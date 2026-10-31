@@ -1223,10 +1223,13 @@ void llama_context::moe_probe_costs_fork() {
         return ret == 0 ? dt : -1.0;
     };
     const int cap = (int) llama_moe_cache_max_batch_cap_fork();
-    const double cn[3] = { 16, 64, (double) cap };
-    double cus[3] = { -1, -1, -1 };
+    // the cache path timed up to the cap: where it starts to lose to streaming is the number the tuner is after
+    double cn[4] = { 16, 64, 256, (double) cap };
+    int nc = cap > 256 ? 4 : 3;
+    if (nc == 3) { cn[2] = (double) cap; }
+    double cus[4] = { -1, -1, -1, -1 };
     if (run(4) > 0) {
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < nc; ++i) {
             run((int) cn[i]);
             cus[i] = run((int) cn[i]);
         }
@@ -1234,7 +1237,7 @@ void llama_context::moe_probe_costs_fork() {
     // streamed passes (above 0 tokens forced onto the streaming path), sizes up to the micro-batch
     double sn[4], sus[4];
     int ns = 0;
-    if (cus[2] > 0) {
+    if (cus[nc - 1] > 0) {
         llama_moe_cache_probe_stream_fork(true);
         for (int n : { 64, 128, 256, 512 }) {
             if (n > (int) cparams.n_ubatch) { break; }
@@ -1243,7 +1246,22 @@ void llama_context::moe_probe_costs_fork() {
         }
         llama_moe_cache_probe_stream_fork(false);
     }
-    llama_moe_cache_probe_end_fork(cn, cus, 3, sn, sus, ns);
+    llama_moe_cache_probe_end_fork(cn, cus, nc, sn, sus, ns);
+    // the same sizes with the early router's predicted staging (K = the experts a token uses): the window between the cache path and plain upload
+    double kn[5], kus[5];
+    int nk = 0;
+    if (cus[nc - 1] > 0 && ns >= 2) {
+        llama_moe_cache_probe_stream_fork(true);
+        llama_moe_cache_probe_k_fork((int) model.hparams.n_expert_used());
+        for (int n : { 64, 128, 256, 512, 1024 }) {
+            if (n > (int) cparams.n_ubatch) { break; }
+            run(n);
+            kn[nk] = n; kus[nk] = run(n); ++nk;
+        }
+        llama_moe_cache_probe_k_fork(-1);
+        llama_moe_cache_probe_stream_fork(false);
+    }
+    llama_moe_cache_probe_k_end_fork(kn, kus, nk);
     LLAMA_LOG_WARN("%s: cache-path probe took %.1f s\n", __func__, (ggml_time_us() - t_start) / 1e6);
 }
 
@@ -3173,6 +3191,16 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
+        }
+    }
+
+    // fork: the staging K of this micro-batch (the middle window of the pass-strategy tuner, llama_moe_pp_pred_k_fork), read by the graph build and the scheduler
+    if (cparams.moe_cache && !getenv("GGML_PRED_K")) {
+        const int64_t kp = llama_moe_pp_pred_k_fork((int32_t) ubatch.n_tokens, (int32_t) model.hparams.n_expert_used());
+        if (kp >= 0) {
+            char kb[16];
+            snprintf(kb, sizeof kb, "%d", (int) kp);
+            setenv("GGML_PRED_K_PASS", kb, 1);
         }
     }
 

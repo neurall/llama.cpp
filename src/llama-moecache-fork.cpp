@@ -8849,6 +8849,8 @@ bool llama_moe_cache_get_info_fork(struct llama_tuning_info * info) {
 // The graph node budget is sized for the cap, so the computed value may move between 8 and the cap without a rebuild.
 static std::atomic<int64_t> g_mb_auto { 31 };      // the computed limit
 static std::atomic<int64_t> g_mb_probe { -1 };     // >= 0 while the start-up probe forces the cache path for up to this many tokens
+static std::atomic<int64_t> g_kb_auto { 0 };       // top of the predicted-staging window (tokens): above max-batch and up to this, a pass stages the experts its early router ranks; 0 = no window
+static std::atomic<int64_t> g_k_probe { -1 };      // >= 0 while the start-up probe times the predicted staging with this K
 static bool mb_is_auto() {
     static const bool a = [] { const char * e = moe_opt("max-batch"); return !e || strcmp(e, "auto") == 0; }();
     return a;
@@ -8859,7 +8861,8 @@ static int64_t mb_fixed() {
 }
 
 int64_t llama_moe_cache_max_batch_cap_fork() {
-    return std::max<int64_t>(128, mb_fixed());   // graph node budget at reserve time
+    // auto: 1024, so the probe can see where the cache path starts to lose to streaming (measured crossovers 100 to 300 tokens; a cap of 128 hid them)
+    return std::max<int64_t>(mb_is_auto() ? 1024 : 128, mb_fixed());   // graph node budget at reserve time
 }
 
 // Exact mode (the CPU backend's GPU-shaped math on, GPU_SHAPE knob / GGML_CPU_GPU_SHAPE): the CPU copies the GPU's one-token kernel (mul_mat_vec_q, 4 warps
@@ -8891,6 +8894,23 @@ int64_t llama_moe_cache_max_batch_fork() {
     }
     return g_mb_auto.load(std::memory_order_relaxed);
 }
+
+// The strategy of a micro-batch of n_tokens, third leg of the max-batch tuner: up to max-batch the cache path (misses uploaded in place), then a window where the
+// experts the early router ranks (K = the experts a token uses) are staged ahead of the layer, then plain upload of what the layer uses. The window is measured
+// by the probe (llama_moe_cache_probe_k_end_fork) and ends where staging stops beating plain upload by 5%: past the sizes timed it is not used (k8 collapsed
+// on GLM from 2000 tokens and on MiMo from 16000, so a window is never extended past a measured point). GGML_PRED_K set by hand forces its K on every pass.
+int64_t llama_moe_pp_pred_k_fork(int32_t n_tokens, int32_t n_used) {
+    const int64_t p = g_k_probe.load(std::memory_order_relaxed);
+    if (p >= 0) {
+        return n_tokens > 1 ? p : 0;
+    }
+    if (getenv("GGML_PRED_K")) {
+        return -1;
+    }
+    const int64_t kb = g_kb_auto.load(std::memory_order_relaxed);
+    return (n_tokens > llama_moe_cache_max_batch_fork() && n_tokens <= kb) ? n_used : 0;
+}
+void llama_moe_cache_probe_k_fork(int k) { g_k_probe = k; }
 
 // The streaming path costs a(n) + n*b: a(n) uploads every distinct expert the batch touches, over the offload GPU's link (prompt batches are
 // offloaded to the fastest card): layers x distinct experts u(n) x expert bytes / link speed, with u(n) = N (1 - (1 - k/N)^n) for N experts per
@@ -8969,6 +8989,64 @@ static bool mb_decode(const std::string & v, int slots, mb_pts & c, mb_pts & s) 
     return true;
 }
 
+// k curve (predicted staging) as "slots cnt n:us ..."
+static std::string mbk_encode(int slots, const mb_pts & k) {
+    std::string r = std::to_string(slots) + " " + std::to_string(k.n.size());
+    for (size_t i = 0; i < k.n.size(); ++i) { r += " " + std::to_string((long long) k.n[i]) + ":" + std::to_string((long long) k.us[i]); }
+    return r;
+}
+static bool mbk_decode(const std::string & v, int slots, mb_pts & k) {
+    std::istringstream is(v);
+    int sl = 0; size_t cnt = 0;
+    if (!(is >> sl >> cnt) || sl != slots || cnt < 2 || cnt > 16) { return false; }
+    for (size_t i = 0; i < cnt; ++i) {
+        std::string t; double n, u;
+        if (!(is >> t) || sscanf(t.c_str(), "%lf:%lf", &n, &u) != 2 || n <= 0 || u <= 0) { return false; }
+        k.n.push_back(n); k.us.push_back(u);
+    }
+    return true;
+}
+// The three-way switch from the three curves: max-batch = first n where the better of streaming and predicted staging is not slower than the cache path, and the
+// staging window = up to the last timed size where staging beats plain upload by 5% (never past a timed size).
+static void mb_apply3(const mb_pts & c, const mb_pts & st, const mb_pts & k) {
+    mb_pts m;
+    for (const mb_pts * q : { &st, &k }) {
+        for (double n : q->n) {
+            if (std::find(m.n.begin(), m.n.end(), n) == m.n.end()) { m.n.push_back(n); }
+        }
+    }
+    std::sort(m.n.begin(), m.n.end());
+    for (double n : m.n) { m.us.push_back(std::min(mb_eval(st, n, true), mb_eval(k, n, true))); }
+    mb_monotone(m);
+    g_mb_auto = crossover(c, m);
+    int64_t kb = 0;
+    bool run = true;
+    for (size_t i = 0; i < k.n.size() && run; ++i) {
+        if (k.us[i] <= 0.95 * mb_eval(st, k.n[i], true)) { kb = (int64_t) k.n[i]; } else if (kb > 0) { run = false; }
+    }
+    g_kb_auto = kb > g_mb_auto.load() ? kb : 0;
+    LLAMA_LOG_WARN("moe-cache: pass strategy: cache path up to %lld tokens, predicted staging up to %lld tokens (0 = none), plain upload above\n",
+            (long long) g_mb_auto.load(), (long long) g_kb_auto.load());
+}
+static mb_pts g_probe_c, g_probe_st;   // the curves of the probe in progress
+
+void llama_moe_cache_probe_k_end_fork(const double * kn, const double * kus, int nk) {
+    moe_cache * mc = g_cache;
+    mb_pts k;
+    for (int i = 0; i < nk; ++i) { if (kus[i] > 0) { k.n.push_back(kn[i]); k.us.push_back(kus[i]); } }
+    if (!mc || g_probe_c.n.size() < 2 || g_probe_st.n.size() < 2 || k.n.size() < 2) {
+        return;
+    }
+    mb_monotone(k);
+    mb_apply3(g_probe_c, g_probe_st, k);
+    std::string msg;
+    for (size_t i = 0; i < k.n.size(); ++i) { msg += " k" + std::to_string((int) k.n[i]) + "=" + std::to_string((int) (k.us[i] / 1e3)) + "ms"; }
+    LLAMA_LOG_WARN("moe-cache: predicted staging timed:%s\n", msg.c_str());
+    if (!mc->profile.empty()) {
+        moe_state_set(mc->profile, { { hw_key("batch.cost3"), mbk_encode((int) mc->n_slots, k) } });
+    }
+}
+
 bool llama_moe_cache_probe_wanted_fork() {
     moe_cache * mc = g_cache;
     if (!mc || !mb_is_auto()) {
@@ -8980,7 +9058,14 @@ bool llama_moe_cache_probe_wanted_fork() {
         mb_monotone(c); mb_monotone(st);
         g_mb_auto = crossover(c, st);
         LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (stored probe)\n", (long long) g_mb_auto.load());
-        return false;
+        mb_pts k;
+        if (moe_state_get(mc->profile, hw_key("batch.cost3"), v) && mbk_decode(v, mc->n_slots, k)) {
+            mb_monotone(k);
+            mb_apply3(c, st, k);
+            return false;
+        }
+        g_probe_c = c; g_probe_st = st;
+        return true;   // no staging curve stored yet (an earlier start before the window existed): time all three once
     }
     return true;
 }
@@ -9003,6 +9088,7 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
         return;   // probe failed: the limit stays at 31
     }
     mb_monotone(c); mb_monotone(st);
+    g_probe_c = c; g_probe_st = st;
     g_mb_auto = crossover(c, st);
     std::string msg;
     for (size_t i = 0; i < c.n.size(); ++i) { msg += " c" + std::to_string((int) c.n[i]) + "=" + std::to_string((int) (c.us[i] / 1e3)) + "ms"; }

@@ -3063,7 +3063,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // layer T's router (moe_pred_ids-T, see build_moe_ffn). Once the split that computes it has been launched, its rows are copied to pinned host memory and an
     // event is recorded; fire_prefetch of layer T's expert tensors waits for that event on the host (the GPU keeps running) and stages only the experts in the
     // first K ranks of any token, plus the ones the card's cache holds (copied on the card). The rest is uploaded late (late_fix) when the real ids are known.
-    static const int pred_k = getenv("GGML_PRED_K") ? atoi(getenv("GGML_PRED_K")) : 0;
+    // GGML_PRED_K forces the staging K for every prompt pass (a study switch); otherwise the pass's K is GGML_PRED_K_PASS, set per micro-batch by the tuner
+    // (llama_moe_pp_pred_k_fork): the middle window between the cache path and plain upload
+    const int pred_k = getenv("GGML_PRED_K") ? atoi(getenv("GGML_PRED_K")) : getenv("GGML_PRED_K_PASS") ? atoi(getenv("GGML_PRED_K_PASS")) : 0;
     struct pred_entry { int prod = -1; ggml_tensor * node = NULL; bool queued = false; int64_t ne0 = 0, ne1 = 0; size_t off = 0; ggml_backend_event_t ev = NULL; };
     std::vector<pred_entry> pred;
     std::vector<pred_entry> predx[2];   // GGML_PRED_DEPTH: the rankings of the same layers made one and two layers earlier (moe_pred2_ids / moe_pred3_ids)
