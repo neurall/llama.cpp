@@ -3017,17 +3017,28 @@ void dynkey_fetch(ggml_backend_sched_t sched, ggml_cgraph * gf) {
 // layer3=[0,0,12,...];  (one count per expert). Dumped when the context is freed.
 namespace {
 struct tokheat_t {
-    std::unordered_map<int32_t, std::unordered_map<uint32_t, uint32_t>> c;   // token id -> (layer << 16 | expert) -> count
+    std::unordered_map<uint64_t, std::unordered_map<uint32_t, uint32_t>> c;   // token key (1-3 ids, see tokheat_key) -> (layer << 16 | expert) -> count
+    int32_t h1 = -1, h2 = -1;   // the two tokens before the next one (one sequence: reset when a pass starts at position 0)
     std::mutex mu;
     int n_expert = 0, n_layer = 0;
     std::string dir;
 };
 tokheat_t g_tokheat;
 
+// key = the last 1, 2 or 3 tokens, 21 bits each ((id + 1), 0 = absent), current token lowest
+uint64_t tokheat_key(int32_t a, int32_t b, int32_t c) {
+    return ((uint64_t) (a + 1) << 42) | ((uint64_t) (b + 1) << 21) | (uint64_t) (c + 1);
+}
+
 void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
     if (ub.token == nullptr) { return; }
     std::vector<int32_t> ids;
     std::lock_guard<std::mutex> lk(g_tokheat.mu);
+    const bool fresh = ub.pos && ub.pos[0] == 0;
+    const int32_t h1s = fresh ? -1 : g_tokheat.h1, h2s = fresh ? -1 : g_tokheat.h2;
+    const int64_t nt = ub.n_tokens;
+    g_tokheat.h1 = nt >= 1 ? ub.token[nt - 1] : h1s;
+    g_tokheat.h2 = nt >= 2 ? ub.token[nt - 2] : (nt == 1 ? h1s : h2s);
     for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
         ggml_tensor * t = ggml_graph_node(gf, i);
         int il = -1;
@@ -3037,11 +3048,18 @@ void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
         for (int64_t r = 0; r < n; ++r) {   // rows may be strided (a view of the top-k)
             ggml_backend_tensor_get(t, ids.data() + r*k, (size_t) r*t->nb[1], (size_t) k*sizeof(int32_t));
         }
+        int32_t h1 = h1s, h2 = h2s;   // every layer walks the same tokens from the same history
         for (int64_t r = 0; r < n; ++r) {
-            auto & m = g_tokheat.c[ub.token[r]];
-            for (int64_t j = 0; j < k; ++j) {
-                if (ids[r*k + j] >= 0 && ids[r*k + j] < n_expert) { ++m[(uint32_t) il << 16 | (uint32_t) ids[r*k + j]]; }
+            const int32_t tk = ub.token[r];
+            uint64_t keys[3] = { tokheat_key(-1, -1, tk), h1 >= 0 ? tokheat_key(-1, h1, tk) : 0, h1 >= 0 && h2 >= 0 ? tokheat_key(h2, h1, tk) : 0 };
+            for (uint64_t key : keys) {
+                if (key == 0) { continue; }
+                auto & m = g_tokheat.c[key];
+                for (int64_t j = 0; j < k; ++j) {
+                    if (ids[r*k + j] >= 0 && ids[r*k + j] < n_expert) { ++m[(uint32_t) il << 16 | (uint32_t) ids[r*k + j]]; }
+                }
             }
+            h2 = h1; h1 = tk;
         }
         g_tokheat.n_layer = std::max(g_tokheat.n_layer, il + 1);
     }
@@ -3050,9 +3068,14 @@ void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
 void tokheat_dump() {
     std::lock_guard<std::mutex> lk(g_tokheat.mu);
     if (g_tokheat.c.empty() || g_tokheat.dir.empty()) { return; }
-    for (auto & [tok, m] : g_tokheat.c) {
-        char hex[16]; snprintf(hex, sizeof hex, "%04x", (unsigned) tok);
-        const std::filesystem::path d = std::filesystem::path(g_tokheat.dir) / hex;
+    for (auto & [key, m] : g_tokheat.c) {
+        // dir/<a>/<b>/<c>: the picks of token c after b after a (a, b absent for the plain token map)
+        std::filesystem::path d = g_tokheat.dir;
+        for (int sh = 42; sh >= 0; sh -= 21) {
+            const uint32_t v = (uint32_t) ((key >> sh) & 0x1fffff);
+            if (v == 0) { continue; }
+            char hex[16]; snprintf(hex, sizeof hex, "%04x", (unsigned) (v - 1)); d /= hex;
+        }
         std::error_code ec; std::filesystem::create_directories(d, ec);
         const std::string f = (d / "heatmap.js").string();
         std::vector<std::vector<uint32_t>> rows(g_tokheat.n_layer, std::vector<uint32_t>(g_tokheat.n_expert, 0));
@@ -3066,7 +3089,7 @@ void tokheat_dump() {
             }
             free(line); fclose(in);
         }
-        for (auto & [key, n] : m) { if ((int) (key >> 16) < (int) rows.size()) { rows[key >> 16][key & 0xffff] += n; } }
+        for (auto & [ekey, n] : m) { if ((int) (ekey >> 16) < (int) rows.size()) { rows[ekey >> 16][ekey & 0xffff] += n; } }
         if (FILE * out = fopen(f.c_str(), "w")) {
             for (size_t il = 0; il < rows.size(); ++il) {
                 fprintf(out, "layer%zu=[", il);
