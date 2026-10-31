@@ -4,6 +4,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 #include <fstream>
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include <thread>
 
 #include "llama-moecache-fork.h"
@@ -956,7 +957,10 @@ void llama_context::set_eval_cb() {
     }
 }
 
+void llama_tokheat_dump_fork(void);
+
 llama_context::~llama_context() {
+    llama_tokheat_dump_fork();   // --moe tokheat=DIR: whatever the last request left
     if (g_lt.ctx == this) { g_lt.ctx = nullptr; }   // research trace (log=l, log=x): the callback state must not point at a freed context
     if (moe_embsnap_enabled()) {   // research (--moe log=e): at exit only, the last layer embedding of the last token of the last graph; nothing is read while running
         synchronize();
@@ -3007,6 +3011,78 @@ void dynkey_fetch(ggml_backend_sched_t sched, ggml_cgraph * gf) {
 }
 }  // namespace
 
+
+// --moe tokheat=DIR: a heat map per token id. Every pass adds, for each prompt/answer token and each MoE layer, one count per picked expert.
+// Counters only go up; a dump adds to the files already on disk. DIR/<model>/<token id in hex, at least 4 digits>/heatmap.js holds one line per layer:
+// layer3=[0,0,12,...];  (one count per expert). Dumped when the context is freed.
+namespace {
+struct tokheat_t {
+    std::unordered_map<int32_t, std::unordered_map<uint32_t, uint32_t>> c;   // token id -> (layer << 16 | expert) -> count
+    std::mutex mu;
+    int n_expert = 0, n_layer = 0;
+    std::string dir;
+};
+tokheat_t g_tokheat;
+
+void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
+    if (ub.token == nullptr) { return; }
+    std::vector<int32_t> ids;
+    std::lock_guard<std::mutex> lk(g_tokheat.mu);
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        int il = -1;
+        if (sscanf(t->name, "ffn_moe_topk-%d", &il) != 1 || il < 0 || t->type != GGML_TYPE_I32 || t->buffer == nullptr) { continue; }
+        const int64_t k = t->ne[0], n = std::min<int64_t>(t->ne[1], ub.n_tokens);
+        ids.resize((size_t) (k*n));
+        for (int64_t r = 0; r < n; ++r) {   // rows may be strided (a view of the top-k)
+            ggml_backend_tensor_get(t, ids.data() + r*k, (size_t) r*t->nb[1], (size_t) k*sizeof(int32_t));
+        }
+        for (int64_t r = 0; r < n; ++r) {
+            auto & m = g_tokheat.c[ub.token[r]];
+            for (int64_t j = 0; j < k; ++j) {
+                if (ids[r*k + j] >= 0 && ids[r*k + j] < n_expert) { ++m[(uint32_t) il << 16 | (uint32_t) ids[r*k + j]]; }
+            }
+        }
+        g_tokheat.n_layer = std::max(g_tokheat.n_layer, il + 1);
+    }
+}
+
+void tokheat_dump() {
+    std::lock_guard<std::mutex> lk(g_tokheat.mu);
+    if (g_tokheat.c.empty() || g_tokheat.dir.empty()) { return; }
+    for (auto & [tok, m] : g_tokheat.c) {
+        char hex[16]; snprintf(hex, sizeof hex, "%04x", (unsigned) tok);
+        const std::filesystem::path d = std::filesystem::path(g_tokheat.dir) / hex;
+        std::error_code ec; std::filesystem::create_directories(d, ec);
+        const std::string f = (d / "heatmap.js").string();
+        std::vector<std::vector<uint32_t>> rows(g_tokheat.n_layer, std::vector<uint32_t>(g_tokheat.n_expert, 0));
+        if (FILE * in = fopen(f.c_str(), "r")) {   // add to what earlier runs stored
+            char * line = nullptr; size_t cap = 0; ssize_t len;
+            while ((len = getline(&line, &cap, in)) > 0) {
+                int il = -1, pos = 0;
+                if (sscanf(line, "layer%d=[%n", &il, &pos) < 1 || il < 0 || il >= (int) rows.size()) { continue; }
+                const char * p = line + pos;
+                for (int e = 0; e < g_tokheat.n_expert && *p && *p != ']'; ++e) { rows[il][e] += (uint32_t) strtoul(p, (char **) &p, 10); if (*p == ',') { ++p; } }
+            }
+            free(line); fclose(in);
+        }
+        for (auto & [key, n] : m) { if ((int) (key >> 16) < (int) rows.size()) { rows[key >> 16][key & 0xffff] += n; } }
+        if (FILE * out = fopen(f.c_str(), "w")) {
+            for (size_t il = 0; il < rows.size(); ++il) {
+                fprintf(out, "layer%zu=[", il);
+                for (size_t e = 0; e < rows[il].size(); ++e) { fprintf(out, e ? ",%u" : "%u", rows[il][e]); }
+                fprintf(out, "];\n");
+            }
+            fclose(out);
+        }
+    }
+    g_tokheat.c.clear();
+}
+}   // namespace
+
+// the server calls it when a request ends (llama_moe_request_end_fork)
+void llama_tokheat_dump_fork(void) { tokheat_dump(); }
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
@@ -3196,6 +3272,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
     if (want_key) {
         dynkey_fetch(sched.get(), res->get_gf());
+    }
+    static const char * tokheat_dir = moe_opt("tokheat");
+    if (tokheat_dir && *tokheat_dir && model.hparams.n_expert > 0) {
+        if (g_tokheat.dir.empty()) {
+            std::string nm = model.name; for (char & ch : nm) { if (!isalnum((unsigned char) ch) && ch != '-' && ch != '.') { ch = '_'; } }
+            g_tokheat.dir = std::string(tokheat_dir) + "/" + nm; g_tokheat.n_expert = (int) model.hparams.n_expert;
+        }
+        synchronize();
+        tokheat_collect(res->get_gf(), ubatch, g_tokheat.n_expert);
     }
 
     ret = GGML_STATUS_SUCCESS;

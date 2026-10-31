@@ -5710,8 +5710,11 @@ void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool
     g_req_boundary.store(true);
 }
 
+void llama_tokheat_dump_fork(void);   // llama-context.cpp: --moe tokheat=DIR
+
 void llama_moe_request_end_fork(void) {
     exptok_save();
+    llama_tokheat_dump_fork();
     if (g_cache != nullptr) {
         topic_store_pending(g_cache);   // the request's map now, not when the next prompt begins: a server's last request is kept too
     }

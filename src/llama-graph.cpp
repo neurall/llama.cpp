@@ -2856,6 +2856,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(selected_experts->src[0], "ffn_moe_argsort", il);
     }
     cb(selected_experts, "ffn_moe_topk", il);
+    static const bool tokheat_on = [] { const char * e = moe_opt("tokheat"); return e && *e; }();
+    if (tokheat_on) { ggml_set_output(selected_experts); }   // --moe tokheat=DIR: the picks stay readable after the graph ran (llama-context.cpp)
 
     if (arch == LLM_ARCH_GROVEMOE && n_expert != hparams.n_expert) {
         // TODO: Use scalar div instead when/if implemented
