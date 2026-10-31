@@ -3341,9 +3341,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 // GGML_PRED_KM=m (default: GGML_PRED_K experts): the top m x (experts a token uses) of each ranking; GGML_PRED_KM2=m2: tier two, ranks up to m2 x. Tier one
                 // of the lags (nearest layer first) is staged before tier two; GGML_PRED_BUDGET=b caps the staged count at b x (experts a token uses).
                 const int n_used = s->graph.n_nodes > 0 && s->graph.nodes[0]->src[2] ? (int) s->graph.nodes[0]->src[2]->ne[0] : 8;
-                static const double km  = getenv("GGML_PRED_KM")     ? atof(getenv("GGML_PRED_KM"))     : 0;
-                static const double km2 = getenv("GGML_PRED_KM2")    ? atof(getenv("GGML_PRED_KM2"))    : 0;
-                static const double bud = getenv("GGML_PRED_BUDGET") ? atof(getenv("GGML_PRED_BUDGET")) : 0;
+                const double km  = getenv("GGML_PRED_KM")     ? atof(getenv("GGML_PRED_KM"))     : 0;
+                const double km2 = getenv("GGML_PRED_KM2")    ? atof(getenv("GGML_PRED_KM2"))    : 0;
+                const double bud = getenv("GGML_PRED_BUDGET") ? atof(getenv("GGML_PRED_BUDGET")) : 0;
                 const int64_t k1 = km  > 0 ? (int64_t) (km *n_used + 0.5) : pred_k;
                 const int64_t k2 = km2 > 0 ? (int64_t) (km2*n_used + 0.5) : k1;
                 const int64_t cap = bud > 0 ? (int64_t) (bud*n_used + 0.5) : INT64_MAX;
