@@ -851,6 +851,9 @@ std::atomic<bool> g_rel_dead{false};   // policy r without router probabilities:
 // expert of any layer, g_topic_tmax) instead of the one map of every request ever served
 std::atomic<bool>     g_topic_on{false};
 std::atomic<bool>     g_topic_thinking{false};   // the request being served is thinking (between <think> and </think>): its answer's uses count in the thinking map
+static std::atomic<uint64_t> g_pjit_miss{0}, g_pjit_up{0}, g_pjit_layers{0};   // prompt calls: missed experts seen by the JIT, uploaded, layer-steps
+static std::atomic<uint64_t> g_pjit_left_l[256], g_pjit_pool_l[256];   // per layer: misses left to the CPU in prompt calls; 1 if the layer uses the pool branch
+static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (llama_moe_cache_prompt_call_fork, set by llama_context::decode)
 std::atomic<bool>     g_topic_answer{false};     // its prompt is over (its key came): from here on its uses are the answer's (a short prompt runs as decode steps too)
 
 // --moe expids=N (0: off, the default): per expert of every layer, the last N token ids the router sent to it (user idea 2026-10-28: per expert the
@@ -5713,6 +5716,13 @@ void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool
 void llama_tokheat_dump_fork(void);   // llama-context.cpp: --moe tokheat=DIR
 
 void llama_moe_request_end_fork(void) {
+    if (g_pjit_layers.load() > 0) {   // prompt calls of this request: what the JIT saw and did (uploads against CPU-computed misses)
+        const uint64_t ms = g_pjit_miss.exchange(0), up = g_pjit_up.exchange(0), ly = g_pjit_layers.exchange(0);
+        std::string pl;
+        for (int l = 0; l < 256; ++l) { const uint64_t v = g_pjit_left_l[l].exchange(0); if (v) { pl += tr_fmt(" L%d%s:%" PRIu64, l, g_pjit_pool_l[l].load() ? "p" : "", v); } }
+        LLAMA_LOG_WARN("moe-cache: prompt calls: left to the CPU per layer (p: pool branch):%s\n", pl.c_str());
+        LLAMA_LOG_WARN("moe-cache: prompt calls: %" PRIu64 " layer-steps, %" PRIu64 " missed experts, %" PRIu64 " uploaded, %" PRIu64 " left to the CPU (%.1f%%)\n", ly, ms, up, ms - std::min(ms, up), ms ? 100.0*(ms - std::min(ms, up))/ms : 0.0);
+    }
     exptok_save();
     llama_tokheat_dump_fork();
     if (g_cache != nullptr) {
@@ -7274,7 +7284,13 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 // (same eviction score as the step's swaps), so the upload also serves later tokens.
 void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
-    if (!mc || knobs().jit == 0 || ids->ne[1] > 4) {
+    // Upload or CPU, per layer and per call, from measured costs (user 2026-10-31: no fixed rule): an upload costs bytes / link rate whatever the expert's token
+    // count, the CPU costs bytes / CPU rate for every token routed to the expert, so a prompt call (many tokens per expert) uploads nearly everything and a decode
+    // step (one token) keeps the CPU where it is faster. In a prompt call the block for an upload is a free one or one of a layer that already ran (its chain is
+    // done: this layer's router ids came back through the same stream), never one of the layers still to come. A prompt call is several tokens with at most one
+    // output (llama_context::decode).
+    const bool prompt = g_prompt_call.load(std::memory_order_relaxed);
+    if (!mc || (!prompt && (knobs().jit == 0 || ids->ne[1] > 4))) {   // a prompt call always weighs upload against the CPU
         return;
     }
     std::lock_guard<std::mutex> lock(mc->mtx);
@@ -7294,6 +7310,13 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         return;
     }
     std::vector<int32_t> cur, miss;
+    std::vector<int32_t> ntok(ls.expert_slot.size(), 0);   // tokens of this call routed to each expert: the CPU computes every one of them, an upload costs the same for 1 or 100
+    for (int64_t t = 0; t < ids->ne[1]; ++t) {
+        for (int64_t i = 0; i < ids->ne[0]; ++i) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (e >= 0 && e < (int32_t) ntok.size()) { ntok[e]++; }
+        }
+    }
     for (int64_t t = 0; t < ids->ne[1]; ++t) {
         for (int64_t i = 0; i < ids->ne[0]; ++i) {
             const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
@@ -7309,6 +7332,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         }
     }
     mc->n_jit_miss += miss.size();
+    if (prompt) { g_pjit_layers++; g_pjit_miss += miss.size(); }
     if (miss.empty()) {
         return;
     }
@@ -7317,20 +7341,23 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     const double rcc = std::min(rc, std::max(0.0, knobs().ddr_gbs * 1e3 - rl * 1e3));
     const double rlb = rl * 1e3;
     const int    m   = (int) miss.size();
+    // the experts with the most tokens are the dearest on the CPU (its time grows with them, an upload's does not): they are uploaded first
+    std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return ntok[a] != ntok[b] ? ntok[a] > ntok[b] : score(ls, a) > score(ls, b); });
+    std::vector<double> cpu_tail(m + 1, 0.0);   // cpu_tail[k]: bytes the CPU still reads if the first k are uploaded (each expert once per token routed to it)
+    for (int i = m - 1; i >= 0; --i) { cpu_tail[i] = cpu_tail[i + 1] + (double) ntok[miss[i]] * S; }
     auto T = [&](int k) {
-        const double tl = k * S / rlb, bc = (m - k) * S;
+        const double tl = k * S / rlb, bc = cpu_tail[k];
         if (k == 0) { return bc / rc; }
         return bc <= tl * rcc ? std::max(tl, rcc > 0 ? bc / rcc : 1e300) : tl + (bc - tl * rcc) / rc;
     };
     int kb = 0;
-    for (int k = 1; k <= m; ++k) {
+    for (int k = 1; k <= m; ++k) {   // measured, not a rule: the k that finishes the layer first, for a prompt call or a decode step alike
         if (T(k) < T(kb)) { kb = k; }
     }
     if (kb == 0) {
         return;
     }
-    std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return score(ls, a) > score(ls, b); });
-    int n_up = 0;
+    int n_up = 0;   // miss[] is ordered by tokens routed to the expert (most first), then by score
     if (pool) {
         for (int i = 0; i < kb; ++i) {
             const int32_t id = miss[i];
@@ -7371,11 +7398,12 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         mc->n_pool_up += n_up;
         mc->n_jit += n_up;
         mc->n_jit_layers += n_up > 0;
+        if (prompt) { g_pjit_up += n_up; if (pub->il >= 0 && pub->il < 256) { g_pjit_left_l[pub->il] += (uint64_t) (m - n_up); g_pjit_pool_l[pub->il] = 1; } }
         return;
     }
     for (int i = 0; i < kb; ++i) {
         const int32_t id = miss[i];
-        if (knobs().admit_jit > 0 && ls.win_count[id] < knobs().admit_jit) {
+        if (!prompt && knobs().admit_jit > 0 && ls.win_count[id] < knobs().admit_jit) {
             continue;  // not seen often enough in the last 64 tokens: the CPU computes it, it takes no slot
         }
         // slot: a free block, else the lowest-scored cached expert of THIS layer this token doesn't use (mid-graph: another layer's
@@ -7383,14 +7411,22 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         double best;
         const size_t jli = (size_t) (&ls - mc->layers.data());
         const slot_pick pk = pick_slot(mc, jli, [&](layer_state & lo, size_t o, int32_t x) {
+            if (prompt) {
+                // first a free block, then a layer that already ran or this layer's blocks the pass does not use; only when none is left (the first layers of a
+                // card have no layer behind them) a block of the layer furthest ahead, so the layers that follow soonest keep what they cached
+                if (pinned(mc, lo, x) || (o == jli && std::find(cur.begin(), cur.end(), x) != cur.end())) { return -1.0; }
+                return o > jli ? 1e12 - (double) o * 1e6 + std::min(score(lo, x), 9e5) : std::min(score(lo, x), 9e5);
+            }
             return o != jli || pinned(mc, lo, x) || std::find(cur.begin(), cur.end(), x) != cur.end() ? -1.0 : score(lo, x);
         }, best);
         const int32_t slot = pk.slot;
         if (slot < 0) {
             break;
         }
-        const int32_t victim = pk.owner >= 0 ? ls.slot_expert[slot] : -1;
-        if (victim >= 0) {
+        const int32_t victim = pk.owner >= 0 ? mc->layers[pk.owner].slot_expert[slot] : -1;
+        if (victim >= 0 && prompt) {
+            evict_slot(mc, pk.owner >= 0 ? mc->layers[pk.owner] : ls, slot);   // any block of a past layer: no pay-back test, the pass needs this expert now
+        } else if (victim >= 0) {
             // JIT=1: admitted only as the step's swap would be (no churn): hotter than the victim by the link's pay-back
             // margin; JIT=2: any miss may evict the lowest-scored expert this token doesn't use
             if (knobs().jit < 2 && ((knobs().big != 0 && ls.glob_count[id] < ls.glob_count[victim]) ||
@@ -7420,6 +7456,11 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     }
     mc->n_jit += n_up;
     mc->n_jit_layers += n_up > 0;
+    if (prompt) { g_pjit_up += n_up; if (pub->il >= 0 && pub->il < 256) { g_pjit_left_l[pub->il] += (uint64_t) (m - n_up); } }
+    if (prompt && n_up < m) {   // no block to take: these few are all the CPU still computes in a prompt
+        static int shown = 0;
+        if (shown++ < 5) { LLAMA_LOG_WARN("moe-cache: prompt: layer %d: %d of %d missed experts found no block (past layers' blocks and free ones used up), the CPU computes them\n", pub->il, m - n_up, m); }
+    }
 }
 
 const llama_moe_cache_layer_fork * llama_moe_cache_lookup_fork(const ggml_tensor * up_exps) {
@@ -8835,7 +8876,6 @@ static bool cpu_gpu_shape_on() {
     return get && get() != 0;
 }
 
-static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (see llama_moe_cache_prompt_call_fork)
 void llama_moe_cache_prompt_call_fork(bool on) { g_prompt_call.store(on, std::memory_order_relaxed); }
 
 int64_t llama_moe_cache_max_batch_fork() {
@@ -8844,14 +8884,6 @@ int64_t llama_moe_cache_max_batch_fork() {
         return p;
     }
     if (cpu_gpu_shape_on()) {
-        return 1;
-    }
-    // A prompt never computes cache misses on the CPU: a missed expert gets (tokens x 8 / experts used) tokens, so the CPU cost grows with the pass while an
-    // upload costs the same (Qwen3.6, pure prompt time: 6.1 s at 1k tokens and 98 s at 10k on the cache path, 0.38 s and 2.6 s staged). In a prompt call (several
-    // tokens, at most one with logits: llama_context::decode) only one-token passes take the cache path; larger ones stage the experts they use to the GPU
-    // (disabled by the constant below). The verify batch of a draft has logits on every token and keeps the cache path.
-    constexpr bool prefill_cpu = false;   // disabled in the code (user rule); true would give the old rule back for a comparison build
-    if (!prefill_cpu && g_prompt_call.load(std::memory_order_relaxed)) {
         return 1;
     }
     if (mb_fixed() >= 0) {
