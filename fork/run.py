@@ -843,7 +843,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         return "INSERT INTO runs (" + ", ".join(q(c) for c in cols) + ", stem, okf) VALUES (" + ",".join("?" * (len(cols) + 2)) + ")"
     def run_build_number(sha):
         try:
-            o = subprocess.run(["git", "-C", HERE, "rev-list", "--count", sha], capture_output=True, text=True, timeout=20)
+            o = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "rev-list", "--count", sha], capture_output=True, text=True, timeout=20)
             return int(o.stdout) if o.returncode == 0 else None
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return None
@@ -1557,6 +1557,86 @@ def cmd_nsys(a):
         print(f"\ncard {d}: kernels by time: " + ", ".join(f"{n[:40]} {t / 1e9:.3f} s" for n, t in tk))
         for g, i in gb:
             print(f"  wait {g / 1e6:7.1f} ms at {(ks[i][1] - w0) / 1e9:7.3f} s after {names.get(ks[i][4], '?')[:40]} before {names.get(ks[i + 1][4], '?')[:40]}")
+
+
+SWEEP_MODELS = {"q36": "Qwen3.6-35B-A3B-GSQ-hybrid.gguf", "qwen36-35b-a3b": "Qwen3.6-35B-A3B-GSQ-hybrid.gguf",
+                "q4": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "qwen38-next-iq4xs": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+                "glm": "GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf", "glm53-flash-3bit": "GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
+                "mimo": "MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf", "mimo-v26-flash-3bit": "MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf",
+                "ds": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf", "deepseek-v41-flash": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf"}
+# the options and environment of the sweep configs (experiments/pp-path-sweep/README.md); the CSV carries only the config name
+SWEEP_CFG = {
+    "upload":    ({"GGML_PF_STATS": "1"}, "--moe max-batch=1,pp-only=1"),
+    "stage":     ({"GGML_PF_STATS": "1"}, "--moe max-batch=1,pp-only=1"),
+    "k8":        ({"GGML_PF_STATS": "1", "GGML_PRED_K": "8"}, "--moe max-batch=1,pp-only=1"),
+    "k32":       ({"GGML_PF_STATS": "1", "GGML_PRED_K": "32"}, "--moe max-batch=1,pp-only=1"),
+    "cache":     ({"GGML_PF_STATS": "1"}, "--moe max-batch=8192,pp-only=1"),
+    "dense":     ({"GGML_PF_STATS": "1"}, "--moe max-batch=1,pp-only=1,dense-split=1,dense-split-min=1"),
+    "dense_moe": ({"GGML_PF_STATS": "1"}, "--moe max-batch=1,pp-only=1,dense-split=1,dense-split-min=1,prefill-split=1"),
+    "auto":      ({"GGML_PF_STATS": "1"}, "--moe pp-only=1"),
+    "cpu_only":  ({}, "(no GPU experts)"),
+}
+
+
+def sweep_row(model, config, n, runs, med_ms, min_ms, max_ms, env, args, commit, ts, build, note=""):
+    """one pass-size sweep point as a row of run-history.csv (and runs.db): pp = prompt tokens/s of the median pass, pp_min/pp_max from the slowest/fastest pass"""
+    n = int(n)
+    gguf = SWEEP_MODELS.get(model, model)
+    tag = "-".join(x for x in (build, model, config) if x)
+    row = {"ts": ts, "commit": commit, "pp": round(1000.0 * n / med_ms, 3), "model": gguf, "args": args, "test": f"ppsize{n}", "hw": "pc1", "ok": 1, "build": build,
+           "campaign": f"{tag}-ppsize{n}", "note": ("pass_ms median=%.1f min=%s max=%s runs=%s " % (med_ms, min_ms, max_ms, runs)) + note, "origin": "sweep",
+           "env": json.dumps(env, sort_keys=True), "cmd": args, "prompt": f"pp{n}", "n_cell": runs,
+           "pp_min": round(1000.0 * n / max_ms, 3) if max_ms else "", "pp_med": round(1000.0 * n / med_ms, 3), "pp_max": round(1000.0 * n / min_ms, 3) if min_ms else "",
+           "n_gen": 1}
+    csv_append("run-history.csv", RUN_COLS, row)
+
+
+def cmd_sweep_log(a):
+    """Log pass-size sweep points into run-history.csv and runs.db, one row at a time, flushed per row so a crash loses nothing.
+    live:   mm7.sh ... | python3 run.py sweep-log --env '{"GGML_PRED_K":"8"}' --args '--moe ...' --commit C --build B   (lines: name n median min max runs ms/token tps)
+    import: python3 run.py sweep-log --csv FILE --build B --commit C   (a sweep CSV of experiments/pp-path-sweep; configs from SWEEP_CFG; rows already logged are skipped)"""
+    import subprocess
+    have = {(r.get("campaign"), r.get("test")) for r in csv_load("run-history.csv") if r.get("origin") == "sweep"}
+    commit = a.commit or subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "rev-parse", "--short=10", "HEAD"], capture_output=True, text=True).stdout.strip()
+    n_new = 0
+    if a.csv:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(a.csv)))
+        if not a.commit:
+            c = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "rev-list", "-1", "--before=" + ts, "HEAD"], capture_output=True, text=True).stdout.strip()
+            commit = c[:10] or commit
+        for r in csv_load_path(a.csv):
+            if not str(r.get("prompt_tokens", "")).isdigit():
+                continue
+            model = r.get("model") or a.model
+            cfg = r["config"]
+            env, args = SWEEP_CFG.get(cfg, ({}, ""))
+            if r.get("setup"):
+                args = (args + " " if args else "") + "[" + r["setup"] + "]"
+            med = float(r.get("median_pass_ms") or r.get("mean_pass_ms"))
+            mn = float(r["min_pass_ms"]) if r.get("min_pass_ms") else None
+            mx = float(r["max_pass_ms"]) if r.get("max_pass_ms") else None
+            tag = "-".join(x for x in (a.build, model, cfg) if x)
+            if (f"{tag}-ppsize{int(r['prompt_tokens'])}", f"ppsize{int(r['prompt_tokens'])}") in have:
+                continue
+            sweep_row(model, cfg, r["prompt_tokens"], r.get("runs") or 1, med, mn, mx, env, args, commit, ts, a.build, a.note or ("imported from " + os.path.basename(a.csv)))
+            n_new += 1
+    else:
+        env = ({} if not a.env else json.loads(a.env) if a.env.lstrip().startswith("{") else dict(kv.split("=", 1) for kv in a.env.split())) 
+        ts_fmt = "%Y-%m-%d %H:%M:%S"
+        for line in iter(sys.stdin.readline, ""):   # not "for line in sys.stdin": that reads ahead in blocks and holds rows back
+            f = line.split()
+            if len(f) < 8 or not f[1].isdigit():
+                continue
+            name, n, med, mn, mx, runs = f[0], f[1], float(f[2]), float(f[3]), float(f[4]), f[5]
+            model, _, cfg = name.partition("_")
+            sweep_row(model, cfg, n, runs, med, mn, mx, env, a.args or "", commit, time.strftime(ts_fmt), a.build, a.note or "")
+            n_new += 1
+    print(f"sweep-log: {n_new} rows logged", file=sys.stderr)
+
+
+def csv_load_path(path):
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
 
 
 def cmd_cells(a):
@@ -9247,6 +9327,9 @@ if __name__ == "__main__":
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
+    sl = sp.add_parser("sweep-log", help="log pass-size sweep points (live from mm7.sh lines on stdin, or --csv FILE of experiments/pp-path-sweep) into run-history.csv and runs.db")
+    sl.add_argument("--csv"); sl.add_argument("--env"); sl.add_argument("--args"); sl.add_argument("--commit"); sl.add_argument("--note"); sl.add_argument("--model")
+    sl.add_argument("--build", default="predictor-upload-bw-reducer")
     cl = sp.add_parser("cells", help="markdown table of the cells of a campaign prefix, with the context and the pool the server really ran with")
     cl.add_argument("prefix")
     mf = sp.add_parser("misfires", help="automatic choices that went against what was measured: a prompt run on one card where the split of the same model and pass "
@@ -9276,5 +9359,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
