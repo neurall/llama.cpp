@@ -3,6 +3,20 @@
 Branch `predictor-upload-bw-reducer`, PC1 (2x RTX 3090, CUDA1 x16 about 25 GB/s, CUDA0 x4 about 6 GB/s). All times are **pure prompt time** (`--moe pp-only=1`,
 one token generated, no decode, no refill). "Prompt tokens" are real-text tokens as the server tokenises them (not words).
 
+## TL;DR (kept current; numbers from the 3-run first sweep until the median sweep fills its CSVs)
+
+Along the prompt size (prompt tokens in the pass), per model, which path gives the lowest pass time:
+
+| prompt tokens | Qwen3.6 | qni4 (Qwen3.8 Next IQ4_XS) | GLM 3.0-bit | why |
+|---|---|---|---|---|
+| 3 to the model's threshold | forced cache (CPU misses) up to about 35 | cache up to about 200 | cache up to about 100-150 | few tokens per missed expert: CPU compute is cheaper than an upload |
+| threshold to about 1000 | K=8 early router (100: 190 ms against 318 staged; 200: 253 against 324) | K=8 (200: 899 ms against 1678 staged) | K=8 (100: 2418 ms against 3758 staged) | uploads dominate, K=8 hides part of them behind the previous layer |
+| 1000 | cache collapses (6109 ms against 379 ms staged); K=8 about equal to staging | cache 12082 ms against 1524 K=8 | cache 23649 ms against 4354 staged, 4575 K=8 | explained: each missed expert now gets about 40 tokens, so CPU time grows with the pass, an upload does not; K=8 stops paying for itself above about 1000 tokens (Qwen3.6 388 ms against 369 staged) |
+| 10000 | "cache" looks better by 0-30% | | | NOT the cache: max-batch is 8192, so a 10000-token pass is staged in every arm; the gap is cold first runs and what ran before (GLM staged runs 35.8, 20.9, 20.9 s against cache-arm 20.6, 16.9, 17.0 s). The median sweep decides. |
+
+Rule in the code now: a prompt call never computes cache misses on the CPU (`--moe prefill-cpu=1` gives the old rule back). The model-specific threshold should come
+from measured budgets (upload us per expert per link, CPU us per token per expert), not a token count.
+
 ## Files
 
 | file | what is in it |
