@@ -2685,7 +2685,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // earlier layer is still computing and stages only the experts it ranks high (ggml_backend_sched_compute_splits, fire_prefetch). The attention's k/v writes have
     // expanded the previous layer's experts into the graph by now, so a plain expand here would put the node behind them, with no lead: it moves to right behind its input.
     {
-        const int pred_k = getenv("GGML_PRED_K") ? atoi(getenv("GGML_PRED_K")) : getenv("GGML_PRED_K_PASS") ? atoi(getenv("GGML_PRED_K_PASS")) : 0;   // forced, or set per micro-batch by the tuner
+        static const int pred_k   = getenv("GGML_PRED_K") ? atoi(getenv("GGML_PRED_K")) : 0;
         static const int pred_lag = std::max(1, getenv("GGML_PRED_LAG") ? atoi(getenv("GGML_PRED_LAG")) : 1);
         static const int pred_depth = std::max(1, std::min(3, getenv("GGML_PRED_DEPTH") ? atoi(getenv("GGML_PRED_DEPTH")) : 1));   // rankings from lag, lag+1, lag+2 layers back
         static struct { const void * g; ggml_tensor * cur[256]; int il; } hist = { nullptr, {}, -2 };

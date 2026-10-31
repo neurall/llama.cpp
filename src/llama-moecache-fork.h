@@ -99,9 +99,6 @@ bool    llama_moe_cache_probe_wanted_fork();
 void    llama_moe_cache_probe_begin_fork();
 void    llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int nc, const double * sn, const double * sus, int ns);
 void    llama_moe_cache_probe_stream_fork(bool on);   // force passes above 0 tokens onto the streaming path (probe)
-void    llama_moe_cache_probe_k_fork(int k);   // force predicted staging with this K on the streaming path (probe); -1 = off
-void    llama_moe_cache_probe_k_end_fork(const double * kn, const double * kus, int nk);   // the predicted-staging curve: sets the window (max-batch, top of the window) and stores it
-int64_t llama_moe_pp_pred_k_fork(int32_t n_tokens, int32_t n_used);   // K for the staging of a micro-batch of n_tokens (0 = none): the window between the cache path and plain upload, -1 = forced by GGML_PRED_K
 
 // ubatch for one decode call of n_tokens new tokens, at most ub_max (the compute buffer is sized for it): equal passes, and a tail that fits the
 // cache path (<= max-batch) is left to it instead of a nearly empty streaming pass that pays a whole expert upload. `--moe prefill-equal=0` = ub_max.
