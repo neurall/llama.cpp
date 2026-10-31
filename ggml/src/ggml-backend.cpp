@@ -3075,6 +3075,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     static size_t                pred_hsize = 0;   // pinned host staging for the rankings: grows, never shrinks
     uint8_t * pred_hbase = NULL;
     double pfs_pred_exp = 0, pfs_pred_up = 0, pfs_late = 0, pfs_late_b = 0, pfs_used = 0;
+    int64_t pfs_late_us = 0, pfs_ntok = 0;   // host time in the late-fix block (ids read-back wait + upload issue) and the tokens of the pass (rows of the ids)
     long long pfs_vn = 0, pfs_vbad = 0, pfs_vpad = 0;
     int                  late_layer = -1;
     const ggml_tensor *  late_ids   = NULL;
@@ -3791,6 +3792,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             prefetch_pending & q = lookahead[split_id];
             const ggml_tensor * ids = split->graph.nodes[0]->src[2];
             const int64_t n_exp = q.input->ne[2];
+            const int64_t t_late0 = ggml_time_us();
+            pfs_ntok = std::max<int64_t>(pfs_ntok, ids->ne[1]);
             if (late_layer != q.layer || late_ids != ids) {
                 late_hid.resize(ggml_nbytes(ids) / sizeof(int32_t));
                 ggml_backend_tensor_get_async(split_backend, (ggml_tensor *) ids, late_hid.data(), 0, ggml_nbytes(ids));
@@ -3841,6 +3844,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
             if (q.hi == q.input->ne[2] && n_late > 0) { ggml_backend_tensor_zero_tail_fork(LR->backend, q.input_cpy); }
             if (n_late > 0) { ggml_backend_event_record(LR->ready[q.slot], LR->backend); pfs_late_t++; }
+            pfs_late_us += ggml_time_us() - t_late0;
             // GGML_PRED_VERIFY=1 (test): every expert the real ids use, read back from the slot with the padding behind it, against the host's bytes
             static const bool pred_verify = getenv("GGML_PRED_VERIFY") != NULL;
             if (pred_verify) {
@@ -4076,8 +4080,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 n_tok, sched->prefetch_n_slots, pf_on ? "on" : "OFF", sched->n_splits, pfs_fired, pfs_why[1], pfs_why[2], pfs_why[3], pfs_why[4], pfs_why[5], pfs_why[6],
                 pfs_card, pfs_dev, pfs_prep);
         if (pred_k > 0) {
-            GGML_LOG_WARN("pred-stats (%lld tokens, K %d): %d staged tensors by prediction, %.0f experts predicted, %.0f of them uploaded, %.0f late experts in %d tensors (%.2f GB), %.0f experts used\n",
-                    n_tok, pred_k, pfs_pred_t, pfs_pred_exp, pfs_pred_up, pfs_late, pfs_late_t, pfs_late_b / 1e9, pfs_used);
+            GGML_LOG_WARN("pred-stats (%lld tokens, K %d): %d staged tensors by prediction, %.0f experts predicted, %.0f of them uploaded, %.0f late experts in %d tensors (%.2f GB), %.0f experts used, late-fix host time %.1f ms\n",
+                    (long long) pfs_ntok, pred_k, pfs_pred_t, pfs_pred_exp, pfs_pred_up, pfs_late, pfs_late_t, pfs_late_b / 1e9, pfs_used, pfs_late_us / 1000.0);
             if (pfs_vn > 0) { GGML_LOG_WARN("pred-verify: %lld used experts read back, %lld differ, %lld only in the padding\n", pfs_vn, pfs_vbad, pfs_vpad); }
         }
         GGML_LOG_WARN("pf-stats sync (cumulative host ms / calls): copy_input-own-card %lld/%lld, cross-card-fallback %lld/%lld, expert-ids-read %lld/%lld, d2h %lld/%lld, prev-card %lld/%lld, copy-ahead %lld/%lld, trace %lld/%lld, eval-cb %lld/%lld\n",
