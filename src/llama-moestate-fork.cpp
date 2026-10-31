@@ -358,6 +358,13 @@ static std::mutex g_opt_mtx;                             // its own lock: the st
 void llama_moe_set_opt(const char * key, const char * value) {
     std::lock_guard<std::mutex> lk(g_opt_mtx);
     g_moe_opts[key] = value ? value : "";
+    // pp-only=1 (measurements): nothing of the generation part happens, so a run times the prompt pass alone. The refill of the blocks a prompt borrowed
+    // (reheat) is background upload that would run into the next request's pass, and the dynhot store reads the answer; both are switched off unless set by hand.
+    // A request still samples its first token from the prompt pass; ask for n_predict 1 and read timings.prompt_ms.
+    if (value && strcmp(key, "pp-only") == 0 && atoi(value) != 0) {
+        if (!g_moe_opts.count("reheat")) { g_moe_opts["reheat"] = "0"; }
+        if (!g_moe_opts.count("dynhot")) { g_moe_opts["dynhot"] = "off"; }
+    }
     // sim-moe-repeat=N / sim-dense-repeat=N: run prompt-sized expert / dense matmuls (and attention) N times in the CUDA backend, to give a small model the compute-to-upload
     // ratio of a big one in scheduler tests (OLMoE standing in for GLM). The backend reads GGML_CUDA_MMID_REPEAT / GGML_CUDA_DENSE_REPEAT at its first prompt graph.
     if (value && strcmp(key, "sim-moe-repeat") == 0)   { setenv("GGML_CUDA_MMID_REPEAT", value, 1); }
