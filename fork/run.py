@@ -4565,6 +4565,26 @@ def cmd_publish(a):
     print(f"published {tag}: {', '.join(arch)}", flush=True)
 
 
+def set_latest_link(tree, link="/p/bw/latest"):
+    """/p/bw/latest -> the tree this build came from (atomic), so the commands given to the user (`sudo /p/bw/latest/resident_pin.sh ...`) never carry a per-build path.
+    The scripts live in fork/; each gets a root symlink in the tree (untracked, excluded from git status) so `/p/bw/latest/<script>` works whatever the tree's layout."""
+    tree = os.path.abspath(tree)
+    fk = os.path.join(tree, "fork")
+    try:
+        excl = subprocess.run(["git", "-C", tree, "rev-parse", "--git-path", "info/exclude"], capture_output=True, text=True).stdout.strip()
+        excl = excl if os.path.isabs(excl) else os.path.join(tree, excl)
+        for f in sorted(os.listdir(fk)) if os.path.isdir(fk) else []:
+            if f.endswith((".sh", ".py")) and os.access(os.path.join(fk, f), os.X_OK) and not os.path.lexists(os.path.join(tree, f)):
+                os.symlink(os.path.join("fork", f), os.path.join(tree, f))
+                with open(excl, "a") as x: x.write(f"/{f}\n")
+        tmp = link + ".tmp"
+        os.path.lexists(tmp) and os.remove(tmp)
+        os.symlink(tree, tmp); os.replace(tmp, link)
+        print(f"latest link: {link} -> {tree}", flush=True)
+    except OSError as e:
+        print(f"latest link not set: {e}", flush=True)
+
+
 def cmd_build(a):
     r"""Builds, in containers (pc1) or on the W10 laptop (pc3), with ccache.
     default: dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
@@ -4696,6 +4716,7 @@ def cmd_build(a):
     print(f"build {name}: OK in {time.time() - t0:.0f} s -> {dst} ({open(os.path.join(dst, 'BUILD_INFO')).read().split()[0]})", flush=True)
     if os.path.dirname(os.path.abspath(dst)) == os.path.abspath(DEVBUILDS):   # devbuilds/latest -> this build (atomic): queued cells that name "latest" pick it up without a reschedule
         lnk = os.path.join(DEVBUILDS, ".latest.tmp"); os.path.lexists(lnk) and os.remove(lnk); os.symlink(name, lnk); os.replace(lnk, os.path.join(DEVBUILDS, "latest"))
+    if a.tree: set_latest_link(a.tree)
     if not a.no_regress:
         r = subprocess.run([sys.executable, os.path.abspath(__file__), "regress", dst, "--wait"])
         sys.exit(r.returncode)
