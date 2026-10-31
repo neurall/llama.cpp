@@ -2687,25 +2687,29 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     {
         static const int pred_k   = getenv("GGML_PRED_K") ? atoi(getenv("GGML_PRED_K")) : 0;
         static const int pred_lag = std::max(1, getenv("GGML_PRED_LAG") ? atoi(getenv("GGML_PRED_LAG")) : 1);
+        static const int pred_depth = std::max(1, std::min(3, getenv("GGML_PRED_DEPTH") ? atoi(getenv("GGML_PRED_DEPTH")) : 1));   // rankings from lag, lag+1, lag+2 layers back
         static struct { const void * g; ggml_tensor * cur[256]; int il; } hist = { nullptr, {}, -2 };
         if (pred_k > 0 && il >= 0 && il < 256) {
             if (hist.g != this || il == 0) { hist.g = this; std::fill(std::begin(hist.cur), std::end(hist.cur), nullptr); }
-            ggml_tensor * src = il > 0 ? hist.cur[std::max(il - pred_lag, 0)] : nullptr;
-            if (src && gate_inp && n_tokens > 1 && probs_in == nullptr && selected_experts_in == nullptr &&
-                    !(cparams.moe_cache && n_tokens <= llama_moe_cache_max_batch_fork())) {   // a pass on the cache chain computes with the cache, no staging
-                const int n0 = ggml_graph_n_nodes(gf);
-                ggml_tensor * pl = ggml_mul_mat(ctx0, gate_inp, src);   // [n_expert, n_tokens]
-                if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
-                if (exp_probs_b) { pl = ggml_add(ctx0, pl, exp_probs_b); }
-                ggml_tensor * pid = ggml_argsort(ctx0, pl, GGML_SORT_ORDER_DESC);
-                cb(pid, "moe_pred_ids", il);
-                ggml_set_output(pid);   // its rows are read by the scheduler after the split: the allocator keeps them
-                ggml_build_forward_expand(gf, pid);
-                ggml_tensor ** nodes = ggml_graph_nodes(gf);
-                const int n1 = ggml_graph_n_nodes(gf);
-                int at = -1;
-                for (int i = n0 - 1; i >= 0; --i) { if (nodes[i] == src) { at = i; break; } }
-                if (at >= 0 && !getenv("GGML_PRED_STAY")) { std::rotate(nodes + at + 1, nodes + n0, nodes + n1); }   // the new nodes read only src and weights
+            for (int d = 0; d < pred_depth; ++d) {
+                const int from = d == 0 ? std::max(il - pred_lag, 0) : il - (pred_lag + d);
+                ggml_tensor * src = il > 0 && from >= 0 ? hist.cur[from] : nullptr;
+                if (src && gate_inp && n_tokens > 1 && probs_in == nullptr && selected_experts_in == nullptr &&
+                        !(cparams.moe_cache && n_tokens <= llama_moe_cache_max_batch_fork())) {   // a pass on the cache chain computes with the cache, no staging
+                    const int n0 = ggml_graph_n_nodes(gf);
+                    ggml_tensor * pl = ggml_mul_mat(ctx0, gate_inp, src);   // [n_expert, n_tokens]
+                    if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
+                    if (exp_probs_b) { pl = ggml_add(ctx0, pl, exp_probs_b); }
+                    ggml_tensor * pid = ggml_argsort(ctx0, pl, GGML_SORT_ORDER_DESC);
+                    cb(pid, d == 0 ? "moe_pred_ids" : d == 1 ? "moe_pred2_ids" : "moe_pred3_ids", il);   // the scheduler reads the lag from the name
+                    ggml_set_output(pid);   // its rows are read by the scheduler after the split: the allocator keeps them
+                    ggml_build_forward_expand(gf, pid);
+                    ggml_tensor ** nodes = ggml_graph_nodes(gf);
+                    const int n1 = ggml_graph_n_nodes(gf);
+                    int at = -1;
+                    for (int i = n0 - 1; i >= 0; --i) { if (nodes[i] == src) { at = i; break; } }
+                    if (at >= 0 && !getenv("GGML_PRED_STAY")) { std::rotate(nodes + at + 1, nodes + n0, nodes + n1); }   // the new nodes read only src and weights
+                }
             }
             hist.cur[il] = cur;
         }

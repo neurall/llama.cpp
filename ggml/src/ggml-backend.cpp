@@ -3066,7 +3066,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     static const int pred_k = getenv("GGML_PRED_K") ? atoi(getenv("GGML_PRED_K")) : 0;
     struct pred_entry { int prod = -1; ggml_tensor * node = NULL; bool queued = false; int64_t ne0 = 0, ne1 = 0; size_t off = 0; ggml_backend_event_t ev = NULL; };
     std::vector<pred_entry> pred;
-    std::vector<std::vector<int>> pred_in_split;
+    std::vector<pred_entry> predx[2];   // GGML_PRED_DEPTH: the rankings of the same layers made one and two layers earlier (moe_pred2_ids / moe_pred3_ids)
+    std::vector<std::vector<int>> pred_in_split;   // lag * 4096 + layer
+    const auto pred_at = [&](int code) -> pred_entry & { const int lag = code >> 12; return lag == 0 ? pred[code & 4095] : predx[lag - 1][code & 4095]; };
     static ggml_backend_buffer_t pred_hbuf = NULL;
     static size_t                pred_hsize = 0;   // pinned host staging for the rankings: grows, never shrinks
     uint8_t * pred_hbase = NULL;
@@ -3084,13 +3086,19 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         for (int j = 0; j < sched->n_splits; j++) {
             const struct ggml_cgraph & g = splits[j].graph;
             for (int k = 0; k < g.n_nodes; k++) {
-                if (strncmp(g.nodes[k]->name, "moe_pred_ids-", 13) != 0) { continue; }
-                const int T = atoi(g.nodes[k]->name + 13);
+                int lag = -1, nl = 0;
+                if (strncmp(g.nodes[k]->name, "moe_pred_ids-", 13) == 0) { lag = 0; nl = 13; }
+                else if (strncmp(g.nodes[k]->name, "moe_pred2_ids-", 14) == 0) { lag = 1; nl = 14; }
+                else if (strncmp(g.nodes[k]->name, "moe_pred3_ids-", 14) == 0) { lag = 2; nl = 14; }
+                if (lag < 0) { continue; }
+                const int T = atoi(g.nodes[k]->name + nl);
                 if (T < 0 || T >= 4096) { continue; }
-                if ((int) pred.size() <= T) { pred.resize(T + 1); }
-                pred[T].prod = j; pred[T].node = g.nodes[k]; pred[T].ne0 = g.nodes[k]->ne[0]; pred[T].ne1 = g.nodes[k]->ne[1]; pred[T].off = total;
+                std::vector<pred_entry> & pv = lag == 0 ? pred : predx[lag - 1];
+                if ((int) pv.size() <= T) { pv.resize(T + 1); }
+                pv[T].prod = j; pv[T].node = g.nodes[k]; pv[T].ne0 = g.nodes[k]->ne[0]; pv[T].ne1 = g.nodes[k]->ne[1]; pv[T].off = total;
                 total += GGML_PAD(ggml_nbytes(g.nodes[k]), 256);
-                pred_in_split[j].push_back(T);
+                pred_in_split[j].push_back(lag * 4096 + T);
+                if (lag > 0 && (int) pred.size() <= T) { pred.resize(T + 1); }
                 pdev0 = sched->backends[splits[j].backend_id]->device;
             }
         }
@@ -3127,13 +3135,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
             GGML_LOG_WARN("pred-setup: %zu layers with a ranking in %d splits, %zu bytes pinned (have %zu)\n", pred.size(), sched->n_splits, total, pred_hsize);
         }
-        if (total == 0 || !pred_hbuf) { pred.clear(); pred_in_split.clear(); }
+        if (total == 0 || !pred_hbuf) { pred.clear(); predx[0].clear(); predx[1].clear(); pred_in_split.clear(); }
         else { pred_hbase = (uint8_t *) ggml_backend_buffer_get_base(pred_hbuf); }
     }
     // the split that computes layer T's ranking has been launched: copy the rows to the host, behind it on its card's stream, and record the event
     const auto pred_queue = [&](int j) {
-        for (int T : pred_in_split[j]) {
-            pred_entry & e = pred[T];
+        for (int code : pred_in_split[j]) {
+            pred_entry & e = pred_at(code);
             ggml_backend_t b = sched->backends[splits[j].backend_id];
             ggml_backend_tensor_get_async(b, e.node, pred_hbase + e.off, 0, ggml_nbytes(e.node));
             if (e.ev == NULL) { e.ev = ggml_backend_event_new(b->device); }
@@ -3328,15 +3336,32 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             // fork (GGML_PRED_K): the experts to stage by prediction; empty = all of them
             std::vector<uint8_t> wanted;
             if (pred_T >= 0) {
-                pred_entry & e = pred[pred_T];
-                if (e.ev) { ggml_backend_event_synchronize(e.ev); }
+                // GGML_PRED_KM=m (default: GGML_PRED_K experts): the top m x (experts a token uses) of each ranking; GGML_PRED_KM2=m2: tier two, ranks up to m2 x. Tier one
+                // of the lags (nearest layer first) is staged before tier two; GGML_PRED_BUDGET=b caps the staged count at b x (experts a token uses).
+                const int n_used = s->graph.n_nodes > 0 && s->graph.nodes[0]->src[2] ? (int) s->graph.nodes[0]->src[2]->ne[0] : 8;
+                static const double km  = getenv("GGML_PRED_KM")     ? atof(getenv("GGML_PRED_KM"))     : 0;
+                static const double km2 = getenv("GGML_PRED_KM2")    ? atof(getenv("GGML_PRED_KM2"))    : 0;
+                static const double bud = getenv("GGML_PRED_BUDGET") ? atof(getenv("GGML_PRED_BUDGET")) : 0;
+                const int64_t k1 = km  > 0 ? (int64_t) (km *n_used + 0.5) : pred_k;
+                const int64_t k2 = km2 > 0 ? (int64_t) (km2*n_used + 0.5) : k1;
+                const int64_t cap = bud > 0 ? (int64_t) (bud*n_used + 0.5) : INT64_MAX;
                 wanted.assign((size_t) input->ne[2], 0);
-                const int32_t * rk = (const int32_t *) (pred_hbase + e.off);
-                const int64_t kk = std::min<int64_t>(pred_k, e.ne0);
-                for (int64_t t = 0; t < e.ne1; ++t) {
-                    for (int64_t r = 0; r < kk; ++r) {
-                        const int32_t id = rk[t*e.ne0 + r];
-                        if (id >= 0 && id < input->ne[2]) { wanted[id] = 1; }
+                int64_t n_want = 0;
+                for (int tier = 0; tier < 2 && n_want < cap; ++tier) {
+                    const int64_t r0 = tier == 0 ? 0 : k1, r1 = tier == 0 ? k1 : k2;
+                    for (int lag = 0; lag < 3 && r0 < r1; ++lag) {
+                        const std::vector<pred_entry> & pv = lag == 0 ? pred : predx[lag - 1];
+                        if (pred_T >= (int) pv.size() || pv[pred_T].prod < 0 || !pv[pred_T].queued) { continue; }
+                        const pred_entry & e = pv[pred_T];
+                        if (e.ev) { ggml_backend_event_synchronize(e.ev); }
+                        const int32_t * rk = (const int32_t *) (pred_hbase + e.off);
+                        const int64_t rr1 = std::min<int64_t>(r1, e.ne0);
+                        for (int64_t r = r0; r < rr1 && n_want < cap; ++r) {
+                            for (int64_t t = 0; t < e.ne1 && n_want < cap; ++t) {
+                                const int32_t id = rk[t*e.ne0 + r];
+                                if (id >= 0 && id < input->ne[2] && !wanted[id]) { wanted[id] = 1; n_want++; }
+                            }
+                        }
                     }
                 }
                 p.partial = true;
@@ -4027,6 +4052,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     }
 
     for (pred_entry & e : pred) { if (e.ev) { ggml_backend_event_free(e.ev); e.ev = NULL; } }
+    for (auto & pv : predx) { for (pred_entry & e : pv) { if (e.ev) { ggml_backend_event_free(e.ev); e.ev = NULL; } } }
     for (auto & kv : held_by) {   // a held slot whose reader never ran (cannot happen: every reader is a split of this graph): given back behind its card's work
         for (int j : kv.second) { pf_finish(j, sched->n_splits - 1, splits[j].backend_id); }
     }
