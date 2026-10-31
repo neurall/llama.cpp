@@ -2674,6 +2674,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                float   post_exp_norm_eps) const {
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
+    {
+        static const bool trace_on = [] { const char * e = moe_opt("tokheat-trace"); return e && atoi(e) != 0; }();
+        if (trace_on) { cb(cur, "moe_in", il); ggml_set_output(cur); }   // --moe tokheat-trace=1: the expert input stays readable (llama-context.cpp)
+    }
     const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
 
     // fork (GGML_PRED_K, prompt passes without the cache chain): the early router. This layer's router is applied to the expert input GGML_PRED_LAG MoE layers back

@@ -3021,6 +3021,12 @@ struct tokheat_t {
     int32_t h1 = -1, h2 = -1;   // the two tokens before the next one (one sequence: reset when a pass starts at position 0)
     std::mutex mu;
     int n_expert = 0, n_layer = 0;
+    // --moe tokheat-trace=1: per request the token ids, every layer's picks (16 per token, -1 padded) and expert inputs (f16), the layout of --moe acts
+    std::vector<int32_t> tr_tok;
+    std::map<int, std::vector<int16_t>> tr_ids;
+    std::map<int, std::vector<uint16_t>> tr_x;
+    int tr_embd = 0, tr_seq = 0;
+    bool trace = false;
     std::string dir;
 };
 tokheat_t g_tokheat;
@@ -3037,11 +3043,23 @@ void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
     const bool fresh = ub.pos && ub.pos[0] == 0;
     const int32_t h1s = fresh ? -1 : g_tokheat.h1, h2s = fresh ? -1 : g_tokheat.h2;
     const int64_t nt = ub.n_tokens;
+    if (g_tokheat.trace) { g_tokheat.tr_tok.insert(g_tokheat.tr_tok.end(), ub.token, ub.token + nt); }
     g_tokheat.h1 = nt >= 1 ? ub.token[nt - 1] : h1s;
     g_tokheat.h2 = nt >= 2 ? ub.token[nt - 2] : (nt == 1 ? h1s : h2s);
     for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
         ggml_tensor * t = ggml_graph_node(gf, i);
         int il = -1;
+        if (g_tokheat.trace && sscanf(t->name, "moe_in-%d", &il) == 1 && t->type == GGML_TYPE_F32 && t->buffer != nullptr) {
+            std::vector<float> row(t->ne[0]); std::vector<uint16_t> h(t->ne[0]);
+            auto & dst = g_tokheat.tr_x[il];
+            for (int64_t r = 0; r < std::min<int64_t>(t->ne[1], ub.n_tokens); ++r) {
+                ggml_backend_tensor_get(t, row.data(), (size_t) r*t->nb[1], row.size()*sizeof(float));
+                ggml_fp32_to_fp16_row(row.data(), (ggml_fp16_t *) h.data(), (int64_t) row.size());
+                dst.insert(dst.end(), h.begin(), h.end());
+            }
+            g_tokheat.tr_embd = (int) t->ne[0];
+            continue;
+        }
         if (sscanf(t->name, "ffn_moe_topk-%d", &il) != 1 || il < 0 || t->type != GGML_TYPE_I32 || t->buffer == nullptr) { continue; }
         const int64_t k = t->ne[0], n = std::min<int64_t>(t->ne[1], ub.n_tokens);
         ids.resize((size_t) (k*n));
@@ -3061,12 +3079,40 @@ void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
             }
             h2 = h1; h1 = tk;
         }
+        if (g_tokheat.trace) {
+            auto & di = g_tokheat.tr_ids[il];
+            for (int64_t r = 0; r < n; ++r) { for (int64_t j = 0; j < 16; ++j) { di.push_back(j < k ? (int16_t) ids[r*k + j] : (int16_t) -1); } }
+        }
         g_tokheat.n_layer = std::max(g_tokheat.n_layer, il + 1);
     }
 }
 
+void tokheat_dump_trace() {
+    if (!g_tokheat.trace || g_tokheat.tr_tok.empty()) { return; }
+    const std::filesystem::path d = std::filesystem::path(g_tokheat.dir) / "trace";
+    std::error_code ec; std::filesystem::create_directories(d, ec);
+    int seq = 0; while (std::filesystem::exists(d / (std::to_string(seq) + ".json"))) { ++seq; }
+    const std::string stem = (d / std::to_string(seq)).string();
+    FILE * fj = fopen((stem + ".json").c_str(), "w"), * fx = fopen((stem + ".f16").c_str(), "wb"), * fi = fopen((stem + ".ids").c_str(), "wb"), * ft = fopen((stem + ".tok").c_str(), "wb");
+    if (fj && fx && fi && ft) {
+        fprintf(fj, "{\"n_embd\": %d, \"layers\": [", g_tokheat.tr_embd);
+        bool first = true;
+        for (auto & [il, ids] : g_tokheat.tr_ids) {
+            fprintf(fj, "%s[%d, %zu]", first ? "" : ", ", il, ids.size() / 16); first = false;
+            fwrite(ids.data(), sizeof(int16_t), ids.size(), fi);
+            auto it = g_tokheat.tr_x.find(il);
+            if (it != g_tokheat.tr_x.end()) { fwrite(it->second.data(), sizeof(uint16_t), it->second.size(), fx); }
+        }
+        fprintf(fj, "]}\n");
+        fwrite(g_tokheat.tr_tok.data(), sizeof(int32_t), g_tokheat.tr_tok.size(), ft);
+    }
+    for (FILE * f : { fj, fx, fi, ft }) { if (f) { fclose(f); } }
+    g_tokheat.tr_tok.clear(); g_tokheat.tr_ids.clear(); g_tokheat.tr_x.clear();
+}
+
 void tokheat_dump() {
     std::lock_guard<std::mutex> lk(g_tokheat.mu);
+    tokheat_dump_trace();
     if (g_tokheat.c.empty() || g_tokheat.dir.empty()) { return; }
     for (auto & [key, m] : g_tokheat.c) {
         // dir/<a>/<b>/<c>: the picks of token c after b after a (a, b absent for the plain token map)
@@ -3300,6 +3346,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     if (tokheat_dir && *tokheat_dir && model.hparams.n_expert > 0) {
         if (g_tokheat.dir.empty()) {
             std::string nm = model.name; for (char & ch : nm) { if (!isalnum((unsigned char) ch) && ch != '-' && ch != '.') { ch = '_'; } }
+            g_tokheat.trace = [] { const char * e = moe_opt("tokheat-trace"); return e && atoi(e) != 0; }();
             g_tokheat.dir = std::string(tokheat_dir) + "/" + nm; g_tokheat.n_expert = (int) model.hparams.n_expert;
         }
         synchronize();
