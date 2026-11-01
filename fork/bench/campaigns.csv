@@ -6156,3 +6156,7 @@ up8_gather_mask_fix-kvg-f16-glm128-pf128k,2026-11-01 21:42:53,bench /m/gl/3/GLM-
 up8_gather_mask_fix-kvg-q8-glm128-pf128k,2026-11-01 21:51:34,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_gather_mask_fix variants v test pf128k n=2,,
 up8_gather_mask_fix-kvg-f16-glm12-pf60k,2026-11-01 22:00:52,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_gather_mask_fix variants v test pf60k n=2,,
 up8_gather_mask_fix-kvg-q8-glm12-pf60k,2026-11-01 22:07:35,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_gather_mask_fix variants v test pf60k n=2,,
+up8_q8_default-kvb-f16-base-tet-tetrisc,2026-11-01 22:22:46,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds up8_q8_default variants v test tetrisc n=2,,
+up8_q8_default-kvb-f16-base-128k-pf128k,2026-11-01 22:23:38,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds up8_q8_default variants v test pf128k n=2,,
+up8_q8_default-kvb-f16-split-tet-tetrisc,2026-11-01 22:26:37,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds up8_q8_default variants v test tetrisc n=2,,
+up8_q8_default-kvb-f16-split-128k-pf128k,2026-11-01 22:27:32,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds up8_q8_default variants v test pf128k n=2,,
