@@ -3756,7 +3756,12 @@ static bool kv_rec_fixed(size_t cells_max, size_t ratio, size_t tokens_max, size
 }
 
 static std::atomic<bool> g_kv_pool_expected { true };
-void llama_moe_cache_kv_pool_expected_fork(bool on) { g_kv_pool_expected = on; }
+void llama_moe_cache_kv_pool_expected_fork(bool on) {
+    g_kv_pool_expected = on;
+    // --moe fattn-kernel=vec|tile|mma: the kernel of decode-sized attention nodes, where it can run them (fork/docs/fork-knobs.md); values of BEST_FATTN_KERNEL_*
+    static const int k = [] { const char * e = moe_opt("fattn-kernel"); return !e ? 0 : !strcmp(e, "vec") ? 100 : !strcmp(e, "tile") ? 200 : !strcmp(e, "mma") ? 400 : 0; }();
+    if (k) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_cuda_fattn_force_fork")) { fn(k); } }
+}
 bool llama_moe_cache_kv_pool_expected_fork() { return g_kv_pool_expected.load(); }
 // The records a context registered while it expected an expert pool (the target): they belong to that pool's tail. The flag above is set by every context at its
 // creation, so it is captured per record here and asked per cache afterwards. A draft context (no pool, ctx_other) created after the target set it to false,

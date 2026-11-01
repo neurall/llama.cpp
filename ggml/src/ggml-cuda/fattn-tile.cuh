@@ -1093,7 +1093,8 @@ static __global__ void flash_attn_tile(
 
     // Skip unused kernel variants for faster compilation:
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 750)
-    constexpr bool skip_quant_arch = is_quant_kv;
+    // fork: q8_0 and q4_0 stay: the KV tiers read them here on tensor-core cards too (--moe fattn-kernel=tile; one K scan per group of heads, the vector kernel scans per head)
+    constexpr bool skip_quant_arch = is_quant_kv && !(type_K == type_V && (type_K == GGML_TYPE_Q8_0 || type_K == GGML_TYPE_Q4_0));
 #elif defined(GGML_USE_HIP) && defined(CDNA)
     constexpr bool skip_quant_arch = is_quant_kv && ggml_cuda_fattn_tile_quant_skip_mfma(DKQ, ncols1*ncols2);
 #else

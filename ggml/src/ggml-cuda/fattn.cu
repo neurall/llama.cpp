@@ -7,6 +7,7 @@
 
 thread_local size_t * ggml_cuda_fattn_plan_fork = nullptr;   // fork: launch_fattn plans instead of running (fattn-common.cuh)
 bool ggml_cuda_fattn_f16_scratch_fork[GGML_CUDA_MAX_DEVICES] = {};   // fork: see fattn-common.cuh
+int  ggml_cuda_fattn_force_fork = 0;   // fork: --moe fattn-kernel, a BEST_FATTN_KERNEL_* value (0: the rules of ggml_cuda_get_best_fattn_kernel)
 
 #if !defined(GGML_USE_MUSA)
 
@@ -658,6 +659,20 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+
+    // fork: --moe fattn-kernel: decode-sized nodes run this kernel where it can run them (the A/B of the kernels; a gather the rules would take becomes a masked scan, same result)
+    if (ggml_cuda_fattn_force_fork != 0 && Q->ne[1] <= 2) {
+        const bool quant_kv = ggml_is_quantized(K->type) || ggml_is_quantized(V->type);
+        if (ggml_cuda_fattn_force_fork == BEST_FATTN_KERNEL_VEC && can_use_vector_kernel) {
+            return BEST_FATTN_KERNEL_VEC;
+        }
+        if (ggml_cuda_fattn_force_fork == BEST_FATTN_KERNEL_TILE && (!quant_kv || ggml_cuda_fattn_tile_use_native_kv(cc, dst))) {
+            return BEST_FATTN_KERNEL_TILE;
+        }
+        if (ggml_cuda_fattn_force_fork == BEST_FATTN_KERNEL_MMA_F16 && turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
+            return BEST_FATTN_KERNEL_MMA_F16;
+        }
+    }
 
     // If Turing tensor cores are available, use them:
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
