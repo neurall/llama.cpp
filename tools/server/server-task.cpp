@@ -12,6 +12,8 @@
 
 #include <sstream>
 
+LLAMA_API bool llama_moe_ram_short_fork(uint64_t n_cells, uint64_t bytes);   // src/llama-context.cpp
+
 //
 // task_params
 //
@@ -1800,6 +1802,16 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
 
             states.pop_front();
         }
+    }
+
+    // fork: a saved prompt never takes the RAM a prompt pass needs: oldest entries go first, and with none left this one is not saved (llama_moe_ram_short_fork)
+    while (llama_moe_ram_short_fork(prompt.tokens.size(), state_size_new)) {
+        if (states.empty()) {
+            SRV_WRN(" - prompt state size %.3f MiB does not fit beside a prompt pass, skipping\n", state_size_new / (1024.0 * 1024.0));
+            return nullptr;
+        }
+        SRV_WRN(" - making room for a prompt pass, removing oldest prompt cache entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
+        states.pop_front();
     }
 
     std::vector<uint8_t> state_data_tgt;

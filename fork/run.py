@@ -2216,12 +2216,16 @@ def server_run(build, env, args, path, body, render=None):
     bwstop = pcie_sampler() if GPULOG else (lambda: None)   # the engine's own byte and time counters are the bandwidth record; the nvidia-smi view only with --gpulog
     try:
         def clamp_text(txt, n_cl):   # --clamp N: cut to N tokens (the server counts them, so it is right for every tokenizer)
+            full = txt
             for _ in range(4):
                 n_tok = len(post("/tokenize", {"content": txt})["tokens"])
                 if n_tok <= n_cl:
                     break
                 txt = txt[:int(len(txt) * n_cl / n_tok * 0.995)]
             print(f"clamp: prompt cut to {n_tok} tokens (limit {n_cl})", flush=True)
+            if OVR.get("vary") and len(txt) < len(full):   # --vary: every run the next slice of the text (each size its own start), not the same one again
+                o = ((IDX + n_cl) * len(txt)) % len(full)
+                txt = (full + full)[o:o + len(txt)]
             return txt
         if render:   # the server renders the model's chat template into the prompt text; a clamp cuts the user text first (cutting the rendered text would drop the assistant header)
             if OVR.get("clamp"):
@@ -2453,8 +2457,23 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
               else:
                   res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": ovr_prompt(_pf_text), "n_predict": _np,
-                                    "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {})})
+                                    "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {}), **({"n_probs": 1} if os.environ.get("RUN_DBG_TOKENS") else {})})
             t = res["timings"]
+            if os.environ.get("RUN_DBG_TOKENS") and res.get("completion_probabilities"):   # debug: the answer's first tokens and their log probabilities: two paths of a prompt pass must give the same first one
+                print("DBG PROBS: " + str([(x.get("id"), round(x.get("logprob", 0.0), 5)) for x in res["completion_probabilities"][:8]]), flush=True)
+            if os.environ.get("RUN_TRUE_PPL"):   # K:L: K prompts of L tokens through the server's prompt path, the log probability of the real next token of each. Perplexity of a path of the prompt pass:
+                # llama-perplexity's batches ask logits for many tokens and are no prompt calls, so it never reaches the prompt chain, the mix or the prediction. Per slice, so arms compare pair by pair.
+                _k, _l = map(int, os.environ["RUN_TRUE_PPL"].split(":"))
+                _ids = post("/tokenize", {"content": _pf_text})["tokens"]
+                _lp, _out = [], 0
+                for _i in range(_k):
+                    _s = (_i + 1) * (len(_ids) - _l - 1) // (_k + 1)
+                    _r = post("/completion", {"prompt": _ids[_s:_s + _l], "n_predict": 1, "cache_prompt": False, "n_probs": 2048, **GREEDY})
+                    _tl = _r["completion_probabilities"][0]["top_logprobs"]
+                    _v = next((x["logprob"] for x in _tl if x["id"] == _ids[_s + _l]), None)
+                    _out += _v is None
+                    _lp.append(round(_tl[-1]["logprob"] if _v is None else _v, 5))
+                print(f"DBG TRUE PPL: {math.exp(-sum(_lp) / len(_lp)):.5f} over {_k} prompts of {_l} tokens, {_out} outside the top 2048: {_lp}", flush=True)
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
@@ -3272,7 +3291,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead", "chat", "nothink"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -4333,6 +4352,7 @@ def add_overrides(sub):
     sub.add_argument("--ctx", type=int, help="context size instead of the test's own")
     sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
+    sub.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run takes the next slice of the prompt text (a repeated text finds every expert it used in the cache, no real prompt does)")
     sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
     sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
@@ -7261,7 +7281,7 @@ def cmd_cell(a):
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--vary"] if getattr(a, "vary", None) else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
@@ -9339,6 +9359,7 @@ if __name__ == "__main__":
     ce.add_argument("--ctx", type=int, help="context size instead of the test's own (a -c in the args loses to the test's own -c)")
     ce.add_argument("--chat", metavar="INSTR", help="pf tests through the chat template with this instruction in front (instruct models)")
     ce.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="cut the prompt to N[k] tokens (pf128k clamped to 48k = a 48k prompt)")
+    ce.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run the next slice of the prompt text")
     br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
     br.add_argument("target", nargs="?", default="prerelease2")
     br.add_argument("--repo", default=os.getcwd(), help="the checkout to look at / merge in")

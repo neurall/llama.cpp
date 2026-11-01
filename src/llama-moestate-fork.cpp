@@ -371,6 +371,9 @@ void llama_moe_set_opt(const char * key, const char * value) {
     if (value && strcmp(key, "sim-dense-repeat") == 0) { setenv("GGML_CUDA_DENSE_REPEAT", value, 1); }
     // pass-stats=1 (off by default; debugging and measurement runs): every split pass's time per card by cause and its link bytes, measured with extra stream
     // stamps and counters in the scheduler (GGML_SCHED_PASS_STATS, read at the first prompt graph); run.py turns it on unless -ns
+    // predicted staging of prompt passes: q1 = a token's picks, q2 = up to pp-k x those picks as far as the link allows; pp-depth: layers ahead (1 = the next layer)
+    if (value && strcmp(key, "pp-k") == 0 && strcmp(value, "0") != 0) { setenv("GGML_PRED_K", "1", 1); setenv("GGML_PRED_KM", "1", 1); setenv("GGML_PRED_KM2", strcmp(value, "auto") == 0 ? "4096" : value, 1); }   // auto: every rank, the time left decides how far q2 goes, per layer and per pass
+    if (value && strcmp(key, "pp-depth") == 0)         { setenv("GGML_PRED_DEPTH", value, 1); }
     if (value && strcmp(key, "pass-stats") == 0)       { setenv("GGML_SCHED_PASS_STATS", value, 1); }
     // pass-trace=N (debugging, with pass-stats=1): the split-by-split timeline of the first N big passes (GGML_SCHED_PASS_TRACE): are the cards side by side or in turn
     if (value && strcmp(key, "pass-trace") == 0)       { setenv("GGML_SCHED_PASS_TRACE", value, 1); }

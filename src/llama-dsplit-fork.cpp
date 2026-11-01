@@ -682,6 +682,8 @@ static bool g_dsf_loaded = false;
 static constexpr int64_t DSF_CELLS = 8192;
 struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill_ms = 0.0; ggml_backend_dev_t xdev = nullptr; double U_us = -1.0; };
 double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert);   // llama-moecache-fork.cpp: a pass's expert upload (ms)
+bool   llama_moe_cache_pp_chain_pass_fork();   // llama-moecache-fork.cpp: the graph that ran has layers on the prompt chain
+bool   llama_moe_cache_pp_chain_takes_fork(int64_t n_tokens);   // llama-moecache-fork.cpp: a pass of this size of this call goes on the prompt chain
 static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
 static int64_t  g_dsf_next_pos0 = -1;    // the first position of the pass about to be decided (llama_context)
 // Measured fallback (user 2026-10-25: "no point to run 2 cards at that point, we should have fallen back to 1 card"): the curves decide a pass from what was measured at
@@ -789,7 +791,7 @@ static void dsplit_calib_load(const llama_model & model) {
                 const double c = atof(p.second.c_str());
                 if (c < 0.3 || c > 3.0) { continue; }
                 if (k.rfind("dsplit_calib5_b", 0) == 0) { g_calib_split_b[atoi(k.c_str() + 15)] = c; }
-                if (k.rfind("dsplit_calib1_b", 0) == 0) { g_calib_one_b[atoi(k.c_str() + 15)] = c; }
+                if (k.rfind("dsplit_calib7_b", 0) == 0) { g_calib_one_b[atoi(k.c_str() + 15)] = c; }
             }
             if (!g_calib_split_b.empty() || !g_calib_one_b.empty()) {
                 LLAMA_LOG_WARN("split planner: %zu split and %zu one-card size factors from the state file\n", g_calib_split_b.size(), g_calib_one_b.size());
@@ -801,7 +803,7 @@ static void dsplit_calib_load(const llama_model & model) {
         if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 0; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file (a prior: the first measured split pass replaces it)\n", c); }
     }
 }
-static void dsplit_calib_b_save(const char * what, int b, double c) {   // a size's factor (dsplit_calib5_b: split, dsplit_calib1_b: one card)
+static void dsplit_calib_b_save(const char * what, int b, double c) {   // a size's factor (dsplit_calib5_b: split, dsplit_calib7_b: one card)
     if (!dsplit_state_on()) { return; }
     char v[32]; snprintf(v, sizeof v, "%.4f", c);
     moe_state_set(g_calib_section, { { dsplit_state_key(std::string(what) + std::to_string(b)), v } });
@@ -816,7 +818,7 @@ static std::set<int> g_bucket_loaded;
 static void dsplit_bucket_load(int b) {
     if (!dsplit_state_on() || !g_bucket_loaded.insert(b).second) { return; }
     std::string v;
-    if (!moe_state_get(g_calib_section, dsplit_state_key("dsplit_arm3_b" + std::to_string(b)), v)) { return; }
+    if (!moe_state_get(g_calib_section, dsplit_state_key("dsplit_arm4_b" + std::to_string(b)), v)) { return; }
     double u0, u1; int n0, n1;
     if (sscanf(v.c_str(), "%lf %d %lf %d", &u0, &n0, &u1, &n1) == 4 && u0 >= 0 && u1 >= 0) {
         dsplit_bucket & B = g_buckets[b];
@@ -834,7 +836,7 @@ static void dsplit_bucket_load_all() {
     done = true;
     std::vector<std::pair<std::string, std::string>> kv;
     if (!moe_state_section_kv(g_calib_section, kv)) { return; }
-    const std::string pre = "dsplit_arm3_b", suf = dsplit_state_key("");   // keys are pre + bucket + "@<hw>#<build>"
+    const std::string pre = "dsplit_arm4_b", suf = dsplit_state_key("");   // keys are pre + bucket + "@<hw>#<build>"
     for (const auto & p : kv) {
         const std::string & k = p.first;
         if (k.compare(0, pre.size(), pre) != 0 || k.size() <= suf.size() || k.compare(k.size() - suf.size(), suf.size(), suf) != 0) { continue; }
@@ -845,7 +847,7 @@ static void dsplit_bucket_save(int b) {
     if (!dsplit_state_on()) { return; }
     const dsplit_bucket & B = g_buckets[b];
     char v[96]; snprintf(v, sizeof v, "%.3f %d %.3f %d", B.us_tok[0], std::min(B.n[0], 3), B.us_tok[1], std::min(B.n[1], 3));
-    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_arm3_b" + std::to_string(b)), v } });
+    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_arm4_b" + std::to_string(b)), v } });
 }
 
 double   llama_moe_cache_compute_att_us_fork();   // llama-moecache-fork.cpp: the attention part of the compute per token at the planned cells (declared here, no header edit)
@@ -2249,7 +2251,17 @@ static dsf_fit dsf_fit_pass(const std::map<int, dsf_pt> & m) {
         double tmin = 1e30, tmax = 0.0;
         int nt = 0;
         for (const auto & x : v) { if (x.t > 0.0) { tmin = std::min(tmin, x.t); tmax = std::max(tmax, x.t); nt++; } }
-        if (nt >= 3 && tmax >= 1.5 * tmin) {
+        // every sample at one context: the context column repeats the constant one, the system below is singular and A came out 0 (Qwen3.6, prompts of 200 to 2000 tokens, all in
+        // the first bucket: 524 us per token, no fixed part, against 215 ms per pass + 125 us per token; one card looked twice its time at 2000 tokens and the split won on it)
+        double c_first = -1.0;
+        bool   one_c = true;
+        for (const auto & x : v) { if (x.t > 0.0) { one_c = one_c && (c_first < 0.0 || x.c == c_first); c_first = x.c; } }
+        if (nt >= 3 && tmax >= 1.5 * tmin && one_c) {
+            double n = 0.0, s1 = 0.0, s2 = 0.0, ry = 0.0, ryt = 0.0;   // y = p0 + A / t
+            for (const auto & x : v) { if (x.t > 0.0) { n += 1.0; s1 += 1.0 / x.t; s2 += 1.0 / (x.t * x.t); ry += x.y; ryt += x.y / x.t; } }
+            const double den = n * s2 - s1 * s1;
+            if (den > 0.0) { A = std::max(0.0, (n * ryt - s1 * ry) / den); }
+        } else if (nt >= 3 && tmax >= 1.5 * tmin) {
             // normal equations of y = p0 + p1 ctx + A / t over the samples with a pass size
             double M[3][3] = {}, r[3] = {};
             for (const auto & x : v) {
@@ -2416,6 +2428,8 @@ static void dsplit_pass_end_locked() {
     const dsf_pass p = g_dsf_ps;
     g_dsf_ps = dsf_pass();
     if (p.choice < 0 || p.T < 64 || p.pos0 < 0 || p.t0 <= 0) { return; }
+    // a pass on the prompt chain says nothing about the path the split is weighed against: its uploads wait for the router (5000 forced chain tokens: 525 us per token, streamed 240)
+    if (llama_moe_cache_pp_chain_pass_fork()) { return; }
     // A pass under a quarter of the card limit (the micro-batch the pools allow now) is no sample: the server's short tail calls (1024-2144 tokens at the
     // end of a long prompt) are mostly the pass's fixed part and its upload, and their pass sizes are too close together to separate the two - recorded,
     // GLM's one-card curve became 4395 us per token from them and the 4k request picked the split it lost (pre13). Small requests are predicted from the
@@ -2597,6 +2611,11 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                     why = fc ? "factors: the split is faster at this context over the tokens left" : "factors: one card is faster at this context over the tokens left";
                 }
             }
+            // the measured paths decide (llama_moe_cache_pp_decide_fork): the chain or a prediction took this pass, or one card was measured faster at this size, or has to be: one card
+            if (choice == 1 && llama_moe_cache_pp_chain_takes_fork(n_tokens)) {
+                choice = 0;
+                why = "measured: one card at this size";
+            }
             B.passes++;
         }
     }
@@ -2774,7 +2793,9 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     }
     llama_dsplit_pass_end_fork();   // the call's last prompt pass ends here (synchronized): its time per token for the split factors
     { std::lock_guard<std::mutex> dl(g_dsf_mu); dsf_flush(); }   // and the call's new samples go to the state file, once
-    if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto()) {
+    // a pass on the prompt chain is no one-card sample (see dsplit_pass_end_locked): stored as one, a chain that lost to streaming made the split win at this size (Qwen3.6, 441 tokens: "one card"
+    // 764 t/s against 1036 streamed, the split ran at 531). Keys dsplit_arm4 and dsplit_calib7: the older ones hold such samples.
+    if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto() && !llama_moe_cache_pp_chain_pass_fork()) {
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
         const int c = g_pending;
         const double v = (double) us / (double) n_tokens;
@@ -2807,7 +2828,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 const double r1 = std::max(0.3, std::min(3.0, v / rt->second));
                 auto ct = g_calib_one_b.find(bk);
                 g_calib_one_b[bk] = ct == g_calib_one_b.end() ? r1 : 0.5 * ct->second + 0.5 * r1;
-                dsplit_calib_b_save("dsplit_calib1_b", bk, g_calib_one_b[bk]);
+                dsplit_calib_b_save("dsplit_calib7_b", bk, g_calib_one_b[bk]);
                 auto pit = g_plans.find(bk);
                 if (pit != g_plans.end()) { pit->second.c_us = -1.0; }   // recompute the plan of this size with it
             }
