@@ -943,8 +943,10 @@ double score(const layer_state & ls, int32_t id, uint64_t gmax) {
         case policy::window: return ls.win_count[id];
         case policy::lru:    return (double) ls.expert_last[id];
         case policy::crf: {
+            static const double hot = [] { const char * w = moe_opt("crf-hot"); return w ? atof(w) : 0.0; }();   // --moe crf-hot=K: plus K x the lifetime share (the ini's counts and this run's)
             const uint32_t age = ls.tok - ls.crf_t[id];
-            return (double) (1u << std::min(7, (int) std::floor(std::log2(std::max(1.0f, ls.crf[id] * std::exp2(-(float) age / 128.0f)))))) / (double) (age + 1);
+            return (double) (1u << std::min(7, (int) std::floor(std::log2(std::max(1.0f, ls.crf[id] * std::exp2(-(float) age / 128.0f)))))) / (double) (age + 1) +
+                   hot * ((double) ls.glob_count[id] / (double) gmax);
         }
         case policy::slru:   return (ls.prot[id] ? 1e15 : 0.0) + (double) ls.expert_last[id];
         case policy::rel:
