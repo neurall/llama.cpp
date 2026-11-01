@@ -111,3 +111,10 @@ kvy-mimo-mma,mimo,1,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/s
 kvy-mimo-q8-long,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 140000 --keep-loops
 kvy-mimo-q4-long,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0",--ctx 140000 --keep-loops
 kvy-mimo-f16-long,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000 --keep-loops
+kvb-glm60,glm,1,pf60k,64,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000 --keep-loops
+kvb-qn60,qn_iq4xs,1,pf60k,64,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000 --keep-loops
+kvb-glm128,glm,1,pf128k,64,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000 --keep-loops
+kvg-qn-f16,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 34816 --env RUN_TRUE_PPL=4:30000
+kvg-qn-q8,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 34816 --env RUN_TRUE_PPL=4:30000
+kvg-qn-q8-off,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-rows=0 -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 34816 --env RUN_TRUE_PPL=4:30000
+kvg-glm-q8-off,glm,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-rows=0 -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000

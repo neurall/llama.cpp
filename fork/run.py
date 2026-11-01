@@ -2545,16 +2545,17 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 # llama-perplexity's batches ask logits for many tokens and are no prompt calls, so it never reaches the prompt chain, the mix or the prediction. Per slice, so arms compare pair by pair.
                 _k, _l = map(int, os.environ["RUN_TRUE_PPL"].split(":"))
                 _ids = post("/tokenize", {"content": _pf_text})["tokens"]
-                _lp, _out = [], 0
+                _lp, _out, _nan = [], 0, 0
                 for _i in range(_k):
                     _s = (_i + 1) * (len(_ids) - _l - 1) // (_k + 1)
                     _r = post("/completion", {"prompt": _ids[_s:_s + _l], "n_predict": 1, "cache_prompt": False, "n_probs": 2048, **GREEDY})
                     _tl = _r["completion_probabilities"][0]["top_logprobs"]
                     _v = next((x["logprob"] for x in _tl if x["id"] == _ids[_s + _l]), None)
                     _out += _v is None
-                    _low = min((x["logprob"] for x in _tl if x["logprob"] is not None), default=-30.0)   # JSON null: a probability of 0 (GLM's tail of the list)
+                    _nan += any(x["logprob"] is None for x in _tl)   # JSON null: the logits are NaN, the model is broken here: said aloud, never scored
+                    _low = min((x["logprob"] for x in _tl if x["logprob"] is not None), default=-30.0)
                     _lp.append(round(_low if _v is None else _v, 5))
-                print(f"DBG TRUE PPL: {math.exp(-sum(_lp) / len(_lp)):.5f} over {_k} prompts of {_l} tokens, {_out} outside the top 2048: {_lp}", flush=True)
+                print(f"DBG TRUE PPL: {'NAN LOGITS ' + str(_nan) + ' of ' + str(_k) if _nan else format(math.exp(-sum(_lp) / len(_lp)), '.5f')} over {_k} prompts of {_l} tokens, {_out} outside the top 2048: {_lp}", flush=True)
             if os.environ.get("RUN_MOVE_TEST"):   # S:L: the KV moves with cells in use (--moe attn-split=2): the real next token's log probability at L and at S tokens, cells fresh and cells moved (prompt_n: how many were not cached)
                 _s, _l = map(int, os.environ["RUN_MOVE_TEST"].split(":"))
                 _ids = post("/tokenize", {"content": _pf_text})["tokens"]
@@ -3066,10 +3067,17 @@ def text_class(text):
     return (round(len(set(g)) / len(g), 3) if g else None), len(text or ""), int("```" in low or "<html" in low or "function " in low or "#include" in low)
 
 
+def is_garbage(text):
+    """'!!!!!!...': the logits are NaN or broken, argmax is token 0. Such a run reports fine speeds and a 99% hit rate (the same token uses the same experts): GLM kv-tail 33 t/s 2026-10-17; the gather mask
+    2026-11-01 fooled a day of rows on GLM and Qwen Next. Never a valid row, --keep-loops or not; a repeat cannot help."""
+    t = (text or "").strip()
+    return len(t) >= 20 and len(set(t)) <= 3
+
+
 def is_loop(text):
     """a repetition loop: the last 30% of the words have a unique word 4-gram share below 0.5 (measured: loops 0.01-0.26, real text 0.83-1.0); needs at least 100 words"""
     t = (text or "").strip()
-    if len(t) >= 20 and len(set(t)) <= 3:   # '!!!!!!...': the logits are NaN or broken, argmax is token 0 (a GLM kv-tail run gave 33 t/s and a 99% hit rate with such an answer, 2026-10-17)
+    if is_garbage(t):
         return True
     w = t.split()
     if len(w) < 100:
@@ -3414,6 +3422,11 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     want = int(OVR["tokens"]) if OVR.get("tokens") else 0
     for k in range(3):   # a repetition loop is not comparable (a short generation that ended with a real answer is kept): stored as a failed run (ok=0, loop=1 for a loop; excluded from every statistic) and repeated, up to 3 times
         if not row.get("ok", 1):
+            break
+        if is_garbage(row.get("output")):   # NaN logits: no speed of this run means anything, with --keep-loops too, and a repeat gives the same
+            row["ok"] = 0
+            row["note"] = "GARBAGE: NaN logits, one repeated token | " + str(row.get("note") or "")
+            print(f"GARBAGE ANSWER {str(row.get('output') or '').strip()[:24]!r}: NaN logits, row stored as failed, its speeds mean nothing", flush=True)
             break
         loop = not KEEP_LOOPS and (row.get("loop_abort") or is_loop(row.get("output")))
         if not loop:
