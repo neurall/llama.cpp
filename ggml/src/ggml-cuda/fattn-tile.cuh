@@ -24,6 +24,9 @@ static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_nv
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128,  8, 128, 2,  64,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128, 16, 128, 2,  64,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128, 32, 256, 1,  64,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128,  8, 128, 2,  64,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128, 16, 128, 2,  64,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128, 32, 256, 1,  64,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256,  8, 128, 2,  64,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 16, 128, 2,  64,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 1,  64,  64)
@@ -107,6 +110,9 @@ static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_nv
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128,  8, 128, 2,  64, 128)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128, 16, 128, 2,  32, 128)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128, 32, 256, 1,  64,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128,  8, 128, 2,  32,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128, 16, 128, 2,  32,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128, 32, 256, 1,  32,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256,  4, 128, 2,  32,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256,  8, 128, 2,  32, 128)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 16, 128, 2,  32, 128)
@@ -184,6 +190,9 @@ static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_nv
 static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_amd(const int DKQ, const int DV, const int ncols, const bool is_quant = false) {
     if (is_quant) {
         GGML_CUDA_FATTN_TILE_CONFIG_CASE( 64,  64,  8, 128, 1,  32,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128,  8, 256, 1,  64,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128, 16, 256, 1,  32,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128, 32, 256, 1,  32,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256,  8, 256, 1,  64, 128)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 1,  32, 128)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 1,  32,  64)
@@ -273,6 +282,9 @@ static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_am
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128,  8, 128, 6,  64,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128, 16, 256, 3,  64,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(128, 128, 32, 256, 3,  64,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128,  8, 128, 6,  32,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128, 16, 256, 5,  32,  64)
+        GGML_CUDA_FATTN_TILE_CONFIG_CASE(192, 128, 32, 256, 2,  64,  64)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256,  4, 128, 6,  32, 128)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256,  8, 128, 6,  32, 128)
         GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 5,  32, 128)
@@ -431,7 +443,8 @@ static constexpr __host__ __device__ bool ggml_cuda_fattn_tile_quant_instantiate
     if (use_logit_softcap) {
         return false;
     }
-    if (!(DKQ == 64 || DKQ == 128 || DKQ == 256) || DV != DKQ) {
+    // fork: K 192 / V 128 (MiMo) in the one shape its heads take: 8 at a time
+    if (!((DKQ == 64 || DKQ == 128 || DKQ == 256) && DV == DKQ) && !(DKQ == 192 && DV == 128 && ncols2 == 8)) {
         return false;
     }
     if (ncols1 < 1 || ncols1 > 8 || (ncols1 & (ncols1 - 1)) != 0) {
@@ -524,7 +537,7 @@ static inline bool ggml_cuda_fattn_tile_use_native_kv(const int cc, const ggml_t
     memcpy(&max_bias,      (const float *) KQV->op_params + 1, sizeof(float));
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
 
-    if (K->ne[0] != V->ne[0] || logit_softcap != 0.0f) {
+    if ((K->ne[0] != V->ne[0] && !(K->ne[0] == 192 && V->ne[0] == 128)) || logit_softcap != 0.0f) {
         return false;
     }
 
@@ -1468,7 +1481,7 @@ static void launch_fattn_tile_cols(
     fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, ncols1, ncols2, use_logit_softcap>;
     bool need_f16_K = true;
     bool need_f16_V = true;
-    if constexpr (!use_logit_softcap && (DKQ == 64 || DKQ == 128 || DKQ == 256) && DV == DKQ) {
+    if constexpr (!use_logit_softcap && (((DKQ == 64 || DKQ == 128 || DKQ == 256) && DV == DKQ) || (DKQ == 192 && DV == 128 && ncols2 == 8))) {
         if (use_native_kv) {
             fattn_kernel = ggml_cuda_get_fattn_tile_quant_case_kernel(DKQ, ncols1, ncols2, K->type, V->type);
             GGML_ASSERT(fattn_kernel != nullptr);
@@ -1596,6 +1609,10 @@ static void launch_fattn_tile_switch_ncols2(ggml_backend_cuda_context & ctx, ggm
 
     if constexpr (DKQ == 192) {
         // MiMo-V2.5 / V2.5-Pro / V2-Flash: gqa_ratio is 8 (SWA) or 16 (full attn)
+        if (use_gqa_opt && pad_gqa) {   // fork: K / V read as they are: 8 heads at a time, a KV head of 16 takes two blocks
+            launch_fattn_tile_switch_ncols1<DKQ, DV, 8, use_logit_softcap>(ctx, dst);
+            return;
+        }
         if (use_gqa_opt && gqa_ratio % 16 == 0) {
             launch_fattn_tile_switch_ncols1<DKQ, DV, 16, use_logit_softcap>(ctx, dst);
             return;
@@ -1723,3 +1740,5 @@ EXTERN_DECL_FATTN_TILE_QUANT_CASES(256, 256, GGML_TYPE_Q5_0)
 EXTERN_DECL_FATTN_TILE_QUANT_CASES(256, 256, GGML_TYPE_Q5_1)
 EXTERN_DECL_FATTN_TILE_QUANT_CASES(256, 256, GGML_TYPE_Q8_0)
 EXTERN_DECL_FATTN_TILE_QUANT_CASES(256, 256, GGML_TYPE_BF16)
+extern DECL_FATTN_TILE_QUANT_CASE(192, 128, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);   // fork: MiMo, the two KV tiers
+extern DECL_FATTN_TILE_QUANT_CASE(192, 128, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0);

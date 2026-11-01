@@ -677,6 +677,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     // If Turing tensor cores are available, use them:
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
+        // fork: K 192 / V 128 (MiMo) has no vector kernel, and the MMA kernel would convert all of K and V to f16 on every token (MiMo q8_0 at 126k cells, 9 full layers: 2.9 GiB
+        // written, decode 47-52 to 67-69 ms per token). The tile kernel reads them as they are. A prompt pass stays on MMA: one conversion for all its tokens.
+        if (Q->ne[0] == 192 && Q->ne[1] <= 2 && (ggml_is_quantized(K->type) || ggml_is_quantized(V->type)) && gqa_opt_applies && ggml_cuda_fattn_tile_use_native_kv(cc, dst)) {
+            return BEST_FATTN_KERNEL_TILE;
+        }
         if (can_use_vector_kernel) {
             if (!ggml_is_quantized(K->type) && !ggml_is_quantized(V->type)) {
                 // the sparse gather exists only in the MMA kernel: (DKQ, DV, 1, 8) with GQA > 4

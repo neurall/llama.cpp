@@ -74,6 +74,18 @@ fattn_kernel_t ggml_cuda_get_fattn_tile_quant_case_kernel(
     FATTN_TILE_QUANT_CASES_ALL_D(Q8_0, BF16)
     FATTN_TILE_QUANT_CASES_ALL_D(BF16, BF16)
 
+    // fork: MiMo's K 192 / V 128, in the two KV tiers
+    if constexpr (GGML_CUDA_FA_Q8_0_Q8_0) {
+        if (head_size == 192 && type_K == GGML_TYPE_Q8_0 && type_V == GGML_TYPE_Q8_0) {
+            return ggml_cuda_get_fattn_tile_quant_kernel<192, 128, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0>(ncols1, ncols2);
+        }
+    }
+    if constexpr (GGML_CUDA_FA_Q4_0_Q4_0) {
+        if (head_size == 192 && type_K == GGML_TYPE_Q4_0 && type_V == GGML_TYPE_Q4_0) {
+            return ggml_cuda_get_fattn_tile_quant_kernel<192, 128, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0>(ncols1, ncols2);
+        }
+    }
+
     return nullptr;
 }
 

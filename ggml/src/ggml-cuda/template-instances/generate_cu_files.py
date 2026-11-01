@@ -93,6 +93,8 @@ for type_k in TYPES_KV:
             continue
         with open(f"fattn-tile-instance-{get_short_name(type_k)}-{get_short_name(type_v)}.cu", "w") as f:
             f.write(SOURCE_FATTN_TILE_QUANT.format(type_k=type_k, type_v=type_v))
+            if type_k == type_v and type_k in ("GGML_TYPE_Q8_0", "GGML_TYPE_Q4_0"):  # fork: MiMo's K 192 / V 128, the two KV tiers
+                f.write(f"DECL_FATTN_TILE_QUANT_CASE(192, 128, {type_k}, {type_v});\n")
 
 for ncols in [8, 16, 32, 64]:
     for ncols2 in [1, 2, 4, 8, 16, 32]:
