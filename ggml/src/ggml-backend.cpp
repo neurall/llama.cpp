@@ -1626,6 +1626,7 @@ struct ggml_backend_sched {
     struct ggml_hash_set  hash_set;
     int                 * hv_tensor_backend_ids; // [hash_set.size]
     struct ggml_tensor ** hv_tensor_copies;      // [hash_set.size][n_backends][n_copies]
+    bool                * hv_tensor_used;        // [hash_set.size] read across backends by a node that is computed
 
     int * node_backend_ids; // [graph_size]
     int * leaf_backend_ids; // [graph_size]
@@ -2283,6 +2284,11 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                             ggml_backend_sched_split_inputs_grow(split);
                         }
                         split->inputs[n_inputs] = src;
+                    }
+                    // inputs of nodes that are not computed (e.g. the unselected branches of ggml_build_forward_select)
+                    // stay in the split so that the allocation does not change, but they do not need to be copied
+                    if (node->flags & GGML_TENSOR_FLAG_COMPUTE) {
+                        sched->hv_tensor_used[src_id] = true;
                     }
                     node->src[j] = tensor_id_copy(src_id, cur_backend_id, sched->cur_copy);
                 }
@@ -4064,7 +4070,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (pf && split->inputs[input_id] == pf->input) {
                 continue;   // staged by the prefetch
             }
-            if (!ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
+            if (!ggml_backend_sched_is_host_weight(split->inputs[input_id]) && sched->hv_tensor_used[hash_id(split->inputs[input_id])]) {
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
         }
@@ -4074,7 +4080,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (pf && split->inputs[input_id] == pf->input) {
                 continue;
             }
-            if (ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
+            if (ggml_backend_sched_is_host_weight(split->inputs[input_id]) && sched->hv_tensor_used[hash_id(split->inputs[input_id])]) {
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
         }
@@ -4105,7 +4111,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     g_cs_cur_entry = g_cs_cur_set >= 0 ? cs_idx[split_id + 1] : -1;   // these copies feed the next split
                     std::vector<ggml_backend_t> nx_d2h;
                     for (int i = 0; i < nx->n_inputs; i++) {
-                        if (!ggml_backend_sched_is_host_weight(nx->inputs[i])) {
+                        if (!ggml_backend_sched_is_host_weight(nx->inputs[i]) && sched->hv_tensor_used[hash_id(nx->inputs[i])]) {
                             ggml_backend_sched_copy_input(sched, nx, nx->inputs[i], nx_d2h);
                         }
                     }
@@ -4118,7 +4124,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     static const bool ahead_w = !(getenv("GGML_SCHED_COPY_AHEAD_W") && atoi(getenv("GGML_SCHED_COPY_AHEAD_W")) == 0);
                     if (ahead_w && !(pf_on && lookahead[split_id + 1].slot != -1)) {
                         for (int i = 0; i < nx->n_inputs; i++) {
-                            if (ggml_backend_sched_is_host_weight(nx->inputs[i])) {
+                            if (ggml_backend_sched_is_host_weight(nx->inputs[i]) && sched->hv_tensor_used[hash_id(nx->inputs[i])]) {
                                 ggml_backend_sched_copy_input(sched, nx, nx->inputs[i], nx_d2h);
                             }
                         }
@@ -4521,6 +4527,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->hash_set    = ggml_hash_set_new(graph_size);
     sched->hv_tensor_backend_ids = (int *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
     sched->hv_tensor_copies      = (ggml_tensor **) malloc(sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
+    sched->hv_tensor_used        = (bool *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
 
     // At most one split per node is the proof-safe bound, but it costs ~21 KB per node (30 inputs x 2 tensors per split, plus the id arrays): at the 575k-node graph
     // of a 14336-token micro-batch that is 12 GB, committed at once. Linux overcommits it unseen; Windows refuses ("GGML_ASSERT(ctx->mem_buffer != NULL)" in ggml_init
@@ -4605,6 +4612,7 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     free(sched->graph_inputs);
     free(sched->hv_tensor_backend_ids);
     free(sched->hv_tensor_copies);
+    free(sched->hv_tensor_used);
     free(sched->node_backend_ids);
     free(sched->leaf_backend_ids);
     free(sched->prev_node_backend_ids);
@@ -4755,6 +4763,7 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
         ggml_hash_set_reset(&sched->hash_set);
         memset(sched->hv_tensor_backend_ids, -1, sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
         memset(sched->hv_tensor_copies,       0, sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
+        memset(sched->hv_tensor_used,         0, sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
         sched->is_reset = true;
     }
     sched->is_alloc = false;
