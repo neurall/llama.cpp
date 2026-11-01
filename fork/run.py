@@ -2655,6 +2655,34 @@ GEN_TASKS = {   # kind: (what a short request is, how to write a document, what 
              ["Solve the first five problems step by step.", "Which of these problems is the hardest, and why? Solve it."]),
     "chat": ("request for practical advice or a plan, with some personal detail", "Write a long email thread between several people on {topic}. Only the emails.",
              ["Summarize who wants what.", "Write the next reply.", "What should happen next, and who should do it?"])}
+def _gen_code(lang):   # one language's code: a task, a file, what is asked of a file
+    return (f"concrete programming task in {lang}: what to build, its inputs, its edge cases", f"Write a complete {lang} source file on {{topic}}: real logic, several functions, no explanation, only code.",
+            ["Find the bugs in this code and fix them.", "Explain what this code does, function by function.", "Add error handling and unit tests to this code.", "Refactor this code and list what you changed."])
+GEN_TASKS.update({   # pure kinds: all of a prompt in one language or form, so its answer is too; routers pick very different experts for them
+    "latin": ("request written entirely in classical Latin, no other language", "Write a long text entirely in classical Latin on {topic}. No other language, no translation.",
+              ["Perge hunc textum Latine scribere.", "Scribe summarium huius textus Latine.", "Quid hic textus significat? Responde Latine."]),
+    "french": ("request written entirely in French, no other language", "Write a long text entirely in French on {topic}. No other language.",
+               ["Continue ce texte en français.", "Résume ce texte en cinq phrases.", "Réécris ce texte pour un enfant de dix ans."]),
+    "german": ("request written entirely in German, no other language", "Write a long text entirely in German on {topic}. No other language.",
+               ["Setze diesen Text auf Deutsch fort.", "Fasse diesen Text in fünf Sätzen zusammen.", "Schreibe diesen Text für ein zehnjähriges Kind um."]),
+    "medical": ("clinical question from a physician with the patient's symptoms, labs and medication, in medical terminology", "Write a long clinical case report on {topic}: history, examination, labs, differential diagnosis, plan, in medical terminology. Only the report.",
+                ["What is the most likely diagnosis, and why?", "Write the discharge summary for this patient.", "Which findings do not fit, and what would you order next?"]),
+    "legal": ("legal question from a lawyer with the facts of the case, in legal language", "Write a long legal text on {topic} with numbered clauses and defined terms, in legal language. Only the text.",
+              ["Which clauses are unenforceable, and why?", "Summarize the obligations of each party.", "Redraft the last clause to favour the other party."]),
+    "equations": ("math problem stated only in LaTeX symbols, with no words", "Write a long derivation on {topic} in pure LaTeX equations: only formulas, not one sentence.",
+                  ["Continue this derivation.", "Find the error in these equations.", "Simplify the last equation."]),
+    "scifi": ("request for a science fiction story with its setting and characters", "Write a long science fiction story on {topic}. Only the story.",
+              ["Continue this story.", "Rewrite the last scene from another character's view.", "List the plot holes in this story."]),
+    "py": _gen_code("Python"), "js": _gen_code("JavaScript"), "cpp": _gen_code("C++"), "java": _gen_code("Java"),
+    "html": ("request for a web page: its layout, its content, its behaviour", "Write a complete HTML page with CSS and JavaScript on {topic}. Only the code.",
+             ["Find the bugs in this page and fix them.", "Make this page work on a phone.", "Add a dark theme to this page."])})
+GEN_KIND_TOPICS = {   # a kind with its own subjects; the others take GEN_TOPICS
+    "medical": "heart failure|sepsis|diabetic ketoacidosis|pulmonary embolism|acute kidney injury|Crohn's disease|stroke|meningitis|lupus|multiple myeloma|preeclampsia|anaphylaxis".split("|"),
+    "legal": "a commercial lease|data protection|an employment contract|a patent licence|a share purchase|a construction dispute|inheritance|a non-disclosure agreement|insolvency|maritime salvage".split("|"),
+    "equations": "eigenvalues|Fourier series|Maxwell's equations|the Riemann zeta function|stochastic calculus|tensor calculus|the Navier-Stokes equations|Lie algebras|Bayes' rule|contour integrals".split("|"),
+    "math": "compound interest|prime numbers|probability of cards|geometry of circles|linear systems|combinatorics|rates of work|modular arithmetic".split("|"),
+    "latin": "the Gallic wars|the Roman senate|the gods of Olympus|a farmer's year|the fall of Troy|the philosophy of the Stoics|a Roman banquet|the sea voyage of Aeneas".split("|"),
+    "scifi": "a generation ship|first contact|a Dyson swarm|time dilation|a Mars rebellion|an uploaded mind|a dying star|a machine religion".split("|")}
 GEN_DOC = 120   # from this many input tokens a prompt is a task on a document, below it a request alone
 
 
@@ -2665,7 +2693,7 @@ def gen_parse(spec):
     if unknown: sys.exit(f"--gen: unknown {sorted(unknown)} in {spec!r}: in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,first=K,url=U")
     rng = lambda v: tuple(int(x) for x in (v.split(":") * 2)[:2])
     g = {"in": rng(d.get("in", "16:2000")), "out": rng(d.get("out", "32:1024")), "task": d.get("task", "|".join(GEN_TASKS)).split("|"), "seed": int(d.get("seed", 1)), "first": int(d.get("first", 0)),
-         "topic": d["topic"].split("|") if d.get("topic") else GEN_TOPICS, "url": (d.get("url") or fcfg.get("hosts", "gen_url")).rstrip("/")}
+         "topic": d["topic"].split("|") if d.get("topic") else GEN_TOPICS, "own_topic": bool(d.get("topic")), "url": (d.get("url") or fcfg.get("hosts", "gen_url")).rstrip("/")}
     g["key"] = json.dumps([g["in"], g["out"], g["task"], d.get("topic"), g["seed"]])
     return g
 
@@ -2698,7 +2726,8 @@ def gen_prompt(spec, i):
         return t if len(ids) <= n else post_("/detokenize", {"tokens": ids[:n]})["content"]
     r = random.Random(f"{g['seed']}/{i}")
     draw = lambda a: a[0] if a[0] == a[1] else int(round(math.exp(r.uniform(math.log(a[0]), math.log(a[1])))))
-    p = {"i": i, "n_in": draw(g["in"]), "out": draw(g["out"]), "task": r.choice(g["task"]), "topic": r.choice(g["topic"]), "lang": r.choice(GEN_LANGS), "lang2": r.choice(GEN_LANGS),
+    task = r.choice(g["task"])
+    p = {"i": i, "n_in": draw(g["in"]), "out": draw(g["out"]), "task": task, "topic": r.choice(g["topic"] if g["own_topic"] else GEN_KIND_TOPICS.get(task, g["topic"])), "lang": r.choice(GEN_LANGS), "lang2": r.choice(GEN_LANGS),
          "form": r.choice(GEN_FORMS), "fmt": r.choice(GEN_FMTS), "human": r.choice(GEN_HUMAN), "seed": r.randrange(1 << 31)}
     k = GEN_TASKS.get(p["task"]) or (p["task"], "Write a long text on {topic}, the input of this task: " + p["task"] + ". Only the text.", [p["task"]])
     if p["n_in"] < GEN_DOC:
@@ -4481,7 +4510,7 @@ def add_overrides(sub):
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
     sub.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run takes the next slice of the prompt text (a repeated text finds every expert it used in the cache, no real prompt does)")
     sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
-    sub.add_argument("--gen", help="generated prompts in place of the test's own, repetition k = prompt k: in=A:B,out=A:B,task=code|prose|explain|data|math|chat or free text,topic=a|b,seed=N (see gen_prompt; '' = defaults)")
+    sub.add_argument("--gen", help="generated prompts in place of the test's own, repetition k = prompt k: in=A:B,out=A:B,task=kinds of GEN_TASKS (latin|french|german|medical|legal|equations|scifi|py|js|cpp|java|html|code|prose|explain|data|math|chat) or free text,topic=a|b,seed=N,first=K (see gen_prompt; '' = defaults)")
     sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
@@ -10266,7 +10295,7 @@ if __name__ == "__main__":
     cb.add_argument("-nm", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="the probes pin at most GB of the model (as run -nm): the ceiling depends on the RAM beside the pinned weights")
     cb.add_argument("-a", dest="cell_args", default="", metavar="ARGS", help="extra cell arguments for the probes (as run -a)")
     gn = sp.add_parser("gen", help="write generated prompts ahead of a run (--gen SPEC on any run writes them on the fly): in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,url=U")
-    gn.add_argument("spec", nargs="?", default="", help="in=16:2000,out=32:1024,task=code|prose|explain|data|math|chat (or free text),topic=a|b (free text),seed=1,url=... (default [hosts] gen_url)")
+    gn.add_argument("spec", nargs="?", default="", help="in=16:2000,out=32:1024,task=latin|french|german|medical|legal|equations|scifi|py|js|cpp|java|html|code|prose|explain|data|math|chat (or free text),topic=a|b (free text),seed=1,first=0,url=... (default [hosts] gen_url)")
     gn.add_argument("-n", type=int, default=1, help="how many prompts")
     gn.add_argument("--start", type=int, default=0, help="first prompt number")
     gn.add_argument("--show", action="store_true", help="print the texts")
