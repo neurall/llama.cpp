@@ -127,3 +127,4 @@ kvb-m90-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/
 kvb-m384-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=384 -ctk f16 -ctv f16",--hog-gpu 4.5
 kvb-m384-nograph-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=384 -ctk f16 -ctv f16",--hog-gpu 4.5 --env GGML_CUDA_DISABLE_GRAPHS=1
 kvb-m384-nomix-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=384,pp-mix=0 -ctk f16 -ctv f16",--hog-gpu 4.5
+kvb-m384-nofuse-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=384 -ctk f16 -ctv f16",--hog-gpu 4.5 --env GGML_CUDA_DISABLE_FUSION=1

@@ -3042,7 +3042,9 @@ static void ggml_backend_cuda_obs_enable(bool on) {
     g_obs_on = on;
 }
 
-static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+// fork: what a MUL_MAT_ID does before its kernel, fused or not. Fused without this (upstream #30489's GLU into MMQ, ggml_cuda_try_fuse), the rows of the experts the
+// prompt mix's home card skips kept what the lent memory held and went into the experts' sum: '!!!!' or a wrong answer from the mix's first pass on (2026-11-02).
+static void ggml_cuda_mul_mat_id_begin(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     if (g_obs_on.load(std::memory_order_relaxed) || g_obs_prompt_on.load(std::memory_order_relaxed)) {
         ggml_cuda_obs_count(ctx, dst->src[0], dst->src[2]);
     }
@@ -3050,6 +3052,10 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         // ids may be -1 (skipped experts, 2-GPU prefill): the kernels leave those rows unwritten
         CUDA_CHECK(cudaMemsetAsync(dst->data, 0, ggml_nbytes(dst), ctx.stream()));
     }
+}
+
+static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    ggml_cuda_mul_mat_id_begin(ctx, dst);
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
     const ggml_tensor * ids  = dst->src[2];
@@ -5541,7 +5547,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 }
                 // Do not read weight or ids before an intervening write, including aliases.
                 if (!ggml_cuda_is_view_or_noop(cgraph->nodes[k])) {
-                    for (const ggml_tensor * src : { dst->src[0], dst->src[2] }) {
+                    for (const ggml_tensor * src : { dst->src[0], dst->src[2], dst->src[3], dst->src[4] }) {
                         if (src && ggml_cuda_tensors_overlap(src, cgraph->nodes[k])) {
                             output_safe = false;
                         }
@@ -5549,7 +5555,10 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 }
             }
             if (output_safe) {
-                ggml_cuda_mul_mat_q(*cuda_ctx, dst->src[0], glu, dst->op == GGML_OP_MUL_MAT_ID ? dst->src[2] : nullptr, dst, nullptr, nullptr, true);
+                // fork: as ggml_cuda_mul_mat_id: the heat count, the zeroed output, and an expert cache chain's expert ids and table (src[3], src[4]; src[2] holds its blocks)
+                const bool mmid = dst->op == GGML_OP_MUL_MAT_ID;
+                if (mmid) { ggml_cuda_mul_mat_id_begin(*cuda_ctx, dst); }
+                ggml_cuda_mul_mat_q(*cuda_ctx, dst->src[0], glu, mmid ? (dst->src[4] ? dst->src[3] : dst->src[2]) : nullptr, dst, nullptr, mmid ? dst->src[4] : nullptr, true);
                 nodes_fused[i] = true;
                 nodes_fused[j] = true;
             }
