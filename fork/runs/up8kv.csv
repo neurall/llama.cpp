@@ -106,3 +106,8 @@ kve-mimo-1,mimo,2,pf128k,64,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state
 kve-mimo-0,mimo,2,pf128k,64,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000
 kve-glm-1,glm,2,pf128k,64,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,prefill-split=1",--ctx 140000
 kve-glm-0,glm,2,pf128k,64,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000
+kvy-mimo-tile,mimo,1,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--keep-loops
+kvy-mimo-mma,mimo,1,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-kernel=mma -ctk q8_0 -ctv q8_0",--keep-loops
+kvy-mimo-q8-long,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 140000 --keep-loops
+kvy-mimo-q4-long,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0",--ctx 140000 --keep-loops
+kvy-mimo-f16-long,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000 --keep-loops
