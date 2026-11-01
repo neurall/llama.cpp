@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+glm-bis1-5000,glm,5,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=one",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1

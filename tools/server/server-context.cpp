@@ -16,6 +16,7 @@
 #include "common.h"
 #include "fit.h"
 #include "llama.h"
+#include "llama-fork-hooks.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -25,6 +26,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
+#include <set>
 #include <cinttypes>
 #include <deque>
 #include <exception>
@@ -44,6 +47,67 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+// fork: the marker strings chat templates write around each message's content (role headers and footers, the generation prompt), longest first.
+// A /completion prompt that a client formatted with a template contains them; without them what is left is the request's own text, the topic key
+// of --moe dynhot (user 2026-10-28: "look in servers template what raw text section name is and extract from foreign template too"). Learned at
+// load from probe chats with placeholder contents, through the model's own template and every built-in one (a client may use another one)
+static std::vector<std::string> g_fork_marks;
+
+static void fork_marks_learn(const common_chat_templates * tmpls, bool use_jinja) {
+    static const char * PH[4]   = { "FORKPHSYSQ", "FORKPHUSRQ", "FORKPHASTQ", "FORKPHUS2Q" };   // system, user, assistant, user again
+    static const char * ROLE[4] = { "system", "user", "assistant", "user" };
+    static const std::vector<std::vector<int>> probes = { { 1 }, { 0, 1 }, { 1, 2, 3 }, { 0, 1, 2, 3 } };
+    std::set<std::string> found;
+    auto take = [&](const std::string & r) {   // the text between and around the placeholders
+        size_t from = 0;
+        while (from <= r.size()) {
+            size_t at = std::string::npos, len = 0;
+            for (const char * ph : PH) {
+                const size_t q = r.find(ph, from);
+                if (q < at) { at = q; len = strlen(ph); }
+            }
+            const std::string piece = r.substr(from, at == std::string::npos ? std::string::npos : at - from);
+            if (piece.size() >= 2 && piece.find_first_not_of(" \t\r\n") != std::string::npos) { found.insert(piece); }
+            if (at == std::string::npos) { break; }
+            from = at + len;
+        }
+    };
+    for (const auto & pr : probes) {
+        for (bool think : { true, false }) {   // the model's own template, thinking on and off
+            try {
+                common_chat_templates_inputs in;
+                in.use_jinja           = use_jinja;
+                in.add_generation_prompt = true;
+                in.enable_thinking     = think;
+                for (int k : pr) { common_chat_msg m; m.role = ROLE[k]; m.content = PH[k]; in.messages.push_back(m); }
+                take(common_chat_templates_apply(tmpls, in).prompt.str());
+            } catch (const std::exception &) {}   // a template without a system role, or without two user turns in a row
+        }
+        std::vector<const char *> names(256);   // the built-in templates
+        names.resize((size_t) std::max(0, llama_chat_builtin_templates(names.data(), names.size())));
+        for (const char * nm : names) {
+            std::vector<llama_chat_message> msgs;
+            for (int k : pr) { msgs.push_back({ ROLE[k], PH[k] }); }
+            std::vector<char> buf(4096);
+            const int32_t n = llama_chat_apply_template(nm, msgs.data(), msgs.size(), true, buf.data(), (int32_t) buf.size());
+            if (n > 0 && n <= (int32_t) buf.size()) { take(std::string(buf.data(), (size_t) n)); }
+        }
+    }
+    g_fork_marks.assign(found.begin(), found.end());
+    std::sort(g_fork_marks.begin(), g_fork_marks.end(), [](const std::string & a, const std::string & b) { return a.size() > b.size(); });
+    SRV_INF("%s: %zu chat template markers learned for the dynhot topic key\n", __func__, g_fork_marks.size());
+}
+
+// the request's own text of a prompt written with a template: the prompt with the markers cut out; none found: empty (the whole prompt is the text)
+static std::string fork_own_text(const std::string & prompt) {
+    std::string own = prompt;
+    size_t cut = 0;
+    for (const auto & m : g_fork_marks) {
+        for (size_t q = own.find(m); q != std::string::npos; q = own.find(m, q + 1)) { own.replace(q, m.size(), "\n"); cut++; }
+    }
+    return cut > 0 ? own : std::string();
+}
 
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
@@ -1872,6 +1936,7 @@ private:
 
             try {
                 chat_templates = common_chat_templates_init(model_tgt, params_base.chat_template);
+                fork_marks_learn(chat_templates.get(), params_base.use_jinja);
 
                 SRV_TRC("%s: chat template, example_format: '%s'\n", __func__,
                     common_chat_format_example(chat_templates.get(), params_base.use_jinja, params_base.default_template_kwargs).c_str());
@@ -2141,6 +2206,13 @@ private:
     }
 
     bool launch_slot_with_task(server_slot & slot, server_task && task) {
+        {   // fork: a request starts: the MoE cache takes the next decode call as its prompt's first, the key of its topic from the request's own text
+            // (a chat request's user input), else from the whole prompt
+            const bool         own = !task.params.fork_own_tokens.empty();
+            const llama_tokens pt  = own ? task.params.fork_own_tokens : task.tokens.get_text_tokens();
+            llama_moe_request_begin_fork(pt.data(), (int32_t) pt.size(), own);
+        }
+
         // process per-request lora adapters
         if (!task.params.lora.empty()) {
             auto task_loras = construct_lora_list(task.params.lora);
@@ -2615,6 +2687,7 @@ private:
             res->tokens      = std::move(slot.generated_tokens);
         }
         { llama_tuning_info ti; llama_get_tuning_info(ctx_tgt, &ti); slot.stats.tuning_end(ti); }
+        llama_moe_request_end_fork();   // fork: the request is over: per-request files of the MoE cache to disk
         res->stats           = slot.stats;
         res->prompt          = slot.task->tokens.detokenize(ctx_tgt, true);
         res->response_fields = std::move(slot.task->params.response_fields);
@@ -5636,6 +5709,16 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     data);
 
             task.apply_chat_session(chat_session);
+
+            {   // fork: the request's own text for the topic key of --moe dynhot: the user-input parts of the rendered chat template, not the template around
+                // them (user 2026-10-28: "pool just raw pretemplate prompts"); the key pools tokens without their positions, so the parts are tokenized apart
+                std::string own;
+                for (const auto & part : chat_session.prompt().parts) {
+                    if (part.is_input) { own += part.text; own += '\n'; }
+                }
+                if (own.empty() && prompt.is_string()) { own = fork_own_text(prompt.get<std::string>()); }   // /completion: a client's own template
+                if (!own.empty()) { task.params.fork_own_tokens = common_tokenize(ctx_server.vocab, own, false, false); }
+            }
 
             task.id_slot = json_value(data, "id_slot", -1);
             sse_ping_interval = task.params.sse_ping_interval;

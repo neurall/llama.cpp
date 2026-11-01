@@ -1,4 +1,5 @@
 #pragma once
+#include "../ggml-det-math.h"
 #include "common.cuh"
 
 #define CUDA_NEG_BLOCK_SIZE 256
@@ -96,7 +97,7 @@ void ggml_cuda_op_unary_mul(ggml_backend_cuda_context & ctx, ggml_tensor * unary
 void ggml_cuda_op_relu_sqr(ggml_backend_cuda_context & ctx, ggml_tensor * relu_node, ggml_tensor * sqr_node);
 
 __device__ __forceinline__ float ggml_cuda_op_silu_single(float x) {
-    return x / (1.0f + expf(-x));
+    return ggml_det_silu(x);
 }
 
 __device__ __forceinline__ float ggml_cuda_op_gelu_single(float x) {

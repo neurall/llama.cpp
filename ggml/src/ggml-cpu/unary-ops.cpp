@@ -1,4 +1,7 @@
 #include "unary-ops.h"
+#include "../ggml-det-math.h"
+
+extern "C" int ggml_cpu_gpu_shape(void);
 
 static inline float op_abs(float x) {
     return fabsf(x);
@@ -29,6 +32,7 @@ static inline float op_relu(float x) {
 }
 
 static inline float op_sigmoid(float x) {
+    if (ggml_cpu_gpu_shape()) return ggml_det_sigmoid(x);
     return 1.f / (1.f + expf(-x));
 }
 
@@ -78,6 +82,7 @@ static inline float op_expm1(float x) {
 }
 
 static inline float op_softplus(float x) {
+    if (ggml_cpu_gpu_shape()) return ggml_det_softplus(x);
     return (x > 20.0f) ? x : log1pf(expf(x));
 }
 

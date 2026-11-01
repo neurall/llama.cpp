@@ -394,8 +394,8 @@ static struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {   // not
     },
     [GGML_TYPE_BF16] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_bf16,
-        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_bf16,
-        .vec_dot_type             = GGML_TYPE_BF16,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_bf16_f32,   // f32 activation: bf16 rounding of it cost ~3 digits against CUDA
+        .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_TQ1_0] = {
@@ -414,6 +414,21 @@ static struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {   // not
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
     },
 };
+
+// GGML_CPU_GPU_SHAPE: the types that have a GPU-shaped dot take the Q8_0 row of the GPU's own quantizer and that dot, whatever the table says (the switch can change
+// while the process runs, so the table is left alone)
+static inline ggml_vec_dot_t ggml_cpu_vec_dot_of(enum ggml_type type) {
+    if (ggml_cpu_gpu_shape()) {
+        ggml_vec_dot_t f = (ggml_vec_dot_t) ggml_cpu_gpu_shape_vec_dot(type);
+        if (f) { return f; }
+    }
+    return type_traits_cpu[type].vec_dot;
+}
+
+static inline enum ggml_type ggml_cpu_vec_dot_type_of(enum ggml_type type) {
+    if (ggml_cpu_gpu_shape() && ggml_cpu_gpu_shape_vec_dot(type)) { return GGML_TYPE_Q8_0; }
+    return type_traits_cpu[type].vec_dot_type;
+}
 
 const struct ggml_type_traits_cpu * ggml_get_type_traits_cpu(enum ggml_type type) {
     return &type_traits_cpu[type];
@@ -1179,8 +1194,8 @@ static void ggml_compute_forward_mul_mat_one_chunk(
 
     const bool src1_cont = ggml_is_contiguous(src1);
 
-    ggml_vec_dot_t const vec_dot      = type_traits_cpu[type].vec_dot;
-    enum ggml_type const vec_dot_type = type_traits_cpu[type].vec_dot_type;
+    ggml_vec_dot_t const vec_dot      = ggml_cpu_vec_dot_of(type);
+    enum ggml_type const vec_dot_type = ggml_cpu_vec_dot_type_of(type);
 
     // broadcast factors
     const int64_t r2 = ne12 / ne02;
@@ -1275,7 +1290,7 @@ void ggml_compute_forward_mul_mat(
     const int ith = params->ith;
     const int nth = params->nth;
 
-    enum ggml_type           const vec_dot_type         = type_traits_cpu[src0->type].vec_dot_type;
+    enum ggml_type           const vec_dot_type         = ggml_cpu_vec_dot_type_of(src0->type);
     ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;
     int64_t                  const vec_dot_num_rows     = type_traits_cpu[src0->type].nrows;
 
@@ -1500,8 +1515,8 @@ static void ggml_compute_forward_mul_mat_id_one_chunk(
 
     const enum ggml_type type = src0->type;
 
-    ggml_vec_dot_t    const vec_dot      = type_traits_cpu[type].vec_dot;
-    enum ggml_type    const vec_dot_type = type_traits_cpu[type].vec_dot_type;
+    ggml_vec_dot_t    const vec_dot      = ggml_cpu_vec_dot_of(type);
+    enum ggml_type    const vec_dot_type = ggml_cpu_vec_dot_type_of(type);
 
     const int64_t blck_0 = 16;
     const int64_t blck_1 = 16;
@@ -1592,7 +1607,7 @@ static void ggml_compute_forward_mul_mat_id_impl(
 
     const bool src1_cont = ggml_is_contiguous(src1);
 
-    enum ggml_type    const vec_dot_type    = type_traits_cpu[type].vec_dot_type;
+    enum ggml_type    const vec_dot_type    = ggml_cpu_vec_dot_type_of(type);
     ggml_from_float_t const from_float      = type_traits_cpu[vec_dot_type].from_float;
 
     // we don't support permuted src0 or src1

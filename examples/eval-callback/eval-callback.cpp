@@ -18,9 +18,17 @@ static FILE * g_dump = nullptr;
 
 static bool router_dump_cb(struct ggml_tensor * t, bool ask, void * user_data) {
     (void) user_data;
-    const bool want = t->type == GGML_TYPE_F32 &&
+    // ROUTER_DUMP_ALL=<layer>[,<layer>..]: also every contiguous f32 tensor of those layers (name ends in -<layer>), to find where CPU and GPU first differ
+    static const char * all = getenv("ROUTER_DUMP_ALL");
+    const char * dash = strrchr(t->name, '-');
+    bool early = false;
+    if (all && dash && ggml_is_contiguous(t) && dash[1] >= '0' && dash[1] <= '9') {
+        const std::string want_l = std::string(",") + all + ",";
+        early = want_l.find(std::string(",") + (dash + 1) + ",") != std::string::npos;
+    }
+    const bool want = t->type == GGML_TYPE_F32 && (early ||
         (strncmp(t->name, "ffn_norm-", 9) == 0 || strncmp(t->name, "attn_post_norm-", 15) == 0 ||
-         strncmp(t->name, "ffn_moe_logits", 14) == 0);
+         strncmp(t->name, "ffn_moe_logits", 14) == 0));
     if (ask) {
         return want;
     }

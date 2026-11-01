@@ -1,0 +1,16 @@
+name,model,n,test,tokens,args,extra
+q36-ka-100,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ka-200,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ka-500,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 500 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ka-1000,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ka-2000,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 2000 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ka-5000,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q38-ka-200,qn_iq4xs,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+q38-ka-1000,qn_iq4xs,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+q38-ka-5000,qn_iq4xs,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1
+glm-ka-200,glm,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+glm-ka-1000,glm,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+glm-ka-5000,glm,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ka-200,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ka-1000,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ka-5000,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1

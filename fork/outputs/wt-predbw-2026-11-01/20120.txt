@@ -1,0 +1,20 @@
+run 20120 | prefill_auto_paths5 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 50.98 t/s | prompt 75.4 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-01 06:36:01
+
+The user wants the smallest HTML Tetris game. The request is literally "smallest" — so minimal code. But I don't want to hand back something brittle and ugly; even a tiny Tetris should feel considered. The ask is smallest, so I should keep it compact but make it actually playable and look decent. Let me balance: deliver a genuinely small single-file Tetris, but with care — good colors, next piece preview, score, keyboard controls.
+
+Hmm, "smallest" is the explicit request. I should honor it primarily — compact code. But I can make it tasteful: nice font, dark background, clean canvas rendering. Let me write a compact but readable version.
+
+Let me write it:
+
+```html
+<canvas id=c width=260 height=520></canvas>
+```
+
+Compact Tetris in ~40 lines. Let me craft it carefully.
+
+```html
+<canvas id=C width=260 height=520 tabindex=0></canvas>
+<script>
+with(Math){
+B="..0...0.0.0.00000000000000000000000000
+---

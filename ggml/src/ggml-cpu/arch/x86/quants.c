@@ -307,6 +307,7 @@ static inline float hsum_float_4x4(const __m128 a, const __m128 b, const __m128 
 #endif // defined(__AVX__) || defined(__AVX2__) || defined(__AVX512F__) || defined(__SSSE3__)
 
 void quantize_row_q8_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT vy, int64_t k) {
+    if (ggml_cpu_gpu_shape()) { quantize_row_q8_0_gpu_shape(x, vy, k); return; }
     assert(QK8_0 == 32);
     assert(k % QK8_0 == 0);
     const int nb = k / QK8_0;
@@ -739,6 +740,7 @@ static inline __m256 q2_0_acc_block_avx2(const block_q2_0 * x, const block_q8_0 
 #endif
 
 void ggml_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    if (ggml_cpu_gpu_shape()) { ggml_vec_dot_q2_0_q8_0_gpu_shape(n, s, vx, vy); return; }
 #if defined(__AVX2__)
     assert(n % QK2_0 == 0);
     assert(nrc == 1);
@@ -1387,6 +1389,7 @@ void ggml_vec_dot_q8_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const voi
     UNUSED(by);
     UNUSED(bs);
 
+    if (ggml_cpu_gpu_shape()) { ggml_vec_dot_q8_0_q8_0_gpu_shape(n, s, vx, vy); return; }
     const block_q8_0 * GGML_RESTRICT x = vx;
     const block_q8_0 * GGML_RESTRICT y = vy;
 

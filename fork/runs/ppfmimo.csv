@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+mimo-fa-200,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-fa-1000,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-fa-5000,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1

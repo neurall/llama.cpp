@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+glm-pl-5000,glm,5,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=0",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1

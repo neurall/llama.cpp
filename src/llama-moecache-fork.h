@@ -127,6 +127,9 @@ std::vector<llama_moe_alias_buf_fork> llama_moe_cache_alias_buffers_fork();
 // --moe mirror-pool: the dense split's copies at the start of dev's pool (the pass planner keeps room), and per graph where its tensors start (behind them
 // when it splits, else 0); the lent range covers the copies too
 void llama_moe_cache_alias_mirror_fork(ggml_backend_dev_t dev, size_t bytes);
+// hot maps per topic (--moe dynhot=1): every decode call's token ids; the first call of a prompt stores the request before it and fills the cache from the stored
+// requests nearest to this prompt (or empties it for a new topic)
+void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t * ids, int32_t n);
 void llama_moe_cache_alias_offset_fork(ggml_backend_dev_t dev, size_t off);
 // after a graph is allocated, before its inputs are set: lend the blocks it reaches to it (evict their experts). Returns true when the graph needed more than the
 // space in front of the KV records (kv-tail): the records were moved forward to make room, so the graph (its views of the KV) must be built again.

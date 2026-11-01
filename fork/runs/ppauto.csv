@@ -1,0 +1,19 @@
+name,model,n,test,tokens,args,extra
+q36-ppl-mix,qwen36,1,pplb,1,--moe pp-only=0,--hog-gpu 4.5
+q36-ppl-nomix,qwen36,1,pplb,1,--moe pp-mix=0,--hog-gpu 4.5
+q36-ppl-kauto,qwen36,1,pplb,1,--moe pp-k=auto,--hog-gpu 4.5
+q36-ppl-kd2,qwen36,1,pplb,1,"--moe pp-k=auto,pp-depth=2,pf-slots=7",--hog-gpu 4.5
+q36-a-100,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-kauto-100,qwen36,3,pf128k,1,"--moe pp-only=1,pp-k=auto",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-a-200,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-kauto-200,qwen36,3,pf128k,1,"--moe pp-only=1,pp-k=auto",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-a-500,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-kauto-500,qwen36,3,pf128k,1,"--moe pp-only=1,pp-k=auto",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-a-1000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-kauto-1000,qwen36,3,pf128k,1,"--moe pp-only=1,pp-k=auto",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-a-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-kauto-2000,qwen36,3,pf128k,1,"--moe pp-only=1,pp-k=auto",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-a-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-kauto-5000,qwen36,3,pf128k,1,"--moe pp-only=1,pp-k=auto",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-kd2-200,qwen36,3,pf128k,1,"--moe pp-only=1,pp-k=auto,pp-depth=2,pf-slots=7",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_VERIFY=1
+q36-kd2-1000,qwen36,3,pf128k,1,"--moe pp-only=1,pp-k=auto,pp-depth=2,pf-slots=7",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_VERIFY=1

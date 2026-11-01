@@ -843,7 +843,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         return "INSERT INTO runs (" + ", ".join(q(c) for c in cols) + ", stem, okf) VALUES (" + ",".join("?" * (len(cols) + 2)) + ")"
     def run_build_number(sha):
         try:
-            o = subprocess.run(["git", "-C", HERE, "rev-list", "--count", sha], capture_output=True, text=True, timeout=20)
+            o = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "rev-list", "--count", sha], capture_output=True, text=True, timeout=20)
             return int(o.stdout) if o.returncode == 0 else None
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return None
@@ -1559,6 +1559,86 @@ def cmd_nsys(a):
             print(f"  wait {g / 1e6:7.1f} ms at {(ks[i][1] - w0) / 1e9:7.3f} s after {names.get(ks[i][4], '?')[:40]} before {names.get(ks[i + 1][4], '?')[:40]}")
 
 
+SWEEP_MODELS = {"q36": "Qwen3.6-35B-A3B-GSQ-hybrid.gguf", "qwen36-35b-a3b": "Qwen3.6-35B-A3B-GSQ-hybrid.gguf",
+                "q4": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "qwen38-next-iq4xs": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+                "glm": "GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf", "glm53-flash-3bit": "GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
+                "mimo": "MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf", "mimo-v26-flash-3bit": "MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf",
+                "ds": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf", "deepseek-v41-flash": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf"}
+# the options and environment of the sweep configs (experiments/pp-path-sweep/README.md); the CSV carries only the config name
+SWEEP_CFG = {
+    "upload":    ({"GGML_PF_STATS": "1"}, "--moe max-batch=1,pp-only=1"),
+    "stage":     ({"GGML_PF_STATS": "1"}, "--moe max-batch=1,pp-only=1"),
+    "k8":        ({"GGML_PF_STATS": "1", "GGML_PRED_K": "8"}, "--moe max-batch=1,pp-only=1"),
+    "k32":       ({"GGML_PF_STATS": "1", "GGML_PRED_K": "32"}, "--moe max-batch=1,pp-only=1"),
+    "cache":     ({"GGML_PF_STATS": "1"}, "--moe max-batch=8192,pp-only=1"),
+    "dense":     ({"GGML_PF_STATS": "1"}, "--moe max-batch=1,pp-only=1,dense-split=1,dense-split-min=1"),
+    "dense_moe": ({"GGML_PF_STATS": "1"}, "--moe max-batch=1,pp-only=1,dense-split=1,dense-split-min=1,prefill-split=1"),
+    "auto":      ({"GGML_PF_STATS": "1"}, "--moe pp-only=1"),
+    "cpu_only":  ({}, "(no GPU experts)"),
+}
+
+
+def sweep_row(model, config, n, runs, med_ms, min_ms, max_ms, env, args, commit, ts, build, note=""):
+    """one pass-size sweep point as a row of run-history.csv (and runs.db): pp = prompt tokens/s of the median pass, pp_min/pp_max from the slowest/fastest pass"""
+    n = int(n)
+    gguf = SWEEP_MODELS.get(model, model)
+    tag = "-".join(x for x in (build, model, config) if x)
+    row = {"ts": ts, "commit": commit, "pp": round(1000.0 * n / med_ms, 3), "model": gguf, "args": args, "test": f"ppsize{n}", "hw": "pc1", "ok": 1, "build": build,
+           "campaign": f"{tag}-ppsize{n}", "note": ("pass_ms median=%.1f min=%s max=%s runs=%s " % (med_ms, min_ms, max_ms, runs)) + note, "origin": "sweep",
+           "env": json.dumps(env, sort_keys=True), "cmd": args, "prompt": f"pp{n}", "n_cell": runs,
+           "pp_min": round(1000.0 * n / max_ms, 3) if max_ms else "", "pp_med": round(1000.0 * n / med_ms, 3), "pp_max": round(1000.0 * n / min_ms, 3) if min_ms else "",
+           "n_gen": 1}
+    csv_append("run-history.csv", RUN_COLS, row)
+
+
+def cmd_sweep_log(a):
+    """Log pass-size sweep points into run-history.csv and runs.db, one row at a time, flushed per row so a crash loses nothing.
+    live:   mm7.sh ... | python3 run.py sweep-log --env '{"GGML_PRED_K":"8"}' --args '--moe ...' --commit C --build B   (lines: name n median min max runs ms/token tps)
+    import: python3 run.py sweep-log --csv FILE --build B --commit C   (a sweep CSV of experiments/pp-path-sweep; configs from SWEEP_CFG; rows already logged are skipped)"""
+    import subprocess
+    have = {(r.get("campaign"), r.get("test")) for r in csv_load("run-history.csv") if r.get("origin") == "sweep"}
+    commit = a.commit or subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "rev-parse", "--short=10", "HEAD"], capture_output=True, text=True).stdout.strip()
+    n_new = 0
+    if a.csv:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(a.csv)))
+        if not a.commit:
+            c = subprocess.run(["git", "-C", os.path.dirname(os.path.realpath(__file__)), "rev-list", "-1", "--before=" + ts, "HEAD"], capture_output=True, text=True).stdout.strip()
+            commit = c[:10] or commit
+        for r in csv_load_path(a.csv):
+            if not str(r.get("prompt_tokens", "")).isdigit():
+                continue
+            model = r.get("model") or a.model
+            cfg = r["config"]
+            env, args = SWEEP_CFG.get(cfg, ({}, ""))
+            if r.get("setup"):
+                args = (args + " " if args else "") + "[" + r["setup"] + "]"
+            med = float(r.get("median_pass_ms") or r.get("mean_pass_ms"))
+            mn = float(r["min_pass_ms"]) if r.get("min_pass_ms") else None
+            mx = float(r["max_pass_ms"]) if r.get("max_pass_ms") else None
+            tag = "-".join(x for x in (a.build, model, cfg) if x)
+            if (f"{tag}-ppsize{int(r['prompt_tokens'])}", f"ppsize{int(r['prompt_tokens'])}") in have:
+                continue
+            sweep_row(model, cfg, r["prompt_tokens"], r.get("runs") or 1, med, mn, mx, env, args, commit, ts, a.build, a.note or ("imported from " + os.path.basename(a.csv)))
+            n_new += 1
+    else:
+        env = ({} if not a.env else json.loads(a.env) if a.env.lstrip().startswith("{") else dict(kv.split("=", 1) for kv in a.env.split())) 
+        ts_fmt = "%Y-%m-%d %H:%M:%S"
+        for line in iter(sys.stdin.readline, ""):   # not "for line in sys.stdin": that reads ahead in blocks and holds rows back
+            f = line.split()
+            if len(f) < 8 or not f[1].isdigit():
+                continue
+            name, n, med, mn, mx, runs = f[0], f[1], float(f[2]), float(f[3]), float(f[4]), f[5]
+            model, _, cfg = name.partition("_")
+            sweep_row(model, cfg, n, runs, med, mn, mx, env, a.args or "", commit, time.strftime(ts_fmt), a.build, a.note or "")
+            n_new += 1
+    print(f"sweep-log: {n_new} rows logged", file=sys.stderr)
+
+
+def csv_load_path(path):
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
 def cmd_cells(a):
     """A markdown table of the cells of one campaign prefix (decode, prompt speed, hit rate) with what the server log says about the memory: the context the server
     ran with (n_ctx_slot) and the pool of the first card, so a cell that did not get the setting it was queued for shows at once."""
@@ -2136,12 +2216,16 @@ def server_run(build, env, args, path, body, render=None):
     bwstop = pcie_sampler() if GPULOG else (lambda: None)   # the engine's own byte and time counters are the bandwidth record; the nvidia-smi view only with --gpulog
     try:
         def clamp_text(txt, n_cl):   # --clamp N: cut to N tokens (the server counts them, so it is right for every tokenizer)
+            full = txt
             for _ in range(4):
                 n_tok = len(post("/tokenize", {"content": txt})["tokens"])
                 if n_tok <= n_cl:
                     break
                 txt = txt[:int(len(txt) * n_cl / n_tok * 0.995)]
             print(f"clamp: prompt cut to {n_tok} tokens (limit {n_cl})", flush=True)
+            if OVR.get("vary") and len(txt) < len(full):   # --vary: every run the next slice of the text (each size its own start), not the same one again
+                o = ((IDX + n_cl) * len(txt)) % len(full)
+                txt = (full + full)[o:o + len(txt)]
             return txt
         if render:   # the server renders the model's chat template into the prompt text; a clamp cuts the user text first (cutting the rendered text would drop the assistant header)
             if OVR.get("clamp"):
@@ -2373,8 +2457,23 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
               else:
                   res, logf = server_run(build, env, args, "/completion",
                                    {"prompt": ovr_prompt(_pf_text), "n_predict": _np,
-                                    "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {})})
+                                    "cache_prompt": False, **GREEDY, **(FIXED if test == "fix12k" else {}), **({"n_probs": 1} if os.environ.get("RUN_DBG_TOKENS") else {})})
             t = res["timings"]
+            if os.environ.get("RUN_DBG_TOKENS") and res.get("completion_probabilities"):   # debug: the answer's first tokens and their log probabilities: two paths of a prompt pass must give the same first one
+                print("DBG PROBS: " + str([(x.get("id"), round(x.get("logprob", 0.0), 5)) for x in res["completion_probabilities"][:8]]), flush=True)
+            if os.environ.get("RUN_TRUE_PPL"):   # K:L: K prompts of L tokens through the server's prompt path, the log probability of the real next token of each. Perplexity of a path of the prompt pass:
+                # llama-perplexity's batches ask logits for many tokens and are no prompt calls, so it never reaches the prompt chain, the mix or the prediction. Per slice, so arms compare pair by pair.
+                _k, _l = map(int, os.environ["RUN_TRUE_PPL"].split(":"))
+                _ids = post("/tokenize", {"content": _pf_text})["tokens"]
+                _lp, _out = [], 0
+                for _i in range(_k):
+                    _s = (_i + 1) * (len(_ids) - _l - 1) // (_k + 1)
+                    _r = post("/completion", {"prompt": _ids[_s:_s + _l], "n_predict": 1, "cache_prompt": False, "n_probs": 2048, **GREEDY})
+                    _tl = _r["completion_probabilities"][0]["top_logprobs"]
+                    _v = next((x["logprob"] for x in _tl if x["id"] == _ids[_s + _l]), None)
+                    _out += _v is None
+                    _lp.append(round(_tl[-1]["logprob"] if _v is None else _v, 5))
+                print(f"DBG TRUE PPL: {math.exp(-sum(_lp) / len(_lp)):.5f} over {_k} prompts of {_l} tokens, {_out} outside the top 2048: {_lp}", flush=True)
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
@@ -3192,7 +3291,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "par", "lead", "chat", "nothink"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
@@ -4253,6 +4352,7 @@ def add_overrides(sub):
     sub.add_argument("--ctx", type=int, help="context size instead of the test's own")
     sub.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
+    sub.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run takes the next slice of the prompt text (a repeated text finds every expert it used in the cache, no real prompt does)")
     sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
     sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
@@ -4485,6 +4585,26 @@ def cmd_publish(a):
     print(f"published {tag}: {', '.join(arch)}", flush=True)
 
 
+def set_latest_link(tree, link="/p/bw/latest"):
+    """/p/bw/latest -> the tree this build came from (atomic), so the commands given to the user (`sudo /p/bw/latest/resident_pin.sh ...`) never carry a per-build path.
+    The scripts live in fork/; each gets a root symlink in the tree (untracked, excluded from git status) so `/p/bw/latest/<script>` works whatever the tree's layout."""
+    tree = os.path.abspath(tree)
+    fk = os.path.join(tree, "fork")
+    try:
+        excl = subprocess.run(["git", "-C", tree, "rev-parse", "--git-path", "info/exclude"], capture_output=True, text=True).stdout.strip()
+        excl = excl if os.path.isabs(excl) else os.path.join(tree, excl)
+        for f in sorted(os.listdir(fk)) if os.path.isdir(fk) else []:
+            if f.endswith((".sh", ".py")) and os.access(os.path.join(fk, f), os.X_OK) and not os.path.lexists(os.path.join(tree, f)):
+                os.symlink(os.path.join("fork", f), os.path.join(tree, f))
+                with open(excl, "a") as x: x.write(f"/{f}\n")
+        tmp = link + ".tmp"
+        os.path.lexists(tmp) and os.remove(tmp)
+        os.symlink(tree, tmp); os.replace(tmp, link)
+        print(f"latest link: {link} -> {tree}", flush=True)
+    except OSError as e:
+        print(f"latest link not set: {e}", flush=True)
+
+
 def cmd_build(a):
     r"""Builds, in containers (pc1) or on the W10 laptop (pc3), with ccache.
     default: dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
@@ -4616,6 +4736,7 @@ def cmd_build(a):
     print(f"build {name}: OK in {time.time() - t0:.0f} s -> {dst} ({open(os.path.join(dst, 'BUILD_INFO')).read().split()[0]})", flush=True)
     if os.path.dirname(os.path.abspath(dst)) == os.path.abspath(DEVBUILDS):   # devbuilds/latest -> this build (atomic): queued cells that name "latest" pick it up without a reschedule
         lnk = os.path.join(DEVBUILDS, ".latest.tmp"); os.path.lexists(lnk) and os.remove(lnk); os.symlink(name, lnk); os.replace(lnk, os.path.join(DEVBUILDS, "latest"))
+    if a.tree: set_latest_link(a.tree)
     if not a.no_regress:
         r = subprocess.run([sys.executable, os.path.abspath(__file__), "regress", dst, "--wait"])
         sys.exit(r.returncode)
@@ -7160,7 +7281,7 @@ def cmd_cell(a):
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--vary"] if getattr(a, "vary", None) else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
@@ -9238,6 +9359,7 @@ if __name__ == "__main__":
     ce.add_argument("--ctx", type=int, help="context size instead of the test's own (a -c in the args loses to the test's own -c)")
     ce.add_argument("--chat", metavar="INSTR", help="pf tests through the chat template with this instruction in front (instruct models)")
     ce.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="cut the prompt to N[k] tokens (pf128k clamped to 48k = a 48k prompt)")
+    ce.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run the next slice of the prompt text")
     br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
     br.add_argument("target", nargs="?", default="prerelease2")
     br.add_argument("--repo", default=os.getcwd(), help="the checkout to look at / merge in")
@@ -9247,6 +9369,9 @@ if __name__ == "__main__":
     s_.add_argument("-t", "--test")
     s_.add_argument("-b", "--build")
     s_.add_argument("--runs", action="store_true")
+    sl = sp.add_parser("sweep-log", help="log pass-size sweep points (live from mm7.sh lines on stdin, or --csv FILE of experiments/pp-path-sweep) into run-history.csv and runs.db")
+    sl.add_argument("--csv"); sl.add_argument("--env"); sl.add_argument("--args"); sl.add_argument("--commit"); sl.add_argument("--note"); sl.add_argument("--model")
+    sl.add_argument("--build", default="predictor-upload-bw-reducer")
     cl = sp.add_parser("cells", help="markdown table of the cells of a campaign prefix, with the context and the pool the server really ran with")
     cl.add_argument("prefix")
     mf = sp.add_parser("misfires", help="automatic choices that went against what was measured: a prompt run on one card where the split of the same model and pass "
@@ -9276,5 +9401,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

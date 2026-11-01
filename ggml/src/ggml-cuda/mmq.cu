@@ -163,7 +163,7 @@ static int ggml_cuda_mmq_get_J_best(
 
 void ggml_cuda_mul_mat_q(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
-        const ggml_cuda_mm_fusion_args_host * fusion) {
+        const ggml_cuda_mm_fusion_args_host * fusion, const ggml_tensor * expert_table) {
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
@@ -314,7 +314,10 @@ void ggml_cuda_mul_mat_q(
 
     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx.pool(), ne_get_rows);
     ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), ne_get_rows + J_best-1); // Needs to be padded for unconditional memory access.
-    ggml_cuda_pool_alloc<int32_t> expert_bounds(ctx.pool(), ne02 + 1);
+    // fork: with a table (the MoE cache) ids are expert ids and src0 holds blocks: the grid and the id helper run over the experts, as for a whole expert tensor. Over the blocks
+    // (thousands in a pool, against a few hundred experts) every empty block is launched for every tile of a pass: 3 to 4 times the compute of the same matmul on a whole tensor.
+    const int64_t n_grid = expert_table ? expert_table->ne[1] : ne02;
+    ggml_cuda_pool_alloc<int32_t> expert_bounds(ctx.pool(), n_grid + 1);
 
     // gate/up activations are broadcast across experts (ne11 == 1): quantize each token once and
     // scatter to its slots. ids_src1 then holds the inverse map (token slot -> compact row).
@@ -332,7 +335,7 @@ void ggml_cuda_mul_mat_q(
             CUDA_CHECK(cudaMemsetAsync(ids_dst.get(),  0, ne_get_rows*sizeof(int32_t), stream));
         }
         ggml_cuda_launch_mm_ids_helper((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(), expert_bounds.get(),
-            ne02, ne12, n_expert_used, ne11, si1, sis1, /*write_inverse =*/ dedup_bcast, stream);
+            n_grid, ne12, n_expert_used, ne11, si1, sis1, /*write_inverse =*/ dedup_bcast, stream);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -378,13 +381,14 @@ void ggml_cuda_mul_mat_q(
     const int64_t s13 = ne12*s12;
 
     // Note that ne02 is used instead of ne12 because the number of y channels determines the z dimension of the CUDA grid.
-    const mmq_args args = {
+    mmq_args args = {
         src0_d, src0->type, (const int *) src1_q8_1.get(), ids_dst.get(), expert_bounds.get(), dst_d,
         src1_scale.ptr,
         ne00, ne01, ne_get_rows, s01, ne_get_rows, s1,
-        ne02, ne02, s02, s12, s2,
+        n_grid, n_grid, s02, s12, s2,
         ne03, ne13, s03, s13, s3,
         ne12, J_best};
+    args.expert_map = expert_table ? (const int32_t *) expert_table->data : nullptr;
 
     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
 }
@@ -584,11 +588,12 @@ size_t ggml_cuda_mmq_scratch_fork(const int id, const ggml_tensor * src0, const 
         const int64_t ne_get_rows = ne12 * n_expert_used;
         take(ne_get_rows * sizeof(int32_t));                      // ids_src1
         take((ne_get_rows + J_best - 1) * sizeof(int32_t));       // ids_dst, padded for the unconditional reads
-        take((ne02 + 1) * sizeof(int32_t));                       // expert_bounds
+        const int64_t n_grid = dst->src[4] ? dst->src[4]->ne[1] : ne02;
+        take((n_grid + 1) * sizeof(int32_t));                     // expert_bounds
         take(ne_get_rows*ne10_padded * y_block_size/y_values_per_block + q8_padding);                             // src1_q8_1
         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) { take(ne_get_rows * sizeof(float)); }               // src1_scale
         ncols_max   = ne12;
-        nchannels_y = ne02 * ne13;
+        nchannels_y = n_grid * ne13;
     }
 
     // launch_mul_mat_q: the stream-k kernel's fixup buffer (unfused; a fused call tiles and takes none, so this is its upper bound)

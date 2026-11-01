@@ -1,3 +1,4 @@
+#include "../ggml-det-math.h"
 #include "common.cuh"
 #include "ggml.h"
 #include "softmax.cuh"
@@ -111,7 +112,7 @@ static __global__ void soft_max_f32(
             break;
         }
 
-        const float val = expf(vals[col] - max_val);
+        const float val = ggml_det_expf(vals[col] - max_val);
         tmp += val;
         vals[col] = val;
     }
@@ -125,10 +126,10 @@ static __global__ void soft_max_f32(
     tmp = block_reduce<block_reduce_method::SUM, block_size_template>(tmp, buf_iw);
 
     if (sinks) {
-        tmp += expf(sinks[i02] - max_val);
+        tmp += ggml_det_expf(sinks[i02] - max_val);
     }
 
-    const float inv_sum = 1.0f / tmp;
+    const float inv_sum = GGML_DET_DIV(1.0f, tmp);
 
 #pragma unroll
     for (int col0 = 0; col0 < ncols; col0 += block_size) {
@@ -206,7 +207,7 @@ static __device__ void soft_max_f32_parallelize_cols_single_row(const float * __
         for (int i = 0; i < n_elem_per_thread; i++) {
             const int idx = col + i * step_size;
             if (idx < p.ncols) {
-                const float tmp = expf(local_vals[i] - local_max);
+                const float tmp = ggml_det_expf(local_vals[i] - local_max);
                 tmp_expf += tmp;
                 dst[idx] = tmp;
             }
@@ -242,7 +243,7 @@ static __device__ void soft_max_f32_parallelize_cols_single_row(const float * __
         for (int i = 0; i < n_elem_per_thread; i++) {
             const int idx = col + i * step_size;
             if (idx < p.ncols) {
-                dst[idx] = local_vals[i] / tmp_expf;
+                dst[idx] = GGML_DET_DIV(local_vals[i], tmp_expf);
             }
         }
         col += step_size * n_elem_per_thread;

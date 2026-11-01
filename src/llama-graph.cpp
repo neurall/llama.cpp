@@ -33,6 +33,11 @@
 #include <memory>
 #include <numeric>
 #include <sstream>
+
+int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used);   // src/llama-moecache-fork.cpp: the prompt chain
+void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
+ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork * pub);
+extern "C" { GGML_API double ggml_backend_pred_get_fork(); }   // ggml-backend.cpp: predicted staging of this pass   // the prompt mix: the card whose ring takes this layer's misses, null = no mix
 #include <string>
 #include <unordered_set>
 #include <map>
@@ -2674,7 +2679,46 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                float   post_exp_norm_eps) const {
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
+    {
+        static const bool trace_on = [] { const char * e = moe_opt("tokheat-trace"); return e && atoi(e) != 0; }();
+        if (trace_on) { cb(cur, "moe_in", il); ggml_set_output(cur); }   // --moe tokheat-trace=1: the expert input stays readable (llama-context.cpp)
+    }
     const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
+
+    // fork (GGML_PRED_K, prompt passes without the cache chain): the early router. This layer's router is applied to the expert input GGML_PRED_LAG MoE layers back
+    // (default 1), and the ranking of all experts (best first, per token) becomes a graph output named moe_pred_ids-<this layer>. The scheduler reads it while the
+    // earlier layer is still computing and stages only the experts it ranks high (ggml_backend_sched_compute_splits, fire_prefetch). The attention's k/v writes have
+    // expanded the previous layer's experts into the graph by now, so a plain expand here would put the node behind them, with no lead: it moves to right behind its input.
+    {
+        static const int pred_k   = getenv("GGML_PRED_K") ? atoi(getenv("GGML_PRED_K")) : 0;
+        static const int pred_lag = std::max(1, getenv("GGML_PRED_LAG") ? atoi(getenv("GGML_PRED_LAG")) : 1);
+        static const int pred_depth = std::max(1, std::min(3, getenv("GGML_PRED_DEPTH") ? atoi(getenv("GGML_PRED_DEPTH")) : 1));   // rankings from lag, lag+1, lag+2 layers back
+        static struct { const void * g; ggml_tensor * cur[256]; int il; } hist = { nullptr, {}, -2 };
+        if ((pred_k > 0 || ggml_backend_pred_get_fork() > 0.0) && il >= 0 && il < 256) {
+            if (hist.g != this || il == 0) { hist.g = this; std::fill(std::begin(hist.cur), std::end(hist.cur), nullptr); }
+            for (int d = 0; d < pred_depth; ++d) {
+                const int from = d == 0 ? std::max(il - pred_lag, 0) : il - (pred_lag + d);
+                ggml_tensor * src = il > 0 && from >= 0 ? hist.cur[from] : nullptr;
+                if (src && gate_inp && n_tokens > 1 && probs_in == nullptr && selected_experts_in == nullptr &&
+                        !(cparams.moe_cache && n_tokens <= llama_moe_cache_max_batch_fork())) {   // a pass on the cache chain computes with the cache, no staging
+                    const int n0 = ggml_graph_n_nodes(gf);
+                    ggml_tensor * pl = ggml_mul_mat(ctx0, gate_inp, src);   // [n_expert, n_tokens]
+                    if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
+                    if (exp_probs_b) { pl = ggml_add(ctx0, pl, exp_probs_b); }
+                    ggml_tensor * pid = ggml_argsort(ctx0, pl, GGML_SORT_ORDER_DESC);
+                    cb(pid, d == 0 ? "moe_pred_ids" : d == 1 ? "moe_pred2_ids" : "moe_pred3_ids", il);   // the scheduler reads the lag from the name
+                    ggml_set_output(pid);   // its rows are read by the scheduler after the split: the allocator keeps them
+                    ggml_build_forward_expand(gf, pid);
+                    ggml_tensor ** nodes = ggml_graph_nodes(gf);
+                    const int n1 = ggml_graph_n_nodes(gf);
+                    int at = -1;
+                    for (int i = n0 - 1; i >= 0; --i) { if (nodes[i] == src) { at = i; break; } }
+                    if (at >= 0 && !getenv("GGML_PRED_STAY")) { std::rotate(nodes + at + 1, nodes + n0, nodes + n1); }   // the new nodes read only src and weights
+                }
+            }
+            hist.cur[il] = cur;
+        }
+    }
 
     // LLAMA_MOE_DEFER: the previous MoE layer's deferred host experts go into the graph here, after this layer's
     // attention and before its router, so the host computes them while the GPU runs the attention
@@ -2825,6 +2869,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(selected_experts->src[0], "ffn_moe_argsort", il);
     }
     cb(selected_experts, "ffn_moe_topk", il);
+    static const bool tokheat_on = [] { const char * e = moe_opt("tokheat"); return e && *e; }();
+    if (tokheat_on) { ggml_set_output(selected_experts); }   // --moe tokheat=DIR: the picks stay readable after the graph ran (llama-context.cpp)
 
     if (arch == LLM_ARCH_GROVEMOE && n_expert != hparams.n_expert) {
         // TODO: Use scalar div instead when/if implemented
@@ -2882,6 +2928,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // outputs sum to the exact result. Larger batches keep the stock path, where
     // the scheduler streams the used experts to the GPU instead.
     const llama_moe_cache_layer_fork * mcache = nullptr;
+    bool mc_pp = false;                 // the prompt chain: this pass's experts run on the GPU alone, see llama_moe_cache_pp_upload_fork
     ggml_tensor * mc_ids_all = nullptr; // LLAMA_MOE_DEFER: full ids (router observation) and the deferred ids
     ggml_tensor * mc_ids_def = nullptr;
     ggml_tensor * mc_w_host  = nullptr;
@@ -2896,6 +2943,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         !up_exps_s && !gate_exps_s && !down_exps_s &&
         type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
         mcache = llama_moe_cache_lookup_fork(up_exps);
+        // a prompt call: the prompt chain, or the prompt path for a layer whose blocks cannot hold the pass (a dense split keeps its own path)
+        const int pp = mcache && moe_ranges.empty() ? llama_moe_cache_pp_chain_fork(mcache, n_tokens, n_expert_used) : 0;
+        mc_pp  = pp > 0;
+        mcache = pp < 0 ? nullptr : mcache;
+    }
+    // The prompt mix, a stream pass on a layer whose cache sits behind a slower link: what the home card holds is computed there from its blocks, nothing crosses a link for it;
+    // the rest is streamed to the fastest link's card by its ring and computed there, the two partial sums meet on the home card. Without this the stream pass sends every
+    // expert of such a layer over the fastest link, whatever the home card holds (Qwen3.6, 2 x 3090: 19 of 40 layers, 2.9 GB of 8.8 GB per pass held and not used).
+    ggml_backend_t mc_mix_b = nullptr;
+    if (!mcache && cparams.moe_cache && n_tokens >= 2 && sched && moe_ranges.empty() && !gate_up_exps && gate_exps && down_exps && !up_exps_b && !gate_exps_b && !down_exps_b &&
+            !up_exps_s && !gate_exps_s && !down_exps_s && type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
+        const llama_moe_cache_layer_fork * m = llama_moe_cache_lookup_fork(up_exps);
+        const ggml_backend_dev_t fd = m ? llama_moe_cache_pp_mix_fork(m) : nullptr;
+        for (int i = 0; fd && i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(b) == fd) { mc_mix_b = b; mcache = m; }
+        }
     }
 
     // the experts of host-resident layers may be read from the MoE cache
@@ -2918,9 +2982,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 cpu_backend = b;
             }
         }
-        mc_cpu_backend = cpu_backend;
+        mc_cpu_backend = mc_mix_b ? nullptr : cpu_backend;   // the mix runs on the GPUs alone
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
-        if (pw && pw->buffer && mcache->pred_on) {
+        if (pw && pw->buffer && mcache->pred_on && !mc_pp && !mc_mix_b) {
             // the next layers' router logits from this layer's input (learned predictors, else the next
             // router), on their GPU in the split before the CPU copy; handed to the CPU gate op as src[4]
             // ([n_expert*ahead, n_tokens]), where the cache's observer reads them
@@ -2952,13 +3016,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
         ggml_tensor * sel_dev = selected_experts;
-        if (cpu_backend) {
-            cur = ggml_cont(ctx0, cur);
+        if (cpu_backend && !mc_mix_b) {
             selected_experts = ggml_cont(ctx0, selected_experts);
-            ggml_backend_sched_set_tensor_backend(sched, cur, cpu_backend);
             ggml_backend_sched_set_tensor_backend(sched, selected_experts, cpu_backend);
-            cb(cur, "ffn_moe_cpu_inp", il);
-            ggml_build_forward_expand(gf, cur);
+            if (!mc_pp) {   // the prompt chain's CPU split holds the ids alone
+                cur = ggml_cont(ctx0, cur);
+                ggml_backend_sched_set_tensor_backend(sched, cur, cpu_backend);
+                cb(cur, "ffn_moe_cpu_inp", il);
+                ggml_build_forward_expand(gf, cur);
+            }
             ggml_build_forward_expand(gf, selected_experts);
             // LLAMA_MOE_DEFER=n (decode, not the last layer): the host misses among the n lowest-scored of the
             // n_expert_used selected experts (argsort order: best first) are computed while the next layer's attention
@@ -3026,14 +3092,21 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
             // JIT miss offload: with the ids on the host (this CPU split), the cache may upload some of this layer's
             // misses on the chain's stream before the chain below is launched (llama_moe_cache_jit_fork)
-            ggml_tensor * jit = ggml_map_custom1(ctx0, selected_experts,
-                    [](ggml_tensor * dst, const ggml_tensor * a, int ith, int nth, void * ud) {
-                        GGML_UNUSED(nth);
-                        if (ith == 0) {
-                            llama_moe_cache_jit_fork((const llama_moe_cache_layer_fork *) ud, a);
-                            memcpy(dst->data, a->data, ggml_nbytes(a));
-                        }
-                    }, 1, (void *) mcache);
+            ggml_custom1_op_t jit_op = [](ggml_tensor * dst, const ggml_tensor * a, int ith, int nth, void * ud) {
+                GGML_UNUSED(nth);
+                if (ith == 0) {
+                    llama_moe_cache_jit_fork((const llama_moe_cache_layer_fork *) ud, a);
+                    memcpy(dst->data, a->data, ggml_nbytes(a));
+                }
+            };
+            ggml_custom1_op_t pp_op = [](ggml_tensor * dst, const ggml_tensor * a, int ith, int nth, void * ud) {
+                GGML_UNUSED(nth);
+                if (ith == 0) {
+                    llama_moe_cache_pp_upload_fork((const llama_moe_cache_layer_fork *) ud, a);
+                    memcpy(dst->data, a->data, ggml_nbytes(a));
+                }
+            };
+            ggml_tensor * jit = ggml_map_custom1(ctx0, selected_experts, mc_pp ? pp_op : jit_op, 1, (void *) mcache);
             ggml_backend_sched_set_tensor_backend(sched, jit, cpu_backend);
             cb(jit, "ffn_moe_cache_jit", il);
             ggml_build_forward_expand(gf, jit);
@@ -3057,72 +3130,52 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
 
         // device-side chain over the cached experts, mirroring the LLM_FFN_SILU
-        // activation above (the only type_op the cache path is enabled for).
-        // Uncached ids all map to one zero slot, so an id repeats within a token; only
-        // the vector kernels (MMVQ/MMVF) handle that, MMQ sizes its grid for distinct
-        // ids. Run batches in chunks of 4 tokens, below every type's MMVQ id limit.
-        constexpr int64_t mc_chunk = 4;
-        for (int64_t t0 = 0; t0 < n_tokens; t0 += mc_chunk) {
-            const int64_t nt = std::min<int64_t>(mc_chunk, n_tokens - t0);
-            // a single chunk (every decode step) takes the tensors as-is: views here
-            // measured ~1.7% slower decode (likely they block CUDA backend fusion)
-            ggml_tensor * inp_c = n_tokens <= mc_chunk ? mc_inp :
-                ggml_view_3d(ctx0, mc_inp, n_embd, 1, nt, mc_inp->nb[1], mc_inp->nb[2], t0*mc_inp->nb[2]);
-            ggml_tensor * ids_c = n_tokens <= mc_chunk ? mc_slot_ids :
-                ggml_view_2d(ctx0, mc_slot_ids, n_expert_used, nt, mc_slot_ids->nb[1], t0*mc_slot_ids->nb[1]);
-
-            ggml_tensor * up_g   = ggml_mul_mat_id(ctx0, mcache->up_c,   inp_c, ids_c);
-            ggml_tensor * gate_g = ggml_mul_mat_id(ctx0, mcache->gate_c, inp_c, ids_c);
+        // activation above (the only type_op the cache path is enabled for). One matmul per tensor over the whole pass: the backend picks the kernel by the
+        // token count, as for the other experts. An uncached expert has id -1 (flush_tables, every kernel skips it): MMQ and the sorted path leave its rows
+        // alone, so a pass of several tokens has its outputs zeroed first (op_params[1]); the prompt chain has no such ids, its misses were uploaded right behind the router.
+        const bool mc_zero = !mc_pp && n_tokens > 1;
+        // A pass of several tokens also gives the backend the expert ids and the table it took the blocks from (src[3], src[4]): MMQ's grid then runs over the experts, not over
+        // every block of the pool (ggml_cuda_mul_mat_q).
+        auto mc_mm = [&](ggml_tensor * w, ggml_tensor * x, ggml_tensor * ids, ggml_tensor * table) {
+            ggml_tensor * m = ggml_mul_mat_id(ctx0, w, x, ids);
+            if (mc_zero) { m->op_params[1] = 1; }
+            if (n_tokens > 1) { m->src[3] = sel_dev; m->src[4] = table; }
+            return m;
+        };
+        auto mc_act = [&](ggml_tensor * gate_t, ggml_tensor * up_t) -> ggml_tensor * {
+            const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
+            constexpr float eps = 1e-6f;
+            if (limit > eps) {
+                if (moe_uses_swiglu_clamp(arch, hparams)) {
+                    // exactly the op the CPU chain uses for these archs
+                    return ggml_swiglu_clamp(ctx0, gate_t, up_t, limit);
+                }
+                up_t = ggml_clamp(ctx0, up_t, -limit, limit);
+                ggml_tensor * ga = ggml_silu(ctx0, gate_t);
+                ga = ggml_clamp(ctx0, ga, -INFINITY, limit);
+                return ggml_mul(ctx0, ga, up_t);
+            }
+            return ggml_swiglu_split(ctx0, gate_t, up_t);
+        };
+        {
+            ggml_tensor * up_g   = mc_mm(mcache->up_c,   mc_inp, mc_slot_ids, mcache->dev_table);
+            ggml_tensor * gate_g = mc_mm(mcache->gate_c, mc_inp, mc_slot_ids, mcache->dev_table);
             cb(up_g,   "ffn_moe_cache_up",   il);
             cb(gate_g, "ffn_moe_cache_gate", il);
-
-            ggml_tensor * act_g = nullptr;
-            {
-                const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
-                constexpr float eps = 1e-6f;
-                if (limit > eps) {
-                    if (moe_uses_swiglu_clamp(arch, hparams)) {
-                        // exactly the op the CPU chain uses for these archs
-                        act_g = ggml_swiglu_clamp(ctx0, gate_g, up_g, limit);
-                    } else {
-                        up_g = ggml_clamp(ctx0, up_g, -limit, limit);
-                        ggml_tensor * ga = ggml_silu(ctx0, gate_g);
-                        ga    = ggml_clamp(ctx0, ga, -INFINITY, limit);
-                        act_g = ggml_mul(ctx0, ga, up_g);
-                    }
-                } else {
-                    act_g = ggml_swiglu_split(ctx0, gate_g, up_g);
-                }
-            }
-
-            ggml_tensor * down_c = ggml_mul_mat_id(ctx0, mcache->down_c, act_g, ids_c); // [n_embd, n_expert_used, nt]
-            cb(down_c, "ffn_moe_cache_down", il);
+            down_g = mc_mm(mcache->down_c, mc_act(gate_g, up_g), mc_slot_ids, mcache->dev_table); // [n_embd, n_expert_used, n_tokens]
+            cb(down_g, "ffn_moe_cache_down", il);
             if (mc_pool_ids) {
-                ggml_tensor * ids_p = n_tokens <= mc_chunk ? mc_pool_ids :
-                    ggml_view_2d(ctx0, mc_pool_ids, n_expert_used, nt, mc_pool_ids->nb[1], t0*mc_pool_ids->nb[1]);
-                ggml_tensor * up_p   = ggml_mul_mat_id(ctx0, mcache->jit_up_c,   inp_c, ids_p);
-                ggml_tensor * gate_p = ggml_mul_mat_id(ctx0, mcache->jit_gate_c, inp_c, ids_p);
-                const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
-                ggml_tensor * act_p = nullptr;
-                if (limit > 1e-6f) {
-                    if (moe_uses_swiglu_clamp(arch, hparams)) {
-                        act_p = ggml_swiglu_clamp(ctx0, gate_p, up_p, limit);
-                    } else {
-                        up_p = ggml_clamp(ctx0, up_p, -limit, limit);
-                        ggml_tensor * ga = ggml_clamp(ctx0, ggml_silu(ctx0, gate_p), -INFINITY, limit);
-                        act_p = ggml_mul(ctx0, ga, up_p);
-                    }
-                } else {
-                    act_p = ggml_swiglu_split(ctx0, gate_p, up_p);
-                }
-                ggml_tensor * down_p = ggml_mul_mat_id(ctx0, mcache->jit_down_c, act_p, ids_p);
+                ggml_tensor * up_p   = mc_mm(mcache->jit_up_c,   mc_inp, mc_pool_ids, mcache->jit_table);
+                ggml_tensor * gate_p = mc_mm(mcache->jit_gate_c, mc_inp, mc_pool_ids, mcache->jit_table);
+                ggml_tensor * down_p = mc_mm(mcache->jit_down_c, mc_act(gate_p, up_p), mc_pool_ids, mcache->jit_table);
                 cb(down_p, "ffn_moe_jit_down", il);
-                down_c = ggml_add(ctx0, down_c, down_p);
+                down_g = ggml_add(ctx0, down_g, down_p);
             }
-            down_g = down_g ? ggml_concat(ctx0, down_g, down_c, 2) : down_c;
         }
 
-        ggml_build_forward_expand(gf, down_g);
+        if (!mc_mix_b) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
+            ggml_build_forward_expand(gf, down_g);
+        }
     }
 
     if (weight_before_ffn) {
@@ -3165,7 +3218,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             up = build_lora_mm_id(up_exps, cur, ids_x, up_exps_s, slots); // [n_ff, n_expert_used, n_tokens]
             cb(up, "ffn_moe_up", il);
 
-            if (mcache) {
+            if (mcache && !mc_mix_b) {
                 up->src[3] = mcache->host_table;
                 up->op_params[0] = mcache->n_slots;
                 if (mc_cpu_backend) {
@@ -3187,7 +3240,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 cur = build_lora_mm_id(gate_exps, cur, ids_x, gate_exps_s, slots); // [n_ff, n_expert_used, n_tokens]
                 cb(cur, "ffn_moe_gate", il);
 
-                if (mcache) {
+                if (mcache && !mc_mix_b) {
                     if (mc_pred) {
                         cur->src[4] = mc_pred;
                     }
@@ -3447,6 +3500,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     if (!moe_ranges.empty() && parts.empty() && sched) {
         parts.push_back({ ds_r[llama_ds_xr_fork(ds_r)].b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(ds_r[llama_ds_xr_fork(ds_r)].b)), 0, n_expert });
     }
+    if (mc_mix_b) {   // the fastest link's card: every expert id the home card does not hold
+        parts.push_back({ mc_mix_b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(mc_mix_b)), 0, n_expert });
+    }
     ggml_tensor * experts = nullptr;
     if (!parts.empty()) {
         // The OWNER of the layer is the card that holds its dense weights (attention, norms, router): the router weight says which. Nothing below assumes two cards or
@@ -3467,6 +3523,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // range mode: the expert card (llama_ds_xr_fork) plays the owner for the id helpers
             owner_b = nullptr;
             for (const auto & pt : parts) { if (pt.b == ds_r[llama_ds_xr_fork(ds_r)].b) { owner_b = pt.b; } }
+        }
+        if (mc_mix_b) {   // the mix: the owner holds no part, its cache chain is its part
+            const ggml_backend_dev_t home = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->dev_table->buffer));
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                if (ggml_backend_get_device(ggml_backend_sched_get_backend(sched, i)) == home) { owner_b = ggml_backend_sched_get_backend(sched, i); }
+            }
         }
         if (owner_b) {
             std::stable_partition(parts.begin(), parts.end(), [&](const split_part & pt) { return pt.b != owner_b; });   // helpers first, the owner's chain(s) last
@@ -3509,6 +3571,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             ggml_tensor * lo_m = pin(ggml_clamp(ctx0, pin(ggml_scale_bias(ctx0, f,  1.0f, (float) (1 - parts[i].lo))), 0.0f, 1.0f));
             ggml_tensor * hi_m = pin(ggml_clamp(ctx0, pin(ggml_scale_bias(ctx0, f, -1.0f, (float) parts[i].hi)),       0.0f, 1.0f));
             ggml_tensor * m = pin(ggml_mul(ctx0, lo_m, hi_m));
+            if (mc_mix_b) {   // kept: no block on the home card (slot id -1)
+                ggml_tensor * held = pin(ggml_clamp(ctx0, pin(ggml_scale_bias(ctx0, pin(ggml_cast(ctx0, mc_slot_ids, GGML_TYPE_F32)), 1.0f, 1.0f)), 0.0f, 1.0f));
+                m = pin(ggml_scale_bias(ctx0, held, -1.0f, 1.0f));
+            }
             ids[i] = pin(ggml_cast(ctx0, pin(ggml_scale_bias(ctx0, pin(ggml_mul(ctx0, m, f1)), 1.0f, -1.0f)), GGML_TYPE_I32));
             cb(ids[i], "ffn_moe_ids_part", il);
             // all id sets before any chain: the scheduler copies only the used experts of a host weight when the
@@ -3638,7 +3704,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
         // rule 3: every partial sum goes straight to the owner and is added there, the owner's own part first. (Added as the chains were built, the sum of two
         // helpers was computed on the second helper: one card's result crossed to another helper and only then to the owner.)
-        ggml_tensor * moe_out = nullptr;
+        ggml_tensor * moe_out = mc_mix_b ? reduce(down_g, owner_b, nullptr) : nullptr;
         auto add_part = [&](size_t i) {
             if (!moe_out) { moe_out = partial[i]; return; }
             moe_out = ggml_add(ctx0, moe_out, partial[i]);
@@ -3648,11 +3714,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         for (size_t i = 0; i < parts.size(); ++i) { if (parts[i].b != owner_b) { add_part(i); } }
         cb(moe_out, "ffn_moe_out", il);
         return moe_out;
+    } else if (mc_pp) {
+        experts = down_g;   // the prompt chain computed every expert of the pass
+        cb(experts, "ffn_moe_cache_merged", il);
     } else {
         experts = expert_chain(cur, selected_experts);
     }
 
-    if (mcache) {
+    if (mcache && !mc_pp) {
         experts->src[3] = mcache->host_table;
         experts->op_params[0] = mcache->n_slots;
         if (mc_cpu_backend) {

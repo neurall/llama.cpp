@@ -1,0 +1,11 @@
+item,value,unit,how_measured
+upload_one_expert_x16,35,us,0.9 MB (gate+up+down) over CUDA1 25 GB/s
+upload_one_expert_x4,147,us,over CUDA0 6.0 GB/s
+cpu_compute_per_expert_per_token,50,us,pure CPU pass 200 tokens 3338 ms / 40 layers / about 138 experts / 12 tokens each
+cpu_compute_one_expert_one_token_range,154-412,us,decode measurement
+gpu_dense_compute,8.9 + 0.097 per token,ms,"nsys fit, one card all in VRAM"
+gpu_moe_compute,32.6 + 0.110 per token,ms,"nsys fit, one card all in VRAM"
+experts_used_per_layer_union_3_tokens,24,of 256,
+experts_used_per_layer_union_100_tokens,103,of 256,
+experts_used_per_layer_union_200_tokens,138,of 256,
+experts_used_per_layer_union_1000_tokens,196,of 256,

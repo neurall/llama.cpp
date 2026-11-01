@@ -1,0 +1,10 @@
+name,model,n,test,tokens,args,extra
+q38-stc-200,qn_iq4xs,2,pf128k,1,--cpu-moe,--clamp 200 --vary --ctx 20992
+q38-stc-1000,qn_iq4xs,2,pf128k,1,--cpu-moe,--clamp 1000 --vary --ctx 20992
+q38-stc-5000,qn_iq4xs,2,pf128k,1,--cpu-moe,--clamp 5000 --vary --ctx 20992
+glm-stc-200,glm,2,pf128k,1,--cpu-moe,--clamp 200 --vary --ctx 20992
+glm-stc-1000,glm,2,pf128k,1,--cpu-moe,--clamp 1000 --vary --ctx 20992
+glm-stc-5000,glm,2,pf128k,1,--cpu-moe,--clamp 5000 --vary --ctx 20992
+mimo-stc-200,mimo,2,pf128k,1,--cpu-moe,--clamp 200 --vary --ctx 20992
+mimo-stc-1000,mimo,2,pf128k,1,--cpu-moe,--clamp 1000 --vary --ctx 20992
+mimo-stc-5000,mimo,2,pf128k,1,--cpu-moe,--clamp 5000 --vary --ctx 20992

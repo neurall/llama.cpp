@@ -1,0 +1,3 @@
+run 19640 | prec_on | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 0.0 t/s | prompt 461.6 t/s | 1 tokens | args: -np 1 --moe max-batch=1,pp-only=1 | power 200+200 W | 2026-11-01 03:52:42
+
+ }

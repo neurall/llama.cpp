@@ -1,0 +1,4 @@
+run 19138 | stock-b12024-official | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 114.41 t/s | prompt 1840.2 t/s | 8 tokens | args: -np 1 | power 200+200 W | 2026-11-01 01:51:35
+
+ {
+        if (min_items ==

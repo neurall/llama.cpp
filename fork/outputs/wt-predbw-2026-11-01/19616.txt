@@ -1,0 +1,3 @@
+run 19616 | prefill_measured_auto9 | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 0.0 t/s | prompt 486.8 t/s | 1 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=0 | power 200+200 W | 2026-11-01 03:31:53
+
+           

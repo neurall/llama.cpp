@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <float.h>
 #include <stdlib.h> // for qsort
+#include <math.h>
 #include <stdio.h>  // for GGML_ASSERT
 
 #define GROUP_MAX_EPS 1e-15f
@@ -47,6 +48,7 @@ void quantize_row_q5_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
 }
 
 void quantize_row_q8_0_generic(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    if (ggml_cpu_gpu_shape()) { quantize_row_q8_0_gpu_shape(x, y, k); return; }
     quantize_row_q8_0_ref(x, y, k);
 }
 
@@ -174,6 +176,477 @@ void ggml_vec_dot_q1_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
+
+// GPU-shaped dot products (GGML_CPU_GPU_SHAPE=1): the CPU adds the block terms in the order the CUDA decode kernels do, so a CPU-computed matmul gives
+// the same float bits as the GPU one and greedy runs do not diverge on a cache miss. Shapes copied from the sm_86 SASS of mul_mat_vec_q (Q8_0, 4 warps,
+// one block per row) and mul_mat_vec_q_moe (Q2_0, one warp): each lane keeps one fused multiply-add chain over its blocks, then the lanes are reduced.
+// The switch can be flipped while the process runs (ggml_cpu_set_gpu_shape: the MoE cache's control file knob GPU_SHAPE, --moe gpu-shape=N). The value is an int
+// that is only written between graph computes, so every op of one compute sees the same value.
+static volatile int ggml_cpu_gpu_shape_on = -1;
+
+int ggml_cpu_gpu_shape(void) {
+    int on = ggml_cpu_gpu_shape_on;
+    if (on < 0) {
+        const char * e = getenv("GGML_CPU_GPU_SHAPE");
+        on = e && atoi(e) != 0;
+        ggml_cpu_gpu_shape_on = on;
+    }
+    return on;
+}
+
+void ggml_cpu_set_gpu_shape(int on) {
+    ggml_cpu_gpu_shape_on = on != 0;
+}
+
+static float ggml_gpu_shape_reduce(float * lane) {
+    for (int off = 16; off > 0; off >>= 1) {
+        float t[32];
+        for (int l = 0; l < 32; l++) t[l] = lane[l] + lane[l ^ off];
+        for (int l = 0; l < 32; l++) lane[l] = t[l];
+    }
+    return lane[0];
+}
+
+// activation quantization as the CUDA kernel: scale d = amax/127, q = round(x/d) with a true division (the CPU loop multiplies by 1/d or 127/amax)
+void quantize_row_q8_0_gpu_shape(const float * GGML_RESTRICT x, block_q8_0 * GGML_RESTRICT y, int64_t k) {
+    const int nb = k / QK8_0;
+    for (int i = 0; i < nb; i++) {
+        float amax = 0.0f;
+        for (int j = 0; j < QK8_0; j++) amax = MAX(amax, fabsf(x[i*QK8_0 + j]));
+        const float d = amax / 127.0f;
+        y[i].d = GGML_FP32_TO_FP16(d);
+        for (int j = 0; j < QK8_0; ++j) y[i].qs[j] = d ? (int8_t) roundf(x[i*QK8_0 + j] / d) : 0;
+    }
+}
+
+void ggml_vec_dot_q8_0_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    const int nb = n / QK8_0;
+    const block_q8_0 * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+    float tmp[4][32] = {{0}};      // [warp][lane]
+    for (int b = 0; b < nb; b++) {
+        const float dd = GGML_CPU_FP16_TO_FP32(x[b].d) * GGML_CPU_FP16_TO_FP32(y[b].d);
+        for (int c = 0; c < 4; c++) {
+            int sumi = 0;
+            for (int j = 0; j < 8; j++) sumi += x[b].qs[c*8 + j] * y[b].qs[c*8 + j];
+            const int tid = (b % 32)*4 + c;
+            float * t = &tmp[tid / 32][tid % 32];
+            *t = fmaf(dd, (float) sumi, *t);
+        }
+    }
+    float lane[32];
+    for (int l = 0; l < 32; l++) lane[l] = ((tmp[1][l] + tmp[0][l]) + tmp[2][l]) + tmp[3][l];
+    *s = ggml_gpu_shape_reduce(lane);
+}
+
+void ggml_vec_dot_q2_0_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    const int nb = n / QK2_0;
+    const block_q2_0 * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+    float lane[32] = {0};
+    for (int b = 0; b < nb; b++) {
+        const float d2 = GGML_CPU_FP16_TO_FP32(x[b].d);
+        for (int c = 0; c < 2; c++) {
+            const block_q8_0 * yb = &y[b*2 + c];
+            int sumi = 0;
+            for (int j = 0; j < 32; j++) sumi += ((int) ((x[b].qs[c*8 + j/4] >> (2*(j%4))) & 3) - 1) * yb->qs[j];
+            const int tid = (b % 16)*2 + c;
+            // the CUDA expert kernel rounds the product and then adds: not a fused multiply-add (checked against its output); the empty asm keeps the compiler from fusing them
+            float prod = (d2 * GGML_CPU_FP16_TO_FP32(yb->d)) * (float) sumi;
+#if defined(__x86_64__)
+            __asm__ volatile("" : "+x"(prod));
+#endif
+            lane[tid] = lane[tid] + prod;
+        }
+    }
+    *s = ggml_gpu_shape_reduce(lane);
+}
+
+
+// ---- GPU-shaped dots of the IQ family -------------------------------------------------------------------------------------------------------------------
+// The CUDA kernel (mul_mat_vec_q) gives each thread one slice of a block (iqs = vdr*chunk) and keeps one running float sum per thread; the integer part of a
+// slice is exact, so only the float order matters. A term is d*sumi with d = half(x.d)*half(y.d) rounded; threads are (b % blocks_per_iter)*threads_per_block
+// + chunk, a warp is 32 of them, the warps are added one after the other and the lanes by an xor tree. The activation is the Q8_0 row of the GPU quantizer.
+// a term is a*b: dd*sumi for the IQ types, (value, 1) where the kernel returns a finished float
+typedef void (*gs_term_fn)(const void * xb, const block_q8_0 * y8, int iqs, float * a, float * b);
+
+static void gs_dot(int nb, size_t xbytes, int q8_per_block, int tpb, int vdr, int nwarps, int fused, gs_term_fn fn, const void * vx, const block_q8_0 * y, float * s) {
+    const int bpi = nwarps*32/tpb;   // blocks per iteration of the whole thread block
+    float tmp[4][32] = {{0}};
+    for (int b = 0; b < nb; b++) {
+        for (int c = 0; c < tpb; c++) {
+            float ta, tb;
+            fn((const char *) vx + (size_t) b*xbytes, y + (size_t) b*q8_per_block, vdr*c, &ta, &tb);
+            const int tid = (b % bpi)*tpb + c;
+            float * t = &tmp[tid / 32][tid % 32];
+            if (fused) {
+                *t = fmaf(ta, tb, *t);
+            } else {
+                float prod = ta * tb;
+#if defined(__x86_64__)
+                __asm__ volatile("" : "+x"(prod));
+#endif
+                *t = *t + prod;
+            }
+        }
+    }
+    float lane[32];
+    for (int l = 0; l < 32; l++) {
+        float v = tmp[0][l];
+        for (int w = 1; w < nwarps; w++) v += tmp[w][l];
+        lane[l] = v;
+    }
+    *s = ggml_gpu_shape_reduce(lane);
+}
+
+// signs of 8 weights from the 7-bit field the GPU unpacks (the 8th is the parity), bit i = weight i
+static inline uint32_t gs_ksigns(uint32_t v) {
+    v &= 0x7F;
+    return v | ((uint32_t) (__builtin_popcount(v) & 1) << 7);
+}
+
+static inline int gs_dot4(const uint8_t * grid, uint32_t signs, const int8_t * q) {
+    int r = 0;
+    for (int j = 0; j < 4; j++) { const int w = (int8_t) grid[j]; r += ((signs >> j) & 1 ? -w : w) * q[j]; }
+    return r;
+}
+
+static void gs_term_iq4_nl(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_iq4_nl * x = xb;
+    int sumi = 0;
+    for (int l = 0; l < 2; l++) {
+        for (int j = 0; j < 4; j++) {
+            const uint8_t q = x->qs[4*(iqs + l) + j];
+            sumi += kvalues_iq4nl[q & 0xF]*y8->qs[4*(iqs + l) + j] + kvalues_iq4nl[q >> 4]*y8->qs[16 + 4*(iqs + l) + j];
+        }
+    }
+    *ta = GGML_CPU_FP16_TO_FP32(x->d) * GGML_CPU_FP16_TO_FP32(y8->d);
+    *tb = (float) sumi;
+}
+
+static void gs_term_iq3_xxs(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_iq3_xxs * x = xb;
+    const uint8_t * q3 = x->qs + 4*iqs;
+    uint32_t aux32; memcpy(&aux32, x->qs + QK_K/4 + 2*iqs, 4);
+    const block_q8_0 * yb = &y8[iqs/2];
+    int sumi = 0;
+    for (int l0 = 0; l0 < 8; l0 += 2) {
+        const uint32_t g0 = iq3xxs_grid[q3[l0 + 0]], g1 = iq3xxs_grid[q3[l0 + 1]];
+        const uint32_t signs = gs_ksigns(aux32 >> (7*l0/2));
+        sumi += gs_dot4((const uint8_t *) &g0, signs,      yb->qs + 4*l0);
+        sumi += gs_dot4((const uint8_t *) &g1, signs >> 4, yb->qs + 4*(l0 + 1));
+    }
+    const int ls = aux32 >> 28;
+    sumi = (ls*sumi + sumi/2)/2;
+    *ta = GGML_CPU_FP16_TO_FP32(x->d) * GGML_CPU_FP16_TO_FP32(yb->d);
+    *tb = (float) sumi;
+}
+
+static void gs_term_iq2_s(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_iq2_s * x = xb;
+    const uint8_t * qs = x->qs + 2*iqs;
+    const int qh = x->qh[iqs/2];
+    const uint8_t * sp = x->qs + QK_K/8 + 2*iqs;
+    const int ls0 = x->scales[iqs/2] & 0x0F, ls1 = x->scales[iqs/2] >> 4;
+    const block_q8_0 * yb = &y8[iqs/2];
+    int sumi0 = 0, sumi1 = 0;
+    for (int l0 = 0; l0 < 8; l0 += 2) {
+        const uint64_t grid = iq2s_grid[qs[l0/2] | ((qh << (8 - l0)) & 0x300)];
+        const uint8_t * g = (const uint8_t *) &grid;
+        const uint32_t sg = sp[l0/2];
+        const int a = gs_dot4(g, sg, yb->qs + 4*l0) + gs_dot4(g + 4, sg >> 4, yb->qs + 4*(l0 + 1));
+        if (l0 < 4) sumi0 += a; else sumi1 += a;
+    }
+    *tb = (float) ((sumi0*ls0 + sumi1*ls1 + (sumi0 + sumi1)/2)/4);
+    *ta = GGML_CPU_FP16_TO_FP32(x->d) * GGML_CPU_FP16_TO_FP32(yb->d);
+}
+
+static void gs_term_iq3_s(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_iq3_s * x = xb;
+    const uint8_t * qs = x->qs + 4*iqs;
+    const int qh = x->qh[iqs/2];
+    const uint8_t * sp = x->signs + 2*iqs;
+    const block_q8_0 * yb = &y8[iqs/2];
+    int sumi = 0;
+    for (int l0 = 0; l0 < 8; l0 += 2) {
+        const uint32_t g0 = iq3s_grid[qs[l0 + 0] | ((qh << (8 - l0)) & 0x100)];
+        const uint32_t g1 = iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)];
+        const uint32_t sg = sp[l0/2];
+        sumi += gs_dot4((const uint8_t *) &g0, sg,      yb->qs + 4*l0);
+        sumi += gs_dot4((const uint8_t *) &g1, sg >> 4, yb->qs + 4*(l0 + 1));
+    }
+    sumi *= 1 + 2*((x->scales[iqs/4] >> ((iqs << 1) & 0x04)) & 0x0F);
+    *ta = GGML_CPU_FP16_TO_FP32(x->d) * GGML_CPU_FP16_TO_FP32(yb->d);
+    *tb = (float) sumi;
+}
+
+static inline int gs_int(const void * base, int i) { int v; memcpy(&v, (const char *) base + 4*i, 4); return v; }
+
+// int8 x 4 lanes dot product of two packed ints (dp4a without the accumulate)
+static inline int gs_dp4a(int a, int b, int c) {
+    return c + (int8_t)(a      )*(int8_t)(b      ) + (int8_t)(a >>  8)*(int8_t)(b >>  8)
+             + (int8_t)(a >> 16)*(int8_t)(b >> 16) + (int8_t)(a >> 24)*(int8_t)(b >> 24);
+}
+
+// the last step of the Q2_K / Q4_K kernels, "dx*sumf_d - dy*sumf_m": nvcc made fma(dx, sumf_d, -(dy*sumf_m)) (the other two forms were tried against the GPU's bits)
+static inline float gs_dm_combine(float dx, float sd, float dy, float sm) {
+    return fmaf(dx, sd, -(dy*sm));
+}
+
+static void gs_term_mxfp4(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_mxfp4 * x = xb;
+    int sumi = 0;
+    for (int l = 0; l < 2; l++) {
+        for (int j = 0; j < 4; j++) {
+            const uint8_t q = x->qs[4*(iqs + l) + j];
+            sumi += kvalues_mxfp4[q & 0xF]*y8->qs[4*(iqs + l) + j] + kvalues_mxfp4[q >> 4]*y8->qs[16 + 4*(iqs + l) + j];
+        }
+    }
+    *ta = GGML_E8M0_TO_FP32_HALF(x->e) * GGML_CPU_FP16_TO_FP32(y8->d);
+    *tb = (float) sumi;
+}
+
+static void gs_term_iq4_xs(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_iq4_xs * x = xb;
+    const block_q8_0 * yb = &y8[iqs/4];
+    int sumi = 0;
+    for (int j = 0; j < 4; j++) {
+        for (int k = 0; k < 4; k++) {
+            const uint8_t q = x->qs[4*(iqs + j) + k];
+            sumi += kvalues_iq4nl[q & 0xF]*yb->qs[4*j + k] + kvalues_iq4nl[q >> 4]*yb->qs[16 + 4*j + k];
+        }
+    }
+    const int ls = ((x->scales_l[iqs/8] >> (iqs & 0x04)) & 0x0F) | (((x->scales_h >> (iqs/2)) & 0x03) << 4);
+    sumi *= ls - 32;
+    *ta = GGML_CPU_FP16_TO_FP32(x->d) * GGML_CPU_FP16_TO_FP32(yb->d);
+    *tb = (float) sumi;
+}
+
+static void gs_term_q2_K(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_q2_K * x = xb;
+    const int bq8_offset = 4*(iqs/8);   // QR2_K * (iqs / QI8_1)
+    const int iqs8 = iqs % 8;
+    int v[2], scales[2], u[8];
+    float d8[4];
+    for (int j = 0; j < 2; j++) v[j] = gs_int(x->qs, iqs + j);
+    const int sc_shift = 8*(iqs8/4);
+    scales[0] = gs_int(x->scales, 2*(iqs/8) + 0) >> sc_shift;
+    scales[1] = gs_int(x->scales, 2*(iqs/8) + 1) >> sc_shift;
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 2; j++) u[2*i + j] = gs_int(y8[bq8_offset + i].qs, iqs8 + j);
+        d8[i] = GGML_CPU_FP16_TO_FP32(y8[bq8_offset + i].d);
+    }
+    float sumf_d = 0.0f, sumf_m = 0.0f;
+    for (int i = 0; i < 4; i++) {
+        const int sc = scales[i/2] >> (16*(i%2));
+        int sumi_d = 0, sumi_m = 0;
+        for (int j = 0; j < 2; j++) {
+            const int vi = (v[j] >> (2*i)) & 0x03030303;
+            sumi_d = gs_dp4a(vi,         u[2*i + j], sumi_d);
+            sumi_m = gs_dp4a(0x01010101, u[2*i + j], sumi_m);
+        }
+        sumf_d = fmaf(d8[i], (float) (sumi_d * (sc & 0xF)), sumf_d);
+        sumf_m = fmaf(d8[i], (float) (sumi_m * ((sc >> 4) & 0xF)), sumf_m);
+    }
+    *ta = gs_dm_combine(GGML_CPU_FP16_TO_FP32(x->d), sumf_d, GGML_CPU_FP16_TO_FP32(x->dmin), sumf_m);
+    *tb = 1.0f;
+}
+
+static void gs_term_q3_K(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_q3_K * x = xb;
+    const int bq8_offset = 4*(iqs/8);   // QR3_K * (iqs / (QI3_K/2))
+    const int iqs8 = iqs % 8;
+    int vl[2], vh[2], scales[3], u[8];
+    float d8[4];
+    for (int j = 0; j < 2; j++) {
+        vl[j] = gs_int(x->qs, iqs + j);
+        vh[j] = gs_int(x->hmask, iqs8 + j) >> bq8_offset;
+    }
+    const int sc_shift = 8*(iqs8/4) + 4*(iqs/8);
+    for (int l = 0; l < 3; l++) scales[l] = gs_int(x->scales, l) >> sc_shift;
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 2; j++) u[2*i + j] = gs_int(y8[bq8_offset + i].qs, iqs8 + j);
+        d8[i] = GGML_CPU_FP16_TO_FP32(y8[bq8_offset + i].d);
+    }
+    float sumf = 0.0f;
+    for (int i = 0; i < 4; i++) {
+        const int sc_low  = (scales[i/2] >> (16*(i%2))) & 0x0F;
+        const int sc_high = (scales[2] >> (16*(i%2) + 2*(i/2))) & 0x03;
+        const int sc = (sc_low | (sc_high << 4)) - 32;
+        int sumi = 0;
+        for (int j = 0; j < 2; j++) {
+            const int vil = (vl[j] >> (2*i)) & 0x03030303;
+            const int vih = ((vh[j] >> i) << 2) & 0x04040404;
+            sumi = gs_dp4a(vil | vih,  u[2*i + j], sumi);
+            sumi = gs_dp4a(0xFCFCFCFC, u[2*i + j], sumi);
+        }
+        sumf = fmaf(d8[i], (float) (sumi * sc), sumf);
+    }
+    *ta = GGML_CPU_FP16_TO_FP32(x->d);
+    *tb = sumf;
+}
+
+static void gs_term_q4_K(const void * xb, const block_q8_0 * y8, int iqs, float * ta, float * tb) {
+    const block_q4_K * x = xb;
+    int v[2], u[4];
+    float d8[2];
+    const int bq8_offset = 2*((iqs/2)/4);
+    const uint8_t * q4 = x->qs + 16*bq8_offset + 4*((iqs/2)%4);
+    memcpy(&v[0], q4, 4); memcpy(&v[1], q4 + 16, 4);
+    const uint16_t * scales = (const uint16_t *) x->scales;
+    const int j = bq8_offset/2, jm = j & 1;
+    const uint32_t s0 = scales[jm + 0], s2 = scales[jm + 2], s4 = scales[jm + 4];
+    const uint32_t hi = (uint32_t) -(int32_t) (j >= 2);
+    uint16_t aux[2];
+    aux[0] = (uint16_t) (((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi));
+    aux[1] = (uint16_t) (((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi));
+    const uint8_t * sc = (const uint8_t *) aux;
+    const uint8_t * m  = sc + 2;
+    for (int i = 0; i < 2; i++) {
+        const block_q8_0 * yi = y8 + bq8_offset + i;
+        d8[i] = GGML_CPU_FP16_TO_FP32(yi->d);
+        u[2*i + 0] = gs_int(yi->qs, (iqs/2)%4);
+        u[2*i + 1] = gs_int(yi->qs, (iqs/2)%4 + 4);
+    }
+    float sumf_d = 0.0f, sumf_m = 0.0f;
+    for (int i = 0; i < 2; i++) {
+        const int v0i = (v[0] >> (4*i)) & 0x0F0F0F0F;
+        const int v1i = (v[1] >> (4*i)) & 0x0F0F0F0F;
+        const int dot1 = gs_dp4a(v1i, u[2*i + 1], gs_dp4a(v0i, u[2*i + 0], 0));
+        const int dot2 = gs_dp4a(0x01010101, u[2*i + 1], gs_dp4a(0x01010101, u[2*i + 0], 0));
+        sumf_d = fmaf(d8[i], (float) (dot1*sc[i]), sumf_d);
+        sumf_m = fmaf(d8[i], (float) (dot2*m[i]),  sumf_m);
+    }
+    *ta = gs_dm_combine(GGML_CPU_FP16_TO_FP32(x->d), sumf_d, GGML_CPU_FP16_TO_FP32(x->dmin), sumf_m);
+    *tb = 1.0f;
+}
+
+// type, K-block bytes, Q8_0 blocks per K-block, threads per K-block (qi/vdr), vdr, warps, fused add
+void ggml_vec_dot_iq4_nl_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    gs_dot(n/QK4_NL, sizeof(block_iq4_nl), 1, 2, 2, 4, 1, gs_term_iq4_nl, vx, vy, s);
+}
+void ggml_vec_dot_iq3_xxs_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    gs_dot(n/QK_K, sizeof(block_iq3_xxs), 8, 8, 2, 4, 1, gs_term_iq3_xxs, vx, vy, s);
+}
+void ggml_vec_dot_iq2_s_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    gs_dot(n/QK_K, sizeof(block_iq2_s), 8, 8, 2, 4, 1, gs_term_iq2_s, vx, vy, s);
+}
+void ggml_vec_dot_iq3_s_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    gs_dot(n/QK_K, sizeof(block_iq3_s), 8, 8, 2, 4, 1, gs_term_iq3_s, vx, vy, s);
+}
+
+void ggml_vec_dot_mxfp4_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    gs_dot(n/QK_MXFP4, sizeof(block_mxfp4), 1, 2, 2, 4, 1, gs_term_mxfp4, vx, vy, s);
+}
+void ggml_vec_dot_iq4_xs_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    gs_dot(n/QK_K, sizeof(block_iq4_xs), 8, 8, 4, 4, 1, gs_term_iq4_xs, vx, vy, s);
+}
+#if defined(__AVX2__) && defined(__FMA__)
+#include <immintrin.h>
+
+// Q2_K, 8 slices of a super-block at once (lane c = slice c = CUDA thread chunk c): the integer sums with maddubs, the float chain of each slice in the lanes.
+// The 128 running sums of the kernel are 16 vectors of 8: block b adds into vector b % 16.
+static inline __m256i gs_slice4(__m256i m) {   // m: 8 sums of 4 products; slice s is lanes 2s and 2s+1 -> 4 int32
+    const __m256i h = _mm256_hadd_epi32(m, m);
+    return _mm256_permutevar8x32_epi32(h, _mm256_setr_epi32(0, 1, 4, 5, 0, 1, 4, 5));
+}
+
+static void gs_dot_q2_K_avx2(int nb, const block_q2_K * GGML_RESTRICT x, const block_q8_0 * GGML_RESTRICT y, float * GGML_RESTRICT s) {
+    __m256 acc[16];
+    for (int k = 0; k < 16; k++) acc[k] = _mm256_setzero_ps();
+    const __m256i m3 = _mm256_set1_epi8(3), ones8 = _mm256_set1_epi8(1), ones16 = _mm256_set1_epi16(1);
+    for (int b = 0; b < nb; b++) {
+        const block_q2_K * xb = x + b;
+        const block_q8_0 * yb = y + (size_t) b*8;
+        __m256i isd[4], ism[4];
+        for (int h = 0; h < 2; h++) {
+            const __m256i q = _mm256_loadu_si256((const __m256i *) (xb->qs + 32*h));
+            for (int i = 0; i < 4; i++) {
+                const __m256i w  = _mm256_and_si256(_mm256_srli_epi16(q, 2*i), m3);
+                const __m256i yv = _mm256_loadu_si256((const __m256i *) yb[4*h + i].qs);
+                const __m256i d4 = gs_slice4(_mm256_madd_epi16(_mm256_maddubs_epi16(w,     yv), ones16));
+                const __m256i m4 = gs_slice4(_mm256_madd_epi16(_mm256_maddubs_epi16(ones8, yv), ones16));
+                if (h == 0) { isd[i] = d4; ism[i] = m4; }
+                else        { isd[i] = _mm256_inserti128_si256(isd[i], _mm256_castsi256_si128(d4), 1); ism[i] = _mm256_inserti128_si256(ism[i], _mm256_castsi256_si128(m4), 1); }
+            }
+        }
+        int32_t sdv[4][8], smv[4][8]; float d8v[4][8];
+        for (int c = 0; c < 8; c++) {
+            for (int i = 0; i < 4; i++) {
+                const int sb = xb->scales[8*(c/4) + 4*(i/2) + (c%4)/2 + 2*(i%2)];
+                sdv[i][c] = sb & 0xF; smv[i][c] = sb >> 4;
+                d8v[i][c] = GGML_CPU_FP16_TO_FP32(yb[4*(c/4) + i].d);
+            }
+        }
+        __m256 sumf_d = _mm256_setzero_ps(), sumf_m = _mm256_setzero_ps();
+        for (int i = 0; i < 4; i++) {
+            const __m256 d8 = _mm256_loadu_ps(d8v[i]);
+            const __m256 xd = _mm256_cvtepi32_ps(_mm256_mullo_epi32(isd[i], _mm256_loadu_si256((const __m256i *) sdv[i])));
+            const __m256 xm = _mm256_cvtepi32_ps(_mm256_mullo_epi32(ism[i], _mm256_loadu_si256((const __m256i *) smv[i])));
+            sumf_d = _mm256_fmadd_ps(d8, xd, sumf_d);
+            sumf_m = _mm256_fmadd_ps(d8, xm, sumf_m);
+        }
+        const __m256 dy_sm = _mm256_mul_ps(_mm256_set1_ps(GGML_CPU_FP16_TO_FP32(xb->dmin)), sumf_m);
+        const __m256 t = _mm256_fmsub_ps(_mm256_set1_ps(GGML_CPU_FP16_TO_FP32(xb->d)), sumf_d, dy_sm);
+        acc[b % 16] = _mm256_add_ps(acc[b % 16], t);
+    }
+    float tmp[4][32];
+    for (int k = 0; k < 16; k++) _mm256_storeu_ps(&tmp[k/4][(k%4)*8], acc[k]);
+    float lane[32];
+    for (int l = 0; l < 32; l++) lane[l] = ((tmp[0][l] + tmp[1][l]) + tmp[2][l]) + tmp[3][l];
+    *s = ggml_gpu_shape_reduce(lane);
+}
+#endif
+
+void ggml_vec_dot_q2_K_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+#if defined(__AVX2__) && defined(__FMA__)
+    gs_dot_q2_K_avx2(n/QK_K, vx, vy, s);
+#else
+    gs_dot(n/QK_K, sizeof(block_q2_K), 8, 8, 2, 4, 1, gs_term_q2_K, vx, vy, s);
+#endif
+}
+void ggml_vec_dot_q3_K_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    gs_dot(n/QK_K, sizeof(block_q3_K), 8, 8, 2, 4, 1, gs_term_q3_K, vx, vy, s);
+}
+void ggml_vec_dot_q4_K_q8_0_gpu_shape(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
+    gs_dot(n/QK_K, sizeof(block_q4_K), 8, 16, 2, 4, 1, gs_term_q4_K, vx, vy, s);
+}
+
+// the dot product the switch puts in place of a type's own (as a ggml_vec_dot_t), or NULL: its activation is then always the Q8_0 row of quantize_row_q8_0_gpu_shape
+#define GS_VEC_DOT(name, inner) \
+    static void name(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) { \
+        UNUSED(bs); UNUSED(bx); UNUSED(by); UNUSED(nrc); \
+        inner(n, s, vx, vy); \
+    }
+GS_VEC_DOT(gs_vec_dot_q8_0,    ggml_vec_dot_q8_0_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_q2_0,    ggml_vec_dot_q2_0_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_iq4_nl,  ggml_vec_dot_iq4_nl_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_iq3_xxs, ggml_vec_dot_iq3_xxs_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_iq2_s,   ggml_vec_dot_iq2_s_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_iq3_s,   ggml_vec_dot_iq3_s_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_mxfp4,   ggml_vec_dot_mxfp4_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_iq4_xs,  ggml_vec_dot_iq4_xs_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_q2_K,    ggml_vec_dot_q2_K_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_q3_K,    ggml_vec_dot_q3_K_q8_0_gpu_shape)
+GS_VEC_DOT(gs_vec_dot_q4_K,    ggml_vec_dot_q4_K_q8_0_gpu_shape)
+
+void * ggml_cpu_gpu_shape_vec_dot(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_Q8_0:    return (void *) gs_vec_dot_q8_0;
+        case GGML_TYPE_Q2_0:    return (void *) gs_vec_dot_q2_0;
+        case GGML_TYPE_IQ4_NL:  return (void *) gs_vec_dot_iq4_nl;
+        case GGML_TYPE_IQ3_XXS: return (void *) gs_vec_dot_iq3_xxs;
+        case GGML_TYPE_IQ2_S:   return (void *) gs_vec_dot_iq2_s;
+        case GGML_TYPE_IQ3_S:   return (void *) gs_vec_dot_iq3_s;
+        case GGML_TYPE_MXFP4:   return (void *) gs_vec_dot_mxfp4;
+        case GGML_TYPE_IQ4_XS:  return (void *) gs_vec_dot_iq4_xs;
+        case GGML_TYPE_Q2_K:    return (void *) gs_vec_dot_q2_K;
+        case GGML_TYPE_Q3_K:    return (void *) gs_vec_dot_q3_K;
+        case GGML_TYPE_Q4_K:    return (void *) gs_vec_dot_q4_K;
+        default:                return NULL;
+    }
+}
+
 void ggml_vec_dot_q2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK2_0;
     const int nb = n / qk;
@@ -185,6 +658,7 @@ void ggml_vec_dot_q2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     UNUSED(by);
     UNUSED(bs);
 
+    if (ggml_cpu_gpu_shape()) { ggml_vec_dot_q2_0_q8_0_gpu_shape(n, s, vx, vy); return; }
     const block_q2_0 * GGML_RESTRICT x = vx;
     const block_q8_0 * GGML_RESTRICT y = vy;
 
@@ -459,6 +933,7 @@ void ggml_vec_dot_q8_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     UNUSED(by);
     UNUSED(bs);
 
+    if (ggml_cpu_gpu_shape()) { ggml_vec_dot_q8_0_q8_0_gpu_shape(n, s, vx, vy); return; }
     const block_q8_0 * GGML_RESTRICT x = vx;
     const block_q8_0 * GGML_RESTRICT y = vy;
 

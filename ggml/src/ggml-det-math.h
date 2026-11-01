@@ -1,0 +1,132 @@
+#pragma once
+
+// Deterministic float math shared by the CPU and CUDA backends (GGML_CPU_GPU_SHAPE): only fmaf, single multiplies/adds, IEEE division and integer bit
+// tricks, so both sides give the same bits. CUDA's fast-math expf/logf/division and the CPU's vectorized approximations cannot match each other.
+// Accuracy is about 1 ulp, enough for the model; results below FLT_MIN flush to 0 on both sides (the GPU flushes denormals anyway).
+
+#include <math.h>
+#include <stdint.h>
+#include <string.h>
+
+#if defined(__CUDACC__)
+#define GGML_DET_FN static __host__ __device__ __forceinline__
+#else
+#define GGML_DET_FN static inline
+#endif
+
+// On the GPU these are the fast-math functions unless the build sets GGML_CUDA_DET_MATH: they run per element in RoPE, silu, softmax, the top-k router and the delta net, and the deterministic
+// ones cost 20% of a prompt pass (GLM, 4684 tokens, 2026-11-01: 9.3 s against 7.5 s). They exist for a CPU that repeats the GPU bit for bit (GGML_CPU_GPU_SHAPE); that work is shelved (2026-10-30).
+#if defined(__CUDA_ARCH__) && !defined(GGML_CUDA_DET_MATH)
+#define GGML_DET_FAST 1
+#endif
+
+// IEEE division: CUDA's fast-math "/" is an approximation, so the device side asks for the rounded one
+GGML_DET_FN float ggml_det_div(float a, float b) {
+#if defined(__CUDA_ARCH__) && !defined(GGML_DET_FAST)
+    return __fdiv_rn(a, b);
+#else
+    return a / b;
+#endif
+}
+#define GGML_DET_DIV(a, b) ggml_det_div((a), (b))
+
+GGML_DET_FN uint32_t ggml_det_f2u(float x) { uint32_t u; memcpy(&u, &x, 4); return u; }
+GGML_DET_FN float    ggml_det_u2f(uint32_t u) { float x; memcpy(&x, &u, 4); return x; }
+
+GGML_DET_FN float ggml_det_expf(float x) {
+#ifdef GGML_DET_FAST
+    return expf(x);
+#endif
+    if (!(x > -87.33f)) return x != x ? x : 0.0f;
+    if (x > 88.72f) return INFINITY;
+    const float n = rintf(x * 1.44269504088896341f);
+    float r = fmaf(n, -0.693145751953125f, x);          // ln2 split in a high part with few bits (exact products) and a low part
+    r = fmaf(n, -1.428606765330187e-06f, r);
+    float p = 1.0f/5040.0f;
+    p = fmaf(p, r, 1.0f/720.0f);
+    p = fmaf(p, r, 1.0f/120.0f);
+    p = fmaf(p, r, 1.0f/24.0f);
+    p = fmaf(p, r, 1.0f/6.0f);
+    p = fmaf(p, r, 0.5f);
+    p = fmaf(p, r, 1.0f);
+    p = fmaf(p, r, 1.0f);
+    const float res = p * ggml_det_u2f((uint32_t) ((int) n + 127) << 23);
+    return res < 1.17549435e-38f ? 0.0f : res;
+}
+
+GGML_DET_FN float ggml_det_logf(float x) {
+#ifdef GGML_DET_FAST
+    return logf(x);
+#endif
+    if (!(x > 0.0f)) return x == 0.0f ? -INFINITY : NAN;
+    if (x == INFINITY) return x;
+    uint32_t u = ggml_det_f2u(x);
+    int e = (int) (u >> 23) - 127;
+    if ((u >> 23) == 0) return -87.33f;                  // denormal input: flushed on the GPU, not needed here
+    float m = ggml_det_u2f((u & 0x7fffffu) | 0x3f800000u);
+    if (m > 1.41421356f) { m *= 0.5f; e += 1; }
+    const float f = m - 1.0f;
+    const float s = GGML_DET_DIV(f, 2.0f + f);
+    const float s2 = s * s;
+    float q = 2.0f/11.0f;
+    q = fmaf(q, s2, 2.0f/9.0f);
+    q = fmaf(q, s2, 2.0f/7.0f);
+    q = fmaf(q, s2, 2.0f/5.0f);
+    q = fmaf(q, s2, 2.0f/3.0f);
+    q = fmaf(q, s2, 2.0f);
+    const float lg = s * q;
+    const float fe = (float) e;
+    return fmaf(fe, 0.693145751953125f, fmaf(fe, 1.428606765330187e-06f, lg));
+}
+
+GGML_DET_FN float ggml_det_log1pf(float y) {
+#ifdef GGML_DET_FAST
+    return log1pf(y);
+#endif
+    const float u = 1.0f + y;
+    const float c = y - (u - 1.0f);
+    return ggml_det_logf(u) + GGML_DET_DIV(c, u);
+}
+
+GGML_DET_FN float ggml_det_sigmoid(float x) { return GGML_DET_DIV(1.0f, 1.0f + ggml_det_expf(-x)); }
+GGML_DET_FN float ggml_det_silu(float x)    { return GGML_DET_DIV(x, 1.0f + ggml_det_expf(-x)); }
+GGML_DET_FN float ggml_det_softplus(float x){ return x > 20.0f ? x : ggml_det_log1pf(ggml_det_expf(x)); }
+
+// powf for a > 0 from the deterministic exp/log (the CUDA fast-math powf and glibc's differ in the last bits)
+GGML_DET_FN float ggml_det_powf(float a, float b) {
+#ifdef GGML_DET_FAST
+    return powf(a, b);
+#else
+    return ggml_det_expf(b * ggml_det_logf(a));
+#endif
+}
+
+// sin and cos: Cody-Waite reduction by pi/2 in three float parts (every product through fmaf), then the Taylor polynomials on [-pi/4, pi/4] and the quadrant swap
+GGML_DET_FN void ggml_det_sincosf(float x, float * s, float * c) {
+#ifdef GGML_DET_FAST
+    *s = sinf(x); *c = cosf(x);
+    return;
+#endif
+    const float n = rintf(x * 0.63661977236758134f);
+    float r = fmaf(-n, 1.5707963705062866f, x);
+    r = fmaf(-n, -4.371138828673793e-08f, r);
+    r = fmaf(-n, -1.7151245100058819e-15f, r);
+    const float r2 = r * r;
+    float sp = 1.0f/362880.0f;
+    sp = fmaf(sp, r2, -1.0f/5040.0f);
+    sp = fmaf(sp, r2, 1.0f/120.0f);
+    sp = fmaf(sp, r2, -1.0f/6.0f);
+    const float sr = fmaf(sp * r2, r, r);
+    float cp = 1.0f/40320.0f;
+    cp = fmaf(cp, r2, -1.0f/720.0f);
+    cp = fmaf(cp, r2, 1.0f/24.0f);
+    cp = fmaf(cp, r2, -0.5f);
+    const float cr = fmaf(cp, r2, 1.0f);
+    const int q = (int) n & 3;
+    switch (q) {
+        case 0:  *s =  sr; *c =  cr; break;
+        case 1:  *s =  cr; *c = -sr; break;
+        case 2:  *s = -sr; *c = -cr; break;
+        default: *s = -cr; *c =  sr; break;
+    }
+}

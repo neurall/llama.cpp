@@ -123,6 +123,10 @@ struct task_params {
     // message spans for checkpointing
     common_chat_msg_spans message_spans;
 
+    // fork: the request's own text (the chat template's user-input parts, tokenized apart): the topic key of --moe dynhot pools these, not the template
+    // around them; empty (a raw /completion prompt): the whole prompt
+    llama_tokens fork_own_tokens;
+
     // Embeddings
     int32_t embd_normalize = 2; // (-1=none, 0=max absolute int16, 1=taxicab, 2=Euclidean/L2, >2=p-norm)
 

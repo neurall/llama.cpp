@@ -4,6 +4,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 #include <fstream>
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include <thread>
 
 #include "llama-moecache-fork.h"
@@ -55,9 +56,13 @@ static uint32_t g_decode_n_tokens = 0;   // tokens of the decode call in progres
 void llama_moe_token_time_fork(double ms);   // src/llama-moestate-fork.cpp
 void llama_moe_prompt_done_fork(uint32_t n_tokens, double ms);
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch);
+void llama_moe_cache_prompt_call_fork(bool on);   // llama-moecache-fork.cpp
 void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the one-card pass limit of this call
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
+bool     llama_moe_cache_pp_short_fork();
+void     llama_moe_cache_pp_freeze_fork();
+void     llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
 void     llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes);   // src/llama-moecache-fork.cpp: a load-time measure-only reserve is a measured graph size for the pass planner
 size_t   llama_moe_cache_graph_scratch_fork(ggml_backend_sched_t sched, ggml_backend_dev_t dev);   // src/llama-moecache-fork.cpp: the computed CUDA scratch of the graph the scheduler split last, on dev's pool
 uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
@@ -227,6 +232,37 @@ static double g_host_a = 0.0, g_host_b = 0.0, g_host_c = 0.0, g_host_d = 0.0;
 void llama_moe_cache_pp_cells_fork(uint64_t cells_end);
 void llama_moe_cache_mask_bpc_fork(double bytes_per_token_cell);   // llama-moecache-fork.cpp: the graph lend's growth with the cells (the cards' copies of the masks)   // llama-moecache-fork.cpp: the cells the next planned call ends at (its compute grows with them); declared here, no header edit
 static bool   g_host_cal = false, g_host_ok = false;
+static uint64_t g_host_held = 0;   // the pinned host buffer the scheduler holds (decode keeps it current)
+static uint32_t g_host_ub   = 0;   // the micro-batch ceiling a pass can reach
+// 4 GiB (user 2026-10-25, later the same day: 8 GiB cut DeepSeek-V4.1 passes to ~4.2k tokens beside 101 GiB pinned). Earlier that day 4 GiB froze the box
+// at 164k cells with 3.2 GiB left (MiMo 200k, 108 GiB pinned): pin less (-nm) for such prompts, or raise it with ram-margin-mb
+// --moe ram-margin-mb=N overrides (e.g. 12288 for a 12 GiB margin)
+static uint64_t ram_margin_bytes() {
+    const char * rm = llama_moe_get_opt("ram-margin-mb");
+    return rm ? (uint64_t) atoll(rm) << 20 : (uint64_t) 4 << 30;
+}
+
+// fork: what the server's prompt cache may keep beside a prompt pass. Its saved states (8 GiB by default) sit in RAM next to weights pinned nearly to the limit, and each request
+// took the room a pass needs: after a few long prompts GLM and MiMo ran out of RAM beside the margin (2026-10-31, the sweep's collapses). True when `bytes` more would leave a full
+// pass at `n_cells` cells (the startup fit) less than the same margin the pass cut keeps. False where the numbers do not exist: no fit, or the free RAM cannot be read here.
+LLAMA_API bool llama_moe_ram_short_fork(uint64_t n_cells, uint64_t bytes) {
+    if (!g_host_ok) {
+        return false;
+    }
+    uint64_t avail = 0, pool_free = 0;
+    if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
+    if (FILE * f = fopen("/proc/meminfo", "r")) {
+        char line[256];
+        while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; break; } }
+        fclose(f);
+    }
+    if (avail == 0) {
+        return false;
+    }
+    const double per_tok = std::max(1.0, g_host_a * (double) n_cells + g_host_b);
+    const double need    = (double) g_host_ub * per_tok + g_host_d * (double) n_cells + g_host_c;
+    return (double) avail + (double) (pool_free << 30) + (double) g_host_held < need + (double) ram_margin_bytes() + (double) bytes;
+}
 static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
     /*.op               =*/ LLM_FUSED_OP_TOP_K_MASK,
     /*.name             =*/ "fused top-k mask",
@@ -956,7 +992,10 @@ void llama_context::set_eval_cb() {
     }
 }
 
+void llama_tokheat_dump_fork(void);
+
 llama_context::~llama_context() {
+    llama_tokheat_dump_fork();   // --moe tokheat=DIR: whatever the last request left
     if (g_lt.ctx == this) { g_lt.ctx = nullptr; }   // research trace (log=l, log=x): the callback state must not point at a freed context
     if (moe_embsnap_enabled()) {   // research (--moe log=e): at exit only, the last layer embedding of the last token of the last graph; nothing is read while running
         synchronize();
@@ -2935,6 +2974,220 @@ static void fork_idx_check(ggml_backend_sched_t sched, ggml_cgraph * gf, const c
     }
 }
 
+// fork: --moe dynhot keys (user 2026-10-28: the key of a request's hot map is the activations at the prompt's last token, "literally on prefill end", before
+// the logits: every token before it is mixed in, nothing of the template; "pool all last token layers activations"). The pass that ends a prompt copies its
+// last token's router input (the source of ffn_gate_inp) of every MoE layer and its final hidden state (result_norm, what the logits are made from) into
+// small outputs (dynkey-0.., dynkey-final); after the pass they are fetched, and the next call hands them to the MoE cache (llama_moe_topic_act_fork).
+// Other graphs stay as they were: an eval callback would turn the scheduler's prefetch off.
+bool llama_moe_topic_key_wanted_fork(void);
+void llama_moe_topic_act_fork(const float * const * rows, int n_rows, int64_t n_embd);
+namespace {
+struct dynkey_state {
+    std::vector<std::vector<float>> rows;   // the MoE layers' router inputs in layer order, then the final hidden state (empty: not in the graph)
+    bool pending = false;                   // fetched after a prompt's last pass, not handed over yet
+} g_dynkey;
+
+// t's last row (a 2-D float tensor) copied out as an output named name
+bool dynkey_out(ggml_context * ctx, ggml_cgraph * gf, ggml_tensor * t, const char * name) {
+    if (t == nullptr || t->type != GGML_TYPE_F32 || t->ne[1] < 1 || t->ne[2] != 1 || t->ne[3] != 1 || t->nb[0] != sizeof(float)) { return false; }
+    ggml_tensor * out = ggml_cont(ctx, ggml_view_1d(ctx, t, t->ne[0], (size_t) (t->ne[1] - 1) * t->nb[1]));
+    ggml_set_name(out, name);
+    ggml_set_output(out);
+    ggml_build_forward_expand(gf, out);
+    return true;
+}
+
+// the copies of a prompt's last pass: the router input of every MoE layer found in the graph, and the final hidden state
+void dynkey_add(ggml_context * ctx, ggml_cgraph * gf, int n_layer) {
+    std::vector<std::pair<int, ggml_tensor *>> rin;   // per MoE layer (once each): its router's input
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        int il = -1, end = 0;
+        if (t->op != GGML_OP_MUL_MAT || t->src[0] == nullptr || sscanf(t->src[0]->name, "blk.%d.ffn_gate_inp.weight%n", &il, &end) != 1 || end == 0 || il < 0 || il >= n_layer) {
+            continue;
+        }
+        bool seen = false;
+        for (const auto & r : rin) { seen = seen || r.first == il; }
+        if (!seen) { rin.emplace_back(il, t->src[1]); }
+    }
+    std::sort(rin.begin(), rin.end(), [](const auto & a, const auto & b) { return a.first < b.first; });
+    int n = 0;
+    for (const auto & r : rin) {
+        char name[32];
+        snprintf(name, sizeof(name), "dynkey-%d", n);
+        n += dynkey_out(ctx, gf, r.second, name);
+    }
+    dynkey_out(ctx, gf, ggml_graph_get_tensor(gf, "result_norm"), "dynkey-final");
+}
+
+// after the pass: the copies into host rows, queued on their backends (the next call synchronizes before it hands them over)
+void dynkey_fetch(ggml_backend_sched_t sched, ggml_cgraph * gf) {
+    std::vector<ggml_tensor *> rows;
+    ggml_tensor * fin = nullptr;
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        if (strncmp(t->name, "dynkey-", 7) != 0) { continue; }
+        if (strcmp(t->name + 7, "final") == 0) { fin = t; continue; }
+        const int k = atoi(t->name + 7);
+        if (k >= (int) rows.size()) { rows.resize(k + 1, nullptr); }
+        rows[k] = t;
+    }
+    rows.push_back(fin);
+    g_dynkey.rows.resize(rows.size());
+    bool any = false;
+    for (size_t k = 0; k < rows.size(); ++k) {
+        g_dynkey.rows[k].clear();
+        if (rows[k] == nullptr) { continue; }
+        g_dynkey.rows[k].resize((size_t) rows[k]->ne[0]);
+        ggml_backend_tensor_get_async(ggml_backend_sched_get_tensor_backend(sched, rows[k]), rows[k], g_dynkey.rows[k].data(), 0, ggml_nbytes(rows[k]));
+        any = true;
+    }
+    g_dynkey.pending = any;
+}
+}  // namespace
+
+
+// --moe tokheat=DIR: a heat map per token id. Every pass adds, for each prompt/answer token and each MoE layer, one count per picked expert.
+// Counters only go up; a dump adds to the files already on disk. DIR/<model>/<token id in hex, at least 4 digits>/heatmap.js holds one line per layer:
+// layer3=[0,0,12,...];  (one count per expert). Dumped when the context is freed.
+namespace {
+struct tokheat_t {
+    std::unordered_map<uint64_t, std::unordered_map<uint32_t, uint32_t>> c;   // token key (1-3 ids, see tokheat_key) -> (layer << 16 | expert) -> count
+    int32_t h1 = -1, h2 = -1;   // the two tokens before the next one (one sequence: reset when a pass starts at position 0)
+    std::mutex mu;
+    int n_expert = 0, n_layer = 0;
+    // --moe tokheat-trace=1: per request the token ids, every layer's picks (16 per token, -1 padded) and expert inputs (f16), the layout of --moe acts
+    std::vector<int32_t> tr_tok;
+    std::map<int, std::vector<int16_t>> tr_ids;
+    std::map<int, std::vector<uint16_t>> tr_x;
+    int tr_embd = 0, tr_seq = 0;
+    bool trace = false;
+    std::string dir;
+};
+tokheat_t g_tokheat;
+
+// key = the last 1, 2 or 3 tokens, 21 bits each ((id + 1), 0 = absent), current token lowest
+uint64_t tokheat_key(int32_t a, int32_t b, int32_t c) {
+    return ((uint64_t) (a + 1) << 42) | ((uint64_t) (b + 1) << 21) | (uint64_t) (c + 1);
+}
+
+void tokheat_collect(ggml_cgraph * gf, const llama_ubatch & ub, int n_expert) {
+    if (ub.token == nullptr) { return; }
+    std::vector<int32_t> ids;
+    std::lock_guard<std::mutex> lk(g_tokheat.mu);
+    const bool fresh = ub.pos && ub.pos[0] == 0;
+    const int32_t h1s = fresh ? -1 : g_tokheat.h1, h2s = fresh ? -1 : g_tokheat.h2;
+    const int64_t nt = ub.n_tokens;
+    if (g_tokheat.trace) { g_tokheat.tr_tok.insert(g_tokheat.tr_tok.end(), ub.token, ub.token + nt); }
+    g_tokheat.h1 = nt >= 1 ? ub.token[nt - 1] : h1s;
+    g_tokheat.h2 = nt >= 2 ? ub.token[nt - 2] : (nt == 1 ? h1s : h2s);
+    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        int il = -1;
+        if (g_tokheat.trace && sscanf(t->name, "moe_in-%d", &il) == 1 && t->type == GGML_TYPE_F32 && t->buffer != nullptr) {
+            std::vector<float> row(t->ne[0]); std::vector<uint16_t> h(t->ne[0]);
+            auto & dst = g_tokheat.tr_x[il];
+            for (int64_t r = 0; r < std::min<int64_t>(t->ne[1], ub.n_tokens); ++r) {
+                ggml_backend_tensor_get(t, row.data(), (size_t) r*t->nb[1], row.size()*sizeof(float));
+                ggml_fp32_to_fp16_row(row.data(), (ggml_fp16_t *) h.data(), (int64_t) row.size());
+                dst.insert(dst.end(), h.begin(), h.end());
+            }
+            g_tokheat.tr_embd = (int) t->ne[0];
+            continue;
+        }
+        if (sscanf(t->name, "ffn_moe_topk-%d", &il) != 1 || il < 0 || t->type != GGML_TYPE_I32 || t->buffer == nullptr) { continue; }
+        const int64_t k = t->ne[0], n = std::min<int64_t>(t->ne[1], ub.n_tokens);
+        ids.resize((size_t) (k*n));
+        for (int64_t r = 0; r < n; ++r) {   // rows may be strided (a view of the top-k)
+            ggml_backend_tensor_get(t, ids.data() + r*k, (size_t) r*t->nb[1], (size_t) k*sizeof(int32_t));
+        }
+        int32_t h1 = h1s, h2 = h2s;   // every layer walks the same tokens from the same history
+        for (int64_t r = 0; r < n; ++r) {
+            const int32_t tk = ub.token[r];
+            uint64_t keys[3] = { tokheat_key(-1, -1, tk), h1 >= 0 ? tokheat_key(-1, h1, tk) : 0, h1 >= 0 && h2 >= 0 ? tokheat_key(h2, h1, tk) : 0 };
+            for (uint64_t key : keys) {
+                if (key == 0) { continue; }
+                auto & m = g_tokheat.c[key];
+                for (int64_t j = 0; j < k; ++j) {
+                    if (ids[r*k + j] >= 0 && ids[r*k + j] < n_expert) { ++m[(uint32_t) il << 16 | (uint32_t) ids[r*k + j]]; }
+                }
+            }
+            h2 = h1; h1 = tk;
+        }
+        if (g_tokheat.trace) {
+            auto & di = g_tokheat.tr_ids[il];
+            for (int64_t r = 0; r < n; ++r) { for (int64_t j = 0; j < 16; ++j) { di.push_back(j < k ? (int16_t) ids[r*k + j] : (int16_t) -1); } }
+        }
+        g_tokheat.n_layer = std::max(g_tokheat.n_layer, il + 1);
+    }
+}
+
+void tokheat_dump_trace() {
+    if (!g_tokheat.trace || g_tokheat.tr_tok.empty()) { return; }
+    const std::filesystem::path d = std::filesystem::path(g_tokheat.dir) / "trace";
+    std::error_code ec; std::filesystem::create_directories(d, ec);
+    int seq = 0; while (std::filesystem::exists(d / (std::to_string(seq) + ".json"))) { ++seq; }
+    const std::string stem = (d / std::to_string(seq)).string();
+    FILE * fj = fopen((stem + ".json").c_str(), "w"), * fx = fopen((stem + ".f16").c_str(), "wb"), * fi = fopen((stem + ".ids").c_str(), "wb"), * ft = fopen((stem + ".tok").c_str(), "wb");
+    if (fj && fx && fi && ft) {
+        fprintf(fj, "{\"n_embd\": %d, \"layers\": [", g_tokheat.tr_embd);
+        bool first = true;
+        for (auto & [il, ids] : g_tokheat.tr_ids) {
+            auto itx = g_tokheat.tr_x.find(il);   // the expert inputs can have more rows than the picks (a one-token pass the top-k node was not named in)
+            fprintf(fj, "%s[%d, %zu, %zu]", first ? "" : ", ", il, ids.size() / 16, itx != g_tokheat.tr_x.end() && g_tokheat.tr_embd > 0 ? itx->second.size() / (size_t) g_tokheat.tr_embd : (size_t) 0); first = false;
+            fwrite(ids.data(), sizeof(int16_t), ids.size(), fi);
+            auto it = g_tokheat.tr_x.find(il);
+            if (it != g_tokheat.tr_x.end()) { fwrite(it->second.data(), sizeof(uint16_t), it->second.size(), fx); }
+        }
+        fprintf(fj, "]}\n");
+        fwrite(g_tokheat.tr_tok.data(), sizeof(int32_t), g_tokheat.tr_tok.size(), ft);
+    }
+    for (FILE * f : { fj, fx, fi, ft }) { if (f) { fclose(f); } }
+    g_tokheat.tr_tok.clear(); g_tokheat.tr_ids.clear(); g_tokheat.tr_x.clear();
+}
+
+void tokheat_dump() {
+    std::lock_guard<std::mutex> lk(g_tokheat.mu);
+    tokheat_dump_trace();
+    if (g_tokheat.c.empty() || g_tokheat.dir.empty()) { return; }
+    for (auto & [key, m] : g_tokheat.c) {
+        // dir/<a>/<b>/<c>: the picks of token c after b after a (a, b absent for the plain token map)
+        std::filesystem::path d = g_tokheat.dir;
+        for (int sh = 42; sh >= 0; sh -= 21) {
+            const uint32_t v = (uint32_t) ((key >> sh) & 0x1fffff);
+            if (v == 0) { continue; }
+            char hex[16]; snprintf(hex, sizeof hex, "%04x", (unsigned) (v - 1)); d /= hex;
+        }
+        std::error_code ec; std::filesystem::create_directories(d, ec);
+        const std::string f = (d / "heatmap.js").string();
+        std::vector<std::vector<uint32_t>> rows(g_tokheat.n_layer, std::vector<uint32_t>(g_tokheat.n_expert, 0));
+        if (FILE * in = fopen(f.c_str(), "r")) {   // add to what earlier runs stored
+            char * line = nullptr; size_t cap = 0; ssize_t len;
+            while ((len = getline(&line, &cap, in)) > 0) {
+                int il = -1, pos = 0;
+                if (sscanf(line, "layer%d=[%n", &il, &pos) < 1 || il < 0 || il >= (int) rows.size()) { continue; }
+                const char * p = line + pos;
+                for (int e = 0; e < g_tokheat.n_expert && *p && *p != ']'; ++e) { rows[il][e] += (uint32_t) strtoul(p, (char **) &p, 10); if (*p == ',') { ++p; } }
+            }
+            free(line); fclose(in);
+        }
+        for (auto & [ekey, n] : m) { if ((int) (ekey >> 16) < (int) rows.size()) { rows[ekey >> 16][ekey & 0xffff] += n; } }
+        if (FILE * out = fopen(f.c_str(), "w")) {
+            for (size_t il = 0; il < rows.size(); ++il) {
+                fprintf(out, "layer%zu=[", il);
+                for (size_t e = 0; e < rows[il].size(); ++e) { fprintf(out, e ? ",%u" : "%u", rows[il][e]); }
+                fprintf(out, "];\n");
+            }
+            fclose(out);
+        }
+    }
+    g_tokheat.c.clear();
+}
+}   // namespace
+
+// the server calls it when a request ends (llama_moe_request_end_fork)
+void llama_tokheat_dump_fork(void) { tokheat_dump(); }
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     llama_kv_cache_set_mask_threads_fork(ubatch.n_tokens > 1 ? (int) cparams.n_threads_batch : (int) cparams.n_threads);   // the mask fill follows the compute threads
     if (mctx && !mctx->apply()) {
@@ -2983,6 +3236,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     const int64_t t_graph0 = ggml_time_us();
     bool graph_rebuilt = false;
     bool reuse = !graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams) && llama_moe_cache_graph_reusable_fork() && !ds_changed && !ctl_changed;
+    // fork (--moe dynhot): the pass that ends a prompt (its last token has the output) copies the key rows out; a reused graph without the copies is built again
+    const bool want_key = cparams.moe_cache_started && !cparams.ctx_other && ubatch.output != nullptr && ubatch.output[ubatch.n_tokens - 1] &&
+                          llama_moe_topic_key_wanted_fork();
+    if (reuse && want_key && ggml_graph_get_tensor(res->get_gf(), "dynkey-final") == nullptr && ggml_graph_get_tensor(res->get_gf(), "dynkey-0") == nullptr) {
+        reuse = false;
+    }
     if (reuse) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
@@ -2999,6 +3258,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         // target's graph went back to the free list, the after-prompt refill uploaded experts into them, and the draft's scratch writes (its own streams) raced
         // the target's verify step: illegal memory access at depth 2 and 3 (DeepSeek 4.1 + Lucebox draft, tetris prompt, reasoning off, 2026-10-27)
         if (!moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // the KV zone moved behind this graph: build it again
+        if (!moe_alias_bufs.empty() && llama_moe_cache_pp_short_fork()) { reuse = false; }   // the lend left a layer of the prompt chain too few blocks
         if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
             LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
             ret = GGML_STATUS_FAILED;
@@ -3028,6 +3288,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 ret = GGML_STATUS_FAILED;
                 return nullptr;
             }
+            if (want_key) {
+                dynkey_add(res->get_ctx(), gf, (int) model.hparams.n_layer());
+            }
 
             moe_mirror_offsets();   // fork: --moe mirror-pool: a pass that splits behind the dense split's copies, any other graph over them
 
@@ -3036,7 +3299,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             if (ggml_backend_sched_alloc_graph(sched.get(), gf)) {
                 // fork: --moe alias=1 lends the pool blocks this graph's tensors reach to it; when the graph reached into the KV zone (kv-tail), the zone moved behind
                 // it and this graph's views of the KV point at the old place: it is built again (the next graph of this size gets its lend before it is built)
-                const bool moved = !moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // only the pool's own context (see above)
+                bool moved = !moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // only the pool's own context (see above)
                 if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // the graph and the KV do not fit the pool: refuse this pass instead of aborting
                     LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
                     ret = GGML_STATUS_FAILED;
@@ -3052,6 +3315,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                     }
                     LLAMA_LOG_WARN("%s: attempt %d allocated, alias_fork %s; nodes reading out_ids %d (with a buffer %d)\n", __func__, attempt, moved ? "moved the zone: build again" : "no move", n_use, n_buf);
                 }
+                moved = (!moe_alias_bufs.empty() && llama_moe_cache_pp_short_fork()) || moved;   // the lend left a layer of the prompt chain too few blocks: the prompt path instead
                 if (moved && attempt < 4) {
                     res->reset();
                     continue;
@@ -3107,11 +3371,25 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         fork_idx_check(sched.get(), res->get_gf(), cparams.ctx_other ? "draft" : "target", n_graphs[this]++);
     }
 
+    llama_moe_cache_pp_freeze_fork();   // a graph of the prompt mix: both cards' view of the home card's experts is fixed for the pass
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+    if (want_key) {
+        dynkey_fetch(sched.get(), res->get_gf());
+    }
+    static const char * tokheat_dir = moe_opt("tokheat");
+    if (tokheat_dir && *tokheat_dir && model.hparams.n_expert > 0) {
+        if (g_tokheat.dir.empty()) {
+            std::string nm = model.name; for (char & ch : nm) { if (!isalnum((unsigned char) ch) && ch != '-' && ch != '.') { ch = '_'; } }
+            g_tokheat.trace = [] { const char * e = moe_opt("tokheat-trace"); return e && atoi(e) != 0; }();
+            g_tokheat.dir = std::string(tokheat_dir) + "/" + nm; g_tokheat.n_expert = (int) model.hparams.n_expert;
+        }
+        synchronize();
+        tokheat_collect(res->get_gf(), ubatch, g_tokheat.n_expert);
     }
 
     ret = GGML_STATUS_SUCCESS;
@@ -3369,7 +3647,8 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 // tokens x cells, since the pass's attention, mask and their temporaries grow with both: after a failure at T tokens and C cells a pass may have
 // T x C x s, s the share that fits (the pool's bytes and the card's free ones, ggml_cuda_oom_fit; 0.9 of it at most, 0.25 at least, 0.5 where it is not known): fewer
 // tokens at that context and more at a shorter one (a later short prompt keeps its full passes). It stays for the life of the process and is lowered again
-// at every failure; a pass of 256 tokens that still does not fit is an error, not a loop.
+// at every failure; a pass that cannot shrink any more (k_pass_granule) and still does not fit is an error, not a loop.
+static constexpr uint32_t k_pass_granule = 32;    // prompt passes are sized in steps of this many tokens: the smallest pass, the one that cannot shrink any more
 static std::atomic<uint64_t> g_oom_tc    { 0 };   // the ceiling, tokens x cells, 0 = none
 static std::atomic<int>      g_oom_retry { 0 };   // set by decode: the call was taken back, run it again
 void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes);   // llama-moecache-fork.cpp: the failed request counts as VRAM need outside the pool (declared here, no header edit)
@@ -3545,6 +3824,19 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         // itself (user 2026-10-26: start from the most threads; too many costs little, too few a lot)
         sched_reserve(); // the compute graph now includes the cache chain
     }
+    if (g_dynkey.pending && cparams.moe_cache_started && !cparams.ctx_other) {   // fork (--moe dynhot): the key rows of the prompt's last pass to the MoE cache
+        synchronize();
+        std::vector<const float *> rows;
+        for (const auto & r : g_dynkey.rows) { rows.push_back(r.empty() ? nullptr : r.data()); }
+        llama_moe_topic_act_fork(rows.data(), (int) rows.size(), (int64_t) model.hparams.n_embd);
+        g_dynkey.pending = false;
+    }
+    if (cparams.moe_cache_started && !cparams.ctx_other) {   // fork (--moe dynhot=1, hot maps per topic): the first call of a prompt looks up the stored requests nearest to it
+        std::vector<int32_t> ids;
+        ids.reserve(batch_inp.tokens.size());
+        for (const auto & t : batch_inp.tokens) { if (!t.has_embd && t.id != LLAMA_TOKEN_NULL) { ids.push_back(t.id); } }
+        llama_moe_cache_topic_begin_fork(model, ids.data(), (int32_t) ids.size());
+    }
     {   // --moe kv-tail=1: KV records no expert pool took (dense models) get their buffer, once, at the first real decode. Only this context's records: the records of
         // the context that expects the pool wait for it (a draft decoding at load took the target's records into a fixed full-context arena, 7 GiB on DeepSeek 4.1);
         // that context hands the ones its pool did not take to an arena once the pool started (or when it decodes with the start deferred, as before)
@@ -3701,7 +3993,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     uint32_t n_ubatch_lim = cparams.n_ubatch;
     if (const uint64_t tc = g_oom_tc.load(); tc > 0 && memory && n_tokens_all > 1) {   // after a CUDA out-of-memory (g_oom_tc): at most tc / cells tokens a pass
         const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
-        const uint32_t lim = (uint32_t) std::min<uint64_t>(n_ubatch_lim, std::max<uint64_t>(256, tc / std::max<uint64_t>(1, n_kv_end) / 32 * 32));
+        const uint32_t lim = (uint32_t) std::min<uint64_t>(n_ubatch_lim, std::max<uint64_t>(k_pass_granule, tc / std::max<uint64_t>(1, n_kv_end) / k_pass_granule * k_pass_granule));
         if (lim < n_ubatch_lim) {
             static uint32_t said = 0;
             if (said != lim) {
@@ -3753,9 +4045,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
         const uint64_t n_kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
         mask_budget_mib = budget / 1048576.0;
+        g_host_held = backend_cpu ? (uint64_t) ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu) : 0;
+        g_host_ub   = cparams.n_ubatch;
         if (budget > 0 && n_kv_end > 0 && g_host_ok) {
             const double per_tok = std::max(1.0, g_host_a * (double) n_kv_end + g_host_b);   // bytes of host buffer per pass token at that many cells (fitted at startup)
-            const uint64_t cap = std::max<uint64_t>(256, (uint64_t) std::max(0.0, ((double) budget - g_host_c - g_host_d * (double) n_kv_end) / per_tok) / 32 * 32);
+            const uint64_t cap = std::max<uint64_t>(k_pass_granule, (uint64_t) std::max(0.0, ((double) budget - g_host_c - g_host_d * (double) n_kv_end) / per_tok) / k_pass_granule * k_pass_granule);
             // user 2026-10-22: the pinned host buffer no longer caps the pass (GLM 3.0 with its weights pinned to the last GiB had a 1.0-1.9 GiB budget: its 12k
             // prompt ran as 5 passes instead of b13600's 3, 520 against 641 prompt t/s). The loader keeps the RAM of a full pass's host buffer free instead
             // (common_pass_buffer_reserve); --moe mask-cap=1 brings the cap back. The pinned-memory rewrite after this release replaces both.
@@ -3769,11 +4063,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             {
                 uint64_t ram = avail + (pool_free << 30) + (backend_cpu ? (uint64_t) ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu) : 0);
                 if (const char * sr = getenv("GGML_SIM_RAM_MB")) { ram = (uint64_t) atoll(sr) << 20; }
-                // 4 GiB (user 2026-10-25, later the same day: 8 GiB cut DeepSeek-V4.1 passes to ~4.2k tokens beside 101 GiB pinned). Earlier that day 4 GiB froze the box
-                // at 164k cells with 3.2 GiB left (MiMo 200k, 108 GiB pinned): pin less (-nm) for such prompts, or raise it with ram-margin-mb
-                // --moe ram-margin-mb=N overrides (e.g. 12288 for a 12 GiB margin)
-                const char * rm = llama_moe_get_opt("ram-margin-mb");
-                const uint64_t ram_margin = rm ? (uint64_t) atoll(rm) << 20 : (uint64_t) 4 << 30;
+                const uint64_t ram_margin = ram_margin_bytes();
                 const double room = ram > ram_margin ? (double) (ram - ram_margin) : 0.0;
                 auto need = [&](uint32_t u) { return (double) u * per_tok + g_host_d * (double) n_kv_end + g_host_c; };
                 uint32_t lim = n_ubatch_lim;
@@ -3781,8 +4071,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                     // the largest pass that fits, not the next power of two down (user 2026-10-25): the buffer is linear in the pass tokens (the startup fit above), so the pass
                     // that leaves exactly the margin is room less the fixed parts over the bytes per token. The caller cuts a call into equal passes of at most this many tokens
                     // (32768 tokens: 3 passes of 10944 for a limit of 12000, not 4 of 8192 as halving gave).
-                    const double u_fit = (room - g_host_c - g_host_d * (double) n_kv_end) / per_tok;
-                    lim = std::max<uint32_t>(256, (uint32_t) std::max(0.0, std::min((double) lim, u_fit)) / 32 * 32);
+                    // A pass the buffer the scheduler holds already takes pins nothing new, so RAM cannot be what stops it: that pass is the floor. The floor was a bare 256:
+                    // with no RAM left beside the margin every pass had 256 tokens and paid a whole upload (GLM and MiMo about 65 t/s where one pass gives 580 and 950, 2026-10-31).
+                    const double u_fit  = (room - g_host_c - g_host_d * (double) n_kv_end) / per_tok;
+                    const double u_held = ((backend_cpu ? (double) ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu) : 0.0) - g_host_c - g_host_d * (double) n_kv_end) / per_tok;
+                    lim = std::max<uint32_t>(k_pass_granule, (uint32_t) std::max(0.0, std::min((double) lim, std::max(u_fit, u_held))) / k_pass_granule * k_pass_granule);
                 }
                 if (lim < n_ubatch_lim) {
                     char v[64], why[256];
@@ -3797,6 +4090,16 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
     }
     if (cparams.moe_cache && memory) { llama_moe_cache_pp_cells_fork((uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all); }
+    // a prompt call (several tokens, at most one with logits) never computes cache misses on the CPU, and it decides per call how far its cache path pays (the pass planner below asks)
+    struct prompt_call_guard {
+        explicit prompt_call_guard(bool on) { llama_moe_cache_prompt_call_fork(on); }
+        ~prompt_call_guard() { llama_moe_cache_prompt_call_fork(false); }
+    } prompt_guard([&] {
+        size_t n_out = 0;
+        for (const auto & t : batch_inp.tokens) { n_out += t.output ? 1 : 0; }
+        return n_tokens_all > 1 && n_out <= 1 && !cparams.ctx_other;
+    }());
+    if (cparams.moe_cache && memory) { llama_moe_cache_pp_decide_fork(n_tokens_all, n_ubatch_lim); }
     g_decode_n_tokens = n_tokens_all;
     // fork: the dense split sizes its ranges against the one-card limit (no card gets more than it, ds_plan); a pass of a call sized pass by pass
     // (--moe split-pass=1, the loop at the top of decode) runs as ONE pass: the pass planner still runs for its claim of the prompt's KV (kv-tail)
@@ -3945,7 +4248,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             const bool inst = oom_bytes == 0;
             llama_pos cells = 0;
             for (uint32_t i = 0; i < ubatch.n_tokens; ++i) { cells = std::max(cells, ubatch.pos[i] + 1); }
-            bool back = inst || ubatch.n_tokens > 256;   // 256 tokens that do not fit: an error (see g_oom_tc)
+            bool back = inst || ubatch.n_tokens > k_pass_granule;   // the smallest pass does not fit: an error (see g_oom_tc)
             for (size_t k = 0; back && k < call_pos_min.size(); ++k) { back = memory->seq_rm(call_pos_min[k].first, call_pos_min[k].second, -1); }
             if (back) {
                 if (!inst) {

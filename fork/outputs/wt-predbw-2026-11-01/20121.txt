@@ -1,0 +1,15 @@
+run 20121 | prefill_auto_paths5 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.86 t/s | prompt 33.8 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-01 06:36:56
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want compact code. But I also want it to be genuinely good: playable, clean, well-crafted. The tension: "smallest" is an explicit constraint, so I should honor it — deliver a tiny, dense HTML file. But I can still make it feel great: nice colors, ghost piece, next piece, score, etc. — while keeping it small.
+
+Let me aim for a genuinely small but complete Tetris. A super-minimal version could be ~1000 bytes. But I want it to actually play well. Let me write a compact one that's readable-ish but tight.
+
+Let me design:
+- Canvas-based, 10x20 grid.
+- Pieces as rotation via matrix rotation.
+- Use a compact encoding: pieces defined by numbers, rotate by index math.
+
+Classic tiny trick: define each piece as a number whose hex digits encode the shape rows. Or use the "s = [0, ...]" approach.
+
+Compact approach: use a string of 7 piece definitions, each 4 rotations as 4 hex digits (4x4 bitmasks). Actually the well
+---

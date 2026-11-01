@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+q36-lpfull-200,qwen36,2,pf128k,8,"--moe pp-only=1",--clamp 200 --ctx 20992 --env RUN_DBG_TOKENS=1
+q36-lpfull-1000,qwen36,2,pf128k,8,"--moe pp-only=1",--clamp 1000 --ctx 20992 --env RUN_DBG_TOKENS=1

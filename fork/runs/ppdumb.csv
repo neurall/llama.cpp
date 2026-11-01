@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+q36-dumb-10,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 10 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-dumb-100,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-dumb-200,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-dumb-500,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-dumb-1000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-dumb-2000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-dumb-5000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1

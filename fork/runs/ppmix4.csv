@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+q36-hon1-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hoff1-2000,qwen36,3,pf128k,1,"--moe pp-only=1,pp-mix=0",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hone1-2000,qwen36,3,pf128k,1,"--moe pp-only=1,dense-split=0",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hon1-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hoff1-5000,qwen36,3,pf128k,1,"--moe pp-only=1,pp-mix=0",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hone1-5000,qwen36,3,pf128k,1,"--moe pp-only=1,dense-split=0",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hon2-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hoff2-2000,qwen36,3,pf128k,1,"--moe pp-only=1,pp-mix=0",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hone2-2000,qwen36,3,pf128k,1,"--moe pp-only=1,dense-split=0",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hon2-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hoff2-5000,qwen36,3,pf128k,1,"--moe pp-only=1,pp-mix=0",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
+q36-hone2-5000,qwen36,3,pf128k,1,"--moe pp-only=1,dense-split=0",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5

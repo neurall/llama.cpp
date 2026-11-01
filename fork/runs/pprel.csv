@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+q36-relhog-100,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5
+q36-relfull-100,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 100 --vary --ctx 20992
+q36-relhog-200,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5
+q36-relfull-200,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992
+q36-relhog-500,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5
+q36-relfull-500,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 20992
+q36-relhog-1000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5
+q36-relfull-1000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992
+q36-relhog-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-relfull-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992
+q36-relhog-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
+q36-relfull-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992

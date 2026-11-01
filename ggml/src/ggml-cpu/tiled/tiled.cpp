@@ -13,6 +13,9 @@
 #include <cstdlib>
 #include <cstring>
 
+extern "C" int    ggml_cpu_gpu_shape(void);                        // quants.c
+extern "C" void * ggml_cpu_gpu_shape_vec_dot(enum ggml_type type); // quants.c
+
 #include <mutex>
 
 #define UNUSED GGML_UNUSED
@@ -610,6 +613,10 @@ static bool ggml_tiled_supported(const struct ggml_tensor * src0,
 
     // repack-buffer weights hold a repacked layout, let that kernel handle
     if (src0->extra != NULL) {
+        return false;
+    }
+    // GGML_CPU_GPU_SHAPE on: a type with a GPU-shaped dot keeps it at any batch, so its rows have the GPU's bits (quants.c)
+    if (ggml_cpu_gpu_shape() && ggml_cpu_gpu_shape_vec_dot(src0->type) != NULL) {
         return false;
     }
     // Supported quant types for src0

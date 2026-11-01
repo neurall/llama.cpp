@@ -455,7 +455,8 @@ static void dsv4_state_read_k_cache(
         return;
     }
 
-    // refill the mirrors from their sources; a mirror gets the same rows as its source, so a whole copy is exact
+    // refill the mirrors from their sources, only the rows just read: upstream copies the whole tensor, but with kv-tail a mirror is a strided view whose
+    // address range past the used cells may hold expert blocks (dsv4_for_stream_ranges), so a whole copy would write over them
     std::vector<uint8_t> buf;
     for (uint32_t il : kv->get_layer_ids()) {
         const int32_t src = kv_src[il];

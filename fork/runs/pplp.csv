@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+q36-lpdumb-200,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 200 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpup-200,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=0",--clamp 200 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpmix-200,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=0",--clamp 200 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpchain-200,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0",--clamp 200 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpk2-200,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=0,pp-k=2",--clamp 200 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpdumb-1000,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=0,pf-resident=0",--clamp 1000 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpup-1000,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=0",--clamp 1000 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpmix-1000,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=0",--clamp 1000 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpchain-1000,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0",--clamp 1000 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+q36-lpk2-1000,qwen36,2,pf128k,8,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=0,pp-k=2",--clamp 1000 --ctx 20992 --hog-gpu 4.5 --env RUN_DBG_TOKENS=1

@@ -1,0 +1,3 @@
+run 20078 | stock-b12024-official | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 0.0 t/s | prompt 32.4 t/s | 1 tokens | args: -np 1 --cpu-moe | power 200+200 W | 2026-11-01 06:05:33
+
+ }

@@ -1,0 +1,3 @@
+run 19973 | prefill_auto_paths3 | pf128k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 0.0 t/s | prompt 1283.7 t/s | 1 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-01 05:19:18
+
+uto
