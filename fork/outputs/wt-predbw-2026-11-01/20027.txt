@@ -1,0 +1,4 @@
+run 20027 | prefill_auto_paths3 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 36.62 t/s | prompt 1589.3 t/s | 8 tokens | args: -np 1 --moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=0,pf-resident=0 --moe sim-vram=4608 | power 200+200 W | 2026-11-01 05:34:52
+
+ang
+e(to[i], to[i

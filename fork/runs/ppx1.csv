@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+q36-xa-1000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1

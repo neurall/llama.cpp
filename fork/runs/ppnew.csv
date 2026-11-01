@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+q36-newfull-100,qwen36,3,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --vary --ctx 20992
+q36-newfull-200,qwen36,3,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992
+q36-newfull-500,qwen36,3,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 500 --vary --ctx 20992
+q36-newfull-1000,qwen36,3,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992
+q36-newfull-2000,qwen36,3,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 2000 --vary --ctx 20992
+q36-newfull-5000,qwen36,3,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992

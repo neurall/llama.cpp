@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+q36-trmix-1000,qwen36,2,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_SCHED_TRACE=/home/o/.claude/jobs/44ecfe4e/tmp/tr_mix1k.csv --env GGML_SCHED_TRACE_ALL=1 --env GGML_PF_STATS=1

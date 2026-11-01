@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+q36-mix-100,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-mix-200,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-mix-500,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-mix-1000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-mix-2000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-mix-5000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+q36-mixa-ans,qwen36,1,pf128k,64,"--moe max-batch=1,pp-mix=1",--clamp 2000 --ctx 20992 --hog-gpu 4.5
+q36-mixb-ans,qwen36,1,pf128k,64,"--moe max-batch=1,pp-mix=0",--clamp 2000 --ctx 20992 --hog-gpu 4.5

@@ -1,0 +1,23 @@
+run 20099 | prefill_auto_paths4 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.09 t/s | prompt 75.7 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-01 06:27:57
+
+The user wants the smallest HTML Tetris game. The request is literally "smallest" — so minimal code. But I want to be careful: "smallest" here is the explicit ask, so I should deliver compact code. Yet I can still make it actually good — a real playable Tetris in a tiny single file. Let me balance: give a genuinely small, working Tetris.
+
+The request is "generate smallest html tetris game." So the deliverable is minimal code. I'll produce a compact but functional one-file Tetris. Maybe I can offer a nicely minified version that's still readable-ish, and keep the response short since they asked for smallest.
+
+Let me write it.
+
+Classic tiny Tetris approach using canvas and the SRS-ish rotation via matrix rotation.
+
+```html
+<canvas id=c width=160 height=320 style=background:#000></canvas>
+<script>
+// tetris
+</script>
+```
+
+Let me write compact code:
+
+```js
+c=document.body.children[0],x=c.getContext`2d`,S=20,W=8,H=16,g=[],B=[]
+for(i=W*H;i--;)B[i]=0
+---

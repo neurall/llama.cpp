@@ -1,0 +1,4 @@
+run 19119 | prefill_measured_auto2 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 47.64 t/s | prompt 378.3 t/s | 8 tokens | args: -np 1 --moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0 --moe sim-vram=4608 | power 200+200 W | 2026-11-01 01:44:25
+
+ {
+        if (min_items ==

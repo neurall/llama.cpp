@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+q36-ha-100,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ha-200,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ha-500,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 500 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ha-1000,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ha-2000,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 2000 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q36-ha-5000,qwen36,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1 --hog-gpu 4.5
+q38-ha-200,qn_iq4xs,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+q38-ha-1000,qn_iq4xs,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+q38-ha-5000,qn_iq4xs,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ha-200,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ha-1000,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ha-5000,mimo,8,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1

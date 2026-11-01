@@ -1,0 +1,27 @@
+run 20100 | prefill_auto_paths4 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.14 t/s | prompt 16.4 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-01 06:28:52
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris in a single HTML file. "Smallest" — they want minimal code. But I don't want to just dump a bare canvas with nothing. I can make it small yet polished. Let me balance: a genuinely tiny Tetris that plays well.
+
+Let me write compact code.
+
+```html
+<canvas id=c width=160 height=320 style="image-rendering:pixelated;width:320px;height:640px"></canvas>
+```
+
+Then JS. Let me write a tight Tetris.
+
+Standard minified-ish Tetris:
+
+```js
+const B=document.body,c=B.querySelector('canvas'),g=c.getContext('2d');
+let M=Array.from({length:20},()=>Array(10).fill(0)),s=0,l=0,o=0,p=0;
+```
+
+Let me write a clean compact version.
+
+```html
+<canvas id=C width=120 height=240></canvas>
+<script>
+const g=C.getContext`2d`,W=10,H=20,S=12;
+let
+---

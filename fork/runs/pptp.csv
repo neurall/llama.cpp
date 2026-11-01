@@ -1,0 +1,17 @@
+name,model,n,test,tokens,args,extra
+q36-tpdumb-200,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=one,pf-resident=0,pp-k=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=40:200
+q36-tpup-200,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=one,pp-k=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=40:200
+q36-tpmix-200,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=one,pp-k=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=40:200
+q36-tpchain-200,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=40:200
+q36-tpk1-200,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=one,pp-k=1",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=40:200
+q36-tpk2-200,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=one,pp-k=2",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=40:200
+q36-tpauto-200,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=40:200
+q36-tpfull-200,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=40:200
+q36-tpdumb-1000,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=one,pf-resident=0,pp-k=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+q36-tpup-1000,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=one,pp-k=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+q36-tpmix-1000,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=one,pp-k=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+q36-tpchain-1000,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+q36-tpk1-1000,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=one,pp-k=1",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+q36-tpk2-1000,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,dense-split=one,pp-k=2",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+q36-tpauto-1000,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+q36-tpfull-1000,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=20:1000

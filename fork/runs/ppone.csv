@@ -1,0 +1,22 @@
+name,model,n,test,tokens,args,extra
+q36-1cup-10,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 10 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cchain-10,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 10 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cauto-10,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 10 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cup-100,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cchain-100,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cauto-100,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cup-200,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cchain-200,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cauto-200,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cup-500,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cchain-500,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cauto-500,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cup-1000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cchain-1000,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cauto-1000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cup-2000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cchain-2000,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cauto-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cup-5000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cchain-5000,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1
+q36-1cauto-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 6.5 --env GGML_PF_STATS=1

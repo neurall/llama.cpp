@@ -1,0 +1,4 @@
+run 19134 | prefill_measured_auto2 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 103.17 t/s | prompt 1661.2 t/s | 8 tokens | args: -np 1 --moe pp-only=1 | power 200+200 W | 2026-11-01 01:50:16
+
+ {
+        if (min_items ==

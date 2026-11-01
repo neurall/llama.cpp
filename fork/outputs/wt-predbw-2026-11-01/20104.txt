@@ -1,0 +1,10 @@
+run 20104 | dspark_fix3 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.09 t/s | prompt 38.4 t/s | 256 tokens | args: -np 1 | power 200+200 W | 2026-11-01 06:31:23
+
+The user wants the smallest HTML Tetris game. Let me think about what "smallest" means — minimal file size, single HTML file. But I don't want to just dump the tiniest possible golfed code — I want something that actually plays well and looks good.
+
+Balance: they asked for "smallest html tetris game" — so a single self-contained HTML file, small. But I'd like it to feel crafted and alive. Let me make a single-file Tetris that's compact but polished: nice typography, a subtle layered background, sound via WebAudio, ghost piece, hold, next queue, level progression, keyboard + touch controls, micro-interactions.
+
+The request says "smallest" — so I should honor minimalism in file structure (one file, no dependencies, no build) while making it feel alive. I'll keep the code reasonably tight but readable-ish. Maybe I'll offer a "golfed" one-liner version too? That could be a nice touch: the crafted version plus a truly tiny ~500 byte version. Actually that's a good idea — deliver a polished single-file game, and mention a golfed variant.
+
+Hmm, but too much. Let me focus: one HTML file
+---

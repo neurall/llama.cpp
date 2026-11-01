@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+q38-mr-200,qn_iq4xs,6,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+q38-mr-1000,qn_iq4xs,6,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+q38-mr-5000,qn_iq4xs,6,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1

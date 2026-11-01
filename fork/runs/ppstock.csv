@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+q36-stcpu-100,qwen36,3,pf128k,1,--cpu-moe,--clamp 100 --vary --ctx 20992
+q36-stfull-100,qwen36,3,pf128k,1,,--clamp 100 --vary --ctx 20992
+q36-stcpu-200,qwen36,3,pf128k,1,--cpu-moe,--clamp 200 --vary --ctx 20992
+q36-stfull-200,qwen36,3,pf128k,1,,--clamp 200 --vary --ctx 20992
+q36-stcpu-500,qwen36,3,pf128k,1,--cpu-moe,--clamp 500 --vary --ctx 20992
+q36-stfull-500,qwen36,3,pf128k,1,,--clamp 500 --vary --ctx 20992
+q36-stcpu-1000,qwen36,3,pf128k,1,--cpu-moe,--clamp 1000 --vary --ctx 20992
+q36-stfull-1000,qwen36,3,pf128k,1,,--clamp 1000 --vary --ctx 20992
+q36-stcpu-2000,qwen36,3,pf128k,1,--cpu-moe,--clamp 2000 --vary --ctx 20992
+q36-stfull-2000,qwen36,3,pf128k,1,,--clamp 2000 --vary --ctx 20992
+q36-stcpu-5000,qwen36,3,pf128k,1,--cpu-moe,--clamp 5000 --vary --ctx 20992
+q36-stfull-5000,qwen36,3,pf128k,1,,--clamp 5000 --vary --ctx 20992

@@ -1,0 +1,3 @@
+run 19869 | prefill_auto_paths2 | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 0.0 t/s | prompt 594.6 t/s | 1 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-01 04:54:57
+
+ {

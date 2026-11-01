@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+q36-tpstock-200,qwen36,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=40:200
+q36-tpstock-1000,qwen36,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=20:1000

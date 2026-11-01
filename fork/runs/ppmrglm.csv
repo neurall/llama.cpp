@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+glm-mr-200,glm,6,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+glm-mr-1000,glm,6,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+glm-mr-5000,glm,6,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1

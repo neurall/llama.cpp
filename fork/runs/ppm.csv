@@ -1,0 +1,10 @@
+name,model,n,test,tokens,args,extra
+q38-ma-200,qn_iq4xs,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+q38-ma-1000,qn_iq4xs,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+q38-ma-5000,qn_iq4xs,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1
+glm-ma-200,glm,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+glm-ma-1000,glm,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+glm-ma-5000,glm,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ma-200,mimo,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ma-1000,mimo,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+mimo-ma-5000,mimo,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 5000 --vary --ctx 20992 --env GGML_PF_STATS=1

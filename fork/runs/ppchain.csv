@@ -1,0 +1,22 @@
+name,model,n,test,tokens,args,extra
+q36-auto-10,qwen36,3,pf128k,1,--moe pp-only=1,--clamp 10 --vary --ctx 20992 --hog-gpu 4.5
+q36-auto-100,qwen36,3,pf128k,1,--moe pp-only=1,--clamp 100 --vary --ctx 20992 --hog-gpu 4.5
+q36-auto-200,qwen36,3,pf128k,1,--moe pp-only=1,--clamp 200 --vary --ctx 20992 --hog-gpu 4.5
+q36-auto-500,qwen36,3,pf128k,1,--moe pp-only=1,--clamp 500 --vary --ctx 20992 --hog-gpu 4.5
+q36-auto-1000,qwen36,3,pf128k,1,--moe pp-only=1,--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5
+q36-auto-2000,qwen36,3,pf128k,1,--moe pp-only=1,--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-auto-5000,qwen36,3,pf128k,1,--moe pp-only=1,--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
+q36-chain-10,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 10 --vary --ctx 20992 --hog-gpu 4.5
+q36-chain-100,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5
+q36-chain-200,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5
+q36-chain-500,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5
+q36-chain-1000,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5
+q36-chain-2000,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-chain-5000,qwen36,3,pf128k,1,"--moe max-batch=16384,pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
+q36-upload-10,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 10 --vary --ctx 20992 --hog-gpu 4.5
+q36-upload-100,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5
+q36-upload-200,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5
+q36-upload-500,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5
+q36-upload-1000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5
+q36-upload-2000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5
+q36-upload-5000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5
