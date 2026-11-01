@@ -2629,7 +2629,7 @@ def generate(build, env, args, prompt, n, chat, extra=None, tag=None):
 # ---- generated prompts: --gen SPEC on any run, `run.py gen` alone ----
 # A cache test needs prompts it never saw: random topics, code and prose, short questions and long documents, any ratio of input to output. A server on another machine writes them
 # ([hosts] gen_url: stock llama-server with Qwen3.6 on W10), so the machine under test does nothing for it. SPEC, comma separated: in=A:B, out=A:B (tokens; a range draws log-uniform,
-# one number is fixed), task=a|b (kinds of GEN_TASKS or free text), topic=a|b (free text, default GEN_TOPICS), seed=N, url=U. Prompt i of a spec is stored in WORK/genprompts: every
+# one number is fixed), task=a|b (kinds of GEN_TASKS or free text), topic=a|b (free text, default GEN_TOPICS), seed=N, first=K (the row starts at prompt K), url=U. Prompt i of a spec is stored in WORK/genprompts: every
 # arm of an A/B and every rerun sends the same text, and the arms of different specs never share one. ponytail: no shelf of documents for very long inputs: W10 writes about 8-10
 # tokens/s, so in=128000 would take hours; reuse stored documents if a long random prompt is ever needed.
 GEN_TOPICS = ("tide tables|beekeeping|medieval trade routes|the immune system|rent control|jazz harmony|volcanoes|bicycle repair|Roman law|sourdough baking|compilers|distributed databases|"
@@ -2661,10 +2661,10 @@ GEN_DOC = 120   # from this many input tokens a prompt is a task on a document, 
 def gen_parse(spec):
     """SPEC to its values; key: what names the prompts (not the server that writes them)"""
     d = dict(kv.split("=", 1) for kv in filter(None, (spec or "").split(",")))
-    unknown = set(d) - {"in", "out", "task", "topic", "seed", "url"}
-    if unknown: sys.exit(f"--gen: unknown {sorted(unknown)} in {spec!r}: in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,url=U")
+    unknown = set(d) - {"in", "out", "task", "topic", "seed", "first", "url"}
+    if unknown: sys.exit(f"--gen: unknown {sorted(unknown)} in {spec!r}: in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,first=K,url=U")
     rng = lambda v: tuple(int(x) for x in (v.split(":") * 2)[:2])
-    g = {"in": rng(d.get("in", "16:2000")), "out": rng(d.get("out", "32:1024")), "task": d.get("task", "|".join(GEN_TASKS)).split("|"), "seed": int(d.get("seed", 1)),
+    g = {"in": rng(d.get("in", "16:2000")), "out": rng(d.get("out", "32:1024")), "task": d.get("task", "|".join(GEN_TASKS)).split("|"), "seed": int(d.get("seed", 1)), "first": int(d.get("first", 0)),
          "topic": d["topic"].split("|") if d.get("topic") else GEN_TOPICS, "url": (d.get("url") or fcfg.get("hosts", "gen_url")).rstrip("/")}
     g["key"] = json.dumps([g["in"], g["out"], g["task"], d.get("topic"), g["seed"]])
     return g
@@ -2680,6 +2680,7 @@ def gen_prompt(spec, i):
     """prompt i of SPEC: from the store, else written now. Keys: text, n_tokens, out, task, topic"""
     import random, urllib.request
     g = gen_parse(spec)
+    i += g["first"]   # first=K: a row starts at prompt K of the same set, so a training row and a test row never share a prompt
     d = os.path.join(WORK, "genprompts", hashlib.sha1(g["key"].encode()).hexdigest()[:12])
     f = os.path.join(d, f"{i}.json")
     if os.path.exists(f): return json.load(open(f))
