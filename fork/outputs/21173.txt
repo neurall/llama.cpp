@@ -1,0 +1,76 @@
+run 21173 | dynhot_global_map | snakec | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 87.37 t/s | prompt 85.5 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=off,state=/tmp/runstate/unk/t-game-ini.ini,hotmaps=/tmp/runstate/unk/hotmaps | power 220+280 W | 2026-10-28 19:18:04
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML snake game". This means I need to create a complete, playable Snake game in a single HTML file, minimizing code size while keeping it functional.
+
+2.  **Key Requirements for Snake Game:**
+   - HTML structure (single file)
+   - Canvas or grid-based rendering
+   - Snake movement (up, down, left, right)
+   - Food spawning
+   - Collision detection (walls, self)
+   - Score tracking
+   - Game over/restart
+   - Minimal code size
+
+3.  **Constraints & Optimization Strategies:**
+   - Use `<canvas>` for rendering (more compact than DOM elements)
+   - Use a single array for snake body
+   - Use keyboard events for controls
+   - Minimize variable names, use compact logic
+   - Avoid external libraries
+   - Keep it self-contained in one HTML file
+   - Use `requestAnimationFrame` or `setInterval` for game loop
+   - Consider using a grid-based approach with simple coordinates
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <body>
+   <canvas id=c></canvas>
+   <script>
+   c.width=c.height=200;
+   ctx=c.getContext('2d');
+   S=[10,10]; // snake head
+   D=[1,0]; // direction
+   F=[15,15]; // food
+   L=20; // grid size
+   function g(){
+     ctx.fillStyle='#000';ctx.fillRect(0,0,200,200);
+     ctx.fillStyle='#fff';
+     for(let i=0;i<S.length;i++) ctx.fillRect(S[i][0]*L,S[i][1]*L,L,L);
+     ctx.fillStyle='#f00';ctx.fillRect(F[0]*L,F[1]*L,L,L);
+     let nx=S[0][0]+D[0],ny=S[0][1]+D[1];
+     if(nx<0||nx>=10||ny<0||ny>=10||S.some(p=>p[0]==nx&&p[1]==ny)) return;
+     S.unshift([nx,ny]);
+     if(nx==F[0]&&ny==F[1]){F=[Math.random()*10|0,Math.random()*10|0];}else S.pop();
+     requestAnimationFrame(g);
+   }
+   document.onkeydown=e=>{
+     if(e.key=='ArrowUp')D=[0,-1];
+     if(e.key=='ArrowDown')D=[0,1];
+     if(e.key=='ArrowLeft')D=[-1,0];
+     if(e.key=='ArrowRight')D=[1,0];
+   };
+   g();
+   </script>
+   </body>
+   </html>
+   ```
+
+5.  **Refine & Optimize (Code Golf/Minimization):**
+   Let's check for issues:
+   - Grid size: 10x10, canvas 200x200, cell size 20. Works.
+   - Snake array: `S` starts with head. `unshift` adds new head, `pop` removes tail unless food eaten. Correct.
+   - Collision: Checks boundaries and self-collision. Correct.
+   - Food: Random position. Correct.
+   - Controls: Arrow keys. Correct.
+   - Loop: `requestAnimationFrame` runs continuously. Might be too fast? Snake game usually needs a fixed speed. I should add a delay or use `setInterval`. But for minimal code, I can use a simple counter or just accept fast movement. Actually, `requestAnimationFrame` runs at ~60fps, which is too fast for snake. I'll use `setInterval` with a delay, or add a frame counter.
+   - Let's use `setInterval` for simplicity and control speed: `setInterval(g, 100)`
+   - Wait, `requestAnimationFrame` is fine if I add a simple throttle, but `setInterval` is shorter.
+   - Let's adjust to `setInterval(g, 100)`
+   - Also, need to prevent reversing direction (can't go right if moving left). I'll add a simple check or just accept it (classic snake allows it but causes immediate death, which is fine for minimal code). Actually, preventing reverse is easy: `if(e.key=='ArrowUp'&&D[1]!=1)D=[0,-1]` etc. But that adds bytes. I'll skip it for minimal size, or use a compact trick.
+   - Let's count
+---

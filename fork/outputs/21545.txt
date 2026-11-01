@@ -1,0 +1,91 @@
+run 21545 | dynhot_replay4 | mathc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 71.49 t/s | prompt 219.0 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,observe=0 | power 220+280 W | 2026-10-29 10:52:29
+
+
+---
+Here is the step-by-step solution to the integral, followed by a verification and an explanation of the integration by parts method.
+
+### Part 1: Solving the Integral $\int x^2 e^x \, dx$
+
+We will use the method of **Integration by Parts**. The formula for integration by parts is:
+$$ \int u \, dv = uv - \int v \, du $$
+
+**Step 1: First Application of Integration by Parts**
+
+Let:
+$$ u = x^2 \quad \text{and} \quad dv = e^x \, dx $$
+
+Differentiate $u$ and integrate $dv$:
+$$ du = 2x \, dx $$
+$$ v = \int e^x \, dx = e^x $$
+
+Apply the formula:
+$$ \int x^2 e^x \, dx = x^2 e^x - \int e^x (2x) \, dx $$
+$$ \int x^2 e^x \, dx = x^2 e^x - 2 \int x e^x \, dx $$
+
+**Step 2: Second Application of Integration by Parts**
+
+Now we need to solve the remaining integral $\int x e^x \, dx$. Let:
+$$ u = x \quad \text{and} \quad dv = e^x \, dx $$
+
+Differentiate $u$ and integrate $dv$:
+$$ du = dx $$
+$$ v = e^x $$
+
+Apply the formula again:
+$$ \int x e^x \, dx = x e^x - \int e^x \, dx $$
+$$ \int x e^x \, dx = x e^x - e^x $$
+
+**Step 3: Combine Results**
+
+Substitute the result from Step 2 back into the equation from Step 1:
+$$ \int x^2 e^x \, dx = x^2 e^x - 2 \left( x e^x - e^x \right) $$
+
+Distribute the $-2$:
+$$ \int x^2 e^x \, dx = x^2 e^x - 2x e^x + 2e^x $$
+
+Factor out $e^x$ (optional but cleaner):
+$$ \int x^2 e^x \, dx = e^x (x^2 - 2x + 2) + C $$
+
+**Final Answer:**
+$$ \int x^2 e^x \, dx = e^x (x^2 - 2x + 2) + C $$
+
+---
+
+### Part 2: Checking the Result by Differentiation
+
+To verify the answer, we differentiate the result with respect to $x$ and check if we get the original integrand $x^2 e^x$.
+
+Let $y = e^x (x^2 - 2x + 2)$.
+
+Use the **Product Rule**: $\frac{d}{dx}(uv) = u'v + uv'$.
+Let $u = e^x$ and $v = x^2 - 2x + 2$.
+
+1.  Differentiate $u$:
+    $$ u' = e^x $$
+2.  Differentiate $v$:
+    $$ v' = 2x - 2 $$
+
+Apply the product rule:
+$$ \frac{dy}{dx} = (e^x)(x^2 - 2x + 2) + (e^x)(2x - 2) $$
+
+Factor out $e^x$:
+$$ \frac{dy}{dx} = e^x [ (x^2 - 2x + 2) + (2x - 2) ] $$
+
+Simplify the terms inside the brackets:
+$$ \frac{dy}{dx} = e^x [ x^2 - 2x + 2 + 2x - 2 ] $$
+$$ \frac{dy}{dx} = e^x [ x^2 ] $$
+$$ \frac{dy}{dx} = x^2 e^x $$
+
+Since the derivative matches the original integrand, the solution is correct.
+
+---
+
+### Part 3: Explanation of Integration by Parts
+
+**General Concept:**
+Integration by parts is derived from the product rule for differentiation. It allows us to integrate a product of two functions by transferring the derivative from one function to the other. It is particularly useful when the integrand is a product of two different types of functions (e.g., polynomial $\times$ exponential, logarithmic $\times$ trigonometric).
+
+**The Formula:**
+$$ \int u \, dv = uv - \int v \, du $$
+
+**How to Choose $u$ and $dv$:**

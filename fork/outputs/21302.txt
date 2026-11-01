@@ -1,0 +1,66 @@
+run 21302 | dynhot_same_prompt_one_record_tokdump2 | poemautc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.57 t/s | prompt 185.9 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd/s.ini,hotmaps=/tmp/runstate/tokd/hotmaps,tokdump=/tmp/runstate/tokd/dump.bin | power 220+280 W | 2026-10-28 21:50:00
+
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Topic: Autumn in a mountain village.
+    *   Length: About 24 lines.
+    *   Imagery: Woodsmoke, falling leaves, the first frost.
+    *   Style: Rhymed couplets, quiet imagery.
+    *   Constraints: No title, no commentary.
+
+2.  **Drafting - Stanza by Stanza (Mental or rough text generation):**
+    *   *Goal:* 24 lines means 12 couplets.
+    *   *Tone:* Quiet, atmospheric, mountain village setting.
+
+    *   *Couplet 1:* Introduce the setting and woodsmoke.
+        *   Idea: Smoke rising from chimneys, mountains quiet.
+        *   Draft: The chimneys breathe a grey and gentle sigh, / The mountain shadows stretch across the sky.
+        *   Check: Rhyme (sigh/sky), quiet imagery. Good.
+
+    *   *Couplet 2:* Falling leaves.
+        *   Idea: Leaves drifting, colors.
+        *   Draft: The maple turns to gold and drifts away, / A silent carpet on the winding way.
+        *   Check: Rhyme (away/way), quiet imagery. Good.
+
+    *   *Couplet 3:* Woodsmoke detail.
+        *   Idea: Smoke clinging, warmth vs cold.
+        *   Draft: The woodsmoke curls around the stone wall, / A soft embrace against the falling fall? No, "falling fall" is bad.
+        *   Draft: The woodsmoke curls around the stone wall, / And lingers soft upon the garden path.
+        *   Check: Rhyme (wall/path). Good.
+
+    *   *Couplet 4:* First frost.
+        *   Idea: Frost on grass, morning.
+        *   Draft: The first frost touches grass with silver lace, / A crystal whisper on the quiet face.
+        *   Check: Rhyme (lace/face). Good.
+
+    *   *Couplet 5:* Village life/quietness.
+        *   Idea: No noise, just nature.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the air is soon? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the world is soon? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the night is soon? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the shadows soon? No.
+        *   Let's try: The village sleeps beneath the pale moon, / The wind is still, the air is cool.
+        *   Rhyme: moon/cool? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the light is soon? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the dawn is soon? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the world is mute.
+        *   Rhyme: moon/mute? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the night is deep.
+        *   Rhyme: moon/deep? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the air is clear.
+        *   Rhyme: moon/clear? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the stars appear.
+        *   Rhyme: moon/appear? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the light is gone.
+        *   Rhyme: moon/gone? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the night is long.
+        *   Rhyme: moon/long? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the night is strong.
+        *   Rhyme: moon/strong? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the night is deep.
+        *   Rhyme: moon/deep? No.
+        *   Draft: The village sleeps beneath the pale moon, / The wind is still, the night is steep.
+        *   Rhyme: moon/steep? No.
+        *  
+---

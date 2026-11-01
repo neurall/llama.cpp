@@ -1,0 +1,72 @@
+run 21347 | dynhot_last_token_keys2 | snakepyc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.65 t/s | prompt 143.5 t/s | 613 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/lang/s.ini,hotmaps=/tmp/runstate/lang/hotmaps,tokdump=/tmp/runstate/lang/dump.bin | power 220+280 W | 2026-10-28 23:21:54
+
+
+---
+Here is the smallest possible Python Snake game for the terminal. It uses only the standard library (`random`, `time`, `sys`) and relies on ANSI escape codes for rendering.
+
+```python
+import random, time, sys
+
+W, H = 20, 10
+snake = [(W//2, H//2)]
+dir = (1, 0)
+food = (random.randint(0, W-1), random.randint(0, H-1))
+
+while True:
+    # Clear screen
+    sys.stdout.write('\033[H')
+    
+    # Move snake
+    nx, ny = snake[-1][0] + dir[0], snake[-1][1] + dir[1]
+    
+    # Check collision
+    if nx < 0 or nx >= W or ny < 0 or ny >= H or (nx, ny) in snake:
+        break
+        
+    snake.append((nx, ny))
+    
+    # Eat food
+    if (nx, ny) == food:
+        food = (random.randint(0, W-1), random.randint(0, H-1))
+    else:
+        snake.pop(0)
+        
+    # Render
+    for y in range(H):
+        line = ''
+        for x in range(W):
+            if (x, y) == food:
+                line += '🍎'
+            elif (x, y) in snake:
+                line += '🐍'
+            else:
+                line += ' '
+        print(line)
+        
+    # Input (optional: use arrow keys to change direction)
+    # For simplicity, this version auto-moves. 
+    # To add input, you'd need to read from stdin, which complicates the "smallest" aspect.
+    # However, here's a minimal input loop if you want to control it:
+    try:
+        inp = sys.stdin.read(1)
+        if inp == 'w': dir = (0, -1)
+        elif inp == 's': dir = (0, 1)
+        elif inp == 'a': dir = (-1, 0)
+        elif inp == 'd': dir = (1, 0)
+    except:
+        pass
+        
+    time.sleep(0.1)
+```
+
+### How to Run:
+1. Save as `snake.py`
+2. Run: `python snake.py`
+3. Use **W/A/S/D** to control direction.
+4. Press **Ctrl+C** to exit.
+
+### Notes:
+- Uses emojis for simplicity and visual clarity.
+- The game auto-moves in the current direction.
+- Input is handled asynchronously via `sys.stdin.read(1)`.
+- The screen is cleared each frame using `\033[H` (ANSI escape code).

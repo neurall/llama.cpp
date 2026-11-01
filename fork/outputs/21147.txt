@@ -1,0 +1,69 @@
+run 21147 | dynhot_modes_whole_prompt_key | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.71 t/s | prompt 40.2 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-28 18:42:33
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+But I don't want to ship a bare terminal dump — a Tetris game is a visual, tactile thing, so the wrapper around it should feel alive and characteristic of the subject: a real playfield with a neon arcade/CRT feel, layered background, motion, micro-interactions.
+
+Balance: keep the game code compact (that's the ask), but present it in a nicely crafted page. The user asked for "smallest" — so I should keep the code genuinely small-ish, but the surrounding page can still be well-crafted. I'll deliver a single HTML file that is the game itself, compact but with good styling.
+
+Let me think: "smallest html tetris game" — they want a minimal single-file Tetris. I should give a compact but complete implementation. I'll aim for something like ~120-180 lines that's readable but tight, with canvas rendering, keyboard controls, score/level/lines, next piece, hold maybe. Keep it small but complete.
+
+Design: the page opens with the game itself — the playfield is the hero. Arcade cabinet aesthetic: dark slate with a subtle scanline/grid ambient background, neon accent colors per tetromino, a side rail with score/level/next/hold, key hints. Add a start overlay with animated title. Add line-clear flash, particle-ish effects maybe minimal to keep size down.
+
+Since it's a single-file game, I'll do everything in one HTML file with inline CSS and JS. Use canvas for the board.
+
+Let me write compact Tetris logic.
+
+Pieces as strings or matrices. Compact approach: use a table of rotation states.
+
+A classic compact approach:
+
+```js
+P='0000,0220,0020,0000|...'
+```
+
+Better compact approach: define pieces as arrays of cell coordinates for spawn state, and rotate by matrix rotation on a bounding box.
+
+Compact standard: use the "S" string approach:
+
+```js
+const SHAPES = {
+ I:[[0,1,2,3]], ...
+}
+```
+
+Let me use the well-known tiny Tetris trick: pieces defined as hex/bitmask per rotation.
+
+Simplest readable compact: define each piece as a matrix, rotate with transpose+reverse.
+
+```js
+const P=[
+ [[1,1,1,1]],                    // I
+ [[1,0,0],[1,1,1]],              // J
+ [[0,0,1],[1,1,1]],              // L
+ [[1,1],[1,1]],                  // O
+ [[0,1,1],[1,1,0]],              // S
+ [[1,1,1],[0,1,0]],              // T
+ [[1,1,0],[0,1,1]]               // Z
+];
+```
+
+Rotation: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Colors array indexed by piece type.
+
+Board 10x20. Canvas 300x600 (cell 30). Next piece preview canvas 4x4.
+
+Controls: ← → ↓ ↑/x rotate, z rotate ccw, space hard drop, p pause, c hold, enter restart.
+
+Scoring: 100/300/500/800 * level, soft drop +1, hard drop +2/cell. Level up every 10 lines. Gravity speed = max(80, 800 - (level-1)*70).
+
+7-bag randomizer (small code, better quality).
+
+Rendering: draw board cells with slight bevel — fill + lighter top-left edge, darker bottom-right. Keep it simple: fillRect with color, then a lighter inset rect.
+
+Ghost piece: outline at drop position — nice touch, small code.
+
+Effects: on line clear, flash row white for ~150ms before removing. That adds complexity; maybe simpler: draw a quick particle burst? Keep it modest — a flash animation using a small array of clearing rows and a timer. Let's do: when lines clear, set `flash = {rows, t}` and pause gravity briefly while animating. Actually simpler: score popup + a screen shake on hard drop. Let me add:
+- hard drop: small
+---

@@ -1,0 +1,67 @@
+run 21191 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.38 t/s | prompt 19.7 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 19:34:43
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, minimal bytes, but still functional and ideally not ugly.
+
+Let me think about what "smallest" means here. The classic minimal Tetris implementations are around 200-500 bytes of JS. There's a famous one by @fskree or "Tetris in 140 bytes"... Actually there's a well-known minimal Tetris in JavaScript around 200-300 bytes. Let me try to write my own compact one.
+
+Requirements for a real Tetris:
+- 10×20 grid
+- 7 tetrominoes (I, O, T, S, Z, J, L)
+- Rotation
+- Movement left/right/down
+- Line clearing
+- Game over
+- Score maybe
+
+For "smallest", I can compress heavily:
+- Use a single string encoding pieces
+- Canvas rendering
+- Keyboard controls
+- setInterval for gravity
+
+Let me write a genuinely tiny but complete Tetris. I'll aim for something like ~300-500 bytes of JS plus minimal HTML/CSS. I should also make it look decent — dark background, centered canvas, maybe a subtle frame. But minimal markup.
+
+Let me design the code.
+
+Classic compact approach:
+
+```js
+D = document, b = D.body, c = b.appendChild(D.createElement('canvas'))
+x = c.getContext('2d')
+```
+
+Pieces: encode each tetromino as a set of coordinates or as a matrix string. A common trick: store all rotations of all pieces in one string, each piece as a list of cells.
+
+One famous compact Tetris (by "Alex" / the 219-byte tetris?) — there's "Tetris in 140m" etc. Let me just write my own.
+
+Approach: 
+- Grid: array of 200 cells (10×20), values 0 or color index.
+- Pieces: each piece = array of 4 [x,y] offsets relative to a position. Rotation: rotate offsets: (x,y) -> (y, -x) or similar. That handles SRS-ish rotation simply (not wall kicks, but fine).
+- 7 pieces defined as base shapes; rotation computed mathematically. But O piece rotating is fine (it just spins in place, acceptable). I piece rotating around a point — with (x,y)->(y,-x) rotation, the I piece rotates around one of its cells, which gives valid rotations (offset by one, but playable).
+
+Define shapes as arrays of coordinate pairs. To compress, encode as strings like "0100 1110 ..." Hmm.
+
+Alternative compact encoding: each piece as a 4x4 or matrix of bits. Let me think about byte count.
+
+Simplest readable-ish compact:
+
+```js
+P=[[1,1,1,1],[[1,1],[1,1]],...]
+```
+
+Actually a very compact known trick: represent each tetromino as a string of 16 bits (4x4 grid), rotate by rotating the 4x4 matrix. Rotation of a 4x4 bit matrix: new[r][c] = old[3-c][r] or similar. That's elegant.
+
+Pieces as 16-bit numbers? Each piece needs 4 rotations but rotation can be computed. So store 7 base shapes as 16-bit ints or as binary strings.
+
+Let me encode each shape as a 4-row string of 4 chars, e.g. I: "1111/0000/0000/0000". Hmm, that's 16 chars per piece × 7 = 112 chars. Could compress: use a single string with all pieces concatenated, 16 chars each: 112 chars. Or use hex: each piece = 16 bits = 4 hex digits. 7 pieces = 28 hex chars! Very compact.
+
+So: `S="4422..."` hmm let me compute hex for each piece.
+
+Represent 4x4 grid, row-major, bit 1 = block. I'll define:
+
+I piece: rows: 1111, 0000, 0000, 0000 → bits: 1111000000000000 = 0xF000.
+O piece: 2x2 in top-left: rows: 1100, 1100, 0000, 0000 → 1100110000000000 = 0xCC00.
+T piece: rows: 1110? Let's use standard: T: row0: 0100? Let me pick shapes that rotate nicely in a 4x4 box.
+
+Actually for rotation within a 4x
+---

@@ -1,0 +1,22 @@
+name,model,n,test,tokens,args,extra
+ct-htmltet,qwen36,1,tetrisc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-htmlbrk,qwen36,1,breakoutc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-htmlsnk,qwen36,1,snakec,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-cpptet,qwen36,1,tetriscppc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-cppsnk,qwen36,1,snakecppc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-pytet,qwen36,1,tetrispyc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-pysnk,qwen36,1,snakepyc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-pycsv,qwen36,1,pycsvc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-pylru,qwen36,1,pylruc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-pyasync,qwen36,1,pyasyncc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-sf1,qwen36,1,scific,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-sf2,qwen36,1,scifi2c,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-sf3,qwen36,1,scifi3c,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-poem1,qwen36,1,poemc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-poem2,qwen36,1,poemautc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-poem3,qwen36,1,poemseac,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-photo,qwen36,1,photoc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-math,qwen36,1,mathc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-arith,qwen36,1,arithc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-ww1,qwen36,1,ww1c,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink
+ct-latin,qwen36,1,latinmedc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps",--nothink

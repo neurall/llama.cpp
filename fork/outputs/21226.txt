@@ -1,0 +1,65 @@
+run 21226 | dynhot_same_prompt_pool_knob | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.99 t/s | prompt 57.0 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/r4-replace | power 220+280 W | 2026-10-28 20:28:32
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, movement, rotation, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, floor, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or div-based)
+
+3.  **Minimize Code Strategy:**
+   - Use a single HTML file with inline CSS and JS.
+   - Use `<canvas>` for rendering (more compact than div-based).
+   - Use compact variable names and bitwise/array tricks where possible.
+   - Avoid external libraries.
+   - Keep logic minimal but functional.
+   - Use a compact representation for pieces (e.g., arrays of coordinates or bit patterns).
+   - Use a single loop for game logic.
+   - Minimize comments and whitespace.
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head><title>Tetris</title><style>body{margin:0;background:#000}canvas{display:block}</style></head>
+   <body><canvas id=c></canvas><script>
+   // Setup
+   const c=document.getElementById('c'), ctx=c.getContext('2d');
+   c.width=200; c.height=400;
+   const W=10, H=20, grid=Array(H).fill(0);
+   // Pieces
+   const P=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]], ...]; // Actually, compact representation is better
+   // Let's use a standard compact representation:
+   const T=[[1,1,1,1],[1,1,0,0],[1,1,1,0],[1,0,1,0],[0,1,1,0],[1,1,1,0],[1,1,0,1]]; // Wait, this is messy.
+   // Better: Use 4x4 bit masks or coordinate lists. Actually, standard array of 4x4 matrices is fine but can be compressed.
+   // Let's use a simpler approach: define pieces as arrays of [x,y] offsets for each rotation.
+   // Actually, for minimal code, I'll use a 4x4 grid representation for each piece, and rotate by transposing/reversing.
+   // But that's verbose. Let's use a known compact Tetris implementation pattern.
+   ```
+
+   Let's think of a proven minimal Tetris structure:
+   - Use a 1D array for the board (200 cells)
+   - Use a piece representation: 7 pieces, each with 4 rotations. Can be stored as a flat array or object.
+   - Actually, I can use a single array `P` of 7 pieces, each piece is an array of 4 rotations, each rotation is an array of 4x4 bits or coordinates.
+   - For minimal code, I'll use a compact representation: `const P=[[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]], ...]` is too long.
+   - Better: Use a known trick: represent pieces as strings or use a compact bit pattern. But readability vs size is a trade-off. I'll aim for ~300-400 bytes.
+
+   Let's draft a minimal version step-by-step:
+
+   ```html
+   <!DOCTYPE html>
+   <html><head><title>T</title><style>body{margin:0;background:#111}canvas{display:block}</style></head>
+   <body><canvas id=c></canvas><script>
+   const c=document.getElementById('c'),x=c.getContext('2d');
+   c.width=200;c.height=400;
+   const B=Array(200).fill(0),P=[[[1,1,1,1],[0
+---

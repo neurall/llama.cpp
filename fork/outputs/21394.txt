@@ -1,0 +1,19 @@
+run 21394 | dynhot_layer_combos | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 95.42 t/s | prompt 194.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps | power 200+200 W | 2026-10-29 00:59:57
+
+
+---
+The thawing of the cryo-gel felt less like waking and more like drowning in reverse. Elias, the ship’s archivist, gasped as the viscous fluid drained from his lungs, replacing the cold numbness with a sharp, burning heat. His eyes, crusted with the residue of a century’s sleep, blinked against the sudden glare of the bridge’s ambient lighting. The silence of the void was broken by the hum of the navigation systems, a low, rhythmic thrum that vibrated through the deck plates and into his bones.
+
+"Status report," Captain Vane’s voice cut through the haze, crisp and authoritative. Elias rubbed his temples, trying to clear the fog of stasis. He looked out the reinforced viewport. Below them, the planet of Aethel hung like a sapphire marble, swirling with clouds and oceans. But something was wrong. The night side of the planet was not dark. It was a web of golden light, pulsating like a nervous system.
+
+"Light," Elias whispered, his voice raspy. "There are lights."
+
+Vane frowned, checking the telemetry. "That’s impossible. We are the first. The colony ship *Aethel Prime* was launched three hundred years ago. We should be the pioneers."
+
+Elias moved to the data console, his fingers trembling as he accessed the historical logs. He pulled up the launch records. There was a discrepancy. A secondary vessel, the *Aethel Secundum*, had been launched exactly one hundred years after the *Prime*. It was a smaller, faster ship, designed for rapid colonization. The logs indicated it had suffered a catastrophic engine failure early in its journey, forcing it to drift in a deceleration orbit for decades before correcting course.
+
+"It didn't drift," Elias said, reading the updated trajectory data. "It accelerated. The *Secundum* arrived fifty years before us. They landed. They built. They lived."
+
+The realization hit Elias with the force of a physical blow. The lights below were not the glow of primitive torches or the flicker of early settlement fires. They were the steady, electric hum of a civilization. Cities, skyscrapers, infrastructure. The descendants of the *Secundum* had thrived. They had forgotten the *Prime*. They had forgotten Elias and his crew, who were still frozen in the ice of the past.
+
+Elias walked to the window, pressing his hand against the cold glass. The lights below seemed

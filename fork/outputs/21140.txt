@@ -1,0 +1,52 @@
+run 21140 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.58 t/s | prompt 20.1 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 18:29:46
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, minified/compact, but still functional and playable.
+
+Let me think about what "smallest" means here. The user wants minimal bytes. I should write a compact Tetris: canvas rendering, keyboard controls, gravity, line clearing, scoring, game over, next piece maybe (optional — smallest might skip next piece). Rotation, movement, drop, collision.
+
+Let me design a truly minimal Tetris implementation.
+
+Classic minimal Tetris approaches:
+
+- Use a canvas, 10x20 grid.
+- Pieces encoded as arrays or as bit patterns.
+- Rotation via math or via piece definitions.
+
+A well-known ultra-compact Tetris in JS exists (the famous 140-byte-ish "Tetris in 140 bytes" by Román Cortés? Actually there's a famous one: "Tetris in 140 characters" — but that's not fully functional). There's also the famous minimal Tetris by "tinytetris" in C (23 lines). For JS, a common compact approach:
+
+Let me write my own compact but complete Tetris. Aim for maybe under 1000 bytes of JS, single HTML file. I'll keep it readable-ish but compact — since the user asked for smallest, heavy minification is appropriate. But I should still make it playable and not broken.
+
+Key features to include (minimum viable Tetris):
+- 7 tetrominoes with colors (colors optional for size; could use single color, but colors make it feel real — maybe use a small color string per piece, cheap).
+- Move left/right, rotate, soft drop / hard drop.
+- Gravity with interval.
+- Line clear + score.
+- Game over detection.
+- Restart.
+
+Let me think about encoding pieces compactly.
+
+Common trick: represent each tetromino as a set of coordinates in a 4x4 or use strings. A very compact encoding: each piece as an array of 4 rotations, each rotation as array of [x,y] cells. That's verbose. Alternative: encode each piece as a 16-bit number per rotation (4x4 grid bitmask). 7 pieces × 4 rotations = 28 numbers. Each rotation bitmask 16 bits. That's compact-ish: e.g. `for(i=0;i<28;)...` no, we need actual data.
+
+Even more compact: use the "rotate by 90°" math on coordinate pairs. Represent each piece as 4 [x,y] pairs, rotate via (x,y)->(y,3-x) or similar within a bounding box. But different pieces have different bounding boxes (I is 4x4 or 2x4...). A classic trick: use a 4x4 box for all, with piece cells positioned so rotation works. Actually the standard SRS uses different box sizes. A simpler approach used in many minimal implementations: define pieces as arrays of 4 rotation states each as arrays of [x,y]. 
+
+Alternative super-compact trick: encode each tetromino as a single number whose binary representation contains the cells, and generate rotations by rotating the 4x4 (or use string rotation). Hmm.
+
+Another classic compact approach: pieces as strings like "0110 1110" etc. Let me think of the well-known minimal JS tetris pattern:
+
+One known compact approach (from "Tetris in 20 lines" etc.):
+
+```js
+p=[["[",...]] 
+```
+
+Let me just design my own.
+
+Approach: board as array of 20 strings? Or 2D array of numbers. Use a flat array `b` of size 200 (10x20), values 0 or piece color index+1.
+
+Pieces: I'll define each piece as a function of rotation using a base shape and rotation transform. To keep it small, define pieces as arrays of 4 masks (16-bit). Let me compute masks.
+
+Actually, a neat trick: define each piece with a single 64-bit? No, keep it simple: define pieces as arrays of strings of 16 chars ('0'/'1') per rotation? That's 7*4*16 = 448 chars. Hmm, or as hex numbers.
+
+Alternative compact trick that's famous: use the piece definitions where each rotation is derived by rotating the previous within a 4x4 grid using bit manipulation. If I store one 16-bit mask per piece and rotate bits in a 4x4 grid: rotated mask r = rotate90(m). For I piece in 4x4: horizontal bar at row 1: bits 0b001001
+---

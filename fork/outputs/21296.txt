@@ -1,0 +1,62 @@
+run 21296 | dynhot_same_prompt_one_record_tokdump2 | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 87.69 t/s | prompt 108.1 t/s | 697 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd/s.ini,hotmaps=/tmp/runstate/tokd/hotmaps,tokdump=/tmp/runstate/tokd/dump.bin | power 220+280 W | 2026-10-28 21:46:25
+
+The user wants the smallest possible HTML breakout game. I need to create a self-contained HTML file with minimal code that implements a basic breakout game. Let me think about the essential elements:
+
+1. A canvas for rendering
+2. A ball that bounces
+3. A paddle controlled by keyboard
+4. Bricks to break
+5. Collision detection
+
+I'll use inline CSS and JavaScript to keep it all in one file. Let me minimize the code while keeping it functional.
+
+Key elements:
+- Canvas element
+- Ball physics (position, velocity, bounce)
+- Paddle movement (left/right arrow keys)
+- Brick grid
+- Collision detection (ball-brick, ball-wall, ball-paddle)
+- Game loop
+
+Let me write the most compact version possible.
+---
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Breakout</title>
+<style>
+body{margin:0;background:#111}
+canvas{display:block;margin:20px auto}
+</style>
+</head>
+<body>
+<canvas id=c width=400 height=300></canvas>
+<script>
+const ctx=c.getContext('2d');
+let bx=200,by=250,bvx=3,bvy=-3;
+let px=175,pw=50;
+let bricks=[];
+for(let r=0;r<5;r++)for(let c=0;c<8;c++)bricks.push({x:50+c*45,y:20+r*25,w:40,h:15,alive:true});
+function draw(){
+ctx.fillStyle='#111';ctx.fillRect(0,0,400,300);
+ctx.fillStyle='#fff';ctx.fillRect(px,280,pw,10);
+ctx.beginPath();ctx.arc(bx,by,6,0,6);ctx.fill();
+bricks.forEach(b=>{if(b.alive){ctx.fillStyle='#f00';ctx.fillRect(b.x,b.y,b.w,b.h);}});
+}
+function update(){
+bx+=bvx;by+=bvy;
+if(bx<6||bx>394)bvx=-bvx;
+if(by<6)bvy=-bvy;
+if(by>280&&bx>px&&bx<px+pw)bvy=-bvy;
+bricks.forEach(b=>{if(b.alive&&bx>b.x&&bx<b.x+b.w&&by>b.y&&by<b.y+b.h){b.alive=false;bvy=-bvy;}});
+if(bricks.every(b=>!b.alive)){bx=200;by=250;bvx=3;bvy=-3;bricks.forEach(b=>b.alive=true);}
+}
+c.addEventListener('keydown',e=>{if(e.key=='ArrowLeft')px-=15;if(e.key=='ArrowRight')px+=15;});
+(function loop(){draw();update();requestAnimationFrame(loop);})();
+</script>
+</body>
+</html>
+```
+
+**Controls:** Left/Right arrow keys to move the paddle. The ball bounces off walls, paddle, and bricks. Game resets when all bricks are cleared.

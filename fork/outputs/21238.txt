@@ -1,0 +1,50 @@
+run 21238 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 94.42 t/s | prompt 303.0 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/r4-replace | power 220+280 W | 2026-10-28 20:34:37
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *POV:* Archivist - implies someone who records, preserves, values history, maybe reflective, observant, carries data/logs.
+   - *Setting:* Generation ship waking from cryosleep, orbiting a target planet. Cities already lit below.
+   - *Plot Twist/Revelation:* A second ship left a century later, arrived first, colonized the planet, and the current crew's descendants are already there.
+   - *Tone/Style:* Literary, sensory, dialogue-driven, reflective.
+   - *Word Count:* ~900 words.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Waking from cryosleep. Sensory details: cold, thawing, light, sound, the archivist's role. Establish the POV immediately.
+   - *Observation:* Looking down at the planet. Cities lit. Confusion/realization.
+   - *Dialogue/Interaction:* Talk with crewmates/engineers. Discover the truth about the second ship.
+   - *Reflection/Theme:* The archivist's perspective on time, legacy, duplication, human nature. The irony of being "first" but arriving "last."
+   - *Closing:* Acceptance, continuity, perhaps a new role for the archivist. Literary resonance.
+
+   Structure:
+   - Paragraph 1: Waking, sensory thaw, archivist's duty
+   - Paragraph 2: Orbital view, lit cities, confusion
+   - Paragraph 3: Dialogue with crew, revelation about the second ship
+   - Paragraph 4: Archivist's internal reflection, historical records, irony
+   - Paragraph 5: Landing/preparation, thematic closure
+
+4.  **Drafting - Mental Refinement (Paragraph by Paragraph):**
+   *(Aim for ~900 words total. I'll write carefully, monitoring pace and word count.)*
+
+   The thaw began as a whisper in the marrow. Cold gave way to a slow, viscous warmth, like honey pulling through cracked ice. I opened my eyes to the pale glow of the wake-up array, the hum of the cryo-pod’s ventilation cycling through my lungs. My fingers trembled against the glass of the data-slate I’d carried into sleep. I was the archivist, keeper of the ship’s memory, the one who logged every breath, every star-chart, every quiet moment of the long drift. Now, the drift was over. We had arrived.
+
+   Through the observation blister, the planet hung in the dark like a polished stone. I expected darkness. I expected the raw, unbroken wilderness we’d been promised. Instead, the night side was threaded with light. Rivers of gold and silver, clustered in geometric patterns, pulsed like veins. Cities. Already built. Already breathing.
+
+   “That’s not right,” murmured Commander Vance, stepping beside me. His voice was rough, still catching up to the waking world. “We’re supposed to be the first. The seed.”
+
+   “The seed,” I said, tracing the light with my fingertip. “But someone else planted the garden.”
+
+   The engineering deck was already awake, voices overlapping in the sudden noise of reactivation. I carried my slate to the central console, where the navigation logs were being pulled from stasis. The data unfolded like a slow bloom. The ship’s original trajectory had been altered. Not by us. By a second vessel. A copy. Launched a century after our departure, carrying a different crew, a different mandate, a faster drive. They had slipped past us in the dark. They had arrived first. They had built. They had lived.
+
+   “They’re our descendants,” said Dr. Aris, her eyes wide, her hands hovering over the telemetry. “The genetic drift, the cultural adaptation, the language shifts… it’s all in the broadcast signals. They’re speaking our tongue, but twisted by time. They’re us, but further along.”
+
+   I felt the weight of the archive settle on my shoulders. I had spent decades recording the silence of the void, the slow decay of our supplies, the quiet births and deaths in the ship’s nurseries. I had preserved the
+---

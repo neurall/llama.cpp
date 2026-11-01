@@ -1,0 +1,55 @@
+run 21146 | dynhot_modes_whole_prompt_key | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 52.41 t/s | prompt 58.4 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-28 18:41:34
+
+The user wants the smallest HTML Tetris game. The literal ask: "generate smallest html tetris game." So they want a minimal, compact single-file Tetris. I should deliver something compact but playable. There's a temptation to over-decorate this into a full arcade landing page, but the request is explicitly for the *smallest* game — so restraint and playability are the actual brief.
+
+I'll give a tight single-file HTML with canvas, minimal CSS, working Tetris: 7-bag, rotation with basic wall kicks, line clears, scoring, levels, next piece, hold maybe. Keep it small but complete. Maybe ~60-80 lines.
+
+Since the request is "smallest," I'll keep it lean but still give it a bit of life: a dark playfield with a subtle grid, a soft CRT-ish glow, and a couple of micro-interactions (score tick, line-clear flash) that cost almost nothing in bytes.
+
+Let me write compact but readable code.
+
+Design: single HTML file. Canvas 10x20. Side panel with score/level/lines/next. Keys: arrows, Z/X rotate, space hard drop, P pause.
+
+Let me write it.
+
+```html
+<!DOCTYPE html><html><head><meta charset=utf-8><title>TETRIS</title>
+<style>
+:root{--a:#0ff;--b:#f80}
+*{box-sizing:border-box;margin:0}
+body{background:#07070b;color:#e8e8f0;font:12px/1.4 ui-monospace,Menlo,monospace;display:grid;place-items:center;min-height:100vh}
+...
+</style>
+```
+
+Let me craft a nice minimal aesthetic: dark background with a subtle scanline/grid ambient layer, neon piece colors, monospace type with a strong weight contrast for the score. Micro-interaction: score value pops when it changes; line flash animation on canvas.
+
+Keep code small. Let me write it out.
+
+```html
+<!doctype html><html lang=en><meta charset=utf-8><title>TETRIS</title>
+<style>
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{display:grid;place-items:center;background:#08080c;color:#dfe;font:600 12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+background-image:radial-gradient(#1b1b2b 1px,transparent 1px);background-size:24px 24px}
+main{display:flex;gap:18px;padding:18px;border:1px solid #23233a;background:#0b0b12;box-shadow:0 0 60px #0008, inset 0 0 40px #ffffff05}
+canvas{display:block;image-rendering:pixelated}
+#b{border:1px solid #23233a;background:#0d0d16}
+aside{width:112px;display:grid;gap:10px;align-content:start}
+h1{font-size:26px;letter-spacing:.18em;color:#fff;text-shadow:0 0 12px #0ff8}
+.k{color:#667;font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+.v{font-size:22px;color:#fff;letter-spacing:.04em}
+.v.pop{animation:pop .25s}
+@keyframes pop{50%{transform:scale(1.18);color:#0ff}}
+p{color:#556;font-size:10px;line-height:1.7}
+kbd{color:#aab;background:#14141f;border:1px solid #262640;padding:0 4px}
+#ov{position:absolute;inset:0;display:grid;place-items:center;background:#08080cd9;font-size:14px;letter-spacing:.2em;cursor:pointer}
+</style>
+<body>
+<main>
+<canvas id=b width=300 height=600></canvas>
+<aside>
+<h1>TETRIS</h1>
+<div><div class=k>score</div><
+---

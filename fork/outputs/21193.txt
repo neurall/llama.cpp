@@ -1,0 +1,49 @@
+run 21193 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.11 t/s | prompt 18.9 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 19:39:03
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not broken.
+
+Let me think about what "smallest" means here. Options:
+1. Extreme code golf (single line, minified, cryptic variable names) — truly smallest bytes.
+2. Small but readable.
+
+The user said "smallest html tetris game" — I'll interpret as code golf: minimize bytes while keeping it a working Tetris. I should aim for something impressively compact — like under 1000 bytes, maybe even under 600 bytes. There are famous tiny Tetris implementations. Let me write my own from scratch, compact but correct.
+
+Key Tetris features to include in minimal version:
+- 10×20 board
+- 7 tetrominoes (or fewer for golf — but real Tetris needs 7; I could use a compact encoding)
+- Rotation
+- Movement left/right/down
+- Collision detection
+- Line clearing
+- Score
+- Game over
+- Gravity with interval / speed increase
+
+Compact encoding of pieces: Each tetromino can be represented as a set of 4 cells. A classic trick: encode each rotation state as a 16-bit number (4×4 grid bitmask). Or use the "binary encoding" trick where each piece is a 2×... Actually a well-known compact approach: represent each piece as an array of 4 rotations, each rotation being a list of [x,y] offsets, or a bitmask.
+
+Even more compact: the famous "tetris in a tweet" style uses piece definitions via bit patterns.
+
+Let me design my own minimal Tetris.
+
+Approach: Canvas rendering. Board 10×20, cell size ~10px. Use a single canvas.
+
+Data:
+- Board: array of 200 cells (0 or color index). Or a string.
+- Current piece: shape as bitmask in a 4×4 box, plus x,y position.
+
+Piece definitions: 7 pieces × 4 rotations. Compact trick: define each piece by a 16-bit mask per rotation? That's 7×4 numbers. Alternatively, define pieces with a compact string.
+
+A very compact known trick: encode all rotations via a single base shape and rotate mathematically. For SRS-like rotation, offsets differ. But we can use a simple rotation: rotate the 4×4 bitmask 90°. If we store each piece as one bitmask (one orientation), we can compute rotations by bit rotation within the 4×4 grid. Rotating a 4×4 bitmask: new mask bit at (r,c) = old bit at (c, 3-r) or similar. That's computable with a small function.
+
+But some pieces (O, I, S, Z) have only 2 or 1 distinct rotations; rotating blindly still works visually (O rotation is same, I in 4×4 box rotation gives 4-wide horizontal vs 4-tall vertical — fine). S/Z rotate to vertical versions — acceptable in minimal Tetris (not SRS but playable). T rotates to 4 orientations — fine. L/J fine.
+
+So: store 7 base masks, rotate function, collision check, done.
+
+Base masks (4×4, bit index = y*4+x, y from top):
+
+Let me define pieces in a 4×4 grid, using row-major, bit i = row*4+col, with row 0 at top.
+
+I: horizontal bar at row 1: bits 4,5,6,7 → mask = 0b0000000011100000? Let's compute: row1 (bits 4-7): 0b1110 << 4 = 0x00F0? bits 4,5,6,7 set = 0b0000000011110000 = 0x0F0? 0x0F0 = 240 = 0b11110000 → bits 4,5,6,7. Yes, I = 0x0F0? Wait 240 decimal = 0b11110000, that's bits 4,5,6,7. Yes. I = 240.
+
+Hmm, but for I piece, better to place in row 1 so rotation within 4×4 works: rotating 0x0F0 (row 1 full except... wait 0b11110000 is bits 4,5,6,7 = row 1, cols 0-3? bit4 = row1 col0, bit5=row1col1, bit6=row1col2, bit
+---

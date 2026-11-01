@@ -1,0 +1,55 @@
+run 21194 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.57 t/s | prompt 16.7 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 19:41:42
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, minified/compact, but still functional and playable.
+
+Let me think about what "smallest" means here. The user wants minimal bytes. I should write a compact Tetris: canvas rendering, keyboard controls, gravity, line clearing, next piece maybe, score. To keep it truly small I might skip some features, but core Tetris: 7 tetrominoes, rotation, movement, drop, line clear, game over.
+
+Let me design a minimal Tetris implementation.
+
+Classic minimal Tetris implementations exist (e.g., the famous "Tetris in 140 bytes of JavaScript" or the ~few hundred byte versions). Let me write my own compact one.
+
+Approach:
+- Canvas element, small grid like 10x18 or 10x20.
+- Use a string-based board or array.
+- Pieces defined compactly.
+
+A well-known compact approach: represent pieces as arrays of rotation states encoded in strings, or use the trick where each piece is defined by a set of coordinates.
+
+Let me think about a compact data encoding. One classic trick: encode each tetromino's rotations as bit patterns in a single number, or use strings like "0F1102..." etc.
+
+Alternative compact approach used in famous golfed Tetris (by @fsk141 or "tiny tetris"): 
+
+There's a famous one:
+
+```js
+b=document.body;b.innerText=b.innerText.replace(/./g,...)
+```
+
+Hmm. Let me just write my own clean-ish compact version, aiming for maybe ~600-800 bytes of JS, which is quite small but readable-ish. The user asked for "smallest" — I'll aim for genuinely tiny while keeping it playable. I can also present the byte count.
+
+Let me design:
+
+Grid: W=10, H=20 (or 18 to fit). Cell size 12px → canvas 120x240.
+
+Board: array `B` of length W*H, values 0/1 (or color index). For minimal, use 0/1 and draw all filled cells same color, current piece in different color maybe. Actually to keep small, draw board cells one color, active piece another color — need to distinguish. Simple: draw grid cells that are set as color A; draw active piece cells color B.
+
+Pieces: 7 tetrominoes. Compact encoding: each piece as a list of 4 cells [x,y] offsets in a base rotation, then rotate by (x,y)->(y,3-x)? Rotation around a pivot is tricky for non-symmetric pieces. A common trick: store all rotations.
+
+Compact trick used in many golfed tetris: define pieces via a string where each piece's rotations are encoded. E.g.:
+
+```js
+P="0123/45678..." 
+```
+
+Alternative: use the "binary encoding" — each rotation state is 16 bits (4x4 grid). 7 pieces × 4 rotations × 16 bits = 448 bits = 56 chars if using char codes. That's compact: a string of 56 chars, each char's charCode bits give the 4x4 pattern. But many rotations are duplicates (O has 1 unique, I has 2, others 4... actually S,Z,L,J,T have 4 each but S/Z have 2 unique each). To keep code small, just store 4 rotations for all — simpler logic, slightly more data.
+
+Actually simpler and very compact: store each piece as 4 rotations, each rotation as a 16-bit number. Encode all as a string using String.fromCharCode with codes... but char codes < 32 are awkward in a string literal. Better: use base64 or just an array of numbers. An array of 28 numbers like [0x2400, ...] is verbose-ish.
+
+Alternative compact encoding: each piece rotation as 4 cells packed: each cell x,y each 0-3 → 4 bits per cell → 16 bits per rotation. Same thing.
+
+Another classic trick: define pieces by strings of coordinates: e.g. I: "0,1;1,1;2,1;3,1" — verbose.
+
+A neat trick: represent each tetromino shape as a 4x4 binary matrix encoded in a single decimal number, and rotate by rotating the matrix. Rotation of a 4x4 bit matrix can be done with bit manipulation... that's code-heavy.
+
+Simplest small approach that's known to work: the "piece as array of arrays of [x,y]" with rotation function using a pivot per
+---

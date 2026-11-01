@@ -1,0 +1,37 @@
+run 21242 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.85 t/s | prompt 237.0 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=pool,hotmaps=/tmp/runstate/plat/r4-pool | power 220+280 W | 2026-10-28 20:37:12
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *Generation ship:* Implies long journey, cryosleep, purpose of colonization.
+   - *Cryosleep wake-up:* Sensory details of thawing, disorientation, physical sensations.
+   - *Above the planet:* View from the ship, seeing lit cities below.
+   - *Descendants from a copy ship:* A second ship left 100 years later, arrived first, colonized, built cities, and now the original crew wakes to find them.
+   - *POV:* Archivist - someone who records, preserves, values history/knowledge. Likely reflective, observant, perhaps burdened by the weight of time and records.
+   - *Literary prose:* Focus on imagery, metaphor, rhythm, sensory details, emotional resonance.
+   - *Dialogue:* Needs to be natural, integrated, revealing character/plot.
+   - *Word count:* ~900 words. I'll aim for 850-950.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Wake-up sequence. Sensory details of cryosleep thawing. Archivist's perspective. Physical sensations (cold, stiffness, taste of preservative fluid, sound of systems waking).
+   - *Observation:* Looking out the viewport. Seeing the planet. Cities lit. Realization that they're not the first.
+   - *Dialogue/Interaction:* Conversation with another crew member or AI/system. Revealing the timeline discrepancy. The copy ship.
+   - *Reflection/Theme:* The archivist's role. What does it mean to be "first" when you're actually second? The weight of records, memory, legacy. The descendants below.
+   - *Closing:* Acceptance, perhaps a moment of connection with the planet below, or a quiet realization about time and human continuity.
+   - *Pacing:* Keep it tight. Focus on sensory and emotional beats. Avoid exposition dumps. Show through details.
+
+4.  **Drafting - Mental Refinement (Paragraph by Paragraph):**
+   *(Opening)* The thaw began as a slow ache in the marrow. I felt it first in the joints, then in the teeth, a metallic taste of cryo-gel lingering on the tongue. The pod’s hiss was the first sound, then the groan of the hull as the ship settled into orbit. I pushed against the glass, my fingers numb, my breath fogging the cold surface. Outside, the world was already awake.
+   *(Observation)* Through the viewport, the planet hung like a polished stone. But it was not the barren expanse we had charted. It was threaded with light. Rivers of gold and silver bled across the continents, pooling in the valleys, climbing the slopes. Cities. Not ruins. Not tents. Cities. I pressed my palm to the glass, feeling the faint vibration of the ship’s thrusters, the quiet hum of systems that had kept us dreaming for three centuries.
+   *(Dialogue/Realization)* “We’re late,” said Elara, her voice rasping from the same thaw. She stood beside me, her eyes wide, her hands trembling as she adjusted the optical filters. “A century behind. The copy ship. It left after us. Faster engines. Shorter cryo cycles. It beat us to the threshold.”
+   *(Archivist's Perspective)* I was the archivist. My duty was to preserve the record, to map the journey, to catalog the silence of the void. Now, the silence was broken by the glow below. I ran my fingers over the console, tracing the flight logs. The copy ship’s departure date was stamped in the margin: 107 years after ours. The math was brutal. We had slept through a century of their waking. They had built, planted, argued, loved, and died while we dreamed in the dark.
+   *(Sensory/Emotional)* The light below pulsed like a heartbeat. I could almost hear the hum of their streets, the clatter of their markets, the whisper of their children. I thought of the archives I’d sealed in the vaults: seed banks, star charts, the first draft of the colony charter,
+---

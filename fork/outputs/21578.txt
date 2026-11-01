@@ -1,0 +1,5 @@
+run 21578 | exact_det | t100 | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 39.42 t/s | prompt 95.0 t/s | 100 tokens | args: -dev none -ngl 0 | power 220+280 W | 2026-10-29 23:39:14
+
+
+
+I'm looking for someone to create a tetris game in html. The game should be able to be played on any device. The game should be able to be played on any device. The game should be able to be played on any device. The game should be able to be played on any device. The game should be able to be played on any device. The game should be able to be played on any device. The game should be able to be played on any device.

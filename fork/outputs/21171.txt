@@ -1,0 +1,67 @@
+run 21171 | dynhot_global_map | pyasyncc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.48 t/s | prompt 144.8 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=read,dynhot-global=0,state=/tmp/runstate/unk/t-py-cos.ini,hotmaps=/tmp/runstate/unk/hotmaps | power 220+280 W | 2026-10-28 19:16:16
+
+Here's a thinking process:
+
+1.  **Understand User Requirements:**
+   - **Language:** Python
+   - **Concurrency:** `asyncio` and `aiohttp`
+   - **Task:** Download a list of URLs concurrently
+   - **Retry Logic:** Retry failed downloads up to 3 times with growing delay (exponential backoff)
+   - **Output:** Save every page to disk
+   - **Format:** Code only, short comments
+
+2.  **Key Components Needed:**
+   - `asyncio` for concurrency
+   - `aiohttp` for HTTP requests
+   - List of URLs (I'll define a sample list or accept it as input, but the prompt says "downloads a list of URLs", so I'll hardcode a sample or make it configurable. I'll just use a sample list for completeness)
+   - Retry mechanism: max 3 retries, growing delay (e.g., 1s, 2s, 4s or similar exponential)
+   - Save to disk: Use `asyncio` file writing or `aiohttp` response content
+   - Error handling: Catch exceptions during download
+
+3.  **Design the Retry Logic:**
+   - Max retries: 3
+   - Delay: Start with 1 second, multiply by 2 each time (1, 2, 4)
+   - Actually, the prompt says "up to three times with a growing delay". I'll interpret this as: attempt 1, if fails, wait delay1, attempt 2, if fails, wait delay2, attempt 3, if fails, wait delay3, then give up. Or maybe 3 retries means 3 additional attempts after the first? I'll stick to 3 total attempts (1 initial + 2 retries) or 3 retries total. Let's do 3 attempts total (initial + 2 retries) or explicitly 3 retries. I'll make it clear: max_retries = 3, delays = [1, 2, 4] seconds.
+   - Actually, "retries each failed download up to three times" usually means 3 retry attempts. So total attempts = 4? Or 3 total? I'll go with 3 attempts total (initial + 2 retries) or just 3 retries. I'll implement 3 retries with delays 1, 2, 4 seconds. Wait, "up to three times" could mean 3 attempts total. I'll stick to 3 attempts total for simplicity, or explicitly 3 retries. Let's do 3 retries (total 4 attempts) or just 3 attempts. I'll clarify in comments. Actually, standard is: max_retries = 3, delays = [1, 2, 4]. I'll implement it as: attempt 1, if fail, wait 1s, attempt 2, if fail, wait 2s, attempt 3, if fail, wait 4s, then stop. That's 3 retries. I'll make it configurable but default to 3 retries.
+
+4.  **Structure the Code:**
+   ```python
+   import asyncio
+   import aiohttp
+   import os
+
+   async def download_url(url, max_retries=3, delays=[1, 2, 4]):
+       for attempt in range(max_retries + 1):
+           try:
+               async with aiohttp.ClientSession() as session:
+                   async with session.get(url) as response:
+                       response.raise_for_status()
+                       content = await response.text()
+                       filename = url.split('/')[-1] or 'page.html'
+                       with open(filename, 'w', encoding='utf-8') as f:
+                           f.write(content)
+                       return True
+           except Exception as e:
+               if attempt < max_retries:
+                   await asyncio.sleep(delays[attempt])
+               else:
+                   print(f"Failed to download {url}: {e}")
+                   return False
+   ```
+
+   Wait, `aiohttp.ClientSession()` should be reused for concurrency, not created per request. Better to create one session outside and pass it, or use `aiohttp.ClientSession()` in a pool. Actually, `aiohttp` recommends creating a session once and reusing it. I'll create a session in the main async function and pass it to the worker.
+
+   Let's refine:
+   ```python
+   import asyncio
+   import aiohttp
+   import os
+
+   async def fetch_and_save(url, session, max_retries=3, delays=[1, 2, 4]):
+       for attempt in range(max_retries + 1):
+           try:
+               async with session.get(url) as response:
+                   response.raise_for_status()
+               content = await response.text()
+               filename = url.split('/')[-1]
+---

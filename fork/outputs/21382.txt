@@ -1,0 +1,52 @@
+run 21382 | dynhot_layer_sets | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.56 t/s | prompt 100.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps | power 200+200 W | 2026-10-29 00:50:21
+
+
+---
+Here is the smallest possible functional Tetris game in a single HTML file. It uses a compact 10x20 grid, basic canvas rendering, and minimal logic.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mini Tetris</title>
+    <style>
+        body { background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        canvas { border: 1px solid #333; background: #000; }
+    </style>
+</head>
+<body>
+    <canvas id="c" width="200" height="400"></canvas>
+    <script>
+        const c = document.getElementById('c');
+        const ctx = c.getContext('2d');
+        const W = 10, H = 20;
+        const board = Array(H).fill().map(() => Array(W).fill(0));
+        
+        // Tetromino shapes
+        const shapes = [
+            [[1,1,1,1]], // I
+            [[1,1],[1,1]], // O
+            [[1,1,1],[0,1,0]], // T
+            [[1,1,1],[1,0,0]], // L
+            [[1,1,1],[0,0,1]], // J
+            [[1,1,0],[0,1,1]], // Z
+            [[0,1,1],[1,1,0]]  // S
+        ];
+
+        let piece, px, py, color;
+        
+        function newPiece() {
+            const s = shapes[Math.floor(Math.random() * shapes.length)];
+            piece = s;
+            px = Math.floor(W / 2) - Math.floor(s[0].length / 2);
+            py = 0;
+            color = Math.random() * 0xFFFFFF | 0;
+        }
+
+        function draw() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, W * 20, H * 20);
+            
+            // Draw board
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x <

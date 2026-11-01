@@ -1,0 +1,68 @@
+run 21425 | dynhot_layer_far | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 52.66 t/s | prompt 38.6 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 02:26:11
+
+The user wants the smallest HTML Tetris game. The ask is minimal: "generate smallest html tetris game." So the priority is compactness. But I can still make it a single self-contained file, tight code. The most characteristic thing for a Tetris game is the playfield itself, so I'll lead with the board rather than any framing chrome. I'll keep it small but with a tiny bit of polish (next piece, score, hold maybe not — smallest). Let me write genuinely small code but still playable and looking decent.
+
+Let me write compact Tetris in HTML with canvas, ~ minimal JS.
+
+I'll aim for something like 40 lines. Let me craft it carefully so it actually works.
+
+```html
+<meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0e14;color:#e8eef7;font:12px/1.4 ui-monospace,monospace;display:flex;gap:14px;justify-content:center;align-items:center;height:100vh;flex-wrap:wrap}
+canvas{background:#05070c;border:1px solid #2a3550;box-shadow:0 0 40px #0008}
+b{color:#5ad1ff}
+</style>
+<canvas id=c width=180 height=360></canvas>
+<div id=i></div>
+<script>
+...
+</script>
+```
+
+Tetromino definitions compactly. A common trick: use string definitions.
+
+Pieces as arrays of rotation states is verbose. Alternative compact approach: define each piece as a 4x4 (or NxN) bit matrix and rotate by transposing/reversing.
+
+Compact: 
+```js
+P="010,111|111,010|1111|11,11|011,110|110,011|10,11,1".split("|")
+```
+Hmm, need per-piece matrices. Let's define:
+
+```js
+S="010/111|111/010|1111|11/11|011/110|110/011|10/11/1"
+```
+Wait O doesn't need rotation. Using square matrices makes rotation easy: rotate = transpose+reverse rows. For non-square, pad to square. Let's use square matrices:
+
+I: 4x4: "0000/1111/0000/0000"
+O: 2x2: "11/11"
+T: 3x3: "010/111/000"
+J: 3x3: "100/111/000"
+L: 3x3: "001/111/000"
+S: 3x3: "011/110/000"
+Z: 3x3: "110/011/000"
+
+Rotation of square matrix clockwise: transpose then reverse each row (or reverse rows then transpose). Works fine.
+
+So:
+```js
+const S="0000,1111,0000,0000|11,11|010,111,000|100,111,000|001,111,000|011,110,000|110,011,000";
+```
+Parse: pieces = S.split("|").map(p=>p.split(",").map(r=>[...r].map(Number)))
+
+Colors: index-based palette array.
+
+Board: 10x18? Standard 10x20. Cell 18px → 180x360. Good.
+
+Game logic:
+
+```js
+B=[...Array(18)].map(_=>Array(10).fill(0))
+```
+Let's do 20 rows for standard: canvas 180x360 with cell 18 → 10x20. Good.
+
+Piece state: {m,x,y}.
+
+Functions:
+---

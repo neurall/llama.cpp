@@ -492,12 +492,73 @@ poll();draw();
 </script></body></html>"""
 
 
+# ---- hot maps per prompt (--moe dynhot): the store files, one assignment per line (user 2026-10-29: "observing what is being formed as text") ----------
+HOTMAP_DIRS = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "hotmaps"), os.path.expanduser("~/.cache/llama.cpp/hotmaps"), "/tmp/runstate/*/hotmaps"]
+
+
+def hotmap_files():
+    """the stores the page may show: model directories (with a keys.js) in the repo's fork/hotmaps, the user's cache and the test runs' dirs (newest first;
+    only their files are served)"""
+    out = []
+    for d in HOTMAP_DIRS:
+        out += [os.path.dirname(f) for f in glob.glob(os.path.join(d, "*", "keys.js"))]
+    return sorted(out, key=lambda f: -os.path.getmtime(os.path.join(f, "keys.js")))
+
+
+HOTMAP_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>hot maps</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;background:#1c2128;color:#adbac7;font:12px/1.3 ui-monospace,Menlo,Consolas,monospace}#bar{padding:6px 16px;border-bottom:1px solid #444c56;display:flex;gap:10px;align-items:center}
+select{background:#22272e;color:#adbac7;border:1px solid #444c56}table{border-collapse:collapse;margin:8px 16px}td,th{padding:2px 6px;border-bottom:1px solid #2d333b;text-align:left;vertical-align:top}
+th{color:#768390;font-weight:normal}.t{max-width:28em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}canvas{image-rendering:pixelated;display:block}h3{margin:12px 16px 4px;font-size:12px;color:#768390;font-weight:normal}
+.m td{padding:1px 4px;text-align:right}#maps{display:flex;flex-wrap:wrap;gap:10px;margin:0 16px}#maps div{font-size:11px}</style></head><body>
+<div id=bar>store <select id=sel></select><span id=info></span></div>
+<h3>sets per layer: how many each layer's file holds, how many of them other sets or rows build on (shared parts split out on every write)</h3><table id=lay class=m></table>
+<h3>records: the prompt's own words, hit rates of the answer and the thinking, the start of what it thought and answered (hover: all of it)</h3><table id=tab></table>
+<h3>expert overlap of the answer maps (per layer the smaller share summed, averaged over layers; 1 = the same experts used alike)</h3><table id=ov class=m></table>
+<h3>key similarity: the average of the per-layer cosines at the prompt's last token (what the lookup compares)</h3><table id=ks class=m></table>
+<h3>the maps: layers down, experts across, brighter = a larger share of the layer's uses (answer, then thinking)</h3><div id=maps></div>
+<script>
+const $=id=>document.getElementById(id);let cur='',stamp=0;
+function parse(txt){const R={};for(const line of txt.split('\\n')){const eq=line.indexOf('=');if(eq<1||!line.endsWith(';'))continue;const name=line.slice(0,eq).trim();
+ const m=name.match(/^([a-z_]+)(\\d+)$/);if(!m)continue;let v;try{v=JSON.parse(line.slice(eq+1,-1))}catch(e){continue}(R[m[2]]=R[m[2]]||{})[m[1]]=v}
+ return Object.keys(R).map(Number).sort((a,b)=>a-b).map(k=>Object.assign({id:k},R[k])).filter(r=>r.key)}
+function shares(map,L,X){const s=new Float32Array(L*X),tot=new Float64Array(L);for(const[c,l,x]of map||[]){s[l*X+x]=c;tot[l]+=c}for(let l=0;l<L;l++)if(tot[l])for(let x=0;x<X;x++)s[l*X+x]/=tot[l];return[s,tot]}
+function overlap(a,b,L,X){let sum=0,n=0;for(let l=0;l<L;l++){if(!a[1][l]&&!b[1][l])continue;n++;if(!a[1][l]||!b[1][l])continue;let t=0;for(let x=0;x<X;x++)t+=Math.min(a[0][l*X+x],b[0][l*X+x]);sum+=t}return n?sum/n:0}
+function keysim(a,b){let s=0;for(let r=0;r<a.length;r++){let d=0,na=0,nb=0;const x=a[r],y=b[r];for(let j=0;j<x.length;j++){d+=x[j]*y[j];na+=x[j]*x[j];nb+=y[j]*y[j]}s+=na&&nb?d/Math.sqrt(na*nb):0}return s/a.length}
+function color(v){const c=Math.round(40+215*Math.max(0,Math.min(1,v)));return`rgb(${c>>2},${c>>1},${c})`}
+function matrix(el,recs,f){let h='<tr><th></th>'+recs.map(r=>`<th>${r.id}</th>`).join('')+'</tr>';for(const a of recs){h+=`<tr><th title="${esc(a.prompt||'')}">${a.id}</th>`;for(const b of recs){const v=f(a,b);h+=`<td style="background:${color(v)}">${v.toFixed(2)}</td>`}h+='</tr>'}el.innerHTML=h}
+function esc(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function draw(map,L,X,title){const cv=document.createElement('canvas');cv.width=X;cv.height=L;cv.style.width=(X*2)+'px';cv.style.height=(L*3)+'px';const cx=cv.getContext('2d'),im=cx.createImageData(X,L);
+ const[s]=shares(map,L,X);let mx=0;for(const v of s)mx=Math.max(mx,v);for(let i=0;i<L*X;i++){const v=mx?Math.sqrt(s[i]/mx):0;im.data[4*i]=40+215*v;im.data[4*i+1]=40+120*v;im.data[4*i+2]=60;im.data[4*i+3]=255}
+ cx.putImageData(im,0,0);const d=document.createElement('div');d.textContent=title;d.appendChild(cv);return d}
+async function file(n){const r=await fetch('/hotmaps/file?f='+encodeURIComponent(cur)+'&n='+n);return r.text()}
+function sets(txt){const S={s:{},c:{}};for(const line of txt.split('\\n'))for(const st of line.split(';')){const m=st.match(/^\\s*([sc])(\\d+)\\s*=\\s*(.+?)\\s*$/);if(!m)continue;try{S[m[1]][m[2]]=JSON.parse(m[3].replace(/([{,])\\s*(e\\d+)\\s*:/g,'$1\"$2\":').replace(/\\b(s\\d+)\\b(?!\")/g,'\"$1\"'))}catch(e){}}return S}
+function expand(S,v,out){for(const x of(Array.isArray(v)?v:[v])){if(x&&typeof x==='object')for(const k in x)out[+k.slice(1)]=(out[+k.slice(1)]||0)+x[k];else if(typeof x==='string')expand(S,S.s[x.slice(1)],out)}return out}
+async function load(){const recs=parse(await file('keys.js'));const nl=recs.length&&recs[0].rows?recs[0].rows.length:0;const LS=[];
+ for(let l=0;l<nl;l++)LS.push(sets(await file(l+'.js')));
+ for(const r of recs)for(const[w,k]of[['rows','val'],['trows','think']]){r[k]=[];(r[w]||[]).forEach((n,l)=>{if(n<0||!LS[l]||!LS[l].c[n])return;const m=expand(LS[l],LS[l].c[n],{});for(const e in m)r[k].push([m[e],l,+e])})}
+ const used=LS.map(S=>{const u=new Set();for(const t of['s','c'])for(const k in S[t]){const v=S[t][k];if(Array.isArray(v))for(const x of v)if(typeof x==='string')u.add(x)}return u.size});
+ $('lay').innerHTML='<tr><th>layer</th>'+LS.map((S,l)=>`<th>${l}</th>`).join('')+'</tr><tr><th>sets</th>'+LS.map(S=>`<td>${Object.keys(S.s).length}</td>`).join('')+'</tr><tr><th>rows</th>'+LS.map(S=>`<td>${Object.keys(S.c).length}</td>`).join('')+
+  '</tr><tr><th>named</th>'+used.map(u=>`<td>${u}</td>`).join('')+'</tr>';
+ let L=1,X=1;for(const r of recs)for(const m of[r.val,r.think])for(const[c,l,x]of m||[]){L=Math.max(L,l+1);X=Math.max(X,x+1)}
+ $('info').textContent=`${recs.length} records, ${L} layers x ${X} experts, keys of ${recs.length?recs[0].key.length:0} rows`;
+ $('tab').innerHTML='<tr><th>id</th><th>prompt</th><th>hit</th><th>thinking hit</th><th>runs</th><th>time</th><th>thinking</th><th>answer</th></tr>'+recs.map(r=>
+  `<tr><td>${r.id}</td><td class=t title="${esc(r.prompt||'')}">${esc(r.prompt||'')}</td><td>${r.hit>=0?(100*r.hit).toFixed(1)+'%':'-'}</td><td>${r.hitthink>=0?(100*r.hitthink).toFixed(1)+'%':'-'}</td><td>${r.n||1}</td><td>${r.time||''}</td>`+
+  `<td class=t title="${esc(r.thinking||'')}">${esc(r.thinking||'')}</td><td class=t title="${esc(r.answer||'')}">${esc(r.answer||'')}</td></tr>`).join('');
+ const sh=recs.map(r=>shares(r.val,L,X));matrix($('ov'),recs,(a,b)=>overlap(sh[recs.indexOf(a)],sh[recs.indexOf(b)],L,X));
+ matrix($('ks'),recs,(a,b)=>keysim(a.key,b.key));
+ const maps=$('maps');maps.innerHTML='';for(const r of recs){maps.appendChild(draw(r.val,L,X,`${r.id} answer`));if((r.think||[]).length)maps.appendChild(draw(r.think,L,X,`${r.id} thinking`))}}
+async function list(){const fs=await(await fetch('/hotmaps/list')).json();const sel=$('sel');const keep=sel.value;sel.innerHTML=fs.map(f=>`<option value="${f.path}">${f.path} (${(f.size/1e6).toFixed(1)} MB)</option>`).join('');
+ if(keep&&fs.some(f=>f.path==keep))sel.value=keep;const f=fs.find(f=>f.path==sel.value);if(!f)return;if(sel.value!=cur||f.mtime!=stamp){cur=sel.value;stamp=f.mtime;load()}}
+$('sel').onchange=()=>{stamp=0;list()};list();setInterval(list,10000)
+</script></body></html>"""
+
+
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>run list</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>:root{--bg:#1c2128;--fg:#adbac7;--line:#444c56}body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.25 ui-monospace,Menlo,Consolas,monospace}
 nav{position:sticky;top:0;background:#22272e;border-bottom:1px solid var(--line);padding:6px 16px;display:flex;gap:14px;align-items:center}
 nav a{color:var(--fg);cursor:pointer;padding:2px 8px;border-radius:4px}nav a.on{background:#316dca;color:#fff}nav span{margin-left:auto;opacity:.6}
 pre{margin:0;padding:10px 16px;white-space:pre;overflow-x:auto}</style></head><body>
-<nav><a id=auto>auto</a><a id=pool>pool</a><a id=status>status</a><a id=screen>run list</a><a id=out>cell output</a><a id=server>server log</a><span id=st></span></nav><pre id=t></pre>
+<nav><a id=auto>auto</a><a id=pool>pool</a><a id=hotmaps>hot maps</a><a id=status>status</a><a id=screen>run list</a><a id=out>cell output</a><a id=server>server log</a><span id=st></span></nav><pre id=t></pre>
 <iframe id=pf src="about:blank" style="display:none;width:100%;height:calc(100vh - 36px);border:0"></iframe>
 <script>let tab='auto';const t=document.getElementById('t'),pf=document.getElementById('pf');
 document.querySelectorAll('nav a').forEach(a=>a.onclick=()=>{tab=a.id;go()});
@@ -506,6 +567,7 @@ async function go(){document.querySelectorAll('nav a').forEach(a=>a.className=a.
   if(a.pool){t.style.display='none';pf.style.display='block';if(pf.src.indexOf('/pool')<0)pf.src='/pool';document.getElementById('st').textContent='auto: live pool view';return}
   t.style.display='block';pf.style.display='none';if(pf.src.indexOf('/pool')>=0)pf.src='about:blank';t.innerHTML=a.html||'';document.getElementById('st').textContent='auto: activity '+new Date().toLocaleTimeString();return}
  if(tab=='pool'){t.style.display='none';pf.style.display='block';if(pf.src.indexOf('/pool')<0)pf.src='/pool';document.getElementById('st').textContent='live pool view';return}
+ if(tab=='hotmaps'){t.style.display='none';pf.style.display='block';if(pf.src.indexOf('/hotmaps')<0)pf.src='/hotmaps';document.getElementById('st').textContent='hot maps per prompt';return}
  t.style.display='block';pf.style.display='none';
  try{const r=await fetch('/c/'+tab);const x=await r.text();const bot=innerHeight+scrollY>=document.body.scrollHeight-40;t.innerHTML=x;if(bot)scrollTo(0,document.body.scrollHeight);
  document.getElementById('st').textContent='updated '+new Date().toLocaleTimeString()}catch(e){document.getElementById('st').textContent='offline'}}
@@ -518,6 +580,16 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/pool":
             body, ct = POOL_PAGE.encode(), "text/html; charset=utf-8"
+        elif u.path == "/hotmaps":
+            body, ct = HOTMAP_PAGE.encode(), "text/html; charset=utf-8"
+        elif u.path == "/hotmaps/list":
+            body, ct = json.dumps([{"path": f, "size": sum(os.path.getsize(x) for x in glob.glob(os.path.join(f, "*.js"))),
+                                    "mtime": os.path.getmtime(os.path.join(f, "keys.js"))} for f in hotmap_files()]).encode(), "application/json"
+        elif u.path == "/hotmaps/file":
+            q = parse_qs(u.query)
+            f, n = q.get("f", [""])[0], q.get("n", ["keys.js"])[0]   # a store directory of the list, and one of its files: keys.js, global.js, <layer>.js
+            ok = f in hotmap_files() and re.fullmatch(r"(keys|global|\d+)\.js", n) and os.path.exists(os.path.join(f, n))
+            body, ct = (open(os.path.join(f, n), "rb").read() if ok else b""), "text/plain; charset=utf-8"
         elif u.path.startswith("/pool/"):
             body, ct = json.dumps(pool_api(u.path[6:], {k: v[0] for k, v in parse_qs(u.query).items()})).encode(), "application/json"
         elif self.path.startswith("/c/"):

@@ -1,0 +1,51 @@
+run 21263 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.34 t/s | prompt 16.0 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 20:54:21
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minified aesthetic request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, but I can still make it look decent within the tiny canvas.
+
+Let me think about what "smallest" means. I could write an extremely golfed version. Let me aim for a genuinely compact but fully functional Tetris:
+
+Features needed for it to be a real Tetris:
+- 10×20 board
+- 7 tetrominoes with rotation
+- Gravity, movement left/right, rotation, soft drop / hard drop maybe
+- Line clearing
+- Score
+- Game over
+- Next piece preview (optional but nice)
+- Keyboard controls
+
+Let me try to write it as compactly as possible while keeping it readable-ish. The user asked for "smallest" so I'll golf it but keep it comprehensible with minimal comments. Actually, for "smallest html tetris game" — famous examples exist like the ~140-byte or tiny tetris in JS. There's a famous "smallest tetris" in JavaScript around 200-300 bytes but those are obfuscated. I should write something small but still legible — maybe aim for under ~1000 bytes of JS, presented nicely.
+
+Let me design:
+
+Board: 10 wide, 20 tall. Use a canvas. Cell size ~12px → canvas 120×240. Maybe scale up for visibility: cell 16 → 160×320. Keep it small.
+
+Data structures:
+- Board as array of 20 strings? Or 2D array. Using strings of digits could be compact.
+- Pieces: define shapes compactly. Classic trick: encode each tetromino as a list of rotations, or use a compact encoding.
+
+Compact piece encoding trick: Each tetromino can be represented by 4 cells in a 4×4 or use binary encoding. A well-known compact approach: represent each rotation state as a bitmask in a 4x4 grid (16 bits), then rotations are bit rotations. Or store shapes as arrays of [x,y] offsets.
+
+Golfed approach used in famous tiny tetris:
+
+```js
+// famous small tetris by Alex Nisov? 
+```
+
+Let me just write my own compact version.
+
+Plan:
+
+```js
+const W=10,H=20,S=16; // cell size
+const C=document.querySelector('canvas').getContext('2d');
+let b=Array(H).fill(0).map(()=>Array(W).fill(0)); // board
+let p, // current piece {x,y,shape}
+```
+
+Shapes: 7 pieces. Encode each as array of rotations? Rotation via matrix rotation of coordinates is compact:
+
+Represent piece as list of 4 [x,y] cells. Rotate: (x,y) -> (y, 3-x) for 4x4 box rotation? For SRS-like rotation in a bounding box: rotating clockwise in an n×n box: (x,y) -> (n-1-y, x). For tetrominoes in a 4×4 box (I uses 4×4, others 3×3 or 4×4). Simple approach: use 4×4 box for all, rotate (x,y)->(y,3-x)? Let's check: I piece horizontal at y=1: cells (0,1),(1,1),(2,1),(3,1). Rotate CW with (x,y)->(y,3-x): (0,1)->(1,3), (1,1)->(1,2), (2,1)->(1,1), (3,1)->(1,0). That gives vertical I at x=1, y from 0..3. Good. Rotate again: (1,3)->(3,2), (1,2)->(2,2), (1,1)->(1,2)... wait (1,1)->(1, 3-1=2)? Hmm (x,y)->(y,3-x): (1,1)->(1,2). (1,2)->(2,2). (1,3)->(3,2). (1,0)->(0,2). So horizontal at y=2, x=0..3. Good. Third rotation: vertical at x=2. Fourth: horizontal at y=1. 
+
+For O piece: cells (1,1),(2,1),(1,2),(2,2). Rotate: (1,1)->(1,2), (2,1)->(1,1), (1,2)->(2,2),
+---

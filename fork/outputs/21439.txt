@@ -1,0 +1,44 @@
+run 21439 | dynhot_layer_far | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.64 t/s | prompt 10.7 t/s | 1005 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 03:10:52
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. But I also care about quality. The user explicitly asked for "smallest", so the primary goal is minimal code size. This is one of the rare cases where the user's explicit request overrides my usual preference for polished, elaborate output — they want a golfed Tetris.
+
+Let me think about what "smallest" means here. A single self-contained HTML file with a playable Tetris, as few bytes as possible. I should still make it genuinely playable: move left/right, rotate, soft drop, hard drop maybe, line clearing, game over, score. The classic minimal Tetris implementations (like the famous 140-byte-ish JS Tetris entries, or "tiny tetris" in C) give inspiration.
+
+There's a well-known minimal Tetris in ~219 bytes of JS by others. Let me write my own compact one rather than copying. I'll aim for something genuinely small but readable-ish, and I'll golf it.
+
+Design decisions for minimalism:
+- Use a `<canvas>`? Or render with text/characters? Text rendering with a `<pre>` and monospace characters can be smaller than canvas pixel drawing. Actually canvas with fillRect per cell is quite compact. Let me compare.
+
+Option A: Canvas rendering.
+```html
+<body onload="...">
+```
+We need: board 10x20, pieces as arrays, rotation via matrix transpose, gravity timer, keyboard input, collision, line clear, draw.
+
+Option B: DOM/text rendering with `pre.innerHTML` — building a string of characters. Could be compact: each cell is a character, e.g. "[]" or "##". Actually string building might be smaller than canvas calls.
+
+Let me think about the classic ultra-golfed approach. A famous one:
+
+```js
+D=document;... 
+```
+
+Let me just write my own from scratch and golf it.
+
+Core data:
+- Board: array of 20 strings? Or a 2D array. Using strings for rows makes line-clear detection easy (row full check: row has no '.'; clearing: replace row with empty). But collision checks with strings are awkward. Better: board as array of arrays, or as a single string of 200 chars, or use numbers.
+
+A neat trick: represent board as array of 20 numbers (bitmasks, 10 bits per row). Collision: for each piece row, check `(board[y+r] & (p<<x))`. Clearing: rows equal 1023 (all 10 bits). Drawing: iterate bits. This is very compact!
+
+Pieces: standard 7 tetrominoes. Represent each as a 4x4 or smaller bitmask matrix. Rotation: rotate the bitmask matrix. If pieces are arrays of row-bitmasks, rotation can be done generically: rotate a matrix of bits.
+
+Generic rotation of a binary matrix represented as array of ints with width w: new matrix... hmm, generic rotation on bitmask rows: given piece as array of rows (each an int, w bits), rotated 90° CW: cell (r,c) -> (c, h-1-r). New row c = bits from column c. Extracting columns from bitmasks is a bit fiddly.
+
+Alternative: store pieces as arrays of [x,y] coordinate pairs and rotate via (x,y)->(y,-x) around origin. That's compact: `p.map(([x,y])=>[y,-x])` or with 90° CW: (x,y)->(y, -x)? Let's define rotation CW: (x, y) -> (y, -x)? For screen coords where y increases downward, rotating clockwise visually: point (x,y) -> (-y, x)? Let me think. In math coords (y up), CW rotation: (x,y)->(y,-x). In screen coords (y down), a visual CW rotation equals math CCW: (x,y)->(-y,x). Hmm, honestly either direction is fine for playability; I just need consistent collision and drawing.
+
+Simplest: pieces as arrays of [x,y] pairs, rotate: `[x,y] -> [y, 3-x]`? That keeps things in 0..3 range if we use a 4x4 box... but pieces like I are 4 long, O is 2x2. Using coordinate pairs with rotation around a fixed pivot can shift pieces out of range. Common golf trick: store each rotation state precomputed, or use matrix rotation.
+
+Alternative compact approach: store the 7 pieces as 4x4 binary matrices (each piece = array of 4 ints, 4 bits each). Rotation of 4x4 bit matrix: transpose + reverse. With ints:
+
+Rotate CW a 4x4 matrix M (
+---

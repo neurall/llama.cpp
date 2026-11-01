@@ -1,0 +1,77 @@
+run 21246 | dynhot_global_map | pylruc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 70.47 t/s | prompt 159.9 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,dynhot-merge=2,state=/tmp/runstate/unkmat/s.ini,hotmaps=/tmp/runstate/unkmat/hotmaps | power 220+280 W | 2026-10-28 20:40:55
+
+Here's a thinking process:
+
+1.  **Understand User Requirements:**
+   - Implement an LRU (Least Recently Used) cache in Python.
+   - `get` and `put` operations must be O(1) time.
+   - Include unit tests using the `unittest` module.
+   - Output should be code only.
+   - Short comments allowed.
+   - No explanation outside the code.
+
+2.  **Key Constraints & Requirements:**
+   - O(1) for `get` and `put`: This typically requires a hash map (dictionary) for O(1) lookup and a doubly-linked list (or deque) to track order. In Python, `collections.OrderedDict` can be used, but it's not strictly O(1) for all operations in older versions, though in Python 3.7+ it maintains insertion order. However, for strict O(1) LRU, a custom doubly-linked list + dict is standard. Alternatively, `collections.deque` with a dict can work, but removing arbitrary elements from a deque is O(n). So, a doubly-linked list is better.
+   - Actually, Python's `collections.OrderedDict` is often used for LRU in interviews, but it's not strictly O(1) for `popitem()` in all contexts? Wait, `OrderedDict` maintains insertion order, and `popitem(last=True)` is O(1). But moving an item to the end when accessed is O(1) in Python 3.7+? Actually, `OrderedDict` doesn't support moving an existing key to the end in O(1) without deleting and re-inserting, which is O(1) but might be considered slightly hacky. The standard LeetCode solution uses a doubly-linked list + dict.
+   - I'll implement a custom doubly-linked list + dictionary for strict O(1) guarantees, as it's the canonical approach.
+   - Size limit: The cache should have a fixed capacity. When it exceeds capacity, the least recently used item is evicted.
+
+3.  **Design the LRU Cache:**
+   - Class `LRUCache`:
+     - `__init__(self, capacity: int)`
+     - `get(self, key: int) -> int`: Returns value if exists, else -1. If exists, mark as recently used.
+     - `put(self, key: int, value: int) -> None`: If key exists, update value and mark as recently used. If not, add new key-value. If capacity exceeded, evict LRU.
+   - Data structures:
+     - `self.cache`: dict mapping key to node (or just value, but we need to track order). Actually, dict maps key to node in the linked list.
+     - `self.head` and `self.tail`: sentinel nodes for the doubly-linked list.
+     - Each node: `key`, `value`, `prev`, `next`.
+   - Operations:
+     - `add_node(node)`: Add to end of list (after tail).
+     - `remove_node(node)`: Remove from list.
+     - Both are O(1) with doubly-linked list.
+     - `get`: Check dict. If exists, move node to end (O(1)), return value. Else return -1.
+     - `put`: Check dict. If exists, update value, move to end. Else, create new node, add to dict, add to list. If len > capacity, remove head node (LRU), delete from dict.
+
+4.  **Draft Code (Mental Refinement):**
+   ```python
+   class Node:
+       def __init__(self, key=0, val=0):
+           self.key = key
+           self.val = val
+           self.prev = None
+           self.next = None
+
+   class LRUCache:
+       def __init__(self, capacity: int):
+           self.capacity = capacity
+           self.cache = {}
+           self.head = Node()
+           self.tail = Node()
+           self.head.next = self.tail
+           self.tail.prev = self.head
+
+       def _add(self, node):
+           # Add node to the end (before tail)
+           prev = self.tail.prev
+           prev.next = node
+           node.prev = prev
+           node.next = self.tail
+           self.tail.prev = node
+
+       def _remove(self, node):
+           # Remove node from list
+           prev = node.prev
+           nxt = node.next
+           prev.next = nxt
+           nxt.prev = prev
+
+       def get(self, key: int) -> int:
+           if key not in self.cache:
+               return -1
+           node = self.cache[key]
+           self._remove(node)
+           self._add(node)
+           return node.val
+
+
+---

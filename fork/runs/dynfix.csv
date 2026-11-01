@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+fx-glm-off-t,glm,1,tetrisc,1024,"--moe dynhot=off",
+fx-glm-read-t,glm,1,tetrisc,1024,"--moe dynhot=read",
+fx-glm-off-e,glm,1,edit4c,1024,"--moe dynhot=off",
+fx-glm-read-e,glm,1,edit4c,1024,"--moe dynhot=read",
+fx-ds-off-t,ds,1,tetrisc,1024,"--moe dynhot=off",
+fx-ds-read-t,ds,1,tetrisc,1024,"--moe dynhot=read",
+fx-ds-off-e,ds,1,edit4c,1024,"--moe dynhot=off",
+fx-ds-read-e,ds,1,edit4c,1024,"--moe dynhot=read",

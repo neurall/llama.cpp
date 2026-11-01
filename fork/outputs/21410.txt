@@ -1,0 +1,23 @@
+run 21410 | dynhot_requests_fp8 | poemautc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 101.89 t/s | prompt 190.6 t/s | 188 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:13:13
+
+
+---
+The valley holds its breath, the air grows thin,
+A silver mist begins to settle in.
+The maples turn to gold, then crimson red,
+And drift upon the path, a quiet tread.
+
+From chimneys rise the woodsmoke, thick and gray,
+It weaves around the stone walls of the day.
+The hearth is lit, the fire burns low,
+A warmth that guards the house from cold and snow.
+
+The first frost touches grass, a pale white sheen,
+On every leaf, a crystal, sharp and keen.
+The birds have flown, the geese are gone,
+The silence settles on the mountain dawn.
+
+The river slows, its current deep and still,
+The world grows quiet, waiting for the chill.
+No wind disturbs the peace, no sound is heard,
+Just the soft fall of the leaf, the quiet word.

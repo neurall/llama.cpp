@@ -1,0 +1,68 @@
+run 21326 | dynhot_last_token_keys2 | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.1 t/s | prompt 107.1 t/s | 685 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin | power 220+280 W | 2026-10-28 23:07:19
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+  const c = document.getElementById('c');
+  const ctx = c.getContext('2d');
+  let x = 100, y = 150, dx = 2, dy = -2;
+  let p = 80, w = 20, h = 10;
+  let bricks = [];
+  for(let i=0; i<10; i++) for(let j=0; j<5; j++) bricks.push({x: i*20, y: j*20, alive: true});
+
+  function loop() {
+    ctx.clearRect(0,0,200,200);
+    x += dx; y += dy;
+    if(x < 0 || x > 200) dx = -dx;
+    if(y < 0 || y > 200) dy = -dy;
+    
+    // Paddle Collision
+    if(y > 190 && x > p && x < p + w) dy = -dy;
+    
+    // Brick Collision
+    bricks.forEach(b => {
+      if(b.alive && x > b.x && x < b.x + 10 && y > b.y && y < b.y + 10) {
+        b.alive = false; dy = -dy;
+      }
+    });
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(x-5, y-5, 10, 10); // Ball
+    ctx.fillRect(p, 190, w, 10);   // Paddle
+    bricks.forEach(b => {
+      if(b.alive) ctx.fillRect(b.x, b.y, 10, 10);
+    });
+    
+    requestAnimationFrame(loop);
+  }
+  
+  document.addEventListener('keydown', e => {
+    if(e.key === 'ArrowLeft') p -= 10;
+    if(e.key === 'ArrowRight') p += 10;
+    p = Math.max(0, Math.min(180, p));
+  });
+  
+  loop();
+</script>
+</body>
+</html>
+```
+
+### How it works:
+1. **Canvas**: Creates a 200x200 drawing area.
+2. **Ball**: Moves with velocity `dx` and `dy`. Bounces off walls.
+3. **Paddle**: Controlled by Left/Right arrow keys.
+4. **Bricks**: A simple array of 50 bricks. If the ball hits one, it disappears and the ball bounces.
+5. **Loop**: `requestAnimationFrame` runs the game at ~60fps.
+
+### Controls:
+- **Left Arrow**: Move paddle left.
+- **Right Arrow**: Move paddle right.
+- **Goal**: Destroy all bricks.

@@ -1,0 +1,80 @@
+run 21337 | dynhot_last_token_keys2 | mathc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 78.05 t/s | prompt 138.9 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin | power 220+280 W | 2026-10-28 23:13:33
+
+
+---
+Here is the step-by-step solution to the integral, followed by a verification and an explanation of the integration by parts technique.
+
+### Part 1: Solving the Integral $\int x^2 e^x \, dx$
+
+We will use the method of **Integration by Parts**. The formula for integration by parts is:
+$$ \int u \, dv = uv - \int v \, du $$
+
+**Step 1: First Application of Integration by Parts**
+Let:
+$$ u = x^2 \quad \Rightarrow \quad du = 2x \, dx $$
+$$ dv = e^x \, dx \quad \Rightarrow \quad v = e^x $$
+
+Substitute these into the formula:
+$$ \int x^2 e^x \, dx = x^2 e^x - \int e^x (2x) \, dx $$
+$$ \int x^2 e^x \, dx = x^2 e^x - 2 \int x e^x \, dx $$
+
+**Step 2: Second Application of Integration by Parts**
+Now we need to solve the remaining integral $\int x e^x \, dx$. Let:
+$$ u = x \quad \Rightarrow \quad du = dx $$
+$$ dv = e^x \, dx \quad \Rightarrow \quad v = e^x $$
+
+Substitute these into the formula for this specific integral:
+$$ \int x e^x \, dx = x e^x - \int e^x \, dx $$
+$$ \int x e^x \, dx = x e^x - e^x $$
+
+**Step 3: Combine Results**
+Substitute the result from Step 2 back into the equation from Step 1:
+$$ \int x^2 e^x \, dx = x^2 e^x - 2 \left( x e^x - e^x \right) $$
+$$ \int x^2 e^x \, dx = x^2 e^x - 2x e^x + 2e^x $$
+
+**Step 4: Final Answer**
+Factor out $e^x$ and add the constant of integration $C$:
+$$ \int x^2 e^x \, dx = e^x (x^2 - 2x + 2) + C $$
+
+---
+
+### Part 2: Verification by Differentiation
+
+To check the result, we differentiate the answer with respect to $x$.
+Let $y = e^x (x^2 - 2x + 2) + C$.
+
+Using the **Product Rule** $(fg)' = f'g + fg'$:
+Let $f = e^x$ and $g = x^2 - 2x + 2$.
+
+1.  $f' = e^x$
+2.  $g' = 2x - 2$
+
+Apply the product rule:
+$$ \frac{d}{dx} \left[ e^x (x^2 - 2x + 2) \right] = (e^x)(x^2 - 2x + 2) + (e^x)(2x - 2) $$
+
+Factor out $e^x$:
+$$ = e^x (x^2 - 2x + 2 + 2x - 2) $$
+
+Simplify the terms inside the parentheses:
+$$ -2x + 2x = 0 $$
+$$ 2 - 2 = 0 $$
+
+So, the derivative is:
+$$ = e^x (x^2) = x^2 e^x $$
+
+This matches the original integrand. The solution is correct.
+
+---
+
+### Part 3: Explanation of Integration by Parts
+
+**General Concept:**
+Integration by parts is derived from the product rule for differentiation. It allows us to integrate a product of two functions by transferring the derivative from one function to the other. It is most useful when the integrand is a product of two different types of functions (e.g., polynomial $\times$ exponential, logarithmic $\times$ trigonometric).
+
+**The Strategy (LIATE Rule):**
+When choosing which part of the product to set as $u$ (to be differentiated) and which to set as $dv$ (to be integrated), a helpful mnemonic is **LIATE**:
+
+1.  **L** - Logarithmic functions ($\ln x, \log x$)
+2.  **I** - Inverse trigonometric functions ($\arcsin x, \arctan x$)
+3.  **A** - Algebraic functions ($x, x^2, x^3$)
+4.  **T** - Trigonometric functions ($\sin

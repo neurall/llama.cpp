@@ -1,0 +1,40 @@
+run 21221 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.65 t/s | prompt 188.2 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/replace | power 220+280 W | 2026-10-28 20:23:34
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *Generation ship:* Implies long travel, cryosleep, purpose of colonization.
+   - *Cryosleep wake-up:* Sensory details of thawing, disorientation, physical sensations.
+   - *Above the planet:* View from the ship, seeing lit cities below.
+   - *Descendants from a copy ship:* A second ship left 100 years later, arrived first, colonized, built cities, and now the original ship arrives to find them already settled. The original crew realizes they are the "ancestors" to the people below.
+   - *POV:* Archivist - someone who records, preserves, values history, knowledge, memory. This perspective should color the narrative.
+   - *Style:* Literary, sensory, dialogue, ~900 words.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Wake from cryosleep. Sensory details: cold, thawing, sound of systems, smell of recycled air, physical stiffness. Archivist's internal reflection on memory/history.
+   - *Observation:* Look out the viewport. See the planet. Cities lit. Realization that they're not the first.
+   - *Dialogue/Interaction:* Talk with crewmates or AI. Discover the truth about the second ship.
+   - *Emotional/Thematic Core:* The archivist grapples with the irony of their mission. They were supposed to be pioneers, but they're arriving as ghosts/ancestors to a thriving civilization. Memory vs. reality. The weight of being "first" in a timeline that already moved forward.
+   - *Closing:* Acceptance, reflection on what it means to be an archivist now. Maybe a moment of connection with the planet below.
+
+   Word count target: ~900. I'll need to pace it carefully, focusing on rich prose and dialogue without padding.
+
+4.  **Drafting - Section by Section (Mental Refinement):**
+   *(Opening)* The thaw began as a whisper in the marrow. Frost crystallized on the eyelids, then dissolved into saline tears. I breathed the first air of three centuries, tasting copper and ozone, the scent of a machine remembering how to live. The cryo-pod’s seals hissed open like lungs exhaling. I sat up, joints protesting, muscles stiff as old parchment. My hands trembled as I reached for the archival slate on the console. It was my duty, after all: to record the moment of arrival, to anchor the ship’s history in the present. But the present had already written itself.
+
+   *(Observation)* I pressed my palm against the viewport glass. The planet hung in the dark, a marble of blue and ochre. Below the terminator line, cities glowed. Not scattered outposts, but a constellation of light. Grids of streets, spires, thermal vents, the soft pulse of habitation. I blinked, expecting the dark silence of an uncolonized world. Instead, I saw a civilization that had already learned to burn.
+
+   *(Dialogue/Discovery)* “We’re late,” said Commander Vance, his voice rough from disuse. He stood beside me, his face pale, eyes wide. “The telemetry says we’re three hundred years behind schedule. But the lights… they’re not ours.”
+   “They’re ours,” I replied, though the words felt like ash. “Just not us.”
+   The archive logs had been silent during the long sleep, but the ship’s navigation AI had been running. I pulled the data stream. A second vessel. *The Aethel*. Launched a century after us. Faster engines, lighter hull, a different trajectory. It had arrived first. It had landed. It had built. It had lived.
+   “They’re our children,” Vance whispered. “A century of breeding, farming, forging. We’re the ghost fleet.”
+   I nodded. The archivist’s mind, trained to preserve the past, now faced a past that had already become the present. I had spent my life cataloging the seeds we carried, the blueprints, the names of the first settlers. Now, those names were echoes. The
+---

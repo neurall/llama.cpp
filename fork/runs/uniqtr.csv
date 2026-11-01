@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+q36-tet-trace,qwen36,2,tetrisc,1024,"--moe uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-q36-tet.txt,uniqseg=128,uniqtrace=1024,observe=0",

@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+dyn-q36-fill,qwen36,2,tetrisc,1024,"--moe sim-vram=3072,dynhot=1,hotmaps=/home/o/.cache/llama.cpp/hotmaps",
+dyn-q36-recover,qwen36,1,tetrisc,1024,"--moe sim-vram=3072,dynhot=1,hotmaps=/home/o/.cache/llama.cpp/hotmaps",

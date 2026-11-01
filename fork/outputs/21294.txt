@@ -1,0 +1,84 @@
+run 21294 | dynhot_same_prompt_one_record_tokdump2 | pylruc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.68 t/s | prompt 191.7 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd/s.ini,hotmaps=/tmp/runstate/tokd/hotmaps,tokdump=/tmp/runstate/tokd/dump.bin | power 220+280 W | 2026-10-28 21:45:12
+
+Here's a thinking process:
+
+1.  **Understand User Requirements:**
+   - Implement an LRU (Least Recently Used) cache in Python
+   - Must support `get` and `put` operations in O(1) time
+   - Include unit tests using the `unittest` module
+   - Output: Code only, short comments, no explanation outside the code
+
+2.  **Key Constraints & Requirements:**
+   - O(1) time for `get` and `put`: This typically requires a hash map (dictionary) for O(1) lookup and a doubly-linked list (or deque) to track order. Python's `collections.OrderedDict` can be used, but it's not strictly O(1) for all operations in the way a custom doubly-linked list + dict is. However, `OrderedDict` is often accepted for LRU in Python, but to be strictly O(1) and follow classic algorithm design, I'll implement a custom doubly-linked list + dictionary. Actually, Python's `collections.deque` is O(1) for append/pop, but removing arbitrary elements is O(n). So a doubly-linked list is better. I'll implement a simple doubly-linked list node class and use a dict to map keys to nodes.
+   - Wait, Python's `collections.OrderedDict` actually has O(1) amortized for `popitem()` and `move_to_end()`, but it's not strictly O(1) in all contexts. However, for interview-style LRU, a custom doubly-linked list + dict is standard. I'll stick to that for correctness and O(1) guarantee.
+   - Actually, I can use `collections.OrderedDict` for simplicity, but the prompt says "O(1) time", which strongly implies the classic hash map + doubly linked list approach. I'll implement that.
+   - Let's design the structure:
+     - `Node` class: `key`, `value`, `prev`, `next`
+     - `LRUCache` class: `capacity`, `cache` (dict mapping key to node), `head`, `tail` (dummy nodes for doubly-linked list)
+     - `put(key, value)`: If key exists, update value and move to end. If not, create new node, add to dict, add to end of list. If capacity exceeded, remove head node (least recently used), update dict, move head to next.
+     - `get(key)`: If key exists, move node to end, return value. Else, return -1.
+     - All operations: O(1)
+
+3.  **Draft Implementation (Mental):**
+   ```python
+   class Node:
+       def __init__(self, key, value):
+           self.key = key
+           self.value = value
+           self.prev = None
+           self.next = None
+
+   class LRUCache:
+       def __init__(self, capacity: int):
+           self.capacity = capacity
+           self.cache = {}
+           self.head = Node(0, 0)
+           self.tail = Node(0, 0)
+           self.head.next = self.tail
+           self.tail.prev = self.head
+
+       def _add_to_end(self, node):
+           prev = self.tail.prev
+           prev.next = node
+           node.prev = prev
+           node.next = self.tail
+           self.tail.prev = node
+
+       def _remove(self, node):
+           prev = node.prev
+           nxt = node.next
+           prev.next = nxt
+           nxt.prev = prev
+
+       def put(self, key: int, value: int) -> None:
+           if key in self.cache:
+               node = self.cache[key]
+               node.value = value
+               self._remove(node)
+               self._add_to_end(node)
+           else:
+               node = Node(key, value)
+               self.cache[key] = node
+               self._add_to_end(node)
+               if len(self.cache) > self.capacity:
+                   lru = self.head.next
+                   self._remove(lru)
+                   del self.cache[lru.key]
+
+       def get(self, key: int) -> int:
+           if key in self.cache:
+               node = self.cache[key]
+               self._remove(node)
+               self._add_to_end(node)
+               return node.value
+           return -1
+   ```
+
+4.  **Check O(1) Complexity:**
+   - `put`: dict lookup O(1), list operations O(1), dict deletion O(1) -> O(1)
+   - `get`: dict lookup O(1), list operations O(1) -> O(1)
+   - Correct.
+
+5.  **Unit Tests:**
+   Need to use `unittest`. I'll write a test class with methods like `
+---

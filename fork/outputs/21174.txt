@@ -1,0 +1,79 @@
+run 21174 | dynhot_global_map | snakec | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 85.26 t/s | prompt 81.1 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=read,dynhot-global=0,state=/tmp/runstate/unk/t-game-cos.ini,hotmaps=/tmp/runstate/unk/hotmaps | power 220+280 W | 2026-10-28 19:18:58
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML snake game". This means I need to create a complete, playable Snake game in a single HTML file, minimizing code size while keeping it functional.
+
+2.  **Key Requirements for Snake Game:**
+   - HTML structure (single file)
+   - Canvas or DOM-based rendering
+   - Game logic: snake movement, food spawning, collision detection, score tracking
+   - Controls: keyboard input (arrow keys)
+   - Minimal code size
+
+3.  **Approach for Minimal Code:**
+   - Use a single HTML file with inline CSS and JS
+   - Use `<canvas>` for rendering (more compact than DOM manipulation)
+   - Use a grid-based approach (e.g., 20x20 cells)
+   - Represent snake as an array of coordinates
+   - Use a simple game loop with `requestAnimationFrame` or `setInterval`
+   - Minimize variable names, use compact syntax
+   - Avoid external dependencies
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head><meta charset="utf-8"><title>Snake</title></head>
+   <body>
+   <canvas id="c" width="200" height="200"></canvas>
+   <script>
+     const c = document.getElementById('c');
+     const ctx = c.getContext('2d');
+     const W = 20, H = 20, S = 10; // grid size, cell size
+     let snake = [{x:10,y:10}], dir = {x:1,y:0}, food = {x:5,y:5};
+     function draw() {
+       ctx.fillStyle = '#000'; ctx.fillRect(0,0,c.width,c.height);
+       ctx.fillStyle = '#0f0';
+       for(let p of snake) ctx.fillRect(p.x*S, p.y*S, S, S);
+       ctx.fillStyle = '#f00'; ctx.fillRect(food.x*S, food.y*S, S, S);
+     }
+     function update() {
+       let nx = snake[0].x + dir.x, ny = snake[0].y + dir.y;
+       if(nx<0||nx>=W||ny<0||ny>=H||snake.some(p=>p.x===nx&&p.y===ny)) return;
+       snake.unshift({x:nx,y:ny});
+       if(nx===food.x && ny===food.y) { food = {x:Math.floor(Math.random()*W), y:Math.floor(Math.random()*H)}; }
+       else snake.pop();
+       draw();
+     }
+     document.onkeydown = e => {
+       if(e.key==='ArrowUp') dir={x:0,y:-1};
+       if(e.key==='ArrowDown') dir={x:0,y:1};
+       if(e.key==='ArrowLeft') dir={x:-1,y:0};
+       if(e.key==='ArrowRight') dir={x:1,y:0};
+     };
+     setInterval(update, 100);
+   </script>
+   </body>
+   </html>
+   ```
+
+5.  **Refine & Optimize for Size:**
+   - Check functionality: Works? Yes.
+   - Can I make it smaller?
+     - Use shorter variable names
+     - Combine lines
+     - Use ternary/compact logic
+     - Remove unnecessary comments
+     - Use `e.key` mapping more compactly
+     - Consider using a single string for directions or numeric keys
+     - Use `setInterval` with a smaller delay? 100ms is fine.
+     - Canvas size: 200x200 with cell size 10 gives 20x20 grid. Good.
+     - Let's minify mentally:
+     ```html
+   <!DOCTYPE html><meta charset=utf8><title>S</title><canvas id=c width=200 height=200></canvas><script>
+   const c=document.getElementById('c'),ctx=c.getContext('2d'),W=20,H=20,S=10;
+   let s=[{x:10,y:10}],d={x:1,y:0},f={x:5,y:5};
+   function draw(){ctx.fillStyle='#000';ctx.fillRect(0,0,c.width,c.height);ctx.fillStyle='#0f0';for(let p of s)ctx.fillRect(p.x*S,p.y*S,S,S);ctx.fillStyle='#f00';ctx.fillRect(f.x*S,f.y*S,S,S)}
+   function update(){let nx
+---

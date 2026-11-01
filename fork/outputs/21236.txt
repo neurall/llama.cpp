@@ -1,0 +1,36 @@
+run 21236 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.37 t/s | prompt 260.9 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/r4-replace | power 220+280 W | 2026-10-28 20:34:09
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *Generation ship:* Long-term space travel, cryosleep, multi-generational or single-generation crew in stasis.
+   - *Cryosleep wake-up:* Sensory details of thawing, disorientation, physical sensations.
+   - *Above the planet:* View of the planet, cities lit, unexpected arrival.
+   - *Descendants from a copy ship:* A second ship launched a century later, arrived first, colonized, built cities, now the original crew's descendants are waiting.
+   - *POV:* Archivist - someone who records, preserves, values history, knowledge, memory. Likely reflective, observant, emotionally resonant.
+   - *Style:* Literary, sensory, dialogue, ~900 words.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Wake-up sequence. Sensory details of cryosleep thawing. Archivist's perspective. Physical sensations (cold, stiffness, taste of preservative fluid, sound of systems waking).
+   - *Observation:* Looking out the viewport. The planet. Cities lit. Confusion. Realization that they're not the first.
+   - *Communication/Dialogue:* Contact with the planet. Descendants' response. Archivist's role in recording/interpreting.
+   - *Theme/Reflection:* Memory, legacy, time, the irony of being "first" but actually "second," the weight of being an archivist.
+   - *Closing:* Acceptance, continuity, the archivist's duty to record this new chapter.
+
+   Word count target: ~900. I'll need to pace it carefully, balancing description, dialogue, and internal reflection.
+
+4.  **Drafting - Section by Section (Mental Refinement):**
+   *(Opening)* The thaw began as a slow ache in the marrow. I felt it first in the joints, then in the lungs, as the cryo-gel dissolved into breath. The hum of the awakening array vibrated through the deck plates, a low, metallic sigh. I opened my eyes to the pale blue of the recovery chamber. My hands trembled. The taste of preservative salt lingered on my tongue. I was the archivist. My duty was to remember, but memory felt heavy, like stone soaked in cold water.
+   *(Observation)* I pulled myself to the viewport. The planet hung in the dark, a marble of azure and ochre. But it was wrong. Wrong in the way that only centuries can be wrong. The night side was not dark. It was threaded with light. Grids of gold and silver, sprawling, luminous, alive. Cities. Not ruins. Not the barren landing zones we had charted. Cities.
+   *(Dialogue/Contact)* The comms crackled. A voice, clear and warm, cut through the static. “Welcome home, First Wave.” I froze. The words echoed in my chest. “You’re not the first,” I whispered. “We left before you.” The voice replied, steady, almost tender. “We left a century after. The *Aethel* carried your seed. We arrived first. We built. We waited.” I pressed my palm against the glass. The light below pulsed like a heartbeat. “Who are you?” I asked. “We are your children,” the voice said. “Your grandchildren. We kept your logs. We read your names. We named our streets after your dreams.”
+   *(Reflection/Archivist's role)* I turned to the console. My fingers found the old keys. The archive was still intact. I had preserved the launch protocols, the star charts, the poetry of departure. Now, I had to record the arrival. The weight of it settled on me. I was not the first to wake. I was the echo. The original ship had been a seed. The copy had been the soil. Time had folded. We had outrun ourselves.
+   *(Sensory/Literary details)* The air in the chamber smelled of ozone and thawed metal. My breath fogged the glass. Below, the lights shifted. They were not static. They were breathing. I could almost hear the hum of their
+---

@@ -1,0 +1,66 @@
+run 21209 | dynhot_same_prompt_pool_knob | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.89 t/s | prompt 113.0 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/replace | power 220+280 W | 2026-10-28 20:10:39
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, movement, rotation, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over detection
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimization Strategies:**
+   - Use a single HTML file with inline CSS and JS
+   - Use Canvas for rendering (more compact than DOM manipulation)
+   - Use compact variable names
+   - Use bitwise/array representations for pieces
+   - Minimize comments
+   - Use efficient algorithms (e.g., matrix representation for grid, simple collision checks)
+   - Avoid external libraries
+   - Use `requestAnimationFrame` or simple loop for game tick
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       body { margin: 0; background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; }
+       canvas { border: 1px solid #333; }
+     </style>
+   </head>
+   <body>
+     <canvas id="c" width="200" height="400"></canvas>
+     <script>
+       // Game logic here
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Develop Core Logic (Mental Refinement):**
+   - Grid: 2D array `g[20][10]` (0 = empty, 1 = filled)
+   - Pieces: Define as arrays of coordinates or bit patterns. Let's use a compact representation:
+     `P = [[1,1,1,1],[1,1,0,0],[1,1,1,0],[1,0,1,0],[1,1,0,1],[1,0,1,1],[1,1,1,1]]` - wait, that's not quite right. Standard tetrominoes:
+     I: `[[1,1,1,1]]`
+     O: `[[1,1],[1,1]]`
+     T: `[[0,1,0],[1,1,1]]`
+     S: `[[0,1,1],[1,1,0]]`
+     Z: `[[1,1,0],[0,1,1]]`
+     J: `[[1,0,0],[1,1,1]]`
+     L: `[[0,0,1],[1,1,1]]`
+     Actually, a more compact way: store as flat arrays or use a lookup. But for size, I'll use a simple array of shapes.
+     Let's use: `S=[[1,1,1,1],[1,1,0,0],[1,1,1,0],[1,0,1,0],[1,1,0,1],[1,0,1,1],[1,1,1,1]]` - wait, that's 7 shapes but some are 4x4, some 2x2. Better to store as 2D arrays with consistent dimensions or handle rotation dynamically.
+     Actually, a common compact representation:
+     `P = [[1,1,1,1],[1,1,0,0],[1,1,1,0],[1,0,1,0],[1,1,0,1],[1,0,1,1],[1,1,1,1]]` - this is wrong.
+     Let's use a standard approach: define shapes as arrays of offsets, or just use a simple 4x4 grid representation for each piece, with rotation handled by transposing/reversing.
+     Actually, for minimal code, I'll use a flat array of 7 pieces, each as a 4x4 array, and rotate by swapping rows/cols.
+     Wait, there's
+---

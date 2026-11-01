@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+sets-tet,qwen36,1,tetrisc,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps",--nothink
+sets-snk,qwen36,1,snakec,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps",--nothink
+sets-cpptet,qwen36,1,tetriscppc,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps",--nothink
+sets-pycsv,qwen36,1,pycsvc,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps",--nothink
+sets-poem,qwen36,1,poemc,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps",--nothink
+sets-sf1,qwen36,1,scific,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps",--nothink
+sets-tet2,qwen36,1,tetrisc,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps",--nothink

@@ -1,0 +1,22 @@
+run 21447 | dynhot_layer_far | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 26.85 t/s | prompt 11.3 t/s | 987 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 03:23:02
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes represented as arrays of coordinates or matrices. Need rotation. Could use 4x4 matrices for I, O, T, S, Z, J, L. Simpler: define shapes as arrays of [x,y] cells relative to top-left? Rotation around center? Need robust.
+
+Alternative use 4x4 matrices and rotate matrix. For each piece, matrix 4x4 with 1s. Rotation by 90 degrees. Collision checks cells. Spawn at x=3? For 4x4 matrix, board width 10, height 20. Use matrix coordinates. Need handle I piece horizontal in row 1? Let's define matrices.
+
+Tetromino matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]] maybe horizontal. Rotation works.
+O: [[1,1],[1,1]] but 2x2. Could use 4x4? Simpler use 2x2 matrix. Rotation no change. But collision and spawn. Need generic matrix rotation. For O 2x2. For others 3x3? T: [[0,1,0],[1,1,1],[0,0,0]]; S: [[0,1,1],[1,1,0],[0,0,0]]; Z: [[1,1,0],[0,1,1],[0,0,0]]; J: [[1,0,0],[1,1,1],[0,0,0]]; L: [[0,0,1],[1,1,1],[0,0,0]]. Rotation of 3x3. I 4x4. O 2x2. Need spawn x maybe 3 for 4x4, 3 for 3x3? Board width 10. Use x=3 for all? For 3x3, x=3 gives columns 3-5. For I 4x4 x=3 gives cols 3-6. Good. y=0. But matrix may have empty top row; spawn y=0. Need collision. For I matrix row 1 has cells at y=1, so spawn at y=0 means piece starts at row 1. Fine. For 3x3 T row 0 has cell at y=0. Good.
+
+Need rotation: rotate matrix clockwise. For 3x3, rotate. For 4x4, rotate. For 2x2, rotate. Need maintain matrix dimensions. Function rotate(m) returns new matrix with rows = m[0].length, cols = m.length: n[i][j] = m[m.length-1-j][i]? Let's derive clockwise: new[i][j] = old[m.length-1-j][i]? For old rows r, cols c. New rows c, cols r. new[i][j] = old[r-1-j][i]? Example old [[1,2],[3,4]] clockwise -> [[3,1],[4,2]]. new[0][0]=old[1][0]=3. Formula new[i][j]=old[r-1-j][i]. Yes. For 3x3. Good.
+
+Need board array 20 rows x 10 cols. Use 0/1. Piece object {m, x, y}. Collision: for each cell in m if 1, board[y+i][x+j] out of bounds or occupied. Need x,y top-left. Need spawn x=3, y=0. But for I 4x4, x=3, y=0, cells at row 1 cols 3-6. Good. For O 2x2 x=3 y=0 cells cols 
+---

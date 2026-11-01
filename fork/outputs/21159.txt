@@ -1,0 +1,56 @@
+run 21159 | dynhot_modes_whole_prompt_key | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.44 t/s | prompt 39.4 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 220+280 W | 2026-10-28 18:56:31
+
+The user wants the smallest HTML Tetris game. The literal ask: "generate smallest html tetris game." So they want a minimal, compact Tetris implementation in a single HTML file. I should keep it small but functional. The request is explicitly "smallest," so I should NOT bloat it. Honor the request: compact code.
+
+I'll give a tight single-file Tetris. Keep it small but playable: board, pieces, rotation, line clears, score, level, game over, restart. Use minimal CSS.
+
+Let me write it compactly but readably enough.
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+const W=10,H=20,S=16,x=c.getContext('2d'),P='013,012,013,012,013,012,013'.split(',');
+```
+
+Hmm, better to use standard tetromino definitions compactly.
+
+A classic compact approach: define pieces as strings of rotations, or use the "S" trick with a formula.
+
+Compact approach: pieces as arrays of coordinates generated from a base matrix.
+
+Let me use this well-known golf-ish approach:
+
+```js
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,1],[0,1,1]],[[1,1,1],[1,1,0]]]
+```
+
+Rotation: transpose + reverse rows.
+
+Board as 2D array of colors.
+
+Let me write it:
+
+```html
+<canvas id=c width=150 height=300 tabindex=0></canvas>
+<style>body{background:#111;margin:0;display:grid;place-items:center;height:100vh}canvas{background:#000;outline:0}</style>
+<script>
+B=[...Array(R=20)].map(_=>Array(C=10).fill(0)),S=15,g=c.getContext('2d'),P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,1],[0,1,1]],[[1,1,1],[1,1,0]]],K='6af,ff0,0ff,fa0,00f,0f0,f00'.split(','),p,q,s=0,l=1,n=0,t=0;
+function newp(){p=Math.random()*7|0;q=P[p].map(r=>r.slice());X=(C-q[0].length)/2|0;Y=0;if(hit(0,1))alert('Game Over '+s),B=B.map(_=>Array(C).fill(0)),s=l=n=0;draw()}
+...
+</script>
+```
+
+Hmm, alert is clunky. Let's do a simple game-over overlay text and restart on space/enter.
+
+Let me write clean compact code:
+
+```html
+<canvas id=c width=150 height=300></canvas>
+<script>
+C=10;R=20;S=15;g=c.getContext('2d');
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,1],[0,1,1]],[[1,1,1],[1,1,0]]];
+K=['0ff','ff0','fa0','f80','00f','0f0','f00'];
+B=Array(R*C).fill(0);
+function reset(){B=Array(R*C).fill(0);s=0;l=0;n=0;over=0;spawn()}
+function spawn(){m=P[Math.random()*7|0];o=K[Math.random()*7|
+---

@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+um7-olmoe-paris,olmoei,1,paris,64,,
+um7-q38-dense0,qwen38,2,pf12k1k,128,--moe dense-split=0,
+um7-q38-dense1,qwen38,2,pf12k1k,128,--moe dense-split=1,
+um7-ds-nodraft,ds,2,pfbest1k,1024,,
+um7-ds-draft3,ds,2,pfbest1k,1024,"-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 3 --moe spec-depth=3",
+um7-glm-dense1,glm,2,pf12k1k,128,--moe dense-split=1,
+um7-nofuse-ds,ds,2,pfbest1k,1024,,--env GGML_CUDA_DISABLE_FUSION=1

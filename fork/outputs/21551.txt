@@ -1,0 +1,63 @@
+run 21551 | dynhot_replay4 | snakec | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 80.36 t/s | prompt 102.1 t/s | 687 tokens | args: -np 1 --moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0 | power 220+280 W | 2026-10-29 11:06:27
+
+
+---
+Here is the smallest possible functional Snake game in a single HTML file (approx. 400 bytes). It uses a grid-based approach with a single `<canvas>` element.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+  const c = document.getElementById('c');
+  const ctx = c.getContext('2d');
+  const w = 20, h = 20;
+  let x = 10, y = 10, dx = 1, dy = 0, food = {x: 15, y: 15};
+  let snake = [{x: 10, y: 10}];
+
+  function draw() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w * h, h * h);
+    ctx.fillStyle = '#0f0';
+    snake.forEach(s => ctx.fillRect(s.x, s.y, 1, 1));
+    ctx.fillStyle = '#f00';
+    ctx.fillRect(food.x, food.y, 1, 1);
+  }
+
+  function update() {
+    x += dx;
+    y += dy;
+    if (x < 0 || x >= w || y < 0 || y >= h) {
+      x = 10; y = 10; dx = 1; dy = 0; snake = [{x: 10, y: 10}];
+    }
+    if (x === food.x && y === food.y) {
+      snake.push({x: x, y: y});
+      food = {x: Math.floor(Math.random() * w), y: Math.floor(Math.random() * h)};
+    } else {
+      snake.shift();
+    }
+    draw();
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowUp' && dy !== 1) { dx = 0; dy = -1; }
+    if (e.key === 'ArrowDown' && dy !== -1) { dx = 0; dy = 1; }
+    if (e.key === 'ArrowLeft' && dx !== 1) { dx = -1; dy = 0; }
+    if (e.key === 'ArrowRight' && dx !== -1) { dx = 1; dy = 0; }
+  });
+
+  setInterval(update, 100);
+</script>
+</body>
+</html>
+```
+
+### How it works:
+1. **Canvas**: A 20x20 grid (200x200 pixels).
+2. **Snake**: An array of coordinates. The head moves, the tail shifts.
+3. **Food**: Randomly placed. If the head hits it, the snake grows.
+4. **Controls**: Arrow keys change direction.
+5. **Game Over**: If the head hits the wall, reset to start.
+
+Save this as `snake.html` and open it in any browser.

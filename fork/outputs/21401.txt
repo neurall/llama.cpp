@@ -1,0 +1,92 @@
+run 21401 | dynhot_requests_fp8 | tetrispyc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 96.14 t/s | prompt 136.3 t/s | 823 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:08:03
+
+
+---
+Here is the smallest possible functional Tetris game for the terminal using Python. It uses `curses` for terminal rendering and handles basic mechanics: falling pieces, rotation, collision, and line clearing.
+
+```python
+import curses
+import random
+
+W, H = 10, 20
+board = [[0]*W for _ in range(H)]
+shapes = [
+    [[1,1,1,1]],
+    [[1,1],[1,1]],
+    [[1,1,1],[0,1,0]],
+    [[1,1,1],[1,0,0]],
+    [[1,1,1],[0,0,1]],
+    [[1,1],[1,0],[1,0]],
+    [[1,1],[0,1],[0,1]]
+]
+
+def draw():
+    curses.clear()
+    for y in range(H):
+        for x in range(W):
+            curses.addch(y, x, ' ' if board[y][x] == 0 else '#')
+    curses.refresh()
+
+def rotate(p):
+    return [[p[y][x] for y in range(len(p))] for x in range(len(p[0]))]
+
+def valid(p, ox, oy):
+    for y, row in enumerate(p):
+        for x, v in enumerate(row):
+            if v and (ox+x < 0 or ox+x >= W or oy+y >= H or board[oy+y][ox+x]):
+                return False
+    return True
+
+def place(p, ox, oy):
+    for y, row in enumerate(p):
+        for x, v in enumerate(row):
+            if v: board[oy+y][ox+x] = 1
+
+def clear_lines():
+    for y in range(H-1, -1, -1):
+        if all(board[y]):
+            board.pop(y)
+            board.insert(0, [0]*W)
+
+stdscr = curses.initscr()
+curses.noecho()
+curses.cbreak()
+p = random.choice(shapes)
+ox, oy = W//2 - len(p[0])//2, 0
+while True:
+    c = stdscr.getch()
+    if c == 27: break
+    if c == 10:  # Enter: Drop
+        if valid(p, ox, oy+1): oy += 1
+        else:
+            place(p, ox, oy)
+            clear_lines()
+            p = random.choice(shapes)
+            ox = W//2 - len(p[0])//2
+            oy = 0
+    elif c == 97:  # Left
+        if valid(p, ox-1, oy): ox -= 1
+    elif c == 99:  # Right
+        if valid(p, ox+1, oy): ox += 1
+    elif c == 114:  # R (Rotate)
+        rp = rotate(p)
+        if valid(rp, ox, oy): p = rp
+    draw()
+curses.endscr()
+```
+
+### Controls:
+- **Left Arrow (a)**: Move Left
+- **Right Arrow (c)**: Move Right
+- **Down Arrow (Enter)**: Drop
+- **R**: Rotate
+
+### How it works:
+1. Uses `curses` for terminal I/O.
+2. Board is a 10x20 grid.
+3. Pieces are defined as simple 2D lists.
+4. Rotation is done by transposing the matrix.
+5. Line clearing removes full rows and shifts the board up.
+6. Game loop handles input and updates the display.
+
+Save as `tetris.py` and run with `python tetris.py`. Press **Esc** to exit.

@@ -1,0 +1,124 @@
+run 21530 | dynhot_replay4 | tetrispyc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 84.42 t/s | prompt 115.2 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,observe=0 | power 220+280 W | 2026-10-29 10:44:53
+
+
+---
+Here is the smallest possible functional Tetris game for the terminal using Python. It uses `curses` for terminal rendering and handles basic movement, rotation, and collision.
+
+```python
+import curses
+import random
+
+W, H = 10, 20
+board = [[0]*W for _ in range(H)]
+shapes = [
+    [[1,1,1,1]],
+    [[1,1],[1,1]],
+    [[1,1,1],[0,1,0]],
+    [[1,1,1],[1,0,0]],
+    [[1,1,1],[0,0,1]],
+    [[1,1],[1,0],[1,0]],
+    [[1,1],[0,1],[0,1]]
+]
+
+def draw():
+    curses.clear()
+    for y in range(H):
+        for x in range(W):
+            curses.addch(y, x, ' ' if board[y][x] == 0 else '#')
+    curses.refresh()
+
+def rotate(s):
+    return [list(row) for row in zip(*s[::-1])]
+
+def valid(p, s):
+    for y, row in enumerate(s):
+        for x, v in enumerate(row):
+            if v and p[y+1][x] != 0: return False
+    return True
+
+def main():
+    curses.initscr()
+    curses.noecho()
+    curses.cbreak()
+    curses.keypad(stdscr)
+    stdscr = curses.initscr()
+    stdscr = curses.initscr() # Re-init to get stdscr
+    
+    # Fix: curses.initscr() returns stdscr
+    stdscr = curses.initscr()
+    
+    s = random.choice(shapes)
+    p = [0]*W
+    y = 0
+    
+    while True:
+        c = stdscr.getch()
+        if c == -1: pass
+        elif c == 27: break # ESC
+        elif c == 10: # Enter/Down
+            if valid(p, s):
+                for i, row in enumerate(s):
+                    for j, v in enumerate(row):
+                        if v: board[y+i][j] = 1
+                y += 1
+                s = random.choice(shapes)
+                p = [0]*W
+            else:
+                # Check for game over
+                if y == 0: break
+                # Clear full rows
+                for row in board:
+                    if all(row): row[:] = [0]*W
+                y = 0
+                s = random.choice(shapes)
+        elif c == 97: # Left
+            if valid([p[i] for i in range(W)], rotate(s)):
+                s = rotate(s)
+        elif c == 100: # Right
+            if valid([p[i] for i in range(W)], rotate(s)):
+                s = rotate(s)
+        draw()
+
+    curses.endwin()
+
+if __name__ == "__main__":
+    main()
+```
+
+### How to Run:
+1. Save as `tetris.py`.
+2. Run: `python tetris.py`
+3. Controls:
+   - **Enter**: Drop piece
+   - **Left/Right**: Rotate piece (Note: In this minimal version, rotation is handled by swapping the shape, but true rotation logic is simplified. For true rotation, use `rotate(s)` on the current shape `s` before checking validity.)
+
+### Simplified Logic Note:
+The above code is a *minimal* implementation. For a more robust small version, here is a cleaner, shorter version using a single list for the board and simpler rotation:
+
+```python
+import curses
+import random
+
+W, H = 10, 20
+board = [[0]*W for _ in range(H)]
+shapes = [
+    [[1,1,1,1]],
+    [[1,1],[1,1]],
+    [[1,1,1],[0,1,0]],
+    [[1,1,1],[1,0,0]],
+    [[1,1,1],[0,0,1]],
+    [[1,1],[1,0],[1,0]],
+    [[1,1],[0,1],[0,1]]
+]
+
+def rotate(s):
+    return [list(row) for row in zip(*s[::-1])]
+
+def valid(p, s):
+    for y, row in enumerate(s):
+        for x, v in enumerate(row):
+            if v and p[y+1][x] != 0: return False
+    return True
+
+def main():
+    stdscr = curses.in

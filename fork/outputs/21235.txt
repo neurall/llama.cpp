@@ -1,0 +1,36 @@
+run 21235 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.33 t/s | prompt 184.4 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/r4-replace | power 220+280 W | 2026-10-28 20:33:31
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *POV:* Archivist - implies someone who records, preserves, values history, maybe reflective, observant, carries the weight of memory.
+   - *Setting:* Generation ship waking from cryosleep, orbiting a target planet. Cities already lit below.
+   - *Plot Twist/Revelation:* A second ship left a century later, arrived first, colonized the planet, and the current crew's descendants are already there.
+   - *Tone/Style:* Literary, sensory, dialogue-driven, reflective, atmospheric.
+   - *Word Count:* ~900 words. Need to pace carefully.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Waking from cryosleep. Sensory details: cold, thawing, light, sound, the archivist's perspective. Establish the setting and the immediate realization that the planet is already inhabited.
+   - *Middle:* Observation of the lit cities. Dialogue with crewmates/commander. The archivist processes the historical anomaly. Flashbacks/internal monologue about the mission, the archive, the original plan. The revelation about the second ship.
+   - *Climax/Resolution:* Acceptance of the paradox. The archivist's role shifts from preserving a future that already exists to documenting a new reality. Closing image with sensory/literary resonance.
+   - *Word Count Check:* Aim for ~900. I'll monitor pacing and paragraph length.
+
+4.  **Drafting - Section by Section (Mental Refinement):**
+   *(Opening)* The thaw began as a whisper in the marrow. I felt it first in the joints, then in the lungs, as the cryo-gel surrendered its frost to the ship’s ambient warmth. My eyes opened to the pale blue of the observation blister, and beyond it, the world. Not the barren, dust-choked expanse we had charted, but a tapestry of light. Cities. Already lit. Already breathing.
+   *(Sensory/Archivist POV)* I pressed my palm against the cold glass. The archive of my mind, heavy with centuries of projected futures, collapsed into a single, quiet shock. I was the Keeper of Records, the one who had cataloged every seed, every blueprint, every name. Now, the names were already written.
+   *(Dialogue/Interaction)* “We’re late,” Commander Vance said, his voice rough from the thaw, stepping beside me. “Or early. I can’t tell.” He pointed to the orbital telemetry. “They beat us by a century. The *Aethel* left after us. Arrived first. Built. Lived. Died. Rebuilt.”
+   *(Archivist's Reflection)* I turned to him. “The *Aethel* was a copy. A contingency. We were told it would fail. The launch protocols were strict. Only one vessel was authorized.”
+   “They built two,” he said. “The council never told us. They sent the second ship when the first cryo-seals showed degradation. They thought we’d wake dead. They sent the backup. It worked.”
+   *(Sensory/Atmosphere)* The planet turned below us, a sphere of amber and violet, threaded with rivers of light. I could see the grid of streets, the glow of habitation domes, the faint pulse of atmospheric processors. It was not a ruin. It was a living city. My archive, I realized, was already obsolete. The future I had spent decades preserving had been realized by strangers who shared my blood.
+   *(Dialogue/Deepening)* “What do we do?” Vance asked. “Do we descend? Do we dock?”
+   “We record,” I said. “That’s what I do.” I moved to the console, fingers trembling as they touched the interface. The cryo-thaw had left my hands stiff, but the archive demanded motion. I pulled up the original mission logs, the seed vault manifests, the genetic drift projections. Then I pulled up the new telemetry. The second ship’s trajectory. The colonization timeline. The cultural assimilation data.
+   *(Internal Monologue/Theme)* I had spent my life in the
+---

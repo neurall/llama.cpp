@@ -1,0 +1,86 @@
+run 21250 | dynhot_global_map | snakec | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 84.81 t/s | prompt 132.1 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,dynhot-merge=2,state=/tmp/runstate/unkmat/s.ini,hotmaps=/tmp/runstate/unkmat/hotmaps | power 220+280 W | 2026-10-28 20:43:57
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML snake game". This means I need to create a complete, playable Snake game in a single HTML file, minimizing code size while keeping it functional.
+
+2.  **Key Requirements for Snake Game:**
+   - HTML structure (single file)
+   - Canvas or grid-based rendering
+   - Snake movement (up, down, left, right)
+   - Food spawning
+   - Collision detection (walls, self)
+   - Score tracking
+   - Game loop
+   - Minimal code size
+
+3.  **Constraints & Optimization Strategies:**
+   - Use `<canvas>` for rendering (more compact than DOM elements)
+   - Use a single array for snake body
+   - Use keyboard events for controls
+   - Minimize variable names, use short names
+   - Avoid external libraries
+   - Use compact logic (e.g., direction as dx/dy, grid as simple coordinates)
+   - Combine CSS and JS inline
+   - Use `requestAnimationFrame` or `setInterval` for game loop
+   - Keep it self-contained
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       canvas { background: #000; display: block; margin: auto; }
+     </style>
+   </head>
+   <body>
+     <canvas id=c width=200 height=200></canvas>
+     <script>
+       const c=document.getElementById('c'), ctx=c.getContext('2d');
+       const S=10, W=c.width/S, H=c.height/S;
+       let snake=[{x:10,y:10}], dir={x:1,y:0}, food={x:15,y:15}, score=0;
+       function draw(){
+         ctx.fillStyle='#000'; ctx.fillRect(0,0,c.width,c.height);
+         ctx.fillStyle='#0f0';
+         for(let p of snake) ctx.fillRect(p.x*S,p.y*S,S,S);
+         ctx.fillStyle='#f00'; ctx.fillRect(food.x*S,food.y*S,S,S);
+       }
+       function move(){
+         let nx=snake[0].x+dir.x, ny=snake[0].y+dir.y;
+         if(nx<0||nx>=W||ny<0||ny>=H||snake.some(p=>p.x===nx&&p.y===ny)) return;
+         snake.unshift({x:nx,y:ny});
+         if(nx===food.x&&ny===food.y){
+           food={x:Math.floor(Math.random()*W),y:Math.floor(Math.random()*H)};
+           score++;
+         } else snake.pop();
+       }
+       document.onkeydown=e=>{
+         if(e.key==='ArrowUp') dir={x:0,y:-1};
+         if(e.key==='ArrowDown') dir={x:0,y:1};
+         if(e.key==='ArrowLeft') dir={x:-1,y:0};
+         if(e.key==='ArrowRight') dir={x:1,y:0};
+       };
+       setInterval(()=>{draw();move();},100);
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Check & Refine (Self-Correction/Improvement):**
+   - *Size:* ~380 bytes. Can be smaller.
+   - *Functionality:* Works, but needs to prevent reversing direction (e.g., if moving right, can't go left immediately). Also, food might spawn on snake. Score display missing. Game over handling missing.
+   - *Optimization:* 
+     - Use `e.key` mapping to direction changes more compactly
+     - Prevent reverse: track previous direction or check against last segment
+     - Add score display
+     - Make it more robust but still minimal
+   - *Compact direction handling:* `dir={x:0,y:-1}` etc. can be shortened. Actually, `e.key` can be mapped to dx/dy directly.
+   - *Reverse prevention:* `if(e.key==='ArrowUp'&&dir.y!==1) dir={x:0,y:-1}` etc.
+   - *Food on snake:* `while(snake.some(p=>p.x===food.x&&p.y===food.y)) food={...}`
+   - *Score:* Add `document.body.textContent=score` or similar.
+   - *Game over:* Could just reset or stop. For minimal, maybe just stop or restart.
+   - *Let's compress further:* Use single line where possible, but keep readable enough.
+
+   Revised compact version:
+---

@@ -1,0 +1,42 @@
+run 21268 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.94 t/s | prompt 19.6 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 21:05:01
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not broken.
+
+Let me think about what "smallest" means here. The user wants minimal bytes. I should aim for a genuinely compact implementation — single file, no external dependencies (that would also keep it small and self-contained). I'll write it as compactly as I can while keeping it a real, working Tetris: piece movement, rotation, gravity, line clears, score, game over.
+
+Let me design the smallest possible Tetris.
+
+Approach: Canvas rendering. A grid of 10×20. Pieces defined compactly. Use a compact encoding for tetromino shapes.
+
+Classic minimal Tetris implementations exist. Let me write my own, aiming for maybe under ~500 bytes of JS if possible, but realistically a fully working Tetris with rotation, collision, line clear, score, speed-up, game over — I can get it quite small.
+
+Let me think about the most compact piece representation. Tetrominoes can be represented as a set of coordinates, or as bit patterns in a 4x4 (or 3x3 / 2x2) matrix, with rotation done by matrix rotation.
+
+A very compact trick: represent each piece as a 16-bit number (4x4 grid), rotate via bit manipulation. Or represent shapes as arrays of [x,y] pairs.
+
+Another classic compact approach: shapes as strings like "01 37 6C" etc. Hmm.
+
+Let me think of a known ultra-compact Tetris. There's a famous one: "Tetris in 140 bytes of JavaScript" or similar. But those often cut corners (no wall kicks, simple rotation). For a playable game I need:
+
+- 7 pieces with 4 rotations each (or rotate via matrix rotation of a bitmask).
+- Collision detection.
+- Lock, clear lines, shift down.
+- Score.
+- Keyboard controls: left/right/down/rotate (maybe hard drop).
+- Game over detection.
+- Gravity timer with speed increase.
+
+Compact design:
+
+Grid: use a 2D array or a flat array. Flat array of 200 cells (10×20), values 0 or color index. Actually for minimal size, store grid as array of numbers where each row is a bitmask? Line clear with bitmasks: row full when mask == 1023 (10 bits). That's compact!
+
+Let me use bitmask rows: `g` = array of 20 rows, each row a 10-bit integer. Piece shapes: each rotation state as a 4x4 bitmask? Or as list of cells.
+
+Piece representation idea: each tetromino as an array of 4 cells [x,y] relative to origin. Rotation: (x,y) -> (y, -x) or (y, x) depending on direction. That's compact: define each piece as 4 coordinate pairs.
+
+Compact encoding: for each piece, encode 4 cells as a single number: each cell x in 0..3, y in 0..3 → 4 bits each? Actually x,y each need 2 bits (0-3), so cell = 4 bits, 4 cells = 16 bits per piece. Then rotation transforms each cell: (x,y) → (y, 3-x)? Hmm, rotation within a 4x4 box: rotating the box. Standard SRS-ish rotation using a bounding box: for a cell (x,y) in a 4-wide box, rotate 90° CW: (x,y) → (y, 3-x)? Let's check: rotating a 4x4 grid 90° clockwise maps cell (x,y) to (3-y, x)? Let me be careful.
+
+Take a 4x4 grid, coordinates x (column 0..3), y (row 0..3). Rotating the grid 90° clockwise: the cell at (x,y) moves to (3-y, x)? Let's verify with corner (0,0) (top-left). After CW rotation, top-left becomes top-right, i.e., (3,0). Formula (3-y, x) with y=0,x=0 gives (3,0). ✓. Cell (3,0) top-right → after CW rotation becomes bottom-right (3,3). Formula: (3-0, 3) = (3,3). ✓. Good: CW rotation: (x,y) → (3-y, x).
+
+But pieces have different bounding boxes: I, O use 4x4; others use 3x3 (with an offset
+---

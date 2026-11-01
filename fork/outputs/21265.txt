@@ -1,0 +1,45 @@
+run 21265 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.06 t/s | prompt 14.9 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 20:58:47
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" genre — like the ~140-byte-ish ones that are barely playable, or the well-known "Tiny Tetris" in ~a few hundred bytes of JS. I should aim for something genuinely small but fully playable: piece movement, rotation, gravity, line clears, score, game over, restart. Keyboard controls. Maybe touch controls too? Touch adds bytes. The user said "smallest" — I'll prioritize compactness but keep it genuinely playable with keyboard, and maybe minimal touch (left/right/down buttons via tapping screen thirds?) — that could be cheap: on touch devices, tapping left/right side moves, tapping middle rotates. That's a few bytes and makes it playable on phones. Let me consider.
+
+Let me design the smallest playable Tetris in a single HTML file.
+
+Approach: canvas rendering, minimal code.
+
+Core data:
+- Board: 10 wide, 20 tall (or smaller to save bytes? Standard is 10x20; I could use 10x18 to save a byte... keep 20, it's fine).
+- Pieces: 7 tetrominoes. Compact encoding: each piece as a 4x4 matrix encoded in a string or as arrays of coordinates. A classic golf trick: encode shapes as binary numbers.
+
+Classic compact representation: each rotation of each piece as a 16-bit number (4x4 grid). 7 pieces × 4 rotations = 28 numbers, but many rotations are duplicates for I, O, Z, S. Alternatively use the well-known trick: represent each piece's 4 rotations as 4 16-bit ints, total 28 ints. Or use the "SRS-lite" approach with a single base shape and rotate via coordinate transform — rotating a matrix: (x,y) -> (y, N-1-x). That's compact.
+
+A very compact known approach (from "tetris in 140 bytes" style): pieces as strings.
+
+Let me think about a genuinely compact but readable-ish implementation. Since the user wants "smallest", I'll golf it but keep it comprehensible enough with a brief explanation after. I should still make it look decent — a dark background, centered canvas, monospace/pixel font, score display. Minimal chrome but not ugly. Actually for "smallest", the aesthetic is inherently minimal — I can make the minimal look intentional: crisp pixel blocks, a scanline-free clean canvas, a tiny score counter. I'll avoid gradients etc. A single accent color scheme with distinct piece colors is standard Tetris and helps playability. Colors per piece: could use a compact palette string.
+
+Let me write the code.
+
+Plan:
+
+```html
+<!doctype html><meta charset=utf8><title>T</title><canvas id=c width=... ></canvas><script>...</script>
+```
+
+Use minimal markup. Style via a tiny <style> or inline. Keep bytes low but readable formatting? "Smallest" — I'll write it fairly dense but with some newlines for readability. I'll aim for maybe ~600-900 bytes of actual code, which is respectable and fully playable. Let me try to get it really tight.
+
+Let me draft the logic:
+
+```js
+C=c.getContext('2d')
+W=10,H=20,S=20 // cell size
+```
+
+Canvas size: 10*cell by 20*cell. Cell 16px → 160x320. Or 20px → 200x400. Let's use cell=16 for compactness? Actually canvas width attr bytes: "160" vs "200" same length. Use 12? Let's pick cell size 16, canvas 160×320. Hmm, on high-DPI it'll be blurry but fine. Keep simple.
+
+Board storage: array of strings? Or 2D array of ints. Use a single array B of length W*H, values 0 or piece color index (1-7). Drawing: fillRect per cell.
+
+Pieces: I'll encode each tetromino as a 4x4 pattern in a 16-bit integer, with 4 rotations each. Classic set:
+
+Actually a neat trick used in tiny tetris implementations: define shapes as arrays of [x,y] offsets for one orientation, and rotate by transforming offsets: rot: (x,y)->(y, 3-x)? Depends on bounding box size. For 4x4 box: rotate clockwise: (x
+---

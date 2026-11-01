@@ -1,0 +1,50 @@
+run 21192 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.36 t/s | prompt 16.1 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 19:37:21
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but readable-ish implementation, single HTML file, no dependencies (that keeps it small — no CDN needed).
+
+Key features a Tetris needs to be "real":
+- 10×20 board
+- 7 tetrominoes with rotation (SRS-ish or simple rotation)
+- Gravity, movement left/right, rotation, soft drop / hard drop maybe
+- Line clearing, scoring
+- Game over
+- Next piece preview (optional for smallness)
+- Colors (optional)
+
+For "smallest", I'll aim for a minimal but complete version: keyboard controls (arrows: left/right move, up rotate, down soft drop), gravity timer, line clear, score, game over restart. Maybe render on canvas with colored cells. Keep it under ~1KB or so if possible? Let me try to write genuinely compact code.
+
+Let me design the implementation.
+
+Board: 10 wide, 20 tall. Represent as a 2D array or a flat array. Use a string? Compact approach: board as array of arrays of 0/1 (or store colors).
+
+Pieces: The 7 tetrominoes. A classic compact trick: encode each piece as a set of coordinates in a 4×4 or use binary numbers per rotation. Another famous trick: use a single string encoding all rotations.
+
+A very compact known approach (from "smallest tetris" golfed versions):
+
+Pieces as arrays of 4 rotation states, each state a list of [x,y] offsets. Or encode each tetromino as 4 numbers (bitmask rows of a 4×4 grid) and rotate by bit manipulation.
+
+Compact trick: represent each shape as a 16-bit number (4×4 grid), rotate by rotating bits. For a 4×4 grid stored row-major (bit index = y*4+x), rotating 90° clockwise: new position (x,y) -> (3-y, x)? Let's define: cell at (x,y) maps to (3-y, x) for clockwise rotation in a 4×4 grid. Bit index old = y*4+x, new = x*4 + (3-y). Hmm, that's a per-bit remap, not a simple shift. But there's a known trick: for a 4×4 grid, rotating can be done with nibble manipulation... Actually a common golf trick is to store each piece as 4 numbers (each rotation state as a 16-bit mask) precomputed, or store shapes as arrays of coordinate pairs and rotate pairs mathematically: rotate (x,y) -> (y, -x) then normalize. That's compact: rot(p) = p.map(([x,y])=>[y,-x]) then shift so min is 0. Actually simpler: rotate within a bounding box: for a piece with cells relative to some origin, rotation clockwise: (x,y) -> (y, size-1-x)? Depends.
+
+Simplest compact approach used in many mini tetris:
+
+```js
+// shapes as arrays of [x,y] pairs
+S=[[[1,0],[1,1],[2,1],[2,2]], ...]
+```
+
+Hmm, that's verbose. Alternative: encode each tetromino as a string of 4 numbers where each number is a bitmask of 4 cells in a 4×4? Or encode as "0F02..." hex?
+
+A really compact classic: use the "binary encoded" shapes:
+
+```js
+const P = [0x0F00, 0x1222, 0x0222, ...]
+```
+
+Hmm. Let me think of the well-known golfed tetris approach. There's a famous one: "Tetris in 140 bytes" etc. But those sacrifice features.
+
+I think a good balance: write clean-ish but compact code, maybe ~600-900 bytes of JS, in a single HTML file with minimal markup. I'll present it as "smallest playable Tetris" with a byte count. I can even minify deliberately but keep it somewhat readable with short variable names and no whitespace where reasonable. The user asked for smallest — so I should actually minify aggressively but keep it functional and still look decent visually (canvas centered, dark background, colored blocks, score display).
+
+Let me actually write
+---

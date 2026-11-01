@@ -1,0 +1,16 @@
+run 21456 | dynhot_f32 | tetrisc | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 46.62 t/s | prompt 191.1 t/s | 128 tokens | args: -np 1 -dev none -ngl 0 --moe-expert-cache 19 --moe dynhot=full | power 220+280 W | 2026-10-29 07:47:20
+
+
+---
+generate smallest html tetris game.<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.<|im_end|>
+<|im_start|>assistant
+generate smallest html tetris game.<|im_end|>
+<|im_start

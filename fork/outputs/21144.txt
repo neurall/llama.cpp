@@ -1,0 +1,79 @@
+run 21144 | dspark_fix3 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 52.71 t/s | prompt 58.7 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-28 18:38:53
+
+The user wants the smallest HTML Tetris game. The literal ask: "generate smallest html tetris game." So they want a minimal, compact single-file Tetris. I should honor "smallest" — a tiny, dense HTML file. But I'd like it to still feel crafted and pleasant to play rather than a bare canvas. There's a real tension here: a page full of dense multi-column prose and ambient background animation would betray "smallest." So the smallest footprint wins as the primary constraint, but I can still make it feel crafted within that constraint: a tight, monospace, arcade-terminal aesthetic with a crisp board, next-piece preview, score/level lines, and keyboard controls — all in a very small file.
+
+Let me write compact but working Tetris in minimal HTML. Aim for something like 30-40 lines. Keep it readable-ish but dense.
+
+Design: dark background, but I don't want the tired near-black-plus-single-neon look. Let's do a classic Game Boy-ish palette? Or a bright arcade look. Let's do a light-on-dark with a multi-hue tetromino palette (7 colors), which naturally gives multiple accents rather than one lone neon. Use a monospace display face (system mono) paired with... for "smallest" one font is fine. I can pair a chunky mono for the numbers with a lighter mono for labels — that's the pairing, done in-file with no external fonts (keeping it small).
+
+Let me write the code.
+
+```html
+<!doctype html><title>tetris</title>
+<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<style>
+html{background:#101014;color:#e8e8f0;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace}
+body{margin:0;min-height:100vh;display:grid;place-items:center}
+...
+</style>
+```
+
+Compact Tetris implementation using canvas:
+
+Standard approach:
+
+```js
+const W=10,H=20,S=16,c=document`c`,x=c.getContext`2d`;
+c.width=W*S;c.height=H*S;
+let P,N,grid=Array.from({length:H},()=>Array(W).fill(0)),score,level,lines;
+```
+
+Piece definitions: use the classic string trick.
+
+```js
+const T='IJOZSVTL'; // hmm
+```
+
+A classic tiny approach: pieces as arrays of rotation states via matrices.
+
+Compact: define pieces as strings of coordinates.
+
+```js
+const P=[ // shape strings, color index
+"..",""
+]
+```
+
+Let me use the well-known minimal approach:
+
+```js
+const K='023 1 2 3'.split(' ')
+```
+
+Simpler: define each piece as a flat list of cells in a 4x4 grid per rotation using a string. E.g.
+
+```js
+const P=[
+"0,1,2,3",           // I
+"1,0,1,1,1,2,2,2",   // ...
+]
+```
+
+Actually the cleanest tiny approach: represent each piece as a square matrix (2x2 for O, 3x3 for the rest, 4x4 for I) and rotate by transposing+reversing.
+
+```js
+const P=[[[1,1,1,1]],[[1],[1,1,1]],[[1,1,1],[0,1,1]],[[1,1,1],[1,1,0]],[[1,1],[1,1]],[[1,1,1],[1,0,0]],[[1,1,1],[0,0,1]]]
+```
+
+Wait I as [[1,1,1,1]] is a 1x4 matrix; rotating gives 4x1. That works with generic rotate.
+
+Rotate: `m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())` — that's clockwise rotation.
+
+Colors: index into palette array.
+
+Spawn: random piece, x = (W - width)/2 | 0, y = 0.
+
+Collision:
+```js
+const hit=(p,x,y)=>p.some((r,j)=>r.some((v,i)=>v&&y+j>=0&&(x+i<0||x+i>=W
+---

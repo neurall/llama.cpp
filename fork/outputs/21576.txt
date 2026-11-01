@@ -1,0 +1,15 @@
+run 21576 | dynhot_router2 | t100 | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 508.79 t/s | prompt 636.1 t/s | 100 tokens | args:  | power 220+280 W | 2026-10-29 23:38:27
+
+
+
+I have a tetris game written in html, css, and javascript. I want to make it smaller. I have a few ideas, but I'm not sure which is the best.
+
+1. Remove the background image.
+
+2. Remove the border.
+
+3. Remove the border and background image.
+
+4. Remove the border and background image and change the border color to black.
+
+5. Remove the border and background image and change the border

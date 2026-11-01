@@ -1,0 +1,37 @@
+run 21215 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 73.54 t/s | prompt 148.5 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/replace | power 220+280 W | 2026-10-28 20:17:04
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *POV:* Archivist - implies someone who records, preserves, values history, maybe reflective, observant, carries data/logs.
+   - *Setting:* Generation ship waking from cryosleep, orbiting a target planet. Cities already lit below.
+   - *Plot Twist/Revelation:* A second ship left a century later, arrived first, colonized the planet, and the current crew's descendants are already there.
+   - *Tone/Style:* Literary, sensory, dialogue-driven, reflective.
+   - *Word Count:* ~900 words. Need to pace carefully.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Waking from cryosleep. Sensory details: cold, thawing, light, sound, the archivist's role. Establish the POV immediately.
+   - *Observation:* Looking down at the planet. Cities lit. Confusion/realization.
+   - *Dialogue/Interaction:* Talk with crewmates/engineers. Discover the truth about the second ship.
+   - *Reflection/Theme:* The archivist's perspective on time, legacy, duplication, human nature. The irony of being "first" but arriving "last."
+   - *Closing:* Acceptance, continuity, maybe a final archival entry or reflection.
+   - *Word Count Check:* Aim for ~900. I'll monitor paragraph length and pacing.
+
+4.  **Drafting - Section by Section (Mental Refinement):**
+   *(Opening)* The thaw began as a whisper in the marrow. I felt it first in the joints, then in the lungs, as the cryo-gel surrendered its frost to the ship’s ambient warmth. My eyes opened to the pale blue of the wake-up chamber, and the archivist’s log hummed softly beside me. I was Elara, keeper of the ship’s memory, the one who had recorded every breath, every dream, every silence during the long sleep. Now, the silence was broken by the groan of hydraulics and the murmur of waking voices.
+   *(Observation)* I climbed to the observation deck. The viewport was a curved lens of tempered glass, and beyond it lay the world we had been promised. But it was not dark. It was lit. Not with the scattered glow of early settlement, but with the steady, geometric brilliance of cities. Rivers of light traced valleys, domes shimmered like glass beads, and the night sky was pierced by the soft amber of streetlamps. I pressed my palm against the cold pane. The planet was alive.
+   *(Dialogue/Discovery)* “We’re late,” said Commander Vance, his voice rough from disuse. He stood beside me, his uniform still damp from the thaw. “The telemetry says we’re in orbit. But the surface… it’s populated.”
+   “A century,” I murmured, pulling the data-slate from my satchel. “The launch records show a second vessel. *The Aethel*. Departed one hundred and twelve years after us. Faster propulsion. Shorter cryo cycles. It should have arrived first.”
+   Vance nodded. “They beat us. They colonized. They built. And now we’re the ghosts.”
+   I scrolled through the archived transmissions. The *Aethel* had sent periodic beacons. We’d missed them. The ship’s receivers had been dormant, locked to our own timeline. The descendants below were not strangers. They were us. Children of our children, speaking our languages, carrying our genetic markers, living in the cities we had only dreamed of.
+   *(Sensory/Reflection)* The light below pulsed like a heartbeat. I could almost hear the hum of their streets, the laughter of their markets, the rustle of their crops. The archivist’s duty was to preserve the past, but the past had already moved forward. I felt a strange hollow in my chest, not grief, but recognition. We had been the seed. They had been the harvest. Both ships had carried the same mandate, the same hope, the same fear. The *Aethel* had simply outrun time.
+   *(Dialogue/Interaction)* “
+---

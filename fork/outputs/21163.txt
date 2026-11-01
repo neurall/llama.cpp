@@ -1,0 +1,83 @@
+run 21163 | dynhot_global_map | pylruc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.17 t/s | prompt 177.2 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/unk/train.ini,hotmaps=/tmp/runstate/unk/hotmaps | power 220+280 W | 2026-10-28 19:09:45
+
+Here's a thinking process:
+
+1.  **Understand User Requirements:**
+   - Implement an LRU (Least Recently Used) cache in Python
+   - Must support `get` and `put` operations in O(1) time
+   - Include unit tests using the `unittest` module
+   - Output: Code only, short comments, no explanation outside the code
+
+2.  **Key Constraints & Requirements:**
+   - O(1) time for `get` and `put`: This typically requires a hash map (dictionary) for O(1) lookup and a doubly-linked list (or deque) to track order. Python's `collections.OrderedDict` can be used, but it's not strictly O(1) for all operations in the way a custom doubly-linked list + dict is. However, `OrderedDict` is often accepted for LRU in Python, but to be strictly O(1) and demonstrate the classic algorithm, I'll implement a custom doubly-linked list + dictionary. Actually, Python's `collections.deque` is O(1) for append/pop, but removing arbitrary elements is O(n). So a doubly-linked list is better. I'll implement a simple doubly-linked list node class and use a dict to map keys to nodes.
+   - Wait, Python's `collections.OrderedDict` actually has O(1) for `get` and `put` (insertion), and `move_to_end` is O(1). It's the standard Pythonic way for LRU. But the prompt says "implements an LRU cache with get and put in O(1) time". I'll stick to the classic hash map + doubly linked list approach to be rigorous, or I can use `OrderedDict` with a size limit. Actually, `OrderedDict` is fine, but I'll implement the classic approach to show O(1) explicitly.
+   - Let's implement a custom doubly-linked list + dict. It's standard for interview-style questions.
+   - I'll define a `Node` class for the doubly-linked list.
+   - `LRUCache` class with `__init__(capacity)`, `put(key, value)`, `get(key)`.
+   - `put`: If key exists, update value and move to end. If not, add new node, move to end. If capacity exceeded, remove least recently used (head) node.
+   - `get`: If key exists, move to end and return value. Else return -1.
+   - All operations: O(1) because dict lookup is O(1), linked list operations are O(1).
+
+3.  **Draft Implementation (Mental):**
+   ```python
+   class Node:
+       def __init__(self, key, val):
+           self.key = key
+           self.val = val
+           self.prev = None
+           self.next = None
+
+   class LRUCache:
+       def __init__(self, capacity: int):
+           self.capacity = capacity
+           self.cache = {}
+           self.head = Node(0, 0)
+           self.tail = Node(0, 0)
+           self.head.next = self.tail
+           self.tail.prev = self.head
+
+       def _add(self, node):
+           # Add node right before tail
+           prev = self.tail.prev
+           prev.next = node
+           node.prev = prev
+           node.next = self.tail
+           self.tail.prev = node
+
+       def _remove(self, node):
+           # Remove node from list
+           prev = node.prev
+           nxt = node.next
+           prev.next = nxt
+           nxt.prev = prev
+
+       def put(self, key: int, value: int) -> None:
+           if key in self.cache:
+               self._remove(self.cache[key])
+               self.cache[key].val = value
+               self._add(self.cache[key])
+           else:
+               new_node = Node(key, value)
+               self.cache[key] = new_node
+               self._add(new_node)
+               if len(self.cache) > self.capacity:
+                   lru = self.head.next
+                   self._remove(lru)
+                   del self.cache[lru.key]
+
+       def get(self, key: int) -> int:
+           if key in self.cache:
+               node = self.cache[key]
+               self._remove(node)
+               self._add(node)
+               return node.val
+           return -1
+   ```
+
+   Wait, `self.head` and `self.tail` are dummy nodes. This is standard.
+   Let's verify O(1): All operations are constant time. Dict lookup O(1), list manipulation O(1). Correct.
+   Edge cases: capacity = 1, get non-existent key, put existing key, capacity exceeded.
+   The code looks solid.
+
+4.  **Unit
+---

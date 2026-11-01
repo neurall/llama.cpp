@@ -1,0 +1,21 @@
+name,model,n,test,tokens,args,extra
+tk3-game1,qwen36,1,tetrisc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-py1,qwen36,1,pycsvc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-py2,qwen36,1,pylruc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-py3,qwen36,1,pyasyncc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-game2,qwen36,1,breakoutc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-game3,qwen36,1,snakec,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-cpp1,qwen36,1,tetriscppc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-cpp2,qwen36,1,snakecppc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-prose1,qwen36,1,scific,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-prose2,qwen36,1,scifi2c,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-prose3,qwen36,1,scifi3c,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-poem1,qwen36,1,poemc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-poem2,qwen36,1,poemautc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-poem3,qwen36,1,poemseac,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-sci,qwen36,1,photoc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-math,qwen36,1,mathc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-arith,qwen36,1,arithc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-hist,qwen36,1,ww1c,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-latin,qwen36,1,latinmedc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink
+tk3-game1b,qwen36,1,tetrisc,1024,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin",--nothink

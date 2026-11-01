@@ -62,7 +62,7 @@ Defaults suit a plain Linux box (everything under ~/llama-fork, models under ~/m
   $FORK_CONFIG, ./fork/local.toml (ignored by git), ~/.config/llama-fork/config.toml
 and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case), e.g. FORK_PATHS_RELS=/data/rels.
 
-  [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent
+  [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent  state
   [models]  olmoe  qwen36  qwen38  glm  mimo        (the regress cells and run.py baseline skip a model whose file is missing)
   [hosts]   w10_ssh  w10_root  history_sources                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
   [gpu]     nvidia_smi  ld_extra  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
@@ -77,7 +77,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         "paths": {
             "rels": _BASE + "/rels", "gh_rel": _BASE + "/stock", "devbuilds": _BASE + "/rels/devbuilds", "release_out": _BASE + "/rels/release-out",
             "images": _BASE + "/rels/images", "best": _BASE + "/rels/best", "ccache": _BASE + "/ccache", "ccache_stock": _BASE + "/ccache-stock",
-            "build_repo": os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build_tmp": _BASE + "/build-tmp", "work": _BASE + "/work", "agent": "",
+            "build_repo": os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build_tmp": _BASE + "/build-tmp", "work": _BASE + "/work", "agent": "", "state": "",
         },
         "models": {
             "olmoe": _BASE + "/models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
@@ -816,7 +816,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         con = sqlite3.connect(":memory:" if os.environ.get("FORK_NO_RUNS_DB") else DB)   # run.py quick without --record: nothing of the run reaches the database file
         con.create_aggregate("consistent", 1, Consistent)
         return con
-    NUMERIC = {"p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "rep", "seed", "ready_s", "load_s", "wall_s", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "vram_mib", "pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
+    NUMERIC = {"p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_med", "pp_max", "tps", "pp", "hit", "ppl", "spp", "n_gen", "bno", "rep", "seed", "ready_s", "load_s", "wall_s", "prompt_s", "gen_s", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "vram_mib", "pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "rss_kb", "major_faults", "uploads", "evictions", "up_mib", "ddr_gbs", "pcie_gbs",
                "ddr_util", "pcie_util", "cpu_util", "gpu_util", "held_gib", "mem_limit", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late",
                "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3", "mem_gb", "mem_peak_gbs", "pcie_peak_gbs"}
     def num(x):
@@ -1791,12 +1791,14 @@ def merge_moe(args):
     return out + ["--moe", ",".join(mine + [v for v in vals if v not in mine])]
 
 
+HOTMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hotmaps")   # fork/hotmaps: one hot-map file per model (git-ignored, published on branch runs-db)
 DIAG_ENV = ("POOL_LIVE", "PERF_LEDGER", "GGML_CUDA_SCRATCH_CHECK")   # diagnostics recorded in a row's env (see cmd_cell's rec): ~10% decode for the scratch check on MiMo
 
 
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
+                             + f",hotmaps={HOTMAPS}"   # the hot maps per topic of every model (--moe dynhot) in the repo's fork/hotmaps, published with runs.db (branch runs-db); a cell's own hotmaps= comes after and wins
                              + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
                              + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
                              + ("" if NOSTATS[0] else ",pass-stats=1")]   # the split pass report per card (extra stream stamps, off in the engine by default): -ns leaves it off
@@ -2177,7 +2179,7 @@ def server_run(build, env, args, path, body, render=None):
     PROCSTAT["cache_state"] = model_residency()
     _t0 = time.time(); PROCSTAT["start_ts"] = time.strftime("%F %T", time.localtime(_t0))
     PROCSTAT["endpoint"] = "completion" if path == "/completion" else "chat"
-    key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v), os.environ.get("PERF_CELL_ENV", "")))
+    key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v), os.environ.get("PERF_CELL_ENV", ""), STATE_FILE["v"], STATE_FILE.get("gen")))   # a cell that resets its state file (--clean-state) gets a server of its own
     d = kept_get() if KEEP_SERVER else None
     if d and d["key"] == key:
         p, logf = PidProc(d["pid"]), d["logf"]   # kept from an earlier run or cell: no start, no load wait
@@ -4201,8 +4203,9 @@ def cmd_bench(a):
                 if (a.clean_state or a.cold_hot) and not build.startswith("stock"):
                     sf = "/tmp/runstate/" + re.sub("[^A-Za-z0-9._-]", "_", build + "-" + name + "-" + os.path.basename(model) + (f"-{a.test}-p{pp}" if a.cold_hot else "")) + ".ini"   # one file per build, variant and model (and prompt with --cold-hot)
                     os.makedirs("/tmp/runstate", exist_ok=True)
-                    if i == (0 if a.cold_hot else a.rep_from) and os.path.exists(sf):
-                        os.remove(sf)   # the run's own file, never ~/.cache/llama.cpp/moe-state.ini
+                    if i == (0 if a.cold_hot else a.rep_from):
+                        if os.path.exists(sf): os.remove(sf)   # the run's own file, never ~/.cache/llama.cpp/moe-state.ini
+                        STATE_FILE["gen"] = time.time()   # a new server for the cold start: a kept one (same args, earlier cell) holds what it learned
                     STATE_FILE["v"] = sf
                 else:
                     STATE_FILE["v"] = None
@@ -4543,9 +4546,10 @@ def _package_linux(a, W, binp, log):
     return N, dst
 
 
-def _publish_db(here):
-    """fork/runs.db as the ONLY commit of branch runs-db (no parent: the history of the binary never accumulates), force-with-lease to the fork, that branch only.
-    Get it: git fetch neurall runs-db && git show FETCH_HEAD:runs.db > fork/runs.db"""
+def _publish_db(here, push=True):
+    """fork/runs.db and fork/hotmaps/*.hotmap (the hot maps per topic of each model, --moe dynhot) as the ONLY commit of branch runs-db (no parent: the history
+    of the binaries never accumulates), force-with-lease to the fork, that branch only. push=False builds the local branch only.
+    Get them: git fetch neurall runs-db && git show FETCH_HEAD:runs.db > fork/runs.db && git archive FETCH_HEAD hotmaps | tar -x -C fork"""
     import sqlite3, tempfile
     R = _git(here, "rev-parse", "--show-toplevel"); out = os.path.join(tempfile.mkdtemp(), "runs.db")
     c = sqlite3.connect(os.path.join(here, "runs.db"), timeout=60)
@@ -4553,17 +4557,25 @@ def _publish_db(here):
     c.execute("VACUUM INTO ?", (out,)); c.close()
     n = sqlite3.connect(out).execute("select count(*) from runs").fetchone()[0]
     blob = _git(R, "hash-object", "-w", out)
-    tree = subprocess.run(["git", "-C", R, "mktree"], input=f"100644 blob {blob}\truns.db\n", capture_output=True, text=True, check=True).stdout.strip()
-    com = _git(R, "commit-tree", tree, "-m", f"runs.db: {n} runs, {time.strftime('%F %H:%M')} (only commit of this branch, replaced on every publish)")
+    mktree = lambda text: subprocess.run(["git", "-C", R, "mktree"], input=text, capture_output=True, text=True, check=True).stdout.strip()
+    entries = f"100644 blob {blob}\truns.db\n"
+    hm = sorted(f for f in os.listdir(HOTMAPS) if f.endswith(".hotmap")) if os.path.isdir(HOTMAPS) else []
+    if hm:   # the hot maps beside it: hotmaps/<model>.hotmap
+        entries += f"040000 tree {mktree(''.join(f'100644 blob {_git(R, chr(104) + 'ash-object', '-w', os.path.join(HOTMAPS, f))}\t{f}\n' for f in hm))}\thotmaps\n"
+    tree = mktree(entries)
+    com = _git(R, "commit-tree", tree, "-m", f"runs.db: {n} runs, hotmaps: {len(hm)} models, {time.strftime('%F %H:%M')} (only commit of this branch, replaced on every publish)")
     _git(R, "update-ref", "refs/heads/runs-db", com)
     subprocess.run(["git", "-C", R, "reflog", "expire", "--expire=now", "refs/heads/runs-db"], capture_output=True)
-    subprocess.run(["git", "-C", R, "push", "--force-with-lease=refs/heads/runs-db", "neurall", "refs/heads/runs-db:refs/heads/runs-db"], check=True)
-    print(f"runs-db = {com[:9]} ({n} runs)", flush=True)
+    if push:
+        subprocess.run(["git", "-C", R, "push", "--force-with-lease=refs/heads/runs-db", "neurall", "refs/heads/runs-db:refs/heads/runs-db"], check=True)
+    print(f"runs-db = {com[:9]} ({n} runs, hot maps of {len(hm)} models){'' if push else ' (local only, not pushed)'}", flush=True)
 
 def cmd_publish(a):
     """run.py publish [--tree DIR] [--name NAME --notes FILE [--replace OLDTAG]]: pushes the tree's branch to the fork (remote neurall, explicit refspec, no force), replaces runs.db there (branch runs-db), and with --name tags the head
     release-b<build>-<hash>-<name> and makes the GitHub release (neurall/llama.cpp) from the archives of that build in REL_OUT; --replace OLDTAG deletes that release and its tag first. Never origin."""
     tree = os.path.abspath(a.tree); here = os.path.dirname(os.path.abspath(__file__))
+    if getattr(a, "local", False):   # the runs-db commit (runs.db and the hot maps) built locally, nothing pushed
+        return _publish_db(here, push=False)
     br = _git(tree, "branch", "--show-current")
     for ref in [f"refs/heads/{br}:refs/heads/{br}"]:
         subprocess.run(["git", "-C", tree, "push", "neurall", ref], check=True)
@@ -5924,16 +5936,19 @@ def run_times(rid):
         try: r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select wall_s, load_s, null, null from runs where rowid=?", (rid,)).fetchone()   # a db from before the prompt_s / gen_s columns
         except sqlite3.Error: r = None
     if not r or not r[0]: return None, ""
-    lv = r[1]
+    def fnum(v):   # 95 rows (19567-20272) hold prompt_s / gen_s as text: written before the two were numeric columns of runlog
+        try: return None if v is None else float(v)
+        except ValueError: return None
+    lv, ps, gs = fnum(r[1]), fnum(r[2]), fnum(r[3])
     if not lv:   # a repeat on a kept server loads nothing: show the load of the cell's first run (same build, model and test, started before it)
         try:
             q = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
                 "select b.load_s from runs a join runs b on b.build=a.build and b.model=a.model and b.test=a.test and b.rowid<a.rowid and b.load_s>0 "
                 "and b.rowid>=a.rowid-3 where a.rowid=? order by b.rowid desc limit 1", (rid,)).fetchone()
-            if q: lv = q[0]
+            if q: lv = fnum(q[0])
         except sqlite3.Error: pass
     tf = lambda x: f"{int(x)}s" if x < 100 else f"{int(x // 60)}m{int(x % 60):02d}s"
-    return float(r[0]), ("" if lv is None or lv < 0 else "l " + tf(lv) + (f" p {tf(r[2])} g {tf(r[3])}" if r[2] is not None and r[3] is not None else ""))   # l load, p prompt, g generation
+    return float(r[0]), ("" if lv is None or lv < 0 else "l " + tf(lv) + (f" p {tf(ps)} g {tf(gs)}" if ps is not None and gs is not None else ""))   # l load, p prompt, g generation
 
 
 def loop_flag(rid):
@@ -6643,7 +6658,7 @@ def run_list(name, argv):
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
-    ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state): run 1 is the cold start of a new user, run 2 starts a new server on the state run 1 left (warm). The server is not kept between cells, so no cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
+    ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state) on a server of its own: run 1 is the cold start of a new user, run 2 runs on the same server (warm). Two builds compared this way learn from zero on the same prompt, so they should arrive at the same speed (reg tests); the user's state file is not touched. No cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
     ap.add_argument("-nk", "-x", "--kill", action="store_true", help="kill the server after every run (default: it stays up and the next run, also of the next cell, uses it when model, build and args are the same; later runs then start with what the earlier ones cached)")
     ap.add_argument("-r", "--runs", default="2", help="measured runs per cell (default 2: one run can be an outlier; 0 = the list's n)")
     ap.add_argument("-fb", "-from-best", "--from-best", dest="from_best", action="store_true", help="cells with the biggest known gain over stock first (from runs.db: newest runs of ours against the newest official stock; cells with no gain known last), so the best gainers run and print first")
@@ -6874,7 +6889,7 @@ def run_list(name, argv):
                 else: run_list_pool(size(r))
             if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)   # after the pool line: which model the next cells run
             tag = f"{r['_b']}-{r['name']}"
-            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if (o.kill or o.clean_state) else ["--keep-server"]) + (["--clean-state"] if o.clean_state else [])
+            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
             if o.dry: print(f"[{name}] {tag}: {re.sub(r' pf(?=\d+k)', ' ', shlex.join(cmd[3:]))}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
@@ -7325,6 +7340,645 @@ def cmd_cell(a):
             f.write(f"{time.strftime('%F %T')} ERROR {a.tag} {a.test} builds={a.builds} model={os.path.basename(a.model)} run.py exit={rc}\n" + "".join(e + "\n" for e in errs))
         return 1
     return 0
+def cmd_tokpred(a):
+    """Replays a --moe tokdump file (per answer token: the input of the first and of the last MoE layer, the experts every MoE layer picked and whether each
+    was cached) as a nearest-neighbour memory (user 2026-10-28: "store all selected (8) of all layers moes per layer 0 activation ... see how much bigger
+    hitrate we would have if we used it to prefetch too"): for each token the k tokens before it whose activation is nearest (cosine, inputs centred on
+    their mean) vote the experts of every layer, weighted by their cosine; the P most voted per layer are the prefetch. Hit rate if prefetched: a pick
+    cached then, or prefetched in time. In time: the first MoE layer's input of this token exists only once that layer runs, so it covers the layers after
+    it; the inputs of the token before exist when the step starts and cover every layer. An upper bound: uploads cost nothing here. Memory: every token
+    before (this request's too), or only earlier requests (what a stored memory gives a new request). Baselines: the experts the token before picked, and
+    this request's most used so far. Last: requests compared by their first answer token's inputs (the whole prompt is in them) against how alike the
+    experts they used were (overlap as hotmapmat computes it): the topic key question."""
+    import struct
+    import numpy as np
+    raw = open(a.file, "rb").read()
+    if raw[:8] != b"MOETOKD1":
+        sys.exit(f"{a.file}: not a --moe tokdump file")
+    ne, nl, nu, nx = struct.unpack_from("<4I", raw, 8)
+    dt = np.dtype([("req", "<u4"), ("k0", "<f2", (ne,)), ("kl", "<f2", (ne,)), ("ids", "<i2", (nl, nu)), ("hit", "u1", (nl, nu))])
+    n = (len(raw) - 24) // dt.itemsize
+    r = np.frombuffer(raw, dtype=dt, count=n, offset=24)
+    rq = r["req"].astype(np.int64)
+    seg = np.concatenate([[0], np.cumsum(np.diff(rq) < 0)])   # a server started again (the file is appended): its requests count anew
+    _, req = np.unique(seg * 1_000_000 + rq, return_inverse=True)
+    ids = r["ids"].astype(np.int64)
+    valid = ids >= 0
+    hit = r["hit"].astype(bool) & valid
+    nreq = int(req.max()) + 1 if n else 0
+    print(f"{a.file}: {n} answer tokens of {nreq} requests, {nl} MoE layers x {nu} experts per token of {nx}, inputs {ne} wide")
+    if n < 2:
+        return
+    first = np.ones(n, bool)
+    first[1:] = req[1:] != req[:-1]   # a request's first answer token: no token before it in the request
+    if a.matrix:   # how alike the experts of the requests' answers were (every answer token, not cut to the cache): repeats of a prompt stay apart here
+        ntok = np.bincount(req, minlength=nreq)
+        keep = [q for q in range(nreq) if ntok[q] >= 200]   # warm-up and probe requests are short
+        names = ((a.names.split(",") if a.names else []) + [f"r{q}" for q in keep])[:len(keep)]
+        cnt = np.zeros((len(keep), nl, nx))
+        lay = np.broadcast_to(np.arange(nl)[None, :, None], ids.shape)
+        for i, q in enumerate(keep):
+            sel = (req == q)[:, None, None] & valid
+            np.add.at(cnt[i], (lay[sel], ids[sel]), 1.0)
+        sh = cnt / np.maximum(cnt.sum(axis=2, keepdims=True), 1)
+        ov = np.array([[np.minimum(sh[i], sh[j]).sum(axis=1).mean() for j in range(len(keep))] for i in range(len(keep))])
+        print(f"\nexpert overlap of the answers ({len(keep)} requests of >= 200 answer tokens; tokens: {', '.join(str(ntok[q]) for q in keep)})")
+        print(" " * 12 + "".join(f"{nm[:7]:>8}" for nm in names))
+        for i in range(len(keep)):
+            print(f"{names[i][:11]:<12}" + "".join(f"{ov[i][j]:8.2f}" for j in range(len(keep))))
+        if a.no_replay:
+            return
+    tot = valid.sum()
+    base = hit.sum() / tot
+    print(f"the run: hit rate {100 * base:.1f}%, {(tot - hit.sum()) / n:.1f} misses per token of {nl * nu} picks")
+
+    def unit(k):
+        k = k.astype(np.float32)
+        k -= k.mean(axis=0)   # centred: a few huge values in every token's input would make all tokens alike
+        return k / np.maximum(np.linalg.norm(k, axis=1, keepdims=True), 1e-12)
+    K0, KL = unit(r["k0"]), unit(r["kl"])
+    ks = sorted(int(v) for v in a.k.split(","))
+    ps = sorted(int(v) for v in a.p.split(","))
+    B = 1024
+
+    def topp(votes, P):   # the P most voted experts per layer (only those with a vote)
+        if P >= nx:
+            return votes > 0
+        thr = -np.partition(-votes, P - 1, axis=2)[..., P - 1]
+        return (votes >= thr[..., None]) & (votes > 0)
+
+    def score(votes, rows, cover_from, acc):   # acc[P] += (picks prefetched, misses saved)
+        for P in ps:
+            m = topp(votes, P)
+            cov = np.take_along_axis(m, np.where(valid[rows], ids[rows], 0), axis=2) & valid[rows]
+            cov[:, :cover_from, :] = False
+            acc[P][0] += cov.sum()
+            acc[P][1] += (cov & ~hit[rows]).sum()
+
+    def result(acc):
+        return {P: (acc[P][0] / tot, (hit.sum() + acc[P][1]) / tot, acc[P][1] / n) for P in ps}
+
+    def vote(rows, picks, w):   # picks: rows x m (rows of the memory), w: rows x m -> votes rows x nl x nx
+        pk = ids[picks]   # rows x m x nl x nu
+        vk = valid[picks]
+        b = np.broadcast_to(np.arange(len(rows))[:, None, None, None], pk.shape)
+        l = np.broadcast_to(np.arange(nl)[None, None, :, None], pk.shape)
+        flat = ((b * nl + l) * nx + np.where(vk, pk, 0)).ravel()
+        ww = (np.broadcast_to(w[:, :, None, None], pk.shape) * vk).ravel()
+        return np.bincount(flat, weights=ww, minlength=len(rows) * nl * nx).reshape(len(rows), nl, nx).astype(np.float32)
+
+    prev = np.arange(n) - 1
+    prev[first] = -1
+    nf = np.nonzero(~first)[0]
+    rows_out = []
+    kmax = max(ks)
+    for name, Q, qrow, mkey, mpick, cover_from in (
+            ("first MoE layer input, this token", K0, np.arange(n), np.arange(n), np.arange(n), 1),
+            ("first MoE layer input, token before", K0, prev, nf - 1, nf, 0),
+            ("last MoE layer input, token before", KL, prev, nf - 1, nf, 0)):
+        M = Q[mkey]
+        for scope in ("any token before", "earlier requests"):
+            acc = {k: {P: [0, 0] for P in ps} for k in ks}
+            for b0 in range(0, n, B):
+                rows = np.arange(b0, min(n, b0 + B))
+                qi = qrow[rows]
+                ok = qi >= 0
+                S = Q[np.maximum(qi, 0)] @ M.T
+                allow = (mpick[None, :] < rows[:, None]) & ok[:, None]   # only picks made before this token
+                if scope == "earlier requests":
+                    allow &= req[mpick][None, :] < req[rows][:, None]
+                S = np.where(allow, S, -np.inf)
+                kk = min(kmax, S.shape[1])
+                nb = np.argpartition(-S, kk - 1, axis=1)[:, :kk]
+                sv = np.take_along_axis(S, nb, axis=1)
+                o = np.argsort(-sv, axis=1)   # nearest first, so the first k are the k nearest
+                nb, sv = np.take_along_axis(nb, o, axis=1), np.take_along_axis(sv, o, axis=1)
+                w = np.where(np.isfinite(sv) & (sv > 0), sv, 0.0).astype(np.float32)
+                for k in ks:
+                    score(vote(rows, mpick[nb[:, :k]], w[:, :k]), rows, cover_from, acc[k])
+            for k in ks:
+                rows_out.append((f"{name}, k={k}, {scope}", result(acc[k])))
+
+    acc = {P: [0, 0] for P in ps}   # the experts the token before picked
+    for b0 in range(0, n, B):
+        rows = np.arange(b0, min(n, b0 + B))
+        pr = prev[rows]
+        score(vote(rows, np.maximum(pr, 0)[:, None], (pr >= 0).astype(np.float32)[:, None]), rows, 0, acc)
+    rows_out.append(("experts of the token before (recency)", result(acc)))
+
+    acc = {P: [0, 0] for P in ps}   # this request's uses so far
+    cum = np.zeros((nl, nx), np.float32)
+    lay = np.broadcast_to(np.arange(nl)[:, None], (nl, nu))
+    for b0 in range(0, n, B):
+        rows = np.arange(b0, min(n, b0 + B))
+        votes = np.empty((len(rows), nl, nx), np.float32)
+        for i, t in enumerate(rows):
+            if first[t]:
+                cum[:] = 0
+            votes[i] = cum
+            v = valid[t]
+            np.add.at(cum, (lay[v], ids[t][v]), 1.0)
+        score(votes, rows, 0, acc)
+    rows_out.append(("this request's most used so far", result(acc)))
+
+    print(f"\nprefetch from a memory of answer tokens: P = experts prefetched per layer per token; recall = share of picks prefetched in time; hit = cached or"
+          f" prefetched; saved = misses saved per token")
+    w0 = max(len(x[0]) for x in rows_out)
+    print(f"{'predictor':{w0}s}  " + "  ".join(f"{'P=' + str(P):^22s}" for P in ps))
+    print(f"{'':{w0}s}  " + "  ".join(f"{'recall   hit  saved':>22s}" for _ in ps))
+    for name, res in rows_out:
+        print(f"{name:{w0}s}  " + "  ".join(f"{100 * res[P][0]:8.1f} {100 * res[P][1]:5.1f} {res[P][2]:6.1f} " for P in ps))
+    print(f"{'(the run as it was)':{w0}s}  " + "  ".join(f"{'':8s} {100 * base:5.1f} {'':6s} " for _ in ps))
+
+    if nreq >= 3:   # requests: inputs at their first answer token against the experts they used
+        cnt = np.zeros((nreq, nl, nx))
+        for q in range(nreq):
+            sel = (req == q)[:, None, None] & valid
+            np.add.at(cnt[q], (np.broadcast_to(np.arange(nl)[None, :, None], ids.shape)[sel], ids[sel]), 1.0)
+        sh = cnt / np.maximum(cnt.sum(axis=2, keepdims=True), 1)
+        ov = np.array([[np.minimum(sh[i], sh[j]).sum(axis=1).mean() for j in range(nreq)] for i in range(nreq)])
+        firsts = np.nonzero(first)[0]
+        def mean_unit(k):
+            m = k.mean(axis=0)
+            return m / max(float(np.linalg.norm(m)), 1e-12)
+        keys = {"first MoE layer input, first answer token": K0[firsts], "last MoE layer input, first answer token": KL[firsts],
+                "first MoE layer input, mean of the first 16 answer tokens": np.stack([mean_unit(K0[req == q][:16]) for q in range(nreq)])}
+        iu = np.triu_indices(nreq, 1)
+        o2 = ov.copy()
+        np.fill_diagonal(o2, -np.inf)
+        print(f"\nrequests ({nreq}): key cosine against how alike the experts they used were (overlap), over {len(iu[0])} pairs")
+        for name, kq in keys.items():
+            c = kq @ kq.T
+            corr = np.corrcoef(c[iu], ov[iu])[0, 1]
+            np.fill_diagonal(c, -np.inf)
+            agree = np.mean(np.argmax(c, axis=1) == np.argmax(o2, axis=1))
+            print(f"  {name:58s} correlation {corr:5.2f}; nearest by key = nearest by experts for {100 * agree:3.0f}% of requests")
+
+
+def _hotmap_report(a, names, hits, hthink, cnt, thk, v8, fk=None, R=None, texts=None):
+    """The report of hotmapmat over a store's records (arrays: hit rates, answer and thinking maps n x layers x experts, the key kinds fk (binary layouts)
+    or every row of each key R (n x rows x n_embd))."""
+    import numpy as np
+    n, x = len(hits), cnt.shape[2]
+    nk = 0 if fk is None else fk.shape[0]
+    kinds = ["first MoE layer", "middle MoE layer", "final hidden state", "MoE layers pooled", "text (own words)"]
+    if texts:
+        print("records: " + "; ".join(f"{names[i]} = {texts[i][:50]!r}" for i in range(n)))
+    def overlaps(A, B):   # per pair: per layer the smaller of the two shares summed over the experts, averaged over the layers either map used
+        sa, sb = A / np.maximum(A.sum(axis=2, keepdims=True), 1), B / np.maximum(B.sum(axis=2, keepdims=True), 1)
+        ua, ub = A.sum(axis=2) > 0, B.sum(axis=2) > 0
+        m = np.zeros((len(A), len(B)))
+        for i in range(len(A)):
+            for j in range(len(B)):
+                both = ua[i] | ub[j]
+                m[i, j] = np.minimum(sa[i], sb[j]).sum(axis=1)[both].mean() if both.any() else 0.0
+        return m
+    ov = overlaps(cnt, cnt)
+    def show(title, m):
+        print(f"\n{title}")
+        print(" " * 12 + "".join(f"{nm[:7]:>8}" for nm in names))
+        for i in range(n):
+            print(f"{names[i][:11]:<12}" + "".join(f"{m[i][j]:8.2f}" for j in range(n)))
+    def spread(C):   # per layer: the experts that take 50 / 80 / 90 % of its uses (median over the layers that used any)
+        out = []
+        for q in (0.5, 0.8, 0.9):
+            per = []
+            for row in C:
+                t = row.sum()
+                if t <= 0:
+                    continue
+                cs = np.cumsum(np.sort(row)[::-1]) / t
+                per.append(int(np.searchsorted(cs, q) + 1))
+            out.append(int(np.median(per)) if per else 0)
+        return out
+    show("expert overlap (answer's hottest experts, 1 = the same used alike)", ov)
+    think_any = v8 and thk.sum() > 0
+    if think_any:
+        has = thk.sum(axis=(1, 2)) > 0
+        show("expert overlap of the thinking maps (0: a request that did not think)", overlaps(thk, thk) * np.outer(has, has))
+        tv = overlaps(thk, cnt)
+        print("\nthinking map vs answer map of the same request: " + ", ".join(f"{names[i]} {tv[i, i]:.2f}" for i in range(n) if has[i]))
+    print(f"\nhow concentrated the maps are: per layer, the experts that take 50 / 80 / 90 % of its uses (median over layers; {x} experts per layer)")
+    for i in range(n):
+        print(f"  {names[i]:12s} answer {'/'.join(str(v) for v in spread(cnt[i]))}" + (f"   thinking {'/'.join(str(v) for v in spread(thk[i]))}" if think_any and thk[i].sum() > 0 else ""))
+    iu = np.triu_indices(n, 1)
+    o2 = ov.copy()
+    np.fill_diagonal(o2, -np.inf)
+    norms = ("raw", "centred", "z-scored")
+    def cosm(K, how):   # n x e keys -> n x n cosine after the normalization
+        if how == "centred":
+            K = K - K.mean(0)
+        elif how == "z-scored":
+            K = (K - K.mean(0)) / (K.std(0) + 1e-6)
+        U = K / np.maximum(np.linalg.norm(K, axis=1, keepdims=True), 1e-12)
+        return U @ U.T
+    def score(c):
+        r = np.corrcoef(c[iu], ov[iu])[0, 1] if n >= 3 else float("nan")
+        cc = c.copy()
+        np.fill_diagonal(cc, -np.inf)
+        return r, (np.mean(np.argmax(cc, 1) == np.argmax(o2, 1)) if n >= 2 else float("nan")), np.percentile(c[iu], 5), np.percentile(c[iu], 95)
+    results = []
+    def report(label, c):
+        r, ag, lo, hi = score(c)
+        results.append((r, label, c))
+        print(f"  {label:44s} correlation {r:5.2f}   nearest agrees {100 * ag:3.0f}%   cosine {lo:6.3f}..{hi:6.3f}")
+    print(f"\nkey vs expert overlap over {len(iu[0])} pairs: correlation of the cosine with the overlap; nearest by key = nearest by experts; cosine spread (5th..95th percentile)")
+    for k in range(nk if fk is not None else 0):
+        if not np.any(fk[k]):
+            print(f"  {kinds[k]:44s} (no key stored)")
+            continue
+        for how in norms:
+            report(f"{kinds[k]}, {how}", cosm(fk[k], how))
+    if R is not None:   # every row of the prompt's last token: the MoE layers' router inputs, then the final hidden state
+        nm = R.shape[1] - 1
+        print(f"\nevery row of the prompt's last token ({nm} MoE layers and the final state)")
+        for how in norms:
+            per = [cosm(R[:, i], how) for i in range(R.shape[1])]
+            rs = [score(c)[0] for c in per]
+            best = int(np.nanargmax(rs[:nm]))
+            print(f"  {how:9s} per layer correlation: " + " ".join(f"{v:.2f}" for v in rs[:nm]) + f" | final {rs[nm]:.2f}  (best MoE layer {best}: {rs[best]:.2f})")
+            report(f"average of every row's cosine (the store), {how}", sum(per) / len(per))
+            report(f"concat first+mid+last, {how}", (per[0] + per[nm // 2] + per[nm]) / 3)
+            report(f"concat all MoE layers, {how}", sum(per[:nm]) / nm)
+            report(f"concat middle third, {how}", sum(per[nm // 3: 2 * nm // 3]) / max(1, 2 * nm // 3 - nm // 3))
+            U = R[:, :nm] / np.maximum(np.linalg.norm(R[:, :nm], axis=2, keepdims=True), 1e-12)
+            report(f"pooled all MoE layers, {how}", cosm(U.mean(1), how))
+        def q4(v):   # the store's 4-bit row (moe_topic_quant): step 4 rms of a unit row / 7, clipped at +-7
+            u = v / max(np.linalg.norm(v), 1e-12)
+            q = np.clip(np.round(u / (4.0 / (np.sqrt(len(u)) * 7.0))), -7, 7)
+            return q / max(np.linalg.norm(q), 1e-12)
+        Q = np.stack([[q4(R[i, r]) for r in range(R.shape[1])] for i in range(n)])
+        Uf = R / np.maximum(np.linalg.norm(R, axis=2, keepdims=True), 1e-12)
+        report("average of every row's cosine, 4-bit rows vs float (the lookup)", np.mean([Q[:, r] @ Uf[:, r].T for r in range(R.shape[1])], axis=0))
+    if results:
+        r, label, c = max((t for t in results if t[0] == t[0]), key=lambda t: t[0])
+        show(f"key cosine of the best: {label} (correlation {r:.2f})", c)
+
+
+
+def hotmapmat7(a, raw):
+    """MOETOPC7 (2026-10-28): five keys per record from the prompt's last token - the router input at the first and the middle MoE layer, the final hidden
+    state (pre-logits), all MoE layers' router inputs pooled - and the mean input embedding of the request's own text, and a prompt hash (one record per
+    prompt). Per key kind: how well its cosine follows the expert overlap of the stored requests (correlation over all pairs; nearest by key = nearest by
+    experts), raw and with the shared part taken out (centred on the records' mean; z-scored per value): a few huge values every token carries swamp raw
+    activations. --acts FILE (<tokdump>.acts): every layer's row of each prompt's last token, matched by prompt hash: each layer alone, concatenations
+    (= the mean of the parts' cosines) and poolings compared the same way."""
+    import struct
+    import numpy as np
+    e, l, x, _ = struct.unpack_from("<4I", raw, 8)
+    kb = (e + 1) // 2
+    nk = 5
+    v8 = raw[:8] == b"MOETOPC8"   # two maps per record: the answer's and the thinking phase's, each with its hit rate
+    kinds = ["first MoE layer", "middle MoE layer", "final hidden state", "MoE layers pooled", "text (own words)"]
+    head = 24 + 4 + 4 * l * x
+    rec = (8 if v8 else 4) + 4 + 4 + 8 + nk * (4 + kb + 4 * e) + (2 if v8 else 1) * 4 * l * x
+    n = (len(raw) - head) // rec
+    hits, hthink, ph, fk = [], [], [], np.zeros((nk, n, e), np.float32)
+    cnt, thk = np.zeros((n, l, x), np.float64), np.zeros((n, l, x), np.float64)
+    for i in range(n):
+        o = head + i * rec
+        hits.append(struct.unpack_from("<f", raw, o)[0])
+        if v8:
+            hthink.append(struct.unpack_from("<f", raw, o + 4)[0])
+            o += 4
+        ph.append(struct.unpack_from("<Q", raw, o + 12)[0])
+        o += 20
+        for k in range(nk):
+            o += 4 + kb
+            fk[k, i] = np.frombuffer(raw, np.float32, e, o)
+            o += 4 * e
+        cnt[i] = np.frombuffer(raw, np.uint32, l * x, o).reshape(l, x)
+        if v8:
+            thk[i] = np.frombuffer(raw, np.uint32, l * x, o + 4 * l * x).reshape(l, x)
+    names = ((a.names.split(",") if a.names else []) + [str(i + 1) for i in range(n)])[:n]
+    R = None
+    if a.acts:   # <tokdump>.acts: every row of each prompt's last token, matched by prompt hash
+        rawa = open(a.acts, "rb").read()
+        if rawa[:8] != b"MOEACTS1":
+            sys.exit(f"{a.acts}: not a dynhot activation file")
+        (ea,) = struct.unpack_from("<I", rawa, 8)
+        o, acts = 12, {}
+        while o + 12 <= len(rawa):
+            h, nr = struct.unpack_from("<QI", rawa, o)
+            o += 12
+            acts[h] = np.frombuffer(rawa, np.float16, nr * ea, o).reshape(nr, ea).astype(np.float32)
+            o += 2 * nr * ea
+        if all(p in acts for p in ph):
+            R = np.stack([acts[p] for p in ph])
+        else:
+            print(f"--acts: {sum(p not in acts for p in ph)} of {n} records have no rows")
+    print(f"{a.file}: {n} records (one per prompt), hit rates {', '.join(f'{100 * h:.0f}' for h in hits)}" +
+          (f"; thinking hit rates {', '.join('-' if h < 0 else f'{100 * h:.0f}' for h in hthink)}" if v8 else ""))
+    _hotmap_report(a, names, hits, hthink, cnt, thk, v8, fk=fk, R=R)
+
+
+def hotmap_js_records(path):
+    """The records of a dynhot store file (<model>.js, 2026-10-29: one assignment per line, the record number in every name, the last assignment wins,
+    key5=null drops record 5): [{word: value}] in record order. Every value is JSON (strings, numbers, arrays, null)."""
+    import json
+    recs = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            eq = line.find("=")
+            if eq <= 0 or not line.endswith(";"):
+                continue
+            name = line[:eq].strip()
+            i = len(name)
+            while i > 0 and name[i - 1].isdigit():
+                i -= 1
+            if i == len(name):
+                continue
+            recs.setdefault(int(name[i:]), {})[name[:i]] = json.loads(line[eq + 1:-1])
+    return [dict(r, id=k) for k, r in sorted(recs.items()) if r.get("key")]
+
+
+def hotmap_js_statements(line):
+    """the `name=value;` statements of a store line: [(name, value)], values read as JSON (strings, numbers, arrays, null)"""
+    import json
+    dec, out, i = json.JSONDecoder(), [], 0
+    while i < len(line):
+        while i < len(line) and line[i] in " \t\r\n;":
+            i += 1
+        eq = line.find("=", i)
+        if i >= len(line) or eq < 0:
+            break
+        v, i = dec.raw_decode(line, eq + 1)
+        out.append((line[i - (i - eq - 1) - (eq - i + i) + i - i:eq].strip() if False else line[:eq].rsplit(";", 1)[-1].strip(), v))
+    return out
+
+
+def hotmap_dir_load(d):
+    """A dynhot store directory (<model>/, 2026-10-29): requests.js (one line per stored request, the last line of a number wins: k = key rows as fp8 E4M3
+    in hex, v / vt = per layer the line of its answer's / thinking's row in that layer's rows.js, m / mt = per layer its own use of each expert of that row
+    in ascending expert order, h / ht hit rates, p / th / a texts) and per layer a directory <l>/ of sets.js (s4=[3,34,6,7,s1]: expert numbers and sets;
+    a set redefined on a later line s4=[s12,s13]), rows.js (c7=[7,s4]) and moes.js (m=[...]: the layer's uses per expert so far).
+    Returns (records, layers): each record with its key rows as floats and its maps expanded ("val"/"think": [[uses, layer, expert], ...]). A layer is
+    {"nodes", "kind", "row0", "moes"}: the sets by line number (a leaf as {"e3": 1, ...}, a split or a row as a list of names and leaves), then its rows
+    from index row0 on (kind "c")."""
+    import re
+    import numpy as np
+    e4m3 = np.array([(-1 if v & 0x80 else 1) * ((v & 7) / 8 * 2 ** -6 if (v >> 3) & 15 == 0 else (1 + (v & 7) / 8) * 2.0 ** (((v >> 3) & 15) - 7))
+                     for v in range(256)], np.float32)
+    def statements(f):
+        if os.path.exists(f):
+            with open(f) as fh:
+                for line in fh:
+                    for st in line.split(";"):
+                        mm = re.match(r"\s*([a-z]+)(\d*)\s*=\s*(.+?)\s*$", st)
+                        if mm:
+                            yield mm.group(1), mm.group(2), mm.group(3)
+    def listval(v):   # [3,34,s1]: a leaf (only numbers) as {"e3": 1}, else the list of names and leaf dict of its numbers
+        items = [x.strip() for x in v.strip()[1:-1].split(",") if x.strip()]
+        nums = {"e" + x: 1 for x in items if x[0].isdigit()}
+        names = [x for x in items if not x[0].isdigit()]
+        return (nums if not names else ([nums] if nums else []) + names)
+    layers = {}
+    for sub in glob.glob(os.path.join(d, "*")):
+        if not os.path.isdir(sub) or not os.path.basename(sub).isdigit():
+            continue
+        nodes, kind = [], []
+        for k, n, v in statements(os.path.join(sub, "sets.js")):
+            x = listval(v)
+            if int(n) == len(nodes):
+                nodes.append(x)
+                kind.append("s")
+            elif int(n) < len(nodes) and kind[int(n)] == "s":   # a set redefined on this line
+                nodes[int(n)] = x
+                nodes.append(None)
+                kind.append("r")
+        row0 = len(nodes)
+        for k, n, v in statements(os.path.join(sub, "rows.js")):
+            nodes.append(listval(v))
+            kind.append("c")
+        moes = []
+        for k, n, v in statements(os.path.join(sub, "moes.js")):
+            moes = [int(x) for x in v.strip()[1:-1].split(",") if x.strip()]
+        layers[int(os.path.basename(sub))] = {"nodes": nodes, "kind": kind, "row0": row0, "moes": moes}
+    def experts(l, x, out):   # the experts of a node, ascending
+        for el in (x if isinstance(x, list) else [x]):
+            if isinstance(el, dict):
+                out.update(int(k[1:]) for k in el)
+            else:
+                experts(l, layers[l]["nodes"][int(el[1:])], out)
+        return out
+    reqs = {}
+    path = os.path.join(d, "requests.js")
+    if os.path.exists(path):
+        with open(path) as fh:
+            for line in fh:
+                for name, v in hotmap_js_statements(line.strip()):
+                    m = re.fullmatch(r"([a-z]+)(\d+)", name)
+                    if m:
+                        reqs.setdefault(int(m.group(2)), {})[m.group(1)] = v
+    recs = []
+    for n in sorted(reqs):
+        r = reqs[n]
+        if not r.get("k"):
+            continue
+        rec = {"id": n, "hit": r.get("h", -1), "hitthink": r.get("ht", -1), "prompt": r.get("p", ""), "thinking": r.get("th", ""), "answer": r.get("a", ""),
+               "key": [e4m3[np.frombuffer(bytes.fromhex(x), np.uint8)] for x in r["k"]]}
+        for word, cword, key in (("v", "m", "val"), ("vt", "mt", "think")):
+            out = []
+            for l, ln in enumerate(r.get(word) or []):
+                if ln is None or ln < 0 or l not in layers:
+                    continue
+                ex = sorted(experts(l, layers[l]["nodes"][layers[l]["row0"] + ln], set()))
+                ct = (r.get(cword) or [])
+                ct = ct[l] if l < len(ct) and len(ct[l]) == len(ex) else [1] * len(ex)
+                out += [[c, l, e] for e, c in zip(ex, ct)]
+            rec[key] = out
+        recs.append(rec)
+    return recs, layers
+
+
+def hotmapmat_dir(a):
+    """The store directory: per layer, how its sets grew (how many, how many shared, how short a row is in names and own experts), then the same report
+    as the other layouts."""
+    import numpy as np
+    recs, layers = hotmap_dir_load(a.file)
+    if not recs:
+        sys.exit(f"{a.file}: no records")
+    print(f"{a.file}: {len(recs)} records; per layer (layer: sets, of them named by others, rows as names / inline experts on average, bytes)")
+    tot = 0
+    out = []
+    for l in sorted(layers):
+        ly = layers[l]
+        named = set()
+        for v in ly["nodes"]:
+            for x in (v if isinstance(v, list) else []):
+                if isinstance(x, str):
+                    named.add(x)
+        rows = [ly["nodes"][r["v"][l]] for r in [] ]
+        rws = [ly["nodes"][i] for i, k in enumerate(ly["kind"]) if k == "c"]
+        nm = np.mean([sum(isinstance(x, str) for x in v) for v in rws]) if rws else 0
+        ow = np.mean([sum(len(x) for x in v if isinstance(x, dict)) for v in rws]) if rws else 0
+        nsets = sum(1 for k in ly["kind"] if k == "s")
+        size = sum(os.path.getsize(os.path.join(a.file, str(l), f)) for f in ("sets.js", "rows.js", "moes.js") if os.path.exists(os.path.join(a.file, str(l), f)))
+        tot += size
+        out.append(f"{l}: {nsets} sets, {len(named)} named, {len(rws)} rows {nm:.1f}/{ow:.0f}, {size // 1024} KB")
+    for i in range(0, len(out), 4):
+        print("  " + " | ".join(out[i:i + 4]))
+    keys = os.path.getsize(os.path.join(a.file, "requests.js"))
+    print(f"  layer files {tot // 1024} KB, requests.js {keys // 1024} KB")
+    a.file = os.path.join(a.file, "requests.js")
+    R = np.array([r["key"] for r in recs], np.float32)
+    n, rows, e = R.shape
+    L = 1 + max((t[1] for r in recs for m in ("val", "think") for t in r.get(m) or []), default=0)
+    X = 1 + max((t[2] for r in recs for m in ("val", "think") for t in r.get(m) or []), default=1)
+    cnt, thk = np.zeros((n, L, X)), np.zeros((n, L, X))
+    for i, r in enumerate(recs):
+        for M, m in ((cnt, "val"), (thk, "think")):
+            for c, l, xx in r.get(m) or []:
+                M[i, l, xx] = c
+    hits, hthink = [r.get("hit", -1) for r in recs], [r.get("hitthink", -1) for r in recs]
+    names = ((a.names.split(",") if a.names else []) + [str(r["id"]) for r in recs])[:n]
+    _hotmap_report(a, names, hits, hthink, cnt, thk, True, R=R, texts=[r.get("prompt", "") for r in recs])
+
+
+def hotmapmat_js(a):
+    """The JS store (<model>.js): every row of each key, both maps, the texts; the same report as the binary layouts."""
+    import numpy as np
+    recs = hotmap_js_records(a.file)
+    if not recs:
+        sys.exit(f"{a.file}: no records")
+    R = np.array([r["key"] for r in recs], np.float32)   # n x rows x n_embd
+    n, rows, e = R.shape
+    L = 1 + max((t[1] for r in recs for m in ("val", "think") for t in r.get(m) or []), default=0)
+    X = 1 + max((t[2] for r in recs for m in ("val", "think") for t in r.get(m) or []), default=1)
+    cnt, thk = np.zeros((n, L, X)), np.zeros((n, L, X))
+    for i, r in enumerate(recs):
+        for M, m in ((cnt, "val"), (thk, "think")):
+            for c, l, xx in r.get(m) or []:
+                M[i, l, xx] = c
+    hits, hthink = [r.get("hit", -1) for r in recs], [r.get("hitthink", -1) for r in recs]
+    texts = [r.get("prompt", "") for r in recs]
+    names = ((a.names.split(",") if a.names else []) + [str(r["id"]) for r in recs])[:n]
+    print(f"{a.file}: {n} records (one per prompt), keys of {rows} rows x {e}, hit rates {', '.join(f'{100 * h:.0f}' for h in hits)}; thinking hit rates "
+          f"{', '.join('-' if h < 0 else f'{100 * h:.0f}' for h in hthink)}")
+    _hotmap_report(a, names, hits, hthink, cnt, thk, True, R=R, texts=texts)
+
+
+def hotmapmat_csv(a):
+    """The CSV store (2026-10-28, <model>.csv: one line per record, the last line of an id wins): every row of each key, both maps, the texts."""
+    import csv
+    import numpy as np
+    csv.field_size_limit(1 << 30)
+    recs = {}
+    with open(a.file, newline="") as f:
+        for row in csv.reader(f):
+            if not row or row[0] == "id" or not row[0].isdigit():
+                continue
+            recs[int(row[0])] = row if len(row) >= 13 and row[10] else None
+    recs = [recs[k] for k in sorted(recs) if recs[k]]
+    if not recs:
+        sys.exit(f"{a.file}: no records")
+    def unesc(t):
+        out, i = [], 0
+        while i < len(t):
+            if t[i] == "\\" and i + 1 < len(t):
+                out.append("\n" if t[i + 1] == "n" else t[i + 1])
+                i += 2
+            else:
+                out.append(t[i])
+                i += 1
+        return "".join(out)
+    R = np.stack([np.array([[float(v) for v in r.split()] for r in row[10].split("|")], np.float32) for row in recs])
+    n, rows, e = R.shape
+    lmax = xmax = 0
+    for row in recs:
+        for fld in (row[11], row[12]):
+            for t in fld.split():
+                c, l, xx = t.split(":")
+                lmax, xmax = max(lmax, int(l)), max(xmax, int(xx))
+    L, X = lmax + 1, max(xmax + 1, 2)
+    cnt, thk = np.zeros((n, L, X)), np.zeros((n, L, X))
+    for i, row in enumerate(recs):
+        for M, fld in ((cnt, row[11]), (thk, row[12])):
+            for t in fld.split():
+                c, l, xx = (int(v) for v in t.split(":"))
+                M[i, l, xx] = c
+    hits, hthink = [float(r[3]) for r in recs], [float(r[4]) for r in recs]
+    texts = [unesc(r[7]) for r in recs]
+    names = ((a.names.split(",") if a.names else []) + [r[0] for r in recs])[:n]
+    print(f"{a.file}: {n} records (one per prompt), keys of {rows} rows x {e}, hit rates {', '.join(f'{100 * h:.0f}' for h in hits)}; thinking hit rates "
+          f"{', '.join('-' if h < 0 else f'{100 * h:.0f}' for h in hthink)}")
+    _hotmap_report(a, names, hits, hthink, cnt, thk, True, R=R, texts=texts)
+
+
+def cmd_hotmapsets(a):
+    """run.py hotmapsets DIR [--names a,b,...] [--groups code=a,b;prose=c,d]: the sets each layer's file grew (2026-10-29: every write splits the sets it
+    shares out as smaller ones). Per layer: lines and bytes of its file, the sets written (a split writes two and redefines one), today's leaves (the
+    smallest sets) and who uses them: every request (the layer's core), one group only, several groups, one request only; with the experts each kind
+    holds. Then the layers that grew most and the largest shared subsets."""
+    import numpy as np
+    recs, layers = hotmap_dir_load(a.dir)
+    if not recs:
+        sys.exit(f"{a.dir}: no requests")
+    n = len(recs)
+    names = ((a.names.split(",") if a.names else []) + [str(r["id"]) for r in recs])[:n]
+    groups = {}
+    for part in (a.groups or "").split(";"):
+        if "=" in part:
+            g, members = part.split("=", 1)
+            for m in members.split(","):
+                groups[m.strip()] = g.strip()
+    reqs = __import__("re")
+    import re as _re
+    raw = {}   # request number -> its v (row line per layer), read again (hotmap_dir_load expands maps, the rows themselves are wanted here)
+    with open(os.path.join(a.dir, "requests.js")) as fh:
+        for line in fh:
+            for name, v in hotmap_js_statements(line.strip()):
+                m = _re.fullmatch(r"v(\d+)", name)
+                if m:
+                    raw[int(m.group(1))] = v
+    rows = [raw.get(r["id"]) for r in recs]
+    def leaves(ly, x, out):   # the leaf sets of a node's tree (by line number)
+        for el in (x if isinstance(x, list) else []):
+            if isinstance(el, str):
+                k = int(el[1:])
+                v = ly["nodes"][k]
+                if isinstance(v, dict):
+                    out.add(k)
+                else:
+                    leaves(ly, v, out)
+        return out
+    report, growth, shared_big = [], [], []
+    print(f"{a.dir}: {n} requests; per layer: lines, KB, sets written, today's leaves: core (every request) / one group / several groups / one request"
+          f" (experts each holds in brackets)")
+    for l in sorted(layers):
+        ly = layers[l]
+        size = sum(os.path.getsize(os.path.join(a.dir, str(l), f)) for f in ("sets.js", "rows.js", "moes.js") if os.path.exists(os.path.join(a.dir, str(l), f)))
+        nlines = len(ly["kind"])
+        written = sum(1 for k in ly["kind"] if k in "sr")
+        users = {}   # leaf -> requests using it
+        for i, rv in enumerate(rows):
+            if not rv or l >= len(rv) or rv[l] < 0:
+                continue
+            for lf in leaves(ly, ly["nodes"][ly["row0"] + rv[l]], set()):
+                users.setdefault(lf, set()).add(i)
+        cnt = {"core": [0, 0], "group": [0, 0], "groups": [0, 0], "one": [0, 0]}
+        for lf, us in users.items():
+            sz = len(ly["nodes"][lf])
+            gs = {groups.get(names[i], names[i]) for i in us}
+            kind = "core" if len(us) == n else "one" if len(us) == 1 else "group" if len(gs) == 1 else "groups"
+            cnt[kind][0] += 1
+            cnt[kind][1] += sz
+            if len(us) > 1:
+                shared_big.append((sz, l, lf, sorted({groups.get(names[i], names[i]) for i in us}), len(us)))
+        growth.append((size, nlines, l))
+        report.append(f"{l:2d}: {nlines:4d} lines {size // 1024:4d} KB {written:4d} sets | core {cnt['core'][0]} ({cnt['core'][1]}) / group {cnt['group'][0]} "
+                      f"({cnt['group'][1]}) / groups {cnt['groups'][0]} ({cnt['groups'][1]}) / one {cnt['one'][0]} ({cnt['one'][1]})")
+    print("\n".join("  " + r for r in report))
+    growth.sort(reverse=True)
+    print("\nlayers that grew most (KB, lines): " + ", ".join(f"{l} ({s // 1024} KB, {ln})" for s, ln, l in growth[:8]))
+    print("layers that grew least: " + ", ".join(f"{l} ({s // 1024} KB, {ln})" for s, ln, l in growth[-6:]))
+    shared_big.sort(reverse=True)
+    print("\nlargest shared subsets (experts, layer, set, used by, requests):")
+    for sz, l, lf, gs, k in shared_big[:12]:
+        print(f"  {sz:3d} experts  layer {l:2d} s{lf:<5d} {k:2d} requests: {', '.join(gs)}")
+
+
 def cmd_hotmapmat(a):
     """Reads a --moe dynhot store (<state dir>/hotmap/<model>.hotmap) and prints, for its records in the order the requests were stored, the key cosine of each
     pooling (mean, max) and the expert overlap of every pair: overlap = per layer the share of its uses each expert got, the smaller of the two shares summed
@@ -7333,20 +7987,37 @@ def cmd_hotmapmat(a):
     all pairs: the pooling whose key predicts the experts used better has the higher one. Records are one request each when the run used dynhot-merge=2
     (nothing pools); --names labels them (a comma list, in storing order)."""
     import struct
+    if os.path.isdir(a.file):
+        return hotmapmat_dir(a)
     raw = open(a.file, "rb").read()
-    if raw[:8] != b"MOETOPC3":
-        sys.exit(f"{a.file}: not a hotmap store of this layout (MOETOPC3)")
+    if raw[:8] in (b"MOETOPC7", b"MOETOPC8"):
+        return hotmapmat7(a, raw)
+    if a.file.endswith(".csv"):
+        return hotmapmat_csv(a)
+    if a.file.endswith(".js"):
+        return hotmapmat_js(a)
+    if raw[:8] not in (b"MOETOPC3", b"MOETOPC6"):
+        sys.exit(f"{a.file}: not a hotmap store of a layout this reads (MOETOPC3, MOETOPC6)")
+    v6 = raw[:8] == b"MOETOPC6"
     e, l, x, _ = struct.unpack_from("<4I", raw, 8)
     kb = (e + 1) // 2   # keys are 4 bits per value: q = nibble - 8, times qinv (1 / length of q); two keys per record (mean pooling, max pooling)
-    rec = 4 + 2 * (4 + kb) + 4 * l * x
-    n = (len(raw) - 24) // rec
-    keys, cnt = ([], []), []
+    # MOETOPC6: the global map after the header (requests, counts); a record = hit rate, source, requests, per key (qinv, 4-bit key, float key), counts
+    head = 24 + (4 + 4 * l * x if v6 else 0)
+    rec = (12 if v6 else 4) + 2 * (4 + kb + (4 * e if v6 else 0)) + 4 * l * x
+    n = (len(raw) - head) // rec
+    keys, fkeys, cnt, hits = ([], []), ([], []), [], []
     for i in range(n):
-        o = 24 + i * rec + 4
+        o = head + i * rec
+        if v6:
+            hits.append(struct.unpack_from("<f", raw, o)[0])
+        o += 12 if v6 else 4
         for k in range(2):
             qi = struct.unpack_from("<f", raw, o)[0]
             keys[k].append([(((raw[o + 4 + j // 2] >> (4 * (j & 1))) & 15) - 8) * qi for j in range(e)])
             o += 4 + kb
+            if v6:
+                fkeys[k].append(list(struct.unpack_from(f"<{e}f", raw, o)))
+                o += 4 * e
         cnt.append([struct.unpack_from(f"<{x}I", raw, o + 4 * x * j) for j in range(l)])
     names = ((a.names.split(",") if a.names else []) + [str(i + 1) for i in range(n)])[:n]
     def overlap(p, q):
@@ -7366,10 +8037,18 @@ def cmd_hotmapmat(a):
     def cos(p, q):
         return sum(u * v for u, v in zip(p, q))
     ov = [[overlap(cnt[i], cnt[k]) for k in range(n)] for i in range(n)]
-    mats = (("key cosine, mean pooling", [[cos(keys[0][i], keys[0][k]) for k in range(n)] for i in range(n)]),
-            ("key cosine, max pooling", [[cos(keys[1][i], keys[1][k]) for k in range(n)] for i in range(n)]),
+    # the 4-bit cosine as the lookup reads it: the stored record's 4-bit key (row) against the new request's float key (column); the 3-file layout has no
+    # float keys: both rows and columns 4-bit
+    fk = fkeys if v6 else keys
+    mats = (("key cosine, mean pooling (exact, float keys)" if v6 else "key cosine, mean pooling", [[cos(fk[0][i], fk[0][k]) for k in range(n)] for i in range(n)]),
+            ("key cosine, max pooling (exact, float keys)" if v6 else "key cosine, max pooling", [[cos(fk[1][i], fk[1][k]) for k in range(n)] for i in range(n)]))
+    if v6:
+        mats += (("key cosine, mean pooling, 4-bit record vs float request (the lookup)", [[cos(keys[0][i], fk[0][k]) for k in range(n)] for i in range(n)]),
+                 ("key cosine, max pooling, 4-bit record vs float request (the lookup)", [[cos(keys[1][i], fk[1][k]) for k in range(n)] for i in range(n)]))
+    mats += (
             ("expert overlap", ov),
             ("shared hot experts (row's hot set also hot in column)", [[shared(i, k) for k in range(n)] for i in range(n)]))
+    ov_i = len(mats) - 2
     for title, m in mats:
         print(f"\n{title}")
         print(" " * 12 + "".join(f"{nm[:7]:>8}" for nm in names))
@@ -7384,7 +8063,7 @@ def cmd_hotmapmat(a):
         sx = sum((u - mx) ** 2 for u in xs) ** 0.5
         sy = sum((v - my) ** 2 for v in ys) ** 0.5
         return sum((u - mx) * (v - my) for u, v in zip(xs, ys)) / (sx * sy) if sx and sy else float("nan")
-    print(f"\ncorrelation of key cosine with expert overlap over {len(pairs)} pairs: mean pooling {corr(mats[0][1]):.2f}, max pooling {corr(mats[1][1]):.2f}")
+    print(f"\ncorrelation of key cosine with expert overlap over {len(pairs)} pairs: " + ", ".join(f"{t.split(',')[1].strip()}{' (4-bit lookup)' if '4-bit' in t else ''} {corr(m):.2f}" for t, m in mats[:ov_i]))
 
 def cmd_hitlog(a):
     """Per request of the cells whose name (runs.db campaign: build-cell-test) starts with PREFIX: the cache hit rate the server printed for that request
@@ -7421,7 +8100,7 @@ def cmd_hitlog(a):
                     m = re.search(r"moe churn = (\d+) uploads", line)
                     if m:
                         up = m.group(1)
-                    m = re.search(r"dynhot: prompt of (\d+) tokens \((\d+) distinct\), nearest of (\d+) stored requests at cosine ([-\d.]+) by (\w+) pooling \(([-\d.]+) by (\w+)\): (.*?) \(key ([\d.]+) ms, search ([\d.]+) ms\)", line)
+                    m = re.search(r"dynhot: prompt of (\d+) tokens \((\d+) distinct[^)]*\), nearest of (\d+) stored requests at cosine ([-\d.]+) by (\w+) pooling \(([-\d.]+) by (\w+)\): (.*?) \(key ([\d.]+) ms, search ([\d.]+) ms\)", line)
                     if m:
                         dyn.append(f"{m.group(1)} tok ({m.group(2)} distinct), {m.group(3)} stored, cos {m.group(5)} {m.group(4)} / {m.group(7)} {m.group(6)}: {m.group(8)}, key {m.group(9)} ms search {m.group(10)} ms")
                     m = re.search(r"dynhot: the prompt is over: (\d+) cached experts .* dropped \(([\d.]+) ms", line)
@@ -7430,8 +8109,49 @@ def cmd_hitlog(a):
                     m = re.search(r"dynhot: request stored: best overlap with a record ([\d.]+), threshold ([\d.]+).*?: (.*?) \((\d+) records, ([\d.]+) ms\)", line)
                     if m:
                         dyn.append(f"stored the request before ({m.group(3)}, overlap {m.group(1)}, {m.group(5)} ms)")
+                    m = re.search(r"dynhot: request stored \(hit ([-\d.]+)% with the cache on (.*?)\): nearest record at cosine ([-\d.]+) \(joins at >= [\d.]+\), maps overlap ([\d.]+): (.*?) record (\d+) \(its hit ([-\d.]+)%, (\d+) requests, (\d+) records", line)
+                    if m:
+                        dyn.append(f"stored the request before (hit {m.group(1)}%, {m.group(5)} record {m.group(6)} at cosine {m.group(3)}, its hit {m.group(7)}%, {m.group(9)} records)")
         name = camp[len(a.prefix):] if camp.startswith(a.prefix) else camp
         print(f"{name[:25]:<26}{hit:>7}{up:>9}{(pp or 0):9.1f}{(tps or 0):9.1f}  {'; '.join(dyn)}")
+
+def cmd_dynfill(a):
+    """Fills a model's hot maps per topic (--moe dynhot=full by default): each prompt of TESTS runs again and again on ONE kept server (a load is most of the
+    cost of a request on the big models), until its requests took --budget seconds or --patience requests in a row did not beat its best decode hit rate
+    (user 2026-10-28: "give each 1 minute for req but stop on hitrate not improving 3 consecutive req"). The server stores every request's map (a prompt's
+    record changes only for a better hit rate) and is stopped at the end, so the last request is stored too. One line per request."""
+    import sqlite3
+    fork = os.path.dirname(os.path.abspath(__file__))
+    model, build = fcfg.model(a.model), resolve_build(a.build)
+    args = (a.args + " " if a.args else "") + f"--moe dynhot={a.mode}"
+    def fnum(v):
+        try: return None if v is None else float(v)
+        except ValueError: return None
+    print(f"dynfill {os.path.basename(model)} on {build}, dynhot={a.mode}: {a.budget:.0f} s of requests per prompt, a prompt stops after {a.patience} requests "
+          f"without a better hit rate", flush=True)
+    for test in a.tests.split(","):
+        best, worse, spent, n = -1.0, 0, 0.0, 0
+        while (n < a.min_requests or spent < a.budget) and worse < a.patience:   # (the first request has no stored map to recall: at least min_requests)
+            t0 = time.time()
+            subprocess.run([sys.executable, os.path.abspath(__file__), "cell", a.tag, model, build, "1", test, args, "--keep-server"] + (["--tokens", str(a.tokens)] if a.tokens else []),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            n += 1
+            row = sqlite3.connect(os.path.join(fork, "runs.db")).execute("select prompt_s, gen_s, start_ts from runs where campaign = ? order by rowid desc limit 1", (f"{a.tag}-{test}",)).fetchone()
+            req_s = ((fnum(row[0]) or 0.0) + (fnum(row[1]) or 0.0)) if row else 0.0
+            spent += req_s if req_s > 0 else time.time() - t0   # the request's own time (prompt + answer), not the load of the first one
+            hit = None
+            logs = [f for f in glob.glob(os.path.join(fork, "bench", "logs", "runs", f"*-{build}-{test}.log")) if os.path.getmtime(f) >= t0]
+            if logs:
+                found = re.findall(r"hit ([\d.]+)% this request", open(max(logs, key=os.path.getmtime), errors="replace").read())
+                hit = float(found[-1]) if found else None
+            if hit is None:
+                print(f"  {test:12s} #{n:<3d} no hit rate (no cache, or the request failed): this prompt stops", flush=True)
+                break
+            better = hit > best
+            best, worse = max(best, hit), (0 if better else worse + 1)
+            print(f"  {test:12s} #{n:<3d} hit {hit:5.1f}%  best {best:5.1f}%  {req_s:5.1f} s  ({spent:4.0f} of {a.budget:.0f} s)" + ("" if better else f"  not better ({worse})"), flush=True)
+    kept_kill()   # SIGTERM: the server stores the last request's map as it ends
+
 
 def cmd_stop(a):
     """Stops a running measurement chain for real: the harness (bench, regress, exp, run, quick, ctl, prompt with their flock wrappers), the servers and tools of our builds and an nsys around them, every descendant of it (the
@@ -8922,7 +9642,7 @@ def _tool_standin():
 
 
 def _tool_bad_runs():
-    """bad-runs [--apply]: runs with a corrupt answer move out of the statistics: table bad_runs in runs.db and bench/bad_runs.csv (same columns + reason), gone from table runs and run-history.csv.
+    """bad-runs [--apply]: runs with a corrupt answer are deleted (table runs, all_runs and run-history.csv); no copy is kept, only the .bak files of the last apply.
     Corrupt = a repetition loop (loop=1), a thrashing run (under 3 t/s with over 1M page faults: the page cache was starved), a nonsense answer (uniq4 < 0.4 over 300+ characters: the same few words again and again) or '!!!!' in the answer. Failed runs (ok=0: out of memory, HTTP 400, a crash) move too, with their note as the reason.
     Dry run unless --apply; both files are copied to *.bak first. Idempotent: run it again any time."""
     import sqlite3, zlib, shutil as sh
@@ -8938,6 +9658,7 @@ def _tool_bad_runs():
         except Exception: pass
     def reason(loop, uniq4, chars, key, md5=None, tps=None, faults=None, ok=None, note=None, n_gen=None, args=None):
         if str(loop) == "1": return "loop"
+        if str(ok) == "0" and "exceeds the available context" in (note or ""): return ""   # kept, ours and stock: the limit of a model on this machine
         if str(ok) == "0": return "failed: " + re.sub(r"\s+", " ", note or "no answer")[:90]   # out of memory, HTTP 400, a crash: no answer to judge
         try:
             if tps not in (None, "") and faults not in (None, "") and 0 < float(tps) < 3 and float(faults) > 1e6: return "thrashing (%.1f t/s, %.0fM page faults: the page cache was starved, e.g. by the huge-page pool)" % (float(tps), float(faults) / 1e6)
@@ -8972,17 +9693,15 @@ def _tool_bad_runs():
     print(f"{os.path.basename(csvp)}: {len(move)} of {len(rows)} rows corrupt:", dict(Counter(r['reason'].split(' (')[0].split(':')[0] for r in move)))
     if not a.apply: print("dry run: --apply moves them"); return
     sh.copy(dbp, dbp + ".bak"); sh.copy(csvp, csvp + ".bak")
-    have = {r[1] for r in con.execute("pragma table_info(bad_runs)")}
-    if not have: con.execute("create table bad_runs as select * from runs where 0"); con.execute("alter table bad_runs add column reason text")
-    else:
-        for c in cols:
-            if c not in have: con.execute(f'alter table bad_runs add column "{c}"')
-    cl = ",".join(f'"{c}"' for c in cols)
+    if con.execute("select 1 from sqlite_master where name='bad_runs'").fetchone():   # the old copy of earlier applies: the context-limit failures go back to runs
+        have = {r[1] for r in con.execute("pragma table_info(bad_runs)")}
+        keepc = ",".join(f'"{c}"' for c in cols if c in have)
+        con.execute(f"insert into runs ({keepc}) select {keepc} from bad_runs where cast(ok as integer)=0 and note like '%exceeds the available context%'")
+        con.execute("drop table bad_runs")
     from runnorm import fam, tgroup, prompt_of
     cells = set()
     for rid, why in bad:
         ts, model, args, test, build, tps, rep, prompt, hw = con.execute("select ts, model, args, test, build, tps, rep, prompt, hw from runs where rowid=?", (rid,)).fetchone()
-        con.execute(f'insert into bad_runs ({cl}, reason) select {cl}, ? from runs where rowid=?', (why, rid))
         con.execute("delete from runs where rowid=?", (rid,))
         f_, tg, pr = fam(model, args), tgroup(test), prompt_of(test, rep, prompt)
         if tps and "all_runs" in {r[0] for r in con.execute("select name from sqlite_master")}:
@@ -8990,14 +9709,10 @@ def _tool_bad_runs():
             cells.add((f_, tg, pr, hw or "pc1", "stock" if (build or "").startswith("stock") else "ours", build))
     if cells: runstats.recompute(con, sorted(cells))
     con.commit()
-    new = not os.path.exists(badp)
-    with open(badp, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=head + ["reason"], lineterminator="\n")
-        if new: w.writeheader()
-        w.writerows(move)
+    if os.path.exists(badp): os.remove(badp)
     with open(csvp, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=head, lineterminator="\n"); w.writeheader(); w.writerows(keep)
-    print(f"moved; backups {os.path.basename(dbp)}.bak and {os.path.basename(csvp)}.bak next to the files")
+    print(f"deleted; backups {os.path.basename(dbp)}.bak and {os.path.basename(csvp)}.bak next to the files")
 
 
 def ppl_chunks_store(start_ts, build, model, test, log):
@@ -9168,7 +9883,25 @@ TOOLS = {
 }
 
 
+def _shared_state():
+    """runs.db and fork/hotmaps are one per machine, not one per worktree ([paths] state in the config, empty: per tree as before). fork/outputs/<id>.txt are named by the row id, so a tree
+    with its own db reuses ids and overwrites the stored answers of other runs (1361 files on 2026-11-01), and a tree with none starts again at id 1. A tree without them gets links;
+    a tree with real files of its own stops here: merge them first."""
+    st = fcfg.path("state")
+    if not st or not os.path.exists(os.path.join(st, "runs.db")):
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("runs.db", "hotmaps"):
+        p, q = os.path.join(here, name), os.path.join(st, name)
+        if not os.path.lexists(p):
+            if os.path.exists(q):
+                os.symlink(q, p)
+        elif not os.path.exists(q) or not os.path.samefile(p, q):
+            sys.exit(f"{p} is not the shared {q}: merge it into the shared one, then remove it (run.py links it again)")
+
+
 if __name__ == "__main__":
+    _shared_state()
     import atexit
     atexit.register(_sync_runs_db)
     os.environ.setdefault("RUNPY_REPRO", "python3 fork/run.py " + shlex.join(sys.argv[1:]))   # rows record how they were started; a child run.py keeps the parent's line
@@ -9244,6 +9977,7 @@ if __name__ == "__main__":
     m.add_argument("--os", default="linux")
     pu = sp.add_parser("publish", help="push the tree's branch to the fork (neurall) + runs.db; with --name the tag and the GitHub release from the REL_OUT archives")
     pu.add_argument("--tree", default="/p/bw/wt-rel"); pu.add_argument("--name"); pu.add_argument("--notes"); pu.add_argument("--replace", help="old release tag to delete first")
+    pu.add_argument("--local", action="store_true", help="only build the local branch runs-db (runs.db and fork/hotmaps), push nothing")
     dp = sp.add_parser("devpub", help="publish a dev build as the prerelease dev-BUILD on the fork (not latest) so remote machines download it instead of receiving a push"); dp.add_argument("build")
     nm = sp.add_parser("numa", help="NUMA map and node x node RAM read-rate table of a machine (-pc ID for a remote one), no model needed")
     nm.add_argument("-pc", "--machine", default="pc1")
@@ -9326,8 +10060,24 @@ if __name__ == "__main__":
     hp.add_argument("what", nargs="*", help="mount: a size like 100g or model file(s); nothing = the most the machine can spare")
     hl = sp.add_parser("hitlog", help="per request: cache hit rate, uploads, speeds and the --moe dynhot lines, for the cells whose runs.db name starts with PREFIX")
     hl.add_argument("prefix", help="the start of the runs.db campaign, e.g. dynhot_two_pool_keys- (build-cell-test)")
+    df = sp.add_parser("dynfill", help="fill a model's hot maps per topic: every prompt again and again on one kept server until --budget seconds of requests or --patience requests without a better hit rate")
+    df.add_argument("model", help="alias of models.ini or a path")
+    df.add_argument("tests", help="comma list of chat tests of prompts.ini (tetrisc,scific,...)")
+    df.add_argument("-b", "--build", default="latest")
+    df.add_argument("--budget", type=float, default=60.0, help="seconds of requests (prompt + answer) per prompt, default 60")
+    df.add_argument("--min-requests", type=int, default=2, help="requests a prompt gets whatever the budget (the first one has no stored map to recall), default 2")
+    df.add_argument("--patience", type=int, default=3, help="a prompt stops after this many requests in a row without a better decode hit rate, default 3")
+    df.add_argument("--mode", default="full", help="--moe dynhot while filling (default full: the stored maps pick the cache's experts and every request is stored)")
+    df.add_argument("-a", "--args", default="", help="more server arguments, e.g. '--moe sim-vram=3072'")
+    df.add_argument("--tokens", type=int, help="answer tokens (default: the test's)")
+    df.add_argument("--tag", default="dynfill", help="cell tag: runs.db campaign TAG-TEST")
+    hs = sp.add_parser("hotmapsets", help="the sets a --moe dynhot store directory's layer files grew: per layer the core, group-only, shared and single-request leaves, the layers that grew most")
+    hs.add_argument("dir"); hs.add_argument("--names", help="labels of the requests in order"); hs.add_argument("--groups", help="group=label,label;group=... (e.g. code=htmltet,cpptet;prose=sf1,sf2)")
     hm = sp.add_parser("hotmapmat", help="print key cosine and expert overlap between the requests in a --moe dynhot store (hotmap/<model>.hotmap)")
-    hm.add_argument("file"); hm.add_argument("--names", help="comma list of labels in storing order")
+    hm.add_argument("file"); hm.add_argument("--names", help="comma list of labels in storing order"); hm.add_argument("--all", action="store_true", help="every matrix"); hm.add_argument("--acts", help="<tokdump>.acts: every layer's row of each prompt's last token (MOETOPC7 stores)")
+    tp = sp.add_parser("tokpred", help="replay a --moe tokdump file: how many misses a prefetch from a nearest-neighbour memory of answer-token activations would save, and how well a request's first-token activation predicts the experts it uses")
+    tp.add_argument("file"); tp.add_argument("--k", default="1,4,16", help="neighbours that vote (comma list)"); tp.add_argument("--p", default="8,16,32", help="experts prefetched per layer per token (comma list)")
+    tp.add_argument("--matrix", action="store_true", help="the expert overlap of every pair of requests (all answer tokens; repeats of a prompt stay apart)"); tp.add_argument("--names", help="labels of the requests of >= 200 answer tokens, in order"); tp.add_argument("--no-replay", action="store_true", help="with --matrix: only the matrix")
     st = sp.add_parser("stop", help="stop the running measurement chain properly: parent scripts, harness, all children; then wait for free GPU memory and restore the power limits")
     st.add_argument("tasks", nargs="*", type=int, help="only these tasks, by the numbers --dry lists (1 = started first); none = all")
     st.add_argument("--last", type=int, default=0, metavar="N", help="only the N most recently started tasks")
@@ -9401,5 +10151,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

@@ -264,3 +264,8 @@ t12-ord-o1-pf12k,2026-10-17 19:37:42,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+2
 t12-ord-o2-pf12k,2026-10-17 19:38:28,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2650.3,-dev CUDA1,1,2650.3,1
 t12-cap-o-pf12k,2026-10-17 19:39:38,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,2637.8,-dev CUDA1,1,2637.8,1
 u12-o-400-pf12k,2026-10-17 19:40:59,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pf12k,200+200,-dev CUDA1,1,1428.7,-dev CUDA1,1,1428.7,1
+dynhot_f32-rc-cpu-1-tetrisc,2026-10-29 07:36:54,OLMoE-1B-7B-0924-Q4_K_M.gguf,tetrisc,220+280,-dev none dynhot=full,1,179.3,-dev none dynhot=full,1,179.3,1
+dynhot_f32-rc-cpu-2-tetrisc,2026-10-29 07:37:31,OLMoE-1B-7B-0924-Q4_K_M.gguf,tetrisc,220+280,-dev none dynhot=full,1,19.4,-dev none dynhot=full,1,19.4,1
+dynhot_f32-rc-cpu-3-tetrisc,2026-10-29 07:38:08,OLMoE-1B-7B-0924-Q4_K_M.gguf,tetrisc,220+280,-dev none dynhot=full,1,22,-dev none dynhot=full,1,22,1
+dynhot_f32-rc-cpu-a-tetrisc,2026-10-29 07:47:34,OLMoE-1B-7B-0924-Q4_K_M.gguf,tetrisc,220+280,-dev none dynhot=full,1,191.1,-dev none dynhot=full,1,191.1,1
+bench-2026-10-29-2338,2026-10-29 23:40:03,OLMoE-1B-7B-0924-Q4_K_M.gguf,t100,220+280,-dev none,4,95.6,-dev none,4,95.6,1

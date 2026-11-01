@@ -1,0 +1,30 @@
+run 21195 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.94 t/s | prompt 19.9 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 19:43:26
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" genre — like the ~140-byte-ish ones that are barely playable, or more complete ones around 500 bytes–2KB. I should aim for something genuinely small but actually playable: gravity, movement, rotation, line clears, score, game over, restart. Maybe keyboard controls. Canvas rendering.
+
+Let me design a compact Tetris in a single HTML file. I'll write it minified-ish but still readable enough. The user asked for smallest, so I should compress aggressively: short variable names, minimal DOM, canvas drawing, compact piece definitions.
+
+Key components:
+1. Canvas, e.g. 10 wide × 20 tall grid, cell size ~12px → 120×240 canvas.
+2. Pieces: 7 tetrominoes. Compact encoding: each piece as a set of rotation states. A classic trick: encode pieces as 4x4 matrices or use the "binary string" trick. A very compact approach: define each piece by its cells in one rotation and rotate programmatically (rotate the matrix). Or use the well-known compact encoding: pieces as arrays of 4 coordinates, rotate by (x,y) → (y, 3-x) or similar within a 4x4 box... Actually simpler: store each piece as a 2D array (matrix) and rotate function.
+
+Compact classic trick: represent each tetromino as a 16-bit number per rotation? That's compact but hard to write quickly. Alternative: use strings like "0110110" etc.
+
+A very compact known approach (from golfed tetris): 
+
+```js
+d=[[1,1,1,1],[[1],[1],[1],[1]],[1,1,[1,1]],[[1,1],1,1],[[1,1],[1,1]],[[1,0],[1,1],[0,1]],[[0,1],[1,1],[1,0]]]
+```
+
+Hmm, let me think of a cleaner compact representation. Common golfed tetris uses:
+
+```js
+p=[[...]] // pieces as arrays of [x,y] offsets
+```
+
+Rotation: rotate offsets around a pivot. For SRS-lite, rotating (x,y) → (y, -x) or (y, x) etc. within a bounding box.
+
+Let me pick a representation: each piece = array of 4 [x,y] cells. Rotation: for each cell, new = [y, size-1-x]? Depends on bounding box width. For I piece (4x1), rotating within 4x4 box: (x,y) → (y, 3-x)? Let's verify: I piece horizontal at y=0: cells (0,0),(1,0),(2,0),(3,0). Rotate (x,y)→(y,3-x): (0,0)→(0,3), (1,0)→(0,2), (2,0)→(0,1), (3,0)→(0,0) → vertical column at x=0. Good. Rotate again: (0,3)→(3,3), (0,2)→(2,3), (0,1)→(1,3), (0,0)→(0,3)... wait (0,0)→(0,3). Hmm: (x,y)→(y,3-x): (0,3)→(3,3), (0,2)→(2,3), (0,1)→(1,3), (0,0)→(0,3). So cells (3,3),(2,3),(1,3),(0,3) → horizontal at y=3. Good. Third rotation: (3,3)→(3,0), (2,3)→(3,1), (1,3)→(3,2), (0,3)→(3,0). Cells (3,0),(3,1),(3,2),(3,0) — duplicate (3,0)! That's wrong: (0,3)→(3, 3-0=3)? wait 3-x where x=0 → 3. So (0,3)→(3,3
+---

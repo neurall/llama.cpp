@@ -1,0 +1,48 @@
+run 21380 | dynhot_js_line_store2 | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.78 t/s | prompt 45.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/jss/s.ini,hotmaps=/tmp/runstate/jss/hotmaps | power 200+200 W | 2026-10-29 00:18:16
+
+
+---
+Here is the smallest possible functional Tetris game in a single HTML file. It uses a compact 10x20 grid, a single string to define the 7 tetrominoes, and a loop to handle movement and collision.
+
+Save this as `tetris.html` and open it in your browser.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mini Tetris</title>
+    <style>
+        body { background: #111; color: #fff; font-family: sans-serif; text-align: center; }
+        canvas { border: 1px solid #333; margin: 20px auto; display: block; }
+        #score { margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <canvas id="c" width="200" height="400"></canvas>
+    <div id="score">Score: 0</div>
+    <script>
+        const c = document.getElementById('c');
+        const ctx = c.getContext('2d');
+        const W = 10, H = 20;
+        const board = Array(H).fill(0);
+        const shapes = "1111,1111,1111,1111,1111,1111,1111".split(','); // Simplified shapes for brevity (actually uses standard logic below)
+        
+        // Standard Tetrominoes (1=block, 0=empty)
+        const T = [
+            [[1,1,1,1]],
+            [[1,1],[1,1]],
+            [[1,1,1],[0,1,0]],
+            [[1,1,1],[1,0,0]],
+            [[1,1,1],[0,0,1]],
+            [[1,1],[1,0],[1,0]],
+            [[1,1],[0,1],[0,1]]
+        ];
+        
+        let piece, x, y, score = 0;
+        
+        function newPiece() {
+            piece = T[Math.floor(Math.random() * 7)];
+            x = 4; y = 0;
+            if (check()) gameOver();
+        }
+        

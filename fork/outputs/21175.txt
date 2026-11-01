@@ -1,0 +1,87 @@
+run 21175 | dynhot_global_map | snakec | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.41 t/s | prompt 84.0 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=read,dynhot-global=1,state=/tmp/runstate/unk/t-game-glob.ini,hotmaps=/tmp/runstate/unk/hotmaps | power 220+280 W | 2026-10-28 19:19:53
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML snake game". This means I need to create a complete, playable Snake game in a single HTML file, minimizing code size while maintaining functionality.
+
+2.  **Key Requirements for Snake Game:**
+   - HTML structure (single file)
+   - Canvas or grid-based rendering
+   - Snake movement (up, down, left, right)
+   - Food spawning
+   - Collision detection (walls, self)
+   - Score tracking
+   - Game loop
+   - Minimal code size
+
+3.  **Constraints & Optimization Strategies:**
+   - Use `<canvas>` for rendering (more compact than DOM elements)
+   - Use a single array for snake body
+   - Use keyboard events for controls
+   - Minimize variable names, use short names
+   - Avoid external libraries
+   - Use compact logic (e.g., direction as dx/dy, grid as simple coordinates)
+   - Combine CSS and JS inline
+   - Use `requestAnimationFrame` or `setInterval` for game loop
+   - Keep it self-contained
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       canvas{background:#000}
+     </style>
+   </head>
+   <body>
+     <canvas id=c width=200 height=200></canvas>
+     <script>
+       const c=document.getElementById('c'), ctx=c.getContext('2d');
+       const S=10, W=c.width/S, H=c.height/S;
+       let snake=[{x:10,y:10}], dir={x:1,y:0}, food={x:15,y:15}, score=0;
+       function draw(){
+         ctx.fillStyle='#000'; ctx.fillRect(0,0,c.width,c.height);
+         ctx.fillStyle='#0f0';
+         snake.forEach(p=>ctx.fillRect(p.x*S,p.y*S,S,S));
+         ctx.fillStyle='#f00'; ctx.fillRect(food.x*S,food.y*S,S,S);
+       }
+       function move(){
+         let nx=snake[0].x+dir.x, ny=snake[0].y+dir.y;
+         if(nx<0||nx>=W||ny<0||ny>=H||snake.some(p=>p.x===nx&&p.y===ny)){
+           snake=[{x:10,y:10}]; dir={x:1,y:0}; food={x:Math.floor(Math.random()*W),y:Math.floor(Math.random()*H)}; score=0;
+           return;
+         }
+         snake.unshift({x:nx,y:ny});
+         if(nx===food.x&&ny===food.y){
+           food={x:Math.floor(Math.random()*W),y:Math.floor(Math.random()*H)};
+           score++;
+         } else snake.pop();
+       }
+       document.onkeydown=e=>{
+         if(e.key==='ArrowUp') dir={x:0,y:-1};
+         if(e.key==='ArrowDown') dir={x:0,y:1};
+         if(e.key==='ArrowLeft') dir={x:-1,y:0};
+         if(e.key==='ArrowRight') dir={x:1,y:0};
+       };
+       setInterval(()=>{draw();move()},100);
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Refine & Minimize (Code Golf Approach):**
+   Let's count characters and optimize:
+   - Remove unnecessary whitespace
+   - Use shorter variable names
+   - Combine functions
+   - Use ternary/shorter logic where possible
+   - Remove comments
+   - Use `onkeydown` directly
+   - Make canvas inline style minimal
+   - Use `setInterval` with compact call
+
+   Let's try to compress it further while keeping it functional:
+   ```html
+   <!DOCTYPE html><meta charset=utf-8><style>canvas{background:#000}</style><canvas id=c width=200 height=200></canvas><script>const c=document.getElementById('c'),ctx=c.getContext('2d'),S=10,W=20,H=20;let s=[{x:10,y:10}],d={x:1,y:0},f={x:15,y:15},sc=0;function g(){ctx.fillStyle='#000';ctx.fillRect(0,0,c.width,c.height);ctx.fillStyle='#0f0';s.forEach(p=>ctx.fillRect(p.x*S,p.y*S,S,S));ctx.fillStyle='#f
+---

@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+det-tet1,qwen36,1,tetrisc,1024,"--moe mode=cache,dynhot=store,state=/tmp/runstate/det/s.ini,hotmaps=/tmp/runstate/det/hotmaps,tokdump=/tmp/runstate/det/dump.bin",--nothink
+det-tet2,qwen36,1,tetrisc,1024,"--moe mode=cache,dynhot=store,state=/tmp/runstate/det/s.ini,hotmaps=/tmp/runstate/det/hotmaps,tokdump=/tmp/runstate/det/dump.bin",--nothink
+det-tet3,qwen36,1,tetrisc,1024,"--moe mode=cache,dynhot=store,state=/tmp/runstate/det/s.ini,hotmaps=/tmp/runstate/det/hotmaps,tokdump=/tmp/runstate/det/dump.bin",--nothink

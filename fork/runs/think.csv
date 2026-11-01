@@ -1,0 +1,20 @@
+name,model,n,test,tokens,args,extra
+th-tet,qwen36,1,tetrisc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-pycsv,qwen36,1,pycsvc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-pylru,qwen36,1,pylruc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-pyasync,qwen36,1,pyasyncc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-brk,qwen36,1,breakoutc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-snk,qwen36,1,snakec,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-cpptet,qwen36,1,tetriscppc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-cppsnk,qwen36,1,snakecppc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-sf1,qwen36,1,scific,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-sf2,qwen36,1,scifi2c,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-sf3,qwen36,1,scifi3c,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-poem1,qwen36,1,poemc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-poem2,qwen36,1,poemautc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-poem3,qwen36,1,poemseac,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-photo,qwen36,1,photoc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-math,qwen36,1,mathc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-arith,qwen36,1,arithc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-ww1,qwen36,1,ww1c,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192
+th-latin,qwen36,1,latinmedc,5120,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048",--ctx 8192

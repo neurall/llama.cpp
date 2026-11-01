@@ -1,0 +1,1 @@
+Solve step by step: find the integral of x^2 * e^x dx and check the result by differentiating it. Then explain integration by parts in general and when to choose which factor to differentiate.

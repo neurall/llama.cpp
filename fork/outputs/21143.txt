@@ -1,0 +1,66 @@
+run 21143 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.75 t/s | prompt 16.5 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 18:36:38
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" genre — like the ~140-byte-ish obfuscated ones won't be readable. I should aim for something genuinely small but still readable-ish and functional. A good target: a few hundred bytes to maybe 1-2KB of actual code. I can write it minified-style but with a brief explanation after.
+
+Key features a real Tetris needs (even minimal):
+- 10×20 board
+- 7 tetrominoes with rotation (SRS-lite or simple rotation)
+- Gravity, movement left/right, rotation, soft drop / hard drop maybe
+- Line clear + scoring
+- Game over
+- Next piece preview maybe (optional for size)
+
+To keep it truly small, I'll use canvas rendering, compact piece encoding, and terse JS.
+
+Let me design the code carefully.
+
+Classic minimal tetris approach:
+
+Pieces as arrays of rotation states, or encode each piece as a set of coordinates and rotate mathematically. A common trick: define pieces by their bounding boxes and use rotation within the box.
+
+Simplest compact approach: define each tetromino as a 2D matrix (array of arrays) and rotate by transposing+reversing. Or define shapes as strings.
+
+A very compact known trick: represent each piece as a list of 4 [x,y] offsets, rotate around a pivot. But I-rotation needs special handling. Alternatively use matrices.
+
+Let me write something like:
+
+```js
+P=[[[1,1,1,1]], // I
+   [[1,1],[1,1]], // O
+   ...]
+```
+
+Rotation: `m=P[i]; P[i]=m[0].map((_,c)=>m.map(r=>r[c]).reverse())` — rotate clockwise.
+
+Board: 10 wide, 20 tall. Store as array of arrays or a flat string.
+
+Rendering: canvas 2D, draw cells as filled rects with slight color per piece.
+
+Controls: keydown: left/right move, up rotate, down soft drop, space hard drop maybe. Keep it minimal: arrows + Z/X or just arrows.
+
+Collision: check each cell of piece matrix at position.
+
+Line clear: filter full rows, add empty rows on top, score += lines*lines*100 or similar.
+
+Gravity: setInterval or requestAnimationFrame with drop counter.
+
+Game over: if new piece collides immediately.
+
+Let me actually write it and count bytes roughly. Aim for under ~1000 bytes of JS if possible, but readability matters a bit. The user said "smallest" — I'll go genuinely compact, single line-ish, but I can keep it semi-readable with short variable names. I'll present it as a code-golf artifact with a short explanation of what's included.
+
+Let me draft:
+
+```html
+<!doctype html><meta charset=utf8><title>T</title><body style=background:#000;display:grid;place-items:center;height:100vh;margin:0><canvas id=c width=120 height=240></canvas><script>
+...
+</script>
+```
+
+Actually for smallest, I can even skip doctype? Without doctype it's quirks mode but canvas still works. For "smallest html" I might drop doctype. But I prefer keeping it valid-ish. Hmm, "smallest" — I'll keep `<!doctype html>` since it's only 15 bytes and avoids quirks-mode weirdness with sizing. Actually quirks mode changes some CSS behaviors; with canvas fixed width/height attributes it's fine. I could drop it. Let me keep it — it's cheap and correct.
+
+Design decisions for minimal but decent:
+- Canvas 120×240 (12px cells ×10, 12px ×20). Draw with 1px gap? For smallest, just fillRect(x*12,y*12,12,12) maybe with slightly smaller rect for grid look: fillRect(x*12+1,y*12+1,10,10) — costs a few bytes but looks much better (grid lines). Worth it.
+- Colors: one color per piece type via array of 7 colors. Or single color for all — smaller but boring. 7 colors array is like ~70 bytes. Worth it for visual quality. Actually to keep it small-ish but nice, I'll use a compact palette string like `c="0693574".split("")` mapping digits to hues? Hmm. Simpler:
+---

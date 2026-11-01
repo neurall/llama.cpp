@@ -1,0 +1,69 @@
+run 21424 | dynhot_layer_far | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 53.36 t/s | prompt 135.9 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 02:24:34
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it tiny, but I don't want it to look like a bare throwaway — I want it to feel alive and playable: a subtle layered background, micro-interactions, distinctive type pairing, and a monospace display face that suits a game console.
+
+So: keep it small (that's the explicit ask) but make it feel crafted — a compact single-file Tetris with keyboard controls, score/level/next preview, and a bit of polish. "Smallest" is the priority, so I shouldn't bloat it into a giant page. Balance: small code, but nicely styled. I'll aim for something genuinely compact yet polished — maybe ~60-90 lines.
+
+Let me write it.
+
+Design: dark background with a subtle layered grid/scanline ambient background, a distinctive display font (e.g., a pixel/mono display face from Google Fonts — but "smallest" suggests avoiding external fonts... I can use a system font stack with a distinctive pairing). Hmm, using Google Fonts adds a link but gives character. I'll include one small font link — it's fine and adds craft. Pair display: "Silkscreen" or "Press Start 2P" (pixel) with a readable body: "IBM Plex Mono" or "Space Grotesk". For a Tetris game, pixel display + clean mono body is characteristic. The game itself is the opening — no generic banner, the board leads.
+
+Let me build:
+
+- Layout: left panel with title, score/level/lines, next piece; center board canvas; right controls legend.
+- Canvas-based rendering for compactness.
+- Ambient background: layered CSS gradients + subtle animated grid drift + faint falling tetromino silhouettes.
+
+Keep code small but readable. Let me write it.
+
+Implementation details:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel=stylesheet>
+<style>...</style>
+<body>
+<main>
+ <aside>...</aside>
+ <canvas id=c width=270 height=540></canvas>
+ <aside>...</aside>
+</main>
+<script>...</script>
+```
+
+Game logic compact:
+
+```js
+const W=10,H=20,S=27,x=c.getContext('2d');
+let g=[...Array(H)].map(_=>Array(W).fill(0)), p,n,sc=0,ln=0,lv=1,tm,ov=0;
+const P='0000,1111,0110,1100,0110,1110,0010,0100,1100'.split(',') // hmm
+```
+
+Better: define pieces as rotation via matrices. Compact approach: use string shapes.
+
+```js
+const S=[ // shapes as [color, matrix-string rows]
+[1,'1111'],
+[2,'11;10;10'],
+[3,'11;01;01'],
+[4,'11;11'],
+[5,'111;010'],
+[6,'111;100'],
+[7,'111;001'],
+];
+```
+
+Rotation: transpose+reverse rows.
+
+```js
+let cur;
+function newp(){const s=S[Math.random()*7|0];cur={c:s[0],m:s[1].split(';'),x:3,y:0}}
+function rot(m){return m[0].map((_,i)=>m.map(r=>r[i]).reverse().join(''))}
+```
+
+Wait transpose then reverse each row: standard clockwise rotation: `m[0].map((_,i)=>m.map(r=>r[i]).reverse().join(''))`. Yes.
+
+Collision:
+```js
+function hit(m,x,y){return m.some((r,j)=>r&&[...r].some((v,i)=>v&&g[y+j]?.[x+i]!==0&&y+j<H&&x+i>=0&&x+i
+---

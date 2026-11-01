@@ -1,0 +1,46 @@
+run 21450 | dynhot_near_only | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.07 t/s | prompt 21.1 t/s | 1005 tokens | args: -np 1 --moe dynhot=off | power 220+280 W | 2026-10-29 07:27:55
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but complete Tetris:
+
+Features needed for it to be a real Tetris:
+- 10×20 board
+- 7 tetrominoes (I, O, T, S, Z, J, L) with proper shapes
+- Rotation (at least basic, ideally all 4 rotations)
+- Gravity, line clear, scoring
+- Next piece preview (nice to have)
+- Keyboard controls: left/right/down, rotate, drop
+- Game over
+- Some rendering — canvas is smallest
+
+Let me try to write it as compactly as possible while keeping it readable-ish. I'll aim for something genuinely small — maybe under ~600 bytes of JS, or a bit more with colors and next-piece. The user said "smallest" so I should push for minimalism, but I also want it to actually work well and look decent. There's tension: my taste says quality, but the user explicitly asks for smallest. The user's request wins — smallest. But I can still make it look good with minimal bytes: a dark background, colored blocks via a palette string, crisp canvas rendering. Minimal bytes can still look intentional.
+
+Let me design the code.
+
+Approach: canvas, single file. Use a compact data encoding for pieces.
+
+Classic compact encoding: pieces as arrays of rotation states, each state as list of cell coordinates, or as bit patterns.
+
+A very compact trick: represent each tetromino's rotations via a string of coordinates. Or use the well-known trick where each piece is defined by 4 numbers, each number being a bitmask of 16 bits (4×4 grid), one per rotation.
+
+Even more compact: the "D" trick — encode shapes as strings like "I:..." Hmm.
+
+Let me think of the truly minimal approach used in famous golfed tetris:
+
+One known minimal Tetris (by Ryan Fowers / "tetr.js"?) There's the famous 140-byte-ish tetris in JS golf competitions but those are obfuscated. I want small but still somewhat legible, since I should explain the code after.
+
+Let me write my own compact version.
+
+Board: 10 wide, 20 tall. Store board as array of 20 strings? Or a single array of 200 cells with values 0-7.
+
+Rendering: canvas 2D, draw each cell as a filled rect with color from palette indexed by piece value. Add slight inner shading? That costs bytes. Maybe draw cell with a 1px gap for a nice tiled look — cheap: fillRect(x*s+1, y*s+1, s-2, s-2) — actually that's just a few extra chars and gives a nice grid look. Or draw full rect plus darker border via strokeRect. The gap trick is cheap and looks good.
+
+Colors: palette array of 7 hex colors. Compact: `c="#0ae"#c40...` hmm. Use a string split: `"#5af#fa3#5a5..."`. Actually simplest: `C=["#4af","#fa4","#4a4","#a4a","#44a","#a44","#4aa"]` — but I want more tasteful colors. Let me pick a palette that looks good on dark background: 
+
+- I: cyan `#3fd` or `#0fc`
+- O: yellow `#fd3`
+- T: purple/magenta `#d4f` — hmm purple... I generally avoid default blue/purple schemes as the overall page theme, but tetromino colors are canonical game content, not a "generic blue-purple hero". Tetris pieces traditionally: I cyan, O yellow, T purple, S green, Z red, J blue, L orange. That's the game's canonical palette — fine, it's content, not decoration. I'll keep canonical-ish but tuned for dark bg.
+
+Palette string: `"0fc fd3 f6c 4d6 f45 48e f83"` — split by space, prefix with "#". Compact: `c.split(" ").map(i=>"#"+i)`. Or just write full hexes in an array — similar length. Let me do: `C="#0fc,#fd3,#f6c,#4d6,#f45,#59d,#f83".split(",")` —
+---

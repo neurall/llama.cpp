@@ -1,0 +1,55 @@
+run 21324 | dynhot_last_token_keys2 | pylruc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 84.4 t/s | prompt 169.4 t/s | 408 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin | power 220+280 W | 2026-10-28 23:06:17
+
+
+---
+```python
+import unittest
+from collections import OrderedDict
+
+class LRUCache:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.cache = OrderedDict()
+
+    def get(self, key: int) -> int:
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        return -1
+
+    def put(self, key: int, value: int) -> None:
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            self.cache[key] = value
+        else:
+            self.cache[key] = value
+            if len(self.cache) > self.capacity:
+                self.cache.popitem(0)
+
+class TestLRUCache(unittest.TestCase):
+    def test_basic_operations(self):
+        cache = LRUCache(2)
+        cache.put(1, 1)
+        cache.put(2, 2)
+        self.assertEqual(cache.get(1), 1)
+        self.assertEqual(cache.get(2), 2)
+        cache.put(3, 3)  # Evicts key 2
+        self.assertEqual(cache.get(2), -1)
+        self.assertEqual(cache.get(3), 3)
+        cache.put(4, 4)  # Evicts key 1
+        self.assertEqual(cache.get(1), -1)
+        self.assertEqual(cache.get(4), 4)
+
+    def test_overwrite(self):
+        cache = LRUCache(2)
+        cache.put(1, 1)
+        cache.put(1, 2)
+        self.assertEqual(cache.get(1), 2)
+
+    def test_empty_cache(self):
+        cache = LRUCache(1)
+        self.assertEqual(cache.get(1), -1)
+
+if __name__ == '__main__':
+    unittest.main()
+```

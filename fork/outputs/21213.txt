@@ -1,0 +1,38 @@
+run 21213 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.34 t/s | prompt 126.9 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/replace | power 220+280 W | 2026-10-28 20:14:56
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *POV:* Archivist - implies someone who records, preserves, values history, data, memory. Likely introspective, observant, perhaps melancholic or awed.
+   - *Setting:* Generation ship waking from cryosleep above a planet. Cities already lit. Descendants from a later ship that arrived first.
+   - *Theme:* Time, legacy, paradox of arrival, human continuity, memory vs. reality.
+   - *Tone:* Literary, sensory, reflective, dialogue-driven but not overly expository.
+   - *Word Count:* ~900 words. Need to pace carefully.
+
+3.  **Brainstorming & Structure:**
+   - Opening: Waking from cryosleep. Sensory details of thawing, the archivist's perspective, the view of the planet.
+   - Discovery: Cities lit. Confusion. Realization that they're not the first.
+   - Dialogue/Interaction: Communication with the planet/colonists. The archivist's role in processing this.
+   - Revelation: The copy ship left a century later, arrived first. The descendants are their own.
+   - Closing: Reflection on memory, legacy, the archivist's duty. Literary resonance.
+   - Need to weave sensory details throughout: cold, light, sound, texture, data, voices.
+   - Keep it tight. Avoid exposition dumps. Use dialogue naturally.
+
+4.  **Drafting - Mental Refinement (Paragraph by Paragraph):**
+   *(Opening)* The thaw began as a whisper in the marrow. I felt it first in the joints, then in the lungs, as the cryo-gel surrendered its frost to the ship’s ambient warmth. My eyes opened to the pale blue of the viewport glass, and beyond it, the world we had sworn to reach hung in the dark like a polished stone. It was not dark. It was lit.
+   *(Sensory/Archivist POV)* I am the keeper of records, the one who logs the drift, the decay, the quiet mathematics of a century-long voyage. I had expected silence. I had expected ruins. Instead, the planet’s surface was threaded with amber veins, a lattice of streets and towers that pulsed with artificial dawn. The lights did not flicker. They breathed.
+   *(Dialogue/Realization)* “We’re late,” I murmured, my voice rough from disuse. The comms array hummed, then answered. A voice, clear and unfiltered, spoke from below. “You’re exactly on time. We’ve been waiting.”
+   *(Sensory/Archivist)* The signal carried the weight of a thousand years of radio waves, but the cadence was familiar. I recognized the inflection, the pause before the next syllable. It was the same cadence I had logged in the pre-launch archives. The same cadence my own voice would have used, had I not been frozen.
+   *(Revelation/Plot)* I pulled the data-slate from its cradle. The navigation logs confirmed it: the *Aethel* had left Earth three centuries ago. The *Vesper*, a sister vessel, departed a century later. Both carried identical seed banks, identical crew manifests, identical destination coordinates. The *Vesper* had traveled faster. It had arrived first. It had built. It had lived.
+   *(Dialogue/Interaction)* “Who are you?” I asked, though I already knew. The comms responded. “We are your children. Your grandchildren. The ones who woke when you were still dreaming.”
+   *(Sensory/Archivist)* I pressed my palm against the glass. The cold of the viewport seeped into my skin, but the light below was warm, almost tangible. I could see the shapes of the cities: terraced hills, glass domes, wind-swept plazas. I could see the smoke of hearths, the glow of workshops, the quiet rhythm of a civilization that had grown in the absence of us.
+   *(Archivist's Role/Theme)* My duty was to preserve. To record. To ensure that the voyage did not vanish into the void. But now, the void had been filled. The
+---

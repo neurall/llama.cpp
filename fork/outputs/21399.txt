@@ -1,0 +1,95 @@
+run 21399 | dynhot_requests_fp8 | tetriscppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 96.65 t/s | prompt 105.1 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:06:48
+
+
+---
+Here is the smallest possible functional Tetris game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and standard C++11 features.
+
+### Requirements
+- **C++11 or later**
+- **Terminal with ANSI escape support** (most modern terminals)
+- **No external libraries** (uses `<iostream>`, `<vector>`, `<random>`, `<chrono>`)
+
+### Code (`tetris.cpp`)
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <string>
+
+using namespace std;
+
+const int W = 10, H = 20;
+int board[H][W] = {0}; // 0 = empty, 1-7 = colors
+int score = 0;
+
+// Tetromino shapes (7 types)
+const vector<vector<vector<int>>> shapes = {
+    {{0,0,0,0},{1,1,1,1},{0,0,0,0},{0,0,0,0}}, // I
+    {{0,0,0},{0,1,0},{0,0,0},{0,0,0}},         // O
+    {{0,0,0},{1,1,0},{0,0,0},{0,0,0}},         // T
+    {{0,0,0},{0,1,1},{0,0,0},{0,0,0}},         // S
+    {{0,0,0},{1,1,0},{0,0,0},{0,0,0}},         // Z
+    {{0,0,0},{1,0,0},{1,0,0},{0,0,0}},         // J
+    {{0,0,0},{0,1,0},{0,1,0},{0,0,0}}          // L
+};
+
+int currentShape, currentX, currentY, rotation;
+
+bool isValid(int x, int y, int shapeIdx, int rot) {
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            if (shapes[shapeIdx][rot][i][j]) {
+                if (x + j < 0 || x + j >= W || y + i >= H || board[y + i][x + j]) return false;
+            }
+        }
+    }
+    return true;
+}
+
+void place() {
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+            if (shapes[currentShape][rotation][i][j])
+                board[currentY + i][currentX + j] = currentShape + 1;
+}
+
+void clearLines() {
+    for (int y = H - 1; y >= 0; y--) {
+        bool full = true;
+        for (int x = 0; x < W; x++)
+            if (!board[y][x]) { full = false; break; }
+        if (full) {
+            score += 10;
+            for (int i = y; i > 0; i--)
+                for (int x = 0; x < W; x++)
+                    board[i][x] = board[i - 1][x];
+            for (int x = 0; x < W; x++) board[0][x] = 0;
+            y++; // Recheck same row
+        }
+    }
+}
+
+void spawn() {
+    currentShape = rand() % 7;
+    rotation = 0;
+    currentX = W / 2 - 2;
+    currentY = 0;
+    if (!isValid(currentX, currentY, currentShape, rotation)) {
+        cout << "Game Over! Score: " << score << endl;
+        exit(0);
+    }
+}
+
+void draw() {
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            if (board[y][x]) {
+                cout << "\x1b[" << (board[y][x] * 31 + 31) << "m█";
+            } else {
+                // Check if current piece is here
+                bool isPiece = false;
+                for (int i = 0; i < 4; i++)
+                    for (int j = 0; j < 4; j++)
+                        if (shapes[currentShape][rotation

@@ -1,0 +1,19 @@
+run 21387 | dynhot_layer_sets | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 93.19 t/s | prompt 199.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps | power 200+200 W | 2026-10-29 00:53:42
+
+
+---
+The thawing of the cryo-gel felt less like waking and more like drowning in reverse. Elias, the ship’s archivist, gasped as the viscous fluid drained from his lungs, replacing the cold numbness with a sharp, burning heat. His eyes, crusted with the residue of a century’s sleep, blinked against the sudden glare of the artificial dawn. The silence of the *Aethelgard* was broken not by alarms, but by the hum of the ventilation systems, a low, rhythmic thrum that vibrated in his teeth.
+
+He stumbled toward the observation deck, his legs trembling like wet paper. The viewports were massive, curved sheets of reinforced glass, offering a panoramic gaze of the world they had been promised. Kepler-4b. The blue marble. But something was wrong. The darkness of the night side was not empty. It was a web of light.
+
+Elias pressed his palm against the cold glass. Below, the continents were not wild, untamed landscapes of forests and oceans. They were illuminated. Cities glowed like embers in a dark hearth, sprawling across the land in geometric patterns that defied the chaotic growth of nature. The lights were steady, persistent, and vast.
+
+"Look," he whispered, his voice raspy from disuse. "They are already here."
+
+The bridge crew had gathered, their faces pale, their eyes wide with a mixture of awe and terror. Captain Vane stood beside him, his uniform wrinkled and stained with the condensation of the thaw. "Impossible," Vane muttered, though his voice lacked conviction. "We were the first. The launch protocols were strict. No one could have left before us."
+
+Elias turned to the data console. His fingers, stiff and clumsy, navigated the interface. He pulled up the historical logs, the digital memory of the ship’s departure. The *Aethelgard* had left Earth in 2140. The mission was a one-way trip, a generation ship carrying ten thousand souls to a new home. The travel time was calculated at eighty years. They should have arrived in 2220.
+
+But the lights below suggested a civilization that had been building for centuries. Elias ran the calculations again. If the lights were from a colony, they had to have arrived earlier. How?
+
+Then, the realization hit him, cold and sharp as the cryo-gel. The *Aethelgard* was not the only

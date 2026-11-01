@@ -1,0 +1,42 @@
+run 21222 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 80.69 t/s | prompt 192.2 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=pool,hotmaps=/tmp/runstate/plat/pool | power 220+280 W | 2026-10-28 20:24:38
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *Generation ship:* Long-term space travel, cryosleep, multi-generational mission (though here it's a single generation ship that wakes up, but the twist is that a copy ship arrived first)
+   - *Cryosleep wake-up:* Sensory details of thawing, disorientation, physical sensations
+   - *Planet already lit:* Cities, lights, signs of civilization
+   - *Descendants from a copy ship:* A second ship launched a century later, arrived first, colonized, built cities, and now the original crew wakes up to find their own descendants
+   - *POV:* Archivist - someone who records, preserves, values history, knowledge, memory. Likely reflective, observant, perhaps melancholic or awed.
+   - *Style:* Literary, sensory, dialogue, ~900 words.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Wake-up sequence. Sensory details of cryosleep thawing. Archivist's perspective. Establish the setting (ship, planet below).
+   - *Discovery:* They see the planet lit. Confusion, then realization. Communication with the planet.
+   - *Dialogue/Interaction:* Archivist talks with crewmates or receives a transmission. The revelation about the copy ship.
+   - *Theme/Reflection:* Memory, legacy, time, identity, the irony of being descendants of themselves.
+   - *Closing:* Acceptance, connection, perhaps a moment of quiet awe. Literary tone maintained.
+
+   Word count target: ~900. I'll need to pace it carefully, focusing on vivid imagery and concise dialogue.
+
+4.  **Drafting - Section by Section (Mental Refinement):**
+   *(Opening)* The thaw began as a slow ache in the marrow. Frost crystallized on the eyelids, then dissolved into saline tears. I unsealed my pod, the air tasting of ozone and stale recycled breath. The ship’s hull hummed, a low vibration that traveled up through the deck plates into my boots. Outside the viewport, the world hung in the dark like a polished marble. But it was wrong. It was wrong because it glowed.
+   *(Sensory/Setting)* I pressed my palm against the cold glass. Below, the continents were stitched with amber veins. Cities. Not ruins. Not scattered outposts. A network of light, pulsing like a nervous system. I had spent three centuries in the archives, cataloging seeds, star charts, and the names of the dead. Now, I was awake, and the destination had already been claimed.
+   *(Dialogue/Realization)* “We’re late,” said Commander Vance, his voice rough from the thaw. He stood beside me, his face pale, eyes wide. “Or early. I don’t know.”
+   “The telemetry says we’re in orbit,” I replied, my throat still catching. “But the planet… it’s inhabited.”
+   Vance frowned. “Inhabited by whom?”
+   I pulled the comms console. The signal was clean, structured, almost familiar. I ran a decryption routine. The voice that answered was calm, measured, carrying the cadence of our own training manuals.
+   “Welcome home,” it said. “You’ve arrived. We’ve been waiting.”
+   *(Revelation)* I stared at the waveform. The linguistic markers matched our original launch protocols. The syntax was ours. The cadence was ours. But the voice belonged to someone who had never slept in our pods.
+   “A copy,” Vance whispered. “They launched a century after us. Faster drive. They beat us.”
+   “They beat us,” I echoed. “And they built this.” I pointed to the glowing continents. “They lived. They aged. They raised children who raised children. And now we wake to find our own blood in their streets.”
+   *(Archivist's Perspective/Theme)* I am an archivist. I preserve what is lost. But what do you preserve when the past has already walked ahead of you? I thought of the seed banks, the genealogical records, the names I’d etched into the hull’s inner walls. We were
+---

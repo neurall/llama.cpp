@@ -1939,3 +1939,167 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-01 00:52:51,"prefill_mix_6 -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pp-mix=0 --moe sim-vram=4608",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5188
 2026-11-01 00:53:29,"prefill_mix_6 -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pp-k=auto --moe sim-vram=4608",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,1,1.6617
 2026-11-01 00:53:29,"prefill_mix_6 -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pp-k=auto --moe sim-vram=4608",Qwen3.6-35B-A3B-GSQ-hybrid.gguf,pplb,2,1.5188
+2026-10-28 13:52:33,dspark_fix3 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3701
+2026-10-28 13:52:33,dspark_fix3 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4243
+2026-10-28 13:54:08,dspark_fix3 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3701
+2026-10-28 13:54:08,dspark_fix3 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4243
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-29 23:40:19,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9336
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9358
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0092
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0224
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0623
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0748
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.0735
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1534
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1684
+2026-10-29 23:40:33,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1594
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9336
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9358
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0092
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0224
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0623
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0748
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.0735
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1534
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1684
+2026-10-29 23:40:46,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1594
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9339
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9344
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0097
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0246
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0647
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0766
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.075
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1555
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1709
+2026-10-29 23:40:59,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1618
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9437
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9434
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0124
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0248
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0653
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0765
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.0748
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1536
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1685
+2026-10-29 23:41:23,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1591
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9374
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.942
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0142
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0272
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0672
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0789
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.0771
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1565
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1708
+2026-10-29 23:42:09,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1619
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9374
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.942
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0142
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0272
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0672
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0789
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.0771
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1565
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1708
+2026-10-29 23:42:54,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1619
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,1,1.9437
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,2,1.9434
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,3,2.0124
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,4,2.0248
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,5,2.0653
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,6,2.0765
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,7,2.0748
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,8,2.1536
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,9,2.1685
+2026-10-29 23:43:39,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,pplb,10,2.1591
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9383
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9399
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,3,2.0134
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,4,2.0264
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,5,2.0646
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,6,2.0754
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,7,2.0744
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,8,2.1547
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,9,2.1692
+2026-10-29 23:44:35,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,10,2.1598
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.94
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9416
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,3,2.0155
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,4,2.0286
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,5,2.0667
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,6,2.0766
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,7,2.0754
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,8,2.1563
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,9,2.1706
+2026-10-29 23:45:14,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,10,2.1612
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.94
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9416
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,3,2.0155
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,4,2.0289
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,5,2.0669
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,6,2.0768
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,7,2.0756
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,8,2.1565
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,9,2.1708
+2026-10-29 23:45:51,exact_det,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,10,2.1614
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9383
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9399
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,3,2.0134
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,4,2.0265
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,5,2.0647
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,6,2.0755
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,7,2.0745
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,8,2.1548
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,9,2.1693
+2026-10-29 23:46:28,dynhot_router2,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,10,2.1599
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9369
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9443
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,3,2.0145
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,4,2.0276
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,5,2.0672
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,6,2.0778
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,7,2.0756
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,8,2.1555
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,9,2.1699
+2026-10-29 23:47:17,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,10,2.1612
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9393
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9464
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,3,2.016
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,4,2.0286
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,5,2.0676
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,6,2.0781
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,7,2.0764
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,8,2.1567
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,9,2.171
+2026-10-29 23:51:12,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,10,2.1615
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9412
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9432
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,3,2.0148
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,4,2.029
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,5,2.0672
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,6,2.0781
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,7,2.0771
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,8,2.1558
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,9,2.1708
+2026-10-29 23:55:00,exact_det -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,10,2.1612
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9393
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9433
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,3,2.0144
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,4,2.0281
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,5,2.0668
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,6,2.078
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,7,2.0762
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,8,2.1563
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,9,2.1702
+2026-10-29 23:59:08,dynhot_router2 -dev none -ngl 0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,10,2.1606

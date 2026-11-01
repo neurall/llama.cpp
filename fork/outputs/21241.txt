@@ -1,0 +1,37 @@
+run 21241 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.55 t/s | prompt 254.0 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=pool,hotmaps=/tmp/runstate/plat/r4-pool | power 220+280 W | 2026-10-28 20:36:58
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *POV:* Archivist - implies someone who records, preserves, values history, maybe reflective, observant, carries the weight of memory.
+   - *Setting:* Generation ship waking from cryosleep, orbiting a target planet. Cities already lit below.
+   - *Plot Twist/Revelation:* A second ship left a century later, arrived first, colonized the planet, and the current crew's descendants are already there.
+   - *Tone/Style:* Literary, sensory, dialogue-driven, reflective, atmospheric.
+   - *Word Count:* ~900 words. Need to pace carefully.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Waking from cryosleep. Sensory details: cold, thawing, light, sound, the archivist's role. Establish the POV immediately.
+   - *Observation:* Looking down at the planet. Cities lit. Confusion/realization.
+   - *Dialogue/Interaction:* Crew members reacting. The archivist pieces together the truth. Maybe a log entry or conversation with another crew member (captain, engineer, etc.).
+   - *Revelation:* The second ship. The paradox of arrival. The descendants below.
+   - *Closing:* Reflection on memory, time, legacy. The archivist's role shifts from preserving the past to witnessing a living future.
+   - *Sensory Details:* Thawing breath, metallic hum, starlight, city lights, dust, silence, voices, the weight of records.
+   - *Dialogue:* Natural, grounded, revealing the plot through conversation rather than exposition.
+
+4.  **Drafting - Mental Refinement (Paragraph by Paragraph):**
+   *(Opening)* The thaw began as a whisper in the marrow. I felt it first in the joints, then in the lungs, as the cryo-gel surrendered its frost to the ship’s ambient warmth. My eyes opened to the pale blue of the wake-up chamber, the air tasting of ozone and old metal. I was the archivist, the keeper of the ship’s memory, and my first duty was to record the moment we returned. But the moment had already happened, somewhere else.
+   *(Observation)* I climbed to the observation deck. The viewport was a curved sheet of glass, fogged with condensation, then cleared by the climate system. Below us, the target world hung in the dark, but it was not dark. It was a tapestry of amber and white, a lattice of streets and towers, glowing like a circuit board pressed against the void. The lights were steady. They had been steady for years.
+   *(Dialogue/Reaction)* “That’s not us,” said Commander Vance, his voice rough from the thaw. He stood beside me, his uniform still damp, his eyes wide. “We were supposed to be the first. The seed.”
+   “The seed,” I repeated, my throat dry. “But the soil is already tilled.”
+   *(Revelation/Logic)* I pulled the navigation logs from the console. The numbers didn’t lie. Our departure: 2147. Arrival window: 2247. But the telemetry from the planet’s orbital beacons showed a second vessel’s signature. A copy of our hull, launched a century later, carrying a different crew, a different cargo. They had traveled the same arc, but with a shorter cryo cycle, faster propulsion, or simply luck. They arrived in 2238. They landed. They built. They slept. They woke. They became us.
+   *(Sensory/Emotional)* I pressed my palm against the glass. The city lights felt like a heartbeat. I thought of the archives I’d spent decades curating: the seed catalogs, the genetic blueprints, the poetry of the departure, the names of the first-born who would never see this world. Now, those names were echoes. Their children had built the lights. Their grandchildren had painted the streets. The ship below was not a ruin, but a living city. We were the latecomers. The ghosts.
+   *(Dialogue/Deepening)* “What do we do?” Vance asked
+---

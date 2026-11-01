@@ -1,0 +1,47 @@
+run 21141 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.2 t/s | prompt 17.4 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 18:32:23
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent enough.
+
+Let me think about what "smallest" means here. Options:
+1. Ultra-minified golfed Tetris (like the famous ~200 byte ones on codegolf.SE — but those are usually not complete Tetris with rotation, gravity, line clearing, scoring).
+2. A compact but readable single-file Tetris, maybe ~1-2KB.
+
+The famous smallest Tetris implementations: there's a well-known "smallest tetris in JavaScript" around 219 bytes? Actually there's a famous one by @fsk141 or "Tetris in 140 bytes"? There's a known one: https://codegolf.stackexchange.com — "Make a tetris game" — smallest complete tetris. There's a famous JS1k tetris. There's also the famous "tiny tetris" in C (ncurses, ~750 bytes).
+
+For HTML/JS, a well-known minimal Tetris is around 500-800 bytes when minified. Let me try to write one myself, aiming for genuinely small but complete: 7 tetromino shapes, rotation, gravity, movement left/right, drop, line clear, score, game over.
+
+I should aim for something like under 1000 bytes of actual code, and present it nicely. But I also want it to look good — the user asked for smallest, so aesthetics should be minimal but tasteful. A tiny canvas centered on a dark page, maybe a monospace score. Actually for "smallest", I could even skip styling... but I care about the first impression. I can keep the HTML shell minimal but add a tiny bit of styling (a few bytes) — dark background, centered canvas, crisp pixels. That's cheap in bytes and makes it feel authored.
+
+Let me design the golfed Tetris.
+
+Core approach:
+- Canvas, e.g. 10x20 grid, cell size ~12px → canvas 120x240. Or use small canvas and scale via CSS with image-rendering: pixelated.
+- Represent board as array of rows (strings or arrays).
+- Pieces: define shapes compactly. Classic trick: encode each tetromino as a 4x4 or 3x3 matrix, rotate by transposing+reversing, or precompute rotations.
+
+Compact encoding trick: store each piece as a list of [x,y] cells in one rotation state, and rotate via (x,y) -> (y, max-x) or use matrix rotation. Or encode shapes as binary numbers.
+
+A very compact known approach:
+
+```js
+d=[[1,1,1,1],[[1],[1],[1],[1]],[[1,1],[1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]]
+```
+
+Hmm, let me think of the classic minimal tetris JS. There's a famous one:
+
+```js
+<body><canvas id=c width=200 height=400><script>c=document.getElementById('c');x=c.getContext('2d');...
+```
+
+Let me just write my own from scratch, carefully golfing.
+
+Plan:
+
+Grid: W=10, H=20. Cell size S=12 (canvas 120x240). Or draw with 1px per cell on a tiny canvas and scale up via CSS — that's very compact: canvas width=10 height=20, CSS width:200px; image-rendering:pixelated. Drawing fillRect(x,y,1,1). That saves bytes on coordinates. Nice trick.
+
+Board: `b` = array of 20 rows, each row array of 10 cells, 0 or color index. Or store as strings? Arrays easier for clearing.
+
+Colors: use a small palette array of 7 colors, indexed by piece id. `k=['#...','#...']`. To save bytes, could use short hex like '#f00' etc. Actually could use HSL? `hsl(${i*36},50%,50%)` — one template string, shorter than 7 hex codes? `k=i=>`hsl(${i*36},99%,47%)`` — that's compact and gives distinct hues per piece. Nice.
+
+Pieces: I'll encode each tetromino as arrays of coordinates or as matrices. Rotation: for matrix m (array of arrays), rotate CW: `
+---
