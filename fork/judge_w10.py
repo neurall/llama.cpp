@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """The judge: a healthy model reads the answers our runs stored, because a broken engine reports fine speeds and a high hit rate while it writes nonsense.
 The gather mask of 2026-11-01 fooled a day of rows. A row the judge calls nonsense has no accepted prompt or decode speed.
+Qwen3.6 reads everything: about 6 s an answer, Qwen3.8-27B takes 19 s on the same card. A row Qwen3.6 calls nonsense goes to Qwen3.8-27B on the CPU, and its word stands.
 
 Runs on W10 next to the stock llama-server with Qwen3.6 (port 8190, scheduled task gensrv), on its own copy of runs.db, so PC1 neither waits nor coordinates:
-    python judge_w10.py DIR      DIR holds runs.db (a copy), README.md, verdicts.jsonl (appended, one row per line); task judge, see docs/w10-builds.md
+    python judge_w10.py DIR      DIR holds runs.db (a copy), README.md, verdicts.jsonl (appended, one row per line; the last line of a row counts); see docs/w10-builds.md
 `run.py judge --sync` copies the first two in and takes the third back. run.py imports this file too, to read a row on demand: same prompt, same scale."""
 import hashlib, json, os, sqlite3, subprocess, sys, time, urllib.request, re
 
-PARTS = (1000, 4000, 8000)   # tokens of an answer's end, read from the end backward, each piece on its own: the server's context is 16384. The first piece called nonsense ends the reading
+PARTS = (300, 1000)   # tokens of an answer's end, read from the end backward, each piece on its own. The next piece only if this one seems fine: the first piece called nonsense ends the reading
+PARTS_DEEP = (1000, 4000, 8000)   # the second opinion reads further; the server's context is 16384
+SECOND_PORT = 8191   # Qwen3.8-27B, started by the first flagged row. On the CPU: Qwen3.6 keeps the card
+SECOND_CMD = [r"N:\build\stock-de7fa0a3c\llama-server.exe", "-m", r"N:\m\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf", "--host", "0.0.0.0", "--port", str(SECOND_PORT), "-np", "1", "-c", "16384", "-ngl", "0", "--no-webui"]
 BAD = 2   # quality at or below this is nonsense. Measured 2026-11-01: damaged texts, loops and `!!!!` 1-2, real answers 3-5. A separate true/false field came back false for every text, so the scale alone decides
 MIN_CHARS = 16   # a shorter answer is too little to tell (prompt rows ask for one token)
 ASK_CHARS = 3000   # of the request, shown with each piece: long prompts carry their task at the start or at the end, so both ends
@@ -50,15 +54,15 @@ def post(url, path, body):
     return json.load(urllib.request.urlopen(q, timeout=1800))
 
 
-def judge_text(url, text, ask=""):
-    """the reading of one answer: {verdict: good | nonsense | none, quality, why, parts, of, tokens, s}; none: it could not read it, down=True when the server is the reason"""
+def judge_text(url, text, ask="", parts=PARTS):
+    """the reading of one answer by one model: {verdict: good | nonsense | none, quality, why, parts, of, tokens, s}; none: it could not read it, down=True when the server is the reason"""
     t0, text = time.time(), (text or "").strip()
     if is_garbage(text):
         return {"verdict": "nonsense", "quality": 1, "why": "one repeated token, NaN logits", "parts": 0, "of": 0, "tokens": 0, "s": 0}
     try:
         ids = post(url, "/tokenize", {"content": text})["tokens"]
         sizes, left = [], len(ids)
-        for n in PARTS:
+        for n in parts:
             if left > 0: sizes.append(n); left -= n
         end, res = len(ids), {"verdict": "good", "quality": 6, "why": "", "parts": 0, "of": len(sizes), "tokens": 0}
         for n in sizes:
@@ -79,8 +83,36 @@ def judge_text(url, text, ask=""):
     return res
 
 
+def judge_answer(url, text, ask="", start=False):
+    """the verdict on an answer: Qwen3.6 reads it, what it calls nonsense goes to Qwen3.8-27B, whose word stands (first: what Qwen3.6 said). Second model down and start not set: Qwen3.6's word stands, second: none"""
+    v = judge_text(url, text, ask)
+    if v["verdict"] != "nonsense" or not v["parts"]:   # no parts: one repeated token, no opinion needed
+        return v
+    second = url.rsplit(":", 1)[0] + f":{SECOND_PORT}"
+    if not server_up(second) and not (start and second_start(second)):
+        v["second"] = "none"
+        return v
+    w = judge_text(second, text, ask, PARTS_DEEP)
+    if w["verdict"] == "none":
+        v["second"] = "none"
+        return v
+    w["first"] = f"{v['quality']}: {v['why']}"
+    return w
+
+
+def second_start(url):
+    """Qwen3.8-27B for the flagged rows: on the first of them, it stays for the next. False when it does not come up in 3 minutes"""
+    print("starting the second model", flush=True)
+    subprocess.Popen(SECOND_CMD, stdin=subprocess.DEVNULL, stdout=open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "second.log"), "w"), stderr=subprocess.STDOUT)
+    for _ in range(36):
+        time.sleep(5)
+        if server_up(url): return True
+    return False
+
+
 def verdict_str(v):
-    return f"none: {v['why']}" if v["verdict"] == "none" else f"{v['verdict']} {v['quality']}: {v['why']} [{v['parts']} of {v['of']} parts, {v['tokens']} tokens, {v['s']} s]"
+    if v["verdict"] == "none": return f"none: {v['why']}"
+    return f"{v['verdict']} {v['quality']}: {v['why']} [{v['parts']} of {v['of']} parts, {v['tokens']} tokens, {v['s']} s]" + (f" (Qwen3.6 said {v['first']})" if v.get("first") else "") + (" (no second opinion)" if v.get("second") else "")
 
 
 def stored_answer(con, build, test, model, ts):
@@ -149,9 +181,9 @@ def main(d):
             if len((text or "").strip()) < MIN_CHARS:
                 v = {"verdict": "none", "why": "no stored answer"}
             elif sha in by_text:   # the same text again (a greedy test repeats it): the same verdict, no request
-                v = {k: by_text[sha].get(k) for k in ("verdict", "quality", "why", "parts", "of", "tokens")}; v["s"] = 0
+                v = {k: by_text[sha].get(k) for k in ("verdict", "quality", "why", "parts", "of", "tokens", "first", "second")}; v["s"] = 0
             else:
-                v = judge_text(url, text, ask)
+                v = judge_answer(url, text, ask, start=True)
             if v.get("down"):
                 print("server stopped answering:", v["why"], flush=True)
                 break

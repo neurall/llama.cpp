@@ -3156,7 +3156,7 @@ def cmd_judge(a):
     """the judge's results and readings on demand: no arguments, what it has said so far; --sync, W10's copy and verdicts; IDS or --build, read now"""
     url = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
     if a.file:
-        print(judge_w10.verdict_str(judge_w10.judge_text(url, open(a.file, errors="replace").read(), a.ask)))
+        print(judge_w10.verdict_str(judge_w10.judge_answer(url, open(a.file, errors="replace").read(), a.ask)))
         return
     import sqlite3
     db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
@@ -3170,7 +3170,7 @@ def cmd_judge(a):
         for r in filter(None, rows):
             t, ask = judge_w10.stored_answer(con, r[2], r[3], r[4], r[1])
             if len((t or "").strip()) < judge_w10.MIN_CHARS: continue
-            v = judge_w10.judge_text(url, t, ask)
+            v = judge_w10.judge_answer(url, t, ask)
             print(line(r, judge_w10.verdict_str(v)), flush=True)
             if not a.dry and v["verdict"] != "none": judge_apply(con, r[0], v)
         return
