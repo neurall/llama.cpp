@@ -259,6 +259,70 @@ static void dequantize_block_cuda(const void * vx, dst_t * y,
         (vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
 }
 
+// fork: see ggml_cuda_to_fp16_rows. Slot n_rows is row 0: a gather's padded slots read it, the -inf of the mask removes them, and inside a copy nobody wrote that would be NaN.
+template <int qk, int qr, dequantize_kernel_t dequantize_kernel>
+static __global__ void dequantize_rows_f16(const void * __restrict__ vx, half * __restrict__ y, const int32_t * __restrict__ rows, const int64_t n_rows,
+        const int64_t ne00, const int64_t ne01,
+        const int64_t ne0203, const uint3 ne02,
+        const int64_t s01, const int64_t s02, const int64_t s03) {
+    const int64_t i00 = 2 * (int64_t(blockDim.x)*blockIdx.x + threadIdx.x);
+
+    if (i00 >= ne00) {
+        return;
+    }
+
+    for (int64_t slot = blockIdx.y; slot <= n_rows; slot += gridDim.y) {
+        const int64_t i01 = slot == n_rows ? 0 : rows[slot];
+        if (i01 < 0) {
+            continue;
+        }
+        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
+            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02);
+            const int64_t i02 = dm.y;
+            const int64_t i03 = dm.x;
+
+            const int64_t ibx0 = i03*s03 + i02*s02 + i01*s01;
+
+            const int64_t ib = ibx0 + i00/qk;
+            const int64_t iqs = (i00%qk)/qr;
+            const int64_t iybs = i00 - i00%qk;
+            const int64_t y_offset = qr == 1 ? 1 : qk/2;
+
+            float2 v;
+            dequantize_kernel(vx, ib, iqs, v);
+
+            const int64_t iy0 = (i0203*ne01 + i01)*ne00 + iybs + iqs;
+            y[iy0 + 0]        = ggml_cuda_cast<half>(v.x);
+            y[iy0 + y_offset] = ggml_cuda_cast<half>(v.y);
+        }
+    }
+}
+
+template <int qk, int qr, dequantize_kernel_t dequantize_kernel>
+static void dequantize_rows_f16_cuda(const void * x, half * y, const int32_t * rows, const int64_t n_rows,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    const int64_t ne0203 = ne02*ne03;
+    const uint3 ne02_fdv = init_fastdiv_values(ne02);
+    const dim3 num_blocks((ne00 + 2*CUDA_DEQUANTIZE_BLOCK_SIZE - 1) / (2*CUDA_DEQUANTIZE_BLOCK_SIZE), (int)std::min(n_rows + 1, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    dequantize_rows_f16<qk, qr, dequantize_kernel><<<num_blocks, CUDA_DEQUANTIZE_BLOCK_SIZE, 0, stream>>>
+        (x, y, rows, n_rows, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+}
+
+bool ggml_cuda_to_fp16_rows(ggml_type type, const void * x, half * y, const int32_t * rows, int64_t n_rows,
+        int64_t ne00, int64_t ne01, int64_t ne02, int64_t ne03, int64_t s01, int64_t s02, int64_t s03, cudaStream_t stream) {
+    switch (type) {
+        case GGML_TYPE_Q8_0:
+            dequantize_rows_f16_cuda<QK8_0, QR8_0, dequantize_q8_0>(x, y, rows, n_rows, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+            return true;
+        case GGML_TYPE_Q4_0:
+            dequantize_rows_f16_cuda<QK4_0, QR4_0, dequantize_q4_0>(x, y, rows, n_rows, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+            return true;
+        default:
+            return false;
+    }
+}
+
 template <int qk, int qr, dequantize_kernel_t dequantize_kernel, typename dst_t>
 static void dequantize_block_cont_cuda(const void * __restrict__ vx, dst_t * __restrict__ y, const int64_t k, cudaStream_t stream) {
     dequantize_block_cuda<qk, qr, dequantize_kernel, dst_t>(vx, y, k, 1, 1, 1, k/qk, k/qk, k/qk, stream);

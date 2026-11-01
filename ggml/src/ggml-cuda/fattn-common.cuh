@@ -997,6 +997,7 @@ extern thread_local size_t * ggml_cuda_fattn_plan_fork;
 // times what the pool plans with (kv_lend_pc_of), so a 128k prompt was refused. Set once for a device, before its first planned graph, and never cleared: a graph allocated
 // earlier has its copies in its tensors and simply does not use them.
 extern bool ggml_cuda_fattn_f16_scratch_fork[GGML_CUDA_MAX_DEVICES];
+extern bool ggml_cuda_fattn_rows_fork;   // fattn.cu: --moe fattn-rows (see launch_fattn)
 
 template <int DV, int ncols1, int ncols2>
 void launch_fattn(
@@ -1068,12 +1069,50 @@ void launch_fattn(
     size_t nb22 = V->nb[2];
     size_t nb23 = V->nb[3];
 
+    GGML_ASSERT(!stream_k || !fold_gqa);
+    const int gqa_ratio    = Q->ne[2] / K->ne[2];
+    const int ncols1_eff   = (fold_gqa && ncols2 > gqa_ratio) ? (ncols / gqa_ratio) : ncols1;
+    const int ntiles_x     = ((Q->ne[1] + ncols1_eff - 1) / ncols1_eff);
+    const int ntiles_z_gqa = ((gqa_ratio + ncols2 - 1) / ncols2);
+    const int ntiles_dst   = ntiles_x * ntiles_z_gqa * K->ne[2] * Q->ne[3];
+
+    // sparse: a query tile of ncols1 queries shares one index list, the union of the queries' visible columns
+    int32_t n_kv_max = 0;
+    if (use_sparse) {
+        GGML_ASSERT(mask != nullptr);
+        const int32_t n_kv_max_query = ggml_get_op_params_i32(KQV, 4);
+        GGML_ASSERT(n_kv_max_query > 0);
+        n_kv_max = std::min<int64_t>(K->ne[1], int64_t(ncols1)*n_kv_max_query);
+
+        const size_t n_lists = size_t(ntiles_x) * mask->ne[3];
+
+        if (plan) {
+            plan_take((size_t(n_kv_max)*n_lists + n_lists) * sizeof(int));
+        } else {
+            KV_max.alloc(size_t(n_kv_max)*n_lists + n_lists);
+            ggml_cuda_flash_attn_ext_compact_mask(mask, KV_max.ptr, KV_max.ptr + size_t(n_kv_max)*n_lists, Q->ne[1], ncols1, n_kv_max, main_stream);
+        }
+    }
+
+    // fork: a gather reads only the rows of its index lists: with few enough of them only those rows become f16, each at its place in a whole copy, so the kernel reads it as before.
+    // A decode token at 137k cells converts 2048 rows of a layer, not 137k. A prompt pass, whose lists cover most cells, converts everything (--moe fattn-rows=0: always).
+    const int64_t n_rows_fork = use_sparse ? int64_t(n_kv_max) * int64_t(ntiles_x) * mask->ne[3] : 0;
+    const auto rows_to_f16 = [&](const ggml_tensor * T, half * y) {
+        const size_t ts = ggml_type_size(T->type);
+        return !plan && use_sparse && ggml_cuda_fattn_rows_fork && n_rows_fork*4 <= T->ne[1] &&
+            ggml_cuda_to_fp16_rows(T->type, T->data, y, KV_max.ptr, n_rows_fork, T->ne[0], T->ne[1], T->ne[2], T->ne[3], T->nb[1] / ts, T->nb[2] / ts, T->nb[3] / ts, main_stream);
+    };
+
     if (!plan && need_f16_K && K->type != GGML_TYPE_F16) {
         const size_t bs = ggml_blck_size(K->type);
         const size_t ts = ggml_type_size(K->type);
 
         GGML_ASSERT(K_f16 != nullptr);
-        if (ggml_is_contiguously_allocated(K)) {
+        if (rows_to_f16(K, K_f16)) {
+            nb11 = K->ne[0] * sizeof(half);
+            nb12 = K->ne[1] * nb11;
+            nb13 = K->ne[2] * nb12;
+        } else if (ggml_is_contiguously_allocated(K)) {
             to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(K->type);
             to_fp16(K_data, K_f16, ggml_nelements(K), main_stream);
 
@@ -1106,7 +1145,11 @@ void launch_fattn(
             const size_t ts = ggml_type_size(V->type);
 
             GGML_ASSERT(V_f16 != nullptr);
-            if (ggml_is_contiguously_allocated(V)) {
+            if (rows_to_f16(V, V_f16)) {
+                nb21 = V->ne[0] * sizeof(half);
+                nb22 = V->ne[1] * nb21;
+                nb23 = V->ne[2] * nb22;
+            } else if (ggml_is_contiguously_allocated(V)) {
                 to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(V->type);
                 to_fp16(V_data, V_f16, ggml_nelements(V), main_stream);
                 V_data = (char *) V_f16;
@@ -1127,31 +1170,6 @@ void launch_fattn(
                 nb23 = V->ne[2] * nb22;
             }
             V_data = (char *) V_f16;
-        }
-    }
-
-    GGML_ASSERT(!stream_k || !fold_gqa);
-    const int gqa_ratio    = Q->ne[2] / K->ne[2];
-    const int ncols1_eff   = (fold_gqa && ncols2 > gqa_ratio) ? (ncols / gqa_ratio) : ncols1;
-    const int ntiles_x     = ((Q->ne[1] + ncols1_eff - 1) / ncols1_eff);
-    const int ntiles_z_gqa = ((gqa_ratio + ncols2 - 1) / ncols2);
-    const int ntiles_dst   = ntiles_x * ntiles_z_gqa * K->ne[2] * Q->ne[3];
-
-    // sparse: a query tile of ncols1 queries shares one index list, the union of the queries' visible columns
-    int32_t n_kv_max = 0;
-    if (use_sparse) {
-        GGML_ASSERT(mask != nullptr);
-        const int32_t n_kv_max_query = ggml_get_op_params_i32(KQV, 4);
-        GGML_ASSERT(n_kv_max_query > 0);
-        n_kv_max = std::min<int64_t>(K->ne[1], int64_t(ncols1)*n_kv_max_query);
-
-        const size_t n_lists = size_t(ntiles_x) * mask->ne[3];
-
-        if (plan) {
-            plan_take((size_t(n_kv_max)*n_lists + n_lists) * sizeof(int));
-        } else {
-            KV_max.alloc(size_t(n_kv_max)*n_lists + n_lists);
-            ggml_cuda_flash_attn_ext_compact_mask(mask, KV_max.ptr, KV_max.ptr + size_t(n_kv_max)*n_lists, Q->ne[1], ncols1, n_kv_max, main_stream);
         }
     }
 

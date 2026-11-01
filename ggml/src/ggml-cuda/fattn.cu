@@ -8,6 +8,7 @@
 thread_local size_t * ggml_cuda_fattn_plan_fork = nullptr;   // fork: launch_fattn plans instead of running (fattn-common.cuh)
 bool ggml_cuda_fattn_f16_scratch_fork[GGML_CUDA_MAX_DEVICES] = {};   // fork: see fattn-common.cuh
 int  ggml_cuda_fattn_force_fork = 0;   // fork: --moe fattn-kernel, a BEST_FATTN_KERNEL_* value (0: the rules of ggml_cuda_get_best_fattn_kernel)
+bool ggml_cuda_fattn_rows_fork = true;   // fork: --moe fattn-rows=0: a gather over quantized K/V converts all of them (launch_fattn)
 
 #if !defined(GGML_USE_MUSA)
 
@@ -687,6 +688,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                     return BEST_FATTN_KERNEL_VEC;
                 }
             } else {
+                // fork: a gather over quantized K/V converts only the rows it reads (launch_fattn), so it costs what it costs over f16, far less than any scan of all the cells
+                if (ggml_cuda_fattn_rows_fork && gqa_opt_applies && gqa_ratio > 4 &&
+                        ggml_cuda_flash_attn_ext_mma_f16_may_use_sparse(K->ne[0], V->ne[0], 1, 8) &&
+                        ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(cc, dst, 1, 8)) {
+                    return BEST_FATTN_KERNEL_MMA_F16;
+                }
                 // fork: quantized K/V with heads sharing a KV head: the tile kernel reads it as it is and scans K once per group of heads, the vector kernel once per head
                 // (Qwen3.6 q8_0 at 137k cells, RTX 3090, 16 heads / 2 KV heads: 68-71 against 52-54 t/s decode). Compiled for q8_0 and q4_0 (flash_attn_tile, skip_quant_arch).
                 if (Q->ne[1] <= 2 && gqa_opt_applies && gqa_ratio > 1 && ggml_cuda_fattn_tile_use_native_kv(cc, dst)) {

@@ -8123,6 +8123,8 @@ static bool ggml_backend_cuda_copy_slices_fork(ggml_backend_t backend, const voi
 
 extern int ggml_cuda_fattn_force_fork;   // fattn.cu
 static void ggml_backend_cuda_fattn_force_set_fork(int kernel) { ggml_cuda_fattn_force_fork = kernel; }
+extern bool ggml_cuda_fattn_rows_fork;   // fattn.cu
+static void ggml_backend_cuda_fattn_rows_set_fork(int on) { ggml_cuda_fattn_rows_fork = on != 0; }
 
 static void ggml_backend_cuda_set_tensor_nosync_fork(ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
@@ -8154,6 +8156,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_obs_prompt_read_fork") == 0) {
         return (void *)ggml_backend_cuda_obs_prompt_read_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_fattn_rows_fork") == 0) {
+        return (void *) ggml_backend_cuda_fattn_rows_set_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_fattn_force_fork") == 0) {
         return (void *)ggml_backend_cuda_fattn_force_set_fork;
