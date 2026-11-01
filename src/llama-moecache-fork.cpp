@@ -9744,7 +9744,11 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         }();
         std::vector<uint8_t> used((size_t) mc->pf_count_layers * mc->pf_count_experts, 0);
         std::vector<upload_job> swaps;
-        if (rd && rd(mc->pf_count_layers, mc->pf_count_experts, used.data())) {
+        const bool counted = rd && rd(mc->pf_count_layers, mc->pf_count_experts, used.data());
+        if (moe_log_has("k")) {   // zero on a pass that ran: the card's counters saw none of its expert matmuls
+            LLAMA_LOG_WARN("moe-cache: prompt counters: %zu of %zu layer experts counted\n", (size_t) std::count(used.begin(), used.end(), (uint8_t) 1), used.size());
+        }
+        if (counted) {
             std::lock_guard<std::mutex> lock(mc->mtx);
             for (auto & ls : mc->layers) {
                 if (ls.pub.il < 0 || ls.pub.il >= mc->pf_count_layers) {

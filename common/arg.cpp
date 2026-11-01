@@ -2554,6 +2554,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "sim-vram") { } // leave v MiB free on every card: the memory is really taken at start (common_hog)
                 else if (key == "sim-ram")  { setenv("GGML_SIM_RAM_MB", std::to_string(v).c_str(), 1); }  // pretend v MiB of RAM can be pinned (test runs)
                 else if (key == "sim") { setenv("GGML_CUDA_SIM_GB", std::to_string(v).c_str(), 1); } // simulated card size in GiB: the CUDA backend hogs the rest of every card before anything else allocates
+                else if (key == "chain-fuse") { if (v == 0) { setenv("GGML_CUDA_NO_CHAIN_FUSE", "1", 1); } } // 0: the expert cache chain keeps gate and up as two matmuls (A/B of the fused MMQ kernel)
                 else if (key == "autotune") { params.autotune = v != 0; }
                 else if (key == "train-every")   { params.n_moe_predict_train = v; if (params.n_moe_predict <= 0) { params.n_moe_predict = 8; } }
                 else { params.moe_opts += (params.moe_opts.empty() ? "" : ",") + kv; } // a tuner knob: the engine checks the name

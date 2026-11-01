@@ -2701,9 +2701,11 @@ static bool ggml_cuda_mul_mat_q_fusion_matches(const ggml_tensor * up, const ggm
         return false;
     }
 
-    // fork: a matmul of the expert cache chain (src[3] the expert ids, src[4] the table id -> block, set by the graph) goes through ggml_cuda_mul_mat_id: the fused call below
-    // hands the kernel neither, so its grid would run over every block of the pool, not over the experts. The CPU chain's skip table (src[3] alone) does not reach a card.
-    if (up->src[3] != nullptr || up->src[4] != nullptr || gate->src[3] != nullptr || gate->src[4] != nullptr) {
+    // fork: a matmul of the expert cache chain carries the expert ids and the table id -> block (src[3], src[4], set by the graph). Gate and up of a chain share both, so an expert
+    // sits in the same block of the two tensors and the fused kernel reads them at one offset; the fused call hands it the ids and the table. Without that pair (the CPU chain's
+    // skip table: src[3] alone) or with two different ones there is no fusion. --moe chain-fuse=0 keeps the chain as two matmuls.
+    static const bool no_chain_fuse = getenv("GGML_CUDA_NO_CHAIN_FUSE") != nullptr;
+    if (up->src[3] != gate->src[3] || up->src[4] != gate->src[4] || (up->src[3] == nullptr) != (up->src[4] == nullptr) || (up->src[4] != nullptr && no_chain_fuse)) {
         return false;
     }
 
@@ -2749,7 +2751,7 @@ static bool ggml_cuda_should_fuse_mul_mat_q(const ggml_tensor * up, const ggml_t
     // For MUL_MAT_ID: same kernel choice as ggml_cuda_mul_mat_id, with the nominal tiles of all experts (the per-expert token counts are only known on the GPU).
     const bool    is_id     = up->op == GGML_OP_MUL_MAT_ID;
     const int64_t ncols     = is_id ? y->ne[2]    : y->ne[1];
-    const int64_t nchannels = is_id ? x_up->ne[2] : y->ne[2]*y->ne[3];
+    const int64_t nchannels = is_id ? (up->src[4] ? up->src[4]->ne[1] : x_up->ne[2]) : y->ne[2]*y->ne[3];   // fork: a table: the kernel's grid runs over the experts, not the pool's blocks
     const bool    use_mmvq  = is_id ? ncols <= get_mmvq_mmid_max_batch(x_up->type, cc) : ggml_cuda_should_use_mmvq(x_up->type, cc, ncols);
     if (use_mmvq || !ggml_cuda_should_use_mmq(x_up->type, cc, ncols, /*n_experts =*/ is_id ? x_up->ne[2] : 0)) {
         return false;
@@ -6058,7 +6060,14 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 if (up->op == GGML_OP_MUL_MAT_ID && (g_obs_on.load(std::memory_order_relaxed) || g_obs_prompt_on.load(std::memory_order_relaxed))) {
                     ggml_cuda_obs_count(*cuda_ctx, gate->src[0], ids);
                 }
-                ggml_cuda_mul_mat_q(*cuda_ctx, src0, src1, ids, glu, &fusion_data);
+                if (up->src[4]) {   // fork: the expert cache chain, ids and table as in ggml_cuda_mul_mat_id
+                    static bool fired_logged = false;   // once per process: this fusion fired
+                    if (!fired_logged) {
+                        fired_logged = true;
+                        GGML_LOG_INFO("%s: fused gate/up MMQ on the expert cache chain fires: %s, %lld tokens\n", __func__, src0->name, (long long) src1->ne[2]);
+                    }
+                }
+                ggml_cuda_mul_mat_q(*cuda_ctx, src0, src1, up->src[4] ? up->src[3] : ids, glu, &fusion_data, up->src[4]);
                 fused_mul_mat_vec = true;
                 fused_node_count  = 3;
                 break;
