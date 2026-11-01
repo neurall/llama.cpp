@@ -3583,6 +3583,10 @@ void llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, 
             continue;
         }
         size_t & nt = ap.need_tok[(int32_t) n_tokens];
+        // this graph holds one growth step of KV (get_size_reserve), its masks too: at more cells it needs more, like a graph that ran (need_at_cells). With no cells noted it
+        // did not grow, and the fit through it and the graphs that ran gave a fixed part of 2.2 GiB at 98k cells: the rest of a 128k prompt ran in passes of 64 tokens at
+        // 189 t/s instead of about 4400 tokens at the 2900 t/s of the big passes (Qwen3.6, 4.5 GiB per card, 2026-11-01)
+        if (graph_bytes >= nt) { ap.need_cells[(int32_t) n_tokens] = ap.kv_step; }
         nt = std::max(nt, graph_bytes);
         return;
     }
