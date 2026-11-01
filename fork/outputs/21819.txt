@@ -1,0 +1,3 @@
+run 21819 | up8_gather_mask_fix | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 0.0 t/s | prompt 21.7 t/s | 1 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0 | power 220+280 W | 2026-11-01 21:06:43
+
+ int
