@@ -687,6 +687,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                     return BEST_FATTN_KERNEL_VEC;
                 }
             } else {
+                // fork: quantized K/V with heads sharing a KV head: the tile kernel reads it as it is and scans K once per group of heads, the vector kernel once per head
+                // (Qwen3.6 q8_0 at 137k cells, RTX 3090, 16 heads / 2 KV heads: 68-71 against 52-54 t/s decode). Compiled for q8_0 and q4_0 (flash_attn_tile, skip_quant_arch).
+                if (Q->ne[1] <= 2 && gqa_opt_applies && gqa_ratio > 1 && ggml_cuda_fattn_tile_use_native_kv(cc, dst)) {
+                    return BEST_FATTN_KERNEL_TILE;
+                }
                 if (cc >= GGML_CUDA_CC_ADA_LOVELACE) {
                     if (Q->ne[1] <= 2) {
                         return BEST_FATTN_KERNEL_VEC;
