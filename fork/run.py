@@ -2552,7 +2552,8 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                     _tl = _r["completion_probabilities"][0]["top_logprobs"]
                     _v = next((x["logprob"] for x in _tl if x["id"] == _ids[_s + _l]), None)
                     _out += _v is None
-                    _lp.append(round(_tl[-1]["logprob"] if _v is None else _v, 5))
+                    _low = min((x["logprob"] for x in _tl if x["logprob"] is not None), default=-30.0)   # JSON null: a probability of 0 (GLM's tail of the list)
+                    _lp.append(round(_low if _v is None else _v, 5))
                 print(f"DBG TRUE PPL: {math.exp(-sum(_lp) / len(_lp)):.5f} over {_k} prompts of {_l} tokens, {_out} outside the top 2048: {_lp}", flush=True)
             if os.environ.get("RUN_MOVE_TEST"):   # S:L: the KV moves with cells in use (--moe attn-split=2): the real next token's log probability at L and at S tokens, cells fresh and cells moved (prompt_n: how many were not cached)
                 _s, _l = map(int, os.environ["RUN_MOVE_TEST"].split(":"))

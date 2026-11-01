@@ -4437,6 +4437,43 @@ llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
     return (llm_graph_input_attn_kv *) res->add_input(std::move(inp));
 }
 
+// fork: --moe attn-split (llama_kv_cache): the attention of each card's KV heads on that card. The home card goes last: a card's input is copied behind that card's earlier
+// work and the other cards' parts need nothing from it but the query heads, so they all run while the home card runs its own. The concat starts a split of its own
+// (ggml_backend_sched_split_graph): in the home card's split its inputs would be copied, waiting for the other cards, before the home card's own attention starts.
+// Each part writes its own K / V rows, so the caller writes none. sinks: one per query head, sliced like them.
+static ggml_tensor * attn_parts_fork(const llm_graph_context & g, const llama_kv_cache_context * mctx, ggml_tensor * k_idxs, ggml_tensor * v_idxs, ggml_tensor * kq_mask,
+                                     ggml_tensor * q_cur, ggml_tensor * k_cur, ggml_tensor * v_cur, ggml_tensor * sinks, uint32_t n_parts, float kq_scale, int il) {
+    ggml_context * ctx0 = g.ctx0;
+    ggml_backend_t home = g.ds_backend(mctx->get_part_dev(il, 0));
+    const int64_t qh = q_cur->ne[1] / n_parts, kh = k_cur->ne[1] / n_parts;
+    std::vector<ggml_tensor *> out(n_parts, nullptr);
+    for (int32_t part = (int32_t) n_parts - 1; part >= 0; --part) {
+        g.ds_skip();
+        ggml_tensor * q_p = ggml_view_3d(ctx0, q_cur, q_cur->ne[0], qh, q_cur->ne[2], q_cur->nb[1], q_cur->nb[2], part * qh * q_cur->nb[1]);
+        q_p = part > 0 ? ggml_cont(ctx0, q_p) : q_p;   // only its own heads cross the link
+        ggml_tensor * k_p = ggml_cont(ctx0, ggml_view_3d(ctx0, k_cur, k_cur->ne[0], kh, k_cur->ne[2], k_cur->nb[1], k_cur->nb[2], part * kh * k_cur->nb[1]));
+        ggml_tensor * v_p = ggml_cont(ctx0, ggml_view_3d(ctx0, v_cur, v_cur->ne[0], kh, v_cur->ne[2], v_cur->nb[1], v_cur->nb[2], part * kh * v_cur->nb[1]));
+        ggml_tensor * s_p = sinks ? ggml_view_1d(ctx0, sinks, qh, part * qh * ggml_element_size(sinks)) : nullptr;
+        g.ds_pin(home);
+        ggml_build_forward_expand(g.gf, mctx->cpy_k(ctx0, k_p, k_idxs, il, part));
+        ggml_build_forward_expand(g.gf, mctx->cpy_v(ctx0, v_p, v_idxs, il, part));
+        g.ds_skip();
+        g_attn_part_other_card = part > 0;
+        out[part] = g.build_attn_mha(q_p, mctx->get_k(ctx0, il, part), mctx->get_v(ctx0, il, part), nullptr, kq_mask, s_p, nullptr, 0, kq_scale, il);
+        g_attn_part_other_card = false;
+        g.ds_pin(g.ds_backend(mctx->get_part_dev(il, part)));
+        ggml_build_forward_expand(g.gf, out[part]);
+    }
+    g.ds_skip();
+    ggml_tensor * cur = out[0];
+    for (uint32_t part = 1; part < n_parts; ++part) {
+        cur = ggml_concat(ctx0, cur, out[part], 0);
+        ggml_set_name(cur, "attn_parts_merge");   // not cb(): the scheduler starts a split at this name
+    }
+    g.ds_pin(home);
+    return cur;
+}
+
 ggml_tensor * llm_graph_context::build_attn(
         llm_graph_input_attn_kv * inp,
         ggml_tensor * wo,
@@ -4499,36 +4536,8 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * cur = nullptr;
     const uint32_t n_parts = cparams.training ? 1 : mctx_cur->get_n_parts(il);
     if (n_parts > 1) {
-        // fork: --moe attn-split (llama_kv_cache): the attention of each card's KV heads on that card. The home card goes last: a card's input is copied behind that card's earlier
-        // work and the other cards' parts need nothing from it but the query heads, so they all run while the home card runs its own. The concat starts a split of its own
-        // (ggml_backend_sched_split_graph): in the home card's split its inputs would be copied, waiting for the other cards, before the home card's own attention starts.
-        GGML_ASSERT(kq_b == nullptr && sinks == nullptr && v_mla == nullptr && cparams.flash_attn);
-        ggml_backend_t home = ds_backend(mctx_cur->get_part_dev(il, 0));
-        const int64_t qh = q_cur->ne[1] / n_parts, kh = k_cur->ne[1] / n_parts;
-        std::vector<ggml_tensor *> out(n_parts, nullptr);
-        for (int32_t part = (int32_t) n_parts - 1; part >= 0; --part) {
-            ds_skip();
-            ggml_tensor * q_p = ggml_view_3d(ctx0, q_cur, q_cur->ne[0], qh, q_cur->ne[2], q_cur->nb[1], q_cur->nb[2], part * qh * q_cur->nb[1]);
-            q_p = part > 0 ? ggml_cont(ctx0, q_p) : q_p;   // only its own heads cross the link
-            ggml_tensor * k_p = ggml_cont(ctx0, ggml_view_3d(ctx0, k_cur, k_cur->ne[0], kh, k_cur->ne[2], k_cur->nb[1], k_cur->nb[2], part * kh * k_cur->nb[1]));
-            ggml_tensor * v_p = ggml_cont(ctx0, ggml_view_3d(ctx0, v_cur, v_cur->ne[0], kh, v_cur->ne[2], v_cur->nb[1], v_cur->nb[2], part * kh * v_cur->nb[1]));
-            ds_pin(home);
-            ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_p, inp->get_k_idxs(), il, part));
-            ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_p, inp->get_v_idxs(), il, part));
-            ds_skip();
-            g_attn_part_other_card = part > 0;
-            out[part] = build_attn_mha(q_p, mctx_cur->get_k(ctx0, il, part), mctx_cur->get_v(ctx0, il, part), nullptr, kq_mask, nullptr, nullptr, 0, kq_scale, il);
-            g_attn_part_other_card = false;
-            ds_pin(ds_backend(mctx_cur->get_part_dev(il, part)));
-            ggml_build_forward_expand(gf, out[part]);
-        }
-        ds_skip();
-        cur = out[0];
-        for (uint32_t part = 1; part < n_parts; ++part) {
-            cur = ggml_concat(ctx0, cur, out[part], 0);
-            ggml_set_name(cur, "attn_parts_merge");   // not cb(): the scheduler starts a split at this name
-        }
-        ds_pin(home);
+        GGML_ASSERT(kq_b == nullptr && v_mla == nullptr && cparams.flash_attn);
+        cur = attn_parts_fork(*this, mctx_cur, inp->get_k_idxs(), inp->get_v_idxs(), kq_mask, q_cur, k_cur, v_cur, sinks, n_parts, kq_scale, il);
     } else {
         cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, 0, kq_scale, il);
         cb(cur, "kqv_out", il);
@@ -4806,15 +4815,16 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     const bool store_kv = !use_kv_cur || hparams.n_layer_kv_from_start >= 0;
+    const uint32_t n_parts = use_kv_cur ? 1 : mctx_cur->get_n_parts(il);   // fork: --moe attn-split: the parts write their own rows (MiMo's full layers: sliding-window ones stay whole)
 
     // optionally store to KV cache
-    if (store_kv && k_cur) {
+    if (store_kv && k_cur && n_parts == 1) {
         const auto & k_idxs = is_swa ? inp->get_k_idxs_swa() : inp->get_k_idxs();
 
         ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
     }
 
-    if (store_kv && v_cur) {
+    if (store_kv && v_cur && n_parts == 1) {
         const auto & v_idxs = is_swa ? inp->get_v_idxs_swa() : inp->get_v_idxs();
 
         ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
@@ -4822,12 +4832,18 @@ ggml_tensor * llm_graph_context::build_attn(
 
     const auto & kq_mask = is_swa ? inp->get_kq_mask_swa() : inp->get_kq_mask();
 
-    ggml_tensor * q = q_cur;
-    ggml_tensor * k = use_kv_cur ? k_cur : mctx_cur->get_k(ctx0, il);
-    ggml_tensor * v = use_kv_cur ? v_cur : mctx_cur->get_v(ctx0, il);
+    ggml_tensor * cur = nullptr;
+    if (n_parts > 1) {
+        GGML_ASSERT(k_cur && v_cur && kq_b == nullptr && v_mla == nullptr && cparams.flash_attn);
+        cur = attn_parts_fork(*this, mctx_cur, inp->get_k_idxs(), inp->get_v_idxs(), kq_mask, q_cur, k_cur, v_cur, sinks, n_parts, kq_scale, il);
+    } else {
+        ggml_tensor * q = q_cur;
+        ggml_tensor * k = use_kv_cur ? k_cur : mctx_cur->get_k(ctx0, il);
+        ggml_tensor * v = use_kv_cur ? v_cur : mctx_cur->get_v(ctx0, il);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, 0, kq_scale, il);
-    cb(cur, "kqv_out", il);
+        cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, 0, kq_scale, il);
+        cb(cur, "kqv_out", il);
+    }
 
     if (v_rot) {
         cur = llama_mul_mat_hadamard(ctx0, cur, v_rot);
