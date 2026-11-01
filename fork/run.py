@@ -5,6 +5,7 @@
   run.py report [--campaign NAME] [--last N] [--tol 0.95]      variants against stock, per model / test / machine
   run.py jobs    [-t TEST] [-n N] [-e K=V ...] [--bare] [--plain] [--args '...'] BUILD...   (MODEL=/path/model.gguf)
   run.py machine [add ID --ssh user@host --root DIR --os linux|windows]    machines reached over ssh (llama-cli runs)
+  run.py gen SPEC [-n N] [--start I] [--show]    write generated prompts ahead of a run; --gen SPEC on any run writes them on the fly (SPEC: in=16:2000,out=32:1024,task=code|prose,topic=a|b,seed=1)
   run.py prompt short|12k|128k|chatv|code [--url U]            the benchmark prompts against a running server
   run.py ctl    BUILD name:KEY=V,KEY=V ...                     one server, settings switched at runtime, rotating prompts
   run.py show [-t TEST] [-b BUILD] [--runs]
@@ -64,7 +65,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
 
   [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent  state
   [models]  olmoe  qwen36  qwen38  glm  mimo        (the regress cells and run.py baseline skip a model whose file is missing)
-  [hosts]   w10_ssh  w10_root  history_sources                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
+  [hosts]   w10_ssh  w10_root  history_sources  gen_url                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
   [gpu]     nvidia_smi  ld_extra  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
                                                               optional shell file whose exports every queue task gets; empty = not used)
 """
@@ -86,7 +87,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
             "glm": _BASE + "/models/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
             "mimo": _BASE + "/models/MiMo-V2.6-Flash-MOPD-MXFP4.gguf",
         },
-        "hosts": {"w10_ssh": "", "w10_root": "N:", "history_sources": ""},
+        "hosts": {"w10_ssh": "", "w10_root": "N:", "history_sources": "", "gen_url": ""},
         "gpu": {"nvidia_smi": "nvidia-smi", "ld_extra": "", "limits_env": "", "limits_service": "", "env_sh": ""},
     }
 
@@ -2482,9 +2483,13 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 def _next_lp(_n, _cache):
                     _r = post("/completion", {"prompt": _ids[:_n], "n_predict": 1, "cache_prompt": _cache, "n_probs": 2048, **GREEDY})
                     _tl = _r["completion_probabilities"][0]["top_logprobs"]
-                    return round(next((x["logprob"] for x in _tl if x["id"] == _ids[_n]), _tl[-1]["logprob"]), 5), _r["timings"]["prompt_n"]
-                _a = _next_lp(_l, False); _b = _next_lp(_s, False); _c = _next_lp(_l, True); _d = _next_lp(_s, True)
-                print(f"DBG MOVE: at {_l}: fresh {_a} moved {_c}; at {_s}: fresh {_b} moved {_d}", flush=True)
+                    return round(next((x["logprob"] for x in _tl if x["id"] == _ids[_n]), _tl[-1]["logprob"]), 5), _r["timings"]["prompt_n"], {x["id"]: x["logprob"] for x in _tl}
+                def _kl(_p, _q):   # of the next-token distributions, over the tokens both list
+                    return round(sum(math.exp(_v) * (_v - _q[2][_k]) for _k, _v in _p[2].items() if _k in _q[2]), 5)
+                _a = _next_lp(_l, False); _b = _next_lp(_s, False); _c = _next_lp(_l, True)
+                _on = [_next_lp(_l + (_i + 1) * 50, True)[0] for _i in range(20)]   # the moved cells stay in use: the real next token, 50 tokens apart
+                _d = _next_lp(_s, True)
+                print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
                    "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
@@ -2536,6 +2541,12 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             TAGBOX["v"] = "edit4-%d" % ((REP or 0) % len(EDIT_INSTR)) + ("-chat" if chat else "")
             args = COMMON + _ctx_args(4096)
             res, logf, text = generate(build, env, args, snippet + "\n\n" + ins, int(OVR.get("tokens") or 128), chat, {"cache_prompt": False})
+        elif test == "gen":   # --gen SPEC: repetition k sends prompt k of the spec (generated on the fly, stored), never the same one twice
+            g = gen_prompt(OVR["gen"], REP or 0)
+            TAGBOX["v"] = "gen-%d" % (REP or 0)
+            args = COMMON + _ctx_args(gen_ctx(OVR["gen"]))
+            res, logf, text = generate(build, env, args, ovr_prompt(g["text"]), int(OVR.get("tokens") or g["out"]), True, {"cache_prompt": False})
+            PROCSTAT["note"] = f"gen {REP or 0}: {g['task'][:24]}, {g['topic'][:32]}, in {g['n_tokens']} out {g['out']}"
         elif test in config.user_tests():   # a prompt of your own from prompts.ini ([name] path = ..., test = chat|completion, tokens = ..., ctx = ...)
             ut = config.user_tests()[test]
             args = COMMON + _ctx_args(int(ut.get("ctx") or 4096))
@@ -2585,7 +2596,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 row["up_gbs_eff"] = round(float(row["up_mib"]) / row["uploads"] / 1024 / (row["up_ms_expert"] / 1000), 2)   # GiB per expert / seconds per expert
         mc = t.get("moe_cache") or {}   # the server's per-request cache churn: swaps (uploads of experts into VRAM), evictions, MiB moved
         if mc.get("active"):
-            row.update(uploads=mc.get("uploads_request"), evictions=mc.get("evictions_request"), up_mib=mc.get("upload_mib_request"))
+            row.update(uploads=mc.get("uploads_request"), evictions=mc.get("evictions_request"), up_mib=mc.get("upload_mib_request"), hit_rate=mc.get("hit_rate_request"))
             for k, v in (mc.get("pressure") or {}).items():
                 row["p_" + k] = v
         if t.get("draft_n"):  # speculative decoding (MTP / draft model): accepted / drafted tokens
@@ -2613,6 +2624,108 @@ def generate(build, env, args, prompt, n, chat, extra=None, tag=None):
         m = res["choices"][0]["message"]
         return res, logf, (m.get("reasoning_content") or "") + "\n---\n" + (m.get("content") or "")
     return res, logf, res["content"]
+
+
+# ---- generated prompts: --gen SPEC on any run, `run.py gen` alone ----
+# A cache test needs prompts it never saw: random topics, code and prose, short questions and long documents, any ratio of input to output. A server on another machine writes them
+# ([hosts] gen_url: stock llama-server with Qwen3.6 on W10), so the machine under test does nothing for it. SPEC, comma separated: in=A:B, out=A:B (tokens; a range draws log-uniform,
+# one number is fixed), task=a|b (kinds of GEN_TASKS or free text), topic=a|b (free text, default GEN_TOPICS), seed=N, url=U. Prompt i of a spec is stored in WORK/genprompts: every
+# arm of an A/B and every rerun sends the same text, and the arms of different specs never share one. ponytail: no shelf of documents for very long inputs: W10 writes about 8-10
+# tokens/s, so in=128000 would take hours; reuse stored documents if a long random prompt is ever needed.
+GEN_TOPICS = ("tide tables|beekeeping|medieval trade routes|the immune system|rent control|jazz harmony|volcanoes|bicycle repair|Roman law|sourdough baking|compilers|distributed databases|"
+              "network protocols|garbage collection|image compression|game physics|kernel schedulers|cryptography|web scraping|machine learning pipelines|payroll|inventory management|"
+              "chess openings|football tactics|marathon training|sailing|mountain rescue|bird migration|coral reefs|soil chemistry|organic farming|electric cars|railway signalling|"
+              "air traffic control|satellite orbits|black holes|quantum computing|protein folding|vaccines|sleep|nutrition|grief|parenting|moving abroad|job interviews|small business taxes|"
+              "stock options|mortgages|insurance claims|copyright|privacy law|elections|the French Revolution|the Silk Road|ancient Egypt|the Cold War|Viking ships|Japanese woodworking|"
+              "Renaissance painting|film editing|video game design|knitting|home plumbing|solar panels|wine making|coffee roasting|dog training|urban planning|lighthouses|deep sea mining").split("|")
+GEN_LANGS = ["Python", "C++", "Rust", "Go", "JavaScript", "TypeScript", "Java", "C#", "Bash", "Lua", "Haskell", "PHP", "Kotlin", "C"]
+GEN_FORMS = ["short story", "news article", "blog post", "novel chapter", "speech", "diary", "travel report", "contract", "product manual", "interview"]
+GEN_FMTS = ["CSV file", "JSON document", "server log", "YAML config", "SQL dump", "XML file"]
+GEN_HUMAN = ["Spanish", "German", "French", "Czech", "Japanese", "Italian"]
+GEN_TASKS = {   # kind: (what a short request is, how to write a document, what is asked of a document)
+    "code": ("concrete programming task in {lang}: what to build, its inputs, its edge cases", "Write a complete {lang} source file on {topic}: real logic, several functions, no explanation, only code.",
+             ["Find the bugs in this {lang} code and fix them.", "Explain what this code does, function by function.", "Rewrite this code in {lang2}.", "Add error handling and unit tests to this code.", "Refactor this code and list what you changed."]),
+    "prose": ("creative writing request (story, poem, letter or speech) with its mood and its reader", "Write a long {form} on {topic}. Only the text.",
+              ["Summarize this text in five sentences.", "Continue this text in the same style.", "Rewrite this text for a ten year old.", "List the main points and who would disagree with them.", "Translate this text to {human}."]),
+    "explain": ("question that asks how something works and why", "Write a long technical article on {topic}. Only the article.",
+                ["Make a study guide from this article.", "Write ten quiz questions with answers on this article.", "Explain this article to a beginner.", "What does this article get wrong or leave out?"]),
+    "data": ("task on tables, SQL, regular expressions or a file format, with a small sample of the data in it", "Write a long {fmt} with realistic made-up records on {topic}. Only the data.",
+             ["Which records look wrong, and why?", "Write a SQL schema for this data and three useful queries.", "Summarize what this data shows.", "Turn the ten most important records into a Markdown table."]),
+    "math": ("math word problem with numbers, or a short proof to write", "Write a long numbered list of math word problems on {topic}, with their numbers. Only the problems.",
+             ["Solve the first five problems step by step.", "Which of these problems is the hardest, and why? Solve it."]),
+    "chat": ("request for practical advice or a plan, with some personal detail", "Write a long email thread between several people on {topic}. Only the emails.",
+             ["Summarize who wants what.", "Write the next reply.", "What should happen next, and who should do it?"])}
+GEN_DOC = 120   # from this many input tokens a prompt is a task on a document, below it a request alone
+
+
+def gen_parse(spec):
+    """SPEC to its values; key: what names the prompts (not the server that writes them)"""
+    d = dict(kv.split("=", 1) for kv in filter(None, (spec or "").split(",")))
+    unknown = set(d) - {"in", "out", "task", "topic", "seed", "url"}
+    if unknown: sys.exit(f"--gen: unknown {sorted(unknown)} in {spec!r}: in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,url=U")
+    rng = lambda v: tuple(int(x) for x in (v.split(":") * 2)[:2])
+    g = {"in": rng(d.get("in", "16:2000")), "out": rng(d.get("out", "32:1024")), "task": d.get("task", "|".join(GEN_TASKS)).split("|"), "seed": int(d.get("seed", 1)),
+         "topic": d["topic"].split("|") if d.get("topic") else GEN_TOPICS, "url": (d.get("url") or fcfg.get("hosts", "gen_url")).rstrip("/")}
+    g["key"] = json.dumps([g["in"], g["out"], g["task"], d.get("topic"), g["seed"]])
+    return g
+
+
+def gen_ctx(spec):
+    """the context of a whole row: the server stays the same for all its prompts; another model's tokenizer may count a prompt up to a quarter longer"""
+    g = gen_parse(spec)
+    return int(g["in"][1] * 1.25) + g["out"][1] + 1024
+
+
+def gen_prompt(spec, i):
+    """prompt i of SPEC: from the store, else written now. Keys: text, n_tokens, out, task, topic"""
+    import random, urllib.request
+    g = gen_parse(spec)
+    d = os.path.join(WORK, "genprompts", hashlib.sha1(g["key"].encode()).hexdigest()[:12])
+    f = os.path.join(d, f"{i}.json")
+    if os.path.exists(f): return json.load(open(f))
+    if not g["url"]: sys.exit("--gen: no server to write prompts: set [hosts] gen_url in the fork config, or url= in the spec")
+    def post_(path, body):
+        q = urllib.request.Request(g["url"] + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(q, timeout=1800))
+    def write(text, n, seed):
+        r = post_("/v1/chat/completions", {"messages": [{"role": "user", "content": text}], "max_tokens": n, "temperature": 1.0, "top_p": 0.95, "seed": seed, "cache_prompt": False,
+                                           "chat_template_kwargs": {"enable_thinking": False}})
+        return r["choices"][0]["message"].get("content") or ""
+    toks = lambda t: post_("/tokenize", {"content": t})["tokens"]
+    def cut(t, n):
+        ids = toks(t)
+        return t if len(ids) <= n else post_("/detokenize", {"tokens": ids[:n]})["content"]
+    r = random.Random(f"{g['seed']}/{i}")
+    draw = lambda a: a[0] if a[0] == a[1] else int(round(math.exp(r.uniform(math.log(a[0]), math.log(a[1])))))
+    p = {"i": i, "n_in": draw(g["in"]), "out": draw(g["out"]), "task": r.choice(g["task"]), "topic": r.choice(g["topic"]), "lang": r.choice(GEN_LANGS), "lang2": r.choice(GEN_LANGS),
+         "form": r.choice(GEN_FORMS), "fmt": r.choice(GEN_FMTS), "human": r.choice(GEN_HUMAN), "seed": r.randrange(1 << 31)}
+    k = GEN_TASKS.get(p["task"]) or (p["task"], "Write a long text on {topic}, the input of this task: " + p["task"] + ". Only the text.", [p["task"]])
+    if p["n_in"] < GEN_DOC:
+        p["text"] = cut(write(f"Write one {k[0].format(**p)}. Subject: {p['topic']}. Write it the way a user types it to an AI assistant, about {max(8, p['n_in'] * 3 // 4)} words. Output only that text.",
+                              p["n_in"] + 32, p["seed"]), p["n_in"])
+    else:
+        p["line"] = r.choice(k[2]).format(**p)
+        need = p["n_in"] - len(toks(p["line"])) - 2
+        parts, n = [], 0
+        for j in range(16):   # a document of many parts: one answer rarely reaches 2000 tokens
+            parts.append(write(k[1].format(**p) + (f" This is part {j + 1} of it, on another side of the subject." if j else ""), min(need - n + 64, 2048), p["seed"] + j))
+            n = len(toks("\n\n".join(parts)))
+            if n >= need: break
+        p["text"] = p["line"] + "\n\n" + cut("\n\n".join(parts), need)
+    p["n_tokens"] = len(toks(p["text"]))
+    os.makedirs(d, exist_ok=True)
+    with open(f + ".tmp", "w") as o: json.dump(p, o, ensure_ascii=False)
+    os.replace(f + ".tmp", f)
+    return p
+
+
+def cmd_gen(a):
+    """prompts --start .. of SPEC to the store (a run with this spec finds them), one line each; --show prints the texts too"""
+    for i in range(a.start, a.start + a.n):
+        t0 = time.time()
+        p = gen_prompt(a.spec, i)
+        print(f"{i:4d}  {p['task'][:8]:8s}  {p['topic'][:26]:26s}  in {p['n_tokens']:5d}  out {p['out']:5d}  {time.time() - t0:5.0f} s  {p['text'][:64]!r}", flush=True)
+        if a.show: print(p["text"], flush=True)
 
 
 def prep_model():
@@ -3302,9 +3415,10 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink", "gen"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
+    if OVR.get("gen") is not None: a.test = "gen"   # --gen on any run: generated prompts in place of the test's own
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
         OVR["tokens"] = ALIAS_TOKENS[a.test]   # alias that fixes the output length (edit4c alone defaults to 128)
     if getattr(a, "test", None) in ALIAS_PREFIX:
@@ -4366,6 +4480,7 @@ def add_overrides(sub):
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
     sub.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run takes the next slice of the prompt text (a repeated text finds every expert it used in the cache, no real prompt does)")
     sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
+    sub.add_argument("--gen", help="generated prompts in place of the test's own, repetition k = prompt k: in=A:B,out=A:B,task=code|prose|explain|data|math|chat or free text,topic=a|b,seed=N (see gen_prompt; '' = defaults)")
     sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
@@ -7305,7 +7420,7 @@ def cmd_cell(a):
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--vary"] if getattr(a, "vary", None) else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--vary"] if getattr(a, "vary", None) else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else []) + (["--gen", a.gen] if getattr(a, "gen", None) is not None else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
@@ -9925,7 +10040,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="tools (each has its own --help): " + ", ".join(sorted(TOOLS)))
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "pplb", "pplc", "ppll", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
+    TESTS = ["ppl", "ppl3", "pplb", "pplc", "ppll", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc", "gen"]
     r = sp.add_parser("run", aliases=["jobs"], help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", type=test_name, choices=TestChoices(TESTS + list(ALIASES)))
@@ -10112,6 +10227,7 @@ if __name__ == "__main__":
     ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
     ce.add_argument("--nothink", action="store_const", const=True, help="chat tests: reasoning off (enable_thinking=false)")
+    ce.add_argument("--gen", help="bench --gen: generated prompts, repetition k = prompt k")
     ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
     ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
@@ -10148,6 +10264,11 @@ if __name__ == "__main__":
     cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true"); cb.add_argument("--ceil", action="store_true", help="only read the engine's one-pass ceiling (one 2k probe) and store it as maxpp")
     cb.add_argument("-nm", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="the probes pin at most GB of the model (as run -nm): the ceiling depends on the RAM beside the pinned weights")
     cb.add_argument("-a", dest="cell_args", default="", metavar="ARGS", help="extra cell arguments for the probes (as run -a)")
+    gn = sp.add_parser("gen", help="write generated prompts ahead of a run (--gen SPEC on any run writes them on the fly): in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,url=U")
+    gn.add_argument("spec", nargs="?", default="", help="in=16:2000,out=32:1024,task=code|prose|explain|data|math|chat (or free text),topic=a|b (free text),seed=1,url=... (default [hosts] gen_url)")
+    gn.add_argument("-n", type=int, default=1, help="how many prompts")
+    gn.add_argument("--start", type=int, default=0, help="first prompt number")
+    gn.add_argument("--show", action="store_true", help="print the texts")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
@@ -10160,5 +10281,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
