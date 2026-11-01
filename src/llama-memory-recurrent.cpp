@@ -165,6 +165,9 @@ void llama_memory_recurrent::clear(bool data) {
     std::fill(rs_idx.begin(), rs_idx.end(), 0);
 }
 
+static thread_local bool g_recr_no_compute_fork = false;
+void llama_memory_recurrent_no_compute_fork(bool on) { g_recr_no_compute_fork = on; }   // llama_context::decode, around the removal of a refused pass
+
 bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
     uint32_t new_head = size;
 
@@ -202,6 +205,10 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                 // a cell shared by several sequences cannot move back for only one of them
                 if (cell.seq_id.size() > 1) {
                     return false;
+                }
+                if (g_recr_no_compute_fork) {   // fork: a pass the pool refused: its graph never ran, the state is still the one before it, only the position moved on
+                    cell.pos = p0 - 1;
+                    return true;
                 }
                 // the filter kept no layer (e.g. an MTP draft context), so only the position moves back
                 if (is_empty()) {

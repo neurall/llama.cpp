@@ -77,6 +77,8 @@ uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
 extern "C" void ggml_backend_sched_link_add_fork(ggml_backend_dev_t dst, ggml_backend_dev_t src, uint64_t n);   // the same for any input: src NULL = host memory
+static thread_local uint32_t g_pass_cap_fork = 0;       // decode() runs the rest of a call after the pool refused one of its passes: its passes take at most this many tokens
+void llama_memory_recurrent_no_compute_fork(bool on);    // llama-memory-recurrent.cpp: the next seq_rm takes back a pass whose graph never ran
 static thread_local bool g_split_sub = false;          // decode() runs one pass of a call sized pass by pass (--moe split-pass=1)
 bool llama_dsplit_in_pass_loop_fork() { return g_split_sub; }   // llama-graph.cpp ds_plan: the pass was sized for all cards by the loop below (graph built on this thread)
 void llama_moe_prompt_progress_fork(uint32_t done);
@@ -4121,7 +4123,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // (--moe split-pass=1, the loop at the top of decode) runs as ONE pass: the pass planner still runs for its claim of the prompt's KV (kv-tail)
     if (n_tokens_all >= 64 && cparams.moe_cache && memory && !g_split_sub) { llama_dsplit_note_limit_fork(n_ubatch_lim); }
     const uint32_t n_ubatch_split = g_split_sub && cparams.moe_cache ? (llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_tokens_all), n_tokens_all) : 0;
-    const uint32_t n_ubatch_call = n_ubatch_split > 0 ? n_ubatch_split : cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, n_ubatch_lim);
+    uint32_t n_ubatch_call = n_ubatch_split > 0 ? n_ubatch_split : cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, n_ubatch_lim);
+    if (g_pass_cap_fork > 0) { n_ubatch_call = std::min(n_ubatch_call, g_pass_cap_fork); }   // the rest of a call after the pool refused one of its passes (below)
     if (n_tokens_all > 1) { llama_moe_prompt_begin_fork((uint32_t) n_tokens_all, n_ubatch_call); }
     if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
         const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
@@ -4166,6 +4169,23 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                         }
                     }
 
+                    if (cparams.moe_cache) {
+                        llama_pos hist = -1;   // the longest history of any sequence (-np > 1: the batch may belong to another one than sequence 0)
+                        for (uint32_t sq = 0; sq < cparams.n_seq_max; ++sq) { hist = std::max(hist, memory->seq_pos_max((llama_seq_id) sq)); }
+                        const uint32_t need = (uint32_t) (std::max<llama_pos>(hist, -1) + 1) + n_tokens_all;
+                        // the KV of this tier holds the request: the pass is too big for the cells the pool has room for beside its graph, not the KV too big. A smaller pass, never
+                        // another tier: a tier loses quality, and with most models at 1M context at most, a KV that really cannot fit hardly ever happens. Nothing of this call ran yet.
+                        const llama_kv_fit_caps cp = llama_moe_cache_kv_fit_caps_fork();
+                        const size_t hold = kv_tier == 0 ? cp.f16 : kv_tier == 1 ? cp.k8v8 : kv_tier == 2 ? cp.k4v4 : cp.ram;
+                        if (cp.valid && need <= hold) {
+                            if (n_ubatch_call > 64) {
+                                n_ubatch_call = std::max<uint32_t>(64, n_ubatch_call * 3 / 4 / 32 * 32);
+                                continue;
+                            }
+                            LLAMA_LOG_WARN("%s: failed to find a memory slot for batch of size %d\n", __func__, balloc->get_n_tokens());
+                            return 1;
+                        }
+                    }
                     if (cparams.moe_cache && !did_retier) {   // qkv-ram-fallback in place: the KV of this tier is full: the next tier, same batch again
                         did_retier = true;
                         char note[512] = { 0 };
@@ -4294,6 +4314,40 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                             __func__, oom_dev, ubatch.n_tokens, (int) cells, (unsigned long long) g_oom_tc.load());
                 }
                 return 1;
+            }
+        }
+        if (!res && status == GGML_STATUS_FAILED && memory && ubatch.n_tokens > 64 && llama_moe_cache_alias_err_fork()) {
+            // fork: the pool refused this pass (its graph and the KV do not fit): a smaller pass, the passes before it stay. Its graph never ran, so its cells go back, on a recurrent
+            // hybrid too, and the rest of the call runs as a call of its own under the smaller limit. The server would halve the whole call instead, and could not take back
+            // what already ran (Qwen3.6, a pass refused at 22016 cells: "inconsistent sequence positions"). Prompt calls only: outputs on the last token at most.
+            const auto & tk = batch_inp.tokens;
+            bool prompt_only = true;
+            for (size_t i = 0; prompt_only && i + 1 < tk.size(); ++i) { prompt_only = !tk[i].output; }
+            if (prompt_only) {
+                size_t need = 0, room = 0;
+                (void) llama_moe_cache_refusal_fork(&need, &room);
+                llama_memory_recurrent_no_compute_fork(true);
+                const bool back = memory->seq_rm(ubatch.seq_id[0][0], ubatch.pos[0], -1);
+                llama_memory_recurrent_no_compute_fork(false);
+                if (back) {
+                    const double share = room > 0 && room < need ? (double) room / (double) need : 0.75;
+                    const uint32_t u2 = std::max<uint32_t>(64, (uint32_t) ((double) ubatch.n_tokens * std::min(share, 0.9)) / 32 * 32);
+                    LLAMA_LOG_WARN("%s: the pool refused a pass of %u tokens: the rest of this call, %zu tokens, in passes of at most %u\n", __func__, ubatch.n_tokens, tk.size() - (size_t) n_tokens_prev, u2);
+                    call_abandon();
+                    const uint32_t cap_prev = g_pass_cap_fork;
+                    g_pass_cap_fork = u2;
+                    llama_batch_ext sub(batch_inp);
+                    sub.tokens.assign(tk.begin() + n_tokens_prev, tk.end());
+                    const int r = decode(sub);
+                    g_pass_cap_fork = cap_prev;
+                    if (r == 0 && n_tokens_prev > 0 && tk.back().output) {   // the output of the last pass: its index in the call, not in the sub-call
+                        const size_t cnt = tk.size() - (size_t) n_tokens_prev;
+                        std::vector<int32_t> head(output_ids.begin(), output_ids.begin() + cnt);
+                        std::fill(output_ids.begin(), output_ids.end(), -1);
+                        std::copy(head.begin(), head.end(), output_ids.begin() + n_tokens_prev);
+                    }
+                    return r;
+                }
             }
         }
         if (!res) {
