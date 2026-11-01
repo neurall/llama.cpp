@@ -9107,7 +9107,8 @@ void llama_moe_cache_step_fork() {
             // victim: a free block if any, else the lowest-scored cached expert (block pool: of ANY layer of the class, so the blocks go to the
             // layers whose experts score highest; without the pool: of this layer)
             double best;
-            const slot_pick pk = pick_slot(mc, li, [&](layer_state & lo, size_t, int32_t e) { return pinned(mc, lo, e) ? -1.0 : xscore(mc, lo, e); }, best);
+            static const bool own_layer = [] { const char * e = moe_opt("own-layer"); return e && atoi(e) != 0; }();   // --moe own-layer=1: a layer evicts only its own experts between tokens too
+            const slot_pick pk = pick_slot(mc, li, [&](layer_state & lo, size_t o, int32_t e) { return (own_layer && o != li) || pinned(mc, lo, e) ? -1.0 : xscore(mc, lo, e); }, best);
             const int32_t slot = pk.slot;
             if (slot < 0) {
                 mc->pr[9] += ls.pending.end() - it;
@@ -9951,7 +9952,8 @@ static std::vector<upload_job> preheat_swap(moe_cache * mc, const std::vector<ui
         }
         const size_t budget = std::max<size_t>(1, mc->pool[pc].owner.size() / 20);
         const size_t n = std::min({ hot.size(), cold.size(), budget });
-        if (n == 0) { continue; }
+        static const bool own_layer_pp = [] { const char * e = moe_opt("own-layer"); return e && atoi(e) != 0; }();
+        if (n == 0 || own_layer_pp) { continue; }   // (this pass moves blocks between layers)
         std::partial_sort(hot.begin(), hot.begin() + (ptrdiff_t) n, hot.end(), [](const cand & a, const cand & b) { return a.sc > b.sc; });
         std::partial_sort(cold.begin(), cold.begin() + (ptrdiff_t) n, cold.end(), [](const cand & a, const cand & b) { return a.sc < b.sc; });
         for (size_t i = 0; i < n; ++i) {
