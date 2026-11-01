@@ -6663,8 +6663,7 @@ llama_context * llama_init_from_model(
         }
     }
 
-    // fork: KV type "auto" (GGML_TYPE_COUNT, the default of -ctk / -ctv): q8_0 when it frees at least KV_Q8_MIN_SHARE of the free VRAM, which is what the expert cache
-    // gets; else f16. Measured (GLM, 128k cells, cache pool 37 GiB on two 3090): q8_0 freed 1 GiB = 2.6% of the cache and decode did not move (16.1 against 16.1 t/s).
+    // fork: KV type "auto" (GGML_TYPE_COUNT, the default of -ctk / -ctv): q8_0 when it frees at least KV_Q8_MIN_SHARE of the expert cache; else f16. Measured (GLM, 128k cells, cache pool 37 GiB on two 3090): q8_0 freed 1 GiB = 2.6% of the cache and decode did not move (16.1 against 16.1 t/s).
     // The free VRAM is read at load, so a smaller card or a --hog-gpu limit turns q8_0 on at a smaller cache.
     if (params.type_k == GGML_TYPE_COUNT || params.type_v == GGML_TYPE_COUNT) {
         const double KV_Q8_MIN_SHARE = 0.10;
@@ -6679,11 +6678,20 @@ llama_context * llama_init_from_model(
             ggml_backend_dev_t d = ggml_backend_dev_get(i);
             if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); free_b += f; }
         }
+        // the expert cache: the free VRAM left after the dense weights, at most all the experts (a model that fits entirely has no cache: then the whole free VRAM counts)
+        uint64_t exps_b = 0, all_b = 0;
+        for (const auto & it : model->tensors_by_name) {
+            const uint64_t nb = ggml_nbytes(it.second);
+            all_b += nb;
+            if (it.first.find("_exps") != std::string::npos) { exps_b += nb; }
+        }
+        const uint64_t dense_b = all_b - exps_b;
+        const uint64_t cache_b = free_b > dense_b ? std::min<uint64_t>(free_b - dense_b, exps_b > 0 ? exps_b : free_b) : 0;
         const double saved = f16_bytes * (1.0 - 17.0 / 32.0);
-        const bool q8 = free_b > 0 && saved >= KV_Q8_MIN_SHARE * (double) free_b;
+        const bool q8 = cache_b > 0 && saved >= KV_Q8_MIN_SHARE * (double) cache_b;
         const ggml_type pick = q8 ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
-        LLAMA_LOG_INFO("%s: KV cache type auto: %.2f GiB as f16 at %llu cells, q8_0 would free %.2f GiB = %.1f%% of the %.1f GiB free VRAM (q8_0 from %.0f%%): %s\n", __func__,
-            f16_bytes / 1073741824.0, (unsigned long long) cells, saved / 1073741824.0, free_b ? 100.0 * saved / free_b : 0.0, free_b / 1073741824.0, 100.0 * KV_Q8_MIN_SHARE, ggml_type_name(pick));
+        LLAMA_LOG_INFO("%s: KV cache type auto: %.2f GiB as f16 at %llu cells, q8_0 would free %.2f GiB = %.1f%% of the %.1f GiB expert cache (free VRAM %.1f GiB; q8_0 from %.0f%%): %s\n", __func__,
+            f16_bytes / 1073741824.0, (unsigned long long) cells, saved / 1073741824.0, cache_b ? 100.0 * saved / cache_b : 0.0, cache_b / 1073741824.0, free_b / 1073741824.0, 100.0 * KV_Q8_MIN_SHARE, ggml_type_name(pick));
         if (params.type_k == GGML_TYPE_COUNT) { params.type_k = pick; }
         if (params.type_v == GGML_TYPE_COUNT) { params.type_v = pick; }
     }
