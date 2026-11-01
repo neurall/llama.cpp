@@ -6115,3 +6115,5 @@ up8_attn_split_dynamic-kvm-qn-dyn-pf128k,2026-11-01 16:24:25,bench /m/q/4/Qwen3.
 up8_attn_split_dynamic-kvm-mimo-base-pf128k,2026-11-01 16:37:18,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds up8_attn_split_dynamic variants v test pf128k n=2,,
 up8_attn_split_dynamic-kvm-mimo-dyn-pf128k,2026-11-01 16:44:46,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds up8_attn_split_dynamic variants v test pf128k n=2,,
 up8_attn_split_dynamic-kvm-glm-on-pf128k,2026-11-01 16:51:45,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_attn_split_dynamic variants v test pf128k n=1,,
+up8_attn_split_dynamic-kvm-glm-m0-pf128k,2026-11-01 17:06:45,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_attn_split_dynamic variants v test pf128k n=1,,
+up8_attn_split_dynamic-kvm-ds-on-pf128k,2026-11-01 17:22:18,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds up8_attn_split_dynamic variants v test pf128k n=1,,
