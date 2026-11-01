@@ -1,0 +1,33 @@
+run 21621 | up8_kv_rot_row_scratch | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 51.8 t/s | prompt 399.4 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0 --moe sim-vram=4608 | power 220+280 W | 2026-11-01 11:50:06
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool common_cpu_get_num_physical_cores(int32_t & num_physical_cores) {
+    num_physical_cores = common_cpu_get_num_physical_cores();
+    return num_physical_cores > 0;
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    if (mask.empty()) {
+        return false;
+    }
+    if (mask.size() > 64) {
+        throw std::invalid_argument("mask too long");
+    }
+    cpumask.clear();
+    for (size_t i = 0; i < mask.size(); i++) {
+        if (mask[i] == '0' || mask[i] == '1') {
+            cpumask.push_back(mask[i] - '0');
+        } else {
+            throw std::invalid_argument("invalid mask");
+        }
+    }
+    return true;
+}
+
+bool parse_cpu_range(const std::string & range, std::vector<int32

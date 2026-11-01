@@ -1,0 +1,5 @@
+run 21692 | up8_tile_q8_default | paris | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 327.03 t/s | prompt 388.1 t/s | 8 tokens | args: -np 1 -ctk q4_0 -ctv q4_0 | power 220+280 W | 2026-11-01 14:18:01
+
+
+---
+Paris is the capital of France.

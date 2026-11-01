@@ -1,0 +1,15 @@
+name,model,n,test,tokens,args,extra
+tp-on-200,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=40:200 --env GGML_CUDA_SCRATCH_CHECK=1
+tp-off-200,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k,chain-fuse=0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=40:200 --env GGML_CUDA_SCRATCH_CHECK=1
+tp-ring-200,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=one,pp-k=0,log=k",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=40:200 --env GGML_CUDA_SCRATCH_CHECK=1
+tp-ringoff-200,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=one,pp-k=0,log=k",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=40:200 --env GGML_CUDA_SCRATCH_CHECK=1 --env GGML_CUDA_DISABLE_FUSION=1
+tp-on-1000,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=20:1000 --env GGML_CUDA_SCRATCH_CHECK=1
+tp-off-1000,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k,chain-fuse=0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=20:1000 --env GGML_CUDA_SCRATCH_CHECK=1
+tp-ring-1000,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=one,pp-k=0,log=k",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=20:1000 --env GGML_CUDA_SCRATCH_CHECK=1
+tp-ringoff-1000,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=1,pp-mix=0,dense-split=one,pp-k=0,log=k",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=20:1000 --env GGML_CUDA_SCRATCH_CHECK=1 --env GGML_CUDA_DISABLE_FUSION=1
+sp-on-200,qn_iq4xs,6,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+sp-off-200,qn_iq4xs,6,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k,chain-fuse=0",--clamp 200 --vary --ctx 20992 --env GGML_PF_STATS=1
+sp-on-1000,qn_iq4xs,6,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+sp-off-1000,qn_iq4xs,6,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k,chain-fuse=0",--clamp 1000 --vary --ctx 20992 --env GGML_PF_STATS=1
+sp-on-4000,qn_iq4xs,6,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k",--clamp 4000 --vary --ctx 20992 --env GGML_PF_STATS=1
+sp-off-4000,qn_iq4xs,6,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,max-batch=16384,dense-split=0,pp-k=0,log=k,chain-fuse=0",--clamp 4000 --vary --ctx 20992 --env GGML_PF_STATS=1

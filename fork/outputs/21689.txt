@@ -1,0 +1,25 @@
+run 21689 | up8_mask_own_cells2 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 66.52 t/s | prompt 2580.0 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 --moe sim-vram=4608 | power 220+280 W | 2026-11-01 14:12:17
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool common_cpu_get_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    if (mask.empty()) {
+        return false;
+    }
+    std::string hex_mask = mask;
+    if (hex_mask.size() > 1 && hex_mask[0] == '0' && hex_mask[1] == 'x') {
+        hex_mask = hex_mask.substr(2);
+    }
+    if (hex_mask.size() % 2 != 0) {
+        LOG_WRN("Invalid hex mask: %s\n", mask.c_str());
+        return false;
+    }
+    for (size_t i = 0; i < hex_mask.size(); i += 2) {
+        std::string byte_str = hex_mask.substr(i, 2);
+        unsigned char byte = std::stoul(byte_str, nullptr, 16);
+        for (int32_t bit = 0; bit < 8; bit++)

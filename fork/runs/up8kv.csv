@@ -1,0 +1,96 @@
+name,model,n,test,tokens,args,extra
+kvs-q8-olmoe,olmoei,1,paris,64,"-ctk q8_0 -ctv q8_0",--env GGML_CUDA_SCRATCH_CHECK=1
+kvs-q8-q36,qwen36,1,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--hog-gpu 4.5 --env GGML_CUDA_SCRATCH_CHECK=1
+kvs-q4-olmoe,olmoei,1,paris,64,"-ctk q4_0 -ctv q4_0",--env GGML_CUDA_SCRATCH_CHECK=1
+kvs-q4-q36,qwen36,1,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0",--hog-gpu 4.5 --env GGML_CUDA_SCRATCH_CHECK=1
+kvp-f16-q36,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--hog-gpu 4.5
+kvp-f16-glm,glm,2,pf60k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 70000
+kvp-q8-q36,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvp-q8-glm,glm,2,pf60k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 70000
+kvp-q4-q36,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0",--hog-gpu 4.5
+kvp-q4-glm,glm,2,pf60k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0",--ctx 70000
+kvq-f16-tp1k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+kvq-f16-tp16k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvq-q8-tp1k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+kvq-q8-tp16k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvq-q4-tp1k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+kvq-q4-tp16k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvl-f16-q36,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,log=w",--hog-gpu 4.5
+kvg-f16-glm128,glm,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000
+kvg-q8-glm128,glm,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 140000
+kvg-f16-glm12,glm,2,pf60k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 70000 --hog-gpu 12
+kvg-q8-glm12,glm,2,pf60k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 70000 --hog-gpu 12
+kvk-q4-rule,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0",--hog-gpu 4.5
+kvk-q4-tile,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-kernel=tile -ctk q4_0 -ctv q4_0",--hog-gpu 4.5
+kvk-q4-mma,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-kernel=mma -ctk q4_0 -ctv q4_0",--hog-gpu 4.5
+kvk-q8-rule,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvk-q8-tile,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-kernel=tile -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvk-f16-rule,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini ",--hog-gpu 4.5
+kvk-f16-tile,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-kernel=tile ",--hog-gpu 4.5
+kvk-f16-vec,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-kernel=vec ",--hog-gpu 4.5
+kvk-q8-mma,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-kernel=mma -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kva-base-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
+kva-split-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=1",--hog-gpu 4.5
+kva-base-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
+kva-split-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=1",--hog-gpu 4.5
+kvm-q8-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvm-q8-tile-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvm-q8-mma-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=mma -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvb-f16-base-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
+kvb-f16-base-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
+kvb-f16-split-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=1",--hog-gpu 4.5
+kvb-f16-split-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=1",--hog-gpu 4.5
+kvb-q8-base-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvb-q8-base-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvb-q8-split-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile,attn-split=1 -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvb-q8-split-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile,attn-split=1 -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
+kvl2-f16-q36,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,log=w,dense-split=0",--hog-gpu 4.5
+kvt-off-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,mask-tail=0",--hog-gpu 4.5
+kvt-on-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
+kvt-off-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,mask-tail=0",--hog-gpu 4.5
+kvt-on-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
+kvq-f16m0-tp1k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,mask-tail=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+kvq-f16m0-tp16k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,mask-tail=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvd-on-tp16k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=1",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvd-off-tp16k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=1,mask-tail=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvc-on-1k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_cold_on.ini",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+kvc-on-16k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_cold_on.ini",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvc-off-1k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_cold_off.ini,mask-tail=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=20:1000
+kvc-off-16k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_cold_off.ini,mask-tail=0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvf-base-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
+kvf-dyn-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=2",--hog-gpu 4.5
+kvf-base-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
+kvf-dyn-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=2",--hog-gpu 4.5
+kvf-basedbg-128k,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+kvf-move-a,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=2",--clamp 30000 --hog-gpu 4.5
+kvf-move-b,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=2",--hog-gpu 4.5 --env RUN_DBG_TOKENS=1
+kvf-rows-f16,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=2",--clamp 100 --ctx 72000 --hog-gpu 4.5 --env RUN_MOVE_TEST=20000:70000
+kvf-rows-q8,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=2 -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 72000 --hog-gpu 4.5 --env RUN_MOVE_TEST=20000:70000
+kvf-ppl-f16,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=2,attn-split-cells=8000",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvf-ppl-q8,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=2,attn-split-cells=8000 -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=8:16000
+kvf-rows-base-f16,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--clamp 100 --ctx 72000 --hog-gpu 4.5 --env RUN_MOVE_TEST=20000:70000
+kvf-rows-base-q8,qwen36,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 72000 --hog-gpu 4.5 --env RUN_MOVE_TEST=20000:70000
+kvm-qn-base,qn_iq4xs,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000
+kvm-qn-dyn,qn_iq4xs,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,attn-split=2",--ctx 140000
+kvm-mimo-base,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--ctx 140000
+kvm-mimo-dyn,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,attn-split=2",--ctx 140000
+kvm-glm-on,glm,1,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,attn-split=2",--ctx 140000
+kvm-glm-m0,glm,1,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,mask-tail=0",--ctx 140000
+kvm-ds-on,ds,1,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,attn-split=2",--ctx 140000
+kvm-ds-m0,ds,1,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,mask-tail=0",--ctx 140000
+kvn-qn-base,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvn-qn-split,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,attn-split=2,attn-split-cells=8000",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvn-mimo-base,mimo,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvn-mimo-split,mimo,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,attn-split=2,attn-split-cells=8000",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvn-glm-base,glm,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvn-glm-m0,glm,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,mask-tail=0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvn-ds-base,ds,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvn-ds-m0,ds,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,mask-tail=0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvr-qn-q8,qn_iq4xs,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 140000
+kvs-qn-q8,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvr-mimo-q8,mimo,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 140000
+kvs-mimo-q8,mimo,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvr-glm-q8,glm,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 140000
+kvs-glm-q8,glm,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvr-ds-q8,ds,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--ctx 140000
+kvs-ds-q8,ds,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000

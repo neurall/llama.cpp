@@ -1,0 +1,39 @@
+run 21763 | up8_attn_split_dynamic | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 19.33 t/s | prompt 923.0 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 220+280 W | 2026-11-01 16:37:24
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    // otherwise fall back to logical cores
+    return std::thread::hardware_concurrency();
+}
+
+int32_t common_cpu_get_num_cores() {
+    return std::thread::hardware_concurrency();
+}
+
+//
+// String utils
+//
+
+// returns the length of the longest common prefix between two strings
+size_t common_prefix_length(const std::string & a, const std::string & b) {
+    size_t n = std::min(a.size(), b.size());
+    size_t i = 0;
+    while (i < n && a[i] == b[i]) {
+        i++;
+    }
+    return i;
+}
+
+// returns the length of the longest common suffix between two strings
+size_t common_suffix_length(const std::string & a, const std::string & b) {
+    size_t n = std::min(a.size(), b.size());
+    size_t i = 0;
+    while (i < n && a[a.size() - 1 - i] == b[b.size() - 1 - i]) {
+        i++;
+    }
+    return i;
+}
+
+// returns the length of the longest common substring between two strings
