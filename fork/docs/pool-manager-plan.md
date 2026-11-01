@@ -39,6 +39,23 @@ About 300 lines, one build.
 | 3 | lanes, one per ratio. Ordered moves: members moving down go first in rising order, then members moving up in falling order | fuzz with a shadow memory. DeepSeek 4.1's ratio-2 cache gives about 1.9 GiB back to the experts |
 | 4 | every layout change and grow goes through the manager. It checks the new layout first (inside the pool, no overlap, blocks under new rows owned by the zone before the rows land), then emits the ledger event | the Part 1 page shows it unchanged |
 
+## Part 2 design rules (user, 2026-10-28)
+
+Trigger: DeepSeek 4.1 + DSpark draft, every repeat request broke after ~256 tokens (answer stops printing, draft acceptance 3%). With `--moe poison=3` and the NaN check, the first NaN is layer 14's MoE output on CUDA1 for the draft token of a 2-token verify batch, in the graph whose lend grew from one block of class 7 to two (7.44 -> 9.28 MiB) when the cells crossed 512. Bounds and owners are worked out in many places, so such a case has no single place to check. The user's rules for the manager:
+
+| rule | what it means here |
+|---|---|
+| one manager per card owns every byte | the lend parts (graph, CUDA scratch, staging slots), the dense split's copies (today placed from llama-context.cpp and only reported to the ledger), the KV zone (fixed part, growing rows, every record), the expert blocks of every size class, and the guards. No other code computes an offset or changes an owner. |
+| one function changes the map | a commit takes the new layout, checks it (inside the pool, no two regions overlap, KV rows and their padded read inside the zone, lend parts behind each other in front of the zone), then runs the transitions in order: drop or await uploads into blocks being taken, evict, mark owners, publish the expert tables, move rows, zero the pad, give blocks back last. Ledger events and poison fills happen only inside it. |
+| a request states its access chunk | an allocation asks for (len, chunk): the tile or pad its kernels read and write in. The manager returns [ptr, ptr + len) and at least one more chunk owned by the same region, so a whole-chunk read or write behind ptr + len never reaches another owner. The guard holds safe values for reads (zero for masked attention rows: 0 x NaN is NaN), also in poison mode. Cost: one chunk per region, well under 1% of the pool. |
+| shared functions, copies only when measured slower | every bound (zone end for N cells, padded read cells, lend end, blocks under a range) comes from one function; the hand copies of `kv_start + kv_fixed + cells x kv_row` (about 15 in llama-moecache-fork.cpp) call it. |
+| fast reuse, autogrow, automove, tight fit stay | layout work only per pass or growth step, never per token; moves copy only rows in use; no free and realloc of CUDA memory (one buffer per card, owner swaps). |
+| one cheap check per graph, always on | before a graph runs: every pool region it touches is owned by its request at that moment (KV rows up to the padded read inside the zone and owned by the KV, lend parts not overlapping, every expert table entry pointing at a block owned by that layer). A comparison of a few numbers per region, not per byte. |
+| n pools for n cards | one map per card (`mc->alias`, one pool buffer per GPU), keyed per card, nothing assumes one or two cards. A commit may change several cards' maps at once (a graph lends on every card it runs on; a cache's KV records span every card): it checks every card's new layout first and applies only when all pass. The per-graph check runs on every card the graph touches. Each card's manager holds all of its own state: no process-wide flag or counter speaks for every card (today `kv_gave_back` and `starved` in `moe_cache`, `g_alias_err` and the `g_kvs` counters are shared by all cards). |
+| layout serial on every cached address | each card's manager bumps a serial whenever an address a graph can bake in changes (lend base, graph region, CUDA scratch region, staging slots, dense split copies). Whatever keeps such an address stores the serial it saw and compares before use: llama's ggml-graph reuse (can_reuse), the CUDA graph cache (re-capture on a mismatch), any later pool pointer. One integer compare per use, always on. Found 2026-10-28: a replayed CUDA graph kept the scratch addresses of its capture after the pool moved the region (DeepSeek 4.1 + DSpark repeat requests broke ~256 tokens in; fine with CUDA graphs off). The immediate fix compares the scratch base and size at replay; the serial is the general form. |
+| access log for debug and fix-validation runs | one global log, one line per access: time, host thread, GPU stream, who (upload worker, graph and node, zone move, pad zero, keep-hot, draft graph), what (expert L/e, KV rows, graph tensor, scratch, staging), GPU, pool, offset, bytes, start or done, read or write. GPU work carries GPU event times (a host start/done is only when it was queued). Replays log the address ranges their capture recorded, so stale addresses show. Written to a file and flushed every few seconds (default 2) so a crash or kill keeps it; on for debug cells and fix-validation cells, off for speed A/B cells. A checker flags any write that overlaps another actor's read or write of the same bytes in time, and any access outside the owner's region at that moment. |
+| easy to trace and to find the culprit | every region carries its owner, the call site that asked for it and the serial of the commit that last changed it; poison fills carry the same serial, so bad bytes lead back to a commit. A ring of the last few hundred commits is always kept in memory (cheap) and dumped with the region map on any failed check or abort, so the dump already holds the culprit. A failed check prints the region, the owner it expected, the owner it found, the graph, and the last commits that touched that range. The ledger, the pool dump, the live pool page and the fuzz test all read the manager's own map. |
+
 ## Speed rules
 
 - Nothing added per token when the debugger is off.
@@ -50,3 +67,18 @@ About 300 lines, one build.
 - A registry for host-side buffers.
 - Computed scratch for small ops (argsort, top-k, softmax): the shortfall alarm covers them.
 - Byte-level shadow memory on the GPU: unit tests only.
+
+## State on pool_refactor (2026-10-28)
+
+| done | commit subject (short) |
+|---|---|
+| zone bounds from shared functions (kvz_bytes, kvz_row_at, kvz_end, kvz_read_cells, kv_read_range), no behaviour change | pool: the KV zone's bounds come from shared functions |
+| the lend synchronises before the expert tables change; a graph is not reused after its place in the pool moved (lend epoch) | pool: the lend synchronises before the expert tables change ... |
+| ledger: thread, rw, start/done columns, 2 s flush, graph windows (lend .. graph-done), CUDA graph capture/replay lines with the scratch range, expert table check against block owners (every 64th step, every step with ledger/poison), --moe race-stress=N | pool debugging: ledger lines name the thread ... |
+| a split whose expert input is redirected to a staging slot gets a new uid (no stale slot address in a replayed CUDA graph); suspected, not yet seen | sched: a split whose expert weights were redirected ... |
+
+In release (dspark-fix3): a CUDA graph is captured again when the scratch region moved since its capture.
+
+Next, in order: build and run this branch (OLMoE unit tests test-pool-fork and kvzone_fuzz, the DSpark repeat cell, a GLM 12k multi-pass prompt with CUDA graphs on vs off for the staging-slot case); the layout serial as one per-card counter that the CUDA graph cache and llama's reuse check both read (replacing the scratch compare, the lend epoch and the staging uid with one rule); the one commit function for owner changes; the access-chunk guards for the lend parts; the dense split's copies placed by the manager.
+
+Hotspots (bug-log rows by 2026-10-28): lend / compute alias / CUDA scratch 26, pass planner 23, KV zone 23, expert uploads / tables / slots 21, dense split 12, DSpark draft 12, stored state 8.
