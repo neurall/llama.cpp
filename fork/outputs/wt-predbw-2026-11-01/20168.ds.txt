@@ -1,0 +1,3 @@
+run 20168 | dspark_fix3 | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 0.0 t/s | prompt 60.6 t/s | 1 tokens | args: -np 1 --moe pp-only=1,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-11-01 09:00:11
+
+ama
