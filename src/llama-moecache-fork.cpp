@@ -31,6 +31,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 #include "llama-poolalloc-fork.h"
 #include "llama-moetopic-fork.h"
@@ -1617,6 +1618,8 @@ static void led_kind(const char * kind, const char *& rw, const char *& st) {
         { "release", "o", "once" }, { "kv-zone", "o", "once" }, { "map", "o", "once" }, { "fill", "w", "once" }, { "kv-pad", "w", "once" },
         { "kv-move", "w", "once" }, { "keep-hot", "w", "once" }, { "mirror", "w", "once" }, { "zero", "w", "once" }, { "OVERLAP", "x", "once" },
         { "cuda-capture", "rw", "once" }, { "cuda-replay", "rw", "once" },
+        { "chain-up", "w", "once" }, { "jit-up", "w", "once" }, { "adopt", "w", "once" },
+        { "node-w", "w", "once" }, { "node-r", "r", "once" }, { "mix-read", "r", "once" }, { "split-replay", "rw", "once" }, { "verify-bad", "x", "once" },
     };
     for (const auto & e : t) { if (strcmp(kind, e.kind) == 0) { rw = e.rw; st = e.st; return; } }
     rw = "?"; st = "once";
@@ -1818,6 +1821,52 @@ static void led_cuda_graph_hook(int device, const void * graph, const char * wha
         return;
     }
 }
+
+// --moe ledger=2: on top of the writers above, what the graphs themselves touch: per split, one node-w line per pool range a node writes and one node-r line per input it reads
+// there (card, byte range, split, node, op, tensor names). A split seen before (same uid, so the same addresses) gives one split-replay line. So `fork/pool_ledger.py LEDGER --addr
+// CARD:MIB` answers who last wrote and who read a byte. Debug only: 5-10 thousand lines per new graph. The kernels' own reads of the expert blocks go by the tables: mix-read lines.
+static int led_level() {
+    static const int v = [] { const char * e = moe_opt("ledger"); return e ? atoi(e) : 0; }();
+    return v;
+}
+static void led_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
+    moe_cache * mc = g_cache;
+    if (!mc) { return; }
+    const ggml_backend_dev_t dev = ggml_backend_get_device(be);
+    for (auto & ap : mc->alias) {
+        if (ap.dev != dev || !ap.buf) { continue; }
+        const char * card = led_card(ap);
+        static std::mutex mu;
+        static std::unordered_set<uint64_t> seen;
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            if (uid != 0 && !seen.insert(uid).second) {
+                led_line(card, "split-replay", 0, 0, tr_fmt("split %d of %d uid %llu", split_id, n_splits, (unsigned long long) uid));
+                return;
+            }
+        }
+        const char * base = (const char *) ggml_backend_buffer_get_base(ap.buf);
+        const size_t size = ggml_backend_buffer_get_size(ap.buf);
+        const auto line = [&](const char * kind, const ggml_tensor * t, const std::string & who) {
+            if (!t || !t->data) { return; }
+            const char * d = (const char *) t->data;
+            if (d < base || d >= base + size) { return; }
+            const size_t lo = (size_t) (d - base);
+            led_line(card, kind, lo, lo + ggml_nbytes(t), who);
+        };
+        for (int j = 0; j < ggml_graph_n_nodes(g); ++j) {
+            const ggml_tensor * t = ggml_graph_node(g, j);
+            const std::string who = tr_fmt("split %d of %d node %d %s %s", split_id, n_splits, j, ggml_op_name(t->op), t->name);
+            const bool view = t->op == GGML_OP_NONE || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
+            if (!view) { line("node-w", t, who); }
+            for (int k = 0; k < GGML_MAX_SRC && !view; ++k) {
+                if (t->src[k]) { line("node-r", t->src[k], who + tr_fmt(" reads src %d %s", k, t->src[k]->name)); }
+            }
+        }
+        return;
+    }
+}
+extern "C" { GGML_API void ggml_sched_set_split_hook_fork(void (*fn)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t)); }
 
 // the NaN hook (ggml_sched_set_nan_hook_fork, set at pool allocation with --moe poison): the region map and the per-MiB fill of every pool, to the log directory
 extern "C" { GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)); }
@@ -3206,6 +3255,7 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
             lo.adopt_victims.push_back(victim);   // its table entry is reset at the next step
         }
         pool_take(mc, ali, slot);
+        led_upload(mc, "adopt", ali, expert, slot, false);
         ls.slot_in_flight[slot] = true;
         ls.adopt_slot[expert]   = slot;
         ls.adopted.push_back(expert);
@@ -6812,6 +6862,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     pool_fill(tmp, 0, total - 4096, 5);
                 }
                 if (poison_on()) { ggml_sched_set_nan_hook_fork(pool_dump_all); }
+                if (led_level() >= 2) { ggml_sched_set_split_hook_fork(led_split_cb); }
                 if (led_on()) {   // CUDA graph captures and replays with their scratch range go into the ledger
                     typedef void (*graph_hook_t)(int, const void *, const char *, const void *, size_t);
                     typedef void (*set_graph_hook_t)(graph_hook_t);
@@ -7804,6 +7855,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             evict_slot(mc, ls, slot);
         }
         pool_take(mc, jli, slot);
+        led_upload(mc, "jit-up", jli, id, slot, false);
         // async on the chain's stream: the chain (launched next) runs after the copies
         const ggml_tensor * srcs[3] = { pub->up_src, pub->gate_src, pub->down_src };
         ggml_tensor *       dsts[3] = { pub->up_c,   pub->gate_c,   pub->down_c   };
@@ -7932,6 +7984,72 @@ void llama_moe_cache_pp_freeze_fork() {
     }
     pp_settle(mc);
     flush_tables();
+    if (led_level() >= 2) {   // what the home cards read in this pass, by their tables: one line per expert, and led_upload checks the block is still the layer's
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            const auto & ls = mc->layers[li];
+            if (ls.link == 0) { continue; }
+            for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
+                if (ls.expert_slot[e] >= 0) { led_upload(mc, "mix-read", li, e, ls.expert_slot[e], false); }
+            }
+        }
+    }
+}
+
+// --moe verify=N (debug, slow): weights never change and the host holds the true copy, so every block the tables say holds an expert is read back and compared with it, past
+// the slice too (what a matmul reads behind its last row). 1: before a graph of the prompt mix or chain, 2: before every graph of 64 tokens or more, 3: before every graph. A bad
+// block is named with its layer, expert and bytes, and goes into the ledger: `pool_ledger.py LEDGER --addr CARD:MIB` then says who wrote it. Clean means the experts are right and the
+// fault is in the kernels or their inputs. Nothing is stopped, the run goes on.
+void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
+    static const int mode = [] { const char * e = moe_opt("verify"); return e ? atoi(e) : 0; }();
+    moe_cache * mc = g_cache;
+    if (mode <= 0 || !mc) { return; }
+    if (mode < 3 && !(mode >= 2 && n_tokens >= 64) && !g_pp_mix_built && !g_pp_built) { return; }
+    const int64_t t0 = ggml_time_us();
+    ggml_backend_sched_synchronize(sched);
+    for (int i = 0; i < mc->n_links; ++i) { if (mc->link_be[i]) { ggml_backend_synchronize(mc->link_be[i]); } }
+    static const char * const parts[3] = { "up", "gate", "down" };
+    std::vector<uint8_t> got;
+    static const std::vector<uint8_t> zeros(1u << 16, 0);
+    size_t n_read = 0, n_bad = 0, n_bad_past = 0;
+    int said = 0;
+    std::lock_guard<std::mutex> lk(mc->mtx);
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        const layer_state & ls = mc->layers[li];
+        const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+        const ggml_tensor * dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
+        for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
+            const int32_t slot = ls.expert_slot[e];
+            if (slot < 0 || ls.slot_in_flight[slot]) { continue; }
+            n_read++;
+            for (int k = 0; k < 3; ++k) {
+                if (!srcs[k] || !dsts[k] || !ggml_backend_buffer_is_host(srcs[k]->buffer)) { continue; }
+                const size_t sz  = srcs[k]->nb[2];
+                const size_t off = (size_t) slot * dsts[k]->nb[2];
+                const size_t pb  = ls.pcls >= 0 ? std::min(mc->pool[ls.pcls].past[k], zeros.size()) : 0;
+                const size_t n   = std::min(sz + pb, ggml_nbytes(dsts[k]) > off ? ggml_nbytes(dsts[k]) - off : (size_t) 0);
+                if (n == 0) { continue; }
+                got.resize(n);
+                ggml_backend_tensor_get(dsts[k], got.data(), off, n);
+                const uint8_t * want = (const uint8_t *) srcs[k]->data + (size_t) e * sz;
+                const uint8_t * next = e + 1 < srcs[k]->ne[2] ? want + sz : zeros.data();
+                size_t diff = 0, first = n;
+                for (size_t i = 0; i < n; ++i) {
+                    if (got[i] != (i < sz ? want[i] : next[i - sz])) { diff++; first = std::min(first, i); }
+                }
+                if (diff == 0) { continue; }
+                const bool in_slice = first < sz;
+                (in_slice ? n_bad : n_bad_past)++;
+                size_t lo = 0, hi = 0;
+                const moe_cache::alias_pool * ap = ls.pcls >= 0 ? led_block(mc, ls.pcls, slot, lo, hi) : nullptr;
+                const std::string who = tr_fmt("L%zu il %d e%d %s block %d: %zu of %zu bytes differ, the first at +%zu (%s)", li, ls.pub.il, e, parts[k], slot, diff, n, first, in_slice ? "in the slice" : "only past the slice");
+                if (ap) { led_line(led_card(*ap), "verify-bad", lo, hi, who); }
+                if (said++ < 16) { LLAMA_LOG_ERROR("pool-verify: BAD %s [%zu, %zu) of %s: %s\n", dsts[k]->name, lo, hi, ap ? led_card(*ap) : "?", who.c_str()); }
+            }
+        }
+    }
+    LLAMA_LOG_WARN("pool-verify: a %d-token graph: %zu cached experts read back and compared with the host's copy in %.0f ms: %zu slices bad, %zu only past the slice\n",
+            (int) n_tokens, n_read, (ggml_time_us() - t0) / 1e3, n_bad, n_bad_past);
 }
 
 bool llama_moe_cache_pp_chain_pass_fork() { return g_pp_built || g_pp_k_built; }
@@ -8026,6 +8144,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                 const int32_t id = miss[i], slot = c[i].slot;
                 if (c[i].owner >= 0) { evict_slot(mc, mc->layers[c[i].owner], slot); }
                 pool_take(mc, jli, slot);
+                led_upload(mc, "chain-up", jli, id, slot, false);
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
                     // what a matmul reads past this slice's last row (see pool_layout): the bytes that follow the slice in the model's tensor, as the upload workers give it
@@ -10306,16 +10425,19 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         std::lock_guard<std::mutex> wlk(mc->wmtx);
         busy = !mc->todo.empty() || mc->in_flight > 0;
     }
-    const bool chain = !busy && pp_chain_pays(n, up, U, n * (double) mc->n_expert_used >= (double) n_expert, &why);
-    if (busy) { why = "uploads on their way"; }
+    // --moe pp-path=stream|mix|chain (test rows): every prompt call takes this path, whatever was measured. The planner picks by time, so a path may run once in a long request or
+    // never: the prompt mix's first try came on the last call of the second request, and a bug on it looked like a bug of the second request (2026-11-02). fork/runs/paths.csv forces each one.
+    static const char * const force = moe_opt("pp-path");
+    const bool chain = force ? strcmp(force, "chain") == 0 : !busy && pp_chain_pays(n, up, U, n * (double) mc->n_expert_used >= (double) n_expert, &why);
+    if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; }
     g_pp_mb = chain ? ub_max : 0;
     const char * why_mix = "";
-    const bool mix = !chain && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
+    const bool mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
     g_pp_mix_call = mix;
     if (why_mix[0]) { why = why_mix; }
     static const bool k_auto = moe_opt("pp-k") == nullptr;   // --moe pp-k fixes it, pp-k=0 turns it off
     const double r = pp_took_us(mix ? PP_MIX : PP_RING, n);
-    const double m = k_auto && !chain && !why_mix[0] && r > 0.0 ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
+    const double m = k_auto && !force && !chain && !why_mix[0] && r > 0.0 ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
     if (k_auto) { ggml_backend_pred_set_fork(m); }
     double o = 0.0;   // the fastest one-card stream measured here
     for (int p = 0; p < PP_PATHS; ++p) {

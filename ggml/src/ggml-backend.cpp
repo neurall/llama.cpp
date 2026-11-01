@@ -1353,7 +1353,10 @@ const char * ggml_backend_dev_description(ggml_backend_dev_t device) {
 }
 
 static void (*g_nan_hook_fork)(void) = nullptr;
-extern "C" { GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)) { g_nan_hook_fork = fn; } }   // the block form: GGML_API may expand to "extern", invalid after extern "C" on the same declaration
+extern "C" { GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)) { g_nan_hook_fork = fn; } }
+// --moe ledger=2 (led_split_cb in llama-moecache-fork.cpp): each split's graph right before it runs, for a line per pool range a node reads or writes
+static void (*g_split_hook_fork)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t) = nullptr;
+extern "C" { GGML_API void ggml_sched_set_split_hook_fork(void (*fn)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t)) { g_split_hook_fork = fn; } }   // the block form: GGML_API may expand to "extern", invalid after extern "C" on the same declaration
 
 void ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total) {
     GGML_ASSERT(device);
@@ -4281,6 +4284,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
             }
         }
+        if (g_split_hook_fork) { g_split_hook_fork(split_backend, &split->graph, split_id, sched->n_splits, split->graph.uid); }
         if (!sched->callback_eval) {
             static const int nan_mode = getenv("GGML_SCHED_NAN_CHECK") ? atoi(getenv("GGML_SCHED_NAN_CHECK")) : 0;
             static long nan_graph2 = 0;

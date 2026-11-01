@@ -62,6 +62,7 @@ void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fo
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
 bool     llama_moe_cache_pp_short_fork();
 void     llama_moe_cache_pp_freeze_fork();
+void     llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 void     llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
 void     llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes);   // src/llama-moecache-fork.cpp: a load-time measure-only reserve is a measured graph size for the pass planner
 size_t   llama_moe_cache_graph_scratch_fork(ggml_backend_sched_t sched, ggml_backend_dev_t dev);   // src/llama-moecache-fork.cpp: the computed CUDA scratch of the graph the scheduler split last, on dev's pool
@@ -3411,6 +3412,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     llama_moe_cache_pp_freeze_fork();   // a graph of the prompt mix: both cards' view of the home card's experts is fixed for the pass
+    if (cparams.moe_cache) { llama_moe_cache_verify_fork(sched.get(), (int32_t) ubatch.n_tokens); }   // --moe verify: the cached experts against the host's copy
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);

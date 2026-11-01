@@ -31,13 +31,18 @@ Run the cell with `-r 0` and n = 2 (first and repeat request) and a long enough 
 | `fork/pool_ledger.py LEDGER --stale` | a CUDA graph replay whose scratch range is outside the current lend |
 | `fork/pool_ledger.py LEDGER --blame N`, `--addr CARD:MIB`, `--at T` | who touched those bytes last, everything at one moment |
 | `--env GGML_CUDA_SCRATCH_DEBUG=1` | every scratch region set, and every CUDA graph captured again because the region moved |
+| `--moe ledger=2` | on top of the writers: what the graphs touch. `node-w` and `node-r` per pool range a node writes or reads (split, node, op, tensor names), `mix-read` per expert a home card reads by its table, `chain-up` and `jit-up` for the uploads inside a graph. `pool_ledger.py LEDGER --addr CARD:MIB` then lists everyone who touched a byte, in order. 5-10 thousand lines per new graph |
+| `--moe verify=1` (2: every graph of 64+ tokens, 3: every graph) | every cached expert read back and compared with the host's copy, before a graph of the prompt mix or chain. A bad block is named and goes into the ledger. Clean means the experts are right and the fault is in a kernel or its inputs |
 | table check (always every 64th step, every step with ledger or poison) | an expert table entry pointing at a block its layer does not own |
+
+A switch that clears a bug proves nothing until the row shows the same path ran: compare `pool`, `margin` and `paths` in the two rows' notes, and the answer text of request 1 and 2 (`repeat parts at char N`). The 2026-11-02 NaN cleared under `GGML_CUDA_NO_PINNED=1` and `GGML_CUDA_DISABLE_FUSION=1` only because those rows never ran the prompt mix.
 
 ## 4. Make a rare race happen every time
 
 | switch | does |
 |---|---|
 | `--moe race-stress=N` | upload workers sleep 0..N ms before each copy and before reporting it done |
+| `--moe pp-path=stream\|mix\|chain` | every prompt call takes this path: the planner picks by time, so a path may run once in a long request or never. List `fork/runs/paths.csv`: each path, 16k prompt, poison, NaN check and byte check |
 | a shorter `-c` (8192) and a prompt whose length puts a pad boundary (256 cells) inside the answer | the lend and the zone change mid-answer |
 
 ## Hotspots (bug-log rows by 2026-10-28)
