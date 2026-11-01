@@ -2029,6 +2029,10 @@ def post(path, body, timeout=3600, every=10, idle_polls=2):
     return box["r"]
 
 
+# unique word 4-gram share below which text is a loop: measured loops 0.01-0.26, real prose 0.83-1.0, repetitive code 0.43-0.49 (0.5 stopped good C++ answers, decode scored 0)
+LOOP_SHARE = 0.3
+
+
 def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=150):
     """/completion as a stream: every `every` tokens (from `min_tokens` on) the last `window` words are tested; a repetition loop (unique word 4-gram share < 0.5) closes the connection (the server stops
     generating) and the result is marked _loop: a loop costs about a minute instead of the whole run. Returns the same fields as the plain post (content, timings)."""
@@ -2052,7 +2056,7 @@ def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=1
         if n >= min_tokens and n % every == 0:
             w = text.split()[-window:]
             g = [tuple(w[i:i + 4]) for i in range(len(w) - 3)]
-            if len(w) >= window and g and len(set(g)) / len(g) < 0.5:
+            if len(w) >= window and g and len(set(g)) / len(g) < LOOP_SHARE:
                 resp.close()
                 # the prompt ran whatever the answer did: its speed from the last progress (processed less cached tokens, ms since the prompt started)
                 pn, pms = (prog["processed"] - prog["cache"], prog["time_ms"]) if prog else (0, 0)
@@ -3081,7 +3085,7 @@ def is_loop(text):
         return False
     w = w[int(len(w) * 0.7):]
     g = [tuple(w[i:i + 4]) for i in range(len(w) - 3)]
-    return bool(g) and len(set(g)) / len(g) < 0.5
+    return bool(g) and len(set(g)) / len(g) < LOOP_SHARE
 
 
 # The judge: fork/judge_w10.py reads every stored answer on W10 with its own copy of runs.db, so no row waits for it and PC1 has nothing to coordinate. Column judge: "good 4: why [...]", "nonsense 1: why [...]", empty: not read yet.
