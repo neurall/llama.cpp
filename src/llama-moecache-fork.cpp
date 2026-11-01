@@ -1339,6 +1339,22 @@ inline double xscore(const moe_cache * mc, const layer_state & ls, int32_t id) {
     return ls.pcls >= 0 ? score(ls, id, std::max<uint64_t>(1, mc->gmax_all)) : score(ls, id);
 }
 
+// --moe prompt-victim=1: which cached expert a prompt pass's miss takes, lowest rank first (free blocks and the experts the layer uses now are the callers' part). 0: the old order.
+// all: the pass visits nearly all of this layer's experts, so every expert comes back next pass and hotness says nothing: the farthest next use goes first, that is this layer's
+// unused blocks, then the layers just finished, most recent first, then the layers furthest ahead. A smaller pass: the coldest by hotness among those, wherever it lies (equal: the
+// later layer). The next two layers give blocks last in both: they are needed soonest.
+inline double prompt_victim_rank(const moe_cache * mc, const layer_state & lo, size_t o, size_t jli, int32_t x, bool all) {
+    static const bool on = [] { const char * e = moe_opt("prompt-victim"); return e && atoi(e) != 0; }();
+    if (!on) {
+        const double s = std::min(score(lo, x), 9e5);
+        return o > jli ? 1e12 - (double) o * 1e6 + s : s;
+    }
+    const double s = std::min(xscore(mc, lo, x), 9e5);
+    if (o > jli && o <= jli + 2) { return 1e12 - (double) o * 1e6 + s; }
+    if (all) { return o <= jli ? (double) (jli - o) * 1e6 + s : 1e11 - (double) o * 1e6 + s; }
+    return s + 1e-3 * (1.0 - (double) o / (double) mc->layers.size());
+}
+
 // ---- block pool runtime ----------------------------------------------------------------------------------------------------------------------------
 // With the block pool the slot index used everywhere (tables, upload offsets, the slot arrays of a layer) is a block of the layer's size class.
 // Invariant: ls.slot_expert[s] >= 0 or ls.slot_in_flight[s] only in the layer that owns block s. Without the pool (--moe pool=0) a slot is one of
@@ -4590,6 +4606,7 @@ static bool kv_convert_run(ggml_backend_t be, moe_cache::alias_pool & ap, size_t
     return true;
 }
 
+static bool g_kv_rows_by_caller = false;   // llama_moe_cache_kv_parts_fork writes the rows itself: the retype changes the layout only, nothing is staged or moved on the card
 bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, char * note, size_t note_size) {
     auto say = [&](const char * fmt, auto... args) { if (note && note_size) { snprintf(note, note_size, fmt, args...); } };
     moe_cache * mc = g_cache;
@@ -4631,7 +4648,7 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
             else if (cp.cells > gap_h) { say("kv-fit: %s: %zu cells do not fit the gap of the zone as tier %d (room for %zu)", dn, cp.cells, tier, gap_h); return false; }
             if (gap_end != 0) { cp.h = std::min(cp.h, std::max(gap_h, cp.cells)); }
         }
-        if (!kv_stage_range(ap, cp.s_lo, cp.s_hi)) { say("kv-fit: %s: no lend in front of the KV to stage the conversion", dn); return false; }
+        if (!g_kv_rows_by_caller && !kv_stage_range(ap, cp.s_lo, cp.s_hi)) { say("kv-fit: %s: no lend in front of the KV to stage the conversion", dn); return false; }
         cp.be = kv_conv_backend(ap.dev);
         if (!cp.be) { say("kv-fit: %s: no backend for the conversion", dn); return false; }
         plans.push_back(std::move(cp));
@@ -4652,13 +4669,6 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
             auto & r = ap.kvt[i]; auto & q = cp.nk[i];
             if (r.layout) {
                 r.layout(r.tk, r.tv, &r.out, &so[i]); q.layout(q.tk, q.tv, &q.out_next, &sn[i]);
-                // --moe attn-split: a layer coming back into the row has no old rows to convert: its rows come afterwards (llama_moe_cache_kv_parts_fork)
-                if (!r.out.empty()) {
-                    sn[i].erase(std::remove_if(sn[i].begin(), sn[i].end(), [&](const llama_kv_tail_fork::seg & g) {
-                        return g.lay < (int32_t) r.out.size() && r.out[g.lay] && !(g.lay < (int32_t) q.out_next.size() && q.out_next[g.lay]);
-                    }), sn[i].end());
-                }
-                // and one that leaves has no new place
             }
             else          { so[i] = sn[i] = { { GGML_TYPE_F16, (int64_t) (r.row / 2), 0, false, 0, 0 } }; }   // no layout: the row moves as bytes
         }
@@ -4666,7 +4676,7 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         // write host memory directly), then dropped from the old segments: the compaction below moves only the layers that stay
         for (size_t i = 0; i < nr; ++i) {
             auto & r = ap.kvt[i]; auto & q = cp.nk[i];
-            if (r.fixed || q.out_next.empty()) { continue; }
+            if (g_kv_rows_by_caller || r.fixed || q.out_next.empty()) { continue; }
             std::vector<llama_kv_tail_fork::seg> keep;
             const size_t n_seg = so[i].size();
             ggml_init_params ip = { (n_seg * 3 + 4) * ggml_tensor_overhead() + ggml_graph_overhead_custom(n_seg * 2 + 4, false) + 4096, nullptr, true };
@@ -4678,7 +4688,6 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
                 const bool leaves = sg.lay < (int32_t) q.out_next.size() && q.out_next[sg.lay] && !(sg.lay < (int32_t) r.out.size() && r.out[sg.lay]);
                 if (!leaves) { keep.push_back(sg); continue; }
                 if (cp.cells == 0) { continue; }
-                if (sg.lay < (int32_t) r.kind.size() && r.kind[sg.lay] != 0) { continue; }   // --moe attn-split: llama_moe_cache_kv_parts_fork read its rows before this
                 const auto & h = q.host[2 * sg.lay + (sg.v ? 1 : 0)];
                 const int64_t nh = (int64_t) (ggml_row_size(sg.type, sg.ne0) / 2);
                 ggml_tensor * a = ggml_new_tensor_2d(hx, GGML_TYPE_F16, nh, (int64_t) cp.cells);
@@ -4707,9 +4716,7 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         order.push_back(&grow);
         if (cp.up) { std::reverse(order.begin(), order.end()); }
         for (run * rr : order) {
-            bool any_seg = false;
-            for (const auto & pt : rr->parts) { any_seg = any_seg || !pt.so->empty(); }
-            if (!any_seg) { continue; }   // every layer of this run left the row (--moe attn-split)
+            if (g_kv_rows_by_caller) { break; }
             if (!kv_convert_run(cp.be, ap, rr->src, rr->ss, rr->dst, rr->ds, rr->n, rr->parts, cp.s_lo, cp.s_hi - cp.s_lo, cp.up, moved)) {
                 GGML_ABORT("kv-retype: a conversion graph failed half-way (the KV is lost)");
             }
@@ -4846,24 +4853,24 @@ bool llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * n
     struct image { moe_cache::alias_pool * ap = nullptr; size_t cells = 0, row = 0; std::unique_ptr<uint8_t[]> b; };
     struct place { size_t im, at, st; };   // an entry's K or V in the old rows: which image, its place in the row, its bytes per row
     std::vector<image> img;
-    std::map<std::tuple<void *, int32_t, bool, int32_t>, place> old;   // by cache, model layer, is V, part (-1: the whole layer)
+    using key_t = std::tuple<void *, int32_t, bool, int32_t>;
+    const auto key_of = [](const moe_cache::alias_pool::kvt_run & r, const llama_kv_tail_fork::seg & q) -> key_t {   // a layer that can split: by model layer and part (-1 whole); a plain one: as it is
+        const int8_t k = q.lay < (int32_t) r.kind.size() ? r.kind[q.lay] : 0;
+        return k == 0 ? key_t { r.owner, q.lay, q.v, -2 } : key_t { r.owner, r.l_il[q.lay], q.v, k == 1 ? -1 : r.l_part[q.lay] };
+    };
+    std::map<key_t, place> old;
     size_t bytes = 0;
     for (auto & ap : mc->alias) {
-        image im; im.ap = &ap; im.row = ap.kv_row;
         bool any = false;
-        for (auto & r : ap.kvt) {
-            if (!r.fixed) { im.cells = std::max(im.cells, r.rows ? r.rows() : 0); }
-            any = any || !r.kind.empty();
-        }
+        for (auto & r : ap.kvt) { any = any || !r.kind.empty(); }
         if (!any) { continue; }
+        image im; im.ap = &ap; im.row = ap.kv_row;
+        for (auto & r : ap.kvt) { if (!r.fixed) { im.cells = std::max(im.cells, r.rows ? r.rows() : 0); } }
         for (auto & r : ap.kvt) {
-            if (r.kind.empty() || r.fixed) { continue; }
+            if (r.fixed || !r.layout) { continue; }
             std::vector<llama_kv_tail_fork::seg> cur;
             r.layout(r.tk, r.tv, &r.out, &cur);
-            for (const auto & q : cur) {
-                if (r.kind[q.lay] == 0) { continue; }
-                old[{ r.owner, r.l_il[q.lay], q.v, r.kind[q.lay] == 1 ? -1 : r.l_part[q.lay] }] = { img.size(), r.prefix + q.off, ggml_row_size(q.type, q.ne0) };
-            }
+            for (const auto & q : cur) { old[key_of(r, q)] = { img.size(), r.prefix + q.off, ggml_row_size(q.type, q.ne0) }; }
         }
         const size_t n = im.cells * im.row;
         if (n > 0) {
@@ -4889,7 +4896,10 @@ bool llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * n
         }
     }
     char why[384] = { 0 };
-    if (!llama_moe_cache_kv_retype_fork(sched, 3, why, sizeof(why))) {
+    g_kv_rows_by_caller = true;
+    const bool laid_out = llama_moe_cache_kv_retype_fork(sched, 3, why, sizeof(why));
+    g_kv_rows_by_caller = false;
+    if (!laid_out) {
         for (auto & im : img) { for (auto & r : im.ap->kvt) { if (!r.kind.empty() && !r.fixed) { r.out_next = r.out; } } }
         say("attn-split: %s", why);
         return false;
@@ -4900,30 +4910,27 @@ bool llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * n
         if (n == 0) { continue; }
         std::unique_ptr<uint8_t[]> nb(new (std::nothrow) uint8_t[n]);
         if (!nb) { GGML_ABORT("attn-split: no room in RAM for the new rows (the KV is lost)"); }
-        bool plain = false;   // layers that stayed: the conversion put their rows in place already, the new image starts from them
-        for (const auto & r : ap.kvt) { plain = plain || r.fixed || r.kind.empty(); for (const int8_t k : r.kind) { plain = plain || k == 0; } }
         const ggml_tensor z = kv_bytes_of_pool(ap, z_at, n);
-        if (plain) { ggml_backend_tensor_get(&z, nb.get(), 0, n); }
         const auto rows_from = [&](const place & w, size_t w_add, size_t to, size_t st) {
             const image & si = img[w.im];
             const size_t c_n = std::min(im.cells, si.cells);
             for (size_t c = 0; c < c_n; ++c) { memcpy(nb.get() + c * R + to, si.b.get() + c * si.row + w.at + w_add, st); }
         };
         for (auto & r : ap.kvt) {
-            if (r.kind.empty() || r.fixed) { continue; }
+            if (r.fixed || !r.layout) { continue; }
             std::vector<llama_kv_tail_fork::seg> cur;
             r.layout(r.tk, r.tv, &r.out, &cur);
             for (const auto & q : cur) {
-                const int8_t k = r.kind[q.lay];
-                if (k == 0) { continue; }
-                const int32_t il = r.l_il[q.lay];
+                const int8_t k = q.lay < (int32_t) r.kind.size() ? r.kind[q.lay] : 0;
                 const size_t st = ggml_row_size(q.type, q.ne0), to = r.prefix + q.off;
+                if (k == 0) { rows_from(old.at(key_of(r, q)), 0, to, st); continue; }   // a plain layer: its place in the row may have changed
+                const int32_t il = r.l_il[q.lay];
                 if (k == 2) {   // a part: its bytes of the whole row
-                    rows_from(old.at({ r.owner, il, q.v, -1 }), (size_t) r.l_part[q.lay] * st, to, st);
+                    rows_from(old.at(key_t { r.owner, il, q.v, -1 }), (size_t) r.l_part[q.lay] * st, to, st);
                 } else {        // a whole layer: its parts' rows side by side
                     size_t off = 0;
                     for (int32_t p = 0; ; ++p) {
-                        const auto it = old.find({ r.owner, il, q.v, p });
+                        const auto it = old.find(key_t { r.owner, il, q.v, p });
                         if (it == old.end()) { break; }
                         rows_from(it->second, 0, to + off, it->second.st);
                         off += it->second.st;
@@ -7630,7 +7637,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
                 // first a free block, then a layer that already ran or this layer's blocks the pass does not use; only when none is left (the first layers of a
                 // card have no layer behind them) a block of the layer furthest ahead, so the layers that follow soonest keep what they cached
                 if (pinned(mc, lo, x) || (o == jli && std::find(cur.begin(), cur.end(), x) != cur.end())) { return -1.0; }
-                return o > jli ? 1e12 - (double) o * 1e6 + std::min(score(lo, x), 9e5) : std::min(score(lo, x), 9e5);
+                return prompt_victim_rank(mc, lo, o, jli, x, cur.size() * 8 >= ls.expert_slot.size() * 7);
             }
             return o != jli || pinned(mc, lo, x) || std::find(cur.begin(), cur.end(), x) != cur.end() ? -1.0 : score(lo, x);
         }, best);
@@ -7830,7 +7837,9 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
             }
         }
         std::vector<int32_t> miss;
+        size_t n_visited = 0;
         for (int32_t e = 0; e < (int32_t) used.size(); ++e) {
+            n_visited += used[e] ? 1 : 0;
             if (used[e] && ls.expert_slot[e] < 0) { miss.push_back(e); }
         }
         mc->n_jit_miss += miss.size();
@@ -7845,7 +7854,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                 const int32_t x = lo.slot_expert[b];
                 if (x < 0) { c.push_back({ -1.0, b, -1 }); return; }
                 if ((size_t) o == jli && used[x]) { return; }
-                const double r = (size_t) o > jli ? 1e12 - (double) o * 1e6 + std::min(score(lo, x), 9e5) : std::min(score(lo, x), 9e5);
+                const double r = prompt_victim_rank(mc, lo, (size_t) o, jli, x, n_visited * 8 >= used.size() * 7);
                 c.push_back({ pinned(mc, lo, x) ? 2e12 + r : r, b, o });
             };
             if (ls.pcls >= 0) {
