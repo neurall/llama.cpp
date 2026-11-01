@@ -3260,9 +3260,16 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         if (!moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens)) { reuse = false; }   // the KV zone moved behind this graph: build it again
         if (!moe_alias_bufs.empty() && llama_moe_cache_pp_short_fork()) { reuse = false; }   // the lend left a layer of the prompt chain too few blocks
         if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // fork: the graph and the KV do not fit the pool: this pass is refused (the request fails, the server lives)
-            LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
-            ret = GGML_STATUS_FAILED;
-            return nullptr;
+            if (!fork_resident && llama_dsplit_cur_fork() == 1) {   // a split pass: one card instead, as below
+                LLAMA_LOG_WARN("%s: a split pass of %d tokens does not fit beside the KV: one card for passes of this size\n", __func__, (int) ubatch.n_tokens);
+                llama_dsplit_veto_fork((int) ubatch.n_tokens);
+                (void) llama_dsplit_decide_fork(model, ubatch.n_tokens);
+                reuse = false;
+            } else {
+                LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
+                ret = GGML_STATUS_FAILED;
+                return nullptr;
+            }
         }
     }
     if (!reuse) {
@@ -3301,6 +3308,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 // it and this graph's views of the KV point at the old place: it is built again (the next graph of this size gets its lend before it is built)
                 bool moved = !moe_alias_bufs.empty() && llama_moe_cache_alias_fork(sched.get(), (int32_t) ubatch.n_tokens);   // only the pool's own context (see above)
                 if (const char * why = moe_alias_bufs.empty() ? nullptr : llama_moe_cache_alias_err_fork()) {   // the graph and the KV do not fit the pool: refuse this pass instead of aborting
+                    // a split pass needs more than the planner's one-card fit (Qwen3.6 q8_0, 4.5 GiB per card: 3530 MiB for 10240 tokens, and the KV behind it did not fit): one card
+                    // for passes of this size. A refusal after the first call of a prompt cannot be taken back on a recurrent hybrid (its memory refuses a partial removal).
+                    if (attempt <= 1 && !fork_resident && llama_dsplit_cur_fork() == 1) {
+                        LLAMA_LOG_WARN("%s: a split pass of %d tokens does not fit beside the KV: one card for passes of this size\n", __func__, (int) ubatch.n_tokens);
+                        llama_dsplit_veto_fork((int) ubatch.n_tokens);
+                        (void) llama_dsplit_decide_fork(model, ubatch.n_tokens);
+                        res->reset();
+                        continue;
+                    }
                     LLAMA_LOG_ERROR("%s: %s\n", __func__, why);
                     ret = GGML_STATUS_FAILED;
                     return nullptr;
