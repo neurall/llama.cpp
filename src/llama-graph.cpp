@@ -444,6 +444,7 @@ static ggml_tensor * build_attn_inp_kq_mask(
     ggml_tensor * res = ggml_new_tensor_4d(ctx, type, n_kv - k0, n_tokens/n_stream, 1, n_stream);
     ggml_set_input(res);
     ggml_set_name(res, "attn_inp_kq_mask");
+    res->op_params[0] = (int32_t) n_kv;   // the mask's width no longer tells the graph's cells, and a graph can be reused only for the cells its K/V views cover (can_reuse_kq_mask)
 
     return res;
 }
@@ -460,6 +461,7 @@ static bool can_reuse_kq_mask(
     bool res = true;
 
     res &= (kq_mask->ne[0] == n_kv - (cparams.flash_attn ? mctx->get_kq_mask_k0() : 0));   // fork: the same first cell too (a reused mask must cover this ubatch's cells)
+    res &= (kq_mask->op_params[0] == (int32_t) n_kv);   // fork: and the same cells: two passes can have equal widths at different cells, and the old graph read too few of them (PPL 1.18 vs 1.09)
     res &= (kq_mask->ne[1] == n_tokens/n_stream);
     res &= (kq_mask->ne[2] == 1);
     res &= (kq_mask->ne[3] == n_stream);
