@@ -120,3 +120,10 @@ kvg-qn-f16,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/st
 kvg-qn-q8,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 34816 --env RUN_TRUE_PPL=4:30000
 kvg-qn-q8-off,qn_iq4xs,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-rows=0 -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 34816 --env RUN_TRUE_PPL=4:30000
 kvg-glm-q8-off,glm,1,pf128k,1,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,fattn-rows=0 -ctk q8_0 -ctv q8_0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvb-nan-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 -ctk f16 -ctv f16",--hog-gpu 4.5 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+kvb-nograph-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 -ctk f16 -ctv f16",--hog-gpu 4.5 --env GGML_CUDA_DISABLE_GRAPHS=1
+kvb-poison-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=384,poison=3,ledger=1 -ctk f16 -ctv f16",--hog-gpu 4.5 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1 --env PERF_LEDGER=1
+kvb-m90-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=90 -ctk f16 -ctv f16",--hog-gpu 4.5
+kvb-m384-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=384 -ctk f16 -ctv f16",--hog-gpu 4.5
+kvb-m384-nograph-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=384 -ctk f16 -ctv f16",--hog-gpu 4.5 --env GGML_CUDA_DISABLE_GRAPHS=1
+kvb-m384-nomix-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,margin_mb=384,pp-mix=0 -ctk f16 -ctv f16",--hog-gpu 4.5
