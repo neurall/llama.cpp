@@ -1,0 +1,35 @@
+run 21847 | up8_q8_default | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 75.94 t/s | prompt 2439.8 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile,attn-split=1 -ctk q8_0 -ctv q8_0 --moe sim-vram=4608 | power 220+280 W | 2026-11-01 22:34:58
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    if (mask.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    for (size_t i = 0; i < mask.size(); i++) {
+        char c = mask[i];
+        if (c == '0' || c == '1') {
+            cpumask.push_back(c - '0');
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool parse_cpu_range(const std::string & range, std::vector<int32_t> & cpumask) {
+    if (range.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    auto parts = string_split<std::string>(range, '-');
+    if (parts.size() != 2) {
+        return false;
+    }
+    int32_t lo = std
