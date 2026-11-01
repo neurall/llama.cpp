@@ -65,7 +65,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
 
   [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent  state
   [models]  olmoe  qwen36  qwen38  glm  mimo        (the regress cells and run.py baseline skip a model whose file is missing)
-  [hosts]   w10_ssh  w10_root  history_sources  gen_url                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
+  [hosts]   w10_ssh  w10_root  history_sources  gen_url (helper server: generated prompts, judge)                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
   [gpu]     nvidia_smi  ld_extra  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
                                                               optional shell file whose exports every queue task gets; empty = not used)
 """
@@ -862,13 +862,14 @@ consistent best = the highest value that at least two runs agree on within 5% (a
             con.commit(); con.close()
         except Exception as e:
             print("runs.db:", e, file=sys.stderr)
-    def insert_output(ts, hw, build, test, model, md5, text, uniq4, chars, code):
-        """the generated text of a run (zlib) into table outputs, keyed by ts + build + hw (read: zlib.decompress(text))"""
+    def insert_output(ts, hw, build, test, model, md5, text, uniq4, chars, code, ask=None):
+        """the generated text of a run (zlib) into table outputs, keyed by ts + build + hw (read: zlib.decompress(text)); ask: what was asked, the ends of it, for the judge"""
         if not text: return
         import zlib
         con = connect()
         con.execute("CREATE TABLE IF NOT EXISTS outputs (ts TEXT, hw TEXT, build TEXT, test TEXT, model TEXT, md5 TEXT, uniq4 REAL, chars INTEGER, code INTEGER, text BLOB)")
-        con.execute("INSERT INTO outputs VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9)))
+        if "ask" not in [r[1] for r in con.execute("PRAGMA table_info(outputs)")]: con.execute("ALTER TABLE outputs ADD COLUMN ask TEXT")
+        con.execute("INSERT INTO outputs (ts, hw, build, test, model, md5, uniq4, chars, code, text, ask) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9), ask))
         con.commit(); con.close()
     EMB = os.path.join(HERE, "bench", "embhot.csv")
     def ensure_emb(con):
@@ -1218,6 +1219,8 @@ RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", 
                                           # seed: sampling seed of a v2 run; branch, patch: source branch of the build and the hash of its uncommitted diff (bin/BUILD_INFO,
                                           # written by the build script; "commit" then is that commit, +patch when dirty). A run's statslog: section of stats.ini, row of stats.csv (ts + build)
 import runexp
+import judge_w10
+from judge_w10 import is_garbage
 RUN_COLS += runexp.EXP_COLS  # columns of `run.py exp` rows, empty for the other runs
 RUN_COLS += ["pred_hit", "chipset", "cpu", "mem_gb", "mem", "mem_peak_gbs", "pcie", "pcie_peak_gbs"]  # platform of the machine (machines.csv: chipset, cpu_short, mem_gb, mem_short, mem_gbs, pcie_short, pcie_gbs); *_peak_gbs are measured GB/s peaks of the machine (ddr_gbs, pcie_gbs are what this run used), empty if not measured
 PRESSURE_COLS = ["p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero"]   # cache pressure of the request (server moe_cache.pressure): met/unmet = selected experts in/not in VRAM; of the unmet that reached the swap decision: admitted into a free slot or by eviction, or declined (admit rule, margin, budget, no victim, lifetime regular, already queued); regret = misses of experts evicted within the last cache turnover; ev_unpaid / ev_zero = evicted uploads that never paid back / were never hit
@@ -1236,6 +1239,7 @@ RUN_COLS += ["pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct"]   # powe
 RUN_COLS += ["temp_med", "temp_max"]   # GPU temperature (C) of the request window, one value per GPU in index order: median and maximum
 RUN_COLS += ["vram_mib"]   # GPU memory in use at the end of the run, all GPUs together (nvidia-smi memory.used)
 RUN_COLS += ["endpoint"]
+RUN_COLS += ["judge"]   # what the judge (Qwen3.6 on W10, fork/judge_w10.py) said about the answer: "good 4: why [1 of 1 parts, 980 tokens, 12 s]", "nonsense 1: why [...]"; empty: not read yet. Filled afterwards, see cmd_judge
 RUN_COLS += ["knobs_end"]   # what the build actually ran with, from the run.knobs line of the end-of-run state snapshot: key settings (slots, workers, upload path, bounce, policy) | every cache knob incl. tuner decisions (defaults differ between builds; * = set by the user)   # completion (raw prompt), chat (template) or cli (llama-cli)
 RUN_COLS += ["load_mode"]   # how the weights were loaded, from the server log: pinned (+ upload path), mmap, mmap after a failed pin ("reloading with mmap"); load time (load_s) tells too: pinned GLM 3.0 about 85-120 s, mmap about 25 s
 RUN_COLS += ["prompt_s", "gen_s"]   # the cell as the screen shows it: prompt = end of the load to the first decoded token, gen = first token to the end (the live bar's p and g); written with wall_s by store_cell_time
@@ -1914,6 +1918,7 @@ def _server_start_once(build, env, args):
         time.sleep(1)
 
 
+LAST_ASK = {"v": ""}   # the request of the last server_run: the judge reads an answer next to what was asked
 PARTIAL = {"text": ""}   # the answer text received so far by the last post(): a failed run stores it (outputs table), so a crash keeps what was generated
 ANSWER_FILE = os.environ.get("PERF_ANSWER")   # a file: post() also writes the received text here, flushed per chunk (survives a stopped run.py); the cell subcommand sets it per cell
 WATCH_LOG = None   # server log of the running server: post() takes its growth as progress, the server is asked (/slots) only while the log is silent (decode writes nothing per token)
@@ -2253,6 +2258,7 @@ def pcie_sampler():
 
 def server_run(build, env, args, path, body, render=None):
     PROCSTAT.clear()
+    LAST_ASK["v"] = body.get("prompt") if isinstance(body.get("prompt"), str) else str((body.get("messages") or [{}])[-1].get("content") or "")
     PROCSTAT["cache_state"] = model_residency()
     _t0 = time.time(); PROCSTAT["start_ts"] = time.strftime("%F %T", time.localtime(_t0))
     PROCSTAT["endpoint"] = "completion" if path == "/completion" else "chat"
@@ -2785,16 +2791,14 @@ def gen_ctx(spec):
 
 def gen_prompt(spec, i):
     """prompt i of SPEC: from the store, else written now. Keys: text, n_tokens, out, task, topic"""
-    import random, urllib.request
+    import random
     g = gen_parse(spec)
     i += g["first"]   # first=K: a row starts at prompt K of the same set, so a training row and a test row never share a prompt
     d = os.path.join(WORK, "genprompts", hashlib.sha1(g["key"].encode()).hexdigest()[:12])
     f = os.path.join(d, f"{i}.json")
     if os.path.exists(f): return json.load(open(f))
     if not g["url"]: sys.exit("--gen: no server to write prompts: set [hosts] gen_url in the fork config, or url= in the spec")
-    def post_(path, body):
-        q = urllib.request.Request(g["url"] + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-        return json.load(urllib.request.urlopen(q, timeout=1800))
+    post_ = lambda path, body: judge_w10.post(g["url"], path, body)
     def write(text, n, seed):
         r = post_("/v1/chat/completions", {"messages": [{"role": "user", "content": text}], "max_tokens": n, "temperature": 1.0, "top_p": 0.95, "seed": seed, "cache_prompt": False,
                                            "chat_template_kwargs": {"enable_thinking": False}})
@@ -3067,13 +3071,6 @@ def text_class(text):
     return (round(len(set(g)) / len(g), 3) if g else None), len(text or ""), int("```" in low or "<html" in low or "function " in low or "#include" in low)
 
 
-def is_garbage(text):
-    """'!!!!!!...': the logits are NaN or broken, argmax is token 0. Such a run reports fine speeds and a 99% hit rate (the same token uses the same experts): GLM kv-tail 33 t/s 2026-10-17; the gather mask
-    2026-11-01 fooled a day of rows on GLM and Qwen Next. Never a valid row, --keep-loops or not; a repeat cannot help."""
-    t = (text or "").strip()
-    return len(t) >= 20 and len(set(t)) <= 3
-
-
 def is_loop(text):
     """a repetition loop: the last 30% of the words have a unique word 4-gram share below 0.5 (measured: loops 0.01-0.26, real text 0.83-1.0); needs at least 100 words"""
     t = (text or "").strip()
@@ -3085,6 +3082,103 @@ def is_loop(text):
     w = w[int(len(w) * 0.7):]
     g = [tuple(w[i:i + 4]) for i in range(len(w) - 3)]
     return bool(g) and len(set(g)) / len(g) < 0.5
+
+
+# The judge: fork/judge_w10.py reads every stored answer on W10 with its own copy of runs.db, so no row waits for it and PC1 has nothing to coordinate. Column judge: "good 4: why [...]", "nonsense 1: why [...]", empty: not read yet.
+# run.py judge --sync: the copy goes over, the verdicts come back. A nonsense row of the last day becomes ok=0: neither its prompt nor its decode speed counts anywhere. An older one is listed for reading first, public numbers among them.
+# run.py judge --build B or IDS: read now, over the network, when a report needs the verdict at once.
+JUDGE_LONG = 30000   # prompt tokens of a long prompt row: past the sparse gates (GLM 10196 cells, Qwen Next 21784). Some bugs live only there
+
+
+def judge_build_line(row):
+    """what is known about this build, said at each of its rows: rows called nonsense, and no long prompt answer judged good yet (the gather mask of 2026-11-01 broke only answers above the sparse gate, short rows looked fine)"""
+    if str(row.get("build")).startswith("stock"): return
+    import sqlite3
+    con = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"), timeout=60)
+    try:
+        v = con.execute("select judge, note from runs where build=? and judge is not null", (row.get("build"),)).fetchall()
+    except sqlite3.Error:
+        return   # no judge column before the first row that has one
+    finally:
+        con.close()
+    bad = sum(1 for j, _ in v if j.startswith("nonsense"))
+    if bad: print(col("1;91", f"JUDGE: {bad} rows of {row.get('build')} are nonsense, their speeds count nowhere. run.py judge lists them"), flush=True)
+    if not any(j.startswith("good") and int(m.group(1)) >= JUDGE_LONG for j, n in v for m in [re.search(r"prompt_n=(\d+)", n or "")] if m):
+        print(col("1;93", f"LONG PROMPT NOT CHECKED on {row.get('build')}: no answer past {JUDGE_LONG} prompt tokens judged good yet. run.py jobs -c sane -b {row.get('build')} -r 0 -nm, then run.py judge --build {row.get('build')}"), flush=True)
+
+
+def judge_apply(con, rid, v, flip=True):
+    """a verdict into runs.db. Nonsense fails the row when flip is set; good on a row failed by the judge gives it back, the row counts after all. Returns the verdict text."""
+    s = judge_w10.verdict_str(v)
+    ok, note = con.execute("select ok, note from runs where rowid=?", (rid,)).fetchone()
+    if v["verdict"] == "nonsense" and flip and ok != "0":
+        con.execute("update runs set judge=?, ok='0', okf=0, stats_ok=NULL, note=? where rowid=?", (s, f"JUDGE NONSENSE: {v['why']} | " + str(note or ""), rid))
+    elif v["verdict"] == "good" and str(note or "").startswith("JUDGE NONSENSE:"):
+        con.execute("update runs set judge=?, ok='1', okf=1, stats_ok=NULL, note=? where rowid=?", (s, str(note).split(" | ", 1)[-1] if " | " in str(note) else "", rid))
+    else:
+        con.execute("update runs set judge=? where rowid=?", (s, rid))
+    con.commit()
+    return s
+
+
+def judge_sync(con):
+    """the copy of runs.db to W10 (a consistent one: rows may be going in), the verdicts back. judge_w10.py takes the copy over by itself."""
+    import sqlite3, tempfile
+    host, root = fcfg.get("hosts", "w10_ssh"), fcfg.get("hosts", "w10_root")
+    here = os.path.dirname(os.path.abspath(__file__))
+    remote = f"{host}:/{root}/judge"
+    with tempfile.TemporaryDirectory() as d:
+        snap = sqlite3.connect(os.path.join(d, "runs.db.tmp"))
+        con.backup(snap)
+        snap.close()
+        scp = lambda *a: subprocess.run(["scp", "-q", "-o", "ConnectTimeout=5", *a], capture_output=True, text=True)
+        for f in (os.path.join(d, "runs.db.tmp"), os.path.join(here, "judge_w10.py"), os.path.join(os.path.dirname(here), "README.md")):
+            r = scp(f, remote + "/")
+            if r.returncode: sys.exit("judge --sync: " + r.stderr.strip()[:200])
+        subprocess.run(["ssh", "-o", "ConnectTimeout=5", host, f"move /y {root}\\judge\\runs.db.tmp {root}\\judge\\runs.db.new"], capture_output=True)
+        vf = os.path.join(d, "verdicts.jsonl")
+        if scp(remote + "/verdicts.jsonl", vf).returncode:
+            print("no verdicts on W10 yet")
+            return
+        day, n = time.strftime("%F %T", time.localtime(time.time() - 86400)), 0
+        for line in open(vf, encoding="utf8"):
+            try: v = json.loads(line)
+            except ValueError: continue
+            r = con.execute("select ts, build, judge from runs where rowid=?", (v["id"],)).fetchone()
+            if not r or r[0] != v["ts"] or r[1] != v["build"] or v["verdict"] == "none": continue
+            if r[2] != judge_w10.verdict_str(v):
+                judge_apply(con, v["id"], v, flip=r[0] >= day)
+                n += 1
+    print(f"{n} new verdicts from W10")
+
+
+def cmd_judge(a):
+    """the judge's results and readings on demand: no arguments, what it has said so far; --sync, W10's copy and verdicts; IDS or --build, read now"""
+    url = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
+    if a.file:
+        print(judge_w10.verdict_str(judge_w10.judge_text(url, open(a.file, errors="replace").read(), a.ask)))
+        return
+    import sqlite3
+    db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
+    con = sqlite3.connect(db, timeout=60)
+    if "judge" not in [r[1] for r in con.execute("PRAGMA table_info(runs)")]: con.execute('ALTER TABLE runs ADD COLUMN "judge" TEXT')
+    if a.sync: judge_sync(con)
+    q = "select rowid, ts, build, test, model, tps, pp from runs where "
+    line = lambda r, j, ok="": f"{r[0]:6d}  {r[2][:26]:26s}  {r[3][:9]:9s}  {os.path.basename(r[4] or '')[:24]:24s}  decode {r[5] or 0:6.1f}  prompt {r[6] or 0:7.1f}  {ok}{j}"
+    if a.ids or a.build:
+        rows = [con.execute(q + "rowid=?", (i,)).fetchone() for i in a.ids] if a.ids else con.execute(q + "build=? and coalesce(ok, '1') != '0' and judge is null order by rowid", (a.build,)).fetchall()
+        for r in filter(None, rows):
+            t, ask = judge_w10.stored_answer(con, r[2], r[3], r[4], r[1])
+            if len((t or "").strip()) < judge_w10.MIN_CHARS: continue
+            v = judge_w10.judge_text(url, t, ask)
+            print(line(r, judge_w10.verdict_str(v)), flush=True)
+            if not a.dry and v["verdict"] != "none": judge_apply(con, r[0], v)
+        return
+    a_, g_, n_ = (con.execute(f"select count(*) from runs where cast(out_chars as int) >= ? and coalesce(ok, '1') != '0' {w}", (judge_w10.MIN_CHARS,)).fetchone()[0] for w in ("", "and judge like 'good%'", "and judge like 'nonsense%'"))
+    print(f"{a_} answers counted: {g_} good, {n_} nonsense but still counted (older than a day, read them, then run.py judge IDS fails them), {a_ - g_ - n_} not read yet")
+    cited = set(re.findall(r"outputs/(\d+)s?\.txt", open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"), errors="replace").read()))
+    for r in con.execute("select rowid, ts, build, test, model, tps, pp, judge, ok from runs where judge like 'nonsense%' order by rowid desc limit ?", (a.last,)):
+        print(line(r, r[7], ("README " if str(r[0]) in cited else "") + ("failed " if r[8] == "0" else "COUNTED ")))
 
 
 TEMPLATED = False   # --templated: chat tests (tetrisc, game4c, edit4c, long1kc, chat) render the template through /apply-template and send the text to /completion
@@ -3169,9 +3263,10 @@ def store(row, build, test, rec, note, hw, vstr):
     row["uniq4"], row["out_chars"], row["code"] = text_class(row.get("output"))
     row["loop"] = int(bool(row.get("loop_abort")) or is_loop(row.get("output")))
     answer_checks(row, (row["model"], test, build, rec.get("args", ""), CAMPAIGN, hw))
+    judge_build_line(row)
     try:   # the generated text (zlib) into runs.db table outputs, keyed by ts + build
         import runlog
-        runlog.insert_output(row["ts"], hw, build, test, row["model"], row.get("md5"), row.get("output"), row["uniq4"], row["out_chars"], row["code"])
+        runlog.insert_output(row["ts"], hw, build, test, row["model"], row.get("md5"), row.get("output"), row["uniq4"], row["out_chars"], row["code"], judge_w10.cut_ask(LAST_ASK["v"]))
     except Exception as ex:
         print("outputs:", ex, file=sys.stderr)
     extra = {k: v for k, v in rec.items() if k != "args"}
@@ -3196,7 +3291,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "judge", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     save_output_file(row["ts"], build, test, row["model"])   # fork/outputs/<run id>.txt: the answer, readable on GitHub without runs.db
     global _EMB_OFF
     try:
@@ -3212,19 +3307,18 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
 def save_output_file(ts, build, test, model, rid=None):
     """the answer of a run as fork/outputs/<runs.db row id>.txt, <id>s.txt for stock builds (header: build, test, model, speeds), so anyone can read it on GitHub next to the README table
     that cites the id; returns the path or None (no stored answer). rid given: that row, else the row of ts + build + test + model."""
-    import sqlite3, zlib
+    import sqlite3
     try:
         con = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         q = "select rowid, ts, build, test, model, tps, pp, n_gen, args, pl, start_ts from runs where "
         r = con.execute(q + "rowid=?", (rid,)).fetchone() if rid else con.execute(q + "ts=? and build=? and test=? and model=? order by rowid desc limit 1", (ts, build, test, model)).fetchone()
         if not r: return None
-        o = con.execute("select text from outputs where build=? and test=? and model=? and abs(strftime('%s', ts) - strftime('%s', substr(?, 1, 19))) <= 120 order by abs(strftime('%s', ts) - strftime('%s', substr(?, 1, 19))) limit 1",
-                        (r[2], r[3], r[4], r[1], r[1])).fetchone()
-        if not o: return None
+        text = judge_w10.stored_answer(con, r[2], r[3], r[4], r[1])[0]
+        if text is None: return None
         os.makedirs(OUT_DIR, exist_ok=True)
         f = os.path.join(OUT_DIR, f"{r[0]}{'s' if (r[2] or '').startswith('stock') else ''}.txt")   # stock runs: <id>s, sorts next to the id
         hdr = f"run {r[0]} | {r[2]} | {r[3]} | {os.path.basename(r[4] or '')} | decode {r[5] and round(r[5], 2)} t/s | prompt {r[6] and round(r[6], 1)} t/s | {r[7] and int(r[7])} tokens | args: {r[8] or ''} | power {r[9] or '?'} W | {r[10] or r[1]}\n\n"
-        open(f, "w").write(hdr + zlib.decompress(o[0]).decode("utf8", "replace"))
+        open(f, "w").write(hdr + text)
         return f
     except Exception as ex:
         print("outputs file:", ex, file=sys.stderr)
@@ -10394,6 +10488,14 @@ if __name__ == "__main__":
     gn.add_argument("-n", type=int, default=1, help="how many prompts")
     gn.add_argument("--start", type=int, default=0, help="first prompt number")
     gn.add_argument("--show", action="store_true", help="print the texts")
+    jd = sp.add_parser("judge", help="Qwen3.6 on W10 reads stored answers (fork/judge_w10.py), nonsense makes a row ok=0: what it said so far; --sync its copy and verdicts; IDS or --build reads now")
+    jd.add_argument("ids", nargs="*", type=int, help="runs.db row ids to read now, read again even when judged before")
+    jd.add_argument("--build", default="", help="read now the rows of this build that have no verdict")
+    jd.add_argument("--sync", action="store_true", help="send W10 a copy of runs.db, take its verdicts back")
+    jd.add_argument("--last", type=int, default=30, help="at most this many rows called nonsense are listed")
+    jd.add_argument("--dry", action="store_true", help="show the verdicts, change no row")
+    jd.add_argument("--file", default="", help="read this text file instead of rows")
+    jd.add_argument("--ask", default="", help="with --file: the request it answered")
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
@@ -10406,5 +10508,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "gen": cmd_gen, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

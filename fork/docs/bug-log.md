@@ -335,3 +335,14 @@ Goal: a missed expert computed on the CPU must give the GPU's bits, so a greedy 
 ## 2026-10-30 llama-server does not exit after a second identical request in cache mode (open)
 
 Repro: GLM 3.5 with `--moe sim-vram=6000 wait-swaps=0`, two identical chat requests, then SIGTERM. The log ends with "cleaning up before exit" and the process stays; SIGKILL needed. Thread states read from /proc (ptrace denied). Cause not found; seen while running the exact-mode checks above, not tied to them.
+
+## 2026-11-01 Every answer above the sparse gate was `!!!!` on GLM and Qwen Next, and a day of rows reported it as a gain
+
+Repro: `python3 fork/run.py jobs -c up8kv -b up8_gather_rows -r 0 -nm -onl kvb-glm60,kvb-qn60` (build before the fix): answer `!!!!...`, decode and hit rate look excellent. Below the gate (GLM 10196 cells, Qwen Next 21784) nothing is wrong, so short rows and PPL at 16k on Qwen Next passed.
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `ggml/src/ggml-cuda/fattn-mma-f16.cuh` `flash_attn_ext_f16`, the mask stride | NaN logits, argmax token 0, one repeated token; GLM decode 27-28 t/s and Qwen Next 44 t/s with hit 99.9%, all void | commit "Attention mask only for the pass's own cells" derives the pass's first cell as `ne11 - stride`. In a gather `ne11` is the list length, not the KV length, so the mask was read far off and every cell was masked | `mask && !use_sparse` in the stride: a gather's mask covers all of K, there is no first cell to derive |
+| `fork/run.py` `is_loop`, `--keep-loops`, how results were read | the rows carried `ok=1`, and speeds were reported before answers | `--keep-loops` skipped the loop test, which is what caught `!!!!` | `is_garbage` fails such a row always. Every answer now goes to a judge model on W10 (`judge_row`, column `judge`), and a nonsense row has no accepted speed |
+
+Verified: build `up8_gather_mask_fix`, GLM 62k and Qwen Next 68k answers are real text (rows `kvb-glm60`, `kvb-qn60`). Long prompt rows for every engine build: `fork/runs/sane.csv`.
