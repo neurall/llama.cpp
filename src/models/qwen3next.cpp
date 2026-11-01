@@ -158,7 +158,7 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
     // Every card computes its token range of every layer: norms, the linear-attention block (conv window and recurrent state handed from range to range, the
     // last range writes both to the memory), the full-attention projections and attention over the KV cache (ds_attn_kv), the shared expert and the router
     // logits; the experts are shared by id range (build_moe_ffn range mode). Only the optimized projection layout (wqkv) is handled; otherwise one card.
-    bool ds_ok = !cparams.embeddings_nextn_masked && cparams.flash_attn && ds_kv_plain(inp->get_attn());
+    bool ds_ok = !cparams.embeddings_nextn_masked && cparams.flash_attn;
     for (int il = 0; il < n_layer && ds_ok; ++il) { ds_ok = !hparams.is_recr(il) || model.layers[il].wqkv != nullptr; }
     if (ds_ok && ds_plan(16)) {
         const size_t NR = ds_r.size();

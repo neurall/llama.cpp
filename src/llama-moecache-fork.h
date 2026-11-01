@@ -174,6 +174,8 @@ struct llama_kv_tail_fork {
     std::function<void(ggml_type, ggml_type, const std::vector<char> *, const std::vector<std::pair<uint8_t *, size_t>> *, ggml_backend_buffer_t)> retype;
     ggml_type          type_k = GGML_TYPE_F16, type_v = GGML_TYPE_F16;   // the types the record has now
     bool               convertible = false;
+    // rot(layer, is_v): the rotation constant of a layer's K or V; null: its rows stay plain. Rows turning quantized are rotated, rows turning float rotate back (it is its own inverse)
+    std::function<ggml_tensor *(int32_t, bool)> rot;
 };
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
 // a cache rebuilt with other KV types (llama_kv_refit) takes the place of the old one in the running pool

@@ -185,7 +185,7 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
     // logits; the experts are shared by id range (build_moe_ffn range mode). Qwen3.5 differences from Qwen3-Next: separate beta / alpha projections, the
     // key heads are repeated by tiling (head h reads key head h mod n_k, not interleaved), multi-section rope (ds_pos). One sequence per batch, no rolling
     // recurrent-state snapshots (n_rs_seq == 0); otherwise one card.
-    bool ds_ok = !cparams.embeddings_nextn_masked && cparams.flash_attn && ubatch.n_seqs == 1 && cparams.n_rs_seq == 0 && ds_kv_plain(inp->get_attn());
+    bool ds_ok = !cparams.embeddings_nextn_masked && cparams.flash_attn && ubatch.n_seqs == 1 && cparams.n_rs_seq == 0;
     for (int il = 0; il < n_layer && ds_ok; ++il) { ds_ok = !hparams.is_recr(il) || model.layers[il].wqkv != nullptr; }
     if (ds_ok && ds_plan(16)) {
         const size_t NR = ds_r.size();

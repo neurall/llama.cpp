@@ -111,7 +111,7 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
     // id range (build_moe_ffn in range mode). The last layer is not cropped to the output rows here: the rows are taken after the ranges are joined.
     bool ds_done = false;
     {
-        bool ds_ok = cparams.flash_attn && ds_kv_plain(inp_attn) &&
+        bool ds_ok = cparams.flash_attn &&
                      std::none_of(cparams.embeddings_layer_inp.begin(), cparams.embeddings_layer_inp.end(), [](bool b) { return b; });
         if (ds_ok && ds_plan(64)) {
             const size_t NR = ds_r.size();

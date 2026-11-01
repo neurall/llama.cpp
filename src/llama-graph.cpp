@@ -5799,41 +5799,39 @@ ggml_tensor * llm_graph_context::ds_join(const std::vector<ggml_tensor *> & xs, 
     return acc;
 }
 
-static bool ds_rotates(const std::vector<ggml_tensor *> & rot) { return std::any_of(rot.begin(), rot.end(), [](const ggml_tensor * t) { return t != nullptr; }); }
-
-bool llm_graph_context::ds_kv_plain(const llm_graph_input_attn_kv * inp) const {
-    return !ds_rotates(inp->self_k_rot) && !ds_rotates(inp->self_v_rot);
-}
-
-bool llm_graph_context::ds_kv_plain(const llm_graph_input_attn_kv_iswa * inp) const {
-    return !ds_rotates(inp->self_k_rot) && !ds_rotates(inp->self_v_rot) && !ds_rotates(inp->self_k_rot_swa) && !ds_rotates(inp->self_v_rot_swa);
-}
-
 std::vector<ggml_tensor *> llm_graph_context::ds_attn_kv(llm_graph_input_attn_kv * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
                                                           const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
-    GGML_ASSERT(!inp->self_k_rot[il] && !inp->self_v_rot[il]);
-    return ds_attn_cache(inp->mctx, inp->get_k_idxs(), inp->get_v_idxs(), inp->get_kq_mask(), q, k, v, sinks, kq_scale, il);
+    return ds_attn_cache(inp->mctx, inp->get_k_idxs(), inp->get_v_idxs(), inp->get_kq_mask(), q, k, v, sinks, inp->self_k_rot[il], inp->self_v_rot[il], kq_scale, il);
 }
 
 std::vector<ggml_tensor *> llm_graph_context::ds_attn_kv(llm_graph_input_attn_kv_iswa * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
                                                           const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
     const bool swa = hparams.is_swa(il);
-    GGML_ASSERT(!(swa ? inp->self_k_rot_swa : inp->self_k_rot)[il] && !(swa ? inp->self_v_rot_swa : inp->self_v_rot)[il]);
     return ds_attn_cache(swa ? inp->mctx->get_swa() : inp->mctx->get_base(), swa ? inp->get_k_idxs_swa() : inp->get_k_idxs(),
-                         swa ? inp->get_v_idxs_swa() : inp->get_v_idxs(), swa ? inp->get_kq_mask_swa() : inp->get_kq_mask(), q, k, v, sinks, kq_scale, il);
+                         swa ? inp->get_v_idxs_swa() : inp->get_v_idxs(), swa ? inp->get_kq_mask_swa() : inp->get_kq_mask(), q, k, v, sinks,
+                         (swa ? inp->self_k_rot_swa : inp->self_k_rot)[il], (swa ? inp->self_v_rot_swa : inp->self_v_rot)[il], kq_scale, il);
 }
 
 std::vector<ggml_tensor *> llm_graph_context::ds_attn_cache(const llama_kv_cache_context * mctx_cur, ggml_tensor * k_idxs, ggml_tensor * v_idxs, ggml_tensor * kq_mask,
                                                              const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k, const std::vector<ggml_tensor *> & v,
-                                                             const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
+                                                             const std::vector<ggml_tensor *> & sinks, ggml_tensor * k_rot, ggml_tensor * v_rot, float kq_scale, int il) const {
     GGML_ASSERT(cparams.flash_attn && !cparams.training);
+    // 0. a rotated KV (quantized K / V): each range rotates its own rows on its own card, as build_attn does on one card; its answer rotates back in step 2.
+    // The constants sit on the cache's card; the card's fast transform does not read them.
+    std::vector<ggml_tensor *> q_r(q), k_r(k), v_r(v);
+    for (size_t r = 0; r < ds_r.size() && (k_rot || v_rot); ++r) {
+        ds_skip();
+        if (k_rot) { q_r[r] = llama_mul_mat_hadamard(ctx0, q[r], k_rot); k_r[r] = llama_mul_mat_hadamard(ctx0, k[r], k_rot); }
+        if (v_rot) { v_r[r] = llama_mul_mat_hadamard(ctx0, v[r], v_rot); }
+        ds_pin(ds_r[r].b);
+    }
     // 1. every range's K/V into the cache (these writes run where the cache is, behind the range's projections)
     ds_skip();
     for (size_t r = 0; r < ds_r.size(); ++r) {
         const int64_t nr = ds_r[r].t1 - ds_r[r].t0;
         (void) nr;
-        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k[r], ds_rows(k_idxs, r), il));
-        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v[r], ds_rows(v_idxs, r), il));
+        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_r[r], ds_rows(k_idxs, r), il));
+        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_r[r], ds_rows(v_idxs, r), il));
     }
     ds_skip();
     // 2. every range's queries over the whole cache, with its rows of the mask (the cache view is read after both writes: they were issued first)
@@ -5847,7 +5845,8 @@ std::vector<ggml_tensor *> llm_graph_context::ds_attn_cache(const llama_kv_cache
         ggml_tensor * vc = mctx_cur->get_v(ctx0, il);
         (void) nr;
         ggml_tensor * m  = ds_rows(kq_mask, r);   // its rows of the mask, cut once for all layers
-        out[r] = build_attn_mha(q[r], kc, vc, nullptr, m, sinks.empty() ? nullptr : sinks[r], nullptr, 0, kq_scale, il);
+        out[r] = build_attn_mha(q_r[r], kc, vc, nullptr, m, sinks.empty() ? nullptr : sinks[r], nullptr, 0, kq_scale, il);
+        if (v_rot) { out[r] = llama_mul_mat_hadamard(ctx0, out[r], v_rot); }
         ds_pin(ds_r[r].b);
     }
     return out;

@@ -39,3 +39,9 @@ thresholds are the minimum over the cards (a record sits on every card that has 
 flash attention with quantised K/V at each model's head size (MiMo 192/128, GLM 512 MLA, Qwen Next 256); perplexity per
 rung (OLMoE ladder: K is the sensitive tensor); CPU attention speed on the RAM layout at 128k+; the first request, when the
 pool does not exist yet (the pool starts at the first real decode): start it before serving or decide the tier mid-request.
+
+## Rotation
+
+Block-scaled K/V lose less when energy is spread evenly, so a cache built quantized rotates K and Q by a Hadamard matrix (upstream, `n_rot_k`, `n_rot_v`). The tiers do the same, without
+cost on float rows: a conversion between a float and a quantized type runs the rows through the transform (its own inverse, `kv_convert_run`), and `get_k_rot` / `get_v_rot` hand the graphs a
+rotation exactly while the type is quantized. q8_0 to q4_0 moves rotated rows and rotates nothing. Dense split rotates per range on the range's card. `--moe kv-tier-rot=0` keeps plain rows for an A/B.

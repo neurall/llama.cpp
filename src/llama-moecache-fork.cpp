@@ -315,6 +315,7 @@ struct moe_cache {
         struct kvt_run { void * owner = nullptr; size_t bytes = 0, row = 0, pad = 1, prefix = 0, cells_max = 0, ratio = 1; bool fixed = false; std::function<size_t()> rows; std::function<void(ggml_backend_buffer_t, uint8_t *, size_t)> attach; size_t cells = 0, plan = 0; float bpv = 2.0f;   // plan: the cells the prompt being planned will fill; bpv: bytes per value of the record's types
                          std::function<size_t(ggml_type, ggml_type, const std::vector<char> *, std::vector<llama_kv_tail_fork::seg> *)> layout;   // qkv-ram-fallback in place (llama_kv_tail_fork)
                          std::function<void(ggml_type, ggml_type, const std::vector<char> *, const std::vector<std::pair<uint8_t *, size_t>> *, ggml_backend_buffer_t)> retype;
+                         std::function<ggml_tensor *(int32_t, bool)> rot;
                          std::vector<char> out, out_next; std::vector<std::pair<uint8_t *, size_t>> host;   // RAM part: layers in host memory now / after the next relayout; where
                          ggml_type tk = GGML_TYPE_F16, tv = GGML_TYPE_F16, tk0 = GGML_TYPE_F16, tv0 = GGML_TYPE_F16; bool convertible = false; size_t unit = 256; };   // tk0/tv0: the types it was created with (tier 0); unit: its row and its place in the combined row are multiples of it
         std::vector<kvt_run>  kvt;
@@ -4223,7 +4224,7 @@ static void kv_tail_bind(moe_cache::alias_pool & ap) {
         }
         moe_cache::alias_pool::kvt_run kr;
         kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.rows = r.rows; kr.attach = r.attach; kr.bpv = r.bpv;
-        kr.layout = r.layout; kr.retype = r.retype; kr.tk = r.type_k; kr.tv = r.type_v; kr.convertible = r.convertible && r.layout && r.retype;
+        kr.layout = r.layout; kr.retype = r.retype; kr.rot = r.rot; kr.tk = r.type_k; kr.tv = r.type_v; kr.convertible = r.convertible && r.layout && r.retype;
         kr.unit = r.layout ? kv_rec_unit(r.type_k, r.type_v) : 256;
         kr.cells_max = r.row ? r.bytes / r.row : 0;
         kr.ratio = llama_kv_cache_tail_ratio_fork(r.owner);
@@ -4483,37 +4484,48 @@ static bool kv_stage_range(const moe_cache::alias_pool & ap, size_t & lo, size_t
     return hi > lo;
 }
 
-struct kv_cv_part { const std::vector<llama_kv_tail_fork::seg> * so; const std::vector<llama_kv_tail_fork::seg> * sn; size_t so_add, sn_add; };
+struct kv_cv_part { const std::vector<llama_kv_tail_fork::seg> * so; const std::vector<llama_kv_tail_fork::seg> * sn; size_t so_add, sn_add; const std::function<ggml_tensor *(int32_t, bool)> * rot; };
+
+// the rotation a segment needs when it changes type: rows are rotated while quantized (llama_kv_cache, n_rot_k_tier), so only a change between float and quantized rotates
+static ggml_tensor * kv_cv_rot(const kv_cv_part & p, size_t i) {
+    const auto & o = (*p.so)[i];
+    const auto & w = (*p.sn)[i];
+    return p.rot && *p.rot && ggml_is_quantized(o.type) != ggml_is_quantized(w.type) ? (*p.rot)(o.lay, o.v) : nullptr;
+}
 
 // rows [0, n_rows) of a run: old row i at byte src + i*ss of the buffer, new row i at dst + i*ds, through the staging range [stg, stg + stg_b). up: descending chunks.
 static bool kv_convert_run(ggml_backend_t be, moe_cache::alias_pool & ap, size_t src, size_t ss, size_t dst, size_t ds, size_t n_rows,
                            const std::vector<kv_cv_part> & parts, size_t stg, size_t stg_b, bool up, size_t & moved) {
     if (n_rows == 0) { return true; }
-    size_t f32_row = 0, n_seg = 0;
+    size_t f32_row = 0, n_seg = 0, n_rot = 0;
     for (const auto & p : parts) {
         for (size_t i = 0; i < p.so->size(); ++i) {
             n_seg++;
-            if ((*p.so)[i].type != (*p.sn)[i].type) { f32_row += (size_t) (*p.so)[i].ne0 * 4; }
+            if ((*p.so)[i].type == (*p.sn)[i].type) { continue; }
+            const bool rotates = kv_cv_rot(p, i) != nullptr;
+            f32_row += (size_t) (*p.so)[i].ne0 * (rotates ? 8 : 4);
+            n_rot   += rotates ? 1 : 0;
         }
     }
     if (n_seg == 0) { return true; }
-    const size_t slack = (n_seg + 2) * 256;
+    const size_t slack = (n_seg + n_rot + 2) * 256;
     if (stg_b <= slack) { return false; }
     const size_t chunk = std::min(n_rows, (stg_b - slack) / (ds + f32_row));
     if (chunk == 0) { return false; }
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(ap.buf);
-    const size_t n_chunks = (n_rows + chunk - 1) / chunk, n_nodes = n_seg * 4 + 8;
+    const size_t n_chunks = (n_rows + chunk - 1) / chunk, n_nodes = n_seg * 4 + n_rot * 2 + 8;
     for (size_t k = 0; k < n_chunks; ++k) {
         const size_t ci = up ? n_chunks - 1 - k : k;
         const size_t a = ci * chunk, n = std::min(chunk, n_rows - a);
-        ggml_init_params ip = { n_seg * 6 * ggml_tensor_overhead() + ggml_graph_overhead_custom(n_nodes, false) + 4096, nullptr, true };
+        ggml_init_params ip = { (n_seg + n_rot) * 6 * ggml_tensor_overhead() + ggml_graph_overhead_custom(n_nodes, false) + 4096, nullptr, true };
         ggml_context * cx = ggml_init(ip);
         if (!cx) { return false; }
         ggml_cgraph * gf = ggml_new_graph_custom(cx, n_nodes, false);
         size_t tmp = GGML_PAD(stg + n * ds, 256);   // f32 temporaries behind the converted rows, one per segment (no memory shared inside a graph)
-        auto mk = [&](ggml_type t, int64_t ne0, size_t at, size_t stride) {
-            ggml_tensor * x = ggml_new_tensor_2d(cx, t, ne0, (int64_t) n);
-            x->nb[1] = stride; x->nb[2] = x->nb[3] = stride * n;
+        auto mk = [&](ggml_type t, int64_t ne0, size_t at, size_t stride, int64_t rows = 0) {
+            if (rows == 0) { rows = (int64_t) n; }
+            ggml_tensor * x = ggml_new_tensor_2d(cx, t, ne0, rows);
+            x->nb[1] = stride; x->nb[2] = x->nb[3] = stride * (size_t) rows;
             x->data = base + at; x->buffer = ap.buf;
             return x;
         };
@@ -4527,9 +4539,22 @@ static bool kv_convert_run(ggml_backend_t be, moe_cache::alias_pool & ap, size_t
                     const int64_t nh = (int64_t) (ggml_row_size(o.type, o.ne0) / 2);
                     ggml_build_forward_expand(gf, ggml_cpy(cx, mk(GGML_TYPE_F16, nh, s_at, ss), mk(GGML_TYPE_F16, nh, d_at, ds)));
                 } else {
-                    ggml_tensor * t32 = mk(GGML_TYPE_F32, o.ne0, tmp, (size_t) o.ne0 * 4);
-                    tmp = GGML_PAD(tmp + (size_t) o.ne0 * 4 * n, 256);
-                    ggml_build_forward_expand(gf, ggml_cpy(cx, ggml_cpy(cx, mk(o.type, o.ne0, s_at, ss), t32), mk(w.type, w.ne0, d_at, ds)));
+                    const size_t row32 = (size_t) o.ne0 * 4, at32 = tmp;
+                    tmp = GGML_PAD(tmp + row32 * n, 256);
+                    ggml_tensor * x = ggml_cpy(cx, mk(o.type, o.ne0, s_at, ss), mk(GGML_TYPE_F32, o.ne0, at32, row32));
+                    if (ggml_tensor * rot = kv_cv_rot(p, i)) {   // the same blocks as the graph's rotation: a row is contiguous, n_rot floats at a time
+                        const int64_t nr = rot->ne[0];
+                        GGML_ASSERT(o.ne0 % nr == 0 && "kv-retype: a row that is not a whole number of rotation blocks");
+                        ggml_build_forward_expand(gf, x);
+                        const int64_t blocks = o.ne0 / nr * (int64_t) n;
+                        ggml_tensor * ro = ggml_mul_mat(cx, rot, mk(GGML_TYPE_F32, nr, at32, (size_t) nr * 4, blocks));
+                        ggml_mul_mat_set_hint(ro, GGML_HINT_SRC0_IS_HADAMARD);
+                        ro->data = base + tmp; ro->buffer = ap.buf;
+                        ggml_build_forward_expand(gf, ro);
+                        x = mk(GGML_TYPE_F32, o.ne0, tmp, row32);
+                        tmp = GGML_PAD(tmp + row32 * n, 256);
+                    }
+                    ggml_build_forward_expand(gf, ggml_cpy(cx, x, mk(w.type, w.ne0, d_at, ds)));
                 }
             }
         }
@@ -4643,8 +4668,8 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         run grow { Z + ap.kv_fixed, ap.kv_row, Z + cp.F, cp.R, cp.cells, {} };
         for (size_t i = 0; i < nr; ++i) {
             auto & r = ap.kvt[i]; auto & q = cp.nk[i];
-            if (r.fixed) { fixed_runs.push_back({ Z + r.prefix, r.row, Z + q.prefix, q.row, r.cells_max, { { &so[i], &sn[i], 0, 0 } } }); }
-            else         { grow.parts.push_back({ &so[i], &sn[i], r.prefix, q.prefix }); }
+            if (r.fixed) { fixed_runs.push_back({ Z + r.prefix, r.row, Z + q.prefix, q.row, r.cells_max, { { &so[i], &sn[i], 0, 0, &r.rot } } }); }
+            else         { grow.parts.push_back({ &so[i], &sn[i], r.prefix, q.prefix, &r.rot }); }
         }
         std::vector<run *> order;   // shrinking: lowest addresses first (the fixed part, then the growing rows); growing: the reverse
         for (auto & fr : fixed_runs) { order.push_back(&fr); }

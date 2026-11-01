@@ -1065,16 +1065,13 @@ struct llm_graph_context {
     // queries attend over the whole cache with its rows of the mask. q/k/v per range (computed on the range's card, after rope), sinks per range (the
     // range card's copy) or empty; returns the per-range attention outputs [n_embd_head_v * n_head, tokens of the range] on the range cards (before wo).
     // The iswa form picks the sliding-window or the full cache of layer il.
-    // false: a layer of this cache attends in a rotated space (quantized K / V, llama_kv_cache::init_rotation). ds_attn_kv does not rotate: such a graph runs on one card
-    bool                       ds_kv_plain(const llm_graph_input_attn_kv * inp) const;
-    bool                       ds_kv_plain(const llm_graph_input_attn_kv_iswa * inp) const;
     std::vector<ggml_tensor *> ds_attn_kv(llm_graph_input_attn_kv * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
                                           const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const;
     std::vector<ggml_tensor *> ds_attn_kv(llm_graph_input_attn_kv_iswa * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
                                           const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const;
     std::vector<ggml_tensor *> ds_attn_cache(const llama_kv_cache_context * mctx_cur, ggml_tensor * k_idxs, ggml_tensor * v_idxs, ggml_tensor * kq_mask,
                                              const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k, const std::vector<ggml_tensor *> & v,
-                                             const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const;
+                                             const std::vector<ggml_tensor *> & sinks, ggml_tensor * k_rot, ggml_tensor * v_rot, float kq_scale, int il) const;
 
     const llm_arch arch;
 

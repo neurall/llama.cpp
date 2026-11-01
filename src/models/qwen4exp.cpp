@@ -568,7 +568,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
     bool ds_done = false;
     {
         auto * ia = inp->get_attn();
-        bool ds_ok = cparams.flash_attn && ds_kv_plain(ia) &&
+        bool ds_ok = cparams.flash_attn &&
                      std::none_of(cparams.embeddings_layer_inp.begin(), cparams.embeddings_layer_inp.end(), [](bool b) { return b; });
         if (ds_ok && ds_plan(64)) {
             const size_t NR = ds_r.size();

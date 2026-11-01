@@ -296,6 +296,9 @@ private:
     // env: LLAMA_ATTN_ROT_DISABLE
     uint32_t n_rot_k = 0;
     uint32_t n_rot_v = 0;
+    // fork: rows the pool can quantize in place (qkv-ram-fallback): size of their rotation; such rows are rotated exactly while their type is quantized (0: they stay plain)
+    uint32_t n_rot_k_tier = 0;
+    uint32_t n_rot_v_tier = 0;
 
     // if all layers participating in the cache have constant head size, the value is stored here
     // otherwise the value is -1
