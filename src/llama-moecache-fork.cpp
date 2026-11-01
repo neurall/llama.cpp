@@ -6002,6 +6002,17 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         first = true;
     }
     g_topic.prev_n = n;
+    // --moe req-reset=1: a new request says what the last one's window was worth: nothing when the topic changed. Replay of mixed topics at a 10% cache: the first 8 tokens of a
+    // request hit 12% with the old window, 43% with it emptied, the whole answer gains 1 to 2 points. ClassLRU's classes drop by two for the same reason; an expert's age stays.
+    static const bool req_reset = [] { const char * e = moe_opt("req-reset"); return e && atoi(e) != 0; }();
+    if (first && req_reset && mc != nullptr) {
+        std::lock_guard<std::mutex> lock(mc->mtx);
+        for (auto & ls : mc->layers) {
+            ls.recent.clear();
+            std::fill(ls.win_count.begin(), ls.win_count.end(), 0u);
+            for (float & c : ls.crf) { c *= 0.25f; }
+        }
+    }
     exptok_call(model, ids, n, first);   // --moe expids: every call
     g_tokdump.req += first;              // --moe tokdump: the answer tokens that follow belong to a new request
     topic_phase(model, ids, n, first);   // --moe dynhot: <think> / </think> among the tokens fed (prompt and answer)
