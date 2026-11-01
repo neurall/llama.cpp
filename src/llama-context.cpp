@@ -4231,6 +4231,15 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
 
+        // a call that is taken back and tried again is no measurement (see the out-of-memory path below)
+        auto call_abandon = [&]() {
+            llama_dsplit_pass_abandon_fork();
+            ggml_backend_sched_synchronize(sched.get());
+            n_queued_tokens    = 0;
+            t_compute_start_us = 0;
+            thrb.last_tokens   = 0;
+        };
+
         // CUDA out-of-memory errors the backend caught (ggml_cuda_oom), also one it got past by itself (a CUDA graph that did not fit is run without
         // one): the next start leaves room for them
         static int oom_seen = 0;
@@ -4260,11 +4269,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 // the failed call is no measurement: the split factors and the balance would time the failure and the retry as one pass, the pass planner
                 // and the prompt counters would count its tokens twice. What the other cards still run of the failed graph ends first; the retry is timed
                 // from its own start (an earlier call not synchronized yet loses its sample: it cannot be told apart from the failure).
-                llama_dsplit_pass_abandon_fork();
-                ggml_backend_sched_synchronize(sched.get());
-                n_queued_tokens    = 0;
-                t_compute_start_us = 0;
-                thrb.last_tokens   = 0;
+                call_abandon();
                 if (inst) {
                     LLAMA_LOG_WARN("%s: CUDA graph out of VRAM on CUDA%d in a %u-token pass at %d cells: the call is taken back and runs again without that CUDA graph\n",
                             __func__, oom_dev, ubatch.n_tokens, (int) cells);
@@ -4302,8 +4307,14 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 case GGML_STATUS_ABORTED:      return  2;
                 case GGML_STATUS_ALLOC_FAILED: return -2;
                 // fork: a graph the pool could not lend next to the KV (llama_moe_cache_alias_err_fork) is 'no room for this many tokens': 1 makes the caller try a smaller batch, as it
-                // does when the KV has no slot; the ubatch's entries were removed above. Not a compute error (the server answered HTTP 500 "Compute error" for a 40k-token prompt on W10).
-                case GGML_STATUS_FAILED:       return llama_moe_cache_alias_err_fork() ? 1 : -3;
+                // does when the KV has no slot. The caller starts the whole call again, so the passes of this call that already ran go too, as after an out-of-memory; with only this
+                // ubatch's entries removed the retry's first position does not follow the cells left ("inconsistent sequence positions"). Not a compute error (the server answered
+                // HTTP 500 "Compute error" for a 40k-token prompt on W10).
+                case GGML_STATUS_FAILED:
+                    if (!llama_moe_cache_alias_err_fork()) { return -3; }
+                    for (auto & pm : call_pos_min) { memory->seq_rm(pm.first, pm.second, -1); }
+                    call_abandon();
+                    return 1;
                 case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
             }
         }
