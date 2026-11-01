@@ -5799,16 +5799,26 @@ ggml_tensor * llm_graph_context::ds_join(const std::vector<ggml_tensor *> & xs, 
     return acc;
 }
 
+static bool ds_rotates(const std::vector<ggml_tensor *> & rot) { return std::any_of(rot.begin(), rot.end(), [](const ggml_tensor * t) { return t != nullptr; }); }
+
+bool llm_graph_context::ds_kv_plain(const llm_graph_input_attn_kv * inp) const {
+    return !ds_rotates(inp->self_k_rot) && !ds_rotates(inp->self_v_rot);
+}
+
+bool llm_graph_context::ds_kv_plain(const llm_graph_input_attn_kv_iswa * inp) const {
+    return !ds_rotates(inp->self_k_rot) && !ds_rotates(inp->self_v_rot) && !ds_rotates(inp->self_k_rot_swa) && !ds_rotates(inp->self_v_rot_swa);
+}
+
 std::vector<ggml_tensor *> llm_graph_context::ds_attn_kv(llm_graph_input_attn_kv * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
                                                           const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
-    GGML_ASSERT(!inp->self_k_rot && !inp->self_v_rot);
+    GGML_ASSERT(!inp->self_k_rot[il] && !inp->self_v_rot[il]);
     return ds_attn_cache(inp->mctx, inp->get_k_idxs(), inp->get_v_idxs(), inp->get_kq_mask(), q, k, v, sinks, kq_scale, il);
 }
 
 std::vector<ggml_tensor *> llm_graph_context::ds_attn_kv(llm_graph_input_attn_kv_iswa * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
                                                           const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
     const bool swa = hparams.is_swa(il);
-    GGML_ASSERT(!(swa ? inp->self_k_rot_swa : inp->self_k_rot) && !(swa ? inp->self_v_rot_swa : inp->self_v_rot));
+    GGML_ASSERT(!(swa ? inp->self_k_rot_swa : inp->self_k_rot)[il] && !(swa ? inp->self_v_rot_swa : inp->self_v_rot)[il]);
     return ds_attn_cache(swa ? inp->mctx->get_swa() : inp->mctx->get_base(), swa ? inp->get_k_idxs_swa() : inp->get_k_idxs(),
                          swa ? inp->get_v_idxs_swa() : inp->get_v_idxs(), swa ? inp->get_kq_mask_swa() : inp->get_kq_mask(), q, k, v, sinks, kq_scale, il);
 }
