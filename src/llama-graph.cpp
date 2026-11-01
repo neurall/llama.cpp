@@ -4163,6 +4163,8 @@ ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_t
     return pos_bias;
 }
 
+static thread_local bool g_attn_part_other_card = false;   // fork: --moe attn-split: build_attn is building the part of a layer on another card
+
 ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * q,
          ggml_tensor * k,
@@ -4209,7 +4211,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
                                   hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
-        res->add_fused_node({LLM_FUSED_OP_FLASH_ATTN, cur, il});
+        if (!g_attn_part_other_card) { res->add_fused_node({LLM_FUSED_OP_FLASH_ATTN, cur, il}); }   // the check of the node's card (llama_context) is about the layer's own part
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         GGML_ASSERT(n_kv_max >= 0 && n_kv_max <= INT32_MAX);
@@ -4508,7 +4510,9 @@ ggml_tensor * llm_graph_context::build_attn(
             ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_p, inp->get_k_idxs(), il, part));
             ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_p, inp->get_v_idxs(), il, part));
             ds_skip();
+            g_attn_part_other_card = part > 0;
             out[part] = build_attn_mha(q_p, mctx_cur->get_k(ctx0, il, part), mctx_cur->get_v(ctx0, il, part), nullptr, kq_mask, nullptr, nullptr, 0, kq_scale, il);
+            g_attn_part_other_card = false;
             ds_pin(ds_backend(mctx_cur->get_part_dev(il, part)));
             ggml_build_forward_expand(gf, out[part]);
         }
