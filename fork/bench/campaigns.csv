@@ -6154,3 +6154,5 @@ up8_gather_mask_fix-kvg-qn-q8-pf128k,2026-11-01 21:17:04,bench /m/q/4/Qwen3.8-Fl
 up8_gather_mask_fix-kvg-qn-q8-off-pf128k,2026-11-01 21:19:50,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds up8_gather_mask_fix variants v test pf128k n=1,,
 up8_gather_mask_fix-kvg-f16-glm128-pf128k,2026-11-01 21:42:53,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_gather_mask_fix variants v test pf128k n=2,,
 up8_gather_mask_fix-kvg-q8-glm128-pf128k,2026-11-01 21:51:34,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_gather_mask_fix variants v test pf128k n=2,,
+up8_gather_mask_fix-kvg-f16-glm12-pf60k,2026-11-01 22:00:52,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_gather_mask_fix variants v test pf60k n=2,,
+up8_gather_mask_fix-kvg-q8-glm12-pf60k,2026-11-01 22:07:35,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds up8_gather_mask_fix variants v test pf60k n=2,,

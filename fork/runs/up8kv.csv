@@ -36,10 +36,10 @@ kva-split-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tm
 kvm-q8-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
 kvm-q8-tile-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
 kvm-q8-mma-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=mma -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
-kvb-f16-base-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
-kvb-f16-base-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5
-kvb-f16-split-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=1",--hog-gpu 4.5
-kvb-f16-split-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=1",--hog-gpu 4.5
+kvb-f16-base-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 -ctk f16 -ctv f16",--hog-gpu 4.5
+kvb-f16-base-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 -ctk f16 -ctv f16",--hog-gpu 4.5
+kvb-f16-split-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=1 -ctk f16 -ctv f16",--hog-gpu 4.5
+kvb-f16-split-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,attn-split=1 -ctk f16 -ctv f16",--hog-gpu 4.5
 kvb-q8-base-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
 kvb-q8-base-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
 kvb-q8-split-tet,qwen36,2,tetrisc,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0,fattn-kernel=tile,attn-split=1 -ctk q8_0 -ctv q8_0",--hog-gpu 4.5
