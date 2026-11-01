@@ -350,8 +350,8 @@ struct common_params_speculative_draft {
 
     int32_t n_ubatch = 0; // physical batch size of the draft context (0 - use the target's n_ubatch)
 
-    ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
-    ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+    ggml_type cache_type_k = GGML_TYPE_Q8_0; // KV cache data type for the K (fork: q8_0 by default, -ctk f16 for the old default)
+    ggml_type cache_type_v = GGML_TYPE_Q8_0; // KV cache data type for the V (fork: q8_0 by default, -ctv f16 for the old default)
 
     common_cpu_params cpuparams;
     common_cpu_params cpuparams_batch;
