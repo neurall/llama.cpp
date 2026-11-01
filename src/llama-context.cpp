@@ -6663,6 +6663,23 @@ llama_context * llama_init_from_model(
         }
     }
 
+    // fork: q8_0 is the default KV type; where it cannot work (no flash attention, head size not a multiple of the block) the cache falls back to f16
+    if (ggml_is_quantized(params.type_k) || ggml_is_quantized(params.type_v)) {
+        bool fits = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
+        for (uint32_t il = 0; fits && il < model->hparams.n_layer(); ++il) {
+            if ((ggml_is_quantized(params.type_k) && model->hparams.n_embd_head_k(il) % ggml_blck_size(params.type_k) != 0) ||
+                (ggml_is_quantized(params.type_v) && model->hparams.n_embd_head_v(il) % ggml_blck_size(params.type_v) != 0)) {
+                fits = false;
+            }
+        }
+        if (!fits) {
+            LLAMA_LOG_WARN("%s: quantized KV cache (K %s, V %s) needs flash attention and head sizes that fit its blocks: using f16\n",
+                __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
+            params.type_k = GGML_TYPE_F16;
+            params.type_v = GGML_TYPE_F16;
+        }
+    }
+
     if ((model->hparams.is_mla() || model->arch == LLM_ARCH_DEEPSEEK4 || model->arch == LLM_ARCH_DEEPSEEK41) && params.type_k != params.type_v) {
         LLAMA_LOG_ERROR("%s: model does not support different K (%s) and V (%s) cache types\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
         return nullptr;
