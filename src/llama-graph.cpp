@@ -4472,7 +4472,7 @@ ggml_tensor * llm_graph_context::build_attn(
         k = k_cur;
         v = v_cur;
     } else {
-        {
+        if (mctx_cur->get_n_parts(il) == 1) {
             const auto & k_idxs = inp->get_k_idxs();
             const auto & v_idxs = inp->get_v_idxs();
 
@@ -4480,14 +4480,49 @@ ggml_tensor * llm_graph_context::build_attn(
             ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
         }
 
-        k = mctx_cur->get_k(ctx0, il);
-        v = mctx_cur->get_v(ctx0, il);
+        if (mctx_cur->get_n_parts(il) == 1) {
+            k = mctx_cur->get_k(ctx0, il);
+            v = mctx_cur->get_v(ctx0, il);
+        }
     }
 
     ggml_tensor * kq_mask = inp->get_kq_mask();
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, 0, kq_scale, il);
-    cb(cur, "kqv_out", il);
+    ggml_tensor * cur = nullptr;
+    const uint32_t n_parts = cparams.training ? 1 : mctx_cur->get_n_parts(il);
+    if (n_parts > 1) {
+        // fork: --moe attn-split (llama_kv_cache): the attention of each card's KV heads on that card. The home card goes last: a card's input is copied behind that card's earlier
+        // work and the other cards' parts need nothing from it but the query heads, so they all run while the home card runs its own. The concat starts a split of its own
+        // (ggml_backend_sched_split_graph): in the home card's split its inputs would be copied, waiting for the other cards, before the home card's own attention starts.
+        GGML_ASSERT(kq_b == nullptr && sinks == nullptr && v_mla == nullptr && cparams.flash_attn);
+        ggml_backend_t home = ds_backend(mctx_cur->get_part_dev(il, 0));
+        const int64_t qh = q_cur->ne[1] / n_parts, kh = k_cur->ne[1] / n_parts;
+        std::vector<ggml_tensor *> out(n_parts, nullptr);
+        for (int32_t part = (int32_t) n_parts - 1; part >= 0; --part) {
+            ds_skip();
+            ggml_tensor * q_p = ggml_view_3d(ctx0, q_cur, q_cur->ne[0], qh, q_cur->ne[2], q_cur->nb[1], q_cur->nb[2], part * qh * q_cur->nb[1]);
+            q_p = part > 0 ? ggml_cont(ctx0, q_p) : q_p;   // only its own heads cross the link
+            ggml_tensor * k_p = ggml_cont(ctx0, ggml_view_3d(ctx0, k_cur, k_cur->ne[0], kh, k_cur->ne[2], k_cur->nb[1], k_cur->nb[2], part * kh * k_cur->nb[1]));
+            ggml_tensor * v_p = ggml_cont(ctx0, ggml_view_3d(ctx0, v_cur, v_cur->ne[0], kh, v_cur->ne[2], v_cur->nb[1], v_cur->nb[2], part * kh * v_cur->nb[1]));
+            ds_pin(home);
+            ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_p, inp->get_k_idxs(), il, part));
+            ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_p, inp->get_v_idxs(), il, part));
+            ds_skip();
+            out[part] = build_attn_mha(q_p, mctx_cur->get_k(ctx0, il, part), mctx_cur->get_v(ctx0, il, part), nullptr, kq_mask, nullptr, nullptr, 0, kq_scale, il);
+            ds_pin(ds_backend(mctx_cur->get_part_dev(il, part)));
+            ggml_build_forward_expand(gf, out[part]);
+        }
+        ds_skip();
+        cur = out[0];
+        for (uint32_t part = 1; part < n_parts; ++part) {
+            cur = ggml_concat(ctx0, cur, out[part], 0);
+            ggml_set_name(cur, "attn_parts_merge");   // not cb(): the scheduler starts a split at this name
+        }
+        ds_pin(home);
+    } else {
+        cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, 0, kq_scale, il);
+        cb(cur, "kqv_out", il);
+    }
 
     if (inp->self_v_rot[il]) {
         cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot[il]);
@@ -5583,6 +5618,8 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
 bool llama_dsplit_in_pass_loop_fork();   // llama-context.cpp
 
 bool llm_graph_context::ds_plan(int64_t min_tokens) const {
+    static const bool attn_split = [] { const char * e = llama_moe_get_opt("attn-split"); return e && atoi(e) != 0; }();
+    if (attn_split) { return false; }   // the attention already runs on several cards, its KV heads are on them (llama_kv_cache)
     ds_r.clear();
     ds_cut.clear();
     ds_mark = nullptr;
