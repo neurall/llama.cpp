@@ -4499,6 +4499,7 @@ llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
     for (auto & ap : mc->alias) {
         if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
         any = true;
+        out.pool += ap.tail_end;   // the pool of this card: what the experts and the KV zone share
         for (int t = 0; t < 3; ++t) {
             kvt_runs v; size_t F = 0, R = 0, pc = 0, pcd = 0;
             if (!kv_records_as(ap.kvt, t, v, F, R)) { cap[t] = 0; continue; }

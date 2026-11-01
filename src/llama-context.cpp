@@ -1469,7 +1469,23 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
         std::string w; for (auto & u : unknown) { w += (w.empty() ? "'" : ", '") + u + "'"; }
         LLAMA_LOG_WARN("%s: --moe kv-fallback=%s: not a tier: %s (tiers are k8v8, k4v4, ram; none = f16 only)\n", __func__, list.c_str(), w.c_str());
     }   // tiers tried after f16, in place: q8_0, q4_0 in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
-    const int tier = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
+    int tier = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
+    // fork: q8_0 pays only when this request's KV takes a real share of the pool the experts live in: f16 fits, but q8_0 would give the experts back at least KV_Q8_MIN_SHARE of the pool.
+    // Measured (GLM, 125k cells, pool 37 GiB): 1 GiB back = 2.6%, decode 16.1 against 16.1 t/s. A shorter request converts back up (kv_fit_select's lower tier).
+    if (tier == 0 && cp.pool > 0 && cp.row_f16 > 0 && n_tokens <= cp.k8v8 && std::find(allowed.begin(), allowed.end(), 1) != allowed.end()) {
+        const double KV_Q8_MIN_SHARE = 0.10;
+        const double saved = (double) n_tokens * cp.row_f16 * (1.0 - 17.0 / 32.0);
+        const bool pick = saved >= KV_Q8_MIN_SHARE * (double) cp.pool;
+        static int last = -1;
+        if (last != (int) pick) {
+            last = (int) pick;
+            char why[320];
+            snprintf(why, sizeof(why), "request of %u tokens: f16 KV %.2f GiB, q8_0 gives the experts %.2f GiB = %.1f%% of the %.1f GiB pool (q8_0 from %.0f%%)",
+                n_tokens, (double) n_tokens * cp.row_f16 / 1073741824.0, saved / 1073741824.0, 100.0 * saved / cp.pool, cp.pool / 1073741824.0, 100.0 * KV_Q8_MIN_SHARE);
+            llama_moe_decision_fork("kv", pick ? "q8_0" : "f16", why);
+        }
+        if (pick) { tier = 1; }
+    }
     if (tier < 0) {
         say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=k8v8,k4v4,ram)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, cp.ram, list.c_str());
         return -1;
@@ -6663,40 +6679,7 @@ llama_context * llama_init_from_model(
         }
     }
 
-    // fork: KV type "auto" (GGML_TYPE_COUNT, the default of -ctk / -ctv): q8_0 when it frees at least KV_Q8_MIN_SHARE of the expert cache; else f16. Measured (GLM, 128k cells, cache pool 37 GiB on two 3090): q8_0 freed 1 GiB = 2.6% of the cache and decode did not move (16.1 against 16.1 t/s).
-    // The free VRAM is read at load, so a smaller card or a --hog-gpu limit turns q8_0 on at a smaller cache.
-    if (params.type_k == GGML_TYPE_COUNT || params.type_v == GGML_TYPE_COUNT) {
-        const double KV_Q8_MIN_SHARE = 0.10;
-        const uint64_t cells = params.n_ctx > 0 ? params.n_ctx : model->hparams.n_ctx_train;
-        uint64_t f16_bytes = 0, free_b = 0;
-        for (uint32_t il = 0; il < model->hparams.n_layer_all; ++il) {
-            if (!model->hparams.has_kv(il)) { continue; }
-            const uint64_t c = model->hparams.is_swa(il) ? std::min<uint64_t>(cells, (uint64_t) model->hparams.n_swa + params.n_ubatch) : cells;
-            f16_bytes += c * 2 * (model->hparams.n_embd_k_gqa(il) + model->hparams.n_embd_v_gqa(il));
-        }
-        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-            ggml_backend_dev_t d = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); free_b += f; }
-        }
-        // the expert cache: the free VRAM left after the dense weights, at most all the experts (a model that fits entirely has no cache: then the whole free VRAM counts)
-        uint64_t exps_b = 0, all_b = 0;
-        for (const auto & it : model->tensors_by_name) {
-            const uint64_t nb = ggml_nbytes(it.second);
-            all_b += nb;
-            if (it.first.find("_exps") != std::string::npos) { exps_b += nb; }
-        }
-        const uint64_t dense_b = all_b - exps_b;
-        const uint64_t cache_b = free_b > dense_b ? std::min<uint64_t>(free_b - dense_b, exps_b > 0 ? exps_b : free_b) : 0;
-        const double saved = f16_bytes * (1.0 - 17.0 / 32.0);
-        const bool q8 = cache_b > 0 && saved >= KV_Q8_MIN_SHARE * (double) cache_b;
-        const ggml_type pick = q8 ? GGML_TYPE_Q8_0 : GGML_TYPE_F16;
-        LLAMA_LOG_INFO("%s: KV cache type auto: %.2f GiB as f16 at %llu cells, q8_0 would free %.2f GiB = %.1f%% of the %.1f GiB expert cache (free VRAM %.1f GiB; q8_0 from %.0f%%): %s\n", __func__,
-            f16_bytes / 1073741824.0, (unsigned long long) cells, saved / 1073741824.0, cache_b ? 100.0 * saved / cache_b : 0.0, cache_b / 1073741824.0, free_b / 1073741824.0, 100.0 * KV_Q8_MIN_SHARE, ggml_type_name(pick));
-        if (params.type_k == GGML_TYPE_COUNT) { params.type_k = pick; }
-        if (params.type_v == GGML_TYPE_COUNT) { params.type_v = pick; }
-    }
-
-    // fork: q8_0 is the default KV type; where it cannot work (no flash attention, head size not a multiple of the block) the cache falls back to f16
+    // fork: a quantized KV type (-ctk/-ctv q8_0, or the pool switching tier) needs flash attention; where it cannot work (no flash attention, head size not a multiple of the block) the cache falls back to f16
     if (ggml_is_quantized(params.type_k) || ggml_is_quantized(params.type_v)) {
         bool fits = params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED;
         for (uint32_t il = 0; fits && il < model->hparams.n_layer(); ++il) {

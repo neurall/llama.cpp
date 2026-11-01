@@ -6160,3 +6160,4 @@ up8_q8_default-kvb-f16-base-tet-tetrisc,2026-11-01 22:22:46,bench /m/q/36/Qwen3.
 up8_q8_default-kvb-f16-base-128k-pf128k,2026-11-01 22:23:38,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds up8_q8_default variants v test pf128k n=2,,
 up8_q8_default-kvb-f16-split-tet-tetrisc,2026-11-01 22:26:37,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds up8_q8_default variants v test tetrisc n=2,,
 up8_q8_default-kvb-f16-split-128k-pf128k,2026-11-01 22:27:32,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds up8_q8_default variants v test pf128k n=2,,
+up8_q8_default-kvb-q8-base-tet-tetrisc,2026-11-01 22:30:14,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds up8_q8_default variants v test tetrisc n=2,,
