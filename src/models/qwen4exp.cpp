@@ -568,7 +568,9 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
     bool ds_done = false;
     {
         auto * ia = inp->get_attn();
-        bool ds_ok = cparams.flash_attn &&
+        // the block-sparse branch below does not rotate, build_layer_attn does: a rotated KV with block-sparse layers runs on one card
+        const bool ds_rot_qsa = inp_kpool != nullptr && std::any_of(ia->self_k_rot.begin(), ia->self_k_rot.end(), [](ggml_tensor * t) { return t != nullptr; });
+        bool ds_ok = cparams.flash_attn && !ds_rot_qsa &&
                      std::none_of(cparams.embeddings_layer_inp.begin(), cparams.embeddings_layer_inp.end(), [](bool b) { return b; });
         if (ds_ok && ds_plan(64)) {
             const size_t NR = ds_r.size();
@@ -810,7 +812,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         }
                     }
                     if (!qsa) {
-                        att = ds_attn_cache(mctx_attn, ia->get_k_idxs(), ia->get_v_idxs(), ia->get_kq_mask(), q, k, v, {}, kq_scale, il);
+                        att = ds_attn_cache(mctx_attn, ia->get_k_idxs(), ia->get_v_idxs(), ia->get_kq_mask(), q, k, v, {}, ia->self_k_rot[il], ia->self_v_rot[il], kq_scale, il);
                     } else {
                         const int64_t kpool  = inp_kpool->kpool;
                         const int64_t n_pool = inp_kpool->pool_cells->ne[0];
