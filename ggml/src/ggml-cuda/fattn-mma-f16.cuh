@@ -1907,8 +1907,10 @@ static __global__ void flash_attn_ext_f16(
     const int stride_Q1   = nb01 / sizeof(float2);
     const int stride_Q2   = nb02 / sizeof(float2);
     const int stride_K    = nb11 / sizeof(half2);
-    // fork: the mask's row stride and the first cell it covers (llama_kv_cache::kq_mask_k0), see flash_attn_ext_f16_load_mask; K and a mask of all its cells: 0
-    const int64_t stride_mask = (int64_t(mask ? ne11 - int(nb31 / sizeof(half)) : 0) << 32) | int64_t(nb31 / sizeof(half));
+    // fork: the mask's row stride and the first cell it covers (llama_kv_cache::kq_mask_k0), see flash_attn_ext_f16_load_mask; K and a mask of all its cells: 0.
+    // A gather: 0 too. Its ne11 is the length of its lists, not K's cells, and an indexer model's mask covers all of K: taken as cells, the mask was read shifted by nearly the whole
+    // context, every cell masked, the logits NaN and the answer token 0 ("!!!!"), on every model with an indexer above the sparse gate.
+    const int64_t stride_mask = (int64_t(mask && !use_sparse ? ne11 - int(nb31 / sizeof(half)) : 0) << 32) | int64_t(nb31 / sizeof(half));
 
     const int stride_V = V_is_K_view ? stride_K : nb21 / sizeof(half2);
 
