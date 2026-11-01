@@ -5212,6 +5212,10 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             // pool holds behind the graph (user rule 2026-10-24). With the slots in (GLM 3.0: 3 x 2.6 GiB) the fit cut the expert card's passes from 6176 to 3776
             // tokens while 3.5 GiB of the lendable pool stayed free.
             size_t & nt = ap.need_tok[n_tokens];
+            if (moe_log_has("w")) {   // what a graph of this size borrows, against what its size held so far
+                LLAMA_LOG_WARN("moe-cache: lend %s: %d tokens at %zu cells: graph %.1f MiB + CUDA scratch %.1f MiB behind %.1f MiB, staging %.1f MiB (this size so far %.1f MiB at %zu cells)\n", ggml_backend_dev_name(ap.dev), n_tokens, cells_now,
+                        peak / 1048576.0, scratch / 1048576.0, ap.base_off / 1048576.0, stage / 1048576.0, nt / 1048576.0, ap.need_cells.count(n_tokens) ? ap.need_cells[n_tokens] : (size_t) 0);
+            }
             if (stage_off >= nt) { ap.need_cells[n_tokens] = cells_now; }
             nt = std::max(nt, stage_off);
         }

@@ -1107,6 +1107,10 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
         return true;
     }
 
+    // fork: a graph of the same shape but much smaller is planned again. It fits the old plan, so stock keeps it, and its tensors then lie at the offsets of the biggest graph so far:
+    // on the pool (the compute alias lends the buffer's start, blocks evicted) a 4704-token prompt pass reached 2611 MiB where it needs 1400 (Qwen3.6, after 9792-token passes). The
+    // graph does not use the room, the experts lose it, the pass planner reads the reach as the graph's size and cuts later passes to 64 tokens.
+    size_t size_plan = 0, size_now = 0;
     for (int i = 0; i < graph->n_nodes; i++) {
         struct ggml_tensor * node = graph->nodes[i];
         struct node_alloc * node_alloc = &galloc->node_allocs[i];
@@ -1116,6 +1120,10 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
             GGML_LOG_DEBUG("%s: node %s is not valid\n", __func__, node->name);
 #endif
             return true;
+        }
+        if (!node->data && !node->view_src && node_alloc->dst.buffer_id >= 0) {
+            size_plan += node_alloc->dst.size_max;
+            size_now  += ggml_backend_buft_get_alloc_size(galloc->bufts[node_alloc->dst.buffer_id], node);
         }
 
         for (int j = 0; j < GGML_MAX_SRC; j++) {
@@ -1130,6 +1138,10 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
                 return true;
             }
         }
+    }
+
+    if (size_plan > 64*1024*1024 && size_now < size_plan / 4 * 3) {
+        return true;
     }
 
     return false;
