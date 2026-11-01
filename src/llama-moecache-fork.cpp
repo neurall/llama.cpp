@@ -4162,7 +4162,7 @@ static size_t kv_rec_unit(ggml_type tk, ggml_type tv) { return std::lcm(kv_type_
 using kvt_runs = std::vector<moe_cache::alias_pool::kvt_run>;
 static void kv_zone_offsets(kvt_runs & kvt, size_t & F, size_t & R) {
     F = 0; R = 0;
-    size_t u_all = 256;
+    size_t u_all = 1;   // (from 256 a q8_0 row of 5440 B took 8704: lcm(256, 272))
     for (auto & kr : kvt) {
         if (kr.fixed) { kr.prefix = F; F += (kr.cells_max * kr.row + 255) / 256 * 256; continue; }
         kr.prefix = (R + kr.unit - 1) / kr.unit * kr.unit;
