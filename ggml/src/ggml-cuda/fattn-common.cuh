@@ -992,6 +992,12 @@ static __global__ void flash_attn_combine_results(
 // the call's own; tests/test-scratch-fork.cpp runs the op and checks them.
 extern thread_local size_t * ggml_cuda_fattn_plan_fork;
 
+// fork: the f16 copies of quantized K / V in a graph the pool lends scratch to: from the scratch, which all nodes share, so a graph holds ONE layer's copies. Inside each
+// attention node's tensor (upstream, f16_extra) the copies of the layers rarely reuse each other's place and the lend grew by about 37 KB per cell on Qwen3.6 at q8_0, ten
+// times what the pool plans with (kv_lend_pc_of), so a 128k prompt was refused. Set once for a device, before its first planned graph, and never cleared: a graph allocated
+// earlier has its copies in its tensors and simply does not use them.
+extern bool ggml_cuda_fattn_f16_scratch_fork[GGML_CUDA_MAX_DEVICES];
+
 template <int DV, int ncols1, int ncols2>
 void launch_fattn(
     ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel, const int nwarps, const size_t nbytes_shared,
@@ -1001,6 +1007,9 @@ void launch_fattn(
     constexpr int ncols = ncols1 * ncols2;
     size_t * const plan = ggml_cuda_fattn_plan_fork;   // fork: see above
     auto plan_take = [plan](size_t n) { if (n > 0) { *plan = GGML_PAD(*plan, 256) + n; } };
+    auto plan_take_or = [plan, &plan_take](ggml_cuda_pool_alloc<half> & mem, half * & out, int64_t n) {
+        if (plan) { plan_take(size_t(n) * sizeof(half)); } else { out = mem.alloc(n); }
+    };
 
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];
@@ -1031,6 +1040,20 @@ void launch_fattn(
     const ggml_cuda_flash_attn_ext_f16_extra_data f16_extra =
         ggml_cuda_flash_attn_ext_get_f16_extra_data(KQV, need_f16_K, need_f16_V);
 
+    // fork: see ggml_cuda_fattn_f16_scratch_fork
+    ggml_cuda_pool_alloc<half> K_f16_scratch(pool);
+    ggml_cuda_pool_alloc<half> V_f16_scratch(pool);
+    half * K_f16 = (half *) f16_extra.K;
+    half * V_f16 = (half *) f16_extra.V;
+    if (ggml_cuda_fattn_f16_scratch_fork[ctx.device]) {
+        if (need_f16_K && K->type != GGML_TYPE_F16) {
+            plan_take_or(K_f16_scratch, K_f16, ggml_nelements(K));
+        }
+        if (need_f16_V && V->type != GGML_TYPE_F16 && !V_is_K_view) {
+            plan_take_or(V_f16_scratch, V_f16, ggml_nelements(V));
+        }
+    }
+
     ggml_cuda_pool_alloc<int>    KV_max(pool);
     ggml_cuda_pool_alloc<float>  dst_tmp(pool);
     ggml_cuda_pool_alloc<float2> dst_tmp_meta(pool);
@@ -1049,8 +1072,7 @@ void launch_fattn(
         const size_t bs = ggml_blck_size(K->type);
         const size_t ts = ggml_type_size(K->type);
 
-        GGML_ASSERT(f16_extra.K != 0);
-        half * K_f16 = (half *) f16_extra.K;
+        GGML_ASSERT(K_f16 != nullptr);
         if (ggml_is_contiguously_allocated(K)) {
             to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(K->type);
             to_fp16(K_data, K_f16, ggml_nelements(K), main_stream);
@@ -1083,8 +1105,7 @@ void launch_fattn(
             const size_t bs = ggml_blck_size(V->type);
             const size_t ts = ggml_type_size(V->type);
 
-            GGML_ASSERT(f16_extra.V != 0);
-            half * V_f16 = (half *) f16_extra.V;
+            GGML_ASSERT(V_f16 != nullptr);
             if (ggml_is_contiguously_allocated(V)) {
                 to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(V->type);
                 to_fp16(V_data, V_f16, ggml_nelements(V), main_stream);

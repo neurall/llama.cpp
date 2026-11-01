@@ -6,6 +6,7 @@
 #include "fattn.cuh"
 
 thread_local size_t * ggml_cuda_fattn_plan_fork = nullptr;   // fork: launch_fattn plans instead of running (fattn-common.cuh)
+bool ggml_cuda_fattn_f16_scratch_fork[GGML_CUDA_MAX_DEVICES] = {};   // fork: see fattn-common.cuh
 
 #if !defined(GGML_USE_MUSA)
 
@@ -755,6 +756,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * dst) {
     GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+
+    if (ggml_cuda_fattn_f16_scratch_fork[device]) {
+        return ggml_nbytes(dst);
+    }
 
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];

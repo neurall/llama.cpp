@@ -3410,6 +3410,7 @@ size_t ggml_cuda_cumsum_scratch_fork(const ggml_tensor * dst, size_t top);    //
 size_t ggml_cuda_solve_tri_scratch_fork(const ggml_tensor * dst, size_t top); // solve_tri.cu
 size_t ggml_cuda_ssm_scan_scratch_fork(const ggml_tensor * dst, size_t top);  // ssm-scan.cu
 extern thread_local size_t * ggml_cuda_fattn_plan_fork;                        // fattn.cu, read by launch_fattn (fattn-common.cuh)
+extern bool ggml_cuda_fattn_f16_scratch_fork[GGML_CUDA_MAX_DEVICES];           // fattn.cu
 
 // ggml_cuda_flash_attn_ext: the kernel choice and launch_fattn run as in a real call, in plan mode (fattn-common.cuh): nothing is converted, taken or launched,
 // launch_fattn adds what it would take. A call needs a backend context: one per device that never computes (no stream is made, the pool takes nothing).
@@ -3436,6 +3437,7 @@ static size_t ggml_cuda_fattn_scratch_fork(int device, const ggml_tensor * dst) 
 // once (some path tests read the current device's properties, ggml_cuda_should_use_mmq: shared memory per block; switching per node cost 0.2 ms per DeepSeek
 // 4.1 decode step).
 static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor * const * nodes, int n) {
+    ggml_cuda_fattn_f16_scratch_fork[device] = true;
     int prev = -1;
     size_t need = 0;
     for (int i = 0; i < n; ++i) {
