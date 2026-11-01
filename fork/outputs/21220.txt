@@ -1,0 +1,42 @@
+run 21220 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.78 t/s | prompt 186.5 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=pool,hotmaps=/tmp/runstate/plat/pool | power 220+280 W | 2026-10-28 20:22:30
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *Generation ship:* Long-duration space travel, cryosleep, intergenerational mission.
+   - *Cryosleep wake-up:* Sensory details of thawing, disorientation, physical sensations.
+   - *Above the planet:* View of the planet, cities lit, unexpected arrival.
+   - *Descendants from a copy ship:* A second ship launched a century later, arrived first, colonized the planet, created a society that now looks up to the original crew.
+   - *POV:* Archivist - implies a focus on records, history, memory, preservation, perhaps a reflective/observational tone.
+   - *Literary prose:* Evocative language, sensory details, metaphor, careful pacing.
+   - *Dialogue:* Needs to be integrated naturally, likely between the archivist and crewmates or AI/system.
+   - *Word count:* ~900 words. I'll aim for 850-950.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Wake from cryosleep. Sensory details of thawing, cold, light, sound. Archivist's perspective.
+   - *Observation:* Look out the viewport. See the planet. Cities lit. Realization that they're not the first.
+   - *Communication/Dialogue:* Contact with the planet or the ship's systems. Discover the truth about the copy ship.
+   - *Reflection:* Archivist's role, memory, the irony of their mission, the descendants' perspective.
+   - *Closing:* Acceptance, connection, perhaps a moment of descent or acknowledgment. Literary tone maintained.
+
+   Structure:
+   - Paragraph 1: Waking, sensory thaw, archivist's internal state.
+   - Paragraph 2: Viewport, planet, cities lit, initial confusion.
+   - Paragraph 3: System/AI interaction, dialogue revealing the copy ship.
+   - Paragraph 4: Archivist's reflection on records, history, the descendants.
+   - Paragraph 5: Final moment, descent/connection, closing image.
+
+4.  **Drafting - Mental Refinement (Paragraph by Paragraph):**
+   *(Para 1)* The thaw began as a whisper in the marrow. Frost crystallized on the eyelids, then dissolved into salt and warmth. I opened my eyes to the pale amber of the wake-up array, feeling the weight of centuries press against my ribs. The air smelled of ozone and recycled pine, the same sterile scent that had accompanied my dreams. I was the archivist, keeper of the ship’s memory, and my first duty was to remember. But memory, I found, was heavier than sleep.
+   *(Para 2)* The viewport glass was cold against my palms. Below us, the target world hung in the void like a polished stone. Its night side was not dark. It was threaded with light—gold, silver, and the soft blue of artificial luminescence. Cities. Sprawling, luminous, alive. I pressed my face to the glass, breath fogging the surface. We had been told the world would be wild, untamed, waiting for our boots. Instead, it was already breathing.
+   *(Para 3)* “Archivist,” the ship’s voice murmured, smooth as polished glass. “Orbital telemetry confirms terrestrial habitation. Population estimates exceed projected parameters. Signal received from surface: welcome, descendants.” I turned to Commander Vance, who stood beside me, his uniform still damp from the thaw. “Descendants?” he said, voice tight. “We’re the first. We left Earth in 2147.” “A copy,” the voice replied. “Launched a century later. Faster propulsion. Arrived first. They built. They waited.” Vance’s jaw tightened. “They’re us. Our children.”
+   *(Para 4)* I walked to the archive vault. The walls were lined with data crystals, each holding a fragment of our journey: seed catalogs, star charts, the names of the dead, the songs hummed in the dark. I ran my fingers over the cold glass. The copy ship had carried the same blueprints, the same dreams,
+---

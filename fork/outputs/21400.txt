@@ -1,0 +1,110 @@
+run 21400 | dynhot_requests_fp8 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.41 t/s | prompt 114.7 t/s | 953 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:07:26
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Requirements
+- C++11 or later
+- Terminal with support for ANSI escape codes (most modern terminals)
+
+### Code (`snake.cpp`)
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+
+using namespace std;
+
+int main() {
+    // Terminal dimensions
+    const int W = 20, H = 15;
+    
+    // Snake state: head at (1,1), body length 1
+    vector<pair<int,int>> snake = {{1,1}};
+    pair<int,int> food;
+    int dir = 0; // 0:up, 1:right, 2:down, 3:left
+    
+    // Random food position
+    auto rand_pos = [&]() {
+        do {
+            food = {rand() % W, rand() % H};
+        } while (food == snake[0]);
+    };
+    rand_pos();
+
+    // Clear screen
+    cout << "\033[2J"; // Clear screen
+    cout << "\033[H";  // Move cursor to top-left
+
+    while (true) {
+        // Input: wait for key press
+        char c = getchar();
+        if (c == 'w') dir = 0;
+        else if (c == 'd') dir = 1;
+        else if (c == 's') dir = 2;
+        else if (c == 'a') dir = 3;
+
+        // Calculate new head position
+        pair<int,int> new_head = snake[0];
+        if (dir == 0) new_head.first--;
+        else if (dir == 1) new_head.second++;
+        else if (dir == 2) new_head.first++;
+        else if (dir == 3) new_head.second--;
+
+        // Check collision
+        if (new_head.first < 0 || new_head.first >= W ||
+            new_head.second < 0 || new_head.second >= H ||
+            any_of(snake.begin(), snake.end(), [&](pair<int,int> p){ return p == new_head; })) {
+            cout << "\nGame Over! Score: " << snake.size() - 1 << endl;
+            return 0;
+        }
+
+        // Move snake
+        snake.insert(snake.begin(), new_head);
+        if (new_head == food) {
+            rand_pos();
+        } else {
+            snake.pop_back(); // Remove tail if no food eaten
+        }
+
+        // Render
+        cout << "\033[H"; // Reset cursor
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                if (find(snake.begin(), snake.end(), {x,y}) != snake.end()) {
+                    cout << "█"; // Snake body
+                } else if ({x,y} == food) {
+                    cout << "●"; // Food
+                } else {
+                    cout << " "; // Empty
+                }
+            }
+            cout << "\n";
+        }
+        
+        // Small delay to prevent instant movement
+        this_thread::sleep_for(chrono::milliseconds(100));
+    }
+}
+```
+
+### How to Compile and Run
+```bash
+g++ -std=c++11 snake.cpp -o snake
+./snake
+```
+
+### Controls
+- **W**: Up
+- **D**: Right
+- **S**: Down
+- **A**: Left
+
+### Notes
+1. **Minimalism**: This uses only standard C++ libraries (`iostream`, `vector`, `random`, `chrono`).
+2. **Rendering**: Uses ANSI escape codes (`\033[H`) to reset the cursor position each frame, avoiding full screen clears.
+3. **Input**: Uses `getchar()` for synchronous input. For smoother gameplay, you might want to use `ncurses`, but this is the smallest pure C++ version.
+4. **Performance**: The `find` and `any_of` operations are O(N) per frame, which is fine for small snakes. For larger snakes, consider using a hash set for collision detection.

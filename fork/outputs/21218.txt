@@ -1,0 +1,46 @@
+run 21218 | dynhot_same_prompt_pool_knob | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.12 t/s | prompt 176.5 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=pool,hotmaps=/tmp/runstate/plat/pool | power 220+280 W | 2026-10-28 20:20:21
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** ~900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *Generation ship:* Implies long travel, cryosleep, multi-generational or single-generation crew, purpose of colonization.
+   - *Cryosleep wake-up:* Sensory details of thawing, disorientation, physical sensations.
+   - *Above the planet:* View of the planet, cities lit, unexpected arrival.
+   - *Descendants from a copy ship:* A second ship left 100 years later, arrived first, colonized, built cities, now the original crew arrives to find them.
+   - *POV:* Archivist - implies focus on records, history, memory, preservation, perhaps a reflective/observational tone.
+   - *Literary prose:* Evocative language, sensory details, metaphor, careful pacing.
+   - *Dialogue:* Needs to be integrated naturally, likely between crew members or with the archivist.
+   - *Length:* ~900 words. I'll aim for 850-950.
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Wake-up sequence. Sensory details of cryosleep thawing. Archivist's perspective. Physical sensations (cold, stiffness, taste of preservatives, sound of systems waking).
+   - *Observation:* Looking out the viewport. The planet. Cities lit. Surprise/confusion.
+   - *Realization/Dialogue:* Crew discusses what they see. Archivist checks records. Discovers the copy ship. The paradox of time/descent.
+   - *Emotional/Thematic Core:* Memory, legacy, the irony of being the "first" but arriving second. The archivist's role in preserving history vs. living it.
+   - *Closing:* Acceptance, reflection, perhaps a moment of connection with the descendants below. Literary resonance.
+
+   Structure:
+   - Paragraph 1: Thawing, sensory details, archivist's awakening.
+   - Paragraph 2: Viewport, planet, cities lit, initial shock.
+   - Paragraph 3: Dialogue with crewmate/commander, checking logs/records.
+   - Paragraph 4: Revelation about the copy ship, descendants, time paradox.
+   - Paragraph 5: Archivist's reflection on memory, legacy, sensory details of the planet below.
+   - Paragraph 6: Closing moment, dialogue/thought, thematic resolution.
+
+4.  **Drafting - Mental Refinement (Iterative):**
+   *(I'll write it out carefully, monitoring word count and style constraints.)*
+
+   The cold came first, a slow, granular thaw that worked through the marrow like frost cracking on glass. I opened my eyes to the pale hum of the wake-up array, my lungs drawing air that tasted of ozone and preserved blood. The cryo-gel had dissolved into a slick residue on my skin, and my joints protested with the dull ache of a century’s suspension. I was the archivist of the *Aethelgard*, tasked with keeping the memory of Earth intact while we drifted toward Proxima Centauri b. Now, the ship’s hull groaned as it settled into orbit, and the viewport’s polarized glass cleared to reveal a world already breathing.
+
+   Below us, the continents were stitched with light. Not the scattered campfires of early settlement, but a lattice of urban glow, amber and silver, pulsing like a nervous system. I pressed my palm against the cold pane, feeling the vibration of the ship’s descent thrusters. “We’re late,” said Commander Vance, his voice rough from the same thaw that had stiffened my throat. He stood beside me, his uniform still damp with condensation. “The navigation logs say we should be the first. But look.”
+
+   I pulled the data-slate from my locker, its screen flickering to life with the ship’s historical registry. The numbers aligned, but the timeline fractured. A century after our launch, a second vessel—the *Aethelgard II*—had departed with a heavier payload, faster drives, and a crew of three thousand. It had arrived first. It had landed. It had built. The logs showed migration routes, agricultural surveys, atmospheric stabilization. Then,
+---

@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+glm-rp-frac15,glm,3,tetrisc,1024,"--moe upload-now=2,jit-all=1,replay=1,replay-frac=1.5,observe=0",
+glm-rp-ahead16,glm,3,tetrisc,1024,"--moe upload-now=2,jit-all=1,replay=1,replay-ahead=16,observe=0",
+glm-rp-ahead4,glm,3,tetrisc,1024,"--moe upload-now=2,jit-all=1,replay=1,replay-ahead=4,observe=0",

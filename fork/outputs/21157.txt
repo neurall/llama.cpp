@@ -1,0 +1,72 @@
+run 21157 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.98 t/s | prompt 16.8 t/s | 1005 tokens | args: -np 1 --moe dynhot=full | power 220+280 W | 2026-10-28 18:53:35
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count, not visual polish. I should honor that request: a genuinely tiny, single-file Tetris that actually works.
+
+Let me think about what "smallest Tetris" means. There are famous minimal Tetris implementations. The classic "smallest tetris in JavaScript" is around a few hundred bytes. Let me try to write a genuinely compact one that still plays properly:
+
+- 10×20 board
+- 7 tetrominoes with rotation
+- Line clearing
+- Score
+- Keyboard controls (left/right/down/rotate/drop)
+- Game over
+
+I need to be careful: it must actually work. Let me design it carefully and then compress.
+
+Approach: use a canvas, draw cells as filled rects. Use a compact piece encoding.
+
+Classic compact approach: represent pieces as arrays of rotation states encoded in strings or numbers. A well-known trick: encode each tetromino's rotations as bit patterns.
+
+Let me think about a known ultra-compact Tetris. There's a famous one by "tinytetris" in C (23 lines). For JS, there are golfed versions around 300-500 bytes.
+
+Let me write my own, aiming for maybe ~600-800 bytes of actual code, which is respectable and fully functional. I'll prioritize correctness over absolute golf, but keep it tight.
+
+Design:
+
+Board: 10 wide, 20 tall. Store as array of strings or array of numbers. Use a 2D approach: `B` = array of rows, each row an array of 10 cells (0 or color index / piece index).
+
+Pieces: The 7 tetrominoes. A compact encoding trick: each piece rotation can be encoded as a list of [x,y] offsets, or as a 4x4 bitmask.
+
+A very compact known trick: represent each tetromino as a set of 4 cells in a 4x4 grid encoded as a 16-bit number per rotation, or use the "SRS-like" via matrix rotation of coordinate pairs.
+
+Simplest compact: define pieces as arrays of coordinate pairs, rotate by (x,y)->(y,-x) around some pivot. But I-piece and O-piece pivot issues... For golf, people often use the trick: piece = array of 4 [x,y], rotation: [x,y] -> [y, 3-x] or similar within a bounding box.
+
+Alternative compact encoding that's well-known: encode all rotations of all 7 pieces as strings like "0123" indices into a shape table. Hmm.
+
+Let me use a known compact representation: each tetromino in each rotation as a 16-bit integer (4x4 grid, bit set = filled). 7 pieces × 4 rotations = 28 numbers, but O has 1 unique rotation and I/S/Z have 2, T/L/J have 4. For golf, just use 4 rotations for all (duplicates fine).
+
+Encoding: for each piece, 4 rotations, each a 16-bit number where bit (r*4+c) means cell filled at row r, col c of a 4x4 box.
+
+Let me compute these. Actually, a cleaner golf trick: define pieces as strings of 16 chars? That's 7*4*16 = 448 chars — too big. Numbers are better.
+
+Alternatively, a super-compact trick used in famous golfed Tetris: 
+
+There's a famous ~140-line but very small Tetris. Also "Tetris in 140 bytes"? Not fully functional.
+
+Let me just write a clean compact implementation myself, targeting maybe 500-700 bytes, and be honest that it's minimal but complete. The user said "smallest" — I'll aim for genuinely small while keeping it playable. I can also minify aggressively.
+
+Let me design the code:
+
+```js
+D=document
+B=D.body
+...
+```
+
+Plan:
+
+- Canvas 120x240 (12px cells) or use character rendering in a `<pre>`? Canvas is compact for drawing: `x.fillRect(...)`.
+
+Actually, an even more compact rendering: use a single `<canvas>` and `fillRect`. Or use text rendering with `□`/`■`? Canvas fillRect is compact.
+
+Let me write the logic:
+
+```js
+c=document.body.appendChild(document.createElement`canvas`)
+x=c.getContext`2d`
+```
+
+Wait, `getContext`2d`` — tagged template works: `c.getContext`2d``. Yes, that's a known golf trick.
+
+Board: `b=Array(20).fill(0).map(v=>Array(10).fill(0))` — golf: `
+---

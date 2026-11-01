@@ -1,0 +1,80 @@
+run 21271 | dynhot_key_own_text | pylruc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 81.97 t/s | prompt 157.7 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,dynhot-merge=2,state=/tmp/runstate/unkmat3/s.ini,hotmaps=/tmp/runstate/unkmat3/hotmaps | power 220+280 W | 2026-10-28 21:10:35
+
+Here's a thinking process:
+
+1.  **Understand User Requirements:**
+   - Implement an LRU (Least Recently Used) cache in Python
+   - Must support `get` and `put` operations in O(1) time
+   - Include unit tests using the `unittest` module
+   - Output: Code only, short comments, no explanation outside the code
+
+2.  **Key Constraints & Requirements:**
+   - O(1) time for `get` and `put`: This typically requires a hash map (dictionary) for O(1) lookup and a doubly-linked list (or deque) to track order. Python's `collections.OrderedDict` can be used, but it's not strictly O(1) for all operations in the way a custom doubly-linked list + dict is. However, `OrderedDict` is often accepted for LRU in Python, but to be strictly O(1) and demonstrate the classic algorithm, I'll implement a custom doubly-linked list + dictionary. Actually, Python's `collections.deque` is O(1) for append/pop, but removing arbitrary elements is O(n). So a doubly-linked list is better. I'll implement a simple doubly-linked list node class and use a dict to map keys to nodes.
+   - Wait, Python's `collections.OrderedDict` actually has O(1) amortized for `popitem()` and `move_to_end()`, but it's not strictly O(1) in all contexts. However, for interview-style LRU, the standard approach is `dict` + `collections.deque` or `dict` + custom doubly-linked list. I'll stick to the classic `dict` + `collections.deque` approach? Actually, `deque` doesn't support O(1) removal of arbitrary elements. So I need a doubly-linked list.
+   - Let's implement a custom doubly-linked list with a dictionary mapping keys to nodes. This is the standard O(1) LRU implementation.
+   - I'll keep it concise.
+
+3.  **Design the LRU Cache:**
+   - Class `LRUCache`:
+     - `__init__(self, capacity)`: Initialize capacity, dict `cache`, and a dummy doubly-linked list head/tail.
+     - `put(key, value)`: If key exists, update value and move to front. If not, add new node, add to dict. If capacity exceeded, remove LRU node (tail) from dict and list.
+     - `get(key)`: If key exists, move to front and return value. Else return -1.
+   - Doubly-linked list nodes: `prev`, `next`, `key`, `value`
+   - Dummy head and tail to simplify boundary conditions.
+
+4.  **Draft Code (Mental Refinement):**
+   ```python
+   class Node:
+       def __init__(self, key, val):
+           self.key = key
+           self.val = val
+           self.prev = None
+           self.next = None
+
+   class LRUCache:
+       def __init__(self, capacity: int):
+           self.capacity = capacity
+           self.cache = {}
+           self.head = Node(0, 0)
+           self.tail = Node(0, 0)
+           self.head.next = self.tail
+           self.tail.prev = self.head
+
+       def _move_to_front(self, node):
+           # Remove from current position
+           node.prev.next = node.next
+           node.next.prev = node.prev
+           # Insert at front (after head)
+           node.prev = self.head
+           node.next = self.head.next
+           self.head.next = node
+           node.next.prev = node
+
+       def put(self, key: int, value: int) -> None:
+           if key in self.cache:
+               self.cache[key].val = value
+               self._move_to_front(self.cache[key])
+           else:
+               new_node = Node(key, value)
+               self.cache[key] = new_node
+               self._move_to_front(new_node)
+               if len(self.cache) > self.capacity:
+                   # Remove LRU (tail.prev)
+                   lru = self.tail.prev
+                   self.cache.pop(lru.key)
+                   lru.prev.next = self.tail
+                   self.tail.prev = lru.prev
+
+       def get(self, key: int) -> int:
+           if key in self.cache:
+               self._move_to_front(self.cache[key])
+               return self.cache[key].val
+           return -1
+   ```
+
+   Wait, `_move_to_front` logic needs to be careful. Let's trace:
+   Initially: head <-> tail
+   Insert node A: head <-> A <-> tail
+   `_move_to_front(A)`:
+   - Remove A: head <-> tail (A.prev.next = A.next -> head.next
+---

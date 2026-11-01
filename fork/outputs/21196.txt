@@ -1,0 +1,58 @@
+run 21196 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.02 t/s | prompt 16.1 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 19:46:00
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" genre — like the ~140-byte-ish ones that are barely playable, or the famous "smallest tetris in javascript" challenges. A well-known one is "Tetris in 140 bytes of JavaScript" but that's not really playable. There's also a famous minimal Tetris in about 500 bytes. I want to make something genuinely playable: piece movement, rotation, gravity, line clears, score, game over, restart. Keyboard controls.
+
+I should aim for genuinely small but readable-ish? The user said "smallest" — so I should golf it. But I also want it to be actually playable and not broken. Let me write a compact Tetris in a single HTML file.
+
+Design considerations: Since it's a golf challenge, the visual design will be minimal by necessity — a canvas, monospace text, keyboard controls. But I can still make it look intentional: dark background, crisp blocks, a small header showing score/lines, minimal instructions. I'll keep the code extremely compact (short variable names, no semicolons where possible, dense expressions) but still correct.
+
+Let me plan the game logic compactly:
+
+Classic compact Tetris approach:
+- Grid: 10 wide × 20 tall (or 12×18 etc.). Use a 2D array or a flat array.
+- Pieces: 7 tetrominoes. Compact encoding: each piece as a set of coordinates in a 4×4 or encoded as strings/binary.
+- Rotation: rotate coordinates mathematically (x,y) -> (y, 3-x) or similar within a bounding box, or use bit-encoded 16-bit representations per rotation.
+
+A very compact known trick: represent each tetromino as a 16-bit number (4×4 grid), rotate by bit manipulation. Or store pieces as arrays of [x,y] pairs and rotate with (x,y)->(y, size-1-x).
+
+Let me write it:
+
+```html
+<body onload=...>
+```
+
+Actually let me draft the JS:
+
+```js
+W=10,H=20 // field
+F=[] // field array of 0/1 (or colors)
+```
+
+For minimalism, single-color blocks are fine, but different colors per piece make it feel like real Tetris and cost little: store piece index+1 in the grid, color = palette[p]. Actually to keep it small, I could color by piece index with a small palette array. That's like 60 bytes extra. Worth it for playability/looks. Hmm, "smallest" — I'll include colors since it's cheap and makes it feel real. Or maybe keep it monochrome for pure minimalism? The user asked for smallest — I'll golf hard but keep colors because they're ~70 bytes and massively improve the feel. Actually let me think about total size. A playable Tetris in ~600-800 bytes of JS is achievable. Colors add negligible bytes. I'll include them.
+
+Piece definitions: The 7 tetrominoes. Compact way: define each as a 2×4 or 4×2 matrix of bits? Common golf trick:
+
+Pieces as arrays of arrays of [x,y] offsets from a center, then rotate.
+
+Alternative super-compact: encode each piece as a string of 16 chars where '#'=block, e.g.:
+
+```
+I: "....####........" 
+```
+
+Hmm. Another classic: use binary numbers.
+
+Let me use the approach: each piece = array of 4 rotation states, each state = array of [x,y] cells. That's verbose. 
+
+Better: each piece defined once as list of cells in a bounding box, rotate mathematically. For I piece, bounding box 4×4; O piece 2×2 (rotation no-op); others 3×3 or 2×3... Rotation of non-square boxes is awkward. Standard trick: put all pieces in a 4×4 box (or use (x,y)->(y,3-x) rotation for 4×4, (x,y)->(y,2-x) for 3×3).
+
+Compact approach used in many golfed tetris:
+
+```js
+P=[[0x4444,0x4444...]] // bit rows
+```
+
+Hmm, let me think of the truly compact classic: "Tetris in 140 bytes" uses piece shapes
+---

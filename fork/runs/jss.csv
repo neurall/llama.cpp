@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+jss-tet,qwen36,1,tetrisc,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/jss/s.ini,hotmaps=/tmp/runstate/jss/hotmaps",--nothink
+jss-tet2,qwen36,1,tetrisc,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/jss/s.ini,hotmaps=/tmp/runstate/jss/hotmaps",--nothink
+jss-poem,qwen36,1,poemc,512,"--moe sim-vram=3072,dynhot=store,state=/tmp/runstate/jss/s.ini,hotmaps=/tmp/runstate/jss/hotmaps",--nothink

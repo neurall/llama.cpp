@@ -1,0 +1,60 @@
+run 21264 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.18 t/s | prompt 19.8 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 20:56:04
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous minimal Tetris implementations. The classic "smallest tetris" is like a few hundred bytes of JS. I want to make something genuinely tiny but still playable and not completely ugly. Since the user asks for smallest, I should prioritize byte count, but I can still make it look decent with minimal styling — a dark background, colored blocks maybe, or even monochrome for size.
+
+Let me design a genuinely compact Tetris:
+
+Core requirements:
+- 10×20 board
+- 7 tetrominoes with rotation
+- Line clearing
+- Score
+- Game over
+- Keyboard controls (left/right/down/rotate/drop)
+- Gravity/tick
+
+Minimal approach: represent pieces as arrays of rotation states, or use a compact encoding.
+
+A very compact trick: encode each tetromino as a 4x4 (or smaller) matrix and rotate by transposing+reversing. Or use the classic trick of storing shapes as lists of coordinates.
+
+Let me write compact JS:
+
+```js
+B=document, C=B.getElementById('c').getContext('2d') // canvas
+```
+
+Actually to be smallest, I can skip HTML boilerplate niceties but I still need valid HTML. Let me aim for something like ~600-800 bytes total, or maybe a bit more with colors and score. The famous "Tetris in 140 bytes" doesn't really exist fully; there's "minitris" etc. Realistic minimal playable Tetris in JS is around 400-700 bytes of code.
+
+Let me write it:
+
+```html
+<body onload=...>
+```
+
+Plan:
+
+- Canvas 120x240 (12px cells, 10 wide, 20 tall) — scale up via CSS? Canvas internal small, CSS width larger for visibility. Actually simplest: canvas width=120 height=240, style with image-rendering pixelated and CSS scale.
+
+- Board as array of 200 ints (0 empty, else color index).
+
+- Pieces: define as arrays of 4 rotation states each? That's bulky. Compact trick: define each piece once as a matrix, rotate programmatically: rot(m) = m[0].map((_,i)=>m.map(r=>r[i]).reverse()) — transpose + reverse rows = rotate 90° CW.
+
+Pieces as binary matrices:
+I: [[1,1,1,1]] — 1 row of 4. Rotations of I in a 1x4 matrix: rotating gives 4x1, then 1x4 again... transposing 1x4 gives 4x1, reversing... Let's check: rot of [[1,1,1,1]]: transpose -> column [[1],[1],[1],[1]], reverse each row (each row length 1, no change) -> same column. Rotating again: transpose of 4x1 -> 1x4, reverse rows -> [[1,1,1,1]] reversed = same. So I only gets 2 distinct states, which is correct visually (I has 2 distinct orientations). Good.
+
+O: [[1,1],[1,1]] — rotation invariant. Good.
+
+T: [[0,1,0],[1,1,1]] — 2x3. Rotations: transpose+reverse gives... let's verify rot(m): m[0].map((_,i)=>m.map(r=>r[i]).reverse()). For 2x3 matrix m = [[0,1,0],[1,1,1]]:
+- i=0: column [0,1] reversed -> [1,0]
+- i=1: column [1,1] reversed -> [1,1]
+- i=2: column [0,1] reversed -> [1,0]
+So rot = [[1,0],[1,1],[1,0]] — 3x2, that's T pointing... shape:
+```
+1 0
+1 1
+1 0
+```
+That's T rotated (pointing right? the nub is at middle-left... actually the nub column is the left column full, hmm). Standard T rotations: spawn flat bottom, then pointing right (nub on right), down, left. Our rot gives nub on left column? The matrix [[1,0],[1,1],[1,0]]: left column all 1s, middle row extends right. That's T pointing
+---

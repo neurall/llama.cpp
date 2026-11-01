@@ -1,0 +1,96 @@
+run 21342 | dynhot_last_token_keys2 | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 87.58 t/s | prompt 101.0 t/s | 1005 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/lang/s.ini,hotmaps=/tmp/runstate/lang/hotmaps,tokdump=/tmp/runstate/lang/dump.bin | power 220+280 W | 2026-10-28 23:18:05
+
+
+---
+Here is the smallest possible functional Tetris game in a single HTML file. It uses a compact 10x20 grid, a single loop for rendering and logic, and minimal CSS.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mini Tetris</title>
+  <style>
+    body { background: #111; color: #fff; font-family: sans-serif; text-align: center; }
+    canvas { border: 1px solid #555; margin: 20px auto; display: block; }
+    #score { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="200" height="400"></canvas>
+  <div id="score">Score: 0</div>
+  <script>
+    const c = document.getElementById('c');
+    const ctx = c.getContext('2d');
+    const w = 10, h = 20;
+    const board = Array(h).fill().map(() => Array(w).fill(0));
+    let score = 0;
+    let cur = { x: 4, y: 0, shape: [[1,1,1,1]] };
+    const shapes = [
+      [[1,1,1,1]],
+      [[1,1],[1,1]],
+      [[1,1,1],[0,1,0]],
+      [[1,1,1],[1,0,0]],
+      [[1,1,1],[0,0,1]],
+      [[1,1],[1,0]],
+      [[1,1],[0,1]]
+    ];
+
+    function draw() {
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.fillStyle = '#fff';
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (board[y][x]) ctx.fillRect(x * 20, y * 20, 19, 19);
+        }
+      }
+      ctx.fillStyle = '#0f0';
+      for (let y = 0; y < cur.shape.length; y++) {
+        for (let x = 0; x < cur.shape[y].length; x++) {
+          if (cur.shape[y][x]) ctx.fillRect((cur.x + x) * 20, (cur.y + y) * 20, 19, 19);
+        }
+      }
+    }
+
+    function collide() {
+      for (let y = 0; y < cur.shape.length; y++) {
+        for (let x = 0; x < cur.shape[y].length; x++) {
+          if (cur.shape[y][x]) {
+            if (board[cur.y + y][cur.x + x] || cur.x + x < 0 || cur.x + x >= w) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function rotate() {
+      const newShape = cur.shape[0].map((_, i) => cur.shape.map(row => row[i]).reverse());
+      const old = cur.shape;
+      cur.shape = newShape;
+      if (collide()) cur.shape = old;
+    }
+
+    function clearLines() {
+      for (let y = h - 1; y >= 0; y--) {
+        if (board[y].every(v => v)) {
+          board.splice(y, 1);
+          board.unshift(Array(w).fill(0));
+          score += 10;
+          document.getElementById('score').innerText = 'Score: ' + score;
+        }
+      }
+    }
+
+    function drop() {
+      cur.y++;
+      if (collide()) {
+        cur.y--;
+        for (let y = 0; y < cur.shape.length; y++) {
+          for (let x = 0; x < cur.shape[y].length; x++) {
+            if (cur.shape[y][x]) board[cur.y + y][cur.x + x] = 1;
+          }
+        }
+        clearLines();
+        cur = { x: 4, y: 0, shape: shapes[Math.floor(Math.random() * shapes.length)] };
+        if (collide()) {
+          alert('Game Over!');

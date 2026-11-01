@@ -1,0 +1,5 @@
+run 21124 | fix_takeback_pass_threads_per_req | paris | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 388.91 t/s | prompt 331.3 t/s | 8 tokens | args: -np 1 | power 220+280 W | 2026-10-28 17:42:11
+
+
+---
+Paris is the capital of France.

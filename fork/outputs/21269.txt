@@ -1,0 +1,30 @@
+run 21269 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.21 t/s | prompt 16.6 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 21:07:36
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" category — like the ~140-byte-ish ones that abuse browser quirks, or the well-known "Tiny Tetris" in ~a few hundred bytes of JS. A famous one is "Tetris in 140 bytes of JavaScript" (there's a known minified tetris around 219 bytes? Actually there's a famous one by @aemkei "Tetris in 140 bytes" — but it's not fully playable/complete). There's also the well-known compact Tetris implementations around 500–800 bytes.
+
+I should aim for a genuinely playable Tetris in a very small byte count. Let me design it carefully.
+
+Constraints I want to keep (my own quality bar even in golf mode):
+- Single HTML file, no external deps (that also keeps it small).
+- Playable: 7 tetrominoes, rotation, movement, gravity, line clear, score, game over, restart.
+- Keyboard controls: arrows + maybe Z/X or up for rotate.
+- Some visual polish even in minimal form — but "smallest" means I should keep styling minimal. Still, I can make it look decent with a monospace grid of characters, or a canvas. Canvas rendering is compact. Or use text with block characters "▓" etc.
+
+Actually, a classic compact approach: render on a `<pre>` or canvas. Canvas with fillRect is compact: `c.fillRect(x*10,y*10,9,9)`.
+
+Let me try to write a genuinely small but complete Tetris. I'll aim for something like ~600–900 bytes total HTML including the wrapper. Let me actually write and mentally test the code.
+
+Design:
+
+Board: 10 wide, 20 tall (or smaller like 12x18 to save bytes? Standard 10x20 is fine; dimensions don't cost much).
+
+Representation: board as a 2D array or a single array of strings? For golf, a flat array of numbers works: `B=[]` with `B[y*10+x]`.
+
+Pieces: 7 tetrominoes. Compact encoding: each piece as a set of 4 coordinates, or as bit patterns. A common golf trick: encode each rotation state as a 16-bit number (4x4 grid), and rotate by bit manipulation. Or store pieces as arrays of [x,y] offsets and rotate via (x,y)->(y,-x) or (y,x) swap.
+
+Simplest compact: define pieces as arrays of 4 cells relative to origin, rotate by mapping [x,y] to [y, -x] (or [y,x] with appropriate sign). For O piece rotation is identity — fine, rotating O just permutes cells, still same shape if we handle it right. Actually rotating O with (x,y)->(y,-x) gives same square if cells are symmetric... O cells: (0,0),(1,0),(0,1),(1,1). Rotate (x,y)->(y,-x): (0,0),(0,-1),(1,0),(1,-1) — shifted but same shape; collision detection with wall kicks absent might cause issues but since shape is same, after normalization... Hmm, without normalization the piece's cells move. Collision check uses actual cells, so it's fine — the O piece would appear to "wobble" but still fits. Actually rotating O: cells become (0,0),(0,-1),(1,0),(1,-1) — that's the same 2x2 square shifted up by... original occupies x∈{0,1}, y∈{0,1}; rotated occupies x∈{0,1}, y∈{-1,0}. So it shifts up one. That could push it through the ceiling or into placed blocks. To avoid weirdness, I could exclude O from rotation, or normalize. For golf, simplest: allow rotation for all; O wobble is a known quirk in tiny tetris implementations and mostly harmless. But it can cause a rotation to fail (collision) which is fine — rotation just doesn't happen. Actually if O is at top row y=0, rotating to y=-1 would collide with ceiling → rotation fails → no visual change. Fine.
+
+Alternatively use the classic trick: represent each tetromino as a 4x4 (or 3x3) binary matrix encoded as a number,
+---

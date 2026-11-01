@@ -1,0 +1,13 @@
+run 21444 | dynhot_layer_far | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 21.35 t/s | prompt 642.2 t/s | 128 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 03:18:28
+
+The user wants me to add a function that counts the lines of this file and prints the count. Since this is a C++ file, I'll add a function that reads the file itself and counts the lines.
+
+Let me add a function that opens the file, reads it line by line, counts the lines, and prints the count.
+---
+Here's the function added at the end of the file:
+
+```cpp
+static void count_and_print_lines() {
+    std::ifstream file("common/json-schema-to-grammar.cpp");
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file." << std

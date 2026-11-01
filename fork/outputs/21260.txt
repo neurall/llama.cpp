@@ -1,0 +1,29 @@
+run 21260 | dynhot_global_map | ww1c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 84.96 t/s | prompt 159.8 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,dynhot-merge=2,state=/tmp/runstate/unkmat/s.ini,hotmaps=/tmp/runstate/unkmat/hotmaps | power 220+280 W | 2026-10-28 20:49:50
+
+Here's a thinking thinking sequence
+
+1.  **Deconstruct the user's request:**
+    *   Topic: Main causes of WWI.
+    *   Specific focus: How the alliance system turned a regional conflict in the Balkans into a war between great powers.
+    *   Constraints: Clear paragraphs, no lists, no headings.
+
+2.  **Brainstorm and Outline (Mental or rough notes):**
+    *   *Causes:* Imperialism, nationalism, militarism, alliance systems, the assassination of Archduke Franz Ferdinand.
+    *   *Balkan conflict:* Serbia vs. Austria-Hungary. Bosnia annexation, Balkan nationalism.
+    *   *Alliance system:* Triple Entente (France, Russia, UK) vs. Central Powers (Germany, Austria-Hungary, Italy initially).
+    *   *Mechanism of escalation:* Assassination -> Austria blames Serbia -> Russia supports Serbia -> Germany supports Austria -> France supports Russia -> UK gets involved (Belgium/Naval issues). Domino effect.
+    *   *Structure:* Need to flow from general causes to the specific Balkan trigger, then explain the alliance domino effect, all in continuous prose without lists or headings.
+
+3.  **Drafting - Paragraph by Paragraph (Mental or text generation with constraint check):**
+    *   *Paragraph 1: General Causes.* Start with the underlying tensions. Imperialism, nationalism, militarism. The "powder keg" metaphor is common but maybe too cliché; better to describe the structural tensions. Great powers competing for colonies and influence. Nationalism in the Balkans and within multi-ethnic empires like Austria-Hungary. Militarism leading to war plans.
+        *   *Drafting thought:* The First World War emerged from a complex web of long-standing tensions among European powers, driven primarily by intense nationalism, aggressive imperialism, and the rapid militarization of society. Throughout the late nineteenth and early twentieth centuries, the great powers competed fiercely for colonial territories and economic dominance, creating a climate of mutual suspicion and rivalry. Simultaneously, nationalist movements within multi-ethnic empires, particularly Austria-Hungary and the Ottoman Empire, threatened the stability of these states by demanding independence or greater autonomy. This internal unrest was exacerbated by the arms race, where nations invested heavily in military expansion and developed rigid war plans that prioritized offensive strategies, making diplomacy increasingly difficult and war more likely.
+
+    *   *Paragraph 2: The Balkan Context and the Trigger.* Focus on the Balkans. Austria-Hungary's annexation of Bosnia. Serbia's role. The assassination.
+        *   *Drafting thought:* The Balkans served as the flashpoint for these broader tensions, as the region was a battleground for both local nationalist aspirations and the geopolitical interests of the great powers. Austria-Hungary's annexation of Bosnia in 1908 heightened tensions with Serbia, which viewed the region as part of its national unification goals and saw Austria-Hungary as an imperialist oppressor. This rivalry culminated in the assassination of Archduke Franz Ferdinand by a Serbian nationalist in June 1914, an event that provided Austria-Hungary with a pretext to punish Serbia. The Austro-Hungarian leadership, backed by Germany, issued an ultimatum demanding concessions that Serbia could not accept without compromising its sovereignty, effectively turning a diplomatic dispute into a crisis that threatened to erupt into violence.
+
+    *   *Paragraph 3: The Alliance System and Escalation.* This is the core of the user's request. How alliances turned regional to global.
+        *   *Drafting thought:* The escalation from a regional dispute to a continental war was driven by the rigid system of alliances that bound the great powers together. Austria-Hungary relied on the support of Germany, which assured Vienna that it would back any action against Serbia, while Serbia looked to Russia, a Slavic ally that felt compelled to protect its influence in the Balkans and prevent the expansion of German power. As Austria-Hungary mobilized against Serbia, Russia responded by mobilizing its own forces, triggering a chain reaction of military preparations. France, allied with Russia, stood ready to support its partner, and Britain, though initially hesitant, was drawn into the conflict due to its alliance with France and the threat to Belgian neutrality, which Germany's invasion plans violated. The alliance system transformed isolated national interests into a collective security dilemma, where the mobilization of one nation forced others to act, creating a domino effect that left no room for diplomatic intervention once the military gears began to turn.
+
+    *   *Paragraph 4: Conclusion/Synthesis.* Wrap up. The alliances made the war inevitable once the trigger happened.
+        *   *Drafting thought:* Ultimately, the alliance system functioned as a mechanism that amplified local conflicts into global catastrophes by locking the great powers into a framework of mutual obligation and deterrence. While the assassination in Saraje
+---

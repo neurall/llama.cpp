@@ -1,0 +1,35 @@
+run 21198 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.94 t/s | prompt 16.8 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 19:50:23
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal code size. I should honor that request: a genuinely tiny Tetris in a single HTML file, ideally under ~1KB or as small as I can reasonably make it while still being playable.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" space — like the ~219-byte Tetris in 140 characters, or "smallest tetris" JS1k entries. I can aim for something genuinely compact but still functional: piece falling, rotation, line clears, score, keyboard controls, game over.
+
+Let me design a minimal Tetris:
+
+Approach: canvas rendering, a single `<canvas>` element, one `<script>` with heavily golfed code.
+
+Core mechanics:
+- Board: 10 wide × 20 tall (or smaller like 10×18 to save bytes? Standard is 10×20; I could use 10×16 to save but let's keep 20 or maybe 18). Actually for golfing, board stored as array of rows, each row an integer bitmask (10 bits) — that's compact. Or array of arrays. Bitmask rows are compact for clearing: row value 1023 means full.
+
+- Pieces: 7 tetrominoes. Classic golf trick: encode pieces as strings of coordinates, or use the "binary encoding" trick. A famous compact encoding: each piece as 4 cells encoded in a number. Or use the trick where rotation is done via bit manipulation on a 4x4 grid encoded as 16-bit number.
+
+A well-known ultra-compact Tetris approach (like the famous 219-byte one by rom1502 / or "Tiny Tetris" by Solomon Basky — "Yet Another Undocumented 219-byte Tetris" in C). For JS, there's a known compact approach:
+
+Pieces encoded as strings like "0F110C1210" etc. Let me think of a clean compact encoding myself.
+
+Option: represent each tetromino as a list of 4 [x,y] offsets relative to a pivot, and rotate by (x,y) -> (y,-x) or (x,y)->(-y,x). Encode each piece's 4 cells as a single number: each cell coordinate 0..3 in x and y, so 4 bits each? Coordinates within a 4x4 box: x in 0..2, y in 0..2 for tetrominoes (they fit in 3x3 or 4x1). Actually I-piece needs 4x1. Encode each cell as x*4+y? x up to 3, y up to 3 → value 0..15, 4 bits per cell, 16 bits per piece... but rotation changes coordinates.
+
+Simpler golf approach used commonly: define pieces as arrays of arrays of [x,y] pairs for each rotation? That's big. Better: define one rotation state per piece and rotate mathematically.
+
+Rotation around a pivot: for O piece rotation is identity; for I, S, Z rotation around center works with the right pivot choice. Standard trick: rotate (x,y) -> (y, 2-x)? Hmm.
+
+Let me think about the classic "rotate in a 3x3 box" trick: for pieces fitting in 3x3 (all except I and O), rotation within the box: (x,y) -> (y, 2-x) rotates 90° clockwise. For I piece in 4x4 box: (x,y) -> (y, 3-x). For O: no rotation needed (or rotate in 2x2: (x,y)->(y,1-x) which maps the square to itself).
+
+So: store each piece as 4 cells (x,y) plus a "size" (3 or 4 or 2). Rotation: if size==3: (x,y)->(y,2-x); if size==4: (x,y)->(y,3-x); if size==2: identity.
+
+Encoding pieces compactly: each piece as a string of 8 digits "xyxyxyxy" plus size. E.g.:
+
+- I: cells (0,1),(1,1),(2,1),(3,1), size 4 → "01112131" + size 4 → "401112131"? Or store size separately.
+- O: (1,0),(2,0),(1,1),(2,1) size 2 → "10112021"
+- T: (1,0),(0,1),(1,1),(2,1) size 3 →
+---

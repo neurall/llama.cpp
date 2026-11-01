@@ -1,0 +1,26 @@
+run 21142 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.04 t/s | prompt 19.6 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 18:33:58
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" genre — like the ~200-byte-ish obfuscated ones (e.g., "tiny tetris" in JS, the famous 219-byte one by rom1502 uses eval tricks). But those are unreadable. The user probably wants a compact but functional single-file HTML Tetris. I'll aim for genuinely small — minified-ish, single line or few lines, but still real gameplay: 7 tetrominoes, rotation, line clears, score, game over, keyboard controls.
+
+I should balance: truly tiny (golfed) vs. readable. The request says "smallest html tetris game" — I'll write it golfed but with minimal whitespace, maybe a few short lines. I can add a brief explanation after the code describing controls and techniques used to shrink it.
+
+Let me design the game:
+
+Core mechanics:
+- Board: 10 wide × 20 tall (classic). Could shrink to like 8×16 to save bytes but classic 10×20 is expected. Actually for golfing, some tiny tetris variants use smaller boards. I'll keep 10×20 for authenticity.
+- 7 pieces (tetrominoes) with rotation. To save bytes, encode pieces compactly.
+
+Compact piece encoding trick: represent each tetromino as a set of coordinates in a 4×4 or use binary bit patterns. A classic golf trick: store each rotation state as a 16-bit number (4×4 grid), and rotate by bit manipulation. Or store pieces as arrays of [x,y] offsets and rotate via (x,y)->(y,-x) or similar.
+
+Even smaller trick: use the "SRS-lite" approach where each piece is defined by 4 cells in a 4x4 grid encoded as a 16-bit integer, rotation = rotating the 4x4 grid. Rotating a 4x4 grid bitboard: for cell index i (0..15), row r=i>>2, col c=i&3; after 90° CW rotation, new index = c*4 + (3-r). So rotated bitboard R: for each set bit i in B, set bit (i&3)*4+(3-(i>>2))... wait let me compute: rotating grid 90° clockwise: new[r'][c'] = old[3-c'][r']? Let me define: old cell at (row r, col c). Rotate CW: new row = c, new col = 3 - r. So new index = c*4 + (3-r). Given old index i = r*4+c, new index j = c*4 + (3-r) = (i&3)*4 + (3 - (i>>2)).
+
+So a rotate function: R=0; for each bit i set in B: R |= 1 << ((i&3)*4 + 3-(i>>2)). That's a small function.
+
+Then pieces defined as 16-bit masks for one orientation; the other 3 orientations derived by rotating. But some pieces (O, I under simple rotation) — with 4x4 grid rotation, I piece rotates within 4x4 which gives the classic "non-SRS" simple rotation, fine for a tiny game. O piece rotation is identity-ish (O in a 2x2 block within 4x4 rotates to itself if positioned symmetrically... O as bits at positions (r,c) in {1,2}x{1,2}? If O occupies cells (1,1),(1,2),(2,1),(2,2) in 4x4: rotate CW: (1,1)->(1,2), (1,2)->(2,2), (2,2)->(2,1), (2,1)->(1,1) — same set. Good, identity.)
+
+So: PIECES = [0x...16-bit masks...], 7 entries. Each piece spawns at some position; we can spawn all pieces at a fixed x offset (e.g., x=3, y=0 or y=-1) since all tetrominoes fit in a 4x4 box (well, I is 4 wide in one orientation, 4 tall in another; fits in 4x4 box).
+
+Rendering: use a canvas or even simpler — a <pre>
+---

@@ -1,0 +1,114 @@
+run 21329 | dynhot_last_token_keys2 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.6 t/s | prompt 124.5 t/s | 933 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd3/s.ini,hotmaps=/tmp/runstate/tokd3/hotmaps,tokdump=/tmp/runstate/tokd3/dump.bin | power 220+280 W | 2026-10-28 23:09:04
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Key Features:
+- **Terminal-based**: Uses standard ASCII characters.
+- **Minimal**: ~100 lines of code.
+- **Input**: Arrow keys (or WASD).
+- **Logic**: Simple grid, collision detection, and growth.
+
+### Code (`snake.cpp`)
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+
+using namespace std;
+
+int main() {
+    // Grid size
+    const int W = 20, H = 15;
+    vector<vector<int>> grid(H, vector<int>(W, 0)); // 0: empty, 1: snake, 2: food
+
+    // Snake state
+    vector<pair<int, int>> snake = {{W/2, H/2}};
+    pair<int, int> dir = {0, 1}; // dx, dy
+    pair<int, int> food;
+
+    // Place food
+    auto place_food = [&]() {
+        do {
+            food = {rand() % W, rand() % H};
+        } while (grid[food.second][food.first] == 1);
+        grid[food.second][food.first] = 2;
+    };
+    place_food();
+
+    // Game loop
+    while (true) {
+        // Input
+        char c = getchar();
+        if (c == 'w') dir = {0, -1};
+        else if (c == 's') dir = {0, 1};
+        else if (c == 'a') dir = {-1, 0};
+        else if (c == 'd') dir = {1, 0};
+
+        // Move head
+        pair<int, int> head = {snake[0].first + dir.first, snake[0].second + dir.second};
+
+        // Check collision
+        if (head.first < 0 || head.first >= W || head.second < 0 || head.second >= H || grid[head.second][head.first] == 1) {
+            cout << "Game Over!" << endl;
+            return 0;
+        }
+
+        // Update snake
+        snake.insert(snake.begin(), head);
+        grid[head.second][head.first] = 1;
+
+        // Check food
+        if (head == food) {
+            place_food();
+        } else {
+            // Remove tail
+            pair<int, int> tail = snake.back();
+            snake.pop_back();
+            grid[tail.second][tail.first] = 0;
+        }
+
+        // Render
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                if (grid[y][x] == 1) cout << '#';
+                else if (grid[y][x] == 2) cout << '*';
+                else cout << ' ';
+            }
+            cout << endl;
+        }
+
+        // Delay
+        this_thread::sleep_for(chrono::milliseconds(100));
+    }
+    return 0;
+}
+```
+
+### How to Compile and Run
+
+1. **Compile**:
+   ```bash
+   g++ -o snake snake.cpp
+   ```
+
+2. **Run**:
+   ```bash
+   ./snake
+   ```
+
+3. **Controls**:
+   - `w`: Up
+   - `s`: Down
+   - `a`: Left
+   - `d`: Right
+
+### Notes:
+- **Input Blocking**: `getchar()` blocks until a key is pressed. For smoother real-time input, you’d need a library like `ncurses`, but this keeps it minimal.
+- **Terminal Size**: The grid is 20x15. Adjust `W` and `H` to fit your terminal.
+- **Performance**: Uses `std::vector` for the snake body. For a truly minimal version, you could use a fixed-size array, but this is clean and safe.
+
+This is the smallest *functional* Snake game in C++ without external dependencies.

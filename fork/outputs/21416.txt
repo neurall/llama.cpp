@@ -1,0 +1,40 @@
+run 21416 | dynhot_requests_fp8 | latinmedc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 91.9 t/s | prompt 147.1 t/s | 781 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:16:43
+
+
+---
+**De Febre: Tractatus Brevis**
+
+Febre est status corporis, in quo calor naturalis excessus est, et humores in corpus perturbantur. Medici antiqui, praecipum Hippocrates et Galenus, febrem non solum symptom, sed signum conflictus inter humores et spiritus vitae reputabant.
+
+**Causae**
+Causae febris plerumque ex humoralibus disbalance oriuntur. Si humores **bilis** (cholerica) vel **phlegma** (phlegmatica) in excessu sunt, calor generatur. Item, causae externae, ut aer calidus, alimentum improprium, vel morbi contagiosi, febrem inducere possunt. In systemate quattuor humores, febris saepe indicat excessum **caliditatis** et **siccitatis** (bilis) vel **caliditatis** et **humiditatis** (phlegma).
+
+**Signa**
+Signa febris manifestantur per:
+1. **Calorem corporis**: Sensatio calor in fronte, brachis, et pedibus.
+2. **Pulsus**: Pulsus rapidus et fortis, saepe irregularis.
+3. **Sudor**: Sudor profusus, praecipum post periodum frigiditatis.
+4. **Debilitas**: Debilitas generalis, dolor capitis, et appetitus diminutus.
+5. **Frigitas**: Periodus frigiditatis (rigores) ante initium calor.
+
+**Diagnosin**
+Diagnosin febris fit per inspectionem **pulsus**, **urina**, et **complexio** (color facies). Medici antiqui observabant:
+- Si urina est **rubra** et **densa**, bilis excessus indicatur.
+- Si urina est **clara** et **diluta**, phlegma excessus indicatur.
+- Pulsus **rapidus** et **calidus** indicat febris acutam.
+- Pulsus **lentus** et **frigidus** indicat febris chronicam.
+
+**Curationem**
+Curationem febris consistit in **reducendo calor** et **restaurando humoralis balance**.
+
+1. **Dietas**: Alimentum leve, ut **cereale**, **fructus**, et **legumes**. Evitandum alimentum calidum, picant, et oleosum.
+2. **Medicamenta**:
+   - **Herbae**: **Salvia**, **camomilla**, **echinacea**, et **ginkgo** usum sunt ad reducendo calor.
+   - **Humores**: Si bilis excessus, **purging** (evacuatio) per **laxatives** naturalis, ut **senna** vel **aloe**. Si phlegma excessus, **expectorants** usum sunt.
+3. **Regimen**:
+   - **Repos**: Repos sufficientis ad restaurando spiritus.
+   - **Hydratio**: Consumptio **aqua** et **infusiones** herbae ad hydratum corpus.
+   - **Ventilatio**: Aer fresco et cool environment.
+
+**Conclusio**
+Febre est signum conflictus humoralis. Curationem requirit balance humores, dietas leve, et repos sufficientis. Medici antiqui emphasize **naturalis remedii** et **preventio** super **medicamenta artificialis**.

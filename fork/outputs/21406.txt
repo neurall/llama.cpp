@@ -1,0 +1,45 @@
+run 21406 | dynhot_requests_fp8 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.85 t/s | prompt 146.4 t/s | 995 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:10:48
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in the haze of neuro-stimulant residue, until the lights of the command deck stabilized into a harsh, clinical white.
+
+"Status report," Commander Vance’s voice cut through the fog, sharp and authoritative. Elias rubbed his eyes, his fingers trembling as he reached for the console. The data streams were already flooding his neural link. The ship, *The Aethelgard*, had arrived. The destination, Kepler-4b, was within visual range.
+
+But the visual feed was wrong.
+
+Elias stared at the main viewport. Below them, the planet was not a barren, rocky wasteland as the pre-launch surveys had predicted. It was a tapestry of light. Cities sprawled across the continents, glowing with amber and azure hues, connected by networks of roads that pulsed like veins. The atmosphere was clear, breathable. There were no signs of the struggle, the famine, or the slow, grinding colonization that the *Aethelgard*’s mission profile had prepared for.
+
+"Something is wrong," Elias whispered, his voice raspy. He ran the spectral analysis. The light signatures were not natural. They were artificial. High-density energy grids. Atmospheric scrubbers. The planet was inhabited.
+
+"Who is down there?" Vance asked, leaning over his shoulder.
+
+Elias pulled up the historical logs. The *Aethelgard* had left Earth in 2104. The mission was a one-way trip, a generation ship carrying five hundred souls to establish a new home. The travel time was calculated at three hundred years. They were the first. They were the pioneers.
+
+"Look at the telemetry," Elias said, pointing to a secondary data stream. "There’s a signal coming from the surface. It’s... it’s us."
+
+Vance frowned. "Us? We haven't landed yet."
+
+"Not us," Elias corrected. "Our descendants. A copy of the ship. It launched a century after us. The *Aethelgard II*. It arrived first."
+
+The silence in the room was heavy, pressing against Elias’s chest. The math was undeniable. The second ship had traveled faster, or perhaps the first ship had slowed due to an unrecorded anomaly. The *Aethelgard II* had arrived two hundred years ago. They had built cities. They had lived. They had died. And their children had built more cities.
+
+Elias felt a profound sense of displacement. He was an archivist, a keeper of history, but history had outrun him. He had spent his life in cryo-sleep preserving the memory of Earth, only to find that Earth’s legacy had already taken root on Kepler-4b.
+
+"Are they hostile?" Vance asked, his hand hovering over the weapon controls.
+
+"No," Elias said. "They’re welcoming. The signal is a broadcast. It’s a greeting."
+
+Elias listened to the audio feed. It was a voice, clear and warm, speaking in a dialect that had evolved from the standard English of the launch. It sounded like a grandmother telling a story.
+
+"Welcome home," the voice said. "We’ve been waiting for you. We’ve kept your records. We’ve preserved your dreams. You are the ancestors. We are the children. Come down."
+
+Elias felt a tear slide down his cheek. It was a strange sensation, to be the ancestor of a civilization that had already flourished. He had expected to be the founder, the first step in a long, arduous journey. Instead, he was the ghost, the echo, the forgotten beginning.
+
+He looked at the other crew members, waking from their pods. They were confused, disoriented, but their faces reflected the same awe. They were not the first. They were the latecomers.
+
+Elias opened the archive of his own mind. He had stored the memories of Earth, the images of the forests, the oceans, the cities. Now, those memories seemed obsolete. The future had already happened. The past had already been lived.
+
+He typed a response to the signal. "We are coming down. We are ready to learn."
+
+The lights of the planet below seemed to pulse, a heartbeat of a world that had already known life. Elias felt a sense of peace, a quiet acceptance. He was not the pioneer. He was the pilgrim. And that was enough.

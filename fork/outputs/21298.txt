@@ -1,0 +1,57 @@
+run 21298 | dynhot_same_prompt_one_record_tokdump2 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.42 t/s | prompt 148.9 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd/s.ini,hotmaps=/tmp/runstate/tokd/hotmaps,tokdump=/tmp/runstate/tokd/dump.bin | power 220+280 W | 2026-10-28 21:47:35
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *Generation ship:* Long voyage, cryosleep, archival role (preserving history/data)
+   - *Waking up:* Sensory details of thawing, disorientation, observation of the planet
+   - *Twist:* Cities already lit, descendants from a later ship that arrived first
+   - *POV:* Archivist - likely reflective, observant, concerned with records, memory, continuity
+   - *Tone:* Literary, atmospheric, introspective, slightly melancholic but wonder-filled
+   - *Word count:* ~900 words (need to pace carefully)
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Waking from cryosleep. Sensory details: cold, thawing, sounds, light, the archivist's role.
+   - *Observation:* Looking down at the planet. Cities lit. Confusion. Realization.
+   - *Dialogue/Interaction:* Crew members, maybe a captain or engineer, discussing the anomaly. Archivist's internal reflection.
+   - *Revelation:* The later ship arrived first. The descendants are their own. The irony of time, progress, legacy.
+   - *Closing:* Archivist's decision to record this, acceptance of the new reality, literary resonance.
+
+   Structure:
+   - Paragraph 1: Thawing, sensory awakening, archivist's perspective
+   - Paragraph 2: Viewing the planet, cities lit, initial confusion
+   - Paragraph 3: Dialogue with crew, realization of the timeline paradox
+   - Paragraph 4: Archivist's reflection on memory, records, the later ship
+   - Paragraph 5: Landing/interaction, acceptance, closing image
+
+4.  **Drafting - Mental Refinement (Iterative):**
+   *(I'll write it out carefully, monitoring word count and style constraints.)*
+
+   The cold came first, a slow thaw that unspooled from my marrow like frost melting on glass. I opened my eyes to the pale hum of the cryo-bay, the air thick with the scent of ozone and damp wool. My fingers trembled against the console, tracing the familiar grooves of the archival interface. I was the keeper of the ship’s memory, the one who logged every star, every silence, every breath we took in the dark. Now, the silence was broken by the groan of hydraulics and the murmur of waking voices.
+
+   “We’re here,” someone said, voice rough with sleep. “Above the target.”
+
+   I pulled myself to the observation deck. The viewport framed a world that should have been barren, waiting for our seeds. Instead, it glowed. Cities clustered like constellations on the dark side, their lights pulsing in grids of gold and amber. Roads threaded through valleys, bridges arched over rivers that ran clear and cold. It was too much, too soon. The mission parameters promised three centuries of cultivation. We had slept for two hundred and forty.
+
+   “That’s impossible,” murmured Commander Vance, stepping beside me. His face was pale, his eyes wide. “We’re the first. The only.”
+
+   “Not the only,” I said, though the words felt heavy. I ran my hand along the glass, tracing the light patterns. “Look at the architecture. The grid layout. The atmospheric scrubbers. It’s ours. Or rather, it’s ours in another branch.”
+
+   Vance frowned. “A copy? We launched alone.”
+
+   “The Council authorized a parallel initiative,” I recalled, pulling the archived logs from my memory. “A century after our departure. They called it the Second Genesis. Faster engines, compressed cryo cycles, automated seeding. They left when we were still in the dark.”
+
+   The realization settled like dust. They had outrun us. They had built the world we were meant to inherit. And now, below us, stood the children of those children. Our descendants, breathing air we had never touched, living in cities we had only dreamed of in the archives.
+
+   “What do we do?” Vance asked, his voice tightening. “Do we descend? Do we claim?”
+
+   “We record,” I said. “
+---

@@ -1,0 +1,49 @@
+run 21156 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.44 t/s | prompt 19.5 t/s | 1005 tokens | args: -np 1 --moe dynhot=full | power 220+280 W | 2026-10-28 18:50:53
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny tetris implementations. The goal: minimal bytes while remaining functional. I should write compact, dense code — short variable names, minimal DOM, canvas rendering, no libraries.
+
+Key features a Tetris needs to be "real":
+- 7 tetromino shapes with rotation
+- Gravity / falling
+- Move left/right, rotate, (maybe soft drop / hard drop)
+- Line clear detection and scoring
+- Game over
+- Collision detection
+
+Let me design a compact implementation.
+
+Classic minimal approach: represent pieces as arrays of rotations, or use a compact encoding. A well-known trick: encode each tetromino's rotations as bit patterns or coordinate lists.
+
+Let me think about a very compact representation. One famous approach: each piece is defined by a set of cells in a 4x4 or via strings.
+
+Compact idea: define shapes as arrays of [x, y] offsets for each rotation. Or use the "SRS-lite" approach where rotation is computed by rotating coordinates.
+
+A very compact trick: represent each tetromino as a 2D array of 4 rotations, each rotation being a list of [x,y] pairs. Or even better: use a single string per piece.
+
+Another classic compact trick: pieces as binary numbers in a 4x4 grid, rotations derived by bit manipulation. E.g., each piece = 16-bit number, rotation = rotate bits. That's compact but tricky.
+
+Simplest compact: define shapes as arrays of coordinate pairs, and rotate by swapping and negating: rotation of (x,y) around origin: (x,y) -> (y, -x) or similar, then normalize. But normalization adds code.
+
+Alternative compact approach used in many minified tetris: 
+
+```js
+P=[[1,1,1,1],[[1,1],[1,1]],...]
+```
+
+Hmm. Let me think about a known minimal tetris. There's the famous "smallest tetris" entries. One approach:
+
+```js
+d=[[1,1,1,1],[[1,1],[1,1]],...]
+```
+
+Let me just write my own compact one and then minify by hand.
+
+Plan:
+- Canvas 2D, grid 10x20, cell size ~12px → canvas 120x240. Maybe scale up a bit for visibility: cell 15 → 150x300. Keep small.
+- Board as array of strings? Or 2D array of numbers. Using array of arrays with numbers 0-7 for colors.
+- Colors: 7 colors. Could use a compact palette string like "#f00 #0f0 ..." split by space, indexed by piece index+1. Or use HSL: `hsl(${i*36},50%,50%)` — one-liner, compact and gives distinct hues. Actually classic tetris colors: I cyan, O yellow, T purple, S green, Z red, J blue, L orange. Using hsl(i*36+...) approximates. Compact: `c=i=>`hsl(${i*36},60%,55%)`` — but hue 36*i: i=1 → 36 (orange), i=2 → 72 (yellow-green)... Not classic but fine for minimal. Actually to be closer: I could use a palette string. `"#0af #fa0 #ff0 #0c0 #f0c #a0f #f00"` hmm. Let me map: pieces order I,J,L,O,S,T,Z → colors cyan, blue, orange, yellow, green, purple, red. Palette string: `"#5af #48f #f80 #fc0 #5c5 #a5a #f45"`? Compact enough: `C="#5cf 48f f80 fc0 5c5 a6a f55".split(" ")` — need # prefix; can do `C="5cf 48f f80 fc0 5c5 a6a f55".split(" ").map(c=>"#"+c)` or just include #: `"#5cf #48f #f80 #fc0 #5c5 #a6a #f55".split(" ")`. Fine.
+
+Actually for code golf, hsl is shorter: `hsl(${i*51},70%,50%)` gives 7 distinct hues at 51° apart (0,51,102,
+---

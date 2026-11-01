@@ -1,0 +1,10 @@
+name,model,n,test,tokens,args,extra
+tb-olmoe-paris,olmoei,1,paris,64,,
+tb-ds-nodraft,ds,2,pfbest1k,1024,,
+tb-ds-b4k,ds,1,pfbest1k,256,-b 4096 -ub 4096,
+tb-ds-b4k-fake2,ds,1,pfbest1k,256,-b 4096 -ub 4096 --moe fake-oom=2,
+tb-ds-b8k,ds,1,pfbest1k,256,-b 8192 -ub 4096,
+tb-ds-b8k-fake4,ds,1,pfbest1k,256,-b 8192 -ub 4096 --moe fake-oom=4,
+tb-ds-b8k-fake2,ds,1,pfbest1k,256,-b 8192 -ub 4096 --moe fake-oom=2,
+tb-mimo-b8k,mimo,1,pf12k1k,256,-b 8192 -ub 4096,
+tb-mimo-b8k-fake2,mimo,1,pf12k1k,256,-b 8192 -ub 4096 --moe fake-oom=2,

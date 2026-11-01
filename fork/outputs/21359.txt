@@ -1,0 +1,174 @@
+run 21359 | dynhot_two_maps_answer_only | pyasyncc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 80.31 t/s | prompt 143.0 t/s | 2323 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048 | power 200+200 W | 2026-10-28 23:53:54
+
+Here's a thinking process:
+
+1.  **Understand User Requirements:**
+   - **Language:** Python
+   - **Concurrency:** `asyncio` and `aiohttp`
+   - **Task:** Download a list of URLs concurrently
+   - **Retry Logic:** Retry failed downloads up to 3 times with growing delay (exponential backoff)
+   - **Output:** Save every page to disk
+   - **Format:** Code only, short comments
+
+2.  **Key Components Needed:**
+   - `asyncio` for concurrency
+   - `aiohttp` for HTTP requests
+   - List of URLs (I'll define a sample list or accept it as input, but the prompt says "downloads a list of URLs", so I'll hardcode a sample or make it configurable)
+   - Retry mechanism: max 3 retries, growing delay (e.g., 1s, 2s, 4s or similar exponential)
+   - File saving: Write content to disk, maybe with a filename derived from URL or index
+   - Error handling: Catch exceptions during download
+   - Concurrency: Use `asyncio.gather` or `asyncio.TaskGroup` (Python 3.12+) or just `asyncio.gather` for compatibility
+
+3.  **Draft - Mental Code Structure:**
+   ```python
+   import asyncio
+   import aiohttp
+   import os
+   import time
+
+   async def download_url(url, session, retries=3, base_delay=1):
+       for attempt in range(retries):
+           delay = base_delay * (2 ** attempt)
+           try:
+               async with session.get(url) as response:
+                   response.raise_for_status()
+                   content = await response.text()
+                   # Save to disk
+                   filename = url.replace("https://", "").replace("http://", "").replace("/", "_")
+                   with open(f"{filename}.html", "w", encoding="utf-8") as f:
+                       f.write(content)
+                   return True
+           except Exception as e:
+               if attempt < retries - 1:
+                   await asyncio.sleep(delay)
+               else:
+                   print(f"Failed to download {url} after {retries} attempts: {e}")
+                   return False
+
+   async def main():
+       urls = ["https://example.com", "https://example.org", "https://example.net"]
+       async with aiohttp.ClientSession() as session:
+           await asyncio.gather(*[download_url(url, session) for url in urls])
+
+   if __name__ == "__main__":
+       asyncio.run(main())
+   ```
+
+4.  **Refine & Check Requirements:**
+   - *Concurrent with asyncio and aiohttp:* Yes, `asyncio.gather` + `aiohttp.ClientSession`
+   - *Retries up to 3 times with growing delay:* Yes, exponential backoff (1, 2, 4 seconds)
+   - *Save every page to disk:* Yes, writes to file
+   - *Code only, short comments:* I'll strip verbose comments, keep it concise.
+   - *Edge cases/Improvements:* 
+     - Filename generation might be too simplistic. I'll use a safer approach: `os.path.basename(url)` or just index-based naming to avoid invalid characters. Let's use `url.split("/")[-1]` or just `f"page_{i}.html"` for simplicity, or extract a safe filename. Actually, `url.replace("https://", "").replace("http://", "").replace("/", "_")` is fine for a script, but I'll make it more robust: `safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_")` -> maybe just use `os.path.basename(url)` or index. I'll stick to a simple safe filename.
+     - Retry logic: The prompt says "retries each failed download up to three times". That means initial attempt + 3 retries = 4 total? Or exactly 3 attempts total? Usually "up to 3 retries" means 3 additional attempts. I'll interpret it as max 3 attempts total (or 3 retries after first fail). I'll make it clear: `max_attempts = 3` (total) or `retries = 3` (additional). I'll use `max_attempts = 3` total for simplicity, or explicitly handle retries. Let's stick to: attempt 1, if fail, retry up to 3 times. I'll adjust to `for attempt in range(3):` (3 retries) + initial attempt? Actually, simpler: `for attempt in range(3):` means 3 attempts total. I'll clarify in comments.
+     - Growing delay: `delay = 1 * (2 ** attempt)` works.
+     - I'll use `asyncio.gather` for concurrency.
+     - I'll add a session timeout/retry config? Not needed, keep it simple.
+     - I'll make sure the code is self-contained and ready to run.
+
+   Let's refine the retry logic to match "retries each failed download up to three times":
+   ```python
+   async def download(url, session, max_retries=3, base_delay=1):
+       for attempt in range(max_retries + 1):  # 1 initial + 3 retries
+           delay = base_delay * (2 ** attempt)
+           try:
+               resp = await session.get(url)
+               resp.raise_for_status()
+               content = await resp.text()
+               # Save to disk
+               fname = url.replace("https://", "").replace("http://", "").replace("/", "_")
+               with open(f"{fname}.html", "w", encoding="utf-8") as f:
+                   f.write(content)
+               return
+           except Exception as e:
+               if attempt < max_retries:
+                   await asyncio.sleep(delay)
+               else:
+                   print(f"Failed: {url} - {e}")
+   ```
+   Wait, `delay` should be applied *before* the retry, not after the last attempt. The loop structure is fine. Actually, exponential backoff usually starts at 1s, then 2s, then 4s. So `delay = base_delay * (2 ** attempt)` is correct for the sleep before the next attempt. But for the first attempt, delay is 1s? That's not right. The first attempt should have 0 delay. So:
+   ```python
+   for attempt in range(max_retries + 1):
+       if attempt > 0:
+           await asyncio.sleep(base_delay * (2 ** (attempt - 1)))
+       try:
+           ...
+   ```
+   This is cleaner.
+
+   Let's adjust filename generation to be safer: `safe_name = url.split("/")[-1]` might have query params. I'll just use `url.replace("https://", "").replace("http://", "").replace("/", "_")` and strip query params if needed, but it's fine for a script. I'll use `os.path.basename(url)` or just index-based naming to avoid URL parsing issues. Actually, `url.replace("https://", "").replace("http://", "").replace("/", "_")` is standard enough. I'll keep it simple.
+
+   Let's structure the final code:
+   ```python
+   import asyncio
+   import aiohttp
+   import os
+
+   async def fetch_and_save(url, session, max_retries=3, base_delay=1):
+       for attempt in range(max_retries + 1):
+           if attempt > 0:
+               await asyncio.sleep(base_delay * (2 ** (attempt - 1)))
+           try:
+               resp = await session.get(url)
+               resp.raise_for_status()
+               content = await resp.text()
+               # Sanitize filename
+               safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_")
+               with open(f"{safe_name}.html", "w", encoding="utf-8") as f:
+                   f.write(content)
+               return
+           except Exception as e:
+               if attempt == max_retries:
+                   print(f"Failed to download {url}: {e}")
+
+   async def main():
+       urls = ["https://example.com", "https://example.org", "https://example.net"]
+       async with aiohttp.ClientSession() as session:
+           await asyncio.gather(*[fetch_and_save(url, session) for url in urls])
+
+   if __name__ == "__main__":
+       asyncio.run(main())
+   ```
+
+   Check requirements:
+   - Concurrent with asyncio and aiohttp: Yes
+   - Retries up to 3 times with growing delay: Yes (exponential backoff)
+   - Saves every page to disk: Yes
+   - Code only, short comments: I'll add minimal comments.
+   - One minor thing: `asyncio.gather` runs concurrently. The session is shared, which is good practice.
+   - I should ensure the code handles the retry delay correctly. The delay grows: 1s, 2s, 4s. That's correct.
+   - I'll add a comment about the retry logic and file saving.
+   - I'll make sure it's strictly code-only as requested.
+
+   Let's verify the retry logic wording: "retries each failed download up to three times with a growing delay". This means: attempt 1 -> fail -> wait 1s -> attempt 2 -> fail -> wait 2s -> attempt 3 ->
+---
+```python
+import asyncio
+import aiohttp
+
+async def download_and_save(url, session, max_retries=3, base_delay=1):
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            await asyncio.sleep(base_delay * (2 ** (attempt - 1)))  # Exponential backoff
+        try:
+            resp = await session.get(url)
+            resp.raise_for_status()
+            content = await resp.text()
+            # Sanitize filename for disk storage
+            safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_")
+            with open(f"{safe_name}.html", "w", encoding="utf-8") as f:
+                f.write(content)
+            return
+        except Exception as e:
+            if attempt == max_retries:
+                print(f"Failed: {url} - {e}")
+
+async def main():
+    urls = ["https://example.com", "https://example.org", "https://example.net"]
+    async with aiohttp.ClientSession() as session:
+        await asyncio.gather(*[download_and_save(url, session) for url in urls])
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```

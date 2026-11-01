@@ -1,0 +1,70 @@
+run 21287 | dynhot_answer_hottest_no_merge | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 80.15 t/s | prompt 98.4 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/dynv/s.ini,hotmaps=/tmp/runstate/dynv/hotmaps | power 220+280 W | 2026-10-28 21:33:59
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while keeping it functional as a playable Tetris game. It should be a single HTML file (or as close as possible) with inline CSS and JavaScript.
+
+2.  **Key Requirements for Tetris:**
+   - Grid/board (typically 10x20)
+   - Tetromino pieces (7 standard shapes)
+   - Movement (left, right, down, rotate)
+   - Collision detection
+   - Line clearing
+   - Score tracking
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimization Strategies:**
+   - Use a single `<canvas>` for rendering
+   - Minimize variable names
+   - Use compact logic (bit manipulation, arrays, loops)
+   - Avoid external libraries
+   - Inline everything in one file
+   - Use modern JS features (arrow functions, template literals, etc.) but keep them short
+   - Consider using a compact representation for pieces (e.g., bitmasks or arrays)
+   - Use a single loop for game logic
+   - Minimize CSS (just reset margins, center canvas)
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <body style="margin:0;background:#000">
+   <canvas id=c width=200 height=400></canvas>
+   <script>
+   // Game state
+   const W=10,H=20;
+   const c=document.getElementById('c');
+   const ctx=c.getContext('2d');
+   // Pieces: 7 tetrominoes, each as array of [x,y] offsets or bitmasks
+   // Let's use bitmasks for compactness: 0x1234... but maybe arrays are easier
+   // Actually, standard representation: [[0,0],[1,0],[0,1],[1,1]] etc.
+   // Let's use a compact array of arrays
+   const P=[[[1,0],[0,1],[1,1],[2,1]],...]; // too long
+   // Better: use bitmasks or precomputed shapes
+   // Actually, let's use a simple array of strings or numbers
+   // I'll use a compact representation: each piece as an array of 4 coordinates relative to center
+   // Or use the classic: P = [ [0,0,1,1], [0,1,1,1], ... ] no
+   // Let's stick to arrays of [x,y] but minimize
+   // Actually, I can use a single array of 7 pieces, each as a flat array of 4 coords
+   // But for rotation, I need to handle it.
+   // Simpler: use a 2D array for the board, and a piece object with x,y,shape,rotation
+   // Let's use bitmasks for shapes: 0x0C, 0x0E, 0x04, 0x07, 0x08, 0x0B, 0x0D? Not standard.
+   // Standard tetrominoes as bitmasks (4x4 grid):
+   // I: 0x0010, 0x0010, 0x0010, 0x0010 -> 0x10101010? No.
+   // Let's use a simpler approach: define pieces as arrays of [dx,dy] for each block
+   // Actually, I'll use a compact representation: P = [[0,0,1,1],[0,1,1,1],[0,0,0,1],[0,1,1,1],[0,0,1,1],[0,1,1,1],[0,0,1,1]]? No.
+   // Let's look up minimal Tetris code online mentally. Common approach:
+   // Use a 1D array for board, 10x20 = 200 cells
+   // Pieces as arrays of 4 offsets
+   // Rotation: swap x,y and negate
+   // I'll write it out carefully.
+
+   // Let's draft step by step:
+   const c=document.getElementById('c');
+   c.width=200;c.height=400;
+   const ctx=c.getContext('2d');
+   const W=10,H=20;
+   const b
+---

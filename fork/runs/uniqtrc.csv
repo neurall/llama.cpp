@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+q36c-tet-det,qwen36,3,tetrisc,1024,"--moe mode=cache,sim-vram=3000,upload-now=2,jit-all=1,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-q36c-tet.txt,uniqseg=128,uniqtrace=1100,acts=1100,observe=0",

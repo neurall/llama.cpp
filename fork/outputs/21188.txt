@@ -1,0 +1,36 @@
+run 21188 | dynhot_global_map | ww1c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.53 t/s | prompt 121.3 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=off,state=/tmp/runstate/unk/t-hist-ini.ini,hotmaps=/tmp/runstate/unk/hotmaps | power 220+280 W | 2026-10-28 19:31:37
+
+Here's a thinking thinking sequence
+
+1.  **Deconstruct the user's request:**
+    *   Topic: Main causes of WWI.
+    *   Specific focus: How the alliance system turned a regional Balkan conflict into a war between great powers.
+    *   Constraints: Clear paragraphs, no lists, no headings.
+
+2.  **Brainstorm and Outline (Mental or rough notes):**
+    *   *Causes:* Imperialism, nationalism, militarism, alliance systems, the assassination of Archduke Franz Ferdinand.
+    *   *Balkan conflict:* Serbia vs. Austria-Hungary. The assassination is the spark.
+    *   *Alliance system:* Dual Alliance (Germany/Austria), Triple Entente (France/Russia/UK). How they get dragged in.
+    *   *Flow:* Start with underlying tensions -> The spark -> The escalation via alliances -> The result.
+
+3.  **Drafting - Paragraph by Paragraph (adhering to constraints):**
+    *   *Paragraph 1: Underlying causes.* Need to mention imperialism, nationalism, and militarism without using lists.
+        *   *Drafting:* The First World War emerged from a complex web of long-standing tensions among European powers, driven primarily by intense nationalism, aggressive imperialism, and the arms race. Major powers like Germany, Britain, France, and Russia competed for colonies and influence, creating friction that eroded trust. Simultaneously, the rise of nationalist movements in the Balkans and within multi-ethnic empires like Austria-Hungary and the Ottoman Empire threatened stability, as populations sought self-determination or feared domination by rival states. This environment was further exacerbated by militarism, where nations invested heavily in military expansion and developed rigid mobilization plans, making war seem inevitable once a crisis occurred.
+
+    *   *Paragraph 2: The Spark and the Balkan Conflict.* Focus on the assassination and the regional nature.
+        *   *Drafting:* The immediate trigger was the assassination of Archduke Franz Ferdinand by a Serbian nationalist in Sarajevo on June 28, 1914. This event ignited a regional crisis in the Balkans, as Austria-Hungary viewed the act as an attack on its sovereignty and demanded harsh reprisals against Serbia. Serbia, backed by its own nationalist sentiments and seeking to protect its independence, initially resisted but eventually faced an ultimatum from Vienna that threatened to strip its sovereignty. The conflict appeared to be a localized dispute between a declining empire and a rising Balkan state, yet the involvement of external powers quickly transformed the situation.
+
+    *   *Paragraph 3: The Alliance System and Escalation.* This is the core of the user's specific request. How alliances turned regional to global.
+        *   *Drafting:* The system of alliances acted as the mechanism that expanded the regional dispute into a continental war. Austria-Hungary relied on its Dual Alliance with Germany, which provided a guarantee of support, encouraging Vienna to pursue a hard line against Serbia. Germany, in turn, saw this as an opportunity to assert its dominance and weaken its rivals. When Serbia mobilized and sought support from Russia, the alliance network activated. Russia, bound by Slavic solidarity and strategic interests in the Balkans, began to mobilize its forces to protect Serbia, which Germany interpreted as a direct threat. The rigid nature of the alliance commitments meant that diplomatic flexibility was sacrificed for military solidarity, as leaders felt compelled to honor their treaties rather than negotiate a settlement.
+
+    *   *Paragraph 4: The Great Powers and the Final Escalation.* How the Entente gets involved and the war becomes global.
+        *   *Drafting:* As Russia and Germany mobilized, the Triple Entente involving France and Britain drew the conflict further into the wider war. France, allied with Russia, was compelled to support its partner against German aggression, while Britain, though initially hesitant, eventually entered the war due to German violations of Belgian neutrality and the threat to the balance of power in Europe. The alliance system ensured that a single spark in the Balkans could not be contained, as each great power was locked into a chain of obligations that made isolation impossible. Consequently, the regional conflict between Serbia and Austria-Hungary rapidly escalated into a massive confrontation involving the major European powers, fueled by mutual distrust, military mobilization schedules, and the inability of diplomacy to override the strategic imperatives of the alliance blocs.
+
+4.  **Review and Refine (Self-Correction/Simulation):**
+    *   *Check constraints:*
+        *   Clear paragraphs? Yes, four distinct paragraphs.
+        *   No lists? Yes, no bullet points or numbered lists.
+        *   No headings? Yes, no titles.
+        *   Main causes explained? Yes (nationalism, imperialism, militarism, assassination).
+        *   Alliance system explained? Yes (Dual Alliance, Triple Entente, how they dragged powers
+---

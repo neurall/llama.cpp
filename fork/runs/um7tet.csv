@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+um7t-glm,glm,2,tetrisc,1024,,
+um7t-qn3,qwen38,2,tetrisc,1024,,
+um7t-q36,qwen36,2,tetrisc,1024,,
+um7t-q27,q27_iq4nl,2,tetrisc,1024,,
+um7t-glm-dyn,glm,2,tetrisc,1024,--moe dynhot=full,
+um7t-qn3-dyn,qwen38,2,tetrisc,1024,--moe dynhot=full,

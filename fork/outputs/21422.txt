@@ -1,0 +1,59 @@
+run 21422 | dynhot_layer_far | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 51.98 t/s | prompt 139.6 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 02:20:23
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I should keep it small but still feel good to use — I can add subtle polish (background, HUD, next piece, ghost piece) without bloating it too much. The user asked for "smallest," so I should honor that: keep it compact. But I can still make it feel crafted within a small footprint — a nice background, HUD, next piece, ghost piece, score, level, all in a small file.
+
+Balance: "smallest" is the explicit ask. I'll deliver a genuinely compact single-file Tetris (a few KB), but with tasteful design. Let me aim for something like ~60-90 lines that's dense but readable, with a distinctive look.
+
+Let me write it.
+
+Design: Tetris-flavored. Opening should be characteristic of the subject — the playfield itself, immediately. So no hero; the game IS the page. A grid-paper / CRT arcade feel. For the type I want something with character rather than a neutral UI sans: a chunky display face for the wordmark and a mono for the HUD numbers. Use Google Fonts? That adds a request; "smallest" — maybe use system fonts but pick distinctive ones. I could use a link to Google Fonts for a display face like "Bungee" or "Silkscreen" or "Press Start 2P" (pixel). Pixel font fits Tetris. But "smallest" — a font link is one line. I'll include one font link for display (Silkscreen or Bungee) and pair with a readable body (IBM Plex Mono or Space Grotesk?). Actually pairing: display = "Bungee" or "Silkscreen"; body = system mono stack. Let's do display: 'Silkscreen' (pixel) for wordmark and numbers, body: system-ui / ui-monospace.
+
+Hmm, but if offline the font fails. Fine, fallback.
+
+Palette: Tetris pieces have canonical colors (cyan, blue, orange, yellow, green, purple, red). Background should let those pop. A flat near-black with one neon accent would feel generic and would flatten the piece colors; I want a layered dark-blue/graphite field with a subtle grid, vignette, and a warm off-white for text. Use a deep desaturated navy/graphite (#101418-ish) plus multiple accent colors from the pieces themselves — that's naturally multi-color, not a single accent. Add a subtle scanline/grid ambient background with slow animation.
+
+Layout: left = HUD stack (wordmark, score, level, lines, next piece, controls legend), center = board, right maybe hold? Keep small: board + side panel. Two-column asymmetric layout.
+
+Implementation compactness: Use canvas for board and next.
+
+Compact Tetris logic:
+
+```js
+const W=10,H=20,S=22;
+```
+
+Use the classic "seed" trick for piece rotation: represent each piece as a binary number and rotate via bit ops. The famous compact Tetris:
+
+```js
+function makePiece(type){
+  let s = [[0,1,1,0],[1,1,1,0],[0,1,0,0]] // ...
+}
+```
+
+The classic tiny version (from "Tetris in 40 lines"):
+
+```js
+o = [
+ [0,1,1,0, 1,1,1,0, 0,1,0,0], // T? 
+]
+```
+
+Let me use the well-known compact approach: pieces defined as 4x4 bitmasks per rotation using a number, rotate by bit manipulation:
+
+```js
+const P = [0xF0, 0x2222, 0x2F0, 0x82F0... ]
+```
+
+Actually the classic JS13k-ish approach:
+
+```js
+// pieces as 4-bit-per-row nibbles in a 16-bit int, rotate 4x4 matrix
+function rot(n){ // rotate 4x4 bit matrix
+  let r=0;
+  for(let i=0;i<16;i++) r |= (n>>i&1) << (3-(i>>2))*4 + (i&3);
+  return r;
+}
+```
+
+Hmm, need correct mapping. Let's define a 4
+---

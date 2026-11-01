@@ -1,0 +1,90 @@
+run 21292 | dynhot_same_prompt_one_record_tokdump2 | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.85 t/s | prompt 55.7 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd/s.ini,hotmaps=/tmp/runstate/tokd/hotmaps,tokdump=/tmp/runstate/tokd/dump.bin | power 220+280 W | 2026-10-28 21:43:39
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, rotation, movement, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or div-based)
+
+3.  **Minimize Code Strategy:**
+   - Use a single HTML file with inline CSS and JS.
+   - Use `<canvas>` for rendering (more compact than div-based).
+   - Use compact variable names and bitwise/array tricks where possible.
+   - Avoid external libraries.
+   - Keep logic minimal but functional.
+   - Use a compact representation for pieces (e.g., arrays of coordinates or bit patterns).
+   - Use a single loop for game logic.
+   - Minimize comments and whitespace.
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       body { margin: 0; background: #111; }
+       canvas { display: block; margin: auto; }
+     </style>
+   </head>
+   <body>
+     <canvas id="c" width="200" height="400"></canvas>
+     <script>
+       // Game logic here
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Develop Core Logic (Mental Refinement):**
+   - Grid: 10x20 array, 0 = empty, 1 = filled.
+   - Pieces: Define as arrays of [x,y] relative to center, or use predefined shapes.
+   - Rotation: Standard rotation matrix or precomputed shapes.
+   - Movement: Check bounds and collisions.
+   - Line clearing: Check rows, remove filled rows, shift down.
+   - Controls: Arrow keys + space for drop.
+   - Rendering: Draw grid and active piece.
+
+   Let's try to write compact code:
+
+   ```javascript
+   const c = document.getElementById('c');
+   const ctx = c.getContext('2d');
+   const W = 10, H = 20;
+   const grid = Array(H).fill(0);
+   const pieces = [
+     [[0,0],[1,0],[2,0],[3,0]], // I
+     [[0,0],[1,0],[0,1],[1,1]], // O
+     [[0,0],[1,0],[2,0],[1,1]], // T
+     [[0,0],[1,0],[1,1],[2,1]], // S
+     [[0,0],[1,0],[0,1],[1,1]], // Z (wait, Z is different)
+     // Let's fix shapes properly
+   ];
+   ```
+
+   Actually, standard Tetris shapes:
+   I: [[0,0],[1,0],[2,0],[3,0]]
+   O: [[0,0],[1,0],[0,1],[1,1]]
+   T: [[0,0],[1,0],[2,0],[1,1]]
+   S: [[0,0],[1,0],[1,1],[2,1]]
+   Z: [[0,0],[1,0],[0,1],[1,1]] -> Wait, Z is [[0,0],[1,0],[1,1],[2,1]]? No.
+   Let's use standard 4x4 bounding box representation or just relative coordinates.
+   Better: Use a compact array of shapes with rotation states.
+
+   Actually, a common compact representation:
+   ```javascript
+   const P = [
+     [[0,0],[1,0],[2,0],[3,0]], // I
+     [[0,0],[1,0],[0,1],[1,1]], // O
+     [[0,0],[1,0],[2,0],[1,1]], // T
+     [[0,
+---

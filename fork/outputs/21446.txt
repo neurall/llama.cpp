@@ -1,0 +1,51 @@
+run 21446 | dynhot_layer_far | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.09 t/s | prompt 8.2 t/s | 987 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 03:20:59
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Option: Use 7 tetrominoes as arrays of 4 cells relative coordinates. Rotation by transform (x,y)->(-y,x) or (y,-x). Need handle. Use shape as array of [x,y]. Rotation around origin. For I shape horizontal [0,0],[1,0],[2,0],[3,0]; rotate gives vertical. For O [0,0],[1,0],[0,1],[1,1]. For others.
+
+Need collision: board 10x20. Piece position x,y. Cells absolute = x+dx, y+dy. Check within board and not occupied. Spawn at x=3? y=0? Need ensure shapes fit. For I horizontal width 4, x=3. For vertical width 1, x=4? But spawn shape initial orientation. Could spawn at x=3, y=0. Some shapes may have negative coords after rotation? Need normalize? Rotation around origin can produce negative coords. If piece position x,y and shape coords can be negative, collision handles. But spawn may be invalid if negative. Better normalize shape after rotation by shifting min x/y to 0? But rotation around origin and then normalize changes pivot. Simpler use matrices and rotate with bounding box. Or use predefined rotations? Need minimal.
+
+Alternative use 4x4 matrices for each tetromino and rotate matrix. But code longer.
+
+Could use shape arrays and rotate around center? Need ensure no negative. We can normalize after rotation: compute min x, min y, subtract. But then rotation pivot changes; still valid. For collision, shape coords nonnegative. Spawn x=3, y=0. For shapes width up to 4, x=3 fits. For vertical I width 1, x=3 fits. Good. But rotation normalization may shift shape; okay.
+
+Need line clearing. Board as array of 20 rows of 10 ints. Use 0/1. Draw.
+
+Game loop: requestAnimationFrame with time. Gravity every e.g. 500ms. Use drop interval. Keyboard: left/right, down soft drop, up rotate, space hard drop. Need prevent default. Need restart on game over? Could press R.
+
+Need scoring: lines cleared * 100? Maybe simple.
+
+Need minimal code. Need maybe no CSS except body. Use canvas.
+
+Let's craft code.
+
+Potential code:
+
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+const c=document.getElementById('c'),g=c.getContext('2d'),W=10,H=20,S=30;
+let b=Array.from({length:H},()=>Array(W).fill(0)),p,px,py,shape,score=0,over=false,last=0,drop=0;
+const shapes=[
+ [[0,0],[1,0],[2,0],[3,0]], // I
+ [[0,0],[1,0],[0,1],[1,1]], // O
+ [[0,0],[1,0],[2,0],[1,1]], // T
+ [[0,0],[1,0],[1,1],[2,1]], // S? Actually S: [1,0],[2,0],[0,1],[1,1]? Need define.
+ [[0,1],[1,1],[1,0],[2,0]], // Z
+ [[0,0],[0,1],[1,1],[2,1]], // L? 
+ [[0,0],[1,0],[2,0],[2,1]] // J?
+];
+Need correct shapes. Let's define standard:
+I: [[0
+---

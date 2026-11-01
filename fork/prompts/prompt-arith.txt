@@ -1,0 +1,1 @@
+Write out the multiplication table from 1x1 to 12x12, one equation per line in the form 7x8=56, nothing else.

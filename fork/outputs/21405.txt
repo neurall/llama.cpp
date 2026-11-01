@@ -1,0 +1,36 @@
+run 21405 | dynhot_requests_fp8 | pyasyncc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 87.81 t/s | prompt 161.1 t/s | 269 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:10:18
+
+
+---
+```python
+import asyncio
+import aiohttp
+import os
+
+async def download_url(url, retries=3, delay=1):
+    for attempt in range(retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        filename = url.replace("https://", "").replace("http://", "").replace("/", "_").replace(".", "_") + ".html"
+                        with open(filename, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        print(f"Saved: {filename}")
+                        return
+            await asyncio.sleep(delay)
+            delay *= 2
+        except Exception as e:
+            print(f"Error on attempt {attempt + 1}: {e}")
+            await asyncio.sleep(delay)
+            delay *= 2
+
+async def main(urls):
+    tasks = [download_url(url) for url in urls]
+    await asyncio.gather(*tasks)
+
+if __name__ == "__main__":
+    urls = ["https://example.com", "https://example.org", "https://example.net"]
+    asyncio.run(main(urls))
+```

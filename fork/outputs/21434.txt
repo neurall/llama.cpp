@@ -1,0 +1,44 @@
+run 21434 | dynhot_layer_far | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.27 t/s | prompt 20.9 t/s | 1005 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 03:00:59
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris in JavaScript" genre — like the ~140-byte-ish obfuscated ones (which are barely playable). I want something genuinely playable: 7 pieces, rotation, movement, gravity, line clearing, score, game over, restart. I can make it compact but readable-ish, or ultra-golfed. The user said "smallest html tetris game" — I'll aim for a genuinely tiny single file, maybe a few hundred bytes of JS, but still playable and not a broken gimmick.
+
+Let me design it:
+
+- Canvas rendering, small grid (e.g., 10×18 or 10×20).
+- Pieces as arrays of rotation states or use a compact encoding.
+- Keyboard controls: arrows for move/rotate/down, maybe Z/X rotate.
+- Gravity via setInterval or requestAnimationFrame with timer.
+- Line clear + score.
+- Game over when spawn collides; press any key / R to restart.
+
+To keep it truly small, I'll write dense but functional code. Let me actually write it and count roughly.
+
+A classic compact approach: represent each tetromino as a set of 4 cells in a 4×4 (or use strings). A very compact trick: store shapes as arrays of [x,y] offsets per rotation, or use the "binary grid per rotation" approach.
+
+Compact encoding idea: each piece = array of rotations, each rotation = array of 4 [dx,dy]. E.g.:
+
+```js
+P=[
+[[1,0],[2,0],[0,1],[1,1]], // O? no...
+]
+```
+
+Actually let me define pieces with rotations. To be small, I can define each piece as a list of 4 rotation states, each state a list of 4 blocks. That's verbose. Alternative: define one rotation and rotate computationally? Rotation math on arbitrary offsets works for some pieces but produces floating point issues for odd-sized pieces (like S/Z/T which are 3-wide). A known trick: rotate within a bounding box: (x,y) -> (y, size-1-x) where size is the piece's box dimension (2 for O, 3 for most, 4 for I). That works if offsets are within the box. So define each piece as base cells + box size, rotate computationally. That's compact.
+
+Pieces (SRS-ish base orientations, using box size n, cells as [x,y] with y down):
+
+- I: size 4, cells [[0,1],[1,1],[2,1],[3,1]]
+- O: size 2, cells [[0,0],[1,0],[0,1],[1,1]] — rotation is identity, fine.
+- T: size 3, cells [[1,0],[0,1],[1,1],[2,1]] (pointing up: flat bottom row with nub on top middle)
+- S: size 3, cells [[1,0],[2,0],[0,1],[1,1]]
+- Z: size 3, cells [[0,0],[1,0],[1,1],[2,1]]
+- J: size 3, cells [[0,0],[0,1],[1,1],[2,1]]
+- L: size 3, cells [[2,0],[0,1],[1,1],[2,1]]
+
+Rotation clockwise in an n×n box with y-down coordinates: (x,y) -> (n-1-y, x). Let me verify: for T size 3, base: cells (1,0),(0,1),(1,1),(2,1). Rotate CW: (x,y)->(2-y, x). 
+- (1,0)->(2,1); (0,1)->(1,0); (1,1)->(1,1); (2,1)->(1,2). Result: (2,1),(1,0),(1,1),(1,2) — that's T pointing right (vertical line x=1 with nub at x=2,y=1). Correct CW rotation. Good.
+
+Rotate CCW: (x,y)->(y, n-1-x). For T: (1,0)->(0,2); (0,1)->(1,2); (1,1)->(1,1);
+---

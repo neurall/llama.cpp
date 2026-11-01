@@ -1,0 +1,13 @@
+run 21441 | dynhot_layer_far | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 10.19 t/s | prompt 176.1 t/s | 128 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 03:14:27
+
+The user wants me to add a function that counts the lines of this file and prints the count. This is a C++ file (json-schema-to-grammar.cpp). The file appears to be cut off mid-function (`gbnf_escape_length` is incomplete).
+
+I need to add a function that counts the lines of this file and prints the count. The simplest approach: a function that opens the file itself (using `__FILE__` macro or a hardcoded path) and counts lines by reading it.
+
+Let me write a function:
+
+```cpp
+static void count_and_print_file_lines() {
+    std::ifstream file(__FILE__);
+   
+---

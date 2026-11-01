@@ -1,0 +1,44 @@
+run 21411 | dynhot_requests_fp8 | poemseac | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 98.06 t/s | prompt 192.4 t/s | 254 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:13:44
+
+
+---
+The black water swells, a restless beast
+breathing in the dark,
+its surface rippling with the ghostly
+reflections of a moon that refuses
+to stay still.
+
+Far out, the lighthouse stands
+like a solitary finger
+pointing into the void,
+casting a beam of pale gold
+that cuts through the heavy mist.
+
+It is a beacon for the lost,
+a steady pulse against the chaos,
+guiding the eye through the
+endless expanse of silence.
+
+A small boat drifts in the shadows,
+its hull barely visible,
+rocking gently with the tide.
+The captain holds the wheel tight,
+eyes fixed on the distant light,
+knowing that shore is a dream
+now, and only the sea remains.
+
+The waves whisper secrets
+to the wood and the steel,
+stories of storms past
+and the cold, deep hunger
+of the ocean floor.
+
+Here, the world shrinks
+to the size of a cabin,
+to the sound of the engine
+humming low and steady,
+a heartbeat in the night.
+
+The light flickers, then holds,
+a promise of safety
+in the vast, unyielding dark.

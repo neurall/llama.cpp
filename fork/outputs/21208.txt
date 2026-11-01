@@ -1,0 +1,95 @@
+run 21208 | dynhot_same_prompt_pool_knob | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.2 t/s | prompt 108.6 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=pool,hotmaps=/tmp/runstate/plat/pool | power 220+280 W | 2026-10-28 20:09:35
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while keeping it functional as a Tetris game. It should be a single HTML file (or as close as possible) with inline CSS and JavaScript.
+
+2.  **Key Requirements for Tetris:**
+   - Grid/board (typically 10x20)
+   - Tetromino pieces (7 shapes)
+   - Movement (left, right, down, rotate)
+   - Collision detection
+   - Line clearing
+   - Game over condition
+   - Score tracking (optional but good)
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimization Strategies:**
+   - Use a single `<canvas>` for rendering
+   - Minimize variable names
+   - Use compact logic (bit manipulation, arrays, loops)
+   - Avoid external libraries
+   - Inline everything in one file
+   - Use modern JS features (arrow functions, ternary, etc.)
+   - Remove comments, whitespace, and unnecessary features
+
+4.  **Core Logic Design (Mental Draft):**
+   - Board: 10x20 array of 0s
+   - Pieces: Define shapes as arrays of coordinates or bit patterns
+   - Rotation: Standard rotation matrix or precomputed shapes
+   - Movement: Check bounds and collisions
+   - Line clearing: Check rows, remove filled ones, shift down
+   - Controls: Arrow keys + space for drop/rotate
+   - Rendering: Draw grid and active piece on canvas
+
+5.  **Code Construction (Iterative Refinement):**
+   Let's write a minimal version step by step, then compress it.
+
+   *Board & Pieces:*
+   ```js
+   const B = Array(20).fill(0).map(() => Array(10).fill(0));
+   const P = [
+     [[1,1,1,1]], // I
+     [[1,1],[1,1]], // O
+     [[1,1,1],[0,1,0]], // T
+     [[1,1,1],[1,0,0]], // L
+     [[1,1,1],[0,0,1]], // J
+     [[1,1,0],[0,1,1]], // S
+     [[0,1,1],[1,1,0]]  // Z
+   ];
+   ```
+   Actually, bit patterns or flat arrays are smaller. Let's use flat arrays for shapes and rotation logic.
+
+   Better approach: Use a single array for each piece, and rotate by transposing/reversing.
+   But for minimal code, precomputing rotated shapes is easier.
+
+   Let's use a compact representation:
+   ```js
+   const S = [
+     [1,1,1,1],
+     [1,1,1,1],
+     [1,1,1,1],
+     [1,1,1,1]
+   ]; // I
+   ```
+   Actually, Tetris pieces are 4x4 or 3x3. Let's use 4x4 arrays with 0s for padding.
+
+   Standard minimal Tetris uses:
+   ```js
+   const T = [
+     [0,1,0,0],
+     [1,1,1,0],
+     [0,0,0,0],
+     [0,0,0,0]
+   ];
+   ```
+   But rotation is tricky. Let's use a simpler approach: store pieces as arrays of 4 coordinates relative to center, or use a well-known compact representation.
+
+   Actually, the classic minimal Tetris code often uses:
+   ```js
+   const P = [
+     [1,1,1,1],
+     [1,1,1,1],
+     [1,1,1,1],
+     [1,1,1,1]
+   ]; // I
+   ```
+   Wait, I'll use a known compact approach: define pieces as arrays of 4x4 grids, and rotate by `map(x=>x.reverse())` or similar.
+
+   Let's try a different, proven minimal approach:
+   Use a 10x20 board as a flat array or 2D array.
+   Use a piece object: `{shape, x, y, rot}`
+   Rotation: standard 90° clockwise: `shape.map((r,i)=>r.map((_,j)=>shape[j][i]))`
+   Actually, `shape.map(r=>r.reverse())` is not rotation
+---

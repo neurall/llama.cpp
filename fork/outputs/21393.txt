@@ -1,0 +1,33 @@
+run 21393 | dynhot_layer_combos | poemc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 97.78 t/s | prompt 141.6 t/s | 228 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps | power 200+200 W | 2026-10-29 00:59:27
+
+
+---
+The sun dips low, the sky turns deep,
+A gentle breeze begins to creep.
+The waves roll soft against the sand,
+A quiet rhythm, hand in hand.
+
+Your eyes reflect the fading light,
+A warmth that burns within the night.
+The salt air kisses on your skin,
+As we walk where the waves begin.
+
+The moon rises, pale and bright,
+Guiding us through the fading light.
+Your voice is soft, a whisper low,
+Like tides that gently ebb and flow.
+
+I hold your hand, the world is still,
+No need for words, no need for will.
+Just you and me, the sea and sky,
+Underneath the starlit eye.
+
+The darkness wraps us in a cloak,
+Of love that never needs to speak.
+The ocean hums a lullaby,
+For us, beneath the midnight sky.
+
+So close, the night is not too cold,
+Your heart beats steady, brave and bold.
+In this quiet, sacred space,
+We find our peace, our resting place.

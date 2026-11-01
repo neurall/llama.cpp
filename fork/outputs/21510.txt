@@ -1,0 +1,44 @@
+run 21510 | dynhot_replay4 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 29.08 t/s | prompt 10.3 t/s | 1005 tokens | args: -np 1 --moe upload-now=2,jit-all=1,replay=1,replay-ahead=4,observe=0 | power 220+280 W | 2026-10-29 10:22:02
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" category — like the ~140-byte-ish obfuscated ones (there's a famous tiny Tetris in JavaScript, e.g., "Tiny Tetris" by unknown, and the famous 219-byte tetris on codegolf.stackexchange). But those are often unreadable and lack polish. The user says "smallest html tetris game" — I think they want a genuinely compact single-file HTML Tetris that works. I can aim for a very small byte count while keeping it functional and even decent-looking.
+
+Let me design a minimal Tetris:
+
+Core requirements:
+- 10×20 board
+- 7 tetrominoes with rotation (SRS-lite or simple rotation)
+- Gravity, line clear, score, game over, controls (left/right/down/rotate/drop)
+- Rendering — canvas is easiest and compact.
+
+To keep it small:
+- Use a single canvas, draw cells as filled rects.
+- Represent pieces as arrays of rotation states or use a compact encoding.
+- Use keyboard controls: arrows + Z/X or up for rotate, space for hard drop.
+- Minimal styling: dark background, centered canvas.
+
+Let me try to write compact but readable-ish code. Actually, "smallest" — I could go full golf. But there's a balance: I want it to actually work reliably. Let me write a genuinely compact implementation, maybe ~600-900 bytes of JS, and present it nicely. I can also mention the byte count.
+
+Let me think about the most compact piece representation. Classic trick: encode each tetromino's rotations as bit patterns or coordinate lists.
+
+Compact approach: define pieces as arrays of 4 rotation states, each state as array of [x,y] cells. That's verbose. Alternative: use a string encoding.
+
+A very compact known trick: represent each rotation as a number where bits encode cells in a 4×4 grid (16 bits). Then cells extracted by iterating bits.
+
+E.g., I: 
+- state 0: cells at row 1: (0,1),(1,1),(2,1),(3,1) → in 4x4 grid bits: positions 4,5,6,7 → 0x00F0 = 0b0000111100000000
+- state R (rotated 90° CW): column 2: (2,0),(2,1),(2,2),(2,3) → bits 2,6,10,14 → 0x2222
+- state 2: row 2: bits 8,9,10,11 → 0xF00... wait 0b1111000000000000 = 0xF000
+- state L: column 1: bits 1,5,9,13 → 0x4444
+
+So I = [0x0F00, 0x4444, 0xF000... hmm let me be careful with bit ordering. If bit index = y*4+x, bit set means cell present.
+
+I horizontal at y=1: x=0..3, y=1 → bits 4,5,6,7 → value 0x00F0 (binary 0000111100000000). 
+I vertical at x=2: bits 2,6,10,14 → 0x2222.
+I horizontal at y=2: bits 8..11 → 0xF000? binary: bit 8 = 0x0100, bit 9=0x0200, bit10=0x0400, bit11=0x0800 → sum 0x0F00. Hmm wait: 0x0F00 = 0000111100000000 in binary? 0x0F00 = 0000 1111 0000 0000 → bits 8,9,10,11. Yes. And 0x00F0 = 0000 0000 1111 0000 → bits 4,5,6,7. Yes.
+
+So I = [0x0F00, 0x2222, 0x0F00, 0x2222] — only two distinct states, can repeat.
+
+O: 2×2 block. In 4×4 grid, place at (1,
+---

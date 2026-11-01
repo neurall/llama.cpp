@@ -1,0 +1,59 @@
+run 21145 | dspark_fix3 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.12 t/s | prompt 40.4 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-10-28 18:39:52
+
+The user wants the smallest HTML Tetris game. The literal ask: "generate smallest html tetris game." So minimal code. But I can still make it a compact yet crafted single-file Tetris. The instruction is "smallest" — so brevity is the point. I should deliver a compact, working Tetris in one HTML file, but I don't want a bare black rectangle either; I want it to feel considered even at small size.
+
+Balance: keep it genuinely small (that's the request), but make it feel alive — a nice canvas, next-piece preview, score/lines/level, keyboard controls, ghost piece, subtle grid. Still compact.
+
+Let me write tight code.
+
+Key design: dark background, but rather than one accent floating on near-black, I want a layered palette with several hues. Tetris pieces already give 7 colors, which is naturally multi-color. Use a subtle CRT-ish playfield with grid lines, a scanline vignette, and a chunky display typeface.
+
+Fonts: a distinctive display face + a readable body/UI face. For a Tetris-ish arcade feel, "Silkscreen" (pixel) for display and "Space Grotesk" for body/UI. That's a good pairing.
+
+Layout: the most characteristic thing about Tetris is the playfield itself, so I'll lead with the board rather than any title screen — board front and center immediately, with side rail for score/next.
+
+Let me write compact code.
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=Space+Grotesk:wght@400;700&display=swap" rel=stylesheet>
+<style>
+*{box-sizing:border-box;margin:0}
+body{background:#101014;color:#e8e6e1;font:14px/1.5 'Space Grotesk',system-ui;display:grid;min-height:100vh;place-items:center;
+background-image:radial-gradient(...)}
+```
+
+Let me design the visual:
+- Background: deep slate #0d0f14 with a layered gradient — a subtle vertical gradient plus a fine dot grid, plus a soft warm glow behind the board. Layered ambient, not big blobs. Maybe a subtle repeating linear-gradient scanline overlay at low opacity.
+- Board: 10x20, cell 22px → 220x440. Canvas with devicePixelRatio scaling? Keep simple: canvas width=220 height=440, CSS scale up a bit. Actually just set canvas to 10*24=240 x 20*24=480.
+- Blocks drawn with a slight bevel: fill color, lighter top-left edge, darker bottom-right, plus 1px inner gap.
+
+Side rail: SCORE / LINES / LEVEL in big Silkscreen numerals, NEXT preview canvas, hold maybe. Keep small: score, lines, level, next.
+
+Controls: ← → ↓ move, ↑ rotate, space hard drop, P pause, R restart. Also on-screen key legend.
+
+Let me write the game logic compactly.
+
+```js
+const W=10,H=20,S=24,c=document`#b`,x=c.getContext`2d`;
+```
+
+Tetromino definitions using matrices rotation via transpose+reverse.
+
+Standard SRS-ish: define pieces as arrays of coordinates in 4x4 or use matrix rotation. Simplest compact: each piece as a string matrix, rotate by transposing and reversing rows. Collisions checked against matrix cells.
+
+```js
+const P='0,0,0|1,1,1|0,1,0'... 
+```
+Better: define shapes as arrays of row strings.
+
+```js
+const T=[[[0,0,0],[1,1,1],[0,1,0]],[[0,1,0],[1,1,1],[0,1,0]],[[0,1,0],[1,1,1],[0,0,0]],[[0,1,0],[1,1,1],[0,1,0]]]
+```
+That's I-piece. Simpler: generic rotate function.
+
+Compact approach:
+
+```js
+const S={I:[[0,0,0,0],[1,
+---

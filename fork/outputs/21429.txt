@@ -1,0 +1,58 @@
+run 21429 | dynhot_layer_far | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.25 t/s | prompt 37.9 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 02:55:56
+
+The user wants the smallest HTML Tetris game. The ask is minimal: "generate smallest html tetris game." So the goal is compactness — a tiny single-file Tetris. I shouldn't over-build. Give a small HTML file.
+
+Let me write a genuinely compact but working Tetris.
+
+Classic tiny tetris approach:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// minimal tetris
+</script>
+```
+
+Let me write compact code.
+
+```js
+B=document,c=B`getContext`('2d'),W=10,H=20,S=16,g=[],d=0
+for(i=W*H;i--;)g[i]=0
+P=[[],[17,3,0x8c0,0x60],[15,0x888,0],[6,0xcc,6,0xcc],[0x2c6,0x62,0],[0x6c,0xc6],[0x36,6,0xc0,0x6c]]
+```
+
+Hmm, let me use a simpler well-known tiny approach: pieces as arrays of 4x4 bitmasks or coordinate sets, rotate by matrix rotation.
+
+Simplest compact: define pieces as strings? Let's do:
+
+```js
+P=[15,17,3,0x8c0,0x60,6,0xcc,0x2c6,0x62,0xc6,0x36,0x6c,0x6c0]
+```
+
+Actually a neat trick: each piece defined by a number whose bits form a 4x4 grid; rotate by bit rotation.
+
+Let me define pieces as 4x4 bitmaps (16-bit) and rotate with a function:
+
+```js
+R=n=>{let r=0;for(y=4;y--;)for(x=4;x--;)r|=((n>>((3-x)*4+y))&1)<<((3-y)*4+x);return r}
+```
+
+Hmm, need to get rotation direction right. Let's define bit index = y*4+x, y row from top. Rotate clockwise: new[x][3-y] = old[y][x]. So new row = x, new col = 3-y. new index = x*4 + (3-y).
+
+```js
+R=n=>{let r=0;for(y=4;y--;)for(x=4;x--;)if(n>>((3-y)*4+x)&1)r|=1<<(x*4+3-y);return r}
+```
+
+Wait careful: old[y][x] bit index = y*4+x. Let me just: for i in 0..15: y=i>>2, x=i&3; if(n>>i&1) r|=1<<(x*4+3-y). That's clockwise.
+
+Pieces (4x4, top-aligned for spawn):
+- I: row1 filled → bits 4,5,6,7 → 0x0F0
+- O: bits 5,6,9,10 → 0x0660
+- T: bits 4,5,6,9 → 0x0E2? Let's compute: 16+32+64+512 = 624 = 0x270. Row1: x=1,2,3? Standard T: row0: x=1,2,3? Let's do T as row1 = x0..2? Simpler: T = bits 1,5,9,2? Let's just define:
+  - T: `0110 / 1110 / 0000`? Keep it simple with 4-bit rows.
+
+Let me define pieces with rows in a 4x4 grid, top rows:
+- I: 1111 in row 0 → 0xF000
+- O: rows 0,1: 1100,1100 → 0b1100110000000000 = 0xCC00
+- T: 0110? Let's do 1110 / 0100 → hmm. T: row0 = 0110? Let's do row0: 1110
+---

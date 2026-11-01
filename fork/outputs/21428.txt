@@ -1,0 +1,92 @@
+run 21428 | dynhot_layer_far | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 51.6 t/s | prompt 119.0 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 200+200 W | 2026-10-29 02:54:30
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want minimal code. But I also want it to feel genuinely crafted: nice typography, smooth feedback, a satisfying little bit of polish. There's a tension here: "smallest html tetris game" — the ask is for compactness. I should honor that: deliver a genuinely tiny single-file Tetris. But I can still make it feel good — with minimal bytes but thoughtful defaults.
+
+Hmm. The instruction says keep it complete and self-contained. The user asked for "smallest". I should deliver a compact, dense one-file Tetris that actually plays well. Maybe I can offer a tiny version that's still polished — small code, but the rendered game looks decent.
+
+Let me strike a balance: a genuinely small single-file Tetris (a few dozen lines), readable-ish, that plays properly with rotation, line clears, scoring, levels, next piece, hold maybe not (keeps it small). And the rendering looks clean by default since canvas colors and a dark page background cost almost nothing.
+
+Let me write it.
+
+Approach: canvas-based, 10x20 grid. Use a compact tetromino definition via rotation computed by matrix rotation.
+
+Minimal but complete implementation:
+
+```html
+<canvas id=c width=250 height=500><body style=margin:0;background:#111;>
+<script>
+// game
+</script>
+```
+
+Let me write compact code:
+
+```js
+const c=document.getElementById('c'),x=c.getContext('2d'),S=25,W=10,H=20;
+let g=Array.from({length:H},()=>Array(W).fill(0)),p,n,s=0,l=0,d=1e3,t=0;
+const P='⛀⛁⛂⛃... ' // hmm
+```
+
+Better: define pieces as strings of 4x4 bitmaps? Compact way: use the classic "P" array of numbers where each piece is defined by its 4 rotations as offsets. A well-known trick:
+
+```js
+const S='1111,,,,I;...'
+```
+
+Simplest compact: define each piece as a 4x4 (or NxN) matrix string and rotate.
+
+```js
+const P=[
+"1111",  // I
+"1,1,11", // J ... 
+]
+```
+
+Let me just use a compact string with rows separated by "." and cells by nothing:
+
+pieces = ["1111", "1,1,111"...] hmm widths differ. Let's use per-piece array of row strings; rotation done by transposing+reversing with padding.
+
+Actually simplest robust: define each piece in a 4x4 bitmask integer per rotation? Or define base shape in NxN where N = row length, rotate within that square. I piece: "1111/1111/1111/1111"? No, that's a square.
+
+Standard approach: define each piece as a square matrix:
+- I: 4x4 with row1 = 1111
+- O: 2x2
+- others: 3x3
+
+Rotation: rotate the square matrix. That works fine and is compact.
+
+```js
+const P=[
+"....,1111,....,....",  // I
+"..11,..11,....,....",  // O  (2x2 in 4x4? better 2x2 no rotation needed)
+".1...,111.,....,...",  // T
+...
+]
+```
+
+Let me use strings of digits, rows separated by ",". Each piece square size = number of rows.
+
+```js
+const P=[
+"1111,1111,1111,1111" // no
+]
+```
+
+OK let me just do it cleanly:
+
+```js
+const P = [
+ [0,0,0,0],
+]
+```
+
+Honestly, a clean compact way:
+
+```js
+const P="1111|0,11,11|1,11,10|1,11,01|11,11|111,010|111,001".split("|")
+```
+
+Hmm, let me define:
+
+- I:
+---

@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+dm-q36-store,qwen36,2,tetrisc,1024,"--moe sim-vram=3072,dynhot=store",
+dm-q36-full,qwen36,2,tetrisc,1024,"--moe sim-vram=3072,dynhot=full",
+dm-q36-read,qwen36,1,tetrisc,1024,"--moe sim-vram=3072,dynhot=read",

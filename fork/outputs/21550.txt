@@ -1,0 +1,74 @@
+run 21550 | dynhot_replay4 | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 85.8 t/s | prompt 49.9 t/s | 738 tokens | args: -np 1 --moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0 | power 220+280 W | 2026-10-29 11:05:33
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 180, dx = 2, dy = -2, bx = 100, by = 100;
+let score = 0;
+
+// Simple brick grid
+const bricks = [];
+for(let r=0; r<5; r++) for(let col=0; col<10; col++) bricks.push({x: col*20, y: r*20, alive: true});
+
+function loop() {
+    ctx.clearRect(0,0,200,200);
+    
+    // Move Ball
+    x += dx; y += dy;
+    
+    // Wall Collision
+    if(x < 0 || x > 200) dx = -dx;
+    if(y < 0 || y > 200) dy = -dy;
+    
+    // Paddle Collision (Paddle is at y=190, width 40, centered at 100)
+    if(y > 180 && x > 80 && x < 120) {
+        dy = -dy;
+        // Add slight angle based on hit position
+        dx = (x - 100) / 20;
+    }
+    
+    // Brick Collision
+    bricks.forEach(b => {
+        if(b.alive && x > b.x && x < b.x+20 && y > b.y && y < b.y+20) {
+            b.alive = false;
+            dy = -dy;
+            score++;
+        }
+    });
+    
+    // Draw
+    ctx.fillStyle = 'black';
+    ctx.fillRect(x-5, y-5, 10, 10); // Ball
+    ctx.fillRect(80, 190, 40, 10); // Paddle
+    bricks.forEach(b => {
+        if(b.alive) ctx.fillRect(b.x, b.y, 20, 20);
+    });
+    
+    ctx.fillText(score, 0, 10);
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
+```
+
+### How it works:
+1. **Canvas**: A 200x200 canvas is created.
+2. **Ball**: A small square (`x`, `y`) moves with velocity (`dx`, `dy`).
+3. **Paddle**: A fixed rectangle at the bottom. If the ball hits it, `dy` reverses.
+4. **Bricks**: An array of 50 bricks. If the ball overlaps a brick, it’s removed (`alive = false`) and `dy` reverses.
+5. **Loop**: `requestAnimationFrame` runs the game loop continuously.
+
+### Controls:
+- The ball automatically bounces off walls and the paddle.
+- No keyboard input is needed for this minimal version (the ball’s angle changes based on where it hits the paddle).

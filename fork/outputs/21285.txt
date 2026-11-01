@@ -1,0 +1,33 @@
+run 21285 | dynhot_key_own_text | ww1c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 73.43 t/s | prompt 151.9 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,dynhot-merge=2,state=/tmp/runstate/unkmat3/s.ini,hotmaps=/tmp/runstate/unkmat3/hotmaps | power 220+280 W | 2026-10-28 21:19:33
+
+Here's a thinking thinking sequence
+
+1.  **Deconstruct the user's request:**
+    *   Topic: Main causes of WWI.
+    *   Specific focus: How the alliance system turned a regional conflict in the Balkans into a war between great powers.
+    *   Constraints: Clear paragraphs, no lists, no headings.
+
+2.  **Brainstorm and Outline (Mental or rough notes):**
+    *   *Causes:* Imperialism, nationalism, militarism, alliance systems, the assassination of Archduke Ferdinand.
+    *   *Balkan conflict:* Serbia vs. Austria-Hungary. Bosnia annexation, Balkan nationalism.
+    *   *Alliance system:* Triple Entente (France, Russia, UK) vs. Central Powers (Germany, Austria-Hungary, Italy - though Italy switched).
+    *   *Mechanism of escalation:* Assassination -> Austria blames Serbia -> Russia supports Serbia -> Germany supports Austria -> France supports Russia -> UK gets involved (Belgium/Naval issues). Domino effect.
+    *   *Structure:* Need to flow logically. Start with underlying causes, move to the spark, explain the alliances, describe the escalation, conclude with the result. All in paragraphs.
+
+3.  **Drafting - Paragraph by Paragraph (Mental or text generation with constraint check):**
+    *   *Paragraph 1: Underlying causes.*
+        *   Content: Imperialism, nationalism, militarism. Competition for colonies, tension in Europe, arms race.
+        *   Drafting: The First World War emerged from a complex web of long-standing tensions rooted in imperialism, nationalism, and militarism. European powers were engaged in fierce competition for colonial territories and economic dominance, which created friction between established empires and rising challengers. Simultaneously, intense nationalism fueled desires for self-determination, particularly in regions like the Balkans where ethnic groups sought independence from multi-ethnic empires like Austria-Hungary and the Ottoman Empire. This nationalist fervor was exacerbated by an arms race, as nations invested heavily in military expansion and modern weaponry, fostering a climate where war was increasingly viewed as a viable tool for resolving disputes. The accumulation of these structural pressures created a volatile environment where a single incident could trigger a catastrophic response.
+
+    *   *Paragraph 2: The Spark and the Balkan context.*
+        *   Content: Assassination of Archduke Ferdinand. Serbia vs. Austria-Hungary. July Crisis.
+        *   Drafting: The immediate catalyst for the conflict was the assassination of Archduke Franz Ferdinand by a Serbian nationalist in Sarajevo on June 28, 1914. This event ignited a crisis in the Balkans, where Austria-Hungary viewed the act as a direct threat to its sovereignty and a provocation by Serbia, which had long been accused of supporting separatist movements within the empire. Austria-Hungary issued an ultimatum to Serbia that was designed to be unacceptable, hoping to punish the Serbian state and assert its dominance. Serbia's refusal to comply fully led Austria-Hungary to declare war, transforming the assassination from a localized political murder into a regional confrontation between two neighboring powers. However, the Balkans were not an isolated theater; the conflict was deeply entangled with the broader geopolitical struggles of the great powers, setting the stage for a wider escalation.
+
+    *   *Paragraph 3: The Alliance System and Escalation.*
+        *   Content: How alliances turned regional to global. Central Powers vs. Entente. Russia's role. Germany's "blank check". France's role. UK's entry.
+        *   Drafting: The system of alliances acted as the mechanism that rapidly expanded the regional Balkan dispute into a general European war. Austria-Hungary relied on the support of Germany, which provided a "blank check" of unconditional backing, encouraging Vienna to pursue a hardline policy against Serbia. Germany's assurance signaled to other powers that the Central Powers were prepared to fight, thereby emboldening the conflict. Russia, driven by its pan-Slavic ideology and strategic interests in the Balkans, mobilized its forces to support Serbia, viewing the Serbian cause as a defense of Slavic peoples against Austro-Hungarian aggression. This Russian mobilization alarmed Germany, which perceived it as a threat to its own security and initiated its own mobilization, effectively closing the window for diplomatic negotiation. The alliance structure meant that actions by one nation automatically triggered obligations from others, creating a domino effect where regional tensions were instantly amplified by the commitments of the great powers.
+
+    *   *Paragraph 4: The Great Powers and Final Escalation.*
+        *   Content: France, UK, Belgium. Naval issues. Belgium neutrality.
+        *   Drafting: As the mobilization continued, the involvement of additional great powers sealed the transition to a world war. France, bound by a military alliance with Russia, mobilized in response
+---

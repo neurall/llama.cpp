@@ -1,0 +1,42 @@
+run 21262 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.36 t/s | prompt 20.0 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 20:51:38
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but real Tetris:
+
+- 10×20 grid (or smaller grid to save bytes, e.g., 12×18? Standard is 10×20).
+- 7 tetrominoes with rotation.
+- Movement: left, right, down (soft drop), rotate, maybe hard drop.
+- Line clearing, scoring, game over.
+- Gravity interval.
+
+To keep it small, I can:
+- Use canvas rendering with simple filled rects.
+- Encode pieces as arrays of rotation states or use a compact representation.
+- Use a single piece definition trick: define each tetromino by a set of cells, and rotate by transforming coordinates (e.g., rotate around a pivot). A common golf trick: represent pieces as strings of coordinates or use the "SRS-lite" with rotation via (x,y)->(y,-x) around center.
+
+A very compact known approach: pieces defined as arrays of 4 rotation states each with 4 [x,y] pairs. Or even smaller: define each piece once and compute rotations mathematically.
+
+Let me design:
+
+Grid: W=10, H=20. Cell size ~ maybe 12px canvas 120×240? Or scale up. For "smallest" the code matters, not the visual size. But I also want it to look decent — I'll add minimal styling: dark background, centered canvas, monospace-ish font? Actually I should avoid overused fonts as primary identity... but for a code-golf tetris, minimalism is the point. I'll keep styling extremely minimal but tasteful: black background, crisp cells with slight color per piece, a thin border, score display. Keep bytes low but not sloppy.
+
+Let me write the game logic compactly.
+
+Piece representation trick: Use a string like "I J L O S T Z" mapping? A classic compact representation:
+
+```js
+P=[[1,1],[[0,1,1,0],[1,1,0,0]],...]  // too verbose
+```
+
+Better: each piece as list of cells in a 4x4 or 3x3 box, rotate by rotating the box. Represent piece as array of [x,y] offsets within a box of size n (3 or 4). Rotation: for a box of size n, rotating clockwise maps (x,y) -> (n-1-y, x) for 4x4? Let's think: for an n×n box, clockwise rotation: (x, y) -> (y, n-1-x). Check: top-left (0,0) -> (0, n-1)? Hmm. Clockwise rotation of a grid: the cell at (row r, col c) moves to (col c, row n-1-r)? Let's define coordinates (x = column, y = row). Clockwise 90°: new_x = n-1-y? Let's verify with a 2x2: cells (0,0),(1,0),(0,1),(1,1). Clockwise rotation: (0,0) [top-left] goes to top-right (1,0). Formula new = (n-1-y, x): (0,0)->(1,0). ✓. (1,0)->(1,1) ✓ (top-right goes to bottom-right). (0,1)->(0,0) ✓. (1,1)->(0,1) ✓. Good: rot cw: (x,y) -> (n-1-y, x).
+
+So define each piece with its cells in an n×n box (n=2 for O, n=3 for most, n=4 for I). Then rotation is just coordinate transform — no stored rotation states. That's compact.
+
+Pieces (using y down positive):
+- I: n=4, cells [(0,1),(1,1),(2,1),(3,1)]
+- O: n=2, cells [(0,0),(1,0),(0,1),(1,1)]
+- T: n=3, cells [(1,0),(0,1),(1,1),(2,1)]
+- S: n=3, cells [(1,0),(2,0),(0,1),(1,1)]
+- Z
+---

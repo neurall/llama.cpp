@@ -1,0 +1,275 @@
+run 21358 | dynhot_two_maps_answer_only | pylruc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 85.26 t/s | prompt 139.1 t/s | 2769 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/think/s.ini,hotmaps=/tmp/runstate/think/hotmaps,tokdump=/tmp/runstate/think/dump.bin --reasoning-budget 2048 | power 200+200 W | 2026-10-28 23:52:52
+
+Here's a thinking process:
+
+1.  **Understand User Requirements:**
+   - Implement an LRU (Least Recently Used) cache in Python
+   - Must support `get` and `put` operations in O(1) time
+   - Include unit tests using the `unittest` module
+   - Output: Code only, short comments, no explanation outside the code
+
+2.  **Key Constraints & Requirements:**
+   - O(1) time for `get` and `put`: This typically requires a hash map (dictionary) for O(1) lookup and a doubly-linked list (or deque) to track order. Python's `collections.OrderedDict` can be used, but it's not strictly O(1) for all operations in the way a custom doubly-linked list + dict is. However, `OrderedDict` is often accepted for LRU in Python, but to be strictly O(1) and demonstrate the classic algorithm, I'll implement a custom doubly-linked list + dictionary. Actually, Python's `collections.deque` is O(1) for append/pop, but removing arbitrary elements is O(n). So a doubly-linked list is better. I'll implement a simple doubly-linked list node class and use a dict to map keys to nodes.
+   - Wait, Python's `collections.OrderedDict` actually has O(1) for `popitem()` and `__getitem__`, but moving an item to the end is O(1) in Python 3.7+? Actually, `OrderedDict` maintains insertion order, and `move_to_end` is O(1). So `OrderedDict` is perfectly fine and idiomatic for LRU in Python. But the prompt says "implements an LRU cache with get and put in O(1) time", which often implies the classic algorithm. I'll stick to the classic doubly-linked list + dict approach to be safe and explicit, or I can use `OrderedDict` with a size limit. Actually, `OrderedDict` is standard and O(1) for these operations in modern Python. Let's implement the classic approach to be rigorous, but keep it concise.
+   - Actually, I'll use a doubly-linked list with a dictionary. It's straightforward and guarantees O(1).
+   - I need to handle a fixed capacity.
+   - `get(key)`: returns value if exists, else -1. Updates order.
+   - `put(key, value)`: adds/updates key. If capacity exceeded, evicts LRU. Updates order.
+
+3.  **Design the LRU Cache:**
+   - Node class: `key`, `value`, `prev`, `next`
+   - Dict: `cache = {}` mapping key to node
+   - Head and tail dummy nodes for the doubly-linked list
+   - `get(key)`:
+     - If key not in cache: return -1
+     - Move node to end (update prev/next pointers)
+     - Return value
+   - `put(key, value)`:
+     - If key in cache: update value, move to end
+     - Else: create new node, add to dict, add to end of list
+     - If len(cache) > capacity: remove head node (LRU), delete from dict
+   - Helper: `add_to_end(node)`, `remove_node(node)`
+
+   Wait, moving a node to the end in a doubly-linked list requires updating pointers. I'll implement helper methods.
+   Actually, Python's `collections.OrderedDict` is much simpler and idiomatic. Let's check if it meets O(1): `__getitem__` is O(1), `__setitem__` is O(1), `popitem()` is O(1). `move_to_end()` is O(1). So `OrderedDict` is perfectly fine. But the prompt might expect the classic implementation. I'll stick to the classic doubly-linked list + dict to be safe and explicit about O(1).
+
+   Let's draft the classic implementation:
+   ```python
+   class LRUCache:
+       def __init__(self, capacity: int):
+           self.capacity = capacity
+           self.cache = {}
+           self.head = ListNode(0)
+           self.tail = ListNode(0)
+           self.head.next = self.tail
+           self.tail.prev = self.head
+
+       def get(self, key: int) -> int:
+           if key not in self.cache:
+               return -1
+           self._move_to_end(self.cache[key])
+           return self.cache[key].value
+
+       def put(self, key: int, value: int) -> None:
+           if key in self.cache:
+               self.cache[key].value = value
+               self._move_to_end(self.cache[key])
+           else:
+               node = ListNode(key, value)
+               self.cache[key] = node
+               self._add_to_end(node)
+               if len(self.cache) > self.capacity:
+                   self._remove_head()
+
+       def _move_to_end(self, node):
+           self._remove_node(node)
+           self._add_to_end(node)
+
+       def _remove_node(self, node):
+           node.prev.next = node.next
+           node.next.prev = node.prev
+
+       def _add_to_end(self, node):
+           node.prev = self.tail.prev
+           node.next = self.tail
+           self.tail.prev.next = node
+           self.tail.prev = node
+
+       def _remove_head(self):
+           lru = self.head.next
+           self._remove_node(lru)
+           del self.cache[lru.key]
+   ```
+   This is clean and O(1). I'll add a `ListNode` class inside or as a nested class. Actually, I can just define it inside `LRUCache` or as a separate class. I'll keep it concise.
+
+   Wait, Python's `collections.OrderedDict` is actually the standard way to implement LRU in Python. But the prompt says "implements an LRU cache", so either is fine. I'll stick to the doubly-linked list approach as it's more algorithmically explicit and guarantees O(1) without relying on OrderedDict's internal implementation details.
+
+   Let's refine it to be compact and correct.
+
+   Actually, I can use `collections.deque` with a dict? No, deque doesn't support O(1) removal of arbitrary elements. So doubly-linked list is necessary.
+
+   I'll write it out carefully.
+
+   Structure:
+   ```python
+   class ListNode:
+       def __init__(self, key=0, val=0):
+           self.key = key
+           self.val = val
+           self.prev = self.next = None
+
+   class LRUCache:
+       def __init__(self, capacity: int):
+           self.capacity = capacity
+           self.cache = {}
+           self.head = ListNode()
+           self.tail = ListNode()
+           self.head.next = self.tail
+           self.tail.prev = self.head
+
+       def get(self, key: int) -> int:
+           if key not in self.cache:
+               return -1
+           node = self.cache[key]
+           self._remove(node)
+           self._add(node)
+           return node.val
+
+       def put(self, key: int, value: int) -> None:
+           if key in self.cache:
+               node = self.cache[key]
+               node.val = value
+               self._remove(node)
+               self._add(node)
+           else:
+               node = ListNode(key, value)
+               self.cache[key] = node
+               self._add(node)
+               if len(self.cache) > self.capacity:
+                   lru = self.head.next
+                   self._remove(lru)
+                   del self.cache[lru.key]
+
+       def _remove(self, node):
+           node.prev.next = node.next
+           node.next.prev = node.prev
+
+       def _add(self, node):
+           node.prev = self.tail.prev
+           node.next = self.tail
+           self.tail.prev.next = node
+           self.tail.prev = node
+   ```
+
+   This is solid. O(1) for all operations.
+
+   Now, unit tests with `unittest`:
+   Need to test:
+   - Basic get/put
+   - Eviction when capacity exceeded
+   - Updating existing key
+   - Return -1 for missing key
+   - Edge cases (capacity 1, multiple puts)
+
+   I'll write a `unittest.TestCase` class.
+
+   ```python
+   import unittest
+
+   class TestLRUCache(unittest.TestCase):
+       def test_basic_operations(self):
+           cache = LRUCache(2)
+           cache.put(1, 1)
+           cache.put(2, 2)
+           self.assertEqual(cache.get(1), 1)
+           cache.put(3, 3) # evicts 2
+           self.assertEqual(cache.get(2), -1)
+           self.assertEqual(cache.get(3), 3)
+
+       def test_update_existing(self):
+           cache = LRUCache(2)
+           cache.put(1, 1)
+           cache.put(1, 2)
+           self.assertEqual(cache.get(1), 2)
+
+       def test_capacity_one(self):
+           cache = LRUCache(1)
+           cache.put(1, 10)
+           self.assertEqual(cache.get(1), 10)
+           cache.put(2, 20)
+           self.assertEqual(cache.get(1), -1)
+           self.assertEqual(cache.get(2), 20)
+
+       def test_eviction_order(self):
+           cache = LRUC
+---
+```python
+class ListNode:
+    def __init__(self, key=0, val=0):
+        self.key = key
+        self.val = val
+        self.prev = self.next = None
+
+class LRUCache:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.cache = {}
+        self.head = ListNode()
+        self.tail = ListNode()
+        self.head.next = self.tail
+        self.tail.prev = self.head
+
+    def get(self, key: int) -> int:
+        if key not in self.cache:
+            return -1
+        node = self.cache[key]
+        self._remove(node)
+        self._add(node)
+        return node.val
+
+    def put(self, key: int, value: int) -> None:
+        if key in self.cache:
+            node = self.cache[key]
+            node.val = value
+            self._remove(node)
+            self._add(node)
+        else:
+            node = ListNode(key, value)
+            self.cache[key] = node
+            self._add(node)
+            if len(self.cache) > self.capacity:
+                lru = self.head.next
+                self._remove(lru)
+                del self.cache[lru.key]
+
+    def _remove(self, node):
+        node.prev.next = node.next
+        node.next.prev = node.prev
+
+    def _add(self, node):
+        node.prev = self.tail.prev
+        node.next = self.tail
+        self.tail.prev.next = node
+        self.tail.prev = node
+
+import unittest
+
+class TestLRUCache(unittest.TestCase):
+    def test_basic_get_put(self):
+        cache = LRUCache(2)
+        cache.put(1, 1)
+        cache.put(2, 2)
+        self.assertEqual(cache.get(1), 1)
+        cache.put(3, 3)  # evicts 2
+        self.assertEqual(cache.get(2), -1)
+        self.assertEqual(cache.get(3), 3)
+
+    def test_update_existing_key(self):
+        cache = LRUCache(2)
+        cache.put(1, 1)
+        cache.put(1, 2)
+        self.assertEqual(cache.get(1), 2)
+
+    def test_capacity_one(self):
+        cache = LRUCache(1)
+        cache.put(1, 10)
+        self.assertEqual(cache.get(1), 10)
+        cache.put(2, 20)
+        self.assertEqual(cache.get(1), -1)
+        self.assertEqual(cache.get(2), 20)
+
+    def test_eviction_order(self):
+        cache = LRUCache(3)
+        cache.put(1, 1)
+        cache.put(2, 2)
+        cache.put(3, 3)
+        cache.get(1)  # makes 1 most recent
+        cache.put(4, 4)  # evicts 2 (LRU)
+        self.assertEqual(cache.get(2), -1)
+        self.assertEqual(cache.get(1), 1)
+        self.assertEqual(cache.get(3), 3)
+        self.assertEqual(cache.get(4), 4)
+
+if __name__ == "__main__":
+    unittest.main()
+```

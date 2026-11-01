@@ -1,0 +1,44 @@
+run 21521 | dynhot_replay4 | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 31.86 t/s | prompt 20.1 t/s | 987 tokens | args: -np 1 --moe observe=0,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-10-29 10:36:13
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas 10x20. Controls arrow keys, rotate, drop. Score. Need minimal code. Need avoid bugs. Let's craft.
+
+Need think through implementation.
+
+Tetris pieces: I, J, L, O, S, T, Z. Use matrices. Board 10x20. Canvas maybe 200x400? Use cell size 20. Need draw.
+
+Game loop: requestAnimationFrame or setInterval. Need gravity. Use timestamp. Simpler setInterval 500ms. But keyboard rotate etc. Need collision.
+
+Implementation compact:
+
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=20;
+let b=Array(H).fill().map(()=>Array(W).fill(0)),p,px,py,score=0,drop=0;
+const P=[
+ [[1,1,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,1],[1,1,0]],
+ [[0,1,0],[1,1,1]],
+ [[1,1,0],[0,1,1]]
+];
+function newP(){p=P[Math.random()*P.length|0].map(r=>r.slice());px=3;py=0;if(hit()){b=Array(H).fill().map(()=>Array(W).fill(0));score=0;}}
+function hit(nx=px,ny=py,shape=p){for(let y=0;y<shape.length;y++)for(let x=0;x<shape[y].length;x++)if(shape[y][x]){let X=nx+x,Y=ny+y;if(X<0||X>=W||Y>=H||b[Y][X])return true;}return false;}
+function rot(){let q=p[0].map((_,i)=>p.map(r=>r[i]).reverse());if(!hit(px,py,q))p=q;}
+function move(dx){if(!hit(px+dx,py))px+=dx;}
+function down(){if(!hit(px,py+1))py++;else{for(let y=0;y<p.length;y++)for(let x=0;x<p[y].length;x++)if(p[y][x])b[py+y][px+x]=1;let lines=0;for(let y=H-1;y>=0;y--)if(b[y].every(v=>v)){b.splice(y,1);b.unshift(Array(W).fill(0));lines++;}score+=lines*100;newP();}}
+function draw(){x.fillStyle='#111';x.fillRect(0,0,c.width,c.height);for(let y=0;y<H;y++)for(let X=0;X<W;X++)if(b[y][X]){x.fillStyle='#4caf50';x.fillRect(X*S,y*S,S-1,S-1);}for(let y=0;y<p.length;y++)for(let X=0;X<p[y].length;X++)if(p[y][X]){x.fillStyle='#ff9800';x.fillRect((px+X)*S,(py+y)*S,S-1,S-1);}x.fillStyle='#fff';x.font='16px sans-serif';x.fillText('Score: '+score,10,20);}
+document.addEventListener('keydown',e=>{if(e.key=='ArrowLeft')move(-1);if(e.key=='ArrowRight')move(1);if(e.key=='ArrowDown')down();if(e.key=='ArrowUp')rot();if(e.key==' ')while(!hit(px,py+1))py++;draw();});
+newP();draw();setInterval(()=>{down();draw();},500);
+</script>
+</body>
+</html>
+
+Need check rotation formula. p[0].map((_,i)=>p.map(r=>r[i]).reverse()) rotates clockwise
+---

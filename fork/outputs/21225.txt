@@ -1,0 +1,87 @@
+run 21225 | dynhot_same_prompt_pool_knob | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 81.85 t/s | prompt 105.4 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=replace,hotmaps=/tmp/runstate/plat/r4-replace | power 220+280 W | 2026-10-28 20:27:53
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, rotation, movement, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimization Strategies:**
+   - Use a single HTML file with inline CSS and JS
+   - Use Canvas for rendering (more compact than DOM manipulation)
+   - Use compact variable names
+   - Use bitwise/array representations for pieces
+   - Minimize comments
+   - Use efficient algorithms (e.g., matrix representation for grid, simple collision checks)
+   - Avoid external libraries
+   - Use `requestAnimationFrame` or simple loop for game tick
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       body { margin: 0; background: #111; }
+       canvas { display: block; margin: auto; }
+     </style>
+   </head>
+   <body>
+     <canvas id="c"></canvas>
+     <script>
+       // Game logic here
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Develop Core Logic (Mental Refinement):**
+   - Grid: 10x20 array of 0s
+   - Pieces: Define as arrays of coordinates or bit patterns. Let's use a compact representation:
+     ```js
+     const P = [
+       [[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]], // I
+       [[1,1],[1,1]], // O
+       [[0,1,0],[1,1,1],[0,0,0]], // T
+       [[0,1,1],[1,1,0],[0,0,0]], // S
+       [[1,1,0],[0,1,1],[0,0,0]], // Z
+       [[1,0,0],[1,1,1],[0,0,0]], // J
+       [[0,0,1],[1,1,1],[0,0,0]]  // L
+     ];
+     ```
+     Actually, bit patterns or flat arrays might be smaller. Let's use a 4x4 matrix representation for each piece, but that's verbose. Better: define shapes as strings or arrays of offsets.
+     Let's try a compact shape definition:
+     ```js
+     const S = [
+       [1,1,1,1],
+       [1,1,1,1],
+       [1,1,1,1],
+       [1,1,1,1]
+     ];
+     ```
+     Actually, standard Tetris pieces can be represented as:
+     ```js
+     const T = [
+       [[0,1,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]],
+       [[0,0,1,0],[0,1,1,1],[0,0,0,0],[0,0,0,0]],
+       [[0,0,0,0],[1,1,1,0],[0,1,0,0],[0,0,0,0]],
+       [[0,0,0,0],[1,1,1,0],[0,0,1,0],[0,0,0,0]]
+     ];
+     ```
+     This is too long. Let's use a more compact representation: flat arrays of coordinates relative to a pivot, or use a well-known minified approach.
+     Actually, I'll use a simple 4x4 grid representation but store them as strings or use a clever encoding.
+     Let's try:
+     ```js
+     const P = [
+       [1,1,1,
+---

@@ -1,0 +1,1 @@
+Write a Python function that reads a CSV file of sales records with the columns date, region and amount, and prints the total amount per region and per month. Include a main block and short comments; no explanation outside the code.

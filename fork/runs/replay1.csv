@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+q36c-tet-replay,qwen36,3,tetrisc,1024,"--moe mode=cache,sim-vram=3000,upload-now=2,jit-all=1,replay=1,observe=0",

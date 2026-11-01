@@ -1,0 +1,22 @@
+name,model,n,test,tokens,args,extra
+ac-htmltet,qwen36,1,tetrisc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-htmlbrk,qwen36,1,breakoutc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-htmlsnk,qwen36,1,snakec,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-cpptet,qwen36,1,tetriscppc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-cppsnk,qwen36,1,snakecppc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-pytet,qwen36,1,tetrispyc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-pysnk,qwen36,1,snakepyc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-pycsv,qwen36,1,pycsvc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-pylru,qwen36,1,pylruc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-pyasync,qwen36,1,pyasyncc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-sf1,qwen36,1,scific,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-sf2,qwen36,1,scifi2c,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-sf3,qwen36,1,scifi3c,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-poem1,qwen36,1,poemc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-poem2,qwen36,1,poemautc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-poem3,qwen36,1,poemseac,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-photo,qwen36,1,photoc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-math,qwen36,1,mathc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-arith,qwen36,1,arithc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-ww1,qwen36,1,ww1c,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink
+ac-latin,qwen36,1,latinmedc,1024,"--moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,uniqdump=/home/o/.claude/jobs/44ecfe4e/tmp/uniq-acts.txt,observe=0",--nothink

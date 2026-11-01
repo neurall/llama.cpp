@@ -1,0 +1,128 @@
+run 21529 | dynhot_replay4 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 83.59 t/s | prompt 107.7 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,upload-now=2,jit-all=1,acts=1024,observe=0 | power 220+280 W | 2026-10-29 10:44:12
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Key Features:
+- **Terminal-based**: Uses standard ASCII characters.
+- **Minimal code**: ~100 lines.
+- **Input**: Arrow keys (or WASD).
+- **Game Loop**: Runs until collision or game over.
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+using namespace std;
+
+int main() {
+    // Game state
+    vector<pair<int, int>> snake = {{0, 0}};
+    pair<int, int> food = {5, 5};
+    int dx = 1, dy = 0; // Initial direction: right
+    int score = 0;
+    bool running = true;
+
+    // Terminal dimensions
+    const int WIDTH = 20, HEIGHT = 15;
+
+    // Helper to clear screen
+    auto clear = []() { cout << "\033[H"; };
+
+    // Helper to print grid
+    auto print = [&]() {
+        clear();
+        for (int y = 0; y < HEIGHT; ++y) {
+            for (int x = 0; x < WIDTH; ++x) {
+                bool isSnake = false;
+                for (auto& p : snake) {
+                    if (p.first == x && p.second == y) {
+                        isSnake = true;
+                        break;
+                    }
+                }
+                if (isSnake) cout << "█";
+                else if (x == food.first && y == food.second) cout << "●";
+                else cout << " ";
+            }
+            cout << "\n";
+        }
+        cout << "Score: " << score << "\n";
+    };
+
+    // Input handling
+    auto handleInput = [&]() {
+        char c;
+        if (cin >> c) {
+            if (c == 'w' || c == '↑') dy = -1, dx = 0;
+            if (c == 's' || c == '↓') dy = 1, dx = 0;
+            if (c == 'a' || c == '←') dx = -1, dy = 0;
+            if (c == 'd' || c == '→') dx = 0, dy = 1;
+        }
+    };
+
+    // Game loop
+    while (running) {
+        // Move snake
+        pair<int, int> head = snake.front();
+        pair<int, int> newHead = {head.first + dx, head.second + dy};
+
+        // Check collision
+        if (newHead.first < 0 || newHead.first >= WIDTH ||
+            newHead.second < 0 || newHead.second >= HEIGHT ||
+            any_of(snake.begin(), snake.end(), [&](pair<int, int> p) {
+                return p == newHead;
+            })) {
+            running = false;
+            break;
+        }
+
+        // Add new head
+        snake.insert(snake.begin(), newHead);
+
+        // Check food
+        if (newHead == food) {
+            score++;
+            // Generate new food
+            do {
+                food = {rand() % WIDTH, rand() % HEIGHT};
+            } while (any_of(snake.begin(), snake.end(), [&](pair<int, int> p) {
+                return p == food;
+            }));
+        } else {
+            snake.pop_back(); // Remove tail if no food eaten
+        }
+
+        // Print and wait
+        print();
+        handleInput();
+        this_thread::sleep_for(chrono::milliseconds(100));
+    }
+
+    cout << "Game Over! Final Score: " << score << "\n";
+    return 0;
+}
+```
+
+### How to Compile and Run:
+1. **Compile**:
+   ```bash
+   g++ -o snake snake.cpp
+   ```
+2. **Run**:
+   ```bash
+   ./snake
+   ```
+3. **Controls**:
+   - Use **WASD** or **Arrow Keys** to move.
+   - Press **Enter** or any key to continue if you want to skip input (though the game waits for arrow keys).
+
+### Notes:
+- **Minimalism**: This uses only standard C++ libraries (`iostream`, `vector`, `random`, `chrono`, `thread`).
+- **Performance**: The game loop runs every 100ms. You can adjust `sleep_for

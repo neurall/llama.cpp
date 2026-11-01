@@ -1,0 +1,66 @@
+run 21210 | dynhot_same_prompt_pool_knob | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.87 t/s | prompt 113.5 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3072,dynhot=full,dynhot-same=pool,hotmaps=/tmp/runstate/plat/pool | power 220+280 W | 2026-10-28 20:11:43
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while maintaining core Tetris functionality (grid, falling pieces, rotation, collision, line clearing, scoring, game over).
+
+2.  **Key Constraints & Goals:**
+   - Single HTML file (no external dependencies)
+   - Minimal code size (bytes)
+   - Functional Tetris mechanics
+   - Use inline CSS/JS
+   - Avoid unnecessary features (keep it simple but playable)
+
+3.  **Core Tetris Mechanics Needed:**
+   - 10x20 grid
+   - 7 tetrominoes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Rotation
+   - Collision detection
+   - Line clearing
+   - Score tracking
+   - Game over condition
+   - Keyboard controls
+
+4.  **Code Minimization Strategies:**
+   - Use compact variable names
+   - Avoid comments
+   - Use bitwise operations or compact representations for pieces
+   - Use a single loop for rendering/game loop
+   - Minimize CSS (inline, minimal styles)
+   - Use `requestAnimationFrame` or `setInterval` efficiently
+   - Represent board as a 1D array or compact 2D structure
+   - Use compact piece definitions
+
+5.  **Drafting - Mental Refinement (Iterative):**
+   Let's think about how to represent pieces compactly.
+   Standard Tetris pieces can be represented as arrays of offsets or bit patterns.
+   For minimal code, I'll use a 1D array for the board (200 cells) and a compact piece representation.
+   Actually, a 2D array is easier for collision, but 1D can work with modulo.
+   Let's stick to a 2D array for simplicity in collision logic, but keep it compact.
+
+   Piece representation: I'll use a list of shapes, each as an array of [x,y] offsets relative to a pivot.
+   Actually, for minimal code, I can use a single string/array per piece and rotate by swapping coordinates.
+
+   Let's try a very compact approach:
+   - Board: `b = Array(200).fill(0)`
+   - Pieces: `p = [[1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1]]` - wait, that's not compact.
+   Better: Use a compact representation like `t = [1,2,4,8,7,11,13]` for piece types, and define shapes as arrays of offsets.
+   Actually, I'll use a standard compact approach: each piece is an array of 4 coordinates. Rotation can be done by swapping x/y and negating.
+
+   Let's write a minimal game loop:
+   ```html
+   <canvas id=c></canvas>
+   <script>
+   c.width=c.height=200;
+   ctx=c.getContext('2d');
+   b=Array(200).fill(0);
+   p=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[1,1],[2,0]],[[0,0],[1,0],[1,1],[2,1]],[[0,0],[1,0],[1,1],[2,1]],[[0,0],[1,0],[1,1],[2,0]],[[0,0],[0,1],[1,0],[1,1]],[[0,0],[0,1],[1,1],[2,1]]];
+   // Wait, piece 2 and 3 are same? No, T and S are different. Let's fix.
+   // Standard tetrominoes:
+   // I: 0,0 1,0 2,0 3,0
+   // O: 0,0 1,0 0,1 1,1
+   // T: 0,0 1,0 1,1 2,0
+   // S: 0,0 1,0 1,1 2,1
+   // Z: 0,0 1,0 1,1 2,0 -> wait Z is 0,0 1,0 1,1 2,0? No, Z is 0,0 1,0 1,1 2,0 is wrong. Z: 0,0 
+---

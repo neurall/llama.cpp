@@ -1,0 +1,58 @@
+run 21158 | dynhot_modes_whole_prompt_key | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 54.22 t/s | prompt 56.9 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 220+280 W | 2026-10-28 18:55:31
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+But I don't want to ship a bare terminal dump — a Tetris game is a tactile, visual thing, so the wrapper around it should feel alive: layered background, motion, micro-interactions, strong typographic contrast. The key trade-off: keep the actual game code compact (that's what was asked), but make the presentation around it genuinely crafted. I'll keep the game logic tight and terse, and put the polish into the shell — a distinctive arcade/CRT aesthetic rather than a flat static layout.
+
+Let me design:
+
+- A single HTML file.
+- Tetris game in ~compact JS.
+- Styling: arcade cabinet vibe. A dark background, but I don't want the tired near-black-with-one-neon-accent look — for Tetris, the pieces ARE seven distinct colors, so a richer multi-hue palette is actually the natural, characteristic choice. Let me use a deep desaturated blue-slate background with a subtle grid/scanline texture, and the 7 tetromino colors as the vivid accents. That's characteristic of Tetris — the pieces are the palette.
+
+Typography: I want a distinctive display face paired with a readable body face. For smallest, external fonts cost bytes, but the file can still link Google Fonts. Let me use something arcade-y but not cliché. Options: "Silkscreen" (pixel), "Press Start 2P" (very cliché but characteristic), "Bungee", "Archivo Black", "Chakra Petch". Let me pair a chunky geometric display face with a mono body.
+
+I'll go: display = 'Bungee' (chunky, arcade signage, distinctive), body/UI = 'Space Grotesk' (readable, geometric). Numbers in tabular mono. Good contrast.
+
+Actually for a Tetris game, a pixel display face is very characteristic. Let me use 'Silkscreen' for the logo/score digits and 'Space Grotesk' for body. Silkscreen is a pixel font — 8-bit, characteristic of the subject. Pair with Space Grotesk. That's a nice distinctive pairing.
+
+Layout: rather than a generic centered headline block, I'll open with the thing that defines Tetris — the board itself, front and center-left, with a side panel showing score/level/lines, next piece, and hold. Plus a "ghost" piece. A cabinet-like layout.
+
+Header: a bold marquee-style title bar "TETRIS" with a scanline/CRT vibe, offset asymmetrically.
+
+Features to include (rich but still compact):
+- 7 tetrominoes with SRS-ish rotation (simple), wall kicks basic.
+- Ghost piece.
+- Hold piece.
+- Next queue (3 pieces) with 7-bag randomizer.
+- Score, level, lines, combo.
+- Pause, restart.
+- Keyboard controls + touch buttons for mobile.
+- Line clear animation (flash).
+- Level speed up.
+- Sidebar with controls legend.
+- Ambient background: layered — subtle grid, drifting tetromino silhouettes, vignette, scanlines.
+- Micro-interactions: buttons hover, key legend keys light up when pressed, score pop on increase.
+- Game over overlay.
+
+Keep code reasonably compact but readable-ish. "Smallest" — I'll keep it a single file, minified-ish but not unreadable. I'll aim for tight code.
+
+Let me write the game.
+
+Board: 10x20. Canvas rendering. Canvas size: 300x600 CSS, scaled by devicePixelRatio.
+
+Implementation plan (compact):
+
+```js
+const W=10,H=20,S=24; // cell px
+let grid=mk(), bag=[], piece, hold, next, nxt=[], score=0, lines=0, level=1, over=0, pause=0, drop=0, iv=1000, last=0, flash=[], combo=0;
+```
+
+Tetromino definitions as strings/arrays. Compact approach: use matrices per piece per rotation? Simpler: define pieces as arrays of rotation states via coordinate lists.
+
+Compact classic approach:
+```js
+const P='IJKLSTZ';
+const SH={I:[[0,1],[1,1],[2,1],[3,1]],...}
+
+---

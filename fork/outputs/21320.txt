@@ -1,0 +1,35 @@
+run 21320 | dynhot_last_token_keys2 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 85.31 t/s | prompt 162.2 t/s | 1024 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/tokd2/s.ini,hotmaps=/tmp/runstate/tokd2/hotmaps,tokdump=/tmp/runstate/tokd2/dump.bin | power 220+280 W | 2026-10-28 23:01:42
+
+Here's a thinking process:
+
+1.  **Analyze User Prompt:**
+   - **Genre:** Science-fiction short story
+   - **Length:** About 900 words
+   - **Plot:** Crew of a generation ship wakes from cryosleep above a planet they were sent to settle. They find the planet's cities already lit. The colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first.
+   - **POV:** Ship's archivist
+   - **Style:** Literary prose with sensory detail and dialogue
+   - **Constraints:** No headings, no lists, no code.
+
+2.  **Deconstruct Key Elements:**
+   - *Generation ship:* Long voyage, cryosleep, archival role (preserving history/data)
+   - *Waking up:* Sensory details of thawing, disorientation, observation of the planet
+   - *Twist:* Cities already lit, descendants from a later ship that arrived first
+   - *Archivist POV:* Focus on records, memory, history, the irony of their role, dialogue with crewmates
+   - *Tone:* Literary, reflective, slightly melancholic but wonder-filled
+   - *Word count:* ~900 words
+
+3.  **Brainstorming & Structuring:**
+   - *Opening:* Waking from cryosleep. Sensory details: cold, thawing, sound of systems, light, the archivist's immediate focus on records/data.
+   - *Observation:* Looking out at the planet. Cities lit. Confusion. Realization that they're not the first.
+   - *Dialogue/Interaction:* Archivist talks with captain/engineer. Discusses the anomaly. The realization about the "copy" ship.
+   - *Thematic Core:* The archivist's role vs. reality. History already happened. The descendants are waiting. The irony of preserving a future that already unfolded.
+   - *Closing:* Acceptance, connection to the planet below, the archivist's new purpose.
+   - *Word Count Check:* Aim for ~900. I'll monitor pacing and density.
+
+4.  **Drafting - Section by Section (Mental Refinement):**
+   *(Opening)* The thaw began as a whisper in the marrow. Frost crystallized on my eyelids, then dissolved into the warm, saline drip of the revival gel. I breathed, and the air tasted of recycled ozone and old paper. My fingers trembled against the console, tracing the familiar grooves of the archival interface. I was the keeper of the ship’s memory, the one who cataloged the seeds, the star charts, the last radio transmissions from Earth. Now, the silence of the vault was broken by the hum of the descent thrusters.
+   *(Observation)* I pulled myself to the observation blister. The planet hung in the black, a marble of azure and ochre. But it was wrong. The night side should have been dark, a blank canvas waiting for our torches. Instead, it glowed. Grids of amber and white light traced continents like veins in a living body. Cities. Already built. Already breathing.
+   *(Dialogue/Realization)* “Archivist,” the captain’s voice cut through the comms, tight with disbelief. “We’re over the target sector. Why are there lights?” I didn’t answer immediately. My hands moved over the data logs, cross-referencing arrival windows, propulsion decay, the original launch manifest. The numbers aligned. We had drifted. But not alone. A second vessel. The *Aethel*, launched a century after us, carrying the same genetic stock, the same mandate. It had shed its cryo-shroud earlier. It had landed. It had built.
+   *(Thematic/Archivist Focus)* I felt the weight of my title collapse. I had spent decades curating a future that had already been written. The archives were not a blueprint; they were a fossil. Below us, the descendants of our own blood were waiting. They had read our logs, perhaps, or inherited them through the ship’s automated relay. They had built from the same dreams, but faster. The lights were not a mistake. They were a greeting.
+   *(Sensory/Dialogue Expansion)* I descended the spiral stairs to the bridge. The crew stood in silence, their faces pale from the thaw, their eyes fixed on the glowing sphere. Engineer Vance spoke first, voice rough. “They’re broadcasting. Frequency matches our original beacon. But it’s… layered. Older protocols, new syntax.” I leaned into the speaker. The transmission unfolded: a welcome, a coordinate map, a list of harvest zones, a question. *Who are you?* I answered, my voice steady despite the tremor in my chest. “We are the first. But we are not the only.” The reply came back, warm, human
+---

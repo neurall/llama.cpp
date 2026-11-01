@@ -1,0 +1,82 @@
+run 21133 | dynhot_hotmaps_dir_frozen | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 91.73 t/s | prompt 59.1 t/s | 1007 tokens | args: -np 1 --moe sim-vram=3072,dynhot=1,hotmaps=/home/o/.cache/llama.cpp/hotmaps | power 220+280 W | 2026-10-28 18:15:01
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means I need to create a complete, playable Tetris game in a single HTML file, minimizing code size while maintaining core functionality (grid, pieces, rotation, movement, collision, line clearing, scoring, game over).
+
+2.  **Key Constraints & Requirements:**
+   - Single HTML file (no external dependencies)
+   - Minimal code size
+   - Functional Tetris mechanics
+   - Must be playable in a browser
+
+3.  **Core Tetris Mechanics to Implement:**
+   - Grid: 10 columns x 20 rows
+   - Pieces: 7 standard tetrominoes (I, O, T, S, Z, J, L)
+   - Movement: Left, Right, Down, Rotate
+   - Collision detection
+   - Line clearing
+   - Scoring
+   - Game over detection
+   - Rendering: Canvas or DOM elements (Canvas is usually more compact)
+
+4.  **Code Size Optimization Strategies:**
+   - Use compact variable names
+   - Avoid comments
+   - Use bitwise operations or arrays for piece definitions
+   - Use a single loop for game logic
+   - Minimize HTML structure (just `<canvas>` and `<script>`)
+   - Use `requestAnimationFrame` or `setInterval` for game loop
+   - Handle keyboard input efficiently
+
+5.  **Draft - Mental Code Structure:**
+   ```html
+   <canvas id=c></canvas>
+   <script>
+   const c=document.getElementById('c'), ctx=c.getContext('2d');
+   c.width=200; c.height=400;
+   const W=10, H=20, B=20;
+   let g=Array(H).fill(0);
+   let p=0, x=4, y=0, rot=0;
+   const T=[
+     [1,1,1,1],
+     [1,1,1,0],[0,1,1,1],
+     [1,1,0],[0,1,1],
+     [1,1,1],[1,0,1],[1,1,1],
+     [1,1,1],[1,1,1],
+     [1,1,1],[1,1,1]
+   ]; // Wait, this is messy. Let's use a better representation.
+   ```
+
+   Actually, standard Tetris pieces can be represented as arrays of offsets or 2D arrays. For compactness, I'll use a 1D array of 4 bits per piece, or just define them as strings/arrays.
+
+   Let's use a more compact piece definition:
+   ```javascript
+   const P=[
+     [[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]],
+     [[1,1],[1,1]],
+     [[0,1,0],[1,1,1],[0,0,0]],
+     [[0,1,1],[1,1,0],[0,0,0]],
+     [[1,1,0],[0,1,1],[0,0,0]],
+     [[1,0,0],[1,1,1],[0,0,0]],
+     [[0,0,1],[1,1,1],[0,0,0]]
+   ];
+   ```
+   This is 7 pieces. Each is 3x3 or 4x4. Actually, standard is 4x4 grid for rotation. Let's stick to 4x4 for simplicity.
+
+   Better approach: Use a single array of 7 pieces, each as a 4x4 array. But that's verbose.
+   Alternative: Use a compact representation like `[[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]]` etc.
+
+   Actually, I can use a simpler representation: each piece as an array of 4 coordinates relative to center, or just use the standard 4x4 grid.
+
+   Let's try a different approach: Use a single string/array for pieces and rotate them mathematically. But that's complex for minimal code.
+
+   I'll stick to predefined 4x4 arrays. It's readable and compact enough.
+
+   Game loop:
+   - `tick()` called every ~100ms
+   - Check collision
+   - Move down
+   - If collision, lock piece, clear lines, spawn new piece
+   -
+---

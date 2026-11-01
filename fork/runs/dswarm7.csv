@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+glm-pplb-graphs-on,glm,1,pplb,0,,
+glm-pplb-graphs-off,glm,1,pplb,0,,--env GGML_CUDA_DISABLE_GRAPHS=1

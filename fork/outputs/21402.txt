@@ -1,0 +1,54 @@
+run 21402 | dynhot_requests_fp8 | snakepyc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.99 t/s | prompt 133.7 t/s | 544 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:08:39
+
+
+---
+Here is the smallest possible Python Snake game for the terminal. It uses only the standard library (`random`, `time`, `sys`) and relies on ANSI escape codes for rendering.
+
+```python
+import random, time, sys
+
+W, H = 20, 10
+snake = [(W//2, H//2)]
+dir = (1, 0)
+food = (random.randint(0, W-1), random.randint(0, H-1))
+
+while True:
+    # Move
+    nx, ny = snake[-1][0] + dir[0], snake[-1][1] + dir[1]
+    if 0 <= nx < W and 0 <= ny < H and (nx, ny) not in snake:
+        snake.append((nx, ny))
+        if (nx, ny) == food:
+            food = (random.randint(0, W-1), random.randint(0, H-1))
+        else:
+            snake.pop(0)
+    else:
+        break
+
+    # Render
+    sys.stdout.write('\x1b[H')
+    for y in range(H):
+        for x in range(W):
+            if (x, y) == food:
+                sys.stdout.write('O')
+            elif (x, y) in snake:
+                sys.stdout.write('X')
+            else:
+                sys.stdout.write(' ')
+        sys.stdout.write('\n')
+    time.sleep(0.1)
+```
+
+### How it works:
+1. **State**: `snake` is a list of coordinates. `dir` is the movement vector.
+2. **Loop**: Calculates the next head position. If valid and not eating food, append head and remove tail. If eating, append head and keep tail (grow).
+3. **Render**: Clears screen (`\x1b[H`), prints grid character by character (`O` for food, `X` for snake, ` ` for empty).
+4. **Input**: This version is **auto-playing** (moves in a fixed direction). To add keyboard input, you'd need `input()` or `curses`, which adds significant code. This is the *smallest* functional game.
+
+### To make it playable with keyboard:
+Replace the `dir` update logic with:
+```python
+import curses
+# ... setup curses ...
+# Use curses.getch() to read arrow keys and update dir
+```
+But that adds ~20+ lines. The above is the minimal auto-play version.

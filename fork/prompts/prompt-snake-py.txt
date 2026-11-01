@@ -1,0 +1,1 @@
+generate smallest python snake game for the terminal.

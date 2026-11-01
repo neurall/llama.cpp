@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+rc-cpu-1,olmoe,1,tetrisc,256,"-dev none -ngl 0 --moe dynhot=full",
+rc-cpu-2,olmoe,1,tetrisc,256,"-dev none -ngl 0 --moe dynhot=full",
+rc-cpu-3,olmoe,1,tetrisc,256,"-dev none -ngl 0 --moe dynhot=full",

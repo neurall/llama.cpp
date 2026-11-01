@@ -1,0 +1,48 @@
+run 21378 | dynhot_js_line_store | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 82.47 t/s | prompt 45.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/jss/s.ini,hotmaps=/tmp/runstate/jss/hotmaps | power 200+200 W | 2026-10-29 00:14:08
+
+
+---
+Here is the smallest possible functional Tetris game in a single HTML file. It uses a compact 10x20 grid, basic canvas rendering, and minimal logic.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mini Tetris</title>
+  <style>
+    body { background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+    canvas { border: 1px solid #333; background: #000; }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="200" height="400"></canvas>
+  <script>
+    const c = document.getElementById('c');
+    const ctx = c.getContext('2d');
+    const W = 10, H = 20;
+    const grid = Array.from({ length: H }, () => Array(W).fill(0));
+    const shapes = [
+      [[1,1,1,1]],
+      [[1,1],[1,1]],
+      [[1,1,1],[0,1,0]],
+      [[1,1,1],[1,0,0]],
+      [[1,1,1],[0,0,1]],
+      [[1,1],[1,0]],
+      [[1,1],[0,1]]
+    ];
+    let piece, x, y, color;
+
+    function newPiece() {
+      piece = shapes[Math.floor(Math.random() * shapes.length)];
+      x = Math.floor(W / 2) - piece[0].length / 2;
+      y = 0;
+      color = Math.floor(Math.random() * 7) + 1;
+      if (grid[y][x] || grid[y][x+1]) gameOver();
+    }
+
+    function draw() {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W * 20, H * 20);
+      ctx.fillStyle = `hsl(${color * 60}, 100%, 50%)`;
+      for (let i = 0; i < piece.length; i++)
+        for (let j = 0; j <

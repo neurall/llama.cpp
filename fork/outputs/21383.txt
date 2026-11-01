@@ -1,0 +1,57 @@
+run 21383 | dynhot_layer_sets | snakec | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.57 t/s | prompt 86.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/sets/s.ini,hotmaps=/tmp/runstate/sets/hotmaps | power 200+200 W | 2026-10-29 00:51:15
+
+
+---
+Here is the smallest possible functional Snake game in a single HTML file (approx. 400 bytes). It uses a grid-based approach with a single `<canvas>` element.
+
+```html
+<!DOCTYPE html>
+<html>
+<head><title>Snake</title></head>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+const w = 20, h = 20;
+let x = 10, y = 10, dx = 1, dy = 0, food = {x: 15, y: 15};
+
+function draw() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x, y, 1, 1);
+  ctx.fillStyle = '#f00';
+  ctx.fillRect(food.x, food.y, 1, 1);
+}
+
+function update() {
+  x += dx;
+  y += dy;
+  if (x < 0 || x >= w || y < 0 || y >= h) {
+    x = 10; y = 10; dx = 1; dy = 0;
+  }
+  if (x === food.x && y === food.y) {
+    food.x = Math.floor(Math.random() * w);
+    food.y = Math.floor(Math.random() * h);
+  }
+  draw();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowUp') dy = -1;
+  if (e.key === 'ArrowDown') dy = 1;
+  if (e.key === 'ArrowLeft') dx = -1;
+  if (e.key === 'ArrowRight') dx = 1;
+});
+
+setInterval(update, 100);
+</script>
+</body>
+</html>
+```
+
+### How it works:
+1. **Canvas**: A 20x20 grid (each cell is 10px).
+2. **Snake**: Represented by `x` and `y` coordinates.
+3. **Movement**: `dx` and `dy`

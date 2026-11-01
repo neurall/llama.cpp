@@ -1,0 +1,53 @@
+run 21403 | dynhot_requests_fp8 | pycsvc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 87.8 t/s | prompt 178.6 t/s | 357 tokens | args: -np 1 --moe sim-vram=3072,dynhot=store,state=/tmp/runstate/contrast/s.ini,hotmaps=/tmp/runstate/contrast/hotmaps | power 200+200 W | 2026-10-29 01:09:12
+
+
+---
+```python
+import csv
+from collections import defaultdict
+
+def process_sales_csv(filename):
+    """
+    Reads a CSV file with columns: date, region, amount.
+    Prints total amount per region and per month.
+    """
+    # Initialize dictionaries to store totals
+    region_totals = defaultdict(float)
+    month_totals = defaultdict(float)
+
+    try:
+        with open(filename, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Parse date to extract month (YYYY-MM format)
+                date_str = row['date']
+                month = date_str[:7]  # Extract YYYY-MM
+                
+                region = row['region']
+                amount = float(row['amount'])
+                
+                # Accumulate totals
+                region_totals[region] += amount
+                month_totals[month] += amount
+
+    except FileNotFoundError:
+        print(f"Error: File '{filename}' not found.")
+        return
+    except KeyError as e:
+        print(f"Error: Missing column {e} in CSV.")
+        return
+
+    # Print totals per region
+    print("Total amount per region:")
+    for region, total in sorted(region_totals.items()):
+        print(f"  {region}: {total:.2f}")
+
+    # Print totals per month
+    print("\nTotal amount per month:")
+    for month, total in sorted(month_totals.items()):
+        print(f"  {month}: {total:.2f}")
+
+if __name__ == "__main__":
+    # Example usage: replace 'sales.csv' with your actual file path
+    process_sales_csv('sales.csv')
+```

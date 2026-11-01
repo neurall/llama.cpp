@@ -1,0 +1,54 @@
+run 21197 | dynhot_modes_whole_prompt_key | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.64 t/s | prompt 19.7 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-10-28 19:47:43
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but readable-ish implementation, maybe minified-ish but with some structure. I should aim for something genuinely small — maybe under 1KB or a few hundred bytes of code — while keeping it actually playable: movement, rotation, gravity, line clears, score, game over, restart.
+
+Let me design the game logic compactly.
+
+Core Tetris:
+- Board: 10 wide, 20 tall (or smaller for compactness, but standard 10x20 is fine).
+- 7 pieces (tetrominoes) with rotations.
+- Controls: left/right/down arrows, up to rotate, maybe space for hard drop.
+- Gravity timer.
+- Line clear + score.
+- Game over detection.
+- Restart.
+
+Rendering: canvas is compact. Or even render with a single div and text? Canvas is easiest: `c.getContext('2d')`, fillRect.
+
+Compact piece representation: A classic trick is to encode each tetromino as a 4x4 (or 2x2/3x3) matrix and rotate via transpose+reverse, or use a string encoding.
+
+A very compact known approach: pieces as arrays of coordinates, rotate by (x,y)->(y, max-x) etc.
+
+Another classic compact trick: represent each piece as a 16-bit number (4x4 grid), rotate with bit operations. Or use the "tetris in 140 bytes" style.
+
+Let me write my own compact version. I'll aim for clarity-ish but small. Let me draft.
+
+Data:
+- Shapes: I'll use the standard 7 tetrominoes. Compact encoding: each shape as a list of [x,y] cells in a 4x4 box, rotation via rotation formula.
+
+Rotation in an NxN box: (x,y) -> (N-1-y, x) for clockwise. For I piece in a 4x4 box that works. For O in a 2x2 box. For others in 3x3 box. So each piece needs its box size. Encode: shapes = [[box, cells...], ...].
+
+Compact encoding idea: store each piece as a string of bits or as arrays.
+
+Let me try a really compact approach used in famous minimal tetris:
+
+```js
+// pieces as 4x4 binary numbers
+const P = [0x4444, 0x8E00, ...]
+```
+
+Hmm, there's a known compact encoding: each rotation of each piece as a 16-bit number where bits map to a 4x4 grid. Then rotation is just picking the next number in a list. That's very compact: 7 pieces × 4 rotations = 28 numbers, but O has 1 unique, I has 2, others 4 → 28 total if we list all (with duplicates for O). Actually simplest: 28 numbers, rotate = index+1 mod 4 within each piece's group of 4.
+
+Encoding: bit i of the 16-bit number = cell (i%4, i/4|0) of a 4x4 grid. Draw: for each bit set, fillRect.
+
+Let me compute the numbers. Grid indexing: bit = y*4 + x, where y=0 is top.
+
+Standard SRS-ish shapes in 4x4 boxes (I'll use simple rotation, not full SRS with kicks — fine for minimal):
+
+I piece (horizontal at top): row y=0, x=0..3 → bits 0,1,2,3 → 0x000F.
+I vertical: x=0, y=0..3 → bits 0,4,8,12 → 0x4444? bit 12 = 0x1000, bit 8=0x100, bit 4=0x10, bit 0=1 → 0x1111. Wait: bit position value = 1<<bit. bit0=1, bit4=16(0x10), bit8=256(0x100), bit12=4096(0x1000). Sum = 0x1111. Yes I vertical = 0x1111, horizontal = 0x000F.
+
+Hmm but for nice rotation behavior, I piece in 4x4 box:
+---
