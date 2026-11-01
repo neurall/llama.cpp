@@ -170,6 +170,11 @@ struct layer_state {
     std::vector<uint32_t> expert_count;   // expert id -> uses, halved every LLAMA_MOE_CACHE_HALVE_EVERY steps
     std::vector<uint32_t> win_count;      // expert id -> uses in the last 64 tokens
     std::vector<uint64_t> expert_last;    // expert id -> clock of its last use (policy lru)
+    std::vector<float>    crf;            // expert id -> uses, halving every 128 tokens (policy crf: ClassLRU, upstream PR 31233)
+    std::vector<uint32_t> crf_t;          // expert id -> this layer's token of its last use
+    uint32_t              tok = 0;        // tokens this layer has seen
+    std::vector<uint8_t>  prot;           // expert id -> in the protected segment (policy slru)
+    int32_t               n_prot = 0;
     std::vector<float>    relevance;      // expert id -> router probability for the current token, smoothed: rel = decay * rel + p (policy r)
     std::vector<uint8_t>  ghost_flag;     // expert id -> evicted within the last n_cache evictions of this layer (regret counter)
     std::deque<int32_t>   ghost_q;
@@ -318,6 +323,7 @@ struct moe_cache {
                          std::function<ggml_tensor *(int32_t, bool)> rot;
                          std::vector<char> out, out_next; std::vector<std::pair<uint8_t *, size_t>> host;   // RAM part: layers in host memory now / after the next relayout; where
                          std::vector<int8_t> kind; std::vector<int32_t> l_il, l_part; std::function<void(bool)> parts_set;   // --moe attn-split: see llama_kv_tail_fork
+                         bool gather = false;   // see llama_kv_tail_fork
                          ggml_type tk = GGML_TYPE_F16, tv = GGML_TYPE_F16, tk0 = GGML_TYPE_F16, tv0 = GGML_TYPE_F16; bool convertible = false; size_t unit = 256; };   // tk0/tv0: the types it was created with (tier 0); unit: its row and its place in the combined row are multiples of it
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (the zone never reaches the last two blocks before it)
@@ -847,7 +853,7 @@ std::string knob_dump() {
     return out;
 }
 
-enum class policy { halve, window, hybrid, add, lru, rel };
+enum class policy { halve, window, hybrid, add, lru, rel, crf, slru };
 std::atomic<bool> g_rel_dead{false};   // policy r without router probabilities: the cache would never fill (relevance 0 everywhere), so it falls back to the default score
 // hot maps per topic (--moe dynhot=1, set at the first prompt): the lifetime term of the score is the topic's map plus this request's own uses (scale: its busiest
 // expert of any layer, g_topic_tmax) instead of the one map of every request ever served
@@ -921,6 +927,8 @@ policy get_policy() {
         if (e && strcmp(e, "halve")  == 0) return policy::halve;
         if (e && (strcmp(e, "r") == 0 || strcmp(e, "relevance") == 0)) return policy::rel;   // only the router's relevance of the expert to the current context: no recency, window or hit counts
         if (e && strcmp(e, "lru")    == 0) return policy::lru;   // plain least recently used: the score is the time of the last use, no lifetime counts, no pay-back margin
+        if (e && strcmp(e, "crf")    == 0) return policy::crf;   // ClassLRU: a use count that halves every 128 tokens gives the class, the score is 2^class / age
+        if (e && strcmp(e, "slru")   == 0) return policy::slru;  // two segments: a hit moves an expert to the protected half, whose oldest goes back to the other; LRU inside each
         return policy::add;
     }();
     return p;
@@ -934,6 +942,11 @@ double score(const layer_state & ls, int32_t id, uint64_t gmax) {
     switch (get_policy()) {
         case policy::window: return ls.win_count[id];
         case policy::lru:    return (double) ls.expert_last[id];
+        case policy::crf: {
+            const uint32_t age = ls.tok - ls.crf_t[id];
+            return (double) (1u << std::min(7, (int) std::floor(std::log2(std::max(1.0f, ls.crf[id] * std::exp2(-(float) age / 128.0f)))))) / (double) (age + 1);
+        }
+        case policy::slru:   return (ls.prot[id] ? 1e15 : 0.0) + (double) ls.expert_last[id];
         case policy::rel:
             if (!g_rel_dead.load(std::memory_order_relaxed)) { return (double) ls.relevance[id]; }
             return ls.win_count[id] + 16.0 * ((double) ls.glob_count[id] / (double) gmax);   // no router probabilities reached the cache: the default score
@@ -964,7 +977,7 @@ double score(const layer_state & ls, int32_t id) {
 
 // the pay-back margin is in uses, which has no meaning for the time of the last use: plain LRU swaps whenever the candidate was used more recently
 double pay_back(int margin) {
-    return get_policy() == policy::lru || get_policy() == policy::rel ? 0.0 : (double) margin;
+    return get_policy() == policy::lru || get_policy() == policy::rel || get_policy() == policy::crf || get_policy() == policy::slru ? 0.0 : (double) margin;
 }
 
 // Hot-set profile: which experts this model used, so the next start preloads them into VRAM
@@ -1345,11 +1358,18 @@ inline double xscore(const moe_cache * mc, const layer_state & ls, int32_t id) {
 // later layer). The next two layers give blocks last in both: they are needed soonest.
 inline double prompt_victim_rank(const moe_cache * mc, const layer_state & lo, size_t o, size_t jli, int32_t x, bool all) {
     static const bool on = [] { const char * e = moe_opt("prompt-victim"); return e && atoi(e) != 0; }();
+    // the ranks below leave room for scores under 9e5, and the clock of the time-based policies runs past that: their score goes in as a share of the clock
+    const auto bounded = [&](double s) {
+        const policy p = get_policy();
+        if (p == policy::lru)  { return 9e5 * (double) lo.expert_last[x] / (double) std::max<uint64_t>(mc->clock, 1); }
+        if (p == policy::slru) { return (lo.prot[x] ? 4.5e5 : 0.0) + 4.4e5 * (double) lo.expert_last[x] / (double) std::max<uint64_t>(mc->clock, 1); }
+        return std::min(s, 9e5);
+    };
     if (!on) {
-        const double s = std::min(score(lo, x), 9e5);
+        const double s = bounded(score(lo, x));
         return o > jli ? 1e12 - (double) o * 1e6 + s : s;
     }
-    const double s = std::min(xscore(mc, lo, x), 9e5);
+    const double s = bounded(xscore(mc, lo, x));
     if (o > jli && o <= jli + 2) { return 1e12 - (double) o * 1e6 + s; }
     if (all) { return o <= jli ? (double) (jli - o) * 1e6 + s : 1e11 - (double) o * 1e6 + s; }
     return s + 1e-3 * (1.0 - (double) o / (double) mc->layers.size());
@@ -1926,6 +1946,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
     }
     static const bool count_prompt = [] { const char * v = moe_opt("count-prompt"); return !v || atoi(v) != 0; }();   // --moe count-prompt=0: prompt batches warm the window but not the lifetime counts
     for (int64_t t = 0; t < n_tokens; ++t) {
+        ls->tok++;
         if ((int32_t) ls->recent.size() >= mc->window) {
             for (int32_t old : ls->recent.front()) {
                 ls->win_count[old]--;
@@ -1941,6 +1962,19 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             ls->expert_count[id]++;
             ls->win_count[id]++;
             ls->expert_last[id] = ++mc->clock;
+            if (get_policy() == policy::crf) {
+                ls->crf[id] = ls->crf[id] * std::exp2(-(float) (ls->tok - ls->crf_t[id]) / 128.0f) + 1.0f;
+                ls->crf_t[id] = ls->tok;
+            } else if (get_policy() == policy::slru && ls->expert_slot[id] >= 0 && !ls->prot[id]) {   // a hit: to the protected half of what this layer holds, its oldest back to the other
+                ls->prot[id] = 1; ls->n_prot++;
+                if (ls->n_prot > std::max(1, ls->n_cache / 2)) {
+                    int32_t oldest = -1;
+                    for (int32_t x = 0; x < (int32_t) ls->prot.size(); ++x) {
+                        if (ls->prot[x] && x != id && (oldest < 0 || ls->expert_last[x] < ls->expert_last[oldest])) { oldest = x; }
+                    }
+                    if (oldest >= 0) { ls->prot[oldest] = 0; ls->n_prot--; }
+                }
+            }
             ls->recent.back().push_back(id);
             if (g_exptok.n > 0 && n_tokens == (int64_t) g_exptok.batch.size() && (uint32_t) il < g_exptok.n_layers && (uint32_t) id < g_exptok.n_exp) {
                 const size_t c = (size_t) il * g_exptok.n_exp + (size_t) id;   // --moe expids: this token to this expert's ring
@@ -2132,6 +2166,7 @@ void publish_job(moe_cache * mc, const upload_job & j) {
 // an expert leaves VRAM: did its upload pay back (decode hits x CPU eval time saved >= upload time)?
 void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
     mc->n_evictions++;
+    if (!ls.prot.empty() && ls.prot[e]) { ls.prot[e] = 0; ls.n_prot--; }
     if (!ls.ghost_flag.empty()) {
         ls.ghost_flag[e] = 1; ls.ghost_q.push_back(e);
         while ((int32_t) ls.ghost_q.size() > std::max(1, ls.n_cache)) { ls.ghost_flag[ls.ghost_q.front()] = 0; ls.ghost_q.pop_front(); }
@@ -3778,6 +3813,7 @@ void llama_moe_cache_kv_pool_expected_fork(bool on) {
     // --moe fattn-kernel=vec|tile|mma: the kernel of decode-sized attention nodes, where it can run them (fork/docs/fork-knobs.md); values of BEST_FATTN_KERNEL_*
     static const int k = [] { const char * e = moe_opt("fattn-kernel"); return !e ? 0 : !strcmp(e, "vec") ? 100 : !strcmp(e, "tile") ? 200 : !strcmp(e, "mma") ? 400 : 0; }();
     if (k) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_cuda_fattn_force_fork")) { fn(k); } }
+    if (const char * e = moe_opt("fattn-rows"); e && atoi(e) == 0) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_cuda_fattn_rows_fork")) { fn(0); } }   // a gather converts all of quantized K/V
 }
 bool llama_moe_cache_kv_pool_expected_fork() { return g_kv_pool_expected.load(); }
 // The records a context registered while it expected an expert pool (the target): they belong to that pool's tail. The flag above is set by every context at its
@@ -4233,6 +4269,7 @@ static void kv_lend_pc_of(const kvt_runs & kvt, size_t & pc_out, size_t & pc_dec
         if (kr.fixed || !kr.layout || (!ggml_is_quantized(kr.tk) && !ggml_is_quantized(kr.tv))) { continue; }
         std::vector<llama_kv_tail_fork::seg> s;
         kr.layout(kr.tk, kr.tv, nullptr, &s);   // every layer: the attention copies a host layer's K/V into the lend too
+        vec = vec && !kr.gather;   // a gather over quantized K/V: decode has the copies too, though only the rows it reads are written (fattn-common.cuh)
         for (size_t i = 0; i < s.size(); ++i) {
             if (s[i].v) { continue; }
             if (s[i].lay < (int32_t) kr.kind.size() && kr.kind[s[i].lay] != 0 && kr.out_next[s[i].lay]) { continue; }   // --moe attn-split: the other layout's entry: no graph reads it
@@ -4260,7 +4297,7 @@ static void kv_tail_bind(moe_cache::alias_pool & ap) {
         moe_cache::alias_pool::kvt_run kr;
         kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.rows = r.rows; kr.attach = r.attach; kr.bpv = r.bpv;
         kr.layout = r.layout; kr.retype = r.retype; kr.rot = r.rot; kr.tk = r.type_k; kr.tv = r.type_v; kr.convertible = r.convertible && r.layout && r.retype;
-        kr.kind = r.kind; kr.l_il = r.l_il; kr.l_part = r.l_part; kr.parts_set = r.parts_set;
+        kr.kind = r.kind; kr.l_il = r.l_il; kr.l_part = r.l_part; kr.parts_set = r.parts_set; kr.gather = r.gather;
         if (!r.mask0.empty()) { kr.out = r.mask0; kr.out_next = r.mask0; static uint8_t no_place[8]; kr.host.assign(2 * r.mask0.size(), { no_place, r.row }); }
         kr.unit = r.layout ? kv_rec_unit(r.type_k, r.type_v) : 256;
         kr.cells_max = r.row ? r.bytes / r.row : 0;
@@ -6857,6 +6894,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             ls.expert_count.assign(n_expert, 0);
             ls.win_count.assign(n_expert, 0);
             ls.expert_last.assign(n_expert, 0);
+            ls.crf.assign(n_expert, 0.0f);
+            ls.crf_t.assign(n_expert, 0);
+            ls.prot.assign(n_expert, 0);
             ls.relevance.assign(n_expert, 0.0f);
             ls.ghost_flag.assign(n_expert, 0);
             const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
@@ -6974,7 +7014,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     src_pinned     ? "from pinned host memory (direct DMA)" :
                                      "from pageable host memory (mmap; --load-mode pin: faster uploads)");
             {
-                static const char * const pol[] = { "halve", "window", "hybrid", "add", "lru", "rel" };
+                static const char * const pol[] = { "halve", "window", "hybrid", "add", "lru", "rel", "crf", "slru" };
                 char sb[320];
                 snprintf(sb, sizeof sb, "slots=%d workers=%d links=%d upload=%s bounce_kb=%zu policy=%s", (int) mc->n_slots, n_workers, n_links,
                         mc->bounce_bytes ? "bounce" : mc->staging[0] ? "pread" : src_pinned ? "pinned-dma" : "mmap-pageable",

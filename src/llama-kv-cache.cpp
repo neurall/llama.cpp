@@ -538,6 +538,7 @@ llama_kv_cache::llama_kv_cache(
             reg.type_k      = type_k;
             reg.type_v      = type_v;
             reg.convertible = !idx_cache;
+            reg.gather      = hparams.indexer_top_k > 0;
             reg.rot = [this, ents = r.ents](int32_t lay, bool is_v) -> ggml_tensor * {   // (made by init_rotation, after this)
                 if (!(is_v ? n_rot_v_tier : n_rot_k_tier)) { return nullptr; }
                 const auto & l = layers[ents.at(lay)];

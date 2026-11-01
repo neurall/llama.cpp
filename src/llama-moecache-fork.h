@@ -174,6 +174,7 @@ struct llama_kv_tail_fork {
     std::function<void(ggml_type, ggml_type, const std::vector<char> *, const std::vector<std::pair<uint8_t *, size_t>> *, ggml_backend_buffer_t)> retype;
     ggml_type          type_k = GGML_TYPE_F16, type_v = GGML_TYPE_F16;   // the types the record has now
     bool               convertible = false;
+    bool               gather = false;   // the attention reads top-k cells of these rows, over quantized K/V through an f16 copy at decode too
     // rot(layer, is_v): the rotation constant of a layer's K or V; null: its rows stay plain. Rows turning quantized are rotated, rows turning float rotate back (it is its own inverse)
     std::function<ggml_tensor *(int32_t, bool)> rot;
     // --moe attn-split: the record's layers that are out of the row at the start, and per layer: 0 plain, 1 a whole layer with parts, 2 a part; its model layer; which part.
