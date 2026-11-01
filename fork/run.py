@@ -2580,7 +2580,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _d = _next_lp(_s, True)
                 print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
-                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
+                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
@@ -3047,6 +3047,22 @@ CELLS = {}   # (model, test, build, args, campaign, hw) -> (t/s of its runs, pp 
 FIRST_ANSWER = {}
 
 
+# What a row's numbers depend on and a debug switch can change without saying so: the pool, its margin and the prompt paths of the last request (2026-11-02: rows that looked clean under
+# a switch had a bigger pool or no mix call at all, and a bug was blamed on the wrong PR). Goes into the row's note.
+def row_layout(logf):
+    try:
+        t = open(logf, errors="replace").read()
+    except OSError:
+        return ""
+    pools = dict(re.findall(r"block pool on (\S+): \d+ layers, ([\d.]+) MiB", t))
+    margins = dict(re.findall(r"VRAM on (\S+): \d+ MiB free at sizing, margin (\d+) MiB", t))
+    last = t[t.rfind("launch_slot_"):] if "launch_slot_" in t else t
+    paths = collections.Counter(x.strip() for x in re.findall(r"prompt call of \d+ tokens: ([^(]+?) \(", last))
+    if not pools:
+        return ""
+    return (f"pool {'+'.join(f'{float(v):.0f}' for v in pools.values())} MiB margin {'/'.join(margins.values())} paths " + (", ".join(f"{k} {n}" for k, n in paths.most_common()) or "-"))
+
+
 def answer_checks(row, key):
     out = row.get("output") or ""
     n_gen = int(float(row.get("n_gen") or 0))
@@ -3061,9 +3077,15 @@ def answer_checks(row, key):
     # With the expert cache, upload timing decides which experts run on the GPU and which on the CPU, and that numeric drift changes the text late in a
     # long answer: a later run that parts from the first is normal. A repeat much shorter or longer than the first is not (the DSpark break: 717 against
     # 887 characters): only that is flagged.
+    k = next((i for i, (x, y) in enumerate(zip(first, out)) if x != y), min(len(first), len(out)))
+    # Nor is a repeat that parts in the first tenth: a damaged prompt, with a coherent answer and no NaN to show for it (2026-11-02: the unwritten rows of a fused GLU, parting at
+    # character 5 of 802 where the normal drift parts at 342).
+    if k * 10 < len(first):
+        row["note"] = f"repeat parts at char {k} of {len(first)} | " + str(row.get("note") or "")
+        print(col("1;93", f"    REPEAT PARTS EARLY from the cell's first run: at character {k} of {len(first)}: the prompt was computed differently: ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
+        return
     if 0.85 * len(first) <= len(out) <= 1.15 * len(first):
         return
-    k = next((i for i, (x, y) in enumerate(zip(first, out)) if x != y), min(len(first), len(out)))
     print(col("1;93", f"    REPEAT DIFFERS from the cell's first run: {len(out)} against {len(first)} characters, parting at character {k}: ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
 
 
