@@ -346,3 +346,21 @@ Repro: `python3 fork/run.py jobs -c up8kv -b up8_gather_rows -r 0 -nm -onl kvb-g
 | `fork/run.py` `is_loop`, `--keep-loops`, how results were read | the rows carried `ok=1`, and speeds were reported before answers | `--keep-loops` skipped the loop test, which is what caught `!!!!` | `is_garbage` fails such a row always. Every answer now goes to a judge model on W10 (`judge_row`, column `judge`), and a nonsense row has no accepted speed |
 
 Verified: build `up8_gather_mask_fix`, GLM 62k and Qwen Next 68k answers are real text (rows `kvb-glm60`, `kvb-qn60`). Long prompt rows for every engine build: `fork/runs/sane.csv`.
+
+## 2026-11-02 Second 128k request `!!!!` on Qwen3.6: a GLU fused into MMQ left the rows of skipped experts unwritten
+
+Repro: `python3 fork/run.py jobs -c up8kv -b up8_kv_auto10 -r 0 -nm -onl kvb-m90-128k` (build before the fix, 2 requests, about 3 min). The bug is on a prompt mix's first pass: the planner first tries the mix on request 2's last call, so request 1 is always fine.
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `ggml/src/ggml-cuda/ggml-cuda.cu` `ggml_cuda_try_fuse` (GLU into MMQ, upstream #30489, merged by hand) against `ggml_cuda_mul_mat_id` | Qwen3.6, `--hog-gpu 4.5`, 137014-token prompt: request 2 answers `!!!!`, fake 77 t/s. Without NaN bits in the old bytes, a coherent answer that parts from request 1 at character 5 (row 21866, `ok=1`) | the fused call went straight to `ggml_cuda_mul_mat_q` and skipped what `ggml_cuda_mul_mat_id` does before its kernel: zero the output (`op_params[1]`: the kernels leave rows of skipped experts unwritten), the expert ids and table (src[3], src[4]), the heat count. Only a pass of several tokens with skipped experts shows it, which is the mix's home card: those rows kept what the lent memory held and went into the experts' sum | `ggml_cuda_mul_mat_id_begin` shared by both paths; the fused call passes ids and table and its overlap check covers them. Build `fix_glu_fuse_zero`, rows `kvb-m384-128k`, `kvb-m90-128k`, one mix call each: request 2 coherent, parts from request 1 at character 342 as with `pp-mix=0`, decode 71-72 t/s |
+
+| false lead | why it looked right | why it was wrong |
+|---|---|---|
+| #31391 batched reads (reverted, then relanded) | `GGML_CUDA_NO_PINNED=1` cleared the NaN and switches that path off | the NaN stayed with the PR reverted; that switch also removed the mix call from the row |
+| `GGML_CUDA_DISABLE_GRAPHS=1`, `GGML_CUDA_DISABLE_FUSION=1` | both clean | the first row's answer still parted at character 5; the second row ran no mix call at all |
+| pool size, CUDA0's KV zone moving | every NaN row so far had the cold 384 MiB margin and a zone move | margin 90 with no zone move was NaN too |
+
+What found it: the NaN check named the first tensor (experts' sum on the mix's first layer), `pp-mix=0` proved the path, comparing the answer text of request 1 and 2 showed damage without a NaN, and the poison ledger showed nobody had written the bad row since the graph's lend. A switch that clears a bug proves nothing until the row shows the same path ran (mix calls, pool, margin).
+
+Rows with a mix call on builds `up8_kv_auto10` and `up8_no_gather` are void. Not run yet: `test-backend-ops` GLU fusion test on a GPU, a true PPL row through the fused path.
