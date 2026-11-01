@@ -1074,6 +1074,80 @@ CHAT_LONG = config.prompt("chat_long")
 KEEP_SERVER = False   # --keep-server (a run list does this unless -x): the server outlives the run and the next cell with the same model, build and args uses it (no reload); later runs find the cache the earlier ones filled
 QDIR = os.environ.get("RUN_QDIR") or os.path.join(WORK, "q5h"); os.makedirs(QDIR, exist_ok=True)   # server logs, queue, kept-server and load files of the machine
 KEPT = QDIR + "/kept-server.json"   # the kept server: key (model, build, args), pid, log file
+
+
+def runlog(msg):
+    """a line in q5h/watch-DATE.log, on the disk at once: what was running survives a freeze of the machine (a power cycle loses /tmp and the page cache)"""
+    try:
+        with open(os.path.join(QDIR, time.strftime("watch-%F.log")), "a") as f:
+            f.write(time.strftime("%T ") + msg + "\n"); f.flush(); os.fsync(f.fileno())
+    except OSError:
+        pass
+
+
+def cmd_memwatch(a):
+    """run.py memwatch PID LOG: a server's memory while it lives, so a frozen machine leaves its cause behind, and the guard that stops the server before the machine freezes.
+    Every 2 s a sample; every 10 s to q5h/watch-DATE.log with an fsync, every sample once memory runs short, so the last seconds are on the disk. New lines of the server's log go
+    to q5h/watch-server-DATE.log the same way (its own file lies in /tmp, which a boot empties). The guard kills the server when MemAvailable stays under --min-avail GiB, or swap-out
+    stays over 25000 pages/s with memory pressure over 30: with 101 GiB pinned the rest of a 125 GiB box thrashes for half an hour before the kernel's OOM killer acts."""
+    def meminfo():
+        m = {}
+        for l in open("/proc/meminfo"):
+            k, v = l.split(":", 1)
+            m[k] = int(v.split()[0]) / 1048576.0
+        return m
+    def vm():
+        return {l.split()[0]: int(l.split()[1]) for l in open("/proc/vmstat") if l.startswith(("pswpout", "pgmajfault"))}
+    def proc():
+        try:
+            d = {}
+            for l in open(f"/proc/{a.pid}/status"):
+                k, _, v = l.partition(":")
+                if k in ("VmRSS", "RssAnon", "RssFile", "VmSwap", "VmLck", "VmPin"): d[k] = int(v.split()[0]) / 1048576.0
+            return d
+        except (OSError, ValueError):
+            return None
+    out = lambda: os.path.join(QDIR, time.strftime("watch-%F.log"))
+    t_prev, v_prev, pos, buf, last_flush, bad = time.time(), vm(), 0, [], time.time(), 0
+    def flush():
+        nonlocal buf, last_flush, pos
+        try:
+            with open(out(), "a") as f:
+                f.write("".join(buf)); f.flush(); os.fsync(f.fileno())
+            buf, last_flush = [], time.time()
+            with open(a.log, "rb") as sl:   # the server's new lines
+                sl.seek(pos); new = sl.read(); pos += len(new)
+            if new:
+                with open(os.path.join(QDIR, time.strftime("watch-server-%F.log")), "ab") as f:
+                    f.write(new); f.flush(); os.fsync(f.fileno())
+        except OSError:
+            pass
+    while True:
+        p = proc()
+        if p is None:
+            buf.append(time.strftime("%T ") + f"server {a.pid} gone\n"); flush()
+            return
+        m, v = meminfo(), vm()
+        now = time.time(); dt = max(now - t_prev, 0.1)
+        so, mf = (v.get("pswpout", 0) - v_prev.get("pswpout", 0)) / dt, (v.get("pgmajfault", 0) - v_prev.get("pgmajfault", 0)) / dt
+        t_prev, v_prev = now, v
+        try: psi = re.findall(r"avg10=([\d.]+)", open("/proc/pressure/memory").read())
+        except OSError: psi = ["0", "0"]
+        some, full = float(psi[0]), float(psi[1]) if len(psi) > 1 else 0.0
+        avail, swap = m.get("MemAvailable", 0), m.get("SwapTotal", 0) - m.get("SwapFree", 0)
+        buf.append(time.strftime("%T ") + f"avail {avail:.1f} free {m.get('MemFree', 0):.1f} cached {m.get('Cached', 0):.1f} anon {m.get('AnonPages', 0):.1f} mlock {m.get('Mlocked', 0):.1f} "
+                   f"dirty {m.get('Dirty', 0):.2f} swap {swap:.2f} GiB, swap-out {so:.0f} major {mf:.0f} /s, psi {some:.1f} {full:.1f}; server rss {p.get('VmRSS', 0):.1f} anon {p.get('RssAnon', 0):.1f} "
+                   f"file {p.get('RssFile', 0):.1f} locked {p.get('VmLck', 0) + p.get('VmPin', 0):.1f} swapped {p.get('VmSwap', 0):.2f} GiB\n")
+        short = avail < 2 * a.min_avail or some > 5 or swap > 1 or so > 1000
+        bad = bad + 1 if avail < a.min_avail or (so > 25000 and some > 30) else 0
+        if bad >= 2:
+            buf.append(time.strftime("%T ") + f"GUARD: server {a.pid} killed, MemAvailable {avail:.1f} GiB, swap-out {so:.0f} pages/s, memory pressure {some:.1f}\n")
+            flush()
+            try: os.kill(a.pid, signal.SIGKILL)
+            except OSError: pass
+            return
+        if short or now - last_flush >= 10: flush()
+        time.sleep(2)
 DETACH = [False]      # server_run sets it while it starts a server to keep: no die-with-parent, own session
 
 
@@ -1810,9 +1884,11 @@ def _server_start_once(build, env, args):
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
     if os.path.exists(logf): os.replace(logf, logf + ".prev")   # the previous start's log stays readable: in a clean-state cell the cold run is the start before the warm one
     global WATCH_LOG; WATCH_LOG = logf   # post() watches this file
+    runlog(f"server start: {build} {os.path.basename(MODEL)} {' '.join(args)}")
     with open(logf, "w") as lf:
         p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
                              + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=None if DETACH[0] else _die_with_parent, start_new_session=DETACH[0])
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "memwatch", str(p.pid), logf], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     t0 = last = time.time()
     size = 0
     while True:
@@ -2180,6 +2256,7 @@ def server_run(build, env, args, path, body, render=None):
     PROCSTAT["cache_state"] = model_residency()
     _t0 = time.time(); PROCSTAT["start_ts"] = time.strftime("%F %T", time.localtime(_t0))
     PROCSTAT["endpoint"] = "completion" if path == "/completion" else "chat"
+    runlog(f"request: {CAMPAIGN} rep {REP} {path}, {len(json.dumps(body))} bytes of body")
     key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v), os.environ.get("PERF_CELL_ENV", ""), STATE_FILE["v"], STATE_FILE.get("gen")))   # a cell that resets its state file (--clean-state) gets a server of its own
     d = kept_get() if KEEP_SERVER else None
     if d and d["key"] == key:
@@ -10294,6 +10371,10 @@ if __name__ == "__main__":
     cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true"); cb.add_argument("--ceil", action="store_true", help="only read the engine's one-pass ceiling (one 2k probe) and store it as maxpp")
     cb.add_argument("-nm", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="the probes pin at most GB of the model (as run -nm): the ceiling depends on the RAM beside the pinned weights")
     cb.add_argument("-a", dest="cell_args", default="", metavar="ARGS", help="extra cell arguments for the probes (as run -a)")
+    mw = sp.add_parser("memwatch", help="a server's memory to q5h/watch-DATE.log and the guard that stops it before the machine freezes (every server start runs this)")
+    mw.add_argument("pid", type=int)
+    mw.add_argument("log", help="the server's log file")
+    mw.add_argument("--min-avail", type=float, default=float(os.environ.get("PERF_GUARD_AVAIL_GB") or 3.0), help="GiB of MemAvailable under which the server is killed")
     gn = sp.add_parser("gen", help="write generated prompts ahead of a run (--gen SPEC on any run writes them on the fly): in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,url=U")
     gn.add_argument("spec", nargs="?", default="", help="in=16:2000,out=32:1024,task=latin|french|german|medical|legal|equations|scifi|py|js|cpp|java|html|code|prose|explain|data|math|chat (or free text),topic=a|b (free text),seed=1,first=0,url=... (default [hosts] gen_url)")
     gn.add_argument("-n", type=int, default=1, help="how many prompts")
@@ -10311,5 +10392,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "gen": cmd_gen, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
