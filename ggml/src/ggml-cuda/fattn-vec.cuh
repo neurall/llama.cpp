@@ -111,6 +111,9 @@ static __global__ void flash_attn_ext_vec(
     V += nb23*sequence + nb22*(head / gqa_ratio);
 
     const half * maskh  = (const half  *) (mask + nb33*(sequence % ne33) + nb31*ic0);
+    // fork: the mask covers only the cells from k0 on, every cell before them is visible to every row (llama_kv_cache::kq_mask_k0)
+    const int stride_mask = mask ? int(nb31 / sizeof(half)) : ne11;
+    const int k0_mask     = ne11 - stride_mask;
 
     const float slope = get_alibi_slope(max_bias, head, n_head_log2, m0, m1);
 
@@ -277,8 +280,8 @@ static __global__ void flash_attn_ext_vec(
                     sum = logit_softcap*tanhf(sum);
                 }
 
-                if (mask && (ncols == 1 || ic0 + j < int(ne01.z))) {
-                    sum += slope*__half2float(maskh[j*ne11 + i_KQ]);
+                if (mask && k_VKQ_0 >= k0_mask && (ncols == 1 || ic0 + j < int(ne01.z))) {
+                    sum += slope*__half2float(maskh[j*stride_mask + i_KQ - k0_mask]);
                 }
 
                 KQ_max_new[j] = fmaxf(KQ_max_new[j], sum + FATTN_KQ_MAX_OFFSET);

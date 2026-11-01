@@ -678,7 +678,7 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
 template <int ncols1>
 __launch_bounds__(FATTN_KQ_STRIDE/2, 1)
 static __global__ void flash_attn_mask_to_KV_max(
-        const half2 * mask_ptr, int * KV_max_ptr, const int ne30, const int64_t s31, const int64_t s33) {
+        const half2 * mask_ptr, int * KV_max_ptr, const int ne30, const int64_t s31, const int64_t s33, const int k0_mask) {
     const half2 * GGML_CUDA_RESTRICT mask   = mask_ptr;
     int         * GGML_CUDA_RESTRICT KV_max = KV_max_ptr;
 
@@ -729,7 +729,7 @@ static __global__ void flash_attn_mask_to_KV_max(
         return;
     }
 
-    KV_max[sequence*ne31 + jt] = KV_max_sj;
+    KV_max[sequence*ne31 + jt] = k0_mask + KV_max_sj;   // fork: the cells before the mask's first are all visible (llama_kv_cache::kq_mask_k0)
 }
 
 void ggml_cuda_flash_attn_ext_compact_mask(
@@ -1169,12 +1169,12 @@ void launch_fattn(
         const dim3 block_dim_KV_max(FATTN_KQ_STRIDE/2, 1, 1);
 
         const int ne_KV_max = blocks_num_KV_max.x*blocks_num_KV_max.y;
-        const int iter_k = K->ne[1] / FATTN_KQ_STRIDE;
+        const int iter_k = mask->ne[0] / FATTN_KQ_STRIDE;
 
         KV_max.alloc(ne_KV_max);
         ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num_KV_max, block_dim_KV_max, 0, main_stream);
         ggml_cuda_kernel_launch(flash_attn_mask_to_KV_max<ncols1>, launch_params,
-            (const half2 *) mask->data, KV_max.ptr, iter_k, s31, s33);
+            (const half2 *) mask->data, KV_max.ptr, iter_k, s31, s33, int(K->ne[1] - mask->ne[0]));
         CUDA_CHECK(cudaGetLastError());
     }
 

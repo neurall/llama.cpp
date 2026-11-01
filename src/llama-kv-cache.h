@@ -211,6 +211,9 @@ public:
     uint32_t           get_n_parts(int32_t il) const;
     ggml_backend_dev_t get_part_dev(int32_t il, uint32_t part) const;
 
+    // fork: the first cell the attention mask of this ubatch has to cover: every cell before it is visible to all its tokens
+    uint32_t kq_mask_k0(const slot_info & sinfo, uint32_t n_kv) const;
+
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo, uint32_t part = 0) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo, uint32_t part = 0) const;
@@ -248,7 +251,7 @@ public:
 
     void set_input_k_shift(ggml_tensor * dst) const;
 
-    void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
+    void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn, uint32_t k0 = 0) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
     // true if llama_kv_cell_ext holds information that has to survive a state save/restore
@@ -439,6 +442,7 @@ public:
     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t part = 0) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t part = 0) const;
 
+    uint32_t           get_kq_mask_k0() const;                       // fork: llama_kv_cache::kq_mask_k0
     uint32_t           get_n_parts(int32_t il) const;                // fork: --moe attn-split
     ggml_backend_dev_t get_part_dev(int32_t il, uint32_t part) const;
 

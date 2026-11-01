@@ -43,6 +43,9 @@ struct tm_desc_fork {
 };
 static size_t tm_unit_fork(ggml_type t) { return ggml_is_quantized(t) ? std::lcm<size_t>(16, ggml_type_size(t)) : 256; }
 // layers marked in `mask` (in host memory) take no room in the row; 0: the types cannot hold a layer's rows. All layers out: one unit (the record keeps a row)
+bool llama_moe_cache_kv_any_host_fork();   // llama-moecache-fork.cpp: a layer's KV lies in host memory (the RAM tier): its attention may run off the card, on kernels with whole masks
+void llama_moe_cache_mask_tail_fork();     // llama-moecache-fork.cpp: masks cover the pass's own cells: a pass's lend no longer grows with the cells (need_at_cells)
+
 static size_t tm_layout_fork(const std::vector<std::array<int64_t, 4>> & lay, ggml_type tk, ggml_type tv, const std::vector<char> * mask, std::vector<llama_kv_tail_fork::seg> * out) {
     const size_t uk = tm_unit_fork(tk), uv = tm_unit_fork(tv);
     size_t off = 0;
@@ -1939,9 +1942,10 @@ struct args_set_input_kq_mask {
     uint32_t       n_swa;
     llama_swa_type swa_type;
 
-    int64_t n_kv;
+    int64_t n_kv;      // the mask's columns: the cells from k0 on
     int64_t n_stream;
     int64_t n_tps;
+    uint32_t k0;       // fork: llama_kv_cache::kq_mask_k0
 };
 
 // fork: persistent workers that fill the rows of a big ubatch's attention mask in parallel (--moe maskt=N). The caller takes chunks too; the workers
@@ -2040,6 +2044,7 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
     const int64_t n_kv     = args.n_kv;
     const int64_t n_stream = args.n_stream;
     const int64_t n_tps    = args.n_tps;
+    const uint32_t k0      = args.k0;
 
     const T mask_keep = llama_cast<T>(0.0f);
     const T mask_drop = llama_cast<T>(-INFINITY);
@@ -2104,7 +2109,7 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
             }
 
             for (uint32_t jj = 0; jj < n_kv; ++jj) {
-                uint32_t j = jj;
+                uint32_t j = jj + k0;
 
                 // we have an exiting mask for this sequence -> update just seq_idxs
                 if (!alibi) {
@@ -2165,14 +2170,14 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
                 }
 
                 if (alibi) {
-                    data[idst + j] = llama_cast<T>(static_cast<float>(-std::abs(p0 - p1)));
+                    data[idst + j - k0] = llama_cast<T>(static_cast<float>(-std::abs(p0 - p1)));
                 } else {
-                    data[idst + j] = mask_keep;
+                    data[idst + j - k0] = mask_keep;
                 }
 
                 continue;
 skip:
-                data[idst + j] = mask_drop;
+                data[idst + j - k0] = mask_drop;
             }
         }
     };
@@ -2236,7 +2241,36 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
     }
 }
 
-void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
+// fork: --moe mask-tail=0 turns it off. With one sequence and no hole, every cell before this ubatch's first cell is visible to all its tokens, so the mask covers only the cells from
+// there on: tokens x (tokens + padding) entries instead of tokens x cells, on the host and on every card with an attention layer (Qwen3.6, 3808-token pass at 137k cells: 28 MiB per
+// card instead of 995). The kernels read cells before it as visible; they find k0 as K's cells less the mask's columns. On a multiple of the attention's K stride (256).
+uint32_t llama_kv_cache::kq_mask_k0(const slot_info & sinfo, uint32_t n_kv) const {
+    static const bool on = [] { const char * e = llama_moe_get_opt("mask-tail"); return !e || atoi(e) != 0; }();
+    if (!on || !kv_tail_on || kv_rev || v_cells.size() != 1 || n_seq_max != 1 || swa_type != LLAMA_SWA_TYPE_NONE ||
+            hparams.f_max_alibi_bias != 0.0f || hparams.indexer_top_k > 0 || hparams.indexer_head_size > 0 || llama_moe_cache_kv_any_host_fork()) {
+        return 0;
+    }
+    if (sinfo.idxs.empty() || sinfo.idxs[0].empty()) {
+        return 0;
+    }
+    const auto & cells = v_cells[0];
+    if (cells.get_used() != cells.used_max_p1()) {
+        return 0;
+    }
+    uint32_t first = sinfo.idxs[0][0];
+    llama_pos p_min = cells.pos_get(first);
+    for (const auto idx : sinfo.idxs[0]) { first = std::min(first, (uint32_t) idx); p_min = std::min(p_min, cells.pos_get(idx)); }
+    // with several positions per token (M-RoPE) the tokens of one image share a position, and the mask of a tie depends on the token: the mask starts before them
+    while (first > 0 && cells.pos_get(first - 1) >= p_min) { --first; }
+    const uint32_t k0 = first / 256 * 256;
+    if (k0 == 0 || k0 >= n_kv) {
+        return 0;
+    }
+    llama_moe_cache_mask_tail_fork();
+    return k0;
+}
+
+void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn, uint32_t k0) const {
     const uint32_t n_tokens = ubatch->n_tokens;
 
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
@@ -2270,6 +2304,7 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
         /*.n_kv             =*/ n_kv,
         /*.n_stream         =*/ n_stream,
         /*.n_tps            =*/ n_tps,
+        /*.k0               =*/ k0,
     };
 
     if (dst->type == GGML_TYPE_F16) {
@@ -3430,7 +3465,11 @@ void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_uba
 }
 
 void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
-    kv->set_input_kq_mask(dst, ubatch, causal_attn);
+    kv->set_input_kq_mask(dst, ubatch, causal_attn, dst->ne[0] < (int64_t) n_kv ? (uint32_t) (n_kv - dst->ne[0]) : 0);   // the graph's mask, a reused one too
+}
+
+uint32_t llama_kv_cache_context::get_kq_mask_k0() const {
+    return sinfos.empty() ? 0 : kv->kq_mask_k0(sinfos[i_cur], n_kv);
 }
 
 void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {

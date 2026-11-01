@@ -486,10 +486,34 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
 
 template<int ncols1, int nwarps, int nbatch_fa, bool use_cp_async, bool oob_check, bool use_sparse>
 static __device__ __forceinline__ void flash_attn_ext_f16_load_mask(
-        const half * const __restrict__ mask_h, half * const __restrict__ tile_mask,
-        const int stride_mask, const int k_VKQ_0, const int i_sup, const int j0, const uint3 ne01,
+        const half * const __restrict__ mask_h0, half * const __restrict__ tile_mask,
+        const int64_t stride_mask_k0, const int k_VKQ_0, const int i_sup, const int j0, const uint3 ne01,
         const int32_t * const __restrict__ indices) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    // fork: the mask covers only the cells from k0 on, every cell before them is visible to every row (one sequence, llama_kv_cache::kq_mask_k0). k0 is a multiple of
+    // FATTN_KQ_STRIDE, so a tile lies wholly on one side of it. stride_mask_k0: the mask's row stride in the low half, k0 in the high one.
+    const int stride_mask = int(stride_mask_k0 & 0xffffffff);
+    const int k0_mask     = int(stride_mask_k0 >> 32);
+    if (k_VKQ_0 < k0_mask) {
+#pragma unroll
+        for (int j1 = 0; j1 < ncols1; j1 += nwarps) {
+            const int j_sram = j1 + threadIdx.y;
+
+            if (j1 + nwarps > ncols1 && j_sram >= ncols1) {
+                break;
+            }
+
+#pragma unroll
+            for (int i0 = 0; i0 < nbatch_fa; i0 += warp_size) {
+                const int i = i0 + threadIdx.x;
+                if (i < nbatch_fa) {
+                    tile_mask[j_sram*(nbatch_fa + 8) + i] = half(0.0f);
+                }
+            }
+        }
+        return;
+    }
+    const half * const __restrict__ mask_h = mask_h0 - k0_mask;
     if constexpr (use_cp_async) {
         static_assert(nbatch_fa <= 8*warp_size && nbatch_fa % 8 == 0, "bad nbatch_fa");
         static_assert(!oob_check, "OOB check incompatible with cp_async");
@@ -589,7 +613,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
         const int ne02,
         const int stride_K,
         const int stride_V,
-        const int stride_mask,
+        const int64_t stride_mask,
         half2        * const __restrict__ tile_Q,
         half2        * const __restrict__ tile_K,
         half2        * const __restrict__ tile_V,
@@ -1207,7 +1231,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
         const int stride_Q2,
         const int stride_K,
         const int stride_V,
-        const int stride_mask,
+        const int64_t stride_mask,
         const int jt,
         const int zt_gqa,
         const int kb0_start,
@@ -1883,7 +1907,8 @@ static __global__ void flash_attn_ext_f16(
     const int stride_Q1   = nb01 / sizeof(float2);
     const int stride_Q2   = nb02 / sizeof(float2);
     const int stride_K    = nb11 / sizeof(half2);
-    const int stride_mask = nb31 / sizeof(half);
+    // fork: the mask's row stride and the first cell it covers (llama_kv_cache::kq_mask_k0), see flash_attn_ext_f16_load_mask; K and a mask of all its cells: 0
+    const int64_t stride_mask = (int64_t(mask ? ne11 - int(nb31 / sizeof(half)) : 0) << 32) | int64_t(nb31 / sizeof(half));
 
     const int stride_V = V_is_K_view ? stride_K : nb21 / sizeof(half2);
 

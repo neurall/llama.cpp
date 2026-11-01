@@ -3897,11 +3897,19 @@ static void kv_zone_check(const moe_cache::alias_pool & ap, size_t lend_end, con
 // on each card, which a size measured at 32k cells did not have).
 static std::atomic<double> g_mask_bpc { 0.0 };
 void llama_moe_cache_mask_bpc_fork(double bytes_per_token_cell) { g_mask_bpc.store(std::max(0.0, bytes_per_token_cell)); }
+static std::atomic<bool> g_mask_tail { false };   // a graph's mask covers only its pass's own cells (llama_kv_cache::kq_mask_k0)
+void llama_moe_cache_mask_tail_fork() { g_mask_tail.store(true, std::memory_order_relaxed); }
 static size_t need_at_cells(const moe_cache::alias_pool & ap, int32_t n_tokens, size_t need, size_t cells) {
     const auto it = ap.need_cells.find(n_tokens);
     const size_t c0 = it != ap.need_cells.end() ? it->second : cells;
-    const double pc = g_mask_bpc.load() * (double) n_tokens + (double) (n_tokens < 64 ? ap.kv_lend_pc_dec : ap.kv_lend_pc);   // + the f16 copies of quantized K/V
-    return cells > c0 ? need + (size_t) (pc * (double) (cells - c0)) : need;
+    if (cells <= c0) { return need; }
+    const double pc = (double) (n_tokens < 64 ? ap.kv_lend_pc_dec : ap.kv_lend_pc);   // the f16 copies of quantized K/V
+    double cols = (double) (cells - c0);   // the mask's columns the graph gains
+    if (g_mask_tail.load(std::memory_order_relaxed)) {   // never more than the pass's own cells and the padding on both sides
+        const double most = (double) GGML_PAD(n_tokens, 256) + 256.0;
+        cols = std::max(0.0, std::min((double) cells, most) - std::min((double) c0, most));
+    }
+    return need + (size_t) (g_mask_bpc.load() * (double) n_tokens * cols + pc * (double) (cells - c0));
 }
 
 // where a lend of `bytes` from the start of the buffer really ends: it takes whole blocks of every size class its range overlaps (the classes are stacked in the buffer, each with its own
@@ -4786,6 +4794,13 @@ static size_t kv_row_all(const moe_cache::alias_pool & ap) {   // bytes per cell
     for (auto & r : ap.kvt) { if (!r.fixed && r.convertible) { row += r.layout(r.tk, r.tv, nullptr, nullptr); } }
     return row;
 }
+bool llama_moe_cache_kv_any_host_fork() {
+    moe_cache * mc = g_cache;
+    if (!mc) { return false; }
+    for (const auto & ap : mc->alias) { if (kv_any_out(ap)) { return true; } }
+    return false;
+}
+
 static bool kv_any_out(const moe_cache::alias_pool & ap) {
     for (auto & r : ap.kvt) { for (char c : r.out) { if (c) { return true; } } }
     return false;

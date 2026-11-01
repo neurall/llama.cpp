@@ -819,7 +819,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
         T_vec_dot * const KV_tmp,
         const int stride_K2,
         const int stride_V2,
-        const int stride_mask,
+        const int64_t stride_mask,
         float * const KQ_max,
         float * const KQ_sum,
         T_acc * const VKQ,
@@ -890,8 +890,9 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                 }
 
                 if (!oob_check || i_KQ < k_VKQ_sup) {
-                    KQ_acc[(i_KQ_0/(np*warp_size))*cpw + jc0] += (ncols2 > 1 || mask) ?
-                        slope*__half2float(mask[j*stride_mask + k_VKQ_0 + i_KQ]) : 0.0f;
+                    // fork: cells before k0 (high half of stride_mask, llama_kv_cache::kq_mask_k0) are visible to every row and in no mask
+                    KQ_acc[(i_KQ_0/(np*warp_size))*cpw + jc0] += ((ncols2 > 1 || mask) && k_VKQ_0 >= int(stride_mask >> 32)) ?
+                        slope*__half2float(mask[j*int(stride_mask & 0xffffffff) + k_VKQ_0 - int(stride_mask >> 32) + i_KQ]) : 0.0f;
 
                     KQ_max_new[jc0] = fmaxf(KQ_max_new[jc0], KQ_acc[(i_KQ_0/(np*warp_size))*cpw + jc0] + FATTN_KQ_MAX_OFFSET);
                 }
@@ -1147,7 +1148,7 @@ static __global__ void flash_attn_tile(
 
     const int stride_K2   = is_quant_kv ? nb11 : int(nb11 / sizeof(half2));
     const int stride_V2   = is_quant_kv ? nb21 : int(nb21 / sizeof(half2));
-    const int stride_mask = nb31 / sizeof(half);
+    const int64_t stride_mask = (int64_t(mask ? ne11 - int(nb31 / sizeof(half)) : 0) << 32) | int64_t(nb31 / sizeof(half));   // fork: see flash_attn_tile_iter
 
     const float slope = ncols2 == 1 ? get_alibi_slope(max_bias, head0, n_head_log2, m0, m1) : 1.0f;
 
