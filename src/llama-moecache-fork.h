@@ -176,6 +176,12 @@ struct llama_kv_tail_fork {
     bool               convertible = false;
     // rot(layer, is_v): the rotation constant of a layer's K or V; null: its rows stay plain. Rows turning quantized are rotated, rows turning float rotate back (it is its own inverse)
     std::function<ggml_tensor *(int32_t, bool)> rot;
+    // --moe attn-split: the record's layers that are out of the row at the start, and per layer: 0 plain, 1 a whole layer with parts, 2 a part; its model layer; which part.
+    // parts_set(on): the cache reads the parts from now on (llama_moe_cache_kv_parts_fork)
+    std::vector<char>    mask0;
+    std::vector<int8_t>  kind;
+    std::vector<int32_t> l_il, l_part;
+    std::function<void(bool)> parts_set;
 };
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
 // a cache rebuilt with other KV types (llama_kv_refit) takes the place of the old one in the running pool

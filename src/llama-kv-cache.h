@@ -210,6 +210,7 @@ public:
     // fork: --moe attn-split: on how many cards this layer's KV heads lie, and the card of a part
     uint32_t           get_n_parts(int32_t il) const;
     ggml_backend_dev_t get_part_dev(int32_t il, uint32_t part) const;
+    int32_t            entry_of(int32_t il, uint32_t part) const;   // the entry of layers[] that holds this part's rows now
 
     // fork: the first cell the attention mask of this ubatch has to cover: every cell before it is visible to all its tokens
     uint32_t kq_mask_k0(const slot_info & sinfo, uint32_t n_kv) const;
@@ -283,10 +284,15 @@ private:
         ggml_tensor * k_rot = nullptr;
         ggml_tensor * v_rot = nullptr;
 
-        // fork: --moe attn-split: this layer's KV heads lie on n_parts cards, one entry per card; map_layer_ids holds part 0, the parts follow it
+        // fork: --moe attn-split: a layer that can split has an entry with all its KV heads on its home card (whole, map_layer_ids holds it) and behind it n_parts entries with the
+        // heads of one card each. Which of them hold the rows: attn_parts_on
         uint32_t part    = 0;
         uint32_t n_parts = 1;
+        bool     whole   = false;
     };
+
+    bool attn_parts_on = false;   // fork: the rows lie in the parts (--moe attn-split: 1 from the start, 2 from a request past the threshold, llama_moe_cache_kv_parts_fork)
+    bool layer_active(const kv_layer & l) const { return l.n_parts == 1 || l.whole != attn_parts_on; }
 
     bool v_trans = true;  // the value tensor is transposed
     // fork: --moe kv-token-major=2: cell c sits in record row kv_size-1-c, so the used cells are the LAST rows of the record and the unused ones come first (the growth of

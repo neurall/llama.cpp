@@ -317,6 +317,7 @@ struct moe_cache {
                          std::function<void(ggml_type, ggml_type, const std::vector<char> *, const std::vector<std::pair<uint8_t *, size_t>> *, ggml_backend_buffer_t)> retype;
                          std::function<ggml_tensor *(int32_t, bool)> rot;
                          std::vector<char> out, out_next; std::vector<std::pair<uint8_t *, size_t>> host;   // RAM part: layers in host memory now / after the next relayout; where
+                         std::vector<int8_t> kind; std::vector<int32_t> l_il, l_part; std::function<void(bool)> parts_set;   // --moe attn-split: see llama_kv_tail_fork
                          ggml_type tk = GGML_TYPE_F16, tv = GGML_TYPE_F16, tk0 = GGML_TYPE_F16, tv0 = GGML_TYPE_F16; bool convertible = false; size_t unit = 256; };   // tk0/tv0: the types it was created with (tier 0); unit: its row and its place in the combined row are multiples of it
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (the zone never reaches the last two blocks before it)
@@ -4218,6 +4219,7 @@ static void kv_lend_pc_of(const kvt_runs & kvt, size_t & pc_out, size_t & pc_dec
         kr.layout(kr.tk, kr.tv, nullptr, &s);   // every layer: the attention copies a host layer's K/V into the lend too
         for (size_t i = 0; i < s.size(); ++i) {
             if (s[i].v) { continue; }
+            if (s[i].lay < (int32_t) kr.kind.size() && kr.kind[s[i].lay] != 0 && kr.out_next[s[i].lay]) { continue; }   // --moe attn-split: the other layout's entry: no graph reads it
             const bool has_v = i + 1 < s.size() && s[i + 1].v;
             pc = std::max(pc, (size_t) (s[i].ne0 + (has_v ? s[i + 1].ne0 : 0)) * 2);
             const int64_t hk = s[i].head, hv = has_v ? s[i + 1].head : -1;
@@ -4242,6 +4244,8 @@ static void kv_tail_bind(moe_cache::alias_pool & ap) {
         moe_cache::alias_pool::kvt_run kr;
         kr.owner = r.owner; kr.bytes = r.bytes; kr.row = r.row; kr.pad = std::max<size_t>(1, r.pad); kr.rows = r.rows; kr.attach = r.attach; kr.bpv = r.bpv;
         kr.layout = r.layout; kr.retype = r.retype; kr.rot = r.rot; kr.tk = r.type_k; kr.tv = r.type_v; kr.convertible = r.convertible && r.layout && r.retype;
+        kr.kind = r.kind; kr.l_il = r.l_il; kr.l_part = r.l_part; kr.parts_set = r.parts_set;
+        if (!r.mask0.empty()) { kr.out = r.mask0; kr.out_next = r.mask0; static uint8_t no_place[8]; kr.host.assign(2 * r.mask0.size(), { no_place, r.row }); }
         kr.unit = r.layout ? kv_rec_unit(r.type_k, r.type_v) : 256;
         kr.cells_max = r.row ? r.bytes / r.row : 0;
         kr.ratio = llama_kv_cache_tail_ratio_fork(r.owner);
@@ -4646,7 +4650,16 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         std::vector<std::vector<llama_kv_tail_fork::seg>> so(nr), sn(nr);
         for (size_t i = 0; i < nr; ++i) {
             auto & r = ap.kvt[i]; auto & q = cp.nk[i];
-            if (r.layout) { r.layout(r.tk, r.tv, &r.out, &so[i]); q.layout(q.tk, q.tv, &q.out_next, &sn[i]); }
+            if (r.layout) {
+                r.layout(r.tk, r.tv, &r.out, &so[i]); q.layout(q.tk, q.tv, &q.out_next, &sn[i]);
+                // --moe attn-split: a layer coming back into the row has no old rows to convert: its rows come afterwards (llama_moe_cache_kv_parts_fork)
+                if (!r.out.empty()) {
+                    sn[i].erase(std::remove_if(sn[i].begin(), sn[i].end(), [&](const llama_kv_tail_fork::seg & g) {
+                        return g.lay < (int32_t) r.out.size() && r.out[g.lay] && !(g.lay < (int32_t) q.out_next.size() && q.out_next[g.lay]);
+                    }), sn[i].end());
+                }
+                // and one that leaves has no new place
+            }
             else          { so[i] = sn[i] = { { GGML_TYPE_F16, (int64_t) (r.row / 2), 0, false, 0, 0 } }; }   // no layout: the row moves as bytes
         }
         // the RAM part: layers leaving the row for host memory (q.out_next, places in q.host) are copied there first (the cells in use, by the card: its kernels
@@ -4665,6 +4678,7 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
                 const bool leaves = sg.lay < (int32_t) q.out_next.size() && q.out_next[sg.lay] && !(sg.lay < (int32_t) r.out.size() && r.out[sg.lay]);
                 if (!leaves) { keep.push_back(sg); continue; }
                 if (cp.cells == 0) { continue; }
+                if (sg.lay < (int32_t) r.kind.size() && r.kind[sg.lay] != 0) { continue; }   // --moe attn-split: llama_moe_cache_kv_parts_fork read its rows before this
                 const auto & h = q.host[2 * sg.lay + (sg.v ? 1 : 0)];
                 const int64_t nh = (int64_t) (ggml_row_size(sg.type, sg.ne0) / 2);
                 ggml_tensor * a = ggml_new_tensor_2d(hx, GGML_TYPE_F16, nh, (int64_t) cp.cells);
@@ -4693,6 +4707,9 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         order.push_back(&grow);
         if (cp.up) { std::reverse(order.begin(), order.end()); }
         for (run * rr : order) {
+            bool any_seg = false;
+            for (const auto & pt : rr->parts) { any_seg = any_seg || !pt.so->empty(); }
+            if (!any_seg) { continue; }   // every layer of this run left the row (--moe attn-split)
             if (!kv_convert_run(cp.be, ap, rr->src, rr->ss, rr->dst, rr->ds, rr->n, rr->parts, cp.s_lo, cp.s_hi - cp.s_lo, cp.up, moved)) {
                 GGML_ABORT("kv-retype: a conversion graph failed half-way (the KV is lost)");
             }
@@ -4802,8 +4819,125 @@ bool llama_moe_cache_kv_any_host_fork() {
 }
 
 static bool kv_any_out(const moe_cache::alias_pool & ap) {
-    for (auto & r : ap.kvt) { for (char c : r.out) { if (c) { return true; } } }
+    for (const auto & r : ap.kvt) {
+        for (size_t i = 0; i < r.out.size(); ++i) { if (r.out[i] && !(i < r.kind.size() && r.kind[i] != 0)) { return true; } }   // (an attn-split entry out of the row is no host layer)
+    }
     return false;
+}
+
+// --moe attn-split: the rows of the attention layers that can split move between their whole entries (all KV heads on the layer's home card) and their parts (each card its heads).
+// Every card's zone is read into RAM (pageable memory: no CUDA allocation at run time, nothing staged in the pool), the zones take their new layout (retype: layers that stay keep
+// their rows), and the rows that enter are put together from the images and written back: a whole K or V row is its parts' rows side by side. No graph runs meanwhile.
+// Only when a request passes the threshold (llama_context::decode): nothing to read for a new prompt; a prefix in use costs a read and a write of its rows over each card's link.
+static ggml_tensor kv_bytes_of_pool(moe_cache::alias_pool & ap, size_t at, size_t n) {
+    ggml_tensor z = {};
+    z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + at;
+    z.ne[0] = (int64_t) n; z.ne[1] = z.ne[2] = z.ne[3] = 1;
+    z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = n;
+    return z;
+}
+
+bool llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * note, size_t note_size) {
+    auto say = [&](const char * fmt, auto... args) { if (note && note_size) { snprintf(note, note_size, fmt, args...); } };
+    moe_cache * mc = g_cache;
+    if (!mc) { say("attn-split: no expert pool"); return false; }
+    const int64_t t0 = ggml_time_us();
+    if (sched) { ggml_backend_sched_synchronize(sched); }
+    struct image { moe_cache::alias_pool * ap = nullptr; size_t cells = 0, row = 0; std::unique_ptr<uint8_t[]> b; };
+    struct place { size_t im, at, st; };   // an entry's K or V in the old rows: which image, its place in the row, its bytes per row
+    std::vector<image> img;
+    std::map<std::tuple<void *, int32_t, bool, int32_t>, place> old;   // by cache, model layer, is V, part (-1: the whole layer)
+    size_t bytes = 0;
+    for (auto & ap : mc->alias) {
+        image im; im.ap = &ap; im.row = ap.kv_row;
+        bool any = false;
+        for (auto & r : ap.kvt) {
+            if (!r.fixed) { im.cells = std::max(im.cells, r.rows ? r.rows() : 0); }
+            any = any || !r.kind.empty();
+        }
+        if (!any) { continue; }
+        for (auto & r : ap.kvt) {
+            if (r.kind.empty() || r.fixed) { continue; }
+            std::vector<llama_kv_tail_fork::seg> cur;
+            r.layout(r.tk, r.tv, &r.out, &cur);
+            for (const auto & q : cur) {
+                if (r.kind[q.lay] == 0) { continue; }
+                old[{ r.owner, r.l_il[q.lay], q.v, r.kind[q.lay] == 1 ? -1 : r.l_part[q.lay] }] = { img.size(), r.prefix + q.off, ggml_row_size(q.type, q.ne0) };
+            }
+        }
+        const size_t n = im.cells * im.row;
+        if (n > 0) {
+            im.b.reset(new (std::nothrow) uint8_t[n]);
+            if (!im.b) { say("attn-split: no room in RAM for %.1f MiB of rows", n / 1048576.0); return false; }
+            const ggml_tensor z = kv_bytes_of_pool(ap, ap.kv_start + ap.kv_fixed, n);
+            ggml_backend_tensor_get(&z, im.b.get(), 0, n);
+            bytes += n;
+        }
+        img.push_back(std::move(im));
+    }
+    if (img.empty()) { say("attn-split: no layer can split"); return false; }
+    static uint8_t no_place[8];   // an entry out of the row: no graph reads it
+    for (auto & im : img) {
+        for (auto & r : im.ap->kvt) {
+            if (r.kind.empty() || r.fixed) { continue; }
+            r.out_next.resize(r.kind.size(), 0);
+            r.host.assign(2 * r.kind.size(), { no_place, r.row });
+            for (size_t i = 0; i < r.kind.size(); ++i) {
+                if (r.kind[i] == 1) { r.out_next[i] = on ? 1 : 0; }
+                if (r.kind[i] == 2) { r.out_next[i] = on ? 0 : 1; }
+            }
+        }
+    }
+    char why[384] = { 0 };
+    if (!llama_moe_cache_kv_retype_fork(sched, 3, why, sizeof(why))) {
+        for (auto & im : img) { for (auto & r : im.ap->kvt) { if (!r.kind.empty() && !r.fixed) { r.out_next = r.out; } } }
+        say("attn-split: %s", why);
+        return false;
+    }
+    for (auto & im : img) {
+        auto & ap = *im.ap;
+        const size_t R = ap.kv_row, n = im.cells * R, z_at = ap.kv_start + ap.kv_fixed;
+        if (n == 0) { continue; }
+        std::unique_ptr<uint8_t[]> nb(new (std::nothrow) uint8_t[n]);
+        if (!nb) { GGML_ABORT("attn-split: no room in RAM for the new rows (the KV is lost)"); }
+        bool plain = false;   // layers that stayed: the conversion put their rows in place already, the new image starts from them
+        for (const auto & r : ap.kvt) { plain = plain || r.fixed || r.kind.empty(); for (const int8_t k : r.kind) { plain = plain || k == 0; } }
+        const ggml_tensor z = kv_bytes_of_pool(ap, z_at, n);
+        if (plain) { ggml_backend_tensor_get(&z, nb.get(), 0, n); }
+        const auto rows_from = [&](const place & w, size_t w_add, size_t to, size_t st) {
+            const image & si = img[w.im];
+            const size_t c_n = std::min(im.cells, si.cells);
+            for (size_t c = 0; c < c_n; ++c) { memcpy(nb.get() + c * R + to, si.b.get() + c * si.row + w.at + w_add, st); }
+        };
+        for (auto & r : ap.kvt) {
+            if (r.kind.empty() || r.fixed) { continue; }
+            std::vector<llama_kv_tail_fork::seg> cur;
+            r.layout(r.tk, r.tv, &r.out, &cur);
+            for (const auto & q : cur) {
+                const int8_t k = r.kind[q.lay];
+                if (k == 0) { continue; }
+                const int32_t il = r.l_il[q.lay];
+                const size_t st = ggml_row_size(q.type, q.ne0), to = r.prefix + q.off;
+                if (k == 2) {   // a part: its bytes of the whole row
+                    rows_from(old.at({ r.owner, il, q.v, -1 }), (size_t) r.l_part[q.lay] * st, to, st);
+                } else {        // a whole layer: its parts' rows side by side
+                    size_t off = 0;
+                    for (int32_t p = 0; ; ++p) {
+                        const auto it = old.find({ r.owner, il, q.v, p });
+                        if (it == old.end()) { break; }
+                        rows_from(it->second, 0, to + off, it->second.st);
+                        off += it->second.st;
+                    }
+                    GGML_ASSERT(off == st && "attn-split: a whole row is not its parts' rows");
+                }
+            }
+        }
+        ggml_backend_tensor_set(const_cast<ggml_tensor *>(&z), nb.get(), 0, n);
+    }
+    for (auto & im : img) { for (auto & r : im.ap->kvt) { if (r.parts_set) { r.parts_set(on); } } }
+    g_kv_epoch.fetch_add(1);   // graphs built before read the other entries
+    say("attn-split: %zu cells of KV moved to %s in %.1f ms (%.1f MiB through RAM)", img[0].cells, on ? "the parts on their cards" : "the whole layers on their home cards", (ggml_time_us() - t0) / 1000.0, bytes / 1048576.0);
+    return true;
 }
 
 bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, char * note, size_t note_size) {

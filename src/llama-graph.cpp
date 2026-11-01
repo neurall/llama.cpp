@@ -4168,6 +4168,7 @@ ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_t
     return pos_bias;
 }
 
+bool llama_kv_parts_on_fork();   // llama-kv-cache.cpp
 static thread_local bool g_attn_part_other_card = false;   // fork: --moe attn-split: build_attn is building the part of a layer on another card
 
 ggml_tensor * llm_graph_context::build_attn_mha(
@@ -5627,8 +5628,7 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
 bool llama_dsplit_in_pass_loop_fork();   // llama-context.cpp
 
 bool llm_graph_context::ds_plan(int64_t min_tokens) const {
-    static const bool attn_split = [] { const char * e = llama_moe_get_opt("attn-split"); return e && atoi(e) != 0; }();
-    if (attn_split) { return false; }   // the attention already runs on several cards, its KV heads are on them (llama_kv_cache)
+    if (llama_kv_parts_on_fork()) { return false; }   // the attention already runs on several cards, its KV heads are on them (llama_kv_cache, --moe attn-split)
     ds_r.clear();
     ds_cut.clear();
     ds_mark = nullptr;

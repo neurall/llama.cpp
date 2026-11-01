@@ -1215,6 +1215,41 @@ static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, gg
             ggml_backend_dev_name(d), il, (long long) nh, (long long) nkv, (long long) hsk, (long long) hsv, mla ? ", MLA" : "", (long long) ATT_T, t[0], t[1], t[2],
             f.a, f.b, f.g, f.b / (double) ATT_T, t[2] > 0.0 ? 100.0 * f.g * 32768.0 * 32768.0 / t[2] : 0.0);
 }
+// --moe attn-split=2: from how many cells a request runs the attention on several cards (--moe attn-split-cells: by hand). A layer's attention over c cells takes t(c) per token, on p cards
+// t(c)/p on each, plus the query heads to the other cards and their outputs back over the slowest link (the home card's part alone needs no copy). It pays from t(c) = 2 x copy for
+// two cards. The factor 2.2 on the copy is measured: Qwen3.6 on x16 + x4 crossed near 40k cells (-3% at 32k, +12-16% at 65k) where bytes / link rate alone say 18k: the copies go
+// through host memory and each is a split. Prompts cross there, decode (one token, each copy a sync) only about twice as far: 1.5 x the crossing, about 60k there.
+size_t llama_dsplit_attn_split_cells_fork(const llama_model & model) {
+    static const size_t by_hand = [] { const char * e = llama_moe_get_opt("attn-split-cells"); return e ? (size_t) atoll(e) : (size_t) 0; }();
+    if (by_hand > 0) { return by_hand; }
+    static size_t cached = 0;
+    if (cached > 0) { return cached; }
+    std::lock_guard<std::mutex> lk(g_plan_mu);
+    const auto & hp = model.hparams;
+    int il = -1;
+    for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (!hp.is_recr(i) && !hp.is_swa(i) && hp.has_kv(i)) { il = (int) i; break; } }
+    double b = 0.0, gbs = 0.0;
+    for (ggml_backend_dev_t d : g_cards) {
+        auto it = g_att_fit.find(d);
+        if (it != g_att_fit.end() && it->second.ok) { b = std::max(b, it->second.b); }
+        const double g = llama_moe_cache_link_gbs_fork(d);
+        if (g > 0.0) { gbs = gbs > 0.0 ? std::min(gbs, g) : g; }
+    }
+    size_t t_on = 60000;   // not measured here: Qwen3.6's number on x16 + x4
+    if (il >= 0 && b > 0.0 && gbs > 0.0) {
+        uint32_t p = std::min<uint32_t>((uint32_t) std::max<size_t>(g_cards.size(), 1), hp.n_head_kv(il));
+        while (p > 1 && (hp.n_head_kv(il) % p != 0 || hp.n_head(il) % p != 0)) { --p; }
+        const double bytes = 2.0 * (double) hp.n_head(il) * (double) hp.n_embd_head_k(il) * 4.0 / std::max<uint32_t>(p, 1);   // per token per layer: query heads there, outputs back
+        const double copy_us = bytes / (gbs * 1e3);
+        const double cross = 2.0 * 2.2 * copy_us * (double) ATT_T / b;
+        t_on = (size_t) (1.5 * cross);
+        LLAMA_LOG_WARN("attn-split: the KV moves to %u cards from %zu cells (attention %.3f us per cell for %lld tokens, %.0f bytes per token per layer over %.1f GB/s; --moe attn-split-cells sets it)\n",
+                p, t_on, b, (long long) ATT_T, bytes, gbs);
+        cached = t_on;
+    }
+    return t_on;
+}
+
 // the attention of ONE token over the whole model at c cells on card d (us): every full-attention layer at c, a sliding-window layer at its window (0 = no fit)
 static double dsplit_att_us_tok(const llama_model & model, ggml_backend_dev_t d, double c, double T) {
     auto it = g_att_fit.find(d);

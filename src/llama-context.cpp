@@ -77,6 +77,10 @@ uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
 extern "C" void ggml_backend_sched_link_add_fork(ggml_backend_dev_t dst, ggml_backend_dev_t src, uint64_t n);   // the same for any input: src NULL = host memory
+bool     llama_kv_parts_on_fork();   // llama-kv-cache.cpp: the attention runs on several cards now (--moe attn-split)
+bool     llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * note, size_t note_size);   // llama-moecache-fork.cpp: the KV rows move
+size_t   llama_dsplit_attn_split_cells_fork(const llama_model & model);   // llama-dsplit-fork.cpp: from how many cells the split pays
+static uint32_t g_request_tokens_fork = 0;   // the cells the current request ends at (server), 0: unknown
 static thread_local uint32_t g_pass_cap_fork = 0;       // decode() runs the rest of a call after the pool refused one of its passes: its passes take at most this many tokens
 void llama_memory_recurrent_no_compute_fork(bool on);    // llama-memory-recurrent.cpp: the next seq_rm takes back a pass whose graph never ran
 static thread_local bool g_split_sub = false;          // decode() runs one pass of a call sized pass by pass (--moe split-pass=1)
@@ -1451,6 +1455,7 @@ void llama_context::sched_new(size_t max_nodes, bool parallel) {
 // -1 when no enabled tier holds it (note says why), -2 when the pool does not exist yet (the first decode starts it: this request runs as the cache is). Bit 8 is set when the cache was
 // rebuilt (the caller drops what it knew of the old one).
 int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char * note, size_t note_size) {
+    if (min_tier >= 0) { g_request_tokens_fork = n_tokens; }   // the server asks at a request's start, with its whole size (--moe attn-split=2, decode)
     auto say = [&](const char * fmt, auto... args) { if (note && note_size) { snprintf(note, note_size, fmt, args...); } };
     const llama_kv_fit_caps cp = llama_moe_cache_kv_fit_caps_fork();
     if (!cp.valid) { return -2; }
@@ -3968,6 +3973,25 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     GGML_ASSERT(n_tokens_all <= cparams.n_batch);
 
     GGML_ASSERT((cparams.causal_attn || cparams.n_ubatch >= n_tokens_all) && "non-causal attention requires n_ubatch >= n_tokens");
+
+    if (cparams.moe_cache_started && !cparams.ctx_other && memory) {   // fork: --moe attn-split=2: from the threshold the attention runs on several cards, below half of it (the rows do not move around one size each time) back on one
+        static const int split_mode = [] { const char * e = llama_moe_get_opt("attn-split"); return e ? atoi(e) : 0; }();
+        if (split_mode == 2) {
+            static uint32_t refused_for = UINT32_MAX;   // a request whose rows cannot move does not ask at each call
+            llama_pos hist = -1;
+            for (uint32_t sq = 0; sq < cparams.n_seq_max; ++sq) { hist = std::max(hist, memory->seq_pos_max((llama_seq_id) sq)); }
+            const size_t size = std::max<size_t>(g_request_tokens_fork, (size_t) (hist + 1) + n_tokens_all);
+            const size_t t_on = llama_dsplit_attn_split_cells_fork(model);
+            const bool   on   = llama_kv_parts_on_fork();
+            if ((on ? size >= t_on / 2 : size >= t_on) != on && refused_for != g_request_tokens_fork) {
+                synchronize();
+                char why[384] = { 0 };
+                const bool done = llama_moe_cache_kv_parts_fork(sched.get(), !on, why, sizeof(why));
+                if (!done) { refused_for = g_request_tokens_fork; }
+                LLAMA_LOG_WARN("%s: %zu cells (threshold %zu): %s\n", __func__, size, t_on, why);
+            }
+        }
+    }
 
     // TODO: this clear of the buffer can easily be forgotten - need something better
     // sync first so any in-flight async copies into embd_seq complete before it is freed
