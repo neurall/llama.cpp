@@ -25,6 +25,7 @@
 #include "base64.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <set>
@@ -5216,6 +5217,22 @@ private:
 
             // shifted according to the current sub-batch
             const int tok_idx = slot.i_batch - off;
+
+            // fork: NaN logits sample token 0 for ever: a '!!!!' answer at a fine speed, and nobody is told. At a request's first token and every 64th after it (a scan of the
+            // vocabulary, far under 1% of a token) they fail the request with the reason instead.
+            if (slot.stats.n_gen % 64 == 0) {
+                const float * lg = llama_get_logits_ith(slot.ctx_tgt, tok_idx);
+                const int     nv = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(slot.ctx_tgt)));
+                bool bad = false;
+                for (int i = 0; lg && i < nv; ++i) { bad = bad || std::isnan(lg[i]); }
+                if (bad) {
+                    SLT_ERR(slot, "NaN logits at generated token %d: the engine computed garbage, the request fails (a debug run: --moe verify=1, GGML_SCHED_NAN_CHECK=1)\n", (int) slot.stats.n_gen);
+                    send_error(slot, "the model produced NaN logits: an engine bug, see the server log", ERROR_TYPE_SERVER);
+                    slot.i_batch = -1;
+                    slot.release();
+                    return;
+                }
+            }
 
             llama_token id;
             {
