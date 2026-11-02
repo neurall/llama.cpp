@@ -186,6 +186,7 @@ struct layer_state {
     std::deque<std::vector<int32_t>> recent; // ids of those tokens, oldest first
     // where up/gate/down live on disk (fd < 0: unknown, upload from host memory)
     int    src_fd[3]   = { -1, -1, -1 };
+    int    src_dfd[3]  = { -1, -1, -1 };   // --moe read-direct: the file again with O_DIRECT, set only for a tensor that stayed mapped (not in pinned memory)
     size_t src_offs[3] = { 0, 0, 0 };
 
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
@@ -479,6 +480,11 @@ struct moe_cache {
 
     // pinned staging per upload worker, for file-backed uploads (pread -> pinned -> DMA)
     std::vector<ggml_backend_buffer_t> staging;
+    // --moe read-direct: one pinned buffer per upload worker and one O_DIRECT descriptor per model file, for the expert slices that stayed mapped (see read_direct)
+    std::vector<ggml_backend_buffer_t> rd_staging;
+    size_t rd_size = 0;
+    std::map<int, int> rd_fds;
+    std::atomic<int64_t> rd_bytes{0}, rd_us{0};
     size_t bounce_bytes = 0;   // --moe bounce=MB: uploads from mmap'd memory are copied to the pinned staging buffer in chunks of this size first, then DMA'd from there (0: DMA straight from the mmap pages)
     size_t staging_size = 0;
 
@@ -723,6 +729,27 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
         d += r; n -= (size_t) r; off += (size_t) r;
     }
     return true;
+#endif
+}
+
+// --moe read-direct: bytes of a mapped expert tensor read with O_DIRECT into a worker's pinned buffer. Through the mapping a slice is read by page faults and 128 KiB
+// readahead (DeepSeek 2 workers: 1.3 GB/s, fio on the same file: 3.3 GB/s at queue depth 2 with 1 MiB blocks, 5.5 at 8) and every byte passes the page cache, whose
+// reclaim then swaps out the process when RAM is tight (2026-11-02). Returns where the bytes start inside the buffer, nullptr when the caller must use the mapping.
+static const char * read_direct(int dfd, uint8_t * buf, size_t cap, size_t off, size_t n) {
+#ifdef _WIN32
+    GGML_UNUSED(dfd); GGML_UNUSED(buf); GGML_UNUSED(cap); GGML_UNUSED(off); GGML_UNUSED(n);
+    return nullptr;
+#else
+    const size_t a = 4096, beg = off & ~(a - 1), end = (off + n + a - 1) & ~(a - 1), need = off + n - beg;
+    if (end - beg > cap) { return nullptr; }
+    size_t got = 0;
+    while (got < need) {
+        const ssize_t r = pread(dfd, buf + got, end - beg - got, (off_t) (beg + got));
+        if (r <= 0) { return nullptr; }
+        got += (size_t) r;
+        if (got < need && (got & (a - 1))) { return nullptr; }   // a short read off the block grid: the next one would fail
+    }
+    return (const char *) buf + (off - beg);
 #endif
 }
 
@@ -7232,6 +7259,47 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     LLAMA_LOG_WARN("moe-cache: pinr=%.1f: up to %.1f GiB of expert slices pinned as they are uploaded, the rest stays mmap'd\n", pinr, mc->pin_budget / 1073741824.0);
                 }
             }
+            // --moe read-direct=1: the expert tensors that did not fit the pin budget are read from their file past the page cache (read_direct)
+            size_t rd_mapped = 0;
+#ifndef _WIN32
+            if (const char * rd = moe_opt("read-direct"); rd && rd[0] == '1' && gpu && !mc->staging[0]) {
+                ggml_backend_buffer_type_t pinned_buft = ggml_backend_dev_host_buffer_type(gpu);
+                for (auto & ls2 : mc->layers) {
+                    const ggml_tensor * ps[3] = { ls2.pub.up_src, ls2.pub.gate_src, ls2.pub.down_src };
+                    for (int k2 = 0; k2 < 3; ++k2) {
+                        if (ls2.src_fd[k2] < 0 || !ps[k2]->buffer || ggml_backend_buffer_get_type(ps[k2]->buffer) == pinned_buft) { continue; }
+                        auto it = mc->rd_fds.find(ls2.src_fd[k2]);
+                        if (it == mc->rd_fds.end()) {
+                            it = mc->rd_fds.emplace(ls2.src_fd[k2], open(("/proc/self/fd/" + std::to_string(ls2.src_fd[k2])).c_str(), O_RDONLY | O_DIRECT)).first;
+                            if (it->second < 0) { LLAMA_LOG_WARN("moe-cache: read-direct: no O_DIRECT on this file (%s), it stays mapped\n", strerror(errno)); }
+                        }
+                        ls2.src_dfd[k2] = it->second;
+                        if (it->second >= 0) { rd_mapped += ggml_nbytes(ps[k2]); }
+                    }
+                }
+                if (rd_mapped > 0) {
+                    mc->rd_size = max_expert + ((size_t) 1 << 18);   // a slice, what is read past it, and the block grid on both sides
+                    for (size_t w = 0; w < mc->staging.size(); ++w) { mc->rd_staging.push_back(ggml_backend_buft_alloc_buffer(pinned_buft, mc->rd_size)); }
+                }
+            }
+            // --moe pin-mlock=1: pinned weights are locked as well. A pinned page cannot be evicted, but it stays on the LRU list: reclaim scans it again and again
+            // (DeepSeek at 88 GiB pinned: 95 GiB on the inactive anon list, up to 8 M pages/s scanned) and each refault of the page cache pushes more of that pressure onto real anon pages.
+            if (const char * ml = moe_opt("pin-mlock"); ml && ml[0] == '1' && gpu) {
+                ggml_backend_buffer_type_t pinned_buft = ggml_backend_dev_host_buffer_type(gpu);
+                std::set<ggml_backend_buffer_t> seen;
+                size_t locked = 0, failed = 0;
+                const int64_t t_ml = ggml_time_us();
+                for (auto & ls2 : mc->layers) {
+                    for (const ggml_tensor * t : { ls2.pub.up_src, ls2.pub.gate_src, ls2.pub.down_src }) {
+                        if (!t->buffer || ggml_backend_buffer_get_type(t->buffer) != pinned_buft || !seen.insert(t->buffer).second) { continue; }
+                        const size_t n = ggml_backend_buffer_get_size(t->buffer);
+                        const uintptr_t b0 = (uintptr_t) ggml_backend_buffer_get_base(t->buffer) & ~(uintptr_t) 4095;
+                        if (mlock((void *) b0, n) == 0) { locked += n; } else { failed += n; }
+                    }
+                }
+                LLAMA_LOG_WARN("moe-cache: pin-mlock: %.1f GiB of pinned weights locked in %.1f ms, %.1f GiB refused (RLIMIT_MEMLOCK)\n", locked / 1073741824.0, (ggml_time_us() - t_ml) / 1e3, failed / 1073741824.0);
+            }
+#endif
             {   // --moe pin-lazy: the loader mapped the weights without reading them; pin the expert tensors in the background up to --moe pin-budget
                 const char * pl = moe_opt("pin-lazy"); const char * pb = moe_opt("pin-budget");
                 const size_t budget = pb ? (size_t) strtoull(pb, nullptr, 10) : 0;
@@ -7242,6 +7310,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
             if (llama_moe_log_profile_fork("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
+            if (!mc->rd_staging.empty()) {
+                LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT by %d workers\n", rd_mapped / 1073741824.0, n_workers);
+            }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
                     mc->bounce_bytes ? "memcpy -> pinned staging (bounce) -> GPU" :
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
@@ -7262,6 +7333,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             unpin_helper();
             led_thread("up-w" + std::to_string(w));   // --moe ledger: this worker's lines say which upload thread wrote
             uint8_t * staging_ptr = mc->staging[w] ? (uint8_t *) ggml_backend_buffer_get_base(mc->staging[w]) : nullptr;
+            uint8_t * rd_ptr = w < mc->rd_staging.size() && mc->rd_staging[w] ? (uint8_t *) (((uintptr_t) ggml_backend_buffer_get_base(mc->rd_staging[w]) + 4095) & ~(uintptr_t) 4095) : nullptr;
             for (;;) {
                 upload_job j;
                 {
@@ -7372,6 +7444,24 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                     }
                     const int64_t tr = ggml_time_us();
+                    if (rd_ptr && ls.src_dfd[k] >= 0) {
+                        // a slice that stayed mapped: the file into this worker's pinned buffer, then DMA. The bytes a matmul reads past the slice come with it.
+                        const char * past = nullptr;
+                        const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], past);
+                        const bool past_in_file = pb > 0 && j.expert + 1 < srcs[k]->ne[2];
+                        const size_t off = ls.src_offs[k] + (size_t) j.expert*sz;
+                        if (const char * got = read_direct(ls.src_dfd[k], rd_ptr, mc->rd_size - 4096, off, sz + (past_in_file ? pb : 0))) {
+                            const int64_t dr = ggml_time_us() - tr;
+                            t_read += dr; mc->rd_us += dr; mc->rd_bytes += (int64_t) (sz + (past_in_file ? pb : 0));
+                            ggml_backend_tensor_set(dsts[k], got, (size_t) j.slot*dsts[k]->nb[2], sz);
+                            if (pb > 0) {
+                                ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
+                                ggml_backend_tensor_set(&z, past_in_file ? got + sz : past, 0, pb);
+                            }
+                            continue;
+                        }
+                        // a failed read falls through to the mapping below
+                    }
                     if (staging_ptr && mc->bounce_bytes == 0 && ls.src_fd[k] >= 0 &&
                             pread_full(ls.src_fd[k], staging_ptr, sz, ls.src_offs[k] + (size_t) j.expert*sz)) {
                         t_read += ggml_time_us() - tr;
@@ -10798,6 +10888,10 @@ void llama_moe_cache_free_fork() {
     mc->lazy_stop.store(true);
     if (mc->lazy_thr.joinable()) { mc->lazy_thr.join(); }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
+    for (auto * b : mc->rd_staging) { if (b) { ggml_backend_buffer_free(b); } }
+#ifndef _WIN32
+    for (auto & f : mc->rd_fds) { if (f.second >= 0) { close(f.second); } }
+#endif
     for (auto * b : mc->pin_chunks) { ggml_backend_buffer_free(b); }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->pctxs) { ggml_free(c); }
