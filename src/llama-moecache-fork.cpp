@@ -47,6 +47,9 @@
 #include <linux/aio_abi.h>
 #include <sys/syscall.h>
 #define MOE_HAVE_AIO 1   // kernel AIO by raw syscalls: no library, passes Docker's default seccomp (io_uring does not) and runs the same speed as io_uring on O_DIRECT reads (fio, 2026-11-02)
+#if !defined(SYS_io_getevents)   // 32-bit ABIs without the plain syscall: the pread pool
+#undef MOE_HAVE_AIO
+#endif
 #endif
 #include <pthread.h>
 #include <sched.h>
@@ -737,6 +740,101 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
     }
     return true;
 #endif
+}
+
+// O_DIRECT reads of one byte range, two engines: the pread pool (several threads, each one block at a time) and kernel AIO (ONE thread, 32 blocks of 1 MiB in flight).
+// fio, PC1 3700X: 8 sync threads 5.9 GB/s, libaio 1 thread qd32 4.7 GB/s and the same with 16 busy cores; PC2 3600: 3.6 against 3.46 (3.3 with 12 cores busy, 4 sync threads 3.4).
+// The async engine needs no free cores, the pool wins when cores are free: rd_pick_mode starts from the free cores and then follows what each engine measured on the real reads.
+// Ladder when the async engine is not there (old kernel, seccomp, Windows): the pread pool. Windows overlapped I/O would be the same shape (completion port), not written.
+static std::atomic<int> g_aio_ok{0};   // --moe read-aio=1 turns the async engine on; off by default until its A/B has run on a real model
+#ifdef MOE_HAVE_AIO
+struct aio_ctx_t { aio_context_t ctx = 0; ~aio_ctx_t() { if (ctx) { syscall(SYS_io_destroy, ctx); } } };
+// bytes [beg, beg + total) of fd into buf (4096-aligned); `need` = bytes that exist (a short block past it is the end of the file). False: nothing usable, the caller reads again with pread.
+static bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need) {
+    constexpr int QD = 32; constexpr size_t BLK = (size_t) 1 << 20;
+    if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
+    thread_local aio_ctx_t c;
+    if (!c.ctx && syscall(SYS_io_setup, QD, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
+    iocb cbs[QD]; iocb * ps[1]; io_event ev[QD];
+    int free_slot[QD]; int n_free = QD;
+    for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
+    size_t next = 0; int infl = 0; bool bad = false;
+    while (next < total || infl > 0) {
+        while (!bad && next < total && n_free > 0) {
+            const int k = free_slot[--n_free];
+            const size_t want = std::min(BLK, total - next);
+            memset(&cbs[k], 0, sizeof(iocb));
+            cbs[k].aio_lio_opcode = IOCB_CMD_PREAD; cbs[k].aio_fildes = (uint32_t) fd;
+            cbs[k].aio_buf = (uint64_t) (uintptr_t) (buf + next); cbs[k].aio_nbytes = want; cbs[k].aio_offset = (int64_t) (beg + next);
+            cbs[k].aio_data = (uint64_t) next;
+            ps[0] = &cbs[k];
+            if (syscall(SYS_io_submit, c.ctx, 1L, ps) != 1) {
+                ++n_free; bad = true;
+                if (infl == 0 && next == 0) { g_aio_ok.store(0); }   // the very first submit refused: not on this kernel
+                break;
+            }
+            next += want; ++infl;
+        }
+        if (infl == 0) { break; }
+        const long got = syscall(SYS_io_getevents, c.ctx, 1L, (long) QD, ev, (struct timespec *) nullptr);
+        if (got < 0) { if (errno == EINTR) { continue; } bad = true; g_aio_ok.store(0); break; }   // a lost context cannot be drained
+        for (long e = 0; e < got; ++e) {
+            const iocb * cb = (const iocb *) (uintptr_t) ev[e].obj;
+            const size_t off = (size_t) ev[e].data, want = cb->aio_nbytes;
+            if (ev[e].res < 0 || ((size_t) ev[e].res < want && off + (size_t) ev[e].res < need)) { bad = true; }
+            free_slot[n_free++] = (int) (cb - cbs); --infl;
+        }
+    }
+    return !bad;
+}
+#endif
+
+// The engine for the next big read: 0 = pread pool, 1 = kernel AIO. Starts from the cores free now (pool needs rd_threads of them), then each engine's measured GB/s (moving average
+// over its last reads) decides; every 16th big read runs the other engine so both numbers stay fresh and a changed load is seen. Switches are logged.
+static std::atomic<int>      g_rd_mode{-1};
+static std::atomic<uint32_t> g_rd_calls{0};
+static std::atomic<double>   g_rd_gbs[2] = { 0.0, 0.0 };
+static int free_cores_now() {
+#ifdef __linux__
+    static std::mutex mx; static uint64_t last_busy = 0, last_all = 0; static int64_t last_us = 0; static int cached = -1;
+    std::lock_guard<std::mutex> lk(mx);
+    const int64_t now = ggml_time_us();
+    if (cached >= 0 && now - last_us < 500000) { return cached; }
+    FILE * f = fopen("/proc/stat", "r");
+    if (!f) { return cached = (int) std::thread::hardware_concurrency(); }
+    unsigned long long v[8] = { 0 };
+    const int n = fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
+    fclose(f);
+    if (n < 4) { return cached = (int) std::thread::hardware_concurrency(); }
+    uint64_t all = 0; for (int i = 0; i < 8; ++i) { all += v[i]; }
+    const uint64_t idle = v[3] + v[4], busy = all - idle;
+    const int hw = (int) std::thread::hardware_concurrency();
+    if (last_all != 0 && all > last_all) { cached = (int) std::lround((double) hw * (1.0 - (double) (busy - last_busy) / (double) (all - last_all))); }
+    else { cached = hw; }
+    last_busy = busy; last_all = all; last_us = now;
+    return cached;
+#else
+    return (int) std::thread::hardware_concurrency();
+#endif
+}
+static int rd_pick_mode(int rd_threads, bool & explore) {
+    explore = false;
+    if (!g_aio_ok.load()) { return 0; }
+    int m = g_rd_mode.load();
+    if (m < 0) { m = free_cores_now() >= rd_threads ? 0 : 1; g_rd_mode.store(m); }
+    if (g_rd_calls.fetch_add(1) % 16 == 15) { explore = true; return 1 - m; }
+    const double a = g_rd_gbs[m].load(), b = g_rd_gbs[1 - m].load();
+    if (a > 0 && b > 1.1 * a) {
+        g_rd_mode.store(1 - m);
+        LLAMA_LOG_WARN("moe-cache: read engine %s -> %s (%.2f against %.2f GB/s, %d cores free)\n", m ? "kernel AIO" : "pread pool", m ? "pread pool" : "kernel AIO", b, a, free_cores_now());
+        return 1 - m;
+    }
+    return m;
+}
+static void rd_note(int mode, size_t bytes, int64_t us) {
+    if (us <= 0) { return; }
+    const double g = (double) bytes / ((double) us * 1e3), old = g_rd_gbs[mode].load();
+    g_rd_gbs[mode].store(old > 0 ? 0.7 * old + 0.3 * g : g);
 }
 
 // --moe read-direct: bytes of a mapped expert tensor read with O_DIRECT into a worker's pinned buffer. Through the mapping a slice is read by page faults and 128 KiB
@@ -3528,107 +3626,6 @@ extern "C" {
     typedef const void * (*ggml_backend_moe_read_fn_t)(const ggml_tensor *, size_t, size_t, void *, size_t, void *);
     GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there too, no shared header)
 }
-// O_DIRECT reads of one byte range, two engines: the pread pool (several threads, each one block at a time) and kernel AIO (ONE thread, 32 blocks of 1 MiB in flight).
-// fio, PC1 3700X: 8 sync threads 5.9 GB/s, libaio 1 thread qd32 4.7 GB/s and the same with 16 busy cores; PC2 3600: 3.6 against 3.46 (3.3 with 12 cores busy, 4 sync threads 3.4).
-// The async engine needs no free cores, the pool wins when cores are free: rd_pick_mode starts from the free cores and then follows what each engine measured on the real reads.
-// Ladder when the async engine is not there (old kernel, seccomp, Windows): the pread pool. Windows overlapped I/O would be the same shape (completion port), not written.
-static std::atomic<int> g_aio_ok{
-#ifdef MOE_HAVE_AIO
-    1
-#else
-    0
-#endif
-};
-#ifdef MOE_HAVE_AIO
-struct aio_ctx_t { aio_context_t ctx = 0; ~aio_ctx_t() { if (ctx) { syscall(SYS_io_destroy, ctx); } } };
-// bytes [beg, beg + total) of fd into buf (4096-aligned); `need` = bytes that exist (a short block past it is the end of the file). False: nothing usable, the caller reads again with pread.
-static bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need) {
-    constexpr int QD = 32; constexpr size_t BLK = (size_t) 1 << 20;
-    if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
-    thread_local aio_ctx_t c;
-    if (!c.ctx && syscall(SYS_io_setup, QD, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
-    iocb cbs[QD]; iocb * ps[1]; io_event ev[QD];
-    int free_slot[QD]; int n_free = QD;
-    for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
-    size_t next = 0; int infl = 0; bool bad = false;
-    while (next < total || infl > 0) {
-        while (!bad && next < total && n_free > 0) {
-            const int k = free_slot[--n_free];
-            const size_t want = std::min(BLK, total - next);
-            memset(&cbs[k], 0, sizeof(iocb));
-            cbs[k].aio_lio_opcode = IOCB_CMD_PREAD; cbs[k].aio_fildes = (uint32_t) fd;
-            cbs[k].aio_buf = (uint64_t) (uintptr_t) (buf + next); cbs[k].aio_nbytes = want; cbs[k].aio_offset = (int64_t) (beg + next);
-            cbs[k].aio_data = (uint64_t) next;
-            ps[0] = &cbs[k];
-            if (syscall(SYS_io_submit, c.ctx, 1L, ps) != 1) {
-                ++n_free; bad = true;
-                if (infl == 0 && next == 0) { g_aio_ok.store(0); }   // the very first submit refused: not on this kernel
-                break;
-            }
-            next += want; ++infl;
-        }
-        if (infl == 0) { break; }
-        const long got = syscall(SYS_io_getevents, c.ctx, 1L, (long) QD, ev, (struct timespec *) nullptr);
-        if (got < 0) { if (errno == EINTR) { continue; } bad = true; g_aio_ok.store(0); break; }   // a lost context cannot be drained
-        for (long e = 0; e < got; ++e) {
-            const iocb * cb = (const iocb *) (uintptr_t) ev[e].obj;
-            const size_t off = (size_t) ev[e].data, want = cb->aio_nbytes;
-            if (ev[e].res < 0 || ((size_t) ev[e].res < want && off + (size_t) ev[e].res < need)) { bad = true; }
-            free_slot[n_free++] = (int) (cb - cbs); --infl;
-        }
-    }
-    return !bad;
-}
-#endif
-
-// The engine for the next big read: 0 = pread pool, 1 = kernel AIO. Starts from the cores free now (pool needs rd_threads of them), then each engine's measured GB/s (moving average
-// over its last reads) decides; every 16th big read runs the other engine so both numbers stay fresh and a changed load is seen. Switches are logged.
-static std::atomic<int>      g_rd_mode{-1};
-static std::atomic<uint32_t> g_rd_calls{0};
-static std::atomic<double>   g_rd_gbs[2] = { 0.0, 0.0 };
-static int free_cores_now() {
-#ifdef __linux__
-    static std::mutex mx; static uint64_t last_busy = 0, last_all = 0; static int64_t last_us = 0; static int cached = -1;
-    std::lock_guard<std::mutex> lk(mx);
-    const int64_t now = ggml_time_us();
-    if (cached >= 0 && now - last_us < 500000) { return cached; }
-    FILE * f = fopen("/proc/stat", "r");
-    if (!f) { return cached = (int) std::thread::hardware_concurrency(); }
-    unsigned long long v[8] = { 0 };
-    const int n = fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
-    fclose(f);
-    if (n < 4) { return cached = (int) std::thread::hardware_concurrency(); }
-    uint64_t all = 0; for (int i = 0; i < 8; ++i) { all += v[i]; }
-    const uint64_t idle = v[3] + v[4], busy = all - idle;
-    const int hw = (int) std::thread::hardware_concurrency();
-    if (last_all != 0 && all > last_all) { cached = (int) std::lround((double) hw * (1.0 - (double) (busy - last_busy) / (double) (all - last_all))); }
-    else { cached = hw; }
-    last_busy = busy; last_all = all; last_us = now;
-    return cached;
-#else
-    return (int) std::thread::hardware_concurrency();
-#endif
-}
-static int rd_pick_mode(int rd_threads, bool & explore) {
-    explore = false;
-    if (!g_aio_ok.load()) { return 0; }
-    int m = g_rd_mode.load();
-    if (m < 0) { m = free_cores_now() >= rd_threads ? 0 : 1; g_rd_mode.store(m); }
-    if (g_rd_calls.fetch_add(1) % 16 == 15) { explore = true; return 1 - m; }
-    const double a = g_rd_gbs[m].load(), b = g_rd_gbs[1 - m].load();
-    if (a > 0 && b > 1.1 * a) {
-        g_rd_mode.store(1 - m);
-        LLAMA_LOG_WARN("moe-cache: read engine %s -> %s (%.2f against %.2f GB/s, %d cores free)\n", m ? "kernel AIO" : "pread pool", m ? "pread pool" : "kernel AIO", b, a, free_cores_now());
-        return 1 - m;
-    }
-    return m;
-}
-static void rd_note(int mode, size_t bytes, int64_t us) {
-    if (us <= 0) { return; }
-    const double g = (double) bytes / ((double) us * 1e3), old = g_rd_gbs[mode].load();
-    g_rd_gbs[mode].store(old > 0 ? 0.7 * old + 0.3 * g : g);
-}
-
 // The O_DIRECT read thread count from the machine, not a constant (user 2026-11-02: "8 t is nice on epyc but hardly on 3600"): 1 MiB blocks on n threads for 0.2 s each, n = 1, 2, 4, 8 and
 // 16 up to the hardware threads / 2; the smallest n within 7% of the best bandwidth wins, so a drive that one or two threads fill leaves the other cores to compute.
 // Costs about 1 s at start. Falls back to 8 (the old default) when the file cannot be read direct.
@@ -7505,6 +7502,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         mc->rd_src[ps[k2]] = { it->second, ls2.src_offs[k2] };
                     }
                 }
+#ifdef MOE_HAVE_AIO
+                if (const char * ra = moe_opt("read-aio")) { g_aio_ok.store(atoi(ra) != 0 ? 1 : 0); }
+#endif
                 if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
                 else if (rd_mapped > 0) { mc->rd_threads = read_threads_probe(mc->rd_fds, mc->profile); }
                 if (rd_mapped > 0) {

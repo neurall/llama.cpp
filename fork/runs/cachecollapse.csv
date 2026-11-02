@@ -10,3 +10,7 @@ qc-chain-10,qwen36,2,pf10k1k,64,"--moe pp-path=chain",--hog-gpu 4.5
 qc-stream-1,qwen36,2,pf1k1k,64,"--moe pp-path=stream",--hog-gpu 4.5
 qc-stream-4,qwen36,2,pf4k1k,64,"--moe pp-path=stream",--hog-gpu 4.5
 qc-stream-10,qwen36,2,pf10k1k,64,"--moe pp-path=stream",--hog-gpu 4.5
+qcb-q36-16,qwen36,2,pf16k1k,64,"",--hog-gpu 4.5
+qcb-qni-16,qn_iq4xs,2,pf16k1k,64,"",
+qcb-mimo-16,mimo,2,pf16k1k,64,"",
+qcb-glm-16,glm,2,pf16k1k,64,"",

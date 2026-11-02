@@ -6303,3 +6303,8 @@ gather_threads_madvise_phases-qi-all-pf12k1k,2026-11-02 10:20:44,bench /m/q/4/Qw
 autopin_probe-dsa-auto-pf16k1k,2026-11-02 10:27:27,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds autopin_probe variants v test pf16k n=2,,
 autopin_probe-gla-auto-pf5k1k,2026-11-02 10:32:36,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds autopin_probe variants v test pf5k n=2,,
 autopin_probe-mia-auto-pf8k1k,2026-11-02 10:41:38,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds autopin_probe variants v test pf8k n=2,,
+rel_prompt_auto-qc-auto-1-pf1k1k,2026-11-02 10:45:11,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds rel_prompt_auto variants v test pf1k n=2,,
+dspark_fix3-qc-auto-1-pf1k1k,2026-11-02 10:46:43,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds dspark_fix3 variants v test pf1k n=2,,
+dspark_fix3-qc-auto-10-pf10k1k,2026-11-02 10:48:35,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds dspark_fix3 variants v test pf10k n=2,,
+dspark_fix3-qcb-q36-16-pf16k1k,2026-11-02 10:49:33,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds dspark_fix3 variants v test pf16k n=2,,
+dspark_fix3-qcb-qni-16-pf16k1k,2026-11-02 10:50:17,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds dspark_fix3 variants v test pf16k n=2,,
