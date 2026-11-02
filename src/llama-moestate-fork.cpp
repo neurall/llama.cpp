@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <cctype>
+#include <chrono>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -452,18 +453,47 @@ void llama_moe_token_time_fork(double ms) {
     g_tok_sum_ms += ms;
 }
 // the latest value and reason of each automatic decision; a repeat of the same value only refreshes the time
+// --moe planner-log=PATH: the planner's picks and what they measured afterwards, one line each, with the wall clock and the seconds since the start (close to the server log's clock), apart from
+// the server log: a speed drop reads against this file (user 2026-11-02: "log key planner decisions to separate planner.log with timestamps so we can monitor runs and correlate perf drops more simply").
+// Kinds: decision (every llama_moe_decision_fork), call (a prompt call's path and why), done (what it took against the best known; SLOW), split, prefill, chain, decode (speed and hit rate per 256 steps).
+static const auto g_planner_t0 = std::chrono::steady_clock::now();
+void llama_moe_planner_log_fork(const char * kind, const char * text) {
+    static std::mutex mu;
+    static FILE * f = nullptr;
+    static bool opened = false;
+    std::lock_guard<std::mutex> lk(mu);
+    if (!opened) {
+        opened = true;
+        const char * p = llama_moe_get_opt("planner-log");
+        if (p && *p) {
+            f = fopen(p, "a");
+            if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
+        }
+    }
+    if (!f) { return; }
+    const auto now = std::chrono::system_clock::now();
+    const time_t t = std::chrono::system_clock::to_time_t(now);
+    char ts[32];
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+    const int ms = (int) (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+    fprintf(f, "%s.%03d %9.3f %-8s %s\n", ts, ms, std::chrono::duration<double>(std::chrono::steady_clock::now() - g_planner_t0).count(), kind, text);
+    fflush(f);
+}
+
 void llama_moe_decision_fork(const char * name, const char * value, const char * why) {
+    const std::string line = std::string(name) + " = " + value + " (" + why + ")";
     std::lock_guard<std::mutex> lk(g_tok_mu);
     const int64_t t = (int64_t) time(nullptr);
     // the decision goes to the log when it changes (run.py calib reads the engine's pass ceiling from "this call fits the ceiling N" there; the live endpoint shows it only while the server runs)
     for (auto & d : g_decisions) {
         if (d.name == name) {
             // a changed value, or a new reason of the pass size (once per prompt call); not every reason update: some tuners rewrite theirs with live numbers each step
-            if (d.value != value || (d.why != why && strcmp(name, "ubatch") == 0)) { LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why); }
+            if (d.value != value || (d.why != why && strcmp(name, "ubatch") == 0)) { LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why); llama_moe_planner_log_fork("decision", line.c_str()); }
             d.value = value; d.why = why; d.t = t; return;   // the reason follows the live numbers too (a tuner updates it as it measures)
         }
     }
     LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why);
+    llama_moe_planner_log_fork("decision", line.c_str());
     g_decisions.push_back({ name, value, why, t });
 }
 // Adaptive prompt pass size, one trial per decode call (the passes of a call are split up front, so a call is the finest measurable step).

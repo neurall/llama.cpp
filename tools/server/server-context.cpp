@@ -945,6 +945,9 @@ struct server_slot {
     }
 
     void print_timings() const {
+        // fork: the request's totals in the decisions, so planner.log (--moe planner-log) tells requests apart and a drop reads against the picks around it
+        llama_moe_decision_fork("request", string_format("prompt %d tokens %.1f s %.1f t/s, decode %d tokens %.1f s %.1f t/s", (int) stats.n_prompt_processed, stats.t_prompt_ms() / 1e3, stats.n_prompt_tps(),
+                (int) stats.n_gen, stats.t_gen_ms() / 1e3, stats.n_gen_tps()).c_str(), "the request's totals");
         const double t_prompt_total = stats.t_prompt_ms();
         const double t_gen_total    = stats.t_gen_ms();
 

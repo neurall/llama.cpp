@@ -867,6 +867,7 @@ static std::atomic<int64_t> g_mb_auto { 0 };       // outside a prompt call, the
 static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call left a layer fewer blocks than its pass may use: its passes leave the prompt chain
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
+void llama_moe_planner_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe planner-log
 static std::atomic<bool> g_pp_mix_call{true};    // this prompt call may run the prompt mix (llama_moe_cache_pp_decide_fork; a forced path keeps it)
 static std::atomic<bool> g_pp_no_dense{false};   // this prompt call stays on one card: the dense split lost at this size, or nothing was measured to weigh it against
 static bool              g_pp_mix_call_built = true;   // the same when the last graph was finished
@@ -8102,8 +8103,10 @@ bool llama_moe_cache_pp_short_fork() {
         if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want)) {
             g_pp_short = true;
             g_pp_built = false;
-            LLAMA_LOG_WARN("moe-cache: prompt chain: layer %d keeps %lld blocks beside the graph, the pass may use %lld experts: this prompt takes the prompt path\n",
+            const std::string refused = format("prompt chain: layer %d keeps %lld blocks beside the graph, the pass may use %lld experts: this prompt takes the prompt path",
                     l.pub.il, (long long) pp_blocks(mc, l), (long long) std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want));
+            LLAMA_LOG_WARN("moe-cache: %s\n", refused.c_str());
+            llama_moe_planner_log_fork("chain", refused.c_str());
             return true;
         }
     }
@@ -8923,6 +8926,21 @@ void llama_moe_cache_step_fork() {
         }
     }
     struct flush_at_exit { ~flush_at_exit() { flush_tables(); } } flush_guard; // table changes reach the GPU before the next graph
+    {   // planner.log: decode speed and hit rate per 256 steps. Prompt calls count no hits and take long, so a window with one in it says little: read it next to the call lines
+        static const bool on = moe_opt("planner-log") != nullptr;
+        static int64_t t0 = 0, n0 = 0;
+        static uint64_t h0 = 0, m0 = 0;
+        if (on && (t0 == 0 || mc->n_steps - n0 >= 256)) {
+            uint64_t h = 0, m = 0;
+            for (const auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
+            const int64_t t = ggml_time_us();
+            if (t0 > 0) {
+                llama_moe_planner_log_fork("decode", format("%lld steps: %.1f t/s, hit %.1f%%", (long long) (mc->n_steps - n0), (double) (mc->n_steps - n0) * 1e6 / (double) std::max<int64_t>(1, t - t0),
+                        h + m > h0 + m0 ? 100.0 * (double) (h - h0) / (double) (h + m - h0 - m0) : 0.0).c_str());
+            }
+            t0 = t; n0 = mc->n_steps; h0 = h; m0 = m;
+        }
+    }
     if (mc->starved.load()) {
         return;   // kv-tail: the KV holds every expert block, nothing to score, admit or upload
     }
@@ -9894,6 +9912,18 @@ static double pp_pass_floor(double n) {
 enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_K = 4, PP_PATHS = PP_K + 8 };
 static struct { double n = 0.0, us = 0.0; } g_pp_took[PP_PATHS][32];
 static bool g_pp_no_chain[32] = {};   // per size: the chain's graph refused such a pass
+static std::string pp_path_name(int p) {
+    return p == PP_RING ? "stream" : p == PP_MIX ? "stream, mix" : p == PP_CHAIN ? "prompt chain" : p == PP_DENSE ? "dense" : format("stream, k x%d", 1 << (p - PP_K));
+}
+// What a try may risk (user 2026-11-02: "often smaller changes ... with big changes to react faster ... to not lose too much perf if decisions were bad"). A running pass cannot change its path, so a
+// try that loses costs its whole call: DeepSeek's mix tried first on 16384 tokens, 134 s against 120 s. So a try runs when the call takes at most 1 s anyway, or at most 5% of this server's
+// prompt time so far, less what tries lost already: a small call soon, a big one after enough work to pay for it. A loss is taken back at the next call of that size (the measured times decide).
+// --moe pp-try=0: every size tries, as before.
+static double g_pp_total_us = 0.0, g_pp_lost_us = 0.0;
+static bool pp_try_ok(double known_us) {
+    static const char * const o = moe_opt("pp-try");
+    return (o && atoi(o) == 0) || known_us <= std::max(1e6, 0.05 * g_pp_total_us - g_pp_lost_us);
+}
 static int pp_bucket(double n) {
     int b = 0;
     while (b < 31 && n >= (double) (2ull << b)) { ++b; }
@@ -9938,6 +9968,7 @@ static bool pp_mix_pick(double n, int n_used, int n_expert, const char ** why) {
         if (g_pp_took[PP_MIX][e].us / g_pp_took[PP_MIX][e].n >= g_pp_took[PP_RING][e].us / g_pp_took[PP_RING][e].n) { return false; }
         break;
     }
+    if (!pp_try_ok(r)) { *why = "no try of the mix: this call could lose too much"; return false; }
     *why = "one try of the mix";
     return true;
 }
@@ -9947,7 +9978,7 @@ static double pp_k_pick(double n, double r, double U, int n_used, int n_expert, 
     for (int i = 0; PP_K + i < PP_PATHS && (double) n_used * (double) (1 << i) < (double) n_expert; ++i) {
         const double t = pp_took_us(PP_K + i, n);
         if (t <= 0.0) {
-            if (last_won && U > pp_pass_floor(n)) { *why = "one try of a prediction"; return (double) (1 << i); }
+            if (last_won && U > pp_pass_floor(n) && (n * (double) n_used < (double) n_expert || pp_try_ok(r))) { *why = "one try of a prediction"; return (double) (1 << i); }
             break;
         }
         last_won = t < t_best;
@@ -9985,6 +10016,7 @@ static bool pp_chain_pays(double n, double up, double U, bool fills, const char 
         const auto & p = g_pp_took[PP_CHAIN][e];
         if (p.n > 0.0) { est = std::min(est, p.us * n / p.n); break; }
     }
+    if (fills && !pp_try_ok(std::max(o, U))) { *why = "no try of the chain: this call could lose too much"; return false; }
     return est < (o > 0.0 ? o : U);
 }
 
@@ -10330,6 +10362,21 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             path = PP_K;
             for (double m = g_pp_k_m; m > 1.0; m /= 2.0) { ++path; }
         }
+        // planner.log: what this call took against the best known at its size, read before its own measurement goes in. The first run of a path that loses counts against the budget of later tries (pp_try_ok)
+        {
+            const double n1 = (double) n_tokens / P, took = (double) us / P, was = pp_took_us(path, n1);
+            int b = -1;
+            for (int p = 0; p < PP_PATHS; ++p) {
+                const double t = pp_took_us(p, n1);
+                if (t > 0.0 && (b < 0 || t < pp_took_us(b, n1))) { b = p; }
+            }
+            const double best = b >= 0 ? pp_took_us(b, n1) : 0.0;
+            g_pp_total_us += (double) us;
+            if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
+            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s)%s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us,
+                    best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "").c_str() : "; first of this size");
+            llama_moe_planner_log_fork("done", done.c_str());
+        }
         // the first pass of a server that fills a layer runs cold whatever its path (Qwen3.6: 348 ms on the chain, 130 warm; the stream 150 ms over its repeats) and the size would keep that
         // number until the path runs again: not a measurement
         // the chain was asked and its graph refused (a layer's blocks cannot hold the pass, pp_chain_fork): the size asks no more
@@ -10491,9 +10538,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     for (int i = 0; i < PP_PATHS - PP_K; ++i) {
         if (const double t = pp_took_us(PP_K + i, n); t > 0.0) { ks += format(", k x%d %.0f ms", 1 << i, t / 1e3); }
     }
-    LLAMA_LOG_WARN("moe-cache: prompt call of %.0f tokens: %s (%s; took: chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, the chain's misses %.0f ms over %zu experts off the card)\n",
+    const std::string pick = format("prompt call of %.0f tokens: %s (%s; took: chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, the chain's misses %.0f ms over %zu experts off the card)",
             n, chain ? "prompt chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
             pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, v.size());
+    LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
+    llama_moe_planner_log_fork("call", pick.c_str());
 }
 
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
