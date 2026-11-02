@@ -1,5 +1,6 @@
 #include "ggml.h"
 #include "mmf.cuh"
+#include <cstdlib>
 #include "mmid.cuh"
 
 static __forceinline__ int mmf_get_rows_per_block(const int cc) {
@@ -138,6 +139,12 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
 bool ggml_cuda_should_use_mmf(enum ggml_type type, int cc, int warp_size, const int64_t * src0_ne,
         const size_t * src0_nb, const int src1_ncols, bool mul_mat_id) {
     if (ggml_is_quantized(type)) {
+        return false;
+    }
+
+    // F32 MMF uses TF32 tensor-core instructions. GGML_CUDA_MMF_F32_DISABLE=1 turns it off (strict F32 diagnostics: the F32 router matmul decides the expert picks)
+    static const bool disable_f32_mmf = [] { const char * e = getenv("GGML_CUDA_MMF_F32_DISABLE"); return e && std::atoi(e) != 0; }();
+    if (type == GGML_TYPE_F32 && disable_f32_mmf) {
         return false;
     }
 
