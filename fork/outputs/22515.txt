@@ -1,0 +1,16 @@
+run 22515 | dec_calc | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.49 t/s | prompt 54.4 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-glm-s100.ini,log=wk | power 220+280 W | 2026-11-02 23:50:14
+
+The user wants me to delete code in `json-schema-to-grammar.cpp` that is never used. This is a real file from llama.cpp. Let me recall what this file contains and figure out what's unused.
+
+The file `common/json-schema-to-grammar.cpp` in llama.cpp contains a grammar builder that converts JSON schemas to GBNF grammars. Let me think about what functions/classes exist there and which are unused.
+
+Known contents (from the llama.cpp repo, roughly):
+
+```cpp
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+#include <algorithm
+---

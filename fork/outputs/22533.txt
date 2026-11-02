@@ -1,0 +1,14 @@
+run 22533 | dec_calc | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.6 t/s | prompt 147.5 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-mimo-s500.ini,log=wk | power 200+200 W | 2026-11-03 00:12:20
+
+Let me analyze this file carefully to identify which code is never used.
+
+The file contains:
+1. `build_repetition` - a static function
+2. `build_min_max_int` - a static function (truncated)
+
+Let me check if these functions are used anywhere in the file. Since the file appears to be truncated, I need to look at what's visible.
+
+Looking at the code:
+- `build_repetition` is a static function - it could be called later in the file (which is truncated)
+- `build_min_max_int` is a static function - it could be called later in the file (which
+---

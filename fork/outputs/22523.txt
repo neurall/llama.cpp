@@ -1,0 +1,12 @@
+run 22523 | dec_calc | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.11 t/s | prompt 64.6 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/df-glm-s200.ini,log=wk,pp-path=dec | power 200+200 W | 2026-11-03 00:00:46
+
+The user wants me to delete code in `json-schema-to-grammar.cpp` that is never used. This is a partial file shown (it's cut off mid-way). I need to figure out what code in this file is unused.
+
+Let me think about what this file typically contains in llama.cpp. The `json-schema-to-grammar.cpp` file in llama.cpp contains functions like:
+
+- `build_repetition` (static helper)
+- `parse_schema` / `check_schema` / `validate_schema` functions
+- `convert_json_schema_to_grammar` (internal)
+- `grammar_escaped_string` or similar
+-
+---

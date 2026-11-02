@@ -1,0 +1,12 @@
+run 22527 | dec_calc | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.36 t/s | prompt 67.2 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-mimo-s100.ini,log=wk | power 200+200 W | 2026-11-03 00:05:36
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+Looking at the file, I need to identify what's unused:
+
+1. `#include <limits>` - Let me check if `std::numeric_limits` or similar is used
+2. `#include <regex>` - Let me check if regex is used
+3. `#include <unordered_map>` - Let me check if unordered_map is used
+4. `#include <unordered_set>` - Let me check if unordered_set is used
+5. `#include <map>` - Let me check if
+---

@@ -1,0 +1,12 @@
+run 22529 | dec_calc | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 19.97 t/s | prompt 70.6 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-mimo-s200.ini,log=wk | power 200+200 W | 2026-11-03 00:07:48
+
+Let me analyze this file to find code that is never used.
+
+Looking at the file, it's a partial snippet of `json-schema-to-grammar.cpp`. Let me identify what's unused:
+
+1. `#include <algorithm>` - need to check if `std::algorithm` functions are used
+2. `#include <limits>` - used for `std::numeric_limits`
+3. `#include <map>` - need to check if `std::map` is used
+4. `#include <regex>` - need to check if `std::regex` is used
+5. `#include <sstream
+---
