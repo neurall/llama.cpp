@@ -1,19 +1,13 @@
 name,model,n,test,tokens,args,extra
-q36-rs5-100,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=5",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs5-200,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=5",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs5-500,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=5",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs5-1000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=5",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs5-2000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=5",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs5-5000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=5",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs7-100,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=7",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs7-200,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=7",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs7-500,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=7",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs7-1000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=7",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs7-2000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=7",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs7-5000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=7",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs13-100,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=13",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs13-200,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=13",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs13-500,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=13",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs13-1000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=13",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs13-2000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=13",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-rs13-5000,qwen36,6,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,pf-slots=13",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+rn-glm-t,glm,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/rn-glm-t.ini,log=wk",--ctx 4096 --env GGML_PF_STATS=1
+ro-glm-t,glm,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/ro-glm-t.ini",--ctx 4096
+rn-glm-l,glm,2,long1kc,128,"--moe state=/tmp/runstate/ppk/rn-glm-l.ini,log=wk",--env GGML_PF_STATS=1
+ro-glm-l,glm,2,long1kc,128,"--moe state=/tmp/runstate/ppk/ro-glm-l.ini",
+rn-mimo-t,mimo,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/rn-mimo-t.ini,log=wk",--ctx 4096 --env GGML_PF_STATS=1
+ro-mimo-t,mimo,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/ro-mimo-t.ini",--ctx 4096
+rn-mimo-l,mimo,2,long1kc,128,"--moe state=/tmp/runstate/ppk/rn-mimo-l.ini,log=wk",--env GGML_PF_STATS=1
+ro-mimo-l,mimo,2,long1kc,128,"--moe state=/tmp/runstate/ppk/ro-mimo-l.ini",
+rn-ds-t,ds,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/rn-ds-t.ini,pp-k=1,pp-path=stream,pp-depth=1,pf-slots=3,log=wk,pin-budget=108447924224 -lm mmap",--ctx 4096 --env GGML_PF_STATS=1
+ro-ds-t,ds,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/ro-ds-t.ini,pin-budget=108447924224 -lm mmap",--ctx 4096
+rn-ds-l,ds,2,long1kc,128,"--moe state=/tmp/runstate/ppk/rn-ds-l.ini,pp-k=2,pp-path=stream,pp-depth=1,pf-slots=3,log=wk,pin-budget=108447924224 -lm mmap",--env GGML_PF_STATS=1
+ro-ds-l,ds,2,long1kc,128,"--moe state=/tmp/runstate/ppk/ro-ds-l.ini,pin-budget=108447924224 -lm mmap",

@@ -1,0 +1,10 @@
+run 22443 | prompt_counts | long1kc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 28.74 t/s | prompt 94.9 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/rn-ds-l.ini,pp-k=2,pp-path=stream,pp-depth=1,pf-slots=3,log=wk,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-11-02 19:11:28
+
+We need answer. Need inspect code. Need identify bug. We have snippet incomplete? Need infer. File json-schema-to-grammar.cpp. Need find bug in source above. Likely in build_min_max_int uniform_range. Need analyze.
+
+We need find bug in provided code. Let's parse.
+
+build_repetition maybe bug? build_min_max_int. Need identify.
+
+We need know context. This is llama.cpp common/json-schema-to-grammar.cpp. There may be known bug? Let's recall. json-schema-to-grammar.cpp in llama.cpp. Functions build_repetition, build_min_max_int
+---

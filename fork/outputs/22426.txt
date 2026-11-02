@@ -1,0 +1,18 @@
+run 22426 | prompt_counts | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 27.88 t/s | prompt 11.2 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/rn-mimo-t.ini,log=wk | power 220+280 W | 2026-11-02 18:51:30
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+- A canvas or grid for the game board
+- Tetromino pieces (I, O, T, S, Z, J, L)
+- Movement (left, right, down, rotate)
+- Collision detection
+- Line clearing
+- Score
+- Game over
+
+Let me write a compact version:
+---
+```html
+<!DOCTYPE html>
+<html><body style="background:#000;color:#fff;font-family:monospace;text-align:center

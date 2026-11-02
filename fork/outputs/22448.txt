@@ -1,0 +1,20 @@
+run 22448 | prompt_counts | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 27.25 t/s | prompt 27.9 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/rd-mimo-t.ini,pp-chain=0,log=wk | power 220+280 W | 2026-11-02 19:21:32
+
+The user is asking me to generate a small HTML Tetris game. Let me create a complete, playable Tetris game in a single HTML file with embedded CSS and JavaScript.
+
+Let me build a full-featured Tetris game with:
+- Canvas-based rendering
+- All 7 tetromino pieces (I, O, T, S, Z, J, L)
+- Rotation
+- Line clearing
+- Score
+- Level
+- Next piece preview
+- Game over detection
+- Controls (arrow keys, space for hard drop)
+
+Let me write this carefully.
+---
+```html
+<!DOCTYPE html>
+<html lang="en

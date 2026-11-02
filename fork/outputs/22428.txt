@@ -1,0 +1,17 @@
+run 22428 | dspark_fix3 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.74 t/s | prompt 33.1 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/ro-mimo-t.ini | power 220+280 W | 2026-11-02 18:53:40
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal Tetris game with:
+- 7 piece types (I, O, T, S, Z, J, L)
+- Rotation
+- Line clearing
+- Score
+- Game over
+- Keyboard controls
+
+Let me make it as compact as possible while still being functional.
+---
+```html
+<!DOCTYPE html><html><body><canvas id=c width=300 height=600></canvas><script>
+const c=document.getElementById('c'),x=c

@@ -1,0 +1,20 @@
+run 22440 | dspark_fix3 | long1kc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.53 t/s | prompt 255.3 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/ro-mimo-l.ini | power 220+280 W | 2026-11-02 19:07:54
+
+Let me analyze the code carefully to find the bug.
+
+Looking at the `build_repetition` function:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items ==
+---
