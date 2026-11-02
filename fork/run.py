@@ -1400,6 +1400,12 @@ def apply_power_schedule():
             print(f"power: GPU {i} {cur[i]} -> {w} W" + ("" if r.returncode == 0 else f"  (failed: {r.stderr.strip()[:80]})"), flush=True)
 
 
+def card_is_mine(i):
+    """does this process use card i (nvidia-smi index)? -ng N narrows CUDA_VISIBLE_DEVICES: the judge may sit on the card left over, and a row does not wait for it"""
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+    return vis is None or not vis.strip() or str(i) in [x.strip() for x in vis.split(",")]
+
+
 def wait_vram_free():
     apply_power_schedule()
     kill_leftovers()
@@ -1410,7 +1416,7 @@ def wait_vram_free():
             t0 = time.time()
         out = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
-        out = [x for x in out if x.isdigit()]   # no GPU, or an nvidia-smi that fails: nothing to wait for
+        out = [x for i, x in enumerate(out) if x.isdigit() and card_is_mine(i)]   # no GPU, or an nvidia-smi that fails: nothing to wait for
         if not out or max(int(x) for x in out) < 500:
             wait_host_free()
             return
@@ -3160,8 +3166,12 @@ def judge_sync(con):
         scp = lambda *a: subprocess.run(["scp", "-q", "-o", "ConnectTimeout=5", *a], capture_output=True, text=True)
         for f in (os.path.join(d, "runs.db.tmp"), os.path.join(here, "judge_w10.py"), os.path.join(os.path.dirname(here), "README.md")):
             r = scp(f, remote + "/")
-            if r.returncode: sys.exit("judge --sync: " + r.stderr.strip()[:200])
+            if r.returncode:
+                print("judge --sync: W10 does not answer: " + r.stderr.strip()[:200], flush=True)
+                judge_local_start()
+                return
         subprocess.run(["ssh", "-o", "ConnectTimeout=5", host, f"move /y {root}\\judge\\runs.db.tmp {root}\\judge\\runs.db.new"], capture_output=True)
+        subprocess.run(["ssh", "-o", "ConnectTimeout=5", host, "schtasks /run /tn judge"], capture_output=True)   # a reboot or an empty battery leaves the reading loop off; a running one is left alone
         vf = os.path.join(d, "verdicts.jsonl")
         if scp(remote + "/verdicts.jsonl", vf).returncode:
             print("no verdicts on W10 yet")
@@ -3178,8 +3188,177 @@ def judge_sync(con):
     print(f"{n} new verdicts from W10")
 
 
+# The judge on this machine when W10 is off (its battery ran out at night, 2026-11-02; user: "start it locally on pc1, you have 2 gpus"). Stock llama-server with Qwen3.6 on the card -ng 1 leaves free, one reading loop that writes verdicts straight into runs.db.
+# A row that wants that card comes first: the loop ends its server and reads on when the card is free again. A row with -ng 1 takes the fastest card, the judge keeps reading on the other.
+# The server runs under the name judge-server, so kill_leftovers and wait_host_free (they look for llama-*) leave it to the loop. The loop ends by itself after 10 minutes with nothing to read, and when W10 answers again (unless started by hand).
+JUDGE_LOCAL_PORT, JUDGE_LOCAL_CTX, JUDGE_LOCAL_IDLE = 8190, 16384, 600
+GPU_SUBCOMMANDS = {"jobs", "run", "cell", "cells", "bench", "regress", "quick", "baseline", "calib", "onepass", "plcal"}
+
+
+def judge_local_pidfile():
+    return os.path.join(QDIR, "judge-local.pid")
+
+
+def judge_local_pid():
+    """the reading loop's pid when it is alive"""
+    try:
+        pid = int(open(judge_local_pidfile()).read())
+        return pid if "judge" in open(f"/proc/{pid}/cmdline").read() else None
+    except (OSError, ValueError):
+        return None
+
+
+def judge_local_start(auto=True):
+    """starts the reading loop on this machine, on its own: rows and the shell that asked may end. False when one runs already"""
+    if judge_local_pid(): return False
+    log = open(os.path.join(QDIR, "judge-local.log"), "a")
+    p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "judge", "--local-loop"] + (["--auto"] if auto else []), stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    open(judge_local_pidfile(), "w").write(str(p.pid))
+    print(f"judge: reading on this machine, pid {p.pid}, log {log.name}", flush=True)
+    return True
+
+
+def judge_local_stop():
+    """ends the reading loop with its servers. True when it was running; the card is free when this returns"""
+    import signal
+    pid = judge_local_pid()
+    if not pid: return False
+    try: os.killpg(pid, signal.SIGTERM)
+    except OSError: pass
+    for _ in range(40):
+        if not judge_local_pid(): break
+        time.sleep(0.5)
+    print(f"judge: reading on this machine stopped, pid {pid}", flush=True)
+    return True
+
+
+def judge_local_kick():
+    """after a stored row: W10's server does not answer, so this machine reads it"""
+    url = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
+    if url and not judge_w10.server_up(url): judge_local_start()
+
+
+def judge_card():
+    """(the card the judge sits on, the card -ng 1 picks), nvidia-smi indices as text: one card only means the same card twice, the judge then waits for every row"""
+    smi = subprocess.run(GPU_Q_NG, shell=True, capture_output=True, text=True).stdout
+    best = pick_gpus(1, smi)
+    rest = [ln.split(",")[0].strip() for ln in smi.strip().splitlines() if ln.split(",")[0].strip() != best]
+    return (rest[-1] if rest else best), best
+
+
+def rows_want_card(card, best):
+    """True while a measured row may need this card: a llama-* process or a run.py row command, unless it is limited to other cards (its CUDA_VISIBLE_DEVICES, or -ng 1 when the judge is not on the fastest card)"""
+    me = os.getpid()
+    for d in filter(str.isdigit, os.listdir("/proc")):
+        if int(d) == me: continue
+        try:
+            argv = open(f"/proc/{d}/cmdline").read().split("\0")
+            comm = open(f"/proc/{d}/comm").read().strip()
+            if not comm.startswith("llama-") and not (any(x.endswith("run.py") for x in argv) and GPU_SUBCOMMANDS & set(argv)): continue
+            env = dict(x.split("=", 1) for x in open(f"/proc/{d}/environ").read().split("\0") if "=" in x)
+        except (OSError, ValueError):
+            continue
+        vis = env.get("CUDA_VISIBLE_DEVICES")
+        if vis is not None and vis.strip():
+            if card in [x.strip() for x in vis.split(",")]: return True
+        elif not ("-ng" in argv and argv[argv.index("-ng") + 1:argv.index("-ng") + 2] == ["1"] and card != best):
+            return True
+    return False
+
+
+def judge_local_loop(a):
+    """see the note above judge_local_pidfile"""
+    import signal, sqlite3
+    card, best = judge_card()
+    exe, model = os.path.join(DEVBUILDS, "stock-latest", "llama-server"), fcfg.get("models", "qwen36")
+    link = os.path.join(QDIR, "judge-server")   # the name in the process table: see above
+    if os.path.lexists(link): os.remove(link)
+    os.symlink(os.path.realpath(exe), link)
+    env = {**os.environ, "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": card, "LD_LIBRARY_PATH": os.path.dirname(os.path.realpath(exe))}
+    url, srv, seen, by_text, quiet, last = f"http://127.0.0.1:{JUDGE_LOCAL_PORT}", None, set(), {}, 0, time.time()
+    second = sorted(glob.glob(os.path.join(os.path.dirname(os.path.dirname(model)), "*", "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf")))
+    judge_w10.SECOND_LOG = os.path.join(QDIR, "judge-second.log")
+    judge_w10.SECOND_CMD = [link, "-m", second[0], "--host", "127.0.0.1", "--port", str(judge_w10.SECOND_PORT), "-np", "1", "-c", str(JUDGE_LOCAL_CTX), "-ngl", "0", "--no-mmap", "--no-webui"] if second else ["false"]
+    readme = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md")
+    db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
+    w10 = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
+    say = lambda *x: print(time.strftime("%F %T"), *x, flush=True)
+    os.environ.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", CUDA_VISIBLE_DEVICES="", LD_LIBRARY_PATH=env["LD_LIBRARY_PATH"])   # the second model starts from here: on the CPU
+    def second_down():   # 12 GiB of RAM and every thread: it never stays beside a row, and wait_host_free would wait for it
+        subprocess.run(["pkill", "-f", f"judge-server.*--port {judge_w10.SECOND_PORT}"])
+    def down():
+        nonlocal srv
+        second_down()
+        if srv:
+            srv.terminate()
+            try: srv.wait(30)
+            except subprocess.TimeoutExpired: srv.kill(); srv.wait()
+            srv = None
+    signal.signal(signal.SIGTERM, lambda *_: (down(), os._exit(0)))
+    say(f"judge on card {card}, rows go to card {best} with -ng 1, server {exe}")
+    try:
+        while True:
+            if a.auto and w10 and judge_w10.server_up(w10):
+                say("W10 answers again: it reads on, run.py judge --sync takes its verdicts")
+                return
+            if rows_want_card(card, best):
+                if srv: say("a row wants the card: server stopped")
+                down(); quiet = 0; time.sleep(5)
+                continue
+            quiet += 1
+            if not srv or srv.poll() is not None:
+                srv = None
+                used = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout.split()
+                if quiet < 3 or not used or int(used[int(card)]) > 600:   # a chain between two rows: its next row comes within seconds, and the card must be empty
+                    time.sleep(5)
+                    continue
+                srv = subprocess.Popen([link, "-m", model, "--host", "127.0.0.1", "--port", str(JUDGE_LOCAL_PORT), "-np", "1", "-c", str(JUDGE_LOCAL_CTX), "-ngl", "99", "--no-mmap", "--no-webui"], env=env, stdin=subprocess.DEVNULL, stdout=open(os.path.join(QDIR, "judge-server.log"), "w"), stderr=subprocess.STDOUT)
+                for _ in range(60):
+                    if judge_w10.server_up(url) or rows_want_card(card, best) or srv.poll() is not None: break
+                    time.sleep(3)
+                say("server up" if judge_w10.server_up(url) else "server did not come up")
+                continue
+            con = sqlite3.connect(db, timeout=60)
+            done = seen | {r[0] for r in con.execute("select rowid from runs where judge is not null")}
+            todo = judge_w10.queue(con, done, readme)
+            say(f"{len(todo)} rows to read")
+            for r in todo[:20]:
+                if rows_want_card(card, best): break
+                free = not rows_want_card(best, best)
+                if not free: second_down()
+                v = judge_w10.read_row(con, r, url, by_text, start=free)
+                if v.get("down"):
+                    say("server stopped answering:", v["why"])
+                    break
+                seen.add(r[0])
+                if v["verdict"] != "none":
+                    second_said = not v.get("second")
+                    day = time.strftime("%F %T", time.localtime(time.time() - 86400))
+                    judge_apply(con, r[0], v, flip=r[1] >= day and second_said)   # Qwen3.6 alone never fails a row: it needs the second model's word, as on W10
+                    con.commit()
+                say(r[0], r[2][:26], r[3][:10], judge_w10.verdict_str(v))
+                last = time.time()
+            con.close()
+            if not todo:
+                if time.time() - last > JUDGE_LOCAL_IDLE:
+                    say("nothing left to read: the card is free")
+                    return
+                time.sleep(30)
+    finally:
+        down()
+        try: os.remove(judge_local_pidfile())
+        except OSError: pass
+
+
 def cmd_judge(a):
-    """the judge's results and readings on demand: no arguments, what it has said so far; --sync, W10's copy and verdicts; IDS or --build, read now"""
+    """the judge's results and readings on demand: no arguments, what it has said so far; --sync, W10's copy and verdicts; IDS or --build, read now; --local, read on this machine"""
+    if a.local_loop: return judge_local_loop(a)
+    if a.local_stop:
+        if not judge_local_stop(): print("judge: not reading on this machine")
+        return
+    if a.local:
+        if not judge_local_start(auto=False): print(f"judge: already reading on this machine, pid {judge_local_pid()}")
+        return
     url = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
     if a.file:
         print(judge_w10.verdict_str(judge_w10.judge_answer(url, open(a.file, errors="replace").read(), a.ask)))
@@ -3290,6 +3469,7 @@ def store(row, build, test, rec, note, hw, vstr):
     row["loop"] = int(bool(row.get("loop_abort")) or is_loop(row.get("output")))
     answer_checks(row, (row["model"], test, build, rec.get("args", ""), CAMPAIGN, hw))
     judge_build_line(row)
+    judge_local_kick()
     try:   # the generated text (zlib) into runs.db table outputs, keyed by ts + build
         import runlog
         runlog.insert_output(row["ts"], hw, build, test, row["model"], row.get("md5"), row.get("output"), row["uniq4"], row["out_chars"], row["code"], judge_w10.cut_ask(LAST_ASK["v"]))
@@ -7635,7 +7815,8 @@ def cmd_cell(a):
     Q5 = QDIR; U = os.environ.get("PERF_LD_EXTRA", ""); SMI = os.environ.get("NVIDIA_SMI", "nvidia-smi")
     while not kept_get():   # nothing may still hold GPU memory (a killed script leaves its children running); the kept server is meant to
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
-        if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
+        used = [int(x) for i, x in enumerate(r.stdout.split()) if card_is_mine(i)]
+        if used and max(used) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
     keep_pool = os.environ.get("RUN_KEEP_POOL") == "1"   # run -nm: the pool stays mounted for the whole list (a remount after fragmentation gets only part of it back: 49-58 of 108 pages, 2026-10-22)
     too_big = False
@@ -8526,6 +8707,7 @@ def cmd_stop(a):
     SIGTERM first, SIGKILL for what is still there after --grace seconds, then it waits until the GPUs have (almost) no memory in use, and puts the power limits
     to the schedule (power_schedule: day 220/280 W, night 200/200 W) unless --no-power. --dry lists what it would stop and changes nothing.
     A build (docker) is not a measurement and is not touched; stop it with docker."""
+    if not getattr(a, "dry", False): judge_local_stop()
     import signal
     me = os.getpid()
     def read_proc(pid):
@@ -10522,6 +10704,10 @@ if __name__ == "__main__":
     jd.add_argument("--dry", action="store_true", help="show the verdicts, change no row")
     jd.add_argument("--file", default="", help="read this text file instead of rows")
     jd.add_argument("--ask", default="", help="with --file: the request it answered")
+    jd.add_argument("--local", action="store_true", help="read on this machine, on the card -ng 1 leaves free; rows on that card come first. Starts by itself when W10 does not answer. Ends after 10 minutes with nothing left to read")
+    jd.add_argument("--local-stop", action="store_true", help="stop reading on this machine")
+    jd.add_argument("--local-loop", action="store_true", help=argparse.SUPPRESS)
+    jd.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")

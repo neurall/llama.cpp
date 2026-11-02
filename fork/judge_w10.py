@@ -3,6 +3,7 @@
 The gather mask of 2026-11-01 fooled a day of rows. A row the judge calls nonsense has no accepted prompt or decode speed.
 Qwen3.6 reads everything: about 6 s an answer, Qwen3.8-27B takes 19 s on the same card. A row Qwen3.6 calls nonsense goes to Qwen3.8-27B on the CPU, and its word stands.
 
+When W10 is off, `run.py judge --local` reads on PC1 instead, with the same functions (see judge_local_loop in run.py).
 Runs on W10 next to the stock llama-server with Qwen3.6 (port 8190, scheduled task gensrv), on its own copy of runs.db, so PC1 neither waits nor coordinates:
     python judge_w10.py DIR      DIR holds runs.db (a copy), README.md, verdicts.jsonl (appended, one row per line; the last line of a row counts); see docs/w10-builds.md
 `run.py judge --sync` copies the first two in and takes the third back. run.py imports this file too, to read a row on demand: same prompt, same scale."""
@@ -12,6 +13,7 @@ PARTS = (300, 1000)   # tokens of an answer's end, read from the end backward, e
 PARTS_DEEP = (1000, 4000, 8000)   # the second opinion reads further; the server's context is 16384
 SECOND_PORT = 8191   # Qwen3.8-27B, started by the first flagged row. On the CPU: Qwen3.6 keeps the card
 SECOND_CMD = [r"N:\build\stock-de7fa0a3c\llama-server.exe", "-m", r"N:\m\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf", "--host", "0.0.0.0", "--port", str(SECOND_PORT), "-np", "1", "-c", "16384", "-ngl", "0", "--no-webui"]
+SECOND_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "second.log")
 BAD = 2   # quality at or below this is nonsense. Measured 2026-11-01: damaged texts, loops and `!!!!` 1-2, real answers 3-5. A separate true/false field came back false for every text, so the scale alone decides
 MIN_CHARS = 16   # a shorter answer is too little to tell (prompt rows ask for one token)
 ASK_CHARS = 3000   # of the request, shown with each piece: long prompts carry their task at the start or at the end, so both ends
@@ -103,7 +105,7 @@ def judge_answer(url, text, ask="", start=False):
 def second_start(url):
     """Qwen3.8-27B for the flagged rows: on the first of them, it stays for the next. False when it does not come up in 3 minutes"""
     print("starting the second model", flush=True)
-    subprocess.Popen(SECOND_CMD, stdin=subprocess.DEVNULL, stdout=open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "second.log"), "w"), stderr=subprocess.STDOUT)
+    subprocess.Popen(SECOND_CMD, stdin=subprocess.DEVNULL, stdout=open(SECOND_LOG, "w"), stderr=subprocess.STDOUT)
     for _ in range(36):
         time.sleep(5)
         if server_up(url): return True
@@ -149,6 +151,21 @@ def server_up(url):
         return False
 
 
+def read_row(con, r, url, by_text, start=True):
+    """the verdict on one row of queue(), with what names the row; down=True when the server is the reason there is none. by_text: what each text was called, the same text (a greedy test repeats it) gets the same verdict and no request"""
+    text, ask = stored_answer(con, r[2], r[3], r[4], r[1])
+    sha = hashlib.sha1((text or "").encode("utf8", "replace")).hexdigest()[:16]
+    if len((text or "").strip()) < MIN_CHARS:
+        v = {"verdict": "none", "why": "no stored answer"}
+    elif sha in by_text:
+        v = {k: by_text[sha].get(k) for k in ("verdict", "quality", "why", "parts", "of", "tokens", "first", "second")}; v["s"] = 0
+    else:
+        v = judge_answer(url, text, ask, start=start)
+    v.update(id=r[0], ts=r[1], build=r[2], test=r[3], model=r[4], sha=sha, read=time.strftime("%F %T"))
+    if v["verdict"] in ("good", "nonsense"): by_text.setdefault(sha, v)
+    return v
+
+
 def main(d):
     """reads forever: a new runs.db.new from PC1 takes over between batches, so new rows go first; with nothing to read it sleeps"""
     url = "http://127.0.0.1:8190"
@@ -176,21 +193,12 @@ def main(d):
         todo = queue(con, done, readme)
         print(f"{time.strftime('%F %T')} {len(todo)} rows to read, {len(done)} read", flush=True)
         for r in todo[:20]:   # a small batch: a new copy from PC1 is seen soon, and nothing holds the file while it comes
-            text, ask = stored_answer(con, r[2], r[3], r[4], r[1])
-            sha = hashlib.sha1((text or "").encode("utf8", "replace")).hexdigest()[:16]
-            if len((text or "").strip()) < MIN_CHARS:
-                v = {"verdict": "none", "why": "no stored answer"}
-            elif sha in by_text:   # the same text again (a greedy test repeats it): the same verdict, no request
-                v = {k: by_text[sha].get(k) for k in ("verdict", "quality", "why", "parts", "of", "tokens", "first", "second")}; v["s"] = 0
-            else:
-                v = judge_answer(url, text, ask, start=True)
+            v = read_row(con, r, url, by_text)
             if v.get("down"):
                 print("server stopped answering:", v["why"], flush=True)
                 break
-            v.update(id=r[0], ts=r[1], build=r[2], test=r[3], model=r[4], sha=sha, read=time.strftime("%F %T"))
             out.write(json.dumps(v, ensure_ascii=False) + "\n"); out.flush()
             done.add(r[0])
-            if v["verdict"] == "good" or v["verdict"] == "nonsense": by_text.setdefault(sha, v)
             print(r[0], r[2][:26], r[3][:10], verdict_str(v) if v["verdict"] != "none" else "none: " + v["why"], flush=True)
         con.close()
         if not todo: time.sleep(60)
