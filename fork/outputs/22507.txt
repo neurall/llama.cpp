@@ -1,0 +1,14 @@
+run 22507 | glu_zero_late | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.91 t/s | prompt 66.8 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/gz-mimo-noup.ini,log=wk,pp-path=dec,upload-now=0 | power 220+280 W | 2026-11-02 23:35:00
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+Looking at the file, I need to identify what's included and what's used:
+
+1. `#include "json-schema-to-grammar.h"` - needed for the header
+2. `#include "common.h"` - needed for `common_json`
+3. `#include "trie.h"` - need to check if trie is used
+4. `#include "unicode.h"` - need to check if unicode functions are used
+
+Standard library includes:
+- `<algorithm>` - need to check if algorithm functions are
+---

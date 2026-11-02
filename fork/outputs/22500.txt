@@ -1,0 +1,5 @@
+run 22500 | dma_log | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.99 t/s | prompt 71.1 t/s | 16 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/fo-mid.ini,log=wk,pp-path=dec,fuse-off=MUL_MAT_ID | power 220+280 W | 2026-11-02 23:19:57
+
+I'll use the common JSON structure.
+---
+I'll use the common JSON

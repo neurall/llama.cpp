@@ -1,0 +1,89 @@
+run 22482 | miss_real | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 39.01 t/s | prompt 3.0 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/mb-ver.ini,log=wk,pp-path=dec,verify=2 | power 220+280 W | 2026-11-02 22:25:57
+
+
+---
+import json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
+
+from json
