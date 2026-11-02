@@ -21,3 +21,12 @@ dbg-qn-past,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-sp
 dbg-qn-mixnode,qn_iq4xs,1,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,ledger=2,poison=3,margin_mb=384",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=2 --env GGML_SCHED_NAN_CHECK_ONLY=ffn_moe_cache
 dbg-qn-nopoison,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,margin_mb=384",--clamp 16000 --ctx 20992
 dbg-qn-stream,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream,margin_mb=384",--clamp 16000 --ctx 20992
+ptp-qn_iq4xs-stream,qn_iq4xs,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-qn_iq4xs-mix,qn_iq4xs,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-qn_iq4xs-chain,qn_iq4xs,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-glm-stream,glm,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-glm-mix,glm,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-glm-chain,glm,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-mimo-stream,mimo,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-mimo-mix,mimo,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-mimo-chain,mimo,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
