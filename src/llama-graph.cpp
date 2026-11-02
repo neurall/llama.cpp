@@ -2631,11 +2631,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             for (int d = 0; d < pred_depth; ++d) {
                 const int from = d == 0 ? std::max(il - pred_lag, 0) : il - (pred_lag + d);
                 ggml_tensor * src = il > 0 && from >= 0 ? hist.cur[from] : nullptr;
-                if (src && gate_inp && n_tokens > 1 && probs_in == nullptr && selected_experts_in == nullptr &&
+                if (src && gate_inp && n_tokens > 1 && selected_experts_in == nullptr &&
                         !(cparams.moe_cache && n_tokens <= llama_moe_cache_max_batch_fork())) {   // a pass on the cache chain computes with the cache, no staging
                     const int n0 = ggml_graph_n_nodes(gf);
                     ggml_tensor * pl = ggml_mul_mat(ctx0, gate_inp, src);   // [n_expert, n_tokens]
                     if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
+                    if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS) { pl = ggml_sqrt(ctx0, ggml_softplus(ctx0, pl)); }   // the bias adds to these, as in the real selection below
                     if (exp_probs_b) { pl = ggml_add(ctx0, pl, exp_probs_b); }
                     ggml_tensor * pid = ggml_argsort(ctx0, pl, GGML_SORT_ORDER_DESC);
                     cb(pid, d == 0 ? "moe_pred_ids" : d == 1 ? "moe_pred2_ids" : "moe_pred3_ids", il);   // the scheduler reads the lag from the name
