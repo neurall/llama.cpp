@@ -26,6 +26,12 @@ void llama_prefetch_rows(const ggml_tensor * tensor, const int32_t * rows, size_
 
     GGML_ASSERT(ggml_is_matrix(tensor));
 
+    // fork: a big gather reads its rows on all CPU threads (ggml_get_n_tasks), at their queue depth. One madvise per row on this thread is the slow part then: 352k calls,
+    // about 4 s of a 16k DeepSeek pass, with the rows already in the page cache. The hint stays for small gathers (a decode step), which run on one thread.
+    if (n_rows > 4096) {
+        return;
+    }
+
     const size_t row_bytes = ggml_row_size(tensor->type, tensor->ne[0]);
     const auto * base = (const char *) tensor->data;
 
