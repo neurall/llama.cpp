@@ -4170,7 +4170,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     } prompt_guard([&] {
         size_t n_out = 0;
         for (const auto & t : batch_inp.tokens) { n_out += t.output ? 1 : 0; }
-        return n_tokens_all > 1 && n_out <= 1 && !cparams.ctx_other;
+        static const bool prefill_cpu = [] { const char * e = moe_opt("prefill-cpu"); return e && atoi(e) != 0; }();   // --moe prefill-cpu=1: comparison switch, a prompt pass runs as a decode call, misses computed on the CPU
+        return !prefill_cpu && n_tokens_all > 1 && n_out <= 1 && !cparams.ctx_other;
     }());
     if (cparams.moe_cache && memory) { llama_moe_cache_pp_decide_fork(n_tokens_all, n_ubatch_lim); }
     g_decode_n_tokens = n_tokens_all;
