@@ -3201,6 +3201,26 @@ void pred_loop(moe_cache * mc) {
 
 }
 
+// What a matmul reads past a slice's last row (rows that are not a multiple of 512 values, Qwen3.8's and Qwen Next's down rows of 640: see pool_layout): the block keeps room for it, and it
+// must hold what the tensor itself would give: the bytes that follow the slice, which are the next expert's, behind the last expert the tensor's padding, zeros. Every writer of a block
+// writes it through here. Returns how many bytes and where they come from; 0 when the class reads nothing past. A JIT upload wrote only the slice until 2026-11-02: the read past it found
+// what the block held before, a graph's or the KV's bytes, and the last value of each output row came out wrong or NaN (found by --moe verify on Qwen Next).
+static size_t expert_past(const moe_cache * mc, const layer_state & ls, int k, int32_t expert, const ggml_tensor * src, const char * & from) {
+    if (ls.pcls < 0 || mc->pool[ls.pcls].past[k] == 0) { return 0; }
+    static const std::vector<uint8_t> zeros(1u << 16, 0);
+    const bool next = expert + 1 < src->ne[2] && ggml_backend_buffer_is_host(src->buffer);
+    from = next ? (const char *) src->data + (size_t) (expert + 1) * src->nb[2] : (const char *) zeros.data();
+    return std::min(mc->pool[ls.pcls].past[k], zeros.size());
+}
+// Those bytes as a tensor of their own: the class's view ends with the last block's slice, so a write or read through the view would overrun it, while the bytes are inside the block.
+static ggml_tensor expert_past_view(const ggml_tensor * dst, size_t off, size_t n) {
+    ggml_tensor z = {};
+    z.type = GGML_TYPE_I8; z.buffer = dst->view_src ? dst->view_src->buffer : dst->buffer; z.data = (char *) dst->data + off;
+    z.ne[0] = (int64_t) n; z.ne[1] = z.ne[2] = z.ne[3] = 1;
+    z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = n;
+    return z;
+}
+
 // Prefill preheat: the scheduler just copied the used experts of `weight` to `dev` for a prompt
 // batch. Keep the ones this prompt uses more than what is cached: they are copied device-to-device
 // into a slot (no extra PCIe traffic) and published at the next step. Up to LLAMA_MOE_CACHE_ADOPT
@@ -3263,6 +3283,13 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
     ls.adopt_mask[expert] |= (uint8_t) (1 << kind);
     *data   = (uint8_t *) c->data + (size_t) slot*c->nb[2];
     *buffer = c->buffer;
+    {   // the caller copies the slice, device to device; what a matmul reads behind it comes from the host
+        const char * from = nullptr;
+        if (const size_t pb = expert_past(mc, ls, kind, expert, weight, from)) {
+            ggml_tensor z = expert_past_view(c, (size_t) slot*c->nb[2] + (size_t) weight->nb[2], pb);
+            ggml_backend_tensor_set(&z, from, 0, pb);
+        }
+    }
     return true;
 }
 
@@ -3300,26 +3327,6 @@ void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, 
         return;
     }
     ggml_backend_tensor_set(dst_c, (const char *) src->data + (size_t) expert*sz, (size_t) slot*dst_c->nb[2], sz);
-}
-
-// What a matmul reads past a slice's last row (rows that are not a multiple of 512 values, Qwen3.8's and Qwen Next's down rows of 640: see pool_layout): the block keeps room for it, and it
-// must hold what the tensor itself would give: the bytes that follow the slice, which are the next expert's, behind the last expert the tensor's padding, zeros. Every writer of a block
-// writes it through here. Returns how many bytes and where they come from; 0 when the class reads nothing past. A JIT upload wrote only the slice until 2026-11-02: the read past it found
-// what the block held before, a graph's or the KV's bytes, and the last value of each output row came out wrong or NaN (found by --moe verify on Qwen Next).
-static size_t expert_past(const moe_cache * mc, const layer_state & ls, int k, int32_t expert, const ggml_tensor * src, const char * & from) {
-    if (ls.pcls < 0 || mc->pool[ls.pcls].past[k] == 0) { return 0; }
-    static const std::vector<uint8_t> zeros(1u << 16, 0);
-    const bool next = expert + 1 < src->ne[2] && ggml_backend_buffer_is_host(src->buffer);
-    from = next ? (const char *) src->data + (size_t) (expert + 1) * src->nb[2] : (const char *) zeros.data();
-    return std::min(mc->pool[ls.pcls].past[k], zeros.size());
-}
-// Those bytes as a tensor of their own: the class's view ends with the last block's slice, so a write or read through the view would overrun it, while the bytes are inside the block.
-static ggml_tensor expert_past_view(const ggml_tensor * dst, size_t off, size_t n) {
-    ggml_tensor z = {};
-    z.type = GGML_TYPE_I8; z.buffer = dst->view_src ? dst->view_src->buffer : dst->buffer; z.data = (char *) dst->data + off;
-    z.ne[0] = (int64_t) n; z.ne[1] = z.ne[2] = z.ne[3] = 1;
-    z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = n;
-    return z;
 }
 
 // The CUDA backend's copy without the stream synchronisation (see ggml_backend_cuda_set_tensor_nosync_fork in ggml-cuda.cu for why: one sync per expert slice
@@ -4834,7 +4841,10 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
             else if (cp.cells > gap_h) { say("kv-fit: %s: %zu cells do not fit the gap of the zone as tier %d (room for %zu)", dn, cp.cells, tier, gap_h); return false; }
             if (gap_end != 0) { cp.h = std::min(cp.h, std::max(gap_h, cp.cells)); }
         }
-        if (!g_kv_rows_by_caller && !kv_stage_range(ap, cp.s_lo, cp.s_hi)) { say("kv-fit: %s: no lend in front of the KV to stage the conversion", dn); return false; }
+        // the staging is for rows to convert: an empty KV (a request's start) has none, and with the dense split's copies in front there may be no blocks to stage in
+        bool has_rows = cp.cells > 0;
+        for (const auto & r : ap.kvt) { has_rows = has_rows || r.fixed; }
+        if (has_rows && !g_kv_rows_by_caller && !kv_stage_range(ap, cp.s_lo, cp.s_hi)) { say("kv-fit: %s: no lend in front of the KV to stage the conversion", dn); return false; }
         cp.be = kv_conv_backend(ap.dev);
         if (!cp.be) { say("kv-fit: %s: no backend for the conversion", dn); return false; }
         plans.push_back(std::move(cp));

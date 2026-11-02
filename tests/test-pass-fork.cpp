@@ -105,6 +105,15 @@ static void test_hot_cache() {
         const poolx_pick q2 = poolx_pick_slot(su.ps, 2, [&](int32_t, int32_t) { return false; }, [&](int32_t, int32_t b) { return su.expert[b]; }, [&](int32_t, int32_t) { return 5.0; }, b3);
         report("only stale free entries: no pick", q2.slot < 0);
     }
+    {   // regression: an empty block found after a candidate: the candidate's owner must not stay in the answer, a caller evicts by owner and slot (2026-11-02: an adoption took expert -1 of that owner)
+        hot_state se; se.ps.owner = { 0, 1 }; se.busy = { 0, 0 }; se.expert = { 4, -1 }; se.rank = { 5, 0 };
+        double b4 = 0;
+        const poolx_pick q = poolx_pick_slot(se.ps, 2, [&](int32_t, int32_t) { return false; }, [&](int32_t, int32_t b) { return se.expert[b]; }, [&](int32_t, int32_t) { return 5.0; }, b4);
+        report("an owned empty block after a candidate: picked, with no owner", q.slot == 1 && q.owner == -1 && b4 == 0);
+        hot_state sf; sf.ps.owner = { 0, -1 }; sf.busy = { 0, 0 }; sf.expert = { 4, -1 }; sf.rank = { 5, 0 };
+        const poolx_pick q3 = poolx_pick_slot(sf.ps, 2, [&](int32_t, int32_t) { return false; }, [&](int32_t, int32_t b) { return sf.expert[b]; }, [&](int32_t, int32_t) { return 5.0; }, b4);
+        report("a free block after a candidate, not on the free list: picked, with no owner", q3.slot == 1 && q3.owner == -1);
+    }
     report("no pick when every block is lent, zone or busy",
             [&]() { hot_state g; g.ps.owner = { -2, -3, 0 }; g.busy = { 0, 0, 1 }; g.expert = { 1, 1, 1 }; double b2 = 0;
                     return poolx_pick_slot(g.ps, 3, [&](int32_t, int32_t b) { return g.busy[b] != 0; }, [&](int32_t, int32_t) { return 1; }, [&](int32_t, int32_t) { return 1.0; }, b2).slot == -1; }());

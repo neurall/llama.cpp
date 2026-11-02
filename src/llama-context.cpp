@@ -1471,12 +1471,14 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
         LLAMA_LOG_WARN("%s: --moe kv-fallback=%s: not a tier: %s (tiers are k8v8, k4v4, ram; none = f16 only)\n", __func__, list.c_str(), w.c_str());
     }   // tiers tried after f16, in place: q8_0, q4_0 in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
     int tier = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
+    bool policy_pick = false;   // q8_0 picked to give the experts room, f16 would fit: it can fail without failing the request
     // fork: q8_0 pays only when this request's KV takes a real share of the pool the experts live in: f16 fits, but q8_0 would give the experts back at least KV_Q8_MIN_SHARE of the pool.
     // Measured (GLM, 125k cells, pool 37 GiB): 1 GiB back = 2.6%, decode 16.1 against 16.1 t/s. A shorter request converts back up (kv_fit_select's lower tier).
     if (tier == 0 && cp.pool > 0 && cp.row_f16 > 0 && n_tokens <= cp.k8v8 && std::find(allowed.begin(), allowed.end(), 1) != allowed.end()) {
         const double KV_Q8_MIN_SHARE = 0.10;
         const double saved = (double) n_tokens * cp.row_f16 * (1.0 - 17.0 / 32.0);
         const bool pick = saved >= KV_Q8_MIN_SHARE * (double) cp.pool;
+        policy_pick = pick;
         static int last = -1;
         if (last != (int) pick) {
             last = (int) pick;
@@ -1509,6 +1511,10 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     synchronize();
     char why[256] = { 0 };
     if (!llama_moe_cache_kv_retype_fork(sched.get(), tier, why, sizeof(why))) {
+        if (policy_pick) {
+            llama_moe_decision_fork("kv", kv_tier == 0 ? "f16" : "as it is", why);
+            return kv_tier;
+        }
         if (tier < kv_tier) {   // back down (a shorter request) while the cache still holds more than the lower tier fits: stay, nothing is lost
             say("kv-fit: staying %s: %s", kv_tier == 1 ? "q8_0/q8_0" : "q4_0/q4_0", why);
             return kv_tier;
