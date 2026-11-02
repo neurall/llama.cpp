@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+gr-s100,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/s.ini",
