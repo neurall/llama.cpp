@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+glm-rp-def,glm,3,tetrisc,1024,,
+glm-rp-on,glm,3,tetrisc,1024,"--moe upload-now=2,jit-all=1,replay=1",
+ds-rp-def,ds,3,tetrisc,1024,,
+ds-rp-on,ds,3,tetrisc,1024,"--moe upload-now=2,jit-all=1,replay=1",
+mimo-rp-def,mimo,3,tetrisc,1024,,
+mimo-rp-on,mimo,3,tetrisc,1024,"--moe upload-now=2,jit-all=1,replay=1",
+qni4-rp-def,qn_iq4xs,3,tetrisc,1024,,
+qni4-rp-on,qn_iq4xs,3,tetrisc,1024,"--moe upload-now=2,jit-all=1,replay=1",
