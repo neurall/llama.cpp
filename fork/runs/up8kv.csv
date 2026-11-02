@@ -131,3 +131,4 @@ kvb-m384-nofuse-128k,qwen36,2,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecf
 kvq-glm-q4-ans,glm,1,pf128k,256,"--moe state=/p/bw/data/state_sane.ini -ctk q4_0 -ctv q4_0",--clamp 16000 --ctx 20992
 kvq-glm-q8-ans,glm,1,pf128k,256,"--moe state=/p/bw/data/state_sane.ini -ctk q8_0 -ctv q8_0",--clamp 16000 --ctx 20992
 kvq-glm-q4-ppl,glm,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini -ctk q4_0 -ctv q4_0",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+kvb-auto-128k,qwen36,1,pf128k,256,"--moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0",--hog-gpu 4.5

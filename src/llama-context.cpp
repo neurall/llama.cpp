@@ -1474,7 +1474,9 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     bool policy_pick = false;   // q8_0 picked to give the experts room, f16 would fit: it can fail without failing the request
     // fork: q8_0 pays only when this request's KV takes a real share of the pool the experts live in: f16 fits, but q8_0 would give the experts back at least KV_Q8_MIN_SHARE of the pool.
     // Measured (GLM, 125k cells, pool 37 GiB): 1 GiB back = 2.6%, decode 16.1 against 16.1 t/s. A shorter request converts back up (kv_fit_select's lower tier).
-    if (tier == 0 && cp.pool > 0 && cp.row_f16 > 0 && n_tokens <= cp.k8v8 && std::find(allowed.begin(), allowed.end(), 1) != allowed.end()) {
+    // -ctk / -ctv force a type (--moe kv-policy=0 is the same switch alone): the tiers below still rescue a request that does not fit, this optional pick stays out.
+    const char * kv_policy = llama_moe_get_opt("kv-policy");
+    if ((!kv_policy || atoi(kv_policy) != 0) && tier == 0 && cp.pool > 0 && cp.row_f16 > 0 && n_tokens <= cp.k8v8 && std::find(allowed.begin(), allowed.end(), 1) != allowed.end()) {
         const double KV_Q8_MIN_SHARE = 0.10;
         const double saved = (double) n_tokens * cp.row_f16 * (1.0 - 17.0 / 32.0);
         const bool pick = saved >= KV_Q8_MIN_SHARE * (double) cp.pool;

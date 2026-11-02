@@ -2410,6 +2410,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         ),
         [](common_params & params, const std::string & value) {
             params.cache_type_k = kv_cache_type_from_str(value);
+            llama_moe_set_opt("kv-policy", "0");   // the type was asked for: no automatic q8_0 on top of it (kv_fit_select)
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_K"));
     add_opt(common_arg(
@@ -2423,6 +2424,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         ),
         [](common_params & params, const std::string & value) {
             params.cache_type_v = kv_cache_type_from_str(value);
+            llama_moe_set_opt("kv-policy", "0");   // the type was asked for: no automatic q8_0 on top of it (kv_fit_select)
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
     add_opt(common_arg(
