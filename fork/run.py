@@ -2258,11 +2258,11 @@ def dmon_summary(text, t0=0.0):
 
 
 def stats_sampler(path, stock=False):
-    """stats.log's gpu lines, one a second while a request runs: every card's load, memory load, temperature, power, clock, PCIe traffic both ways and free VRAM, from nvidia-smi dmon (user 2026-11-02: "each gpu temp util", "free vram per gpu").
+    """stats.log's gpu lines, one every 10 s while a request runs: every card's load, memory load, temperature, power, clock, PCIe traffic both ways and free VRAM, from nvidia-smi dmon (user 2026-11-02: "each gpu temp util", "free vram per gpu").
     A stock server writes no stat lines of its own, so there the disk and reclaim numbers come from here. Returns the stop function."""
     try:
         total = [int(x) for x in subprocess.run([NVSMI, "--query-gpu=memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.split()]
-        p = subprocess.Popen([NVSMI, "dmon", "-s", "putcm", "-d", "1", "-o", "T"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        p = subprocess.Popen([NVSMI, "dmon", "-s", "putcm", "-d", "10", "-o", "T"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     except (OSError, ValueError, subprocess.SubprocessError):
         return lambda: None
     atexit.register(p.terminate)

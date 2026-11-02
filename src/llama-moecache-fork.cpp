@@ -6209,12 +6209,12 @@ static std::vector<int32_t> g_req_prompt;   // the tokens of the topic key of th
 static bool                 g_req_own = false;   // they are the request's own text (a chat request's user input), not its whole prompt
 
 // the server's hooks (llama-fork-hooks.h): a request starts; a request ended: the per-expert token ids to the file, so the file is whole while the server waits
-// --moe stats: a status line every --moe stats-ms (default 1000): far more often than the planner decides, so a drop reads against what the machine did in that second (user 2026-11-02: "we need to see
+// --moe stats: a status line every --moe stats-ms (default 10000; was 1000, user 2026-11-02: "writes a status line every second maybe hurting perf not needed so often 10-30s is fine"). Earlier: "we need to see
 // stats samples more often than planner makes decisions"). RAM as this engine moves it (this CPU shows no memory counters without root: the CPU's expert reads, the uploads, the prompt streams; all other traffic is
 // missing), each link's uploads against its probed maximum, the cache, then disk, memory and CPU (llama_moe_stats_io_fork). What every card really moved, its load, temperature and free VRAM: the gpu lines from run.py.
 static void stats_status_run(moe_cache * mc) {
     const char * o = moe_opt("stats-ms");
-    const int64_t period = (int64_t) std::max(50, o ? atoi(o) : 1000) * 1000;
+    const int64_t period = (int64_t) std::max(50, o ? atoi(o) : 10000) * 1000;
     int64_t t0 = ggml_time_us(), cpu0 = mc->cpu_bytes.load(), up0 = mc->up_bytes.load(), pf0 = mc->pf_bytes.load(), lk0[MAX_LINKS] = {};
     for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
     uint64_t h0 = 0, m0 = 0, n0 = mc->n_steps, u0 = mc->n_uploads, e0 = mc->n_evictions;
