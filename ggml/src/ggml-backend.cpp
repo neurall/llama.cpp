@@ -5037,6 +5037,11 @@ static struct ggml_tensor * graph_copy_dup_tensor(struct ggml_hash_set hash_set,
     }
 
     struct ggml_tensor * dst = ggml_dup_tensor_layout(src->data && !src->view_src ? ctx_allocated : ctx_unallocated, src);
+    // fork: ggml_dup_tensor_layout gathers a gappy tensor (the scheduler's copies between cards). This copy keeps the source's memory layout: a view shares its parent's bytes, and
+    // without its strides the unit tests' CPU reference read a stridden id view as contiguous (360 false failures of MUL_MAT_ID with n_used < n_mats, 2026-11-02).
+    for (int i = 0; i < GGML_MAX_DIMS; i++) {
+        dst->nb[i] = src->nb[i];
+    }
     if (src->view_src != NULL) {
         dst->view_src = graph_copy_dup_tensor(hash_set, node_copies, ctx_allocated, ctx_unallocated, src->view_src);
         dst->view_offs = src->view_offs;
