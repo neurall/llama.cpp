@@ -3306,15 +3306,20 @@ void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, 
 // must hold what the tensor itself would give: the bytes that follow the slice, which are the next expert's, behind the last expert the tensor's padding, zeros. Every writer of a block
 // writes it through here. Returns how many bytes and where they come from; 0 when the class reads nothing past. A JIT upload wrote only the slice until 2026-11-02: the read past it found
 // what the block held before, a graph's or the KV's bytes, and the last value of each output row came out wrong or NaN (found by --moe verify on Qwen Next).
-static size_t expert_past(const moe_cache * mc, const layer_state & ls, int k, int32_t expert, const ggml_tensor * src, const ggml_tensor * dst, size_t slot, const char * & from) {
+static size_t expert_past(const moe_cache * mc, const layer_state & ls, int k, int32_t expert, const ggml_tensor * src, const char * & from) {
     if (ls.pcls < 0 || mc->pool[ls.pcls].past[k] == 0) { return 0; }
     static const std::vector<uint8_t> zeros(1u << 16, 0);
-    const size_t sz   = src->nb[2];
-    const size_t doff = slot * dst->nb[2] + sz;
-    const size_t have = ggml_nbytes(dst) > doff ? ggml_nbytes(dst) - doff : 0;   // the tensor's last block: its view ends with the slice
-    const bool   next = expert + 1 < src->ne[2] && ggml_backend_buffer_is_host(src->buffer);
-    from = next ? (const char *) src->data + (size_t) (expert + 1) * sz : (const char *) zeros.data();
-    return std::min({ mc->pool[ls.pcls].past[k], zeros.size(), have });
+    const bool next = expert + 1 < src->ne[2] && ggml_backend_buffer_is_host(src->buffer);
+    from = next ? (const char *) src->data + (size_t) (expert + 1) * src->nb[2] : (const char *) zeros.data();
+    return std::min(mc->pool[ls.pcls].past[k], zeros.size());
+}
+// Those bytes as a tensor of their own: the class's view ends with the last block's slice, so a write or read through the view would overrun it, while the bytes are inside the block.
+static ggml_tensor expert_past_view(const ggml_tensor * dst, size_t off, size_t n) {
+    ggml_tensor z = {};
+    z.type = GGML_TYPE_I8; z.buffer = dst->view_src ? dst->view_src->buffer : dst->buffer; z.data = (char *) dst->data + off;
+    z.ne[0] = (int64_t) n; z.ne[1] = z.ne[2] = z.ne[3] = 1;
+    z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = n;
+    return z;
 }
 
 // The CUDA backend's copy without the stream synchronisation (see ggml_backend_cuda_set_tensor_nosync_fork in ggml-cuda.cu for why: one sync per expert slice
@@ -7363,11 +7368,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     // the bytes that follow the slice in the model's tensor (the next expert), as the tensor itself would give; behind the last expert the
                     // tensor's padding, zeros. Same stream as the slice, before the next slice (up's read region reaches into gate, which is written next).
                     const char * from = nullptr;
-                    if (const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], dsts[k], (size_t) j.slot, from)) {
-                        const size_t doff = (size_t) j.slot * dsts[k]->nb[2] + sz;
+                    if (const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], from)) {
+                        ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
                         const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
-                        if (ns) { ns(dsts[k], from, doff, pb); nosync_used = true; }
-                        else    { ggml_backend_tensor_set(dsts[k], from, doff, pb); }
+                        if (ns) { ns(&z, from, 0, pb); nosync_used = true; }
+                        else    { ggml_backend_tensor_set(&z, from, 0, pb); }
                     }
                 }
                 if (nosync_used) { cuda_thread_sync(); }
@@ -7875,8 +7880,9 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             const size_t sz = srcs[k]->nb[2];
             ggml_backend_tensor_set_async(be, dsts[k], (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
             const char * from = nullptr;
-            if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], dsts[k], (size_t) slot, from)) {
-                ggml_backend_tensor_set_async(be, dsts[k], from, (size_t) slot*dsts[k]->nb[2] + sz, pb);
+            if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], from)) {
+                ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);
+                ggml_backend_tensor_set_async(be, &z, from, 0, pb);
             }
         }
         ls.slot_expert[slot]    = id;
@@ -8042,10 +8048,11 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 const size_t sz  = srcs[k]->nb[2];
                 const size_t off = (size_t) slot * dsts[k]->nb[2];
                 const char * from = nullptr;
-                const size_t pb  = expert_past(mc, ls, k, e, srcs[k], dsts[k], (size_t) slot, from);
+                const size_t pb  = expert_past(mc, ls, k, e, srcs[k], from);
                 const size_t n   = sz + pb;
                 got.resize(n);
-                ggml_backend_tensor_get(dsts[k], got.data(), off, n);
+                ggml_backend_tensor_get(dsts[k], got.data(), off, sz);
+                if (pb) { ggml_tensor z = expert_past_view(dsts[k], off + sz, pb); ggml_backend_tensor_get(&z, got.data() + sz, 0, pb); }
                 const uint8_t * want = (const uint8_t *) srcs[k]->data + (size_t) e * sz;
                 const uint8_t * next = (const uint8_t *) from;
                 size_t diff = 0, first = n;
@@ -8164,8 +8171,9 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                     const size_t sz = srcs[k]->nb[2];
                     ggml_backend_tensor_set_async(be, dsts[k], (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
                     const char * from = nullptr;
-                    if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], dsts[k], (size_t) slot, from)) {
-                        ggml_backend_tensor_set_async(be, dsts[k], from, (size_t) slot*dsts[k]->nb[2] + sz, pb);
+                    if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], from)) {
+                        ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);
+                        ggml_backend_tensor_set_async(be, &z, from, 0, pb);
                     }
                 }
                 ls.slot_expert[slot]   = id;
@@ -8642,8 +8650,9 @@ bool llama_moe_cache_swap_layers_fork(int il_a, int il_b) {
                 ggml_backend_tensor_set(t3[k], m.data[k].data(), (size_t) s * t3[k]->nb[2], m.data[k].size());
                 const ggml_tensor * s3[3] = { L.pub.up_src, L.pub.gate_src, L.pub.down_src };
                 const char * from = nullptr;
-                if (const size_t pb = expert_past(mc, L, k, m.e, s3[k], t3[k], (size_t) s, from)) {
-                    ggml_backend_tensor_set(t3[k], from, (size_t) s * t3[k]->nb[2] + m.data[k].size(), pb);
+                if (const size_t pb = expert_past(mc, L, k, m.e, s3[k], from)) {
+                    ggml_tensor z = expert_past_view(t3[k], (size_t) s * t3[k]->nb[2] + m.data[k].size(), pb);
+                    ggml_backend_tensor_set(&z, from, 0, pb);
                 }
             }
             L.slot_expert[s] = m.e;

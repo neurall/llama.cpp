@@ -3231,8 +3231,12 @@ static bool ggml_backend_sched_nan_check_node(ggml_backend_sched_t sched, int sp
         for (const auto & c : per_col) { if (cols.size() < 160) { cols += " " + std::to_string(c.first) + ":" + std::to_string(c.second); } }
         GGML_LOG_WARN("nan-node:   bad values per column (column:count):%s\n", cols.c_str());
         const struct ggml_tensor * ids_t = t->src[4] ? t->src[3] : t->src[2];
-        if (ids_t && read(ids_t)) {
-            const std::vector<uint8_t> ids_b = buf;
+        std::vector<uint8_t> ids_b;
+        if (ids_t && ids_t->data && ids_t->buffer) {   // a view with a stride: its whole span, read through its own strides below
+            ids_b.resize(ggml_nbytes(ids_t));
+            ggml_backend_tensor_get(ids_t, ids_b.data(), 0, ids_b.size());
+        }
+        if (!ids_b.empty()) {
             std::vector<uint8_t> table_b;
             if (t->src[4] && read(t->src[4])) { table_b = buf; }
             std::map<int32_t, int64_t> per_expert;
