@@ -3431,7 +3431,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         bool           partial    = false;
         int            layer      = -1;
         std::vector<uint8_t> remote;          // the prompt mix: experts another card computes, this slot never holds them
-        bool           from_far   = false; // staged from a ranking two layers back: the next ranking tops it up
+        int            look       = 0;     // how many layers before the nearest ranking this slot was last staged from: each nearer ranking tops it up, 0 = nothing left to add
     };
     std::vector<prefetch_pending> lookahead;
     ggml_backend_buffer_t pf_slot_buf [GGML_SCHED_MAX_PF_RINGS][GGML_SCHED_MAX_PREFETCH_SLOTS] = {};
@@ -3491,9 +3491,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     std::vector<int32_t> late_hid;
     std::vector<uint8_t> late_used;
     int    pfs_pred_t = 0, pfs_late_t = 0;
-    // The time a ring has for the next layer (user 2026-11-01): q1, a token's picks (n ranks of the ranking), always; q2, the oversampling up to n x multiplier, as far as the time before the
-    // layer's matmuls allows; with pp-depth 2 the layer after takes its q1 before this layer's q2, if that fits too. Time left = the last layer's measured time, less what passed since it
-    // started, less what the ring still has to send (issued bytes over the link's rate).
+    // The time a ring has (user 2026-11-02): the nearest layer first, q1, a token's n picks, always, q2, the oversampling up to n x multiplier, as far as the time before that layer's matmuls
+    // allows. What the time leaves goes to the layers behind it (pp-depth), which are ranked again at every step and mostly wrong from far: same 16 uploads per token, one look at l+1 found 93.9% of
+    // the picks, looks at l+3 and l+2 alone 87.7 (Qwen 3.6, 21 requests). Each look adds n x multiplier experts that cost an upload, so a layer collects them as it comes closer. Time left = the last
+    // layer's measured time, less what passed since it started, less what the ring still has to send (issued bytes over the link's rate).
     static const int pred_depth = std::max(1, std::min(3, getenv("GGML_PRED_DEPTH") ? atoi(getenv("GGML_PRED_DEPTH")) : 1));
     static double pf_layer_us = 0.0;   // the last layer's time, kept for the first layers of the next pass
     static double pred_q1     = 0.0;   // experts the last layer's q1 sent: what the next q1 will take
@@ -3560,6 +3561,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         if (total == 0 || !pred_hbuf) { pred.clear(); predx[0].clear(); predx[1].clear(); pred_in_split.clear(); }
         else { pred_hbase = (uint8_t *) ggml_backend_buffer_get_base(pred_hbuf); }
+        for (auto & v : pred_in_split) { std::sort(v.begin(), v.end()); }   // the nearest ranking first: its layer spends the link before the ones behind it
         pred_S.assign(pred.size(), 0.0);
         pred_cap.assign(pred.size(), -1);
         for (int j = 0; j < sched->n_splits; j++) {
@@ -3591,35 +3593,41 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     const auto pf_issued = [&](int ri, double bytes, double rate) {
         if (rate > 0.0) { pfu_free[ri] = std::max(pfu_free[ri], (double) ggml_time_us()) + bytes / rate; }
     };
-    // What layer T stages for tensor `input`: q1 and q2 by rank, nearest ranking first. held(id): the expert costs no upload (on the card, computed by another, already in the slot).
-    // Returns the experts q1 sends. GGML_PRED_KM=m (default: GGML_PRED_K experts): q1 takes the top m x (experts a token uses) of each ranking; GGML_PRED_KM2=m2: q2 takes ranks up to m2 x.
-    // GGML_PRED_BUDGET=b caps the staged count at b x (experts a token uses).
+    // What layer T stages for tensor `input` from its newest ranking, the one a nearer layer made knows better. held(id) = no upload (on the card, computed by another, already in the slot).
+    // q1, always: a token's first k1 ranks. q2, as far as cap_new allows: per token the next ranks that cost an upload, what the card holds takes no place, until the token sent k2 (user 2026-11-02:
+    // "skip and oversample 16 from next not yet in vram"; a link that cannot carry them sends fewer). Round by round, so the cap drops the worst ranks of all tokens. Returns the experts q1 sends.
+    // GGML_PRED_KM=m (default: GGML_PRED_K experts): k1 = m x (experts a token uses); GGML_PRED_KM2=m2: k2 = m2 x. GGML_PRED_BUDGET=b caps the staged count at b x (experts a token uses).
     const auto pred_pick = [&](int T, const ggml_tensor * input, int n_used, int64_t cap_new, auto && held, std::vector<uint8_t> & wanted) -> int64_t {
         static const double km  = getenv("GGML_PRED_KM")     ? atof(getenv("GGML_PRED_KM"))     : 0;
         static const double km2 = getenv("GGML_PRED_KM2")    ? atof(getenv("GGML_PRED_KM2"))    : 0;
         static const double bud = getenv("GGML_PRED_BUDGET") ? atof(getenv("GGML_PRED_BUDGET")) : 0;
         const int64_t k1 = pred_m > 0.0 ? (int64_t) n_used : km  > 0 ? (int64_t) (km *n_used + 0.5) : pred_k;
-        const int64_t k2 = pred_m > 0.0 ? (int64_t) (pred_m*n_used + 0.5) : km2 > 0 ? (int64_t) (km2*n_used + 0.5) : k1;
+        const int64_t k2 = std::max(k1, pred_m > 0.0 ? (int64_t) (pred_m*n_used + 0.5) : km2 > 0 ? (int64_t) (km2*n_used + 0.5) : k1);
         const int64_t cap = bud > 0 ? (int64_t) (bud*n_used + 0.5) : INT64_MAX;
         wanted.assign((size_t) input->ne[2], 0);
+        const pred_entry * e = NULL;
+        for (int lag = 2; lag >= 0; --lag) {
+            const std::vector<pred_entry> & pv = lag == 0 ? pred : predx[lag - 1];
+            if (T < (int) pv.size() && pv[T].prod >= 0 && pv[T].queued) { e = &pv[T]; }
+        }
+        if (e == NULL) { return 0; }
+        if (e->ev) { ggml_backend_event_synchronize(e->ev); }
+        const int32_t * rk = (const int32_t *) (pred_hbase + e->off);
+        std::vector<int64_t> at((size_t) e->ne1, 0), sent((size_t) e->ne1, 0);   // per token: the next rank to read, the experts it sent
         int64_t n_want = 0, n_new = 0, n_q1 = 0;
-        for (int tier = 0; tier < 2 && n_want < cap; ++tier) {
-            const int64_t r0 = tier == 0 ? 0 : k1, r1 = tier == 0 ? k1 : k2;
-            for (int lag = 0; lag < 3 && r0 < r1; ++lag) {
-                const std::vector<pred_entry> & pv = lag == 0 ? pred : predx[lag - 1];
-                if (T >= (int) pv.size() || pv[T].prod < 0 || !pv[T].queued) { continue; }
-                const pred_entry & e = pv[T];
-                if (e.ev) { ggml_backend_event_synchronize(e.ev); }
-                const int32_t * rk = (const int32_t *) (pred_hbase + e.off);
-                const int64_t rr1 = std::min<int64_t>(r1, e.ne0);
-                for (int64_t r = r0; r < rr1 && n_want < cap && (tier == 0 || n_new < cap_new); ++r) {
-                    for (int64_t t = 0; t < e.ne1 && n_want < cap && (tier == 0 || n_new < cap_new); ++t) {
-                        const int32_t id = rk[t*e.ne0 + r];
-                        if (id >= 0 && id < input->ne[2] && !wanted[id]) { wanted[id] = 1; n_want++; n_new += !held((int64_t) id); }
+        for (int64_t round = 0; round < k1 + k2 && n_want < cap && (round < k1 || n_new < cap_new); ++round) {
+            for (int64_t t = 0; t < e->ne1 && n_want < cap && (round < k1 || n_new < cap_new); ++t) {
+                while (at[t] < e->ne0 && sent[t] < k2) {
+                    const int32_t id = rk[t*e->ne0 + at[t]++];
+                    const bool none = id < 0 || id >= input->ne[2] || held((int64_t) id);
+                    if (!none) {
+                        if (!wanted[id]) { wanted[id] = 1; n_want++; n_new++; }
+                        sent[t]++;
                     }
+                    if (!none || round < k1) { break; }
                 }
             }
-            if (tier == 0) { n_q1 = n_new; }
+            if (round + 1 == k1) { n_q1 = n_new; }
         }
         return n_q1;
     };
@@ -3758,18 +3766,20 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // fork (GGML_PRED_K): this layer's ranking is not on its way yet: the upload is issued after the launch that queues it (fire_ahead comes back after every
         // launch, and nothing of this card overtakes a deferred upload)
         int pred_T = -1;
-        bool pred_far = false;
+        int pred_look = 0;
         if (pred_k > 0 && !pred.empty()) {
             int T = -1;
             if (sscanf(input->name, "blk.%d.", &T) == 1 && T >= 0 && T < (int) pred.size() && pred[T].prod >= 0) {
                 if (!pred[T].queued) {
-                    // --moe pp-depth=2: the ranking made a layer earlier is there, and q1 of this layer fits in the time left: it goes now, the nearer ranking tops the slot up
+                    // --moe pp-depth: a ranking made earlier is there, and its q1 fits in what the nearer layers leave of the time to the next layer's start: it goes now, each nearer ranking tops the slot up
+                    for (int lag = 1; lag < pred_depth && pred_look == 0; ++lag) {
+                        if (T < (int) predx[lag - 1].size() && predx[lag - 1][T].prod >= 0 && predx[lag - 1][T].queued) { pred_look = lag; }
+                    }
                     const struct sched_pf_ring * Rf = ggml_backend_sched_pf_ring_for(sched, sched->backends[s->backend_id]->device);
-                    const double left = Rf ? pf_time_left((int) (Rf - sched->prefetch_ring), T) : -1.0;
+                    const double left = Rf && pred_look > 0 ? pf_time_left((int) (Rf - sched->prefetch_ring), T - pred_look) : -1.0;
                     const double rt   = ggml_backend_sched_pf_rate(sched->backends[s->backend_id]->device);
-                    const bool far_ok = pred_depth > 1 && T < (int) predx[0].size() && predx[0][T].prod >= 0 && predx[0][T].queued && left >= 0.0 && rt > 0.0 && pred_q1 * pred_S[T] / rt <= left;
+                    const bool far_ok = left >= 0.0 && rt > 0.0 && pred_q1 * pred_S[T] / rt <= left;
                     if (!far_ok) { pf_deferred = true; return; }
-                    pred_far = true;
                 }
                 pred_T = T;
             }
@@ -3872,17 +3882,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const int n_used = s->graph.n_nodes > 0 && s->graph.nodes[0]->src[2] ? (int) s->graph.nodes[0]->src[2]->ne[0] : 8;
                 const bool first_of_layer = pred_cap[pred_T] < 0;
                 if (first_of_layer) {
-                    const double left = pf_time_left(ri, pred_T), S = pred_S[pred_T];
-                    // with a second layer to serve, its q1 comes before this layer's q2
-                    const double keep = pred_depth > 1 && pf_rt > 0.0 ? pred_q1 * S / pf_rt : 0.0;
-                    pred_cap[pred_T] = left >= 0.0 && pf_rt > 0.0 && S > 0.0 ? (int64_t) (std::max(0.0, left - keep) * pf_rt / S) : INT64_MAX;
+                    const double left = pf_time_left(ri, pred_T - pred_look), S = pred_S[pred_T];
+                    pred_cap[pred_T] = left >= 0.0 && pf_rt > 0.0 && S > 0.0 ? (int64_t) (left * pf_rt / S) : INT64_MAX;
                 }
                 const auto held = [&](int64_t id) { return id < p.lo || id >= p.hi || where[(size_t) (id - p.lo)] != NULL || (!p.remote.empty() && p.remote[id]); };
                 const int64_t n_q1 = pred_pick(pred_T, input, n_used, pred_cap[pred_T], held, wanted);
                 if (first_of_layer) { pred_q1 = (double) n_q1; }
                 p.partial = true;
                 p.layer   = pred_T;
-                p.from_far = pred_far;
+                p.look    = pred_look;
                 p.filled.assign((size_t) (p.hi - p.lo), 0);
                 for (int64_t id = p.lo; id < p.hi; ++id) { pfs_pred_exp += wanted[id]; }
                 pfs_pred_t++;
@@ -4458,13 +4466,19 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
             if (!pred_in_split.empty() && !pred_in_split[split_id].empty()) {
                 pred_queue(split_id);
-                // the ranking made right behind the layer before: the slots staged from the earlier ranking take what this one adds
+                // a nearer ranking: the slots staged from a farther one take what this one adds, the nearest layer first, in this look's time (pred_in_split is sorted by lag)
                 for (int code : pred_in_split[split_id]) {
-                    if ((code >> 12) != 0) { continue; }
-                    const int T = code & 4095;
+                    const int lag = code >> 12, T = code & 4095;
+                    bool first_of_layer = true;
                     for (int j = split_id + 1; j < sched->n_splits; j++) {
                         prefetch_pending & q = lookahead[j];
-                        if (q.slot < 0 || !q.partial || !q.from_far || q.layer != T) { continue; }
+                        if (q.slot < 0 || !q.partial || q.look <= lag || q.layer != T) { continue; }
+                        const double rt = ggml_backend_sched_pf_rate(sched->backends[splits[j].backend_id]->device);
+                        if (first_of_layer) {
+                            const double left = pf_time_left(q.ring, T - lag);
+                            pred_cap[T] = left >= 0.0 && rt > 0.0 && pred_S[T] > 0.0 ? (int64_t) (left * rt / pred_S[T]) : INT64_MAX;
+                            first_of_layer = false;
+                        }
                         const int n_used = splits[j].graph.nodes[0]->src[2] ? (int) splits[j].graph.nodes[0]->src[2]->ne[0] : 8;
                         std::vector<uint8_t> want;
                         const auto held = [&](int64_t id) { return id < q.lo || id >= q.hi || q.filled[(size_t) (id - q.lo)] || (!q.remote.empty() && q.remote[id]); };
@@ -4472,8 +4486,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         int n_top = 0;
                         const double b = pf_fill(q, splits[j].backend_id, want, &n_top);
                         pfs_up_b += b;
-                        pf_issued(q.ring, b, ggml_backend_sched_pf_rate(sched->backends[splits[j].backend_id]->device));
-                        q.from_far = false;
+                        pf_issued(q.ring, b, rt);
+                        q.look = lag;
                     }
                 }
             }
