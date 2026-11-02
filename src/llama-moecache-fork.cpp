@@ -42,6 +42,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <pthread.h>
 #include <sched.h>
 #else
@@ -3519,6 +3520,68 @@ extern "C" {
     typedef const void * (*ggml_backend_moe_read_fn_t)(const ggml_tensor *, size_t, size_t, void *, size_t, void *);
     GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there too, no shared header)
 }
+// The O_DIRECT read thread count from the machine, not a constant (user 2026-11-02: "8 t is nice on epyc but hardly on 3600"): 1 MiB blocks on n threads for 0.2 s each, n = 1, 2, 4, 8 and
+// 16 up to the hardware threads / 2; the smallest n within 7% of the best bandwidth wins, so a drive that one or two threads fill leaves the other cores to compute.
+// Costs about 1 s at start. Falls back to 8 (the old default) when the file cannot be read direct.
+static int read_threads_probe(const std::map<int, int> & fds, const std::string & section) {
+#ifdef _WIN32
+    GGML_UNUSED(fds);
+    return 8;
+#else
+    int dfd = -1;
+    for (const auto & kv : fds) { if (kv.second >= 0) { dfd = kv.second; break; } }
+    struct stat st;
+    if (dfd < 0 || fstat(dfd, &st) != 0 || st.st_size < ((off_t) 1 << 30)) { return 8; }
+    // kept with the model's other start measurements (links, RAM), keyed by the hardware threads: a later start skips the probe
+    const std::string key = format("read_threads.%u", std::thread::hardware_concurrency());
+    std::string old;
+    if (!section.empty() && moe_state_get(section, key, old) && atoi(old.c_str()) > 0) {
+        LLAMA_LOG_WARN("moe-cache: read-direct: %d threads (stored probe)\n", atoi(old.c_str()));
+        return atoi(old.c_str());
+    }
+    const size_t block = (size_t) 1 << 20, span = (size_t) st.st_size / 32 / block * block;   // each thread its own region, 32 regions in the file
+    const int hw = std::max(2u, std::thread::hardware_concurrency()), cap = std::max(1, hw / 2);
+    std::vector<int> cands;
+    for (int n = 1; n < cap; n *= 2) { cands.push_back(n); }
+    cands.push_back(cap);
+    std::vector<double> gbs;
+    for (const int n : cands) {
+        std::atomic<size_t> bytes{0};
+        std::atomic<bool>   stop{false}, fail{false};
+        std::vector<std::thread> th;
+        const int64_t t0 = ggml_time_us();
+        for (int i = 0; i < n; ++i) {
+            th.emplace_back([&, i]() {
+                void * buf = nullptr;
+                if (posix_memalign(&buf, 4096, block) != 0) { fail.store(true); return; }
+                size_t o = (size_t) i * span;
+                const size_t end = o + span;
+                while (!stop.load(std::memory_order_relaxed) && o + block <= end) {
+                    const ssize_t r = pread(dfd, buf, block, (off_t) o);
+                    if (r <= 0) { fail.store(true); break; }
+                    bytes.fetch_add((size_t) r);
+                    o += block;
+                }
+                free(buf);
+            });
+        }
+        while (ggml_time_us() - t0 < 200000 && !fail.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+        stop.store(true);
+        for (auto & t : th) { t.join(); }
+        if (fail.load()) { return 8; }
+        gbs.push_back((double) bytes.load() / ((ggml_time_us() - t0) / 1e6) / 1e9);
+    }
+    const double best = *std::max_element(gbs.begin(), gbs.end());
+    size_t pick = cands.size() - 1;
+    for (size_t k = 0; k < cands.size(); ++k) { if (gbs[k] >= 0.93 * best) { pick = k; break; } }
+    std::string row;
+    for (size_t k = 0; k < cands.size(); ++k) { row += format(" %d:%.2f", cands[k], gbs[k]); }
+    LLAMA_LOG_WARN("moe-cache: read-direct: probe GB/s by threads%s -> %d threads (the smallest within 7%% of the best %.2f GB/s)\n", row.c_str(), cands[pick], best);
+    if (!section.empty()) { moe_state_set(section, {{ key, std::to_string(cands[pick]) }}); }
+    return cands[pick];
+#endif
+}
+
 // The scheduler's prompt uploads (ggml_backend_sched_upload_weight): the same read as read_direct in 1 MiB blocks on several threads. Threads start per chunk, as pin_prefetch_run does per tensor.
 // ponytail: 7 thread starts per 32 MiB, about 2% of a core at 5 GB/s; a pool if that ever shows.
 static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * ud) {
@@ -7305,7 +7368,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             // --moe read-direct=1: the expert tensors that did not fit the pin budget are read from their file past the page cache (read_direct)
             size_t rd_mapped = 0;
 #ifndef _WIN32
-            if (const char * rd = moe_opt("read-direct"); rd && rd[0] == '1' && gpu && !mc->staging[0]) {
+            if (const char * rd = moe_opt("read-direct"); !(rd && rd[0] == '0') && gpu && !mc->staging[0]) {   // default on (user 2026-11-02, with pin-mlock: DS prompt 263 -> 341 t/s); =0 switches it off
                 ggml_backend_buffer_type_t pinned_buft = ggml_backend_dev_host_buffer_type(gpu);
                 for (auto & ls2 : mc->layers) {
                     const ggml_tensor * ps[3] = { ls2.pub.up_src, ls2.pub.gate_src, ls2.pub.down_src };
@@ -7322,6 +7385,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                 }
                 if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
+                else if (rd_mapped > 0) { mc->rd_threads = read_threads_probe(mc->rd_fds, mc->profile); }
                 if (rd_mapped > 0) {
                     mc->rd_size = max_expert + ((size_t) 1 << 18);   // a slice, what is read past it, and the block grid on both sides
                     for (size_t w = 0; w < mc->staging.size(); ++w) { mc->rd_staging.push_back(ggml_backend_buft_alloc_buffer(pinned_buft, mc->rd_size)); }
@@ -7329,7 +7393,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
             // --moe pin-mlock=1: pinned weights are locked as well. A pinned page cannot be evicted, but it stays on the LRU list: reclaim scans it again and again
             // (DeepSeek at 88 GiB pinned: 95 GiB on the inactive anon list, up to 8 M pages/s scanned) and each refault of the page cache pushes more of that pressure onto real anon pages.
-            if (const char * ml = moe_opt("pin-mlock"); ml && ml[0] == '1' && gpu) {
+            if (const char * ml = moe_opt("pin-mlock"); !(ml && ml[0] == '0') && gpu) {   // default on; =0 switches it off
                 ggml_backend_buffer_type_t pinned_buft = ggml_backend_dev_host_buffer_type(gpu);
                 std::set<ggml_backend_buffer_t> seen;
                 size_t locked = 0, failed = 0;
