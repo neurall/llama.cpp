@@ -1311,7 +1311,9 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         // the RAM and the huge-page pool reach, in tensor order, and the rest is mapped (--moe pin-budget=BYTES, set by common_init_from_params)
         auto * buft_dev = ggml_backend_buft_get_device(buft);
         if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
-            if (pin_used + ggml_nbytes(t_meta) <= pin_budget) {
+            // a table read by rows on demand is never pinned, whatever the budget: a token touches a few hundred of its bytes (DeepSeek's Engram table: 103 GiB, 144 bytes
+            // a row, 48 rows a token), and it comes first in tensor order, so pinning it would eat the budget of the experts, which are read whole in every pass
+            if (!(flags & TENSOR_READ_LAZY) && pin_used + ggml_nbytes(t_meta) <= pin_budget) {
                 pin_used += ggml_nbytes(t_meta);   // this tensor is read into pinned memory
             } else {
                 auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
