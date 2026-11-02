@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+gm-mix,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/f.ini,pp-path=mix",
+gm-cpu,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/g.ini,prefill-cpu=1",
+gm-k1,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/h.ini,pp-path=stream,pp-k=1,pp-depth=1",
