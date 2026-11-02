@@ -1,0 +1,9 @@
+run 21904 | up8_ledger2_verify | pf128k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,poison=3 | power 200+200 W | 2026-11-02 01:24:27
+
+ !plan_spec.dspark.local_path.empty();
+    if (spec_sidecar_found) {
+        params.speculative.draft.mparams.hf_file.clear();
+    }
+
+    // when a sidecar type is requested but the draft repo does not ship it, fall back to the main repo
+    const
