@@ -1,0 +1,61 @@
+run 22245 | dspark_fix3 | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.45 t/s | prompt 55.9 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 220+280 W | 2026-11-02 13:31:17
+
+We need answer user asks: "Delete the code in this file that is never used." They provided partial file common/json-schema-to-grammar.cpp. Need identify unused code? We need infer from snippet? They want remove code never used. Need likely analyze file? We only have snippet, not full file. Need answer maybe provide cleaned code? Need understand context. They pasted beginning of file with functions build_repetition, build_min_max_int. They ask delete code in this file that is never used. Could be from codebase, need identify unused functions/variables? We need inspect snippet. It ends mid-function. Maybe they expect us to modify file? We need respond with code after deleting unused code. But we don't have full file. Need determine which code is never used within provided snippet? Let's parse.
+
+File includes headers. Functions:
+- build_repetition: likely used elsewhere in file.
+- build_min_max_int: likely used elsewhere.
+But snippet incomplete. Maybe there are unused includes? "Delete the code in this file that is never used." Could mean remove unused code from this file, perhaps functions not referenced. Need know full file. We only have partial. Maybe this is from llama.cpp common/json-schema-to-grammar.cpp. We can recall actual file. Need identify unused code in that file. Let's search memory? I know llama.cpp has common/json-schema-to-grammar.cpp. It contains functions: build_repetition, build_min_max_int, build_min_max_int? There is a function `build_min_max_int` maybe unused? Let's recall.
+
+The file json-schema-to-grammar.cpp in llama.cpp. It converts JSON schema to GBNF grammar. Functions:
+- static std::string build_repetition(...)
+- static void build_min_max_int(...)
+- static void build_min_max_int? maybe used by `build_min_max_int`? 
+- static std::string build_string(...)
+- static std::string build_number(...)
+- static std::string build_integer(...)
+- static std::string build_boolean(...)
+- static std::string build_null(...)
+- static std::string build_array(...)
+- static std::string build_object(...)
+- static std::string build_grammar(...)
+- class json_schema_to_grammar? 
+Maybe there is unused `build_min_max_int`? Let's recall actual code.
+
+I can reconstruct from llama.cpp. The snippet is from common/json-schema-to-grammar.cpp. It defines `build_repetition` and `build_min_max_int`. In actual file, `build_min_max_int` is used in `build_integer`? Let's recall.
+
+I have seen llama.cpp code. There is a function `build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true)`. It builds grammar for integer range. It is used by `build_integer`? Actually JSON schema integer with minimum/maximum. It may be used in `build_number`? Let's search memory.
+
+I remember code from llama.cpp `json-schema-to-grammar.cpp`:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") { ... }
+
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) { ... }
+
+static std::string build_string(const json & schema, const std::string & rule_name) { ... }
+
+static std::string build_number(const json & schema, const std::string & rule_name) { ... }
+
+static std::string build_integer(const json & schema, const std::string & rule_name) { ... }
+
+static std::string build_boolean(...) { ... }
+
+static std::string build_null(...) { ... }
+
+static std::string build_array(...) { ... }
+
+static std::string build_object(...) { ... }
+
+static std::string build_grammar(const json & schema) { ... }
+```
+Maybe `build_min_max_int` is used in `build_integer`? Let's recall exact.
+
+I can search memory from training. The code:
+```
+static std::string build_integer(const json & schema, const std::string & rule_name) {
+    std::stringstream out;
+    if (schema.contains("minimum") || schema.contains("maximum")) {
+        int64_t min_value = schema.contains("minimum") ? schema["minimum"].get<int64_t>() : std::numeric_limits<int64_t>::min();
+        int64_t max_value = schema.contains("maximum") ? schema["maximum"].get<int64_t>() : std::numeric_limits<int64_t>::max();
+        build_min_max_int(min_value
+---

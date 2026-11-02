@@ -1,0 +1,61 @@
+run 22163 | rel_stable_auto | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.0 t/s | prompt 41.0 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-02 12:04:57
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact single-file Tetris. But I don't want to ship a bare terminal window — a game deserves to feel like a game. I'll keep the code genuinely compact (that's the whole point of the ask) but wrap it in a crafted, alive presentation: a distinctive display face, a layered background, micro-interactions.
+
+Balance: "smallest" — they want compact code. I should deliver a small, dense HTML file. But I can still make it feel crafted: a tight, dense blocky display face, a layered background, and a compact but complete game.
+
+Let me write a compact Tetris in ~1-2KB of JS but with nice CSS. Actually, let me aim for genuinely small code — that's the point — while the visual result is polished.
+
+Design direction: Tetris = blocky, grid, arcade. A near-black canvas with one neon accent is the obvious move and it's exactly what everyone reaches for; let me do something different. Tetris's own brand world is polychrome — the seven tetrominoes are inherently multi-colored, so I can build the whole palette off those. Let me use a bold, warm off-white/graphite base with strong primary colors from the tetrominoes themselves. Maybe a "blueprint / technical drawing" aesthetic: dark slate-blue background with a grid, chunky type.
+
+Let me pick: background = deep ink blue (#101a2b-ish) with a subtle grid + scanline layers, plus multiple tetromino colors as accents (cyan, yellow, magenta, green, red, blue, orange). That's polychrome and reads as Tetris rather than a one-note neon look.
+
+Typography: display face — something blocky/pixel-ish but not cheesy. Google Fonts options: "Silkscreen" (pixel), "Press Start 2P" (pixel, overused), "Bungee" (chunky), "Archivo Black", "Chivo Mono". Pair a distinctive display with a readable body. Let me use "Bungee" or "Silkscreen" for display and "Space Grotesk" / "IBM Plex Sans" for body. Actually for a Tetris game, a pixel display face is very characteristic. "Silkscreen" is nice and small. Body: "Space Grotesk" or "IBM Plex Mono". Let me do display: "Silkscreen" (bold), body: "Space Grotesk". Hmm, Silkscreen at large sizes looks great.
+
+Alternatively "Bungee" — chunky, blocky, very Tetris-ish. I'll go with Silkscreen for the wordmark/score digits and Space Grotesk for body. Actually score digits in a pixel font is great.
+
+Layout: open with the game itself, not a title card. Left: the board (canvas). Right: a side rail with score/level/lines, next piece, hold, controls legend. Above: a compact wordmark bar. That's characteristic.
+
+Implementation: canvas-based, compact.
+
+Let me write the game compactly but readably-ish.
+
+```js
+const W=10,H=20,S=22; // cell size
+```
+
+Use canvas 220x440 plus next/hold mini canvases.
+
+Pieces as strings or matrices. Compact approach: use the classic SRS-ish with rotation via matrix rotation.
+
+Compact piece definition:
+```js
+const P='0123456789ABCDEF'... 
+```
+Simpler: define pieces as arrays of coords per rotation? Smallest is: define each piece as a number bitmask in a 4x4 grid and rotate by bit tricks. But readability... "smallest" is the ask, so a bit-golfed approach is on-theme and fun. But I also want it to work correctly.
+
+Let me use the classic approach:
+
+```js
+const T=[
+ [],
+ [[0,1],[1,1],[1,0]], // J
+ ...
+]
+```
+
+Smallest known trick: use the string of hex per piece and rotate matrices.
+
+I'll do:
+```js
+const P='74F2 0742 ...'
+```
+
+Let me just do a clean compact version:
+
+```js
+const SH=[ // shapes as 4x4 bitmasks per piece, rotate by bit ops
+```
+
+Actually simplest compact & correct:
+---

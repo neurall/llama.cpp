@@ -1,0 +1,13 @@
+run 22295 | reg_cpu_switch | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.73 t/s | prompt 58.4 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/k1-glm-s200.ini,pp-path=stream,pp-k=1,pp-depth=1 | power 220+280 W | 2026-11-02 15:35:17
+
+The user is asking me to delete code in this file that is never used. But I only have a partial file shown - it's cut off mid-function. Let me think about what I can actually do here.
+
+The file shown is `common/json-schema-to-grammar.cpp` from llama.cpp. The snippet shown is truncated - it ends abruptly at:
+
+```cpp
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*
+```
+
+So I don't have the full file. The user wants me to delete unused code. Without the full file, I can't determine what's used and
+---

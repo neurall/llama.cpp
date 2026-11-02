@@ -1,0 +1,9 @@
+run 22331 | reg_cpu_switch | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 26.57 t/s | prompt 8.9 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dk4.ini,pp-path=stream,pp-k=4,pp-depth=1 | power 220+280 W | 2026-11-02 16:21:37
+
+We need answer user asks: "Delete the code in this file that is never used." They provided snippet beginning of file. Need infer task likely from codebase? Need identify unused code in file common/json-schema-to-grammar.cpp. We need provide modified file? They only show first lines and function signature incomplete. Need maybe they expect us to remove unused code from entire file? But only snippet. Need analyze. We need answer likely "I can't determine without full file" or identify unused includes/functions? Let's parse.
+
+They gave:
+// file: common/json-schema-to-grammar.cpp
+#include ...
+using
+---

@@ -1,0 +1,70 @@
+run 22137 | rel_stable_auto | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.23 t/s | prompt 686.1 t/s | 906 tokens | args: -np 1 | power 220+280 W | 2026-11-02 11:34:52
+
+Let me analyze this file carefully to identify which code is never used.
+
+First, let me understand what's used externally (from other files) and what's used internally.
+
+**External usage (declared in header or called from other files):**
+- `gbnf_format_literal` - this is a public function (no `static`), so it's likely called from other files.
+- `json-schema-to-grammar` functions - the main entry point.
+
+**Internal functions and variables:**
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Let me check if it's called anywhere in this file... The file is truncated, so I need to check what's visible. It's not called in the visible portion. But since the file is truncated, it might be called later. However, the user says "delete code that is never used" - I should only delete code that's provably never used based on what's shown.
+
+Wait, the file is truncated at `gbnf_escape_length`. So I can only analyze what's shown.
+
+Let me check each item:
+
+1. `build_repetition` - static, not called in visible code. But might be called later in the file (it's truncated). I should keep it if it could be used later... but the user says "never used". Since the file is truncated, I can't be sure. Let me assume the user wants me to analyze only what's visible.
+
+Actually, re-reading the prompt: "Delete the code in this file that is never used." The file is truncated, so I should only delete code that is provably never used within the visible portion AND not used externally.
+
+Let me check each item:
+
+1. `build_repetition` - static function, not called in visible code. Could be called later (file truncated). Keep.
+
+2. `build_min_max_int` - static function, not called in visible code. Could be called later. Keep.
+
+3. `SPACE_RULE` - const string, not referenced in visible code. Could be used later. Keep.
+
+4. `BuiltinRule` struct - used by `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`. Keep.
+
+5. `PRIMITIVE_RULES` - used by `is_reserved_name`. Keep.
+
+6. `STRING_FORMAT_RULES` - used by `is_reserved_name`. Keep.
+
+7. `is_reserved_name` - static function, not called in visible code. Could be called later. Keep.
+
+8. `INVALID_RULE_CHARS_RE` - static regex, not called in visible code. Could be used later. Keep.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - used by `format_literal`. Keep.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - static regex, not called in visible code. Could be used later. Keep.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - used by `format_literal`. Keep.
+
+12. `MAX_PATTERN_DEPTH` - static const int, not used in visible code. Could be used later. Keep.
+
+13. `NON_LITERAL_SET` - static unordered_set, not used in visible code. Could be used later. Keep.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - static unordered_set, not used in visible code. Could be used later. Keep.
+
+15. `replacePattern` - static function, used by `format_literal`. Keep.
+
+16. `format_literal` - static function, used by `gbnf_format_literal`. Keep.
+
+17. `gbnf_format_literal` - public function, likely used externally. Keep.
+
+18. `gbnf_escape_length` - static function (truncated), not called in visible code. Could be used later. Keep.
+
+Hmm, since the file is truncated, almost everything could potentially be used later in the file. The only things I can definitively say are never used are... actually, let me reconsider.
+
+Wait - the user is asking me to delete code that is never used. Since the file is truncated, I should analyze what's shown and determine what's never referenced anywhere in the visible portion AND not used externally.
+
+But actually, many of these static functions and variables are likely used later in the file (which is truncated). So I need to be careful.
+
+Let me reconsider: the user wants me to identify code that is provably never used
+---

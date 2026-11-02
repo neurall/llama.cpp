@@ -1,0 +1,12 @@
+run 22299 | reg_cpu_switch | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 22.02 t/s | prompt 133.7 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/b-glm-s500.ini | power 220+280 W | 2026-11-02 15:39:47
+
+The user is asking me to delete code in this file that is never used. But I only have a partial file shown - it's cut off mid-function. Let me analyze what's shown and figure out what could be unused.
+
+The file is `json-schema-to-grammar.cpp` from llama.cpp (this is a known file in the llama.cpp repository). Let me think about what I know about this file and what's shown.
+
+The shown code includes:
+1. `build_repetition` - a static function
+2. `build_min_max_int` - a static function (cut off mid-way)
+
+The file is truncated. I
+---

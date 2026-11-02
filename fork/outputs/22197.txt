@@ -1,0 +1,64 @@
+run 22197 | rel_stable_auto | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.74 t/s | prompt 226.1 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-02 12:52:29
+
+The user wants me to delete code in this file that is never used. Let me analyze the code shown.
+
+The file is `json-schema-to-grammar.cpp`. The shown portion includes:
+
+1. `build_repetition` function - static helper
+2. `build_min_max_int` function - static helper with lambdas `digit_range`, `more_digits`, `uniform_range`
+
+Let me think about what's used and what's not.
+
+Looking at `build_repetition`:
+- It's called with `item_rule`, `min_items`, `max_items`, `separator_rule` (default "").
+- The logic:
+  - `has_max` computed
+  - if max_items == 0 return ""
+  - if min_items == 0 && max_items == 1 return item_rule + "?"
+  - if separator_rule.empty():
+    - min_items == 1 && !has_max → "+"
+    - min_items == 0 && !has_max → "*"
+    - else → "{min,max}"
+  - else (separator non-empty):
+    - result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)
+    - if min_items == 0: result = "(" + result + ")?"
+    - return result
+
+Wait, there's a subtle bug/unused path: in the recursive call with separator, if min_items == 0, then min_items passed is 0, and max_items passed is max_items - 1 (if has_max). Hmm, but wait — if min_items == 0 and max_items == 1, we already returned early with "?". So in the separator branch with min_items == 0, max_items must be > 1 or unlimited. Actually wait, if min_items == 0 and max_items == 1, we return early. So the separator branch with min_items == 0 has max_items >= 2 or unlimited.
+
+Hmm, but actually there's a known issue in this code: when min_items == 0 and has_max, the recursion is build_repetition(..., 0, max_items - 1). Then inside, if max_items - 1 == 1 and min_items == 0, it returns item_rule + "?" — wait no, the recursive call has separator_rule non-empty (it's "(" + separator_rule + " " + item_rule + ")"), so it goes to the separator branch again... Actually wait, the recursive call passes a non-empty separator rule, so it will recurse again.
+
+Hmm wait, actually let me re-check: the recursive call is `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. The separator_rule parameter of the recursive call... wait, no! Look carefully:
+
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+The recursive call only passes 3 arguments: item_rule (which is the combined "(sep item)" rule), min_items, max_items. The separator_rule defaults to "" in the recursive call! So the recursion goes into the `separator_rule.empty()` branch.
+
+So in the recursion, separator is empty. Then:
+- if min_items == 1 && !has_max → "+" — but wait, in the recursion, has_max refers to the new max_items. If original had max unlimited, recursion has max unlimited too, so !has_max. If original min_items == 1, recursion min_items == 0. So min_items == 0 && !has_max → "*". Hmm.
+- Actually the recursion with separator empty: min_items is either 0 (if original 0 or 1) or min_items - 1.
+
+Wait, this seems like the actual llama.cpp code. Let me recall the actual llama.cpp implementation of build_repetition:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" +
+---

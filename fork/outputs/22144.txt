@@ -1,0 +1,63 @@
+run 22144 | rel_stable_auto | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 50.45 t/s | prompt 83.3 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-02 11:42:07
+
+The user wants the smallest HTML Tetris game. The ask is minimal: "generate smallest html tetris game." So the deliverable should be a compact, working single-file Tetris. I should balance "smallest" with actually playable and looking decent.
+
+Let me write a genuinely small but complete Tetris in one HTML file. Keep it tight but readable-ish. Let me aim for something compact — maybe 60-80 lines minified-ish but still functional.
+
+Let me write it:
+
+```html
+<canvas id=c width=260 height=520></canvas>
+```
+
+with a script. Let me craft compact code.
+
+Standard approach:
+
+```js
+const W=10,H=20,S=26,g=[],cv=c.getContext('2d');
+let p,q,x,y,s,sc=0,ov=0;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]];
+```
+
+Draw with fillRect per cell.
+
+Let me write compact but working code:
+
+```html
+<canvas id=C width=260 height=520 tabindex=0></canvas>
+<script>
+C=C.getContext`2d`,B=(a,b)=>a.map((r,y)=>r.map((v,x)=>a[y][x])),
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]],
+G=Array.from({length:20},_=>Array(10).fill(0)),
+R=n=>P[n=Math.random()*7|0],
+rot=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse()),
+...
+</script>
+```
+
+Let me just write it carefully.
+
+```js
+const cv=document.getElementById('C'),x=cv.getContext('2d'),W=10,H=20,S=26;
+let G=Array.from({length:H},()=>Array(W).fill(0)),N,Pn,px,py,sc=0,lv=1,ln=0,dead=0,t=0,spd=500;
+const SH=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]],
+COL=['#0ff','#ff0','#a0f','#00f','#f00','#0f0','#f80'];
+function spawn(){N=Math.random()*7|0;Pn=SH[N];px=W/2-1|0;py=0;if(hit(Pn,px,py))dead=1}
+function hit(m,nx,ny,o=0){return m.some((r,y)=>r.some((v,i)=>v&&(G[ny+y]?.[nx+i+o]||nx+i<0||nx+i>=W)))}
+```
+
+Hmm, careful with hit detection: need to check bounds and occupied cells. Let me define:
+
+```js
+function hit(m,x,y){return m.some((r,j)=>r.some((v,i)=>v&&(x+i<0||x+i>=W||G[y+j])))}
+```
+
+That handles below-board too? If y+j >= H, G[y+j] is undefined → truthy? undefined is falsy. So need `G[y+j]===undefined||G[y+j][x+i]`. Let's do:
+
+```js
+v&&(x+i<0||x+i>=W||y+j>=H||G[y+j][x+i])
+```
+
+Good.
+---

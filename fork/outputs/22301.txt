@@ -1,0 +1,18 @@
+run 22301 | reg_cpu_switch | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 29.67 t/s | prompt 65.7 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/k1-mimo-s200.ini,pp-path=stream,pp-k=1,pp-depth=1 | power 220+280 W | 2026-11-02 15:41:44
+
+Let me analyze this code file to find what's never used.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Looking at the code provided, I can see:
+
+1. `build_repetition` - a static function that builds repetition patterns. Let me check if it's used elsewhere in the file (the file appears to be truncated).
+
+2. The includes: `json-schema-to-grammar.h`, `common.h`, `trie.h`, `unicode.h`
+
+3. Various standard library includes
+
+4. `using json = common_json;`
+
+Since the file
+---

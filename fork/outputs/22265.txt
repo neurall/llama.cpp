@@ -1,0 +1,16 @@
+run 22265 | rel_stable_auto | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.4 t/s | prompt 29.5 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/reg/s.ini | power 220+280 W | 2026-11-02 14:05:17
+
+The user wants me to delete code in `json-schema-to-grammar.cpp` that is never used. This is a real file from llama.cpp. Let me recall what this file contains and figure out what's unused.
+
+The file `common/json-schema-to-grammar.cpp` in llama.cpp contains a grammar builder for JSON schemas. Let me think about its structure:
+
+- `build_repetition` function
+- `grammar_builder` class with methods like:
+  - `add_rule`
+  - `add_schema`
+  - `add_property`
+  - `add_properties`
+  - `add_choices`
+  - `add_pattern`
+ 
+---

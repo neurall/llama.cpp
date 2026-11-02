@@ -1,0 +1,64 @@
+run 22229 | dspark_fix3 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.81 t/s | prompt 216.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-02 13:16:11
+
+Let me analyze this file to find code that is never used.
+
+Looking at the code:
+
+1. `build_repetition` - This is a static function. Is it used anywhere in the shown code? The shown code is truncated, but within the shown portion, I don't see it being called. However, since the file is truncated, I need to be careful. The task says "Delete the code in this file that is never used." I should only consider what's shown, but typically these tasks expect me to analyze the visible code.
+
+Let me look at what's visible:
+
+- `build_repetition` - static function, not called in the visible portion. But it might be called later in the file (which is truncated). Hmm.
+
+- `build_min_max_int` - static function, not called in the visible portion. It contains a lambda `uniform_range` that is recursive via `std::function`. Within `build_min_max_int`, `uniform_range` is called. Also `digit_range` and `more_digits` lambdas are used within `build_min_max_int` and `uniform_range`.
+
+Wait, let me check `more_digits` - it's used in `uniform_range`. `digit_range` is used in `uniform_range`.
+
+Inside `build_min_max_int`, after the `uniform_range` definition, the visible code ends with `out << ")";`. The function body continues beyond what's shown (the code is cut off mid-function). So I can't fully determine usage.
+
+Actually, the task format: "Delete the code in this file that is never used." - This is a code editing task where I need to identify unused code. Given the truncation, I should focus on what's visible.
+
+Let me re-read the visible code carefully:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    ...
+}
+```
+
+This function is not called anywhere in the visible code. But it's likely called later in the file (in functions like `build_json_schema` or similar for handling arrays with minItems/maxItems). Since the file is truncated, I can't be sure. However, in these tasks, typically the visible portion is the whole context given, and I should determine usage based on the visible code. But that seems risky.
+
+Hmm, actually in the real llama.cpp file `json-schema-to-grammar.cpp`, `build_repetition` is used later in the file. And `build_min_max_int` is used later too. So deleting them would be wrong in the real file.
+
+But wait - the task might be based on a modified version of the file where some code was made unused. Let me look more carefully.
+
+Looking at the includes:
+- `#include "json-schema-to-grammar.h"` - needed
+- `#include "common.h"` - needed (for common_json)
+- `#include "trie.h"` - needed? In the real file, trie is used for the "check_trie" / greedy trie stuff. In the visible code, no trie usage. But later in the file there might be.
+- `#include "unicode.h"` - used later in real file.
+
+Includes like `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>`.
+
+In the visible code:
+- `<limits>` is used: `std::numeric_limits<int>::max()`, `std::numeric_limits<int64_t>::min()`, etc.
+- `<sstream>` is used: `std::stringstream & out`.
+- `<string>` is used: `std::string`.
+- `<vector>` - not visible in shown code, but likely used later.
+- `<algorithm>` - `std::find` or `std::sort`? Not visible; likely used later.
+- `<map>` - not visible; likely used later.
+- `<regex>` - not visible; likely used later (for regex to grammar conversion).
+- `<unordered_map>`, `<unordered_set>` - not visible; likely used later.
+
+`string_repeat` - used in `build_min_max_int` (from common.h presumably).
+
+So within the visible code, what is truly never used?
+
+Let me check `build_repetition`'s internals:
+- `has_max` - used.
+- The parameter `separator_rule` default "" - used.
+- All branches seem reachable.
+
+`build_min_max_int` internals:
+- `has_min` - declared: `auto has_min = min_value != std::numeric_limits<int64_t>::min();` Is `has_min` used in the visible portion? Let me scan... In the visible portion, I see `has_max` used? Let me check: `auto has_max = max_value != std::numeric_limits<int64_t>::max();` - is `has_max` used in the visible portion? I see
+---

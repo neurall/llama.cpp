@@ -1,0 +1,11 @@
+run 22298 | reg_cpu_switch | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.9 t/s | prompt 109.7 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/b-glm-s500.ini | power 220+280 W | 2026-11-02 15:38:11
+
+The user wants me to add a function that counts the lines of this file and prints the count. This is a C++ file (json-schema-to-grammar.cpp). The file appears to be truncated in the middle of the `more_digits` lambda (the `out << "` line seems cut off).
+
+The user wants me to add a function that counts the lines of this file and prints the count. So I need to write a C++ function that:
+1. Opens the file itself (this source file)
+2. Counts the lines
+3. Prints the count
+
+I should add this function to the file. Since the file is
+---

@@ -1,0 +1,32 @@
+run 22150 | rel_stable_auto | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.44 t/s | prompt 11.9 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-02 11:51:56
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous minimal Tetris implementations. The classic is the 140-byte-ish "Tetris in 140 bytes of JavaScript" but those are usually just the JS logic without full HTML wrapper, and often lack proper rotation, hold, etc. A well-known one: "smallest tetris in 51 lines" or the famous one by Román Cortés? Actually the famous one is "Tetris in 140 bytes" by Alvaro Cobo — but it's incomplete (no rotation of all pieces properly, no game over detection maybe).
+
+I want to make something genuinely playable: 7 tetrominoes, rotation, line clearing, score, levels/speed increase, game over, keyboard controls, maybe touch buttons for mobile? Touch buttons add bytes. The user asked for smallest, so I should prioritize compactness but keep it fully functional. I'll aim for a minified-but-readable-ish single file. I can write it quite densely.
+
+Let me design:
+
+- Canvas rendering (small canvas, e.g., 10x20 cells, cell size ~16px or computed).
+- Board as a 2D array or a flat array. Flat array of 200 cells is compact.
+- Pieces: define shapes as arrays of rotations? Compact approach: use the classic trick of encoding each tetromino as a 4x4 or via coordinates. A very compact known trick: represent each piece as a string of 4 numbers (bitmask rows) and rotate via bit manipulation. Or use the "SRS-lite" approach with rotation states computed by rotating coordinates.
+
+Compact piece representation idea: each tetromino as array of 4 [x,y] cells in one orientation; rotation = (x,y) -> (y, 3-x) or similar within a bounding box. But different pieces have different bounding boxes (I is 4x4, others 3x3, O is 2x2). A common compact trick: use a 4x4 matrix encoded as 16-bit number per rotation? That's 7 pieces × 4 rotations = 28 numbers. Or compute rotations on the fly.
+
+Alternative compact trick used in golfed tetris: pieces as strings like "I32J..." Hmm.
+
+Let me think of a clean compact approach:
+
+Represent each tetromino as a list of 4 cells relative to origin, and rotate with a function. For SRS-like behavior with wall kicks — wall kicks add bytes; I can skip proper SRS kicks and just do simple rotation with bounds clamping (try shifting left/right if rotation collides). That's acceptable for a minimal game.
+
+Simplest robust approach: define pieces as arrays of rotation states? That's verbose. Better: define each piece as a 2x2/3x3/4x4 grid encoded as a string of digits, and rotate by transposing.
+
+Known compact trick: encode each tetromino as a 4x4 matrix where rows are 4-bit numbers. E.g., piece I: rows [2,2,2,2]? Hmm.
+
+Let me use the approach: each piece = array of 4 numbers, each number is a bitmask of 4 columns for one row (like the famous golfed tetris). Rotation: rotate the matrix. With numbers as rows of 4 bits, rotating 90° CW: newRows[c] = bits... Let me define matrix m[r][c] = (m[r] >> c) & 1. Rotation CW: m'[r][c] = m[3-c][r]? Let's compute: rotating matrix 90° clockwise: element at (r,c) goes to (c, N-1-r). So m'[c][N-1-r] = m[r][c], i.e., m'[r][c] = m[N-1-c][r].
+
+With N=4 and rows as 4-bit ints, I can compute rotated rows: for each new row r (0..3), newRow[r] = sum over c of bit (m[3-c] >> r & 1) << c. That's a loop — fine, small function.
+
+Actually simpler: store pieces as arrays of [x,y] points and rotate points: for a piece with cells (x,y) in a box of size n, CW rotation: (x,y) -> (n-1-y, x). Then re-center. This works if I keep the piece's
+---

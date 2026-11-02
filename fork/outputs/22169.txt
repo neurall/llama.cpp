@@ -1,0 +1,46 @@
+run 22169 | rel_stable_auto | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 17.14 t/s | prompt 4.0 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-02 12:17:19
+
+The user wants the smallest HTML Tetris game. This is a classic code-golf style challenge. They explicitly asked for "smallest" — so this is one of the rare cases where minimalism IS the point, and the user's explicit request overrides my usual preference for elaborate, polished experiences. The user wants compact code.
+
+But I should still make it work well and be genuinely playable. Let me write a genuinely tiny but fully functional Tetris in a single HTML file. I'll aim for a really compact implementation — maybe under 1KB or close to it — while keeping it playable: movement, rotation, gravity, line clearing, score, game over.
+
+Let me think about how to write the smallest functional Tetris.
+
+Approach: Use canvas, a compact piece definition, keyboard controls, requestAnimationFrame or setInterval for gravity.
+
+Classic minimal Tetris golf techniques:
+- Represent pieces as arrays of rotation states encoded as bitmasks or strings.
+- Use a single canvas, draw cells as filled rects.
+- Board as a 1D array of width*height.
+- Collision check by testing each cell of the piece matrix.
+
+Let me write it carefully and compactly but still readable-ish. The user asked for "smallest" so I'll golf it, but I want it to actually be playable and not broken. Let me aim for something like ~600-900 bytes of actual code. I'll present it in a single HTML file with minimal markup.
+
+Let me design:
+
+- Canvas 120x240, cell size 12, board 10x20.
+- Pieces: standard 7 tetrominoes. Encode each as a 4x4 or use compact string representation.
+
+A very compact encoding: each piece as array of rotations, each rotation as list of [x,y] offsets? That's verbose. Better: encode each tetromino as 16-bit number per rotation, or use the classic trick: define shapes as binary strings.
+
+Common golfed approach: pieces defined as arrays of strings like "0110,0110" etc. Or use numeric encoding: each rotation state is a 4x4 bitmask = 16 bits, so a number 0..65535. 7 pieces × 4 rotations = 28 numbers. Or store one rotation and rotate programmatically.
+
+Programmatic rotation of a matrix: if piece stored as array of [x,y] pairs, rotate 90°: (x,y) -> (y, -x) or similar, then normalize. That's compact.
+
+Alternative compact trick used in many golfed tetris: store pieces as strings of coordinates.
+
+Let me try a known ultra-compact approach:
+
+```js
+P=[[1,3],[1,3],[0,2,3],[0,1,2],[1,2,3],[0,1,2,3],[0,1,3,4]] // hmm
+```
+
+Actually a neat encoding: represent each tetromino as coordinates in a 2x2 or 3x3 grid using base-4 or pairs.
+
+Let me think of the classic: each piece = array of cells where cell index = y*4+x in a 4x4 box? For I piece: cells at (0,1),(1,1),(2,1),(3,1) → indices 1,5,9,13. O: (1,0),(2,0),(1,1),(2,1) → 2,3,6,7. T: (1,0),(0,1),(1,1),(2,1) → 1,4,5,6. S: (1,0),(2,0),(0,1),(1,1) → 1,2,4,5. Z: (0,0),(1,0),(1,1),(2,1) → 0,1,5,6. J: (0,0),(0,1),(1,1),(2,1) → 0,4,5,6. L: (2,0),(0,1),(1,1),(2,1) → 2,4,5,6.
+
+So pieces as arrays of 4 indices in a 4x4 grid: 
+I:[1,5,9,13], O:[2,6,7,3]... wait order doesn't matter: O:[2,3,6,7], T:[1,4,5,6], S:[1,2,4,5], Z:[0,1,5,6], J:[0,4,5,6], L:[2,4,5,6].
+
+Rotation: for a cell at index i in 4x4: x=i%4, y=i/4|0. Rotate 90° CW within 4x4: new
+---
