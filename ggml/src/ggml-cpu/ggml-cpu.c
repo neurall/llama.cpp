@@ -2560,8 +2560,10 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
             {
                 // FIXME: get_rows can use additional threads, but the cost of launching additional threads
                 // decreases performance with GPU offloading
-                //n_tasks = n_threads;
-                n_tasks = 1;
+                // fork: a big gather from a quantized table does use them. It dequantizes every row and, on a mapped table, takes the page faults itself, so one thread
+                // means one read at a time: DeepSeek's Engram table, 786k rows in a 16k pass, 8.7k faults/s with the SSD good for 100k/s at queue depth 8, and the graph's
+                // only op, so the plan ran the whole split on one thread (2026-11-02). A small gather (a decode step) stays on one thread.
+                n_tasks = ggml_is_quantized(node->src[0]->type) && ggml_nelements(node->src[1]) >= 256 ? n_threads : 1;
             } break;
         case GGML_OP_SCALE:
         case GGML_OP_SET:
