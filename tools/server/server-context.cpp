@@ -4851,7 +4851,10 @@ private:
                             const auto pos = slot.prompt.n_tokens();
                             const auto & checkpoints = slot.prompt.checkpoints;
 
-                            if (pos == last_user_pos || checkpoints.empty() || pos > checkpoints.back().n_tokens + params_base.checkpoint_min_step) {
+                            // fork: not for a prefix this short: reading it again costs less than the extra pass the cut costs now (DeepSeek: a 27-token call of 4.8 s, every
+                            // expert the pass needs is uploaded whatever the token count; 6% of a 17.5k prompt)
+                            const bool worth_a_pass = pos >= 256;
+                            if (worth_a_pass && (pos == last_user_pos || checkpoints.empty() || pos > checkpoints.back().n_tokens + params_base.checkpoint_min_step)) {
                                 break;
                             }
                         }
