@@ -6422,7 +6422,7 @@ def prompt_passes_save(model, test, build):
         c.execute("create table if not exists prompt_passes (ts text, hw text, model text, test text, build text, call int, k int, n int, tokens int, secs real, tps int, hit_pct int, asked int, found int, other_card_pct int)")
         hw = (HWF[0].split("'")[1] if "'" in HWF[0] else "")
         ts = time.strftime("%F %T")
-        c.executemany("insert into prompt_passes values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [(ts, hw, os.path.basename(model), ALIASES.get(test, test), str(build)) + r for r in rows])
+        c.executemany("insert into prompt_passes values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [(ts, hw, os.path.basename(model), ALIASES.get(test, test), str(build)) + r for r in rows])
         c.commit()
     except sqlite3.Error as e: print("prompt passes:", e, file=sys.stderr)
 

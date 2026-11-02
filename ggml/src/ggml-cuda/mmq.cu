@@ -377,6 +377,12 @@ void ggml_cuda_mul_mat_q(
         CUDA_CHECK(cudaGetLastError());
     }
 
+    // fork: the zeroed output of ggml_cuda_mul_mat_id_begin for a fused GLU, not before this point: gate and up are read by the quantize above and dst can sit on their bytes
+    // (MiMo: on all 46 expert layers of a 121-token pass), zeroed first every GPU expert of the pass came out as zero and only the CPU's picks reached the answer (2026-11-02).
+    if (fuse_glu && dst->op_params[1] != 0) {
+        CUDA_CHECK(cudaMemsetAsync(dst->data, 0, ggml_nbytes(dst), stream));
+    }
+
     static_assert(QK_FP4_MMQ == 8 * QK_MXFP4, "QK_FP4_MMQ needs to be 8 * QK_MXFP4");
     const int64_t s12 = use_native_fp4 ? ne11 * ne10_padded * sizeof(block_fp4_mmq) / (QK_FP4_MMQ * sizeof(int)) :
                                          ne11 * ne10_padded * sizeof(block_q8_1) / (QK8_1 * sizeof(int));

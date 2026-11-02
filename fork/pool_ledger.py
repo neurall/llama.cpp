@@ -18,13 +18,16 @@ WHILE the copy ran (the live check only sees the two ends), and it answers "who 
   pool_ledger.py LEDGER.csv --at T_US          the lend, the zone and the uploads in flight at that time, per card
   pool_ledger.py LEDGER.csv --races            a graph's window (its lend line to its graph-done line) crossed by another thread's write into its bytes,
                                                and upload windows that overlap a graph window on the same bytes (needs the thread column, 2026-10-28)
+  pool_ledger.py LEDGER.csv --dma              every copy's real window on its stream (dma-start, dma-done: pointer, length, when it was queued) against the pool map: a lend, a KV zone, KV rows
+                                               moved or zeroed, a fill or blocks given back on its bytes while it ran, two copies on one byte range at once, a copy that never ended, and how far
+                                               behind the host the streams run
   pool_ledger.py LEDGER.csv --stale            CUDA graph replays whose scratch range lies outside the lend of that card at that moment (an address kept
                                                from an older layout, the DSpark repeat-request bug of 2026-10-28)
 
 Columns since 2026-10-28: t_us, thread, card, kind, rw (w write, o owner change, rw a graph's read and write, x violation), state (start / done /
 once), lo, hi, bytes, who. Older files without thread / rw / state still load; --races then has no threads to tell apart.
 """
-import argparse, collections, csv, sys
+import argparse, bisect, collections, csv, sys
 
 MIB = 1048576.0
 
@@ -35,8 +38,8 @@ def load(path):
     with (gzip.open(path, "rt", newline="") if path.endswith(".gz") else open(path, newline="")) as f:
         for r in csv.DictReader(f):
             try:
-                rows.append((int(r["t_us"]), r["card"], r["kind"], int(r["lo"]), int(r["hi"]), r["who"]))
-            except (KeyError, ValueError):
+                rows.append((int(r["t_us"]), r["card"], r["kind"], int(r["lo"]), int(r["hi"]), r["who"] or ""))
+            except (KeyError, ValueError, TypeError):
                 continue
     rows.sort(key=lambda x: x[0])
     return rows
@@ -77,11 +80,81 @@ def load_full(path):
         for r in csv.DictReader(f):
             try:
                 rows.append((int(r["t_us"]), r.get("thread", "") or "", r["card"], r["kind"], r.get("rw", "") or "", r.get("state", "") or "",
-                             int(r["lo"]), int(r["hi"]), r["who"]))
-            except (KeyError, ValueError):
+                             int(r["lo"]), int(r["hi"]), r["who"] or ""))
+            except (KeyError, ValueError, TypeError):
                 continue
     rows.sort(key=lambda x: x[0])
     return rows
+
+
+def dma_windows(full):
+    """the copies as their streams ran them: (t_start, t_done, card, lo, hi, who), and the ones with no end in the file"""
+    open_, out = {}, []
+    for t, th, card, kind, rw, st, lo, hi, who in full:
+        if kind == "dma-start":
+            open_[(card, lo, hi, who)] = t
+        elif kind == "dma-done" and (card, lo, hi, who) in open_:
+            out.append((open_.pop((card, lo, hi, who)), t, card, lo, hi, who))
+    return sorted(out), sorted((t, *k) for k, t in open_.items())
+
+
+def dma_check(full, t_first, n_max):
+    """what the pool did to bytes a copy was still writing; returns the number of findings"""
+    wins, left = dma_windows(full)
+    if not wins and not left:
+        print("no dma lines: a build without ggml_cuda_dma, or no --moe ledger")
+        return 0
+    # lines that give bytes to something else, in time order per card; the map's block classes never change, its zone line does
+    changes = collections.defaultdict(list)
+    for t, th, card, kind, rw, st, lo, hi, who in full:
+        if kind in ("lend", "kv-zone", "kv-move", "kv-pad", "zero", "mirror", "fill", "release", "graph-done") or (kind == "map" and "zone" in who):
+            changes[card].append((t, kind, lo, hi, who))
+    MS = 1e3
+    late = sorted(w[0] - int(w[5].split(" queued ")[1].split()[0]) for w in wins if " queued " in w[5])
+    run = sorted(w[1] - w[0] for w in wins)
+    print(f"{len(wins)} copies, {sum(w[4] - w[3] for w in wins) / MIB:.1f} MiB, {len(left)} never ended")
+    if late:
+        print(f"queued to started: median {late[len(late) // 2] / MS:.2f} ms, worst {late[-1] / MS:.2f} ms; started to done: median {run[len(run) // 2] / MS:.2f} ms, worst {run[-1] / MS:.2f} ms")
+    found = 0
+    def show(line):
+        nonlocal found
+        found += 1
+        if found <= n_max:
+            print(line)
+    for t0, t1, card, lo, hi, who in wins:
+        ch = changes[card]
+        for t, kind, a, b, w in ch[bisect.bisect_left(ch, (t0,)):bisect.bisect_right(ch, (t1 + 1,))]:
+            if a < hi and b > lo and kind != "graph-done":
+                show(f"UNDER COPY {(t - t_first) / 1e6:10.3f}s {card}: {kind} [{a / MIB:.3f}, {b / MIB:.3f}) MiB {w[:70]}  x  copy [{lo / MIB:.3f}, {hi / MIB:.3f}) MiB {(t1 - t0) / MS:.2f} ms {who[:64]}")
+    by_card = collections.defaultdict(list)
+    for w in wins:
+        by_card[w[2]].append(w)
+    for card, ws in by_card.items():
+        live = []
+        for w in ws:
+            live = [x for x in live if x[1] > w[0]]
+            for x in live:
+                if x[3] < w[4] and x[4] > w[3]:
+                    show(f"TWO COPIES {(w[0] - t_first) / 1e6:10.3f}s {card}: [{w[3] / MIB:.3f}, {w[4] / MIB:.3f}) {w[5][:56]}  x  [{x[3] / MIB:.3f}, {x[4] / MIB:.3f}) {x[5][:56]}")
+            live.append(w)
+    # the regions at each copy's start and end: an expert block's copy inside the lend or the KV zone of that moment
+    state = collections.defaultdict(dict)
+    ev = sorted([(w[0], 0, w) for w in wins] + [(w[1], 1, w) for w in wins], key=lambda x: (x[0], x[1]))
+    i = 0
+    rows = sorted(((t, card, kind, lo, hi) for t, th, card, kind, rw, st, lo, hi, who in full if kind in ("lend", "kv-zone") or (kind == "map" and "zone" in who)), key=lambda x: x[0])
+    for t, end, w in ev:
+        while i < len(rows) and rows[i][0] <= t:
+            st_ = state[rows[i][1]]
+            st_["lend" if rows[i][2] == "lend" else "zone"] = (rows[i][3], rows[i][4])
+            i += 1
+        if "queued" in w[5] and (" cache" in w[5] or w[5].startswith("cache") or "expert" in w[5] or "_c " in w[5]):
+            for name, (a, b) in state[w[2]].items():
+                if a < w[4] and b > w[3]:
+                    show(f"IN {name.upper()} {(t - t_first) / 1e6:10.3f}s {w[2]}: copy [{w[3] / MIB:.3f}, {w[4] / MIB:.3f}) MiB {'ended' if end else 'started'} inside [{a / MIB:.3f}, {b / MIB:.3f}) {w[5][:64]}")
+    names = collections.Counter(w[5].split(" queued ")[0].split(".")[0] for w in wins)
+    print("copies by tensor:", ", ".join(f"{n} {c}" for n, c in names.most_common(12)))
+    print(f"findings {found}")
+    return found
 
 
 def graph_windows(full):
@@ -150,11 +223,14 @@ def main():
     ap.add_argument("--max", type=int, default=40, help="lines per list")
     ap.add_argument("--races", action="store_true")
     ap.add_argument("--stale", action="store_true")
+    ap.add_argument("--dma", action="store_true")
     a = ap.parse_args()
     rows = load(a.ledger)
     if not rows:
         sys.exit("no rows")
     t_first = rows[0][0]
+    if a.dma:
+        sys.exit(1 if dma_check(load_full(a.ledger), t_first, a.max) else 0)
     if a.races or a.stale:
         full = load_full(a.ledger)
         found = races(full) if a.races else []

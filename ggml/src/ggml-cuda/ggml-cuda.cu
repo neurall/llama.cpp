@@ -1031,12 +1031,48 @@ static void ggml_cuda_h2d_pace(int device, size_t size) {
     }
 }
 
+// fork, --moe ledger (pool_ledger.py --dma): a copy queued on a stream runs later, behind everything the stream already holds. Two host functions around it on that stream say when it
+// really began and ended, and the pointer and length go with them, so what the pool did meanwhile can be checked against the bytes (user 2026-11-02: an old bug was a DMA still writing
+// into bytes the KV had taken). The hook runs on CUDA's own thread, nothing in it calls CUDA. Off without a hook: no host function in the stream.
+extern "C" {
+    typedef void (*ggml_backend_dma_hook_t)(int device, const void * dst, size_t bytes, const char * who, int done);
+    GGML_API ggml_backend_dma_hook_t ggml_backend_dma_hook_fork(void);
+}
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+struct ggml_cuda_dma_rec { int device; const void * dst; size_t bytes; char who[96]; };
+static void CUDART_CB ggml_cuda_dma_begin_cb(void * p) {
+    const auto * r = (const ggml_cuda_dma_rec *) p;
+    if (const auto hook = ggml_backend_dma_hook_fork()) { hook(r->device, r->dst, r->bytes, r->who, 0); }
+}
+static void CUDART_CB ggml_cuda_dma_end_cb(void * p) {
+    const auto * r = (const ggml_cuda_dma_rec *) p;
+    if (const auto hook = ggml_backend_dma_hook_fork()) { hook(r->device, r->dst, r->bytes, r->who, 1); }
+    delete r;
+}
+#endif
+template <class Copy>
+static void ggml_cuda_dma(cudaStream_t stream, int device, const void * dst, size_t bytes, const char * name, Copy && copy) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (ggml_backend_dma_hook_fork() != nullptr) {
+        auto * r = new ggml_cuda_dma_rec{ device, dst, bytes, {} };
+        snprintf(r->who, sizeof(r->who), "%.48s queued %lld ptr %p", name ? name : "", (long long) ggml_time_us(), dst);
+        CUDA_CHECK(cudaLaunchHostFunc(stream, ggml_cuda_dma_begin_cb, r));
+        copy();
+        CUDA_CHECK(cudaLaunchHostFunc(stream, ggml_cuda_dma_end_cb, r));
+        return;
+    }
+#endif
+    copy();
+}
+
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
     ggml_cuda_h2d_pace(ctx->device, size);
-    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    ggml_cuda_dma(cudaStreamPerThread, ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
+        CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    });
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
@@ -3206,11 +3242,11 @@ static void ggml_backend_cuda_obs_enable(bool on) {
 
 // fork: what a MUL_MAT_ID does before its kernel, fused or not. Fused without this (upstream #30489's GLU into MMQ, ggml_cuda_try_fuse), the rows of the experts the
 // prompt mix's home card skips kept what the lent memory held and went into the experts' sum: '!!!!' or a wrong answer from the mix's first pass on (2026-11-02).
-static void ggml_cuda_mul_mat_id_begin(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+static void ggml_cuda_mul_mat_id_begin(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const bool zero = true) {
     if (g_obs_on.load(std::memory_order_relaxed) || g_obs_prompt_on.load(std::memory_order_relaxed)) {
         ggml_cuda_obs_count(ctx, dst->src[0], dst->src[2]);
     }
-    if (dst->op_params[1] != 0) {
+    if (zero && dst->op_params[1] != 0) {
         // ids may be -1 (skipped experts, 2-GPU prefill): the kernels leave those rows unwritten
         CUDA_CHECK(cudaMemsetAsync(dst->data, 0, ggml_nbytes(dst), ctx.stream()));
     }
@@ -4099,7 +4135,9 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
     ggml_cuda_h2d_pace(cuda_ctx->device, size);
-    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
+    ggml_cuda_dma(cuda_ctx->stream(), cuda_ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
+        CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
+    });
 }
 
 static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
@@ -4277,7 +4315,7 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
     if (e.dev != nullptr) {
         ggml_cuda_xstage_read(dst_data, e.dev, n, ctx_dst->stream());   // zero-copy: the destination card reads the block itself, the copy engine stays with the uploads
     } else {
-        CUDA_CHECK(cudaMemcpyAsync(dst_data, e.host, n, cudaMemcpyHostToDevice, ctx_dst->stream()));
+        ggml_cuda_dma(ctx_dst->stream(), ctx_dst->device, dst_data, n, "xstage", [&] { CUDA_CHECK(cudaMemcpyAsync(dst_data, e.host, n, cudaMemcpyHostToDevice, ctx_dst->stream())); });
     }
     CUDA_CHECK(cudaEventRecord(e.h2d_done, ctx_dst->stream()));
     e.used = true;
@@ -4340,7 +4378,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
             sdata = rows_tmp.get();
         }
         if (src_physical == dst_physical) {
-            CUDA_CHECK(cudaMemcpyAsync(dst->data, sdata, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+            ggml_cuda_dma(cuda_ctx_src->stream(), cuda_ctx_dst->device, dst->data, ggml_nbytes(dst), dst->name, [&] { CUDA_CHECK(cudaMemcpyAsync(dst->data, sdata, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream())); });
         } else {
             // fork: two halves through pinned host memory, each on its own card's stream (see ggml_cuda_xstage_copy); the events are queued there
             if (ggml_cuda_xstage_on() && ggml_cuda_xstage_copy(cuda_ctx_src, cuda_ctx_dst, sdata, dst->data, ggml_nbytes(dst))) {
@@ -4349,7 +4387,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
 #ifdef GGML_CUDA_NO_PEER_COPY
             return false;
 #else
-            CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_physical, sdata, src_physical, ggml_nbytes(dst), cuda_ctx_src->stream()));
+            ggml_cuda_dma(cuda_ctx_src->stream(), cuda_ctx_dst->device, dst->data, ggml_nbytes(dst), dst->name, [&] { CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_physical, sdata, src_physical, ggml_nbytes(dst), cuda_ctx_src->stream())); });
 #endif // GGML_CUDA_NO_PEER_COPY
         }
 
@@ -4373,7 +4411,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
                 }
             }
         } else {
-            CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
+            ggml_cuda_dma(cuda_ctx_src->stream(), cuda_ctx_dst->device, dst->data, ggml_nbytes(dst), dst->name, [&] { CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream())); });
         }
     }
     return true;
@@ -5693,6 +5731,12 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    // fork, --moe fuse-off=GLU+MUL: the fusions that start at these ops stay apart, to name the one a bug needs (GGML_CUDA_DISABLE_FUSION parts all of them and changes the allocation too)
+    static const std::string fuse_off = [] { const char * e = getenv("GGML_CUDA_FUSE_OFF"); return e ? "+" + std::string(e) + "+" : std::string(); }();
+    if (!fuse_off.empty() && fuse_off.find("+" + std::string(ggml_op_name(node->op)) + "+") != std::string::npos) {
+        return 0;
+    }
+
     // fuse a GLU into the Q8_1 activation quantization of the MMQ matmul consuming it (a few
     // nodes ahead after stream reordering); skip if any node between them overlaps its output.
     if (node->op == GGML_OP_GLU && cuda_ctx->stream_context().concurrent_events.empty()) {
@@ -5732,9 +5776,10 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 }
             }
             if (output_safe) {
-                // fork: as ggml_cuda_mul_mat_id: the heat count, the zeroed output, and an expert cache chain's expert ids and table (src[3], src[4]; src[2] holds its blocks)
+                // fork: as ggml_cuda_mul_mat_id: the heat count, the zeroed output, and an expert cache chain's expert ids and table (src[3], src[4]; src[2] holds its blocks).
+                // The output is zeroed inside ggml_cuda_mul_mat_q, behind the quantize: the GLU was gate's and up's last reader, so the allocator may lay dst over them.
                 const bool mmid = dst->op == GGML_OP_MUL_MAT_ID;
-                if (mmid) { ggml_cuda_mul_mat_id_begin(*cuda_ctx, dst); }
+                if (mmid) { ggml_cuda_mul_mat_id_begin(*cuda_ctx, dst, false); }
                 ggml_cuda_mul_mat_q(*cuda_ctx, dst->src[0], glu, mmid ? (dst->src[4] ? dst->src[3] : dst->src[2]) : nullptr, dst, nullptr, mmid ? dst->src[4] : nullptr, true);
                 nodes_fused[i] = true;
                 nodes_fused[j] = true;
@@ -8413,7 +8458,9 @@ static void ggml_backend_cuda_set_tensor_nosync_fork(ggml_tensor * tensor, const
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buf->context;
     ggml_cuda_set_device(ctx->device);
     ggml_cuda_h2d_pace(ctx->device, size);
-    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    ggml_cuda_dma(cudaStreamPerThread, ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
+        CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    });
 }
 static void ggml_backend_cuda_thread_sync_fork() {
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));

@@ -387,3 +387,15 @@ The first fix had its own bug: it clamped those bytes to the class's view, which
 
 Verified on `fix_pick_owner_kv_flip`, `kvb-m90-128k`, one mix call on request 2: the two answers are identical over all 802 characters, decode 71.6 and 71.4 t/s.
 
+
+## 2026-11-02 MiMo off topic on the decode chain: the fused GLU's zeroing wiped its own inputs
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `ggml_cuda_try_fuse`, GLU into MMQ, with `ggml_cuda_mul_mat_id_begin` | MiMo, `pp-path=dec`, 121 tokens: the answer is off topic from its first word and loops, at speeds that look like gains. Clean with `upload-now=0` | The fix of the `!!!!` entry above zeroed the output before the quantize. The GLU is gate's and up's last reader, so the allocator lays the output (`ffn_moe_cache_down`) exactly on their bytes (all 46 expert layers, `ledger=2`). The zeroing wiped gate and up, every GPU expert of the pass came out as zero and only the CPU's picks reached the answer | the output is zeroed inside `ggml_cuda_mul_mat_q`, behind the quantize |
+
+It looked like an upload race because of how much was lost: with `upload-now=0` the CPU kept about 40% of the picks and the answer stayed on topic, with mid-pass uploads less stayed on the CPU, and `jit-all=1` gave the worst text. What did not find it: poison, `verify`, `--races`, `--map`, and the new `--dma` windows (32,720 copies, nothing under a running copy), because every byte was right and nothing was NaN. `GGML_SCHED_NAN_CHECK=1` kept the bug and `=2` cleared it (no fusion there), `GGML_CUDA_DISABLE_FUSION=1` cleared it, `fuse-off=GLU` named it and `ledger=2` showed the overlap.
+
+Reached by passes that run MMQ with ids that may be -1: the decode chain above the vector kernels' batch, the prompt mix, the 2-card prefill. No release has it. Rows of those paths since that fix are suspect even when on topic: the answers lost GPU experts.
+
+Verified on `glu_zero_late`, 100-token prompt, two requests each: MiMo, GLM and DeepSeek on the decode chain with uploads, MiMo with uploads off and on the mix, all answers on task.

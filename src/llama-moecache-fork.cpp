@@ -2048,6 +2048,7 @@ static void led_kind(const char * kind, const char *& rw, const char *& st) {
         { "cuda-capture", "rw", "once" }, { "cuda-replay", "rw", "once" },
         { "chain-up", "w", "once" }, { "jit-up", "w", "once" }, { "adopt", "w", "once" },
         { "node-w", "w", "once" }, { "node-r", "r", "once" }, { "mix-read", "r", "once" }, { "split-replay", "rw", "once" }, { "verify-bad", "x", "once" },
+        { "dma-start", "w", "start" }, { "dma-done", "w", "done" }, { "table", "w", "once" },
     };
     for (const auto & e : t) { if (strcmp(kind, e.kind) == 0) { rw = e.rw; st = e.st; return; } }
     rw = "?"; st = "once";
@@ -2295,6 +2296,26 @@ static void led_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id
     }
 }
 extern "C" { GGML_API void ggml_sched_set_split_hook_fork(void (*fn)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t)); }
+// a copy into a pool as its stream runs it (ggml_cuda_dma in ggml-cuda.cu), on CUDA's own thread: start and end in pool offsets, the writer's pointer and length with them.
+// pool_ledger.py --dma lays the windows over the lend, the KV zone and each other. Copies outside a pool (weights on a card) are left out.
+extern "C" {
+    typedef void (*ggml_backend_dma_hook_t)(int device, const void * dst, size_t bytes, const char * who, int done);
+    GGML_API void ggml_backend_set_dma_hook_fork(ggml_backend_dma_hook_t fn);
+}
+static void led_dma(int device, const void * dst, size_t bytes, const char * who, int done) {
+    GGML_UNUSED(device);
+    moe_cache * mc = g_cache;
+    if (!mc) { return; }
+    for (const auto & ap : mc->alias) {
+        if (!ap.buf) { continue; }
+        const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+        const uint8_t * p    = (const uint8_t *) dst;
+        if (p < base || p >= base + ggml_backend_buffer_get_size(ap.buf)) { continue; }
+        const size_t lo = (size_t) (p - base);
+        led_line(led_card(ap), done ? "dma-done" : "dma-start", lo, lo + bytes, who);
+        return;
+    }
+}
 
 // the NaN hook (ggml_sched_set_nan_hook_fork, set at pool allocation with --moe poison): the region map and the per-MiB fill of every pool, to the log directory
 extern "C" { GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)); }
@@ -3852,6 +3873,7 @@ void flush_tables() {
             x = x >= pub->n_slots ? -1 : x;   // uncached (n_slots) and JIT pool experts (n_slots + 1): -1, which every kernel skips (no zero block is read)
         }
         ggml_backend_tensor_set(pub->dev_table, v.data(), 0, v.size()*sizeof(int32_t));
+        led_line("?", "table", 0, v.size()*sizeof(int32_t), tr_fmt("L%d device table", pub->il));
     }
     if (g_cache) {
         for (auto & l : g_cache->layers) {
@@ -7697,6 +7719,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 if (poison_on()) { ggml_sched_set_nan_hook_fork(pool_dump_all); }
                 if (led_level() >= 2) { ggml_sched_set_split_hook_fork(led_split_cb); }
+                if (led_on()) { ggml_backend_set_dma_hook_fork(led_dma); }
                 if (led_on()) {   // CUDA graph captures and replays with their scratch range go into the ledger
                     typedef void (*graph_hook_t)(int, const void *, const char *, const void *, size_t);
                     typedef void (*set_graph_hook_t)(graph_hook_t);
@@ -11600,6 +11623,7 @@ void llama_moe_cache_free_fork() {
     ggml_set_moe_phase_callback(nullptr, nullptr);
     ggml_backend_set_moe_src_callback(nullptr, nullptr);
     ggml_backend_set_moe_read_fn_fork(nullptr, nullptr);
+    ggml_backend_set_dma_hook_fork(nullptr);
     ggml_backend_set_moe_fill_callback(nullptr, nullptr);
     ggml_backend_set_moe_where_fn_fork(nullptr, nullptr);
     ggml_backend_set_split_callback(nullptr, nullptr);

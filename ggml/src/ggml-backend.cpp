@@ -1369,6 +1369,15 @@ static void (*g_nan_hook_fork)(void) = nullptr;
 extern "C" { GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)) { g_nan_hook_fork = fn; } }
 // --moe ledger=2 (led_split_cb in llama-moecache-fork.cpp): each split's graph right before it runs, for a line per pool range a node reads or writes
 static void (*g_split_hook_fork)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t) = nullptr;
+// fork, --moe ledger: every copy the CUDA backend queues into a card, when its stream reaches it and when it ends (ggml_cuda_dma, led_dma in llama-moecache-fork.cpp)
+extern "C" {
+    typedef void (*ggml_backend_dma_hook_t)(int device, const void * dst, size_t bytes, const char * who, int done);
+    GGML_API void ggml_backend_set_dma_hook_fork(ggml_backend_dma_hook_t fn);
+    GGML_API ggml_backend_dma_hook_t ggml_backend_dma_hook_fork(void);
+}
+static std::atomic<ggml_backend_dma_hook_t> g_dma_hook{nullptr};
+void ggml_backend_set_dma_hook_fork(ggml_backend_dma_hook_t fn) { g_dma_hook.store(fn); }
+ggml_backend_dma_hook_t ggml_backend_dma_hook_fork(void) { return g_dma_hook.load(std::memory_order_relaxed); }
 extern "C" { GGML_API void ggml_sched_set_split_hook_fork(void (*fn)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t)) { g_split_hook_fork = fn; } }   // the block form: GGML_API may expand to "extern", invalid after extern "C" on the same declaration
 
 void ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total) {

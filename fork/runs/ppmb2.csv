@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+mb-nofuse,mimo,1,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mb-nofuse.ini,log=wk,pp-path=dec,chain-fuse=0",
+mb-ver2,mimo,1,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mb-ver2.ini,log=wk,pp-path=dec,verify=2",
+mb-c64,mimo,1,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mb-c64.ini,log=wk,pp-path=dec",--clamp 64

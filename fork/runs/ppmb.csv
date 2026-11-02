@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+mb-noup,mimo,1,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mb-noup.ini,log=wk,pp-path=dec,upload-now=0",
+mb-ver,mimo,1,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mb-ver.ini,log=wk,pp-path=dec,verify=2",
