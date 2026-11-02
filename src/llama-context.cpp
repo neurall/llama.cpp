@@ -3194,14 +3194,14 @@ void tokheat_dump() {
         const std::string f = (d / "heatmap.js").string();
         std::vector<std::vector<uint32_t>> rows(g_tokheat.n_layer, std::vector<uint32_t>(g_tokheat.n_expert, 0));
         if (FILE * in = fopen(f.c_str(), "r")) {   // add to what earlier runs stored
-            char * line = nullptr; size_t cap = 0; ssize_t len;
-            while ((len = getline(&line, &cap, in)) > 0) {
+            std::vector<char> buf(1 << 16); char * line = buf.data();   // fgets, not getline: Windows has no getline; a row is n_expert numbers, far below 64 KiB
+            while (fgets(line, (int) buf.size(), in)) {
                 int il = -1, pos = 0;
                 if (sscanf(line, "layer%d=[%n", &il, &pos) < 1 || il < 0 || il >= (int) rows.size()) { continue; }
                 const char * p = line + pos;
                 for (int e = 0; e < g_tokheat.n_expert && *p && *p != ']'; ++e) { rows[il][e] += (uint32_t) strtoul(p, (char **) &p, 10); if (*p == ',') { ++p; } }
             }
-            free(line); fclose(in);
+            fclose(in);
         }
         for (auto & [ekey, n] : m) { if ((int) (ekey >> 16) < (int) rows.size()) { rows[ekey >> 16][ekey & 0xffff] += n; } }
         if (FILE * out = fopen(f.c_str(), "w")) {
