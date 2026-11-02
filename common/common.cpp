@@ -1265,9 +1265,8 @@ static size_t common_model_file_size(const std::string & path_model) {
     return size;
 }
 
-// bytes of the routed-expert tensors (*_exps), over all splits: the rest of the file is what the GPU has to hold before a cache slot fits
-// bytes of the tensors that need no VRAM for the expert cache to fit: the experts and the (per-layer) token embeddings
-static size_t common_model_expert_bytes(const std::string & path_model) {
+// bytes of the tensors whose name passes match, over all splits
+static size_t common_model_tensor_bytes(const std::string & path_model, bool (*match)(const char *)) {
     gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
     gguf_context * g0 = gguf_init_from_file(path_model.c_str(), gp);
     if (!g0) {
@@ -1288,16 +1287,21 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
             continue;
         }
         for (int64_t t = 0; t < gguf_get_n_tensors(g); t++) {
-            // the experts, and the token embeddings: they stay in host memory (a lookup, one row per token, e.g. the 26.8 GiB per_layer_token_embd of Qwen3.8-Flash-Next),
-            // so neither counts against the VRAM the cache needs besides the non-expert weights
-            const char * name = gguf_get_tensor_name(g, t);
-            if (strstr(name, "_exps") || strstr(name, "token_embd")) {
+            if (match(gguf_get_tensor_name(g, t))) {
                 bytes += gguf_get_tensor_size(g, t);
             }
         }
         gguf_free(g);
     }
     return bytes;
+}
+
+// bytes of the routed-expert tensors (*_exps), over all splits: the rest of the file is what the GPU has to hold before a cache slot fits
+// bytes of the tensors that need no VRAM for the expert cache to fit: the experts and the (per-layer) token embeddings
+static size_t common_model_expert_bytes(const std::string & path_model) {
+    // the experts, and the token embeddings: they stay in host memory (a lookup, one row per token, e.g. the 26.8 GiB per_layer_token_embd of Qwen3.8-Flash-Next),
+    // so neither counts against the VRAM the cache needs besides the non-expert weights
+    return common_model_tensor_bytes(path_model, [](const char * name) { return strstr(name, "_exps") != nullptr || strstr(name, "token_embd") != nullptr; });
 }
 
 // free memory summed over GPUs, of the largest GPU, and the GPU count
@@ -2071,13 +2075,15 @@ static void common_auto_pin(common_params & params) {
             }
             // The start value from the ratio of RAM to model (user 2026-11-02: "start from reasonable best base based on ram vs model size ratio", "70% as constant is nonsense"):
             // what is not pinned and not kept for the system is page cache for the mapped rest, which needs a share h of its bytes cached: avail - pin = margin + h * (model - pin),
-            // so pin = (avail - margin - h * model) / (1 - h). DeepSeek on 125 GiB: 85 GiB pinned was best, 97 starved the cache (swap-in 13k pages/s); GLM 3.0-bit best at 101 or more, MiMo 85 to 101.
-            // The Engram table (TENSOR_READ_LAZY) is never pinned by the loader whatever the budget says. --moe pin-cache=H changes h.
+            // so pin = (avail - margin - h * model) / (1 - h). The Engram table (TENSOR_READ_LAZY) is never pinned by the loader whatever the budget says and a token touches a few hundred of its
+            // bytes, so it is no part of model here (user rule: model minus Engram). DeepSeek on 125 GiB, 100 and 500 tokens: 78 GiB pinned 7 and 34 prompt t/s, 96 GiB 11 and 45, 101 GiB 12 and 46.
+            // --moe pin-cache=H changes h.
             const double h = [] { const char * v = llama_moe_get_opt("pin-cache"); return v ? std::min(0.9, std::max(0.0, atof(v))) : 0.15; }();
-            const double eq = ((double) mem - (double) margin - h * (double) model_size) / (1.0 - h);
+            const size_t engram = common_model_tensor_bytes(params.model.path, [](const char * name) { return strstr(name, "engram_kv") != nullptr; });
+            const double eq = ((double) mem - (double) margin - h * (double) (model_size - std::min(engram, model_size))) / (1.0 - h);
             params.load_pin_budget = pool + (eq > 0 ? (size_t) eq : 0);
-            LOG_INF("%s: pin start %.1f GiB = (available %.1f - kept free %.1f - %.2f x model %.1f) / (1 - %.2f), reserved pool %.1f GiB\n", __func__,
-                    params.load_pin_budget / 1073741824.0, mem / 1073741824.0, margin / 1073741824.0, h, model_size / 1073741824.0, h, pool / 1073741824.0);
+            LOG_INF("%s: pin start %.1f GiB = (available %.1f - kept free %.1f - %.2f x (model %.1f - Engram %.1f)) / (1 - %.2f), reserved pool %.1f GiB\n", __func__,
+                    params.load_pin_budget / 1073741824.0, mem / 1073741824.0, margin / 1073741824.0, h, model_size / 1073741824.0, engram / 1073741824.0, h, pool / 1073741824.0);
             // --moe pin-pct=N: at most N% of the machine's RAM pinned (the reserved pool always counts). Pinning all it can left DeepSeek (232 GiB) 12 GiB beside 109 GiB pinned: the page cache of the
             // mapped rest stayed at 0, the kernel scanned 140 million pages a second and a second request's 16k pass read at 335 MB/s (user 2026-11-02: "make it %", fork/runs/paths.csv dsp-*)
             if (const char * pct = llama_moe_get_opt("pin-pct"); pct && ram_total > 0) {

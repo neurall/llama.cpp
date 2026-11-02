@@ -1006,6 +1006,8 @@ static std::atomic<uint64_t> g_pjit_left_l[256], g_pjit_pool_l[256];   // per la
 static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (llama_moe_cache_prompt_call_fork, set by llama_context::decode)
 static std::atomic<int64_t> g_mb_auto { 0 };       // outside a prompt call, the largest pass on the cache path: experts per layer / experts per token, the tokens that can touch them all
 static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call left a layer fewer blocks than its pass may use: its passes leave the prompt chain
+static std::atomic<bool> g_pp_dec{false};        // this prompt call runs on the decode chain, misses may stay on the CPU (llama_moe_cache_pp_decide_fork)
+static bool              g_pp_dec_built = false; // the same when the last graph was finished
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
 static std::atomic<bool> g_pp_mix_call{true};    // this prompt call may run the prompt mix (llama_moe_cache_pp_decide_fork; a forced path keeps it)
@@ -8803,7 +8805,7 @@ static bool pp_chain_on() {
     return on;
 }
 static bool pp_chain_allowed() {
-    return pp_chain_on() && g_prompt_call.load(std::memory_order_relaxed) && !g_pp_short.load(std::memory_order_relaxed);
+    return pp_chain_on() && g_prompt_call.load(std::memory_order_relaxed) && !g_pp_short.load(std::memory_order_relaxed) && !g_pp_dec.load(std::memory_order_relaxed);
 }
 
 // the blocks of a layer's class an expert may take now: not lent to a graph, not under the KV zone, no upload in flight
@@ -10594,6 +10596,7 @@ static bool cpu_gpu_shape_on() {
 extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t dev, double gbs); }   // ggml-backend.cpp (declared there, no shared header)
 void llama_moe_cache_prompt_call_fork(bool on) {
     g_prompt_call.store(on, std::memory_order_relaxed);
+    g_pp_dec = false;
     if (on) { g_pp_short = false; } else { ggml_backend_pred_set_fork(0.0); }
     if (on && g_cache) {
         for (int k = 0; k < g_cache->n_links; ++k) {
@@ -10805,12 +10808,12 @@ static double pp_pass_floor(double n) {
 }
 // The time of a whole prompt pass, per path and size: the last measurement per power of two of the tokens (in memory, never stored: what the cards hold changes it, and a try costs one
 // pass). This is what auto decides by (user 2026-11-01: per size, from measured values). The paths are told apart by the graph that ran, a forced path measures as well.
-// PP_RING: the stream, every expert staged on the fastest link's card. PP_MIX: the stream with the prompt mix. PP_K + i: the stream with predicted staging, q2 up to 2^i x a token's picks.
-enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_K = 4, PP_PATHS = PP_K + 8 };
+// PP_RING: the stream, every expert staged on the fastest link's card. PP_MIX: the stream with the prompt mix. PP_DEC: the decode chain. PP_K + i: the stream with predicted staging, q2 up to 2^i x a token's picks.
+enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_PATHS = PP_K + 8 };
 static struct { double n = 0.0, us = 0.0; } g_pp_took[PP_PATHS][32];
 static bool g_pp_no_chain[32] = {};   // per size: the chain's graph refused such a pass
 static std::string pp_path_name(int p) {
-    return p == PP_RING ? "stream" : p == PP_MIX ? "stream, mix" : p == PP_CHAIN ? "prompt chain" : p == PP_DENSE ? "dense" : format("stream, k x%d", 1 << (p - PP_K));
+    return p == PP_RING ? "stream" : p == PP_MIX ? "stream, mix" : p == PP_CHAIN ? "prompt chain" : p == PP_DENSE ? "dense" : p == PP_DEC ? "decode chain" : format("stream, k x%d", 1 << (p - PP_K));
 }
 // What a try may risk (user 2026-11-02: "often smaller changes ... with big changes to react faster ... to not lose too much perf if decisions were bad"). A running pass cannot change its path, so a
 // try that loses costs its whole call: DeepSeek's mix tried first on 16384 tokens, 134 s against 120 s. So a try runs when the call takes at most 1 s anyway, or at most 5% of this server's
@@ -10851,6 +10854,7 @@ static double pp_other_us(double n) {
 // The multiplier of predicted staging for a stream pass of n tokens, 0 = none (user 2026-11-01: k as multiples of the router's picks, found per model and size, DeepSeek took 5 x its 6 where
 // Qwen3.8 took 1 x its 8). The stream runs first: it is what a prediction must beat. Then one try per step, 1 x, 2 x, 4 x the picks, while the step before won and the ranks do not reach all
 // experts; of the steps measured, the fastest stays (a step can lose and the next one win: Qwen3.8 at 958 tokens, x1 lost, x4 won by 15%). Prediction shortens the upload alone, so a size is tried only while the upload is longer than what the compute takes at least.
+// A new size starts on x1, no stream first (DeepSeek 152 tokens: 20 t/s on x1, 12 on the stream, a request lost to measure it); the stream comes last, as a try under pp_try_ok.
 // The prompt mix for a stream pass of n tokens (user 2026-11-01: the second card should give a boost, and a partial upload slower than all of it is a bug). The plain stream runs first, it is
 // what the last release runs; then one try. It saves the uploads of what the slower link's card holds and pays for moving each of its layers' tokens over that link, so its gain shrinks with
 // the tokens: measured here, the faster; the nearest smaller size that lost says lost here (GLM, 4630 tokens: 9.9 s against 5.3 s, 26 s of host wait on the cross-card copies against 0.7).
@@ -10870,17 +10874,18 @@ static bool pp_mix_pick(double n, int n_used, int n_expert, const char ** why) {
     return true;
 }
 static double pp_k_pick(double n, double r, double U, int n_used, int n_expert, const char ** why) {
-    double best = 0.0, t_best = r;
+    double best = 0.0, t_best = r > 0.0 ? r : std::numeric_limits<double>::max();
     bool last_won = true;
     for (int i = 0; PP_K + i < PP_PATHS && (double) n_used * (double) (1 << i) < (double) n_expert; ++i) {
         const double t = pp_took_us(PP_K + i, n);
         if (t <= 0.0) {
-            if (last_won && U > pp_pass_floor(n) && (n * (double) n_used < (double) n_expert || pp_try_ok(r))) { *why = "one try of a prediction"; return (double) (1 << i); }
+            if (last_won && U > pp_pass_floor(n) && (n * (double) n_used < (double) n_expert || pp_try_ok(best > 0.0 ? t_best : r))) { *why = "one try of a prediction"; return (double) (1 << i); }
             break;
         }
         last_won = t < t_best;
         if (last_won) { best = (double) (1 << i); t_best = t; }
     }
+    if (r <= 0.0 && best > 0.0 && pp_try_ok(t_best)) { *why = "one try of the stream"; return 0.0; }
     return best;
 }
 // Whether a pass of n tokens takes the prompt chain. Measured at this size on both sides: the faster. Else the nearest size measured on both sides, when it says so for this one too: the
@@ -11251,10 +11256,10 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     std::lock_guard<std::mutex> lk(g_pp_mu);
     // a split pass (two cards) says nothing about one card, and a report that is not of the planned calls (an unplanned prompt) neither: the totals start again
     const double chain_up = g_pp_up_us.exchange(0.0);
-    if (mc && us > 0 && n_tokens > 0 && llama_dsplit_cur_fork() != 1) { pp_pass_add(n_tokens, g_pp_built ? std::max(0.0, (double) us - chain_up) : (double) us, g_pp_built); }
+    if (mc && us > 0 && n_tokens > 0 && llama_dsplit_cur_fork() != 1 && !g_pp_dec_built) { pp_pass_add(n_tokens, g_pp_built ? std::max(0.0, (double) us - chain_up) : (double) us, g_pp_built); }
     if (mc && us > 0 && n_tokens > 1) {   // a call of P passes: one pass of its size
         const double P = n_tokens == g_pp_n && g_pp_P > 0 ? (double) g_pp_P : 1.0;
-        int path = llama_dsplit_cur_fork() == 1 ? PP_DENSE : g_pp_built ? PP_CHAIN : g_pp_mix_built ? PP_MIX : PP_RING;
+        int path = llama_dsplit_cur_fork() == 1 ? PP_DENSE : g_pp_dec_built ? PP_DEC : g_pp_built ? PP_CHAIN : g_pp_mix_built ? PP_MIX : PP_RING;
         if ((path == PP_RING || path == PP_MIX) && g_pp_k_built) {
             path = PP_K;
             for (double m = g_pp_k_m; m > 1.0; m /= 2.0) { ++path; }
@@ -11278,7 +11283,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         // the first pass of a server that fills a layer runs cold whatever its path (Qwen3.6: 348 ms on the chain, 130 warm; the stream 150 ms over its repeats) and the size would keep that
         // number until the path runs again: not a measurement
         // the chain was asked and its graph refused (a layer's blocks cannot hold the pass, pp_chain_fork): the size asks no more
-        if (path != PP_CHAIN && path != PP_DENSE && g_pp_mb.load(std::memory_order_relaxed) > 0) { g_pp_no_chain[pp_bucket((double) n_tokens / P)] = true; }
+        if (path != PP_CHAIN && path != PP_DENSE && path != PP_DEC && g_pp_mb.load(std::memory_order_relaxed) > 0) { g_pp_no_chain[pp_bucket((double) n_tokens / P)] = true; }
         static bool cold = true;
         const bool fills = !mc->layers.empty() && (double) n_tokens / P * (double) mc->n_expert_used >= (double) mc->layers[0].expert_slot.size();
         if (cold && fills) {
@@ -11289,7 +11294,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         }
     }
     // a chain pass neither: its uploads add to its compute, as one token's compute it told the split planner one card takes 1288 ms where it streams in 500
-    if (!mc || us <= 0 || llama_dsplit_cur_fork() == 1 || g_pp_built || g_pp_k_built || n_tokens != g_pp_n || g_pp_P == 0 || g_pp_ub == 0) {
+    if (!mc || us <= 0 || llama_dsplit_cur_fork() == 1 || g_pp_built || g_pp_k_built || g_pp_dec_built || n_tokens != g_pp_n || g_pp_P == 0 || g_pp_ub == 0) {
         g_pp_n = 0; g_pp_P = 0; g_pp_Usum = 0.0; g_pp_xc = 0.0;
         return;
     }
@@ -11414,16 +11419,22 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // --moe pp-path=stream|mix|chain (test rows): every prompt call takes this path, whatever was measured. The planner picks by time, so a path may run once in a long request or
     // never: the prompt mix's first try came on the last call of the second request, and a bug on it looked like a bug of the second request (2026-11-02). fork/runs/paths.csv forces each one.
     static const char * const force = moe_opt("pp-path");
-    const bool chain = force ? strcmp(force, "chain") == 0 : !busy && pp_chain_pays(n, up, U, n * (double) mc->n_expert_used >= (double) n_expert, &why);
-    if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; }
-    g_pp_mb = chain ? ub_max : 0;
+    // A call whose picks cannot fill a layer (fewer tokens than experts / picks) stages nothing: the decode chain, whose CPU takes a few tokens' misses cheaper than the links do (GLM 15 tokens at a
+    // full cache: 0.6 s, the prompt chain 1.4 s uploading each; MiMo 10 tokens: 0.3 s, 1.0 s). Longer calls never compute on the CPU (a miss there runs over many tokens). The decode chain runs first,
+    // it is what the last release runs, then the prompt chain if its uploads can win, measured the faster. Never the stream: 2 tokens took DeepSeek 7.8 s, every expert uploaded, 2.1 s here.
+    const bool fills = n * (double) mc->n_expert_used >= (double) n_expert;
+    const bool chain = force ? strcmp(force, "chain") == 0 : !busy && (fills || pp_took_us(PP_DEC, n) > 0.0) && pp_chain_pays(n, up, U, fills, &why);
+    const bool dec = !force && !fills && !chain;
+    if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec && !why[0]) { why = "too few tokens to fill a layer"; }
+    g_pp_dec = dec;
+    g_pp_mb = chain || dec ? ub_max : 0;
     const char * why_mix = "";
-    const bool mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
+    const bool mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && !dec && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
     g_pp_mix_call = mix;
     if (why_mix[0]) { why = why_mix; }
     static const bool k_auto = moe_opt("pp-k") == nullptr;   // --moe pp-k fixes it, pp-k=0 turns it off
     const double r = pp_took_us(mix ? PP_MIX : PP_RING, n);
-    const double m = k_auto && !force && !chain && !why_mix[0] && r > 0.0 ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
+    const double m = k_auto && !force && !chain && !dec && !why_mix[0] ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
     if (k_auto) { ggml_backend_pred_set_fork(m); }
     double o = 0.0;   // the fastest one-card stream measured here
     for (int p = 0; p < PP_PATHS; ++p) {
@@ -11437,7 +11448,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         if (const double t = pp_took_us(PP_K + i, n); t > 0.0) { ks += format(", k x%d %.0f ms", 1 << i, t / 1e3); }
     }
     const std::string pick = format("prompt call of %.0f tokens: %s (%s; took: chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, the chain's misses %.0f ms over %zu experts off the card)",
-            n, chain ? "prompt chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
+            n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
             pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, v.size());
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
@@ -11671,7 +11682,7 @@ bool llama_moe_cache_graph_reusable_fork() {
     return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built && starved == g_starved_built &&
            g_kv_epoch.load() == g_kv_epoch_built &&   // a moved KV zone: the old graph's views point at the old place
            g_lend_epoch.load() == g_lend_epoch_built &&   // a graph placed elsewhere in the pool since: the old graph's tensors sit at the old place
-           (!g_pp_built || pp_chain_allowed()) && (!g_pp_mix_built || pp_mix_allowed()) && g_pp_k_built == (ggml_backend_pred_get_fork() > 0.0) && g_pp_mix_call_built == g_pp_mix_call.load(std::memory_order_relaxed);       // a graph of the prompt chain has no CPU chain: only a prompt call may run it
+           (!g_pp_built || pp_chain_allowed()) && g_pp_dec_built == g_pp_dec.load(std::memory_order_relaxed) && (!g_pp_mix_built || pp_mix_allowed()) && g_pp_k_built == (ggml_backend_pred_get_fork() > 0.0) && g_pp_mix_call_built == g_pp_mix_call.load(std::memory_order_relaxed);       // a graph of the prompt chain has no CPU chain: only a prompt call may run it
 }
 
 int32_t llama_moe_cache_cpu_sat_threads_fork() {
@@ -11686,6 +11697,7 @@ void llama_moe_cache_graph_built_fork() {
     g_kv_epoch_built = g_kv_epoch.load();
     g_lend_epoch_built = g_lend_epoch.load();
     g_pp_built = g_pp_graph;
+    g_pp_dec_built = g_pp_dec.load(std::memory_order_relaxed);
     g_pp_k_m = ggml_backend_pred_get_fork();
     g_pp_k_built = g_pp_k_m > 0.0;
     g_pp_mix_call_built = g_pp_mix_call.load(std::memory_order_relaxed);
