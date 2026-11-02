@@ -3430,7 +3430,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         std::vector<uint8_t> filled;
         bool           partial    = false;
         int            layer      = -1;
-        std::vector<uint8_t> far;          // the prompt mix: experts another card computes, this slot never holds them
+        std::vector<uint8_t> remote;          // the prompt mix: experts another card computes, this slot never holds them
         bool           from_far   = false; // staged from a ranking two layers back: the next ranking tops it up
     };
     std::vector<prefetch_pending> lookahead;
@@ -3633,7 +3633,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         double bytes = 0.0;
         int64_t run0 = -1;
         for (int64_t id = q.lo; id <= q.hi; ++id) {
-            const bool need = id < q.hi && want[id] && !q.filled[(size_t) (id - q.lo)] && (q.far.empty() || !q.far[id]);
+            const bool need = id < q.hi && want[id] && !q.filled[(size_t) (id - q.lo)] && (q.remote.empty() || !q.remote[id]);
             if (need) {
                 if (run0 < 0) { run0 = id; }
                 q.filled[(size_t) (id - q.lo)] = 1;
@@ -3861,8 +3861,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             for (int64_t id = p.lo; id < p.hi; ++id) {
                 if (where[(size_t) (id - p.lo)] != (const void *) 1) { continue; }
                 where[(size_t) (id - p.lo)] = NULL;
-                if (p.far.empty()) { p.far.assign((size_t) input->ne[2], 0); }
-                p.far[id] = 1;
+                if (p.remote.empty()) { p.remote.assign((size_t) input->ne[2], 0); }
+                p.remote[id] = 1;
             }
             // fork (GGML_PRED_K): the experts to stage by prediction; empty = all of them
             std::vector<uint8_t> wanted;
@@ -3877,7 +3877,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     const double keep = pred_depth > 1 && pf_rt > 0.0 ? pred_q1 * S / pf_rt : 0.0;
                     pred_cap[pred_T] = left >= 0.0 && pf_rt > 0.0 && S > 0.0 ? (int64_t) (std::max(0.0, left - keep) * pf_rt / S) : INT64_MAX;
                 }
-                const auto held = [&](int64_t id) { return id < p.lo || id >= p.hi || where[(size_t) (id - p.lo)] != NULL || (!p.far.empty() && p.far[id]); };
+                const auto held = [&](int64_t id) { return id < p.lo || id >= p.hi || where[(size_t) (id - p.lo)] != NULL || (!p.remote.empty() && p.remote[id]); };
                 const int64_t n_q1 = pred_pick(pred_T, input, n_used, pred_cap[pred_T], held, wanted);
                 if (first_of_layer) { pred_q1 = (double) n_q1; }
                 p.partial = true;
@@ -3887,9 +3887,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 for (int64_t id = p.lo; id < p.hi; ++id) { pfs_pred_exp += wanted[id]; }
                 pfs_pred_t++;
             }
-            if (!p.far.empty()) {
+            if (!p.remote.empty()) {
                 if (wanted.empty()) { wanted.assign((size_t) input->ne[2], 1); p.filled.assign((size_t) (p.hi - p.lo), 0); }
-                for (int64_t id = p.lo; id < p.hi; ++id) { if (p.far[id]) { wanted[id] = 0; } }
+                for (int64_t id = p.lo; id < p.hi; ++id) { if (p.remote[id]) { wanted[id] = 0; } }
             }
             if ((n_res <= 0 || where_buf == NULL) && wanted.empty()) {
                 ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, off, (size_t) (p.hi - p.lo)*esz + pad);
@@ -4467,7 +4467,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         if (q.slot < 0 || !q.partial || !q.from_far || q.layer != T) { continue; }
                         const int n_used = splits[j].graph.nodes[0]->src[2] ? (int) splits[j].graph.nodes[0]->src[2]->ne[0] : 8;
                         std::vector<uint8_t> want;
-                        const auto held = [&](int64_t id) { return id < q.lo || id >= q.hi || q.filled[(size_t) (id - q.lo)] || (!q.far.empty() && q.far[id]); };
+                        const auto held = [&](int64_t id) { return id < q.lo || id >= q.hi || q.filled[(size_t) (id - q.lo)] || (!q.remote.empty() && q.remote[id]); };
                         pred_pick(T, q.input, n_used, pred_cap[T], held, want);
                         int n_top = 0;
                         const double b = pf_fill(q, splits[j].backend_id, want, &n_top);
