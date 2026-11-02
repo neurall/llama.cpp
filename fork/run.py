@@ -6730,6 +6730,17 @@ def live_rows(rec):
     return "\n".join(ln)
 
 
+OLD_BUILD_PIN_GIB = {"ds": 85, "glm": 101, "mimo": 85}   # best of the pin sweeps on gather_threads_madvise_phases (DS 61/73/85/97, GLM and MiMo 61/85/101); builds without the auto pin only
+AUTO_PIN_COMMIT = "d56a4a6a7e"   # the commit that computes the pin start from RAM and model size (common_auto_pin); builds before it need a forced -nm
+
+def has_auto_pin(build):
+    """True when devbuilds/BUILD contains the auto pin commit: its rows get no forced pin share (user 2026-11-02: remove forced -nm from runs, except for old builds)"""
+    try:
+        c = dict(l.split("=", 1) for l in open(os.path.join(DEVBUILDS, build, "BUILD_INFO")).read().splitlines() if "=" in l).get("commit", "")
+        return bool(c) and subprocess.run(["git", "-C", os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "merge-base", "--is-ancestor", AUTO_PIN_COMMIT, c], capture_output=True).returncode == 0
+    except Exception: return False
+
+
 def own_build_no(build):
     """build number from `llama-server --version` of devbuilds/BUILD ('?' when it cannot be read: the display never stops a run)"""
     st = re.fullmatch(r"stock-b(\d+)-official", str(build))
@@ -7486,10 +7497,20 @@ def run_list(name, argv):
     if o.no_pool and o.no_pool != "0":   # -nm GB: every non-stock row pins at most GB GiB of the model, the rest is mapped (row-level -nm GB, see nomount_args)
         for r in rows:
             if not r["_b"].startswith("stock") and "-nm" not in shlex.split(r.get("args") or ""): r["args"] = ((r.get("args") or "") + f" -nm {o.no_pool}").strip()
+    auto_pin = {b: has_auto_pin(b) for b in dict.fromkeys(r["_b"] for r in rows)}
+    for r in rows:   # builds with the auto pin: no forced pin share, the build computes it from RAM and model size and logs the numbers (a -nm 0 row stays: it asks for no pinning)
+        if auto_pin.get(r["_b"]) and not r["_b"].startswith("stock"):
+            tok = shlex.split(r.get("args") or ""); keep = []
+            for i, t in enumerate(tok):
+                if t == "-nm" and i + 1 < len(tok) and re.fullmatch(r"[\d.]+%?", tok[i + 1]) and float(tok[i + 1].rstrip("%")) != 0: continue
+                if i and tok[i - 1] == "-nm" and re.fullmatch(r"[\d.]+%?", t) and float(t.rstrip("%")) != 0: continue
+                keep.append(t)
+            r["args"] = shlex.join(keep)
     ram_gib = int(open("/proc/meminfo").readline().split()[1]) >> 20
     for r in rows:   # a model that cannot fit RAM beside 16 GiB for the system must not be pinned (128 GiB GLM on 125 GiB froze PC1): -lm mmap, no pool; stock mmaps already
-        if not r["_b"].startswith("stock") and (size(r) >> 30) + 16 > ram_gib and not nomount_args(r.get("args") or "")[1]:
-            pg = max(1, ram_gib - 24)   # default pin cap: RAM - 24 GiB (125 GiB -> 101); pinning 110 GiB froze PC1; the rest is mapped
+        if not r["_b"].startswith("stock") and not auto_pin.get(r["_b"]) and (size(r) >> 30) + 16 > ram_gib and not nomount_args(r.get("args") or "")[1]:
+            pg = OLD_BUILD_PIN_GIB.get(r["model"], max(1, ram_gib - 24))   # old builds: the best share measured per model (2026-11-02, 125 GiB box), else RAM - 24 GiB
+            # default pin cap: RAM - 24 GiB (125 GiB -> 101); pinning 110 GiB froze PC1; the rest is mapped
             r["args"] = ((r.get("args") or "") + f" -nm {pg}").strip()   # (model > RAM - 16 GiB: pin at most RAM - 24 GiB, map the rest; `run ... -n` shows it as -nm in the cell's arguments)
     bad = []; last_model = shown = None
     for b in dict.fromkeys(r["_b"] for r in rows) or [o.build]:   # which binaries the list runs: name, real path, build date
