@@ -1,0 +1,25 @@
+name,model,n,test,tokens,args,extra
+mc-glm-t,glm,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/mc-glm-t.ini,log=wk",--ctx 4096
+md-glm-t,glm,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/md-glm-t.ini,log=wk,pp-path=dec",--ctx 4096
+mc-glm-s100,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mc-glm-s100.ini,log=wk",
+md-glm-s100,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/md-glm-s100.ini,log=wk,pp-path=dec",
+mc-glm-s500,glm,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mc-glm-s500.ini,log=wk",
+md-glm-s500,glm,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/md-glm-s500.ini,log=wk,pp-path=dec",
+mc-glm-l,glm,2,long1kc,128,"--moe state=/tmp/runstate/ppk/mc-glm-l.ini,log=wk",
+md-glm-l,glm,2,long1kc,128,"--moe state=/tmp/runstate/ppk/md-glm-l.ini,log=wk,pp-path=dec",
+mc-mimo-t,mimo,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/mc-mimo-t.ini,log=wk",--ctx 4096
+md-mimo-t,mimo,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/md-mimo-t.ini,log=wk,pp-path=dec",--ctx 4096
+mc-mimo-s100,mimo,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mc-mimo-s100.ini,log=wk",
+md-mimo-s100,mimo,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/md-mimo-s100.ini,log=wk,pp-path=dec",
+mc-mimo-s500,mimo,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mc-mimo-s500.ini,log=wk",
+md-mimo-s500,mimo,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/md-mimo-s500.ini,log=wk,pp-path=dec",
+mc-mimo-l,mimo,2,long1kc,128,"--moe state=/tmp/runstate/ppk/mc-mimo-l.ini,log=wk",
+md-mimo-l,mimo,2,long1kc,128,"--moe state=/tmp/runstate/ppk/md-mimo-l.ini,log=wk,pp-path=dec",
+mc-ds-t,ds,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/mc-ds-t.ini,log=wk",--ctx 4096
+md-ds-t,ds,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/md-ds-t.ini,log=wk,pp-path=dec",--ctx 4096
+mc-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mc-ds-s100.ini,log=wk",
+md-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/md-ds-s100.ini,log=wk,pp-path=dec",
+mc-ds-s500,ds,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/mc-ds-s500.ini,log=wk",
+md-ds-s500,ds,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/md-ds-s500.ini,log=wk,pp-path=dec",
+mc-ds-l,ds,2,long1kc,128,"--moe state=/tmp/runstate/ppk/mc-ds-l.ini,log=wk",
+md-ds-l,ds,2,long1kc,128,"--moe state=/tmp/runstate/ppk/md-ds-l.ini,log=wk,pp-path=dec",

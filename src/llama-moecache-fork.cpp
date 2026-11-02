@@ -8612,7 +8612,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // done: this layer's router ids came back through the same stream), never one of the layers still to come. A prompt call is several tokens with at most one
     // output (llama_context::decode).
     const bool prompt = g_prompt_call.load(std::memory_order_relaxed);
-    if (!mc || (!prompt && (knobs().jit == 0 || ids->ne[1] > (jit_all_mode ? std::max<int64_t>(4, llama_moe_cache_max_batch_fork()) : 4)))) {   // a prompt call always weighs upload against the CPU
+    if (!mc || knobs().jit == 0) {
         return;
     }
     std::lock_guard<std::mutex> lock(mc->mtx);
@@ -11442,16 +11442,15 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // --moe pp-path=stream|mix|chain (test rows): every prompt call takes this path, whatever was measured. The planner picks by time, so a path may run once in a long request or
     // never: the prompt mix's first try came on the last call of the second request, and a bug on it looked like a bug of the second request (2026-11-02). fork/runs/paths.csv forces each one.
     static const char * const force = moe_opt("pp-path");
-    // Upload or CPU, computed per call from this machine's rates (user 2026-11-02: no fixed limit, what wins on x16 + x4 does not on PCIe 5). The decode chain may leave misses on the CPU, every other
-    // path uploads them. Its CPU costs bytes / CPU rate per token routed to an expert, an upload bytes / the rate of that layer's card, so short calls go to the CPU (GLM 15 tokens at a full cache:
-    // 0.6 s, the prompt chain 1.4 s uploading each; MiMo 10 tokens: 0.3 s, 1.0 s) and long ones to the links (a miss there runs over many tokens). The decode chain also has its own compute per token, whatever
-    // it finds in the cache, so its time is what it measured when that is more than its misses. It may run while it beats the fastest other path measured at this size, else the stream's whole
-    // upload (2 tokens took DeepSeek 7.8 s streaming, every expert uploaded, 2.1 s here). It runs first while it also beats the chain's uploads, then the chain if they can win, measured the faster.
-    const double td = std::max(cpu, pp_scaled_us(PP_DEC, n)), to = pp_other_us(n, PP_DEC);
-    const bool dec_ok    = n <= (double) llama_moe_cache_max_batch_cap_fork() && td < (to > 0.0 ? to : U);   // its graph holds what the node budget allows
-    const bool dec_first = dec_ok && td < (to > 0.0 ? to : std::max(pp_pass_floor(n), up));
-    const bool chain = force ? strcmp(force, "chain") == 0 : !busy && (!dec_first || pp_took_us(PP_DEC, n) > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
-    const bool dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
+    // Upload or CPU is decided behind each layer's router, for every pass, from the real picks and misses x the known costs (llama_moe_cache_jit_fork, user 2026-11-02: "number of miss moes
+    // multiplied by known cost"). Here, before any router ran, only the graph is chosen: the decode chain has a CPU side, the prompt chain and the stream have none. The odds of a miss say too little
+    // for that (GLM, 126 tokens: 5.7 s on the CPU or 4.9 s of uploads expected, the decode chain took 2.6 s, k x1 3.5 s), so a size up to the graph's budget, where the CPU can still win, runs the
+    // decode chain once and measured times decide after that: the fastest path measured at this size. Then the prompt chain if its uploads can win, measured the faster.
+    const double cap = (double) llama_moe_cache_max_batch_cap_fork();
+    const double td = pp_took_us(PP_DEC, n), to = pp_other_us(n, PP_DEC);
+    const bool dec_ok = n <= cap && (td <= 0.0 || to <= 0.0 || td < to);
+    const bool chain = force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
+    const bool dec = force ? strcmp(force, "dec") == 0 && n <= cap : dec_ok && !chain;
     if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
     g_pp_dec = dec;
     g_pp_mb = chain || dec ? ub_max : 0;
@@ -11476,9 +11475,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     }
     std::string links;
     for (int k = 0; k < mc->n_links; ++k) { links += format("%s%.1f", k ? "/" : "", mc->gbs_link[k]); }
-    const std::string pick = format("prompt call of %.0f tokens: %s (%s; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card, decode chain expected %.0f ms; links %s GB/s, CPU %.1f GB/s)",
+    const std::string pick = format("prompt call of %.0f tokens: %s (%s; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s)",
             n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, pp_took_us(PP_DEC, n) / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
-            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), td / 1e3, links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs);
+            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs);
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
     llama_moe_stats_io_fork(0);   // the reads of this call start counting here
