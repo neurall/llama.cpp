@@ -36,3 +36,4 @@ ptq-qwen36-stream,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense
 ptq-qwen36-mix,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=200:1000
 ptq-qwen36-chain,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=200:1000
 ptq-stock-qwen36,qwen36,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=200:1000
+dsq-stream,ds,2,pfbest1k,1024,"--moe pp-path=stream",
