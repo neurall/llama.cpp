@@ -459,15 +459,36 @@ void llama_moe_token_time_fork(double ms) {
 // One event or one status report per line, with a type acronym (user 2026-11-02: "one line per event with timestamp and evt type acronim seems simpler than wastefull csv"; tail -f it to watch a change live, run.py stats does).
 // The first line of the file names the types. STA comes once a second from stats_status_run, GPU once a second from run.py (nvidia-smi dmon).
 static const auto g_stats_t0 = std::chrono::steady_clock::now();
+// --moe log-profile=NAME[+NAME]: what the engine logs on top of its own server log (user 2026-11-02: "make all the heavy binary logging optional on demand, logging profiles"; "just planner and make stats included
+// every profile"). Every profile writes the status lines of stats.log. stats: only those. planner: its event lines too. activations: the per-prompt hot maps too (--moe dynhot=store, until now on by default: it
+// records them and nothing reads them back in that mode). all: every one of these. off: nothing. Without the key: planner when --moe stats=PATH is given, else nothing. A key of its own (--moe dynhot=full, ledger=1,
+// tokdump=PATH) needs no profile.
+bool llama_moe_log_profile_fork(const char * name) {
+    const char * o = llama_moe_get_opt("log-profile");
+    const std::string v = o ? o : llama_moe_get_opt("stats") ? "planner" : "";
+    if (v.empty() || v == "off") { return false; }
+    if (strcmp(name, "stats") == 0) { return true; }
+    std::istringstream is(v);
+    std::string w;
+    while (std::getline(is, w, '+')) {
+        if (w == name || w == "all") { return true; }
+    }
+    return false;
+}
+
 void llama_moe_stats_log_fork(const char * kind, const char * text) {
     static std::mutex mu;
     static FILE * f = nullptr;
     static bool opened = false;
+    static const bool planner = llama_moe_log_profile_fork("planner");
+    if (!planner && strcmp(kind, "STA") != 0) { return; }
     std::lock_guard<std::mutex> lk(mu);
     if (!opened) {
         opened = true;
-        const char * p = llama_moe_get_opt("stats");
-        if (p && *p) {
+        const char * p = llama_moe_get_opt("stats");   // a profile without a path: stats.log in the log directory
+        const std::string path = p && *p ? p : moe_log_file("stats.log");
+        if (!path.empty()) {
+            p = path.c_str();
             f = fopen(p, "a");
             if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
             else if (ftell(f) == 0 && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0) {
@@ -490,7 +511,7 @@ void llama_moe_stats_log_fork(const char * kind, const char * text) {
 // DeepSeek's second request read at 335 MB/s on a drive that does 5.8 GB/s, and nothing said so). Empty without --moe stats, and on a caller's first call.
 std::string llama_moe_stats_io_fork(int who) {
 #ifdef __linux__
-    static const bool on = llama_moe_get_opt("stats") != nullptr;
+    static const bool on = llama_moe_log_profile_fork("stats") || llama_moe_log_profile_fork("planner");
     if (!on) { return ""; }
     struct sample { int64_t t = 0; unsigned long long rb = 0, mj = 0, mn = 0, sc = 0, si = 0, so = 0, all = 0, idle = 0, iow = 0; };
     static sample last[3];

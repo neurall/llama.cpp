@@ -87,6 +87,7 @@ static std::vector<std::pair<ggml_backend_dev_t, double>> g_early_gbs; // early 
 
 void        llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
 std::string llama_moe_stats_io_fork(int who);                                 // what the disk, the memory and the CPU did since this caller's last call
+bool        llama_moe_log_profile_fork(const char * name);                    // --moe log-profile
 
 namespace {
 
@@ -6234,7 +6235,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     }
     if (g_topic.on < 0) {   // the first prompt: open the store
         size_t max_rec = 1024;
-        const std::string m = moe_opt("dynhot") ? moe_opt("dynhot") : "store";
+        const std::string m = moe_opt("dynhot") ? moe_opt("dynhot") : llama_moe_log_profile_fork("activations") ? "store" : "off";   // recording is on demand: --moe log-profile=activations
         if      (m == "full" || m == "1") { g_topic.mode = topic_t::FULL; }
         else if (m == "read")             { g_topic.mode = topic_t::READ; }
         else if (m == "off"  || m == "0") { g_topic.mode = topic_t::OFF; }
@@ -7240,7 +7241,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     LLAMA_LOG_WARN("moe-cache: pin-lazy: pinning expert tensors in the background, up to %.1f GiB, the rest stays mapped\n", budget / 1073741824.0);
                 }
             }
-            if (moe_opt("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
+            if (llama_moe_log_profile_fork("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
                     mc->bounce_bytes ? "memcpy -> pinned staging (bounce) -> GPU" :
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
@@ -8975,7 +8976,7 @@ void llama_moe_cache_step_fork() {
     }
     struct flush_at_exit { ~flush_at_exit() { flush_tables(); } } flush_guard; // table changes reach the GPU before the next graph
     {   // stats.log: decode speed and hit rate per 256 steps. Prompt calls count no hits and take long, so a window with one in it says little: read it next to the call lines
-        static const bool on = moe_opt("stats") != nullptr;
+        static const bool on = llama_moe_log_profile_fork("planner");
         static int64_t t0 = 0, n0 = 0;
         static uint64_t h0 = 0, m0 = 0;
         if (on && (t0 == 0 || mc->n_steps - n0 >= 256)) {
