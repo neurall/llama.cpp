@@ -6107,7 +6107,7 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
 }
 
 // ---- hot maps per topic (task 158; user idea 2026-10-27; the store: llama-moetopic-fork.h) ---------------------------------------------------------
-// --moe dynhot=full|store|read|off (1 = full, 0 = off; default store, user 2026-10-28: "dynhot full/onlystore/onlyread/off meaning only store uses ini hotmoes
+// --moe dynhot=full|store|read|off (1 = full, 0 = off; default full since 2026-11-02, was store (user 2026-10-28: "dynhot full/onlystore/onlyread/off meaning only store uses ini hotmoes
 // for decode"): the hottest experts of every request's answer (topic_dec, as many as the cache holds: topic_hottest) and its decode hit rate are stored
 // under its prompt's keys, the mean and the max of the input embeddings of the request's own text (the chat template's user parts; a /completion prompt
 // with the template's markers cut); a prompt stored before changes its record only for a better hit rate. store collects only: the cache runs on the
@@ -6486,7 +6486,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     }
     if (g_topic.on < 0) {   // the first prompt: open the store
         size_t max_rec = 1024;
-        const std::string m = moe_opt("dynhot") ? moe_opt("dynhot") : llama_moe_log_profile_fork("activations") ? "store" : "off";   // recording is on demand: --moe log-profile=activations
+        const std::string m = moe_opt("dynhot") ? moe_opt("dynhot") : "full";   // default full (user 2026-11-02): per layer the nearest records' maps, the global map where no record is near; --moe dynhot=off|store|read
         if      (m == "full" || m == "1") { g_topic.mode = topic_t::FULL; }
         else if (m == "read")             { g_topic.mode = topic_t::READ; }
         else if (m == "off"  || m == "0") { g_topic.mode = topic_t::OFF; }
