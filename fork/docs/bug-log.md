@@ -376,3 +376,14 @@ Repro: `python3 fork/run.py jobs -c paths -b up8_ledger2_verify -r 0 -nm -onl db
 Only models with such rows are touched; GLM, MiMo and Qwen3.6 showed 0 bad bytes on every path.
 
 The first fix had its own bug: it clamped those bytes to the class's view, which ends with the last block's slice, so that block's bytes were no longer written and the byte check no longer read them. `fix_jit_past_bytes` gave NaN under poison from request 1 with a clean byte check. Found with `GGML_SCHED_NAN_CHECK=2 GGML_SCHED_NAN_CHECK_ONLY=ffn_moe_cache`: all bad values in column 2559 of `ffn_moe_cache_down-30`, the table reaching the class's last block. Those bytes now go through `expert_past_view`, a tensor of their own. Verified on build `fix_jit_past_last_block`: `pa-qn_iq4xs-mix` under poison, NaN check and byte check, both requests: no NaN, 0 bad bytes in 5 byte checks.
+
+## 2026-11-02 Found by the forced path list and the long prompt list on the same night
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `src/llama-poolalloc-fork.h` `poolx_pick_slot` | Qwen Next, `pp-path=mix`, RUN_TRUE_PPL row: `general protection fault` in `llama_moe_cache_step_fork`, on the loop over `adopt_victims`, right after a 95-token pass | the picker went on to an empty block with the owner of an earlier candidate still in its answer. An adoption then took expert -1 of that owner: a write before its table, and a bad index at the next step | the owner is reset on both early returns; `tests/test-pass-fork.cpp` has the two cases, which fail on the old header. Build `fix_pick_owner_kv_flip`: the row runs, PPL 1.05099 |
+| `llama_moe_cache_kv_retype_fork` with the q8_0 policy | Qwen3.6 128k with the dense split on (`sl-q36`): HTTP 400 `kv-fit: CUDA0: no lend in front of the KV to stage the conversion` | the conversion asked for staging blocks with no rows to convert, and the dense split's copies left none in front of the zone. The policy's optional pick failed the request | no rows, no staging; a pick of the policy that cannot run stays on f16 with a logged decision. `sl-q36`: answer coherent, decode 70.9 t/s, prompt 2221 t/s |
+| `moe_fill_cb` | the adoption path wrote the slice only, like the JIT upload above | same as the JIT entry | `expert_past` there too |
+
+Verified on `fix_pick_owner_kv_flip`, `kvb-m90-128k`, one mix call on request 2: the two answers are identical over all 802 characters, decode 71.6 and 71.4 t/s.
+
