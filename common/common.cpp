@@ -1373,6 +1373,20 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
 // RAM that can be used without swapping: Linux MemAvailable (free + reclaimable page cache), 0 if unknown
 // with_pool: also the free pages of a reserved huge page pool (1 GiB and 2 MiB, Linux): MemAvailable does not count them, but the pinned weights buffer is taken
 // from exactly those pages, so for the decision to pin they are available RAM (a 100 GiB pool left 21 GiB "available" and a 109 GiB model fell back to mmap)
+// the RAM of the machine, huge pages included; 0 when unknown
+static size_t common_ram_total() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX st = {};
+    st.dwLength = sizeof(st);
+    return GlobalMemoryStatusEx(&st) ? (size_t) st.ullTotalPhys : 0;
+#elif defined(__linux__)
+    const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+    return pages > 0 && page > 0 ? (size_t) pages * (size_t) page : 0;
+#else
+    return 0;
+#endif
+}
+
 static size_t common_ram_available(bool with_pool = false) {
 #if defined(_WIN32)
     GGML_UNUSED(with_pool);
@@ -2016,10 +2030,11 @@ static void common_auto_pin(common_params & params) {
     // in the RAM available now minus the margin below; a model that does not is pinned up to that limit and the rest is mapped
     if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
         const size_t avail = common_ram_available(true);
-        // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: everything else is pinned (2026-10-21: 12 GiB, was 0 when the model fitted and 4 GiB when it did not),
-        // plus the largest prompt pass's pinned host buffer (user 2026-10-22: a full-size pass comes before how much of the model is pinned)
+        // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: a tenth of the machine, at least 4 GiB (user 2026-11-02: a share, not 12 GiB on any machine; was 0 when
+        // the model fitted and 4 GiB when it did not until 2026-10-21), plus the largest prompt pass's pinned host buffer (user 2026-10-22: a full-size pass comes before how much of the model is pinned)
         const size_t pass_buf = common_pass_buffer_reserve(params);
-        const size_t margin = ((size_t) 12 << 30) + pass_buf;
+        const size_t ram_total = common_ram_total();
+        const size_t margin = std::max((size_t) 4 << 30, ram_total / 10) + pass_buf;
         LOG_INF("%s: %.1f GiB of RAM kept free for the pinned host buffer of the largest prompt pass\n", __func__, pass_buf / 1073741824.0);
         if (avail && model_size + margin <= avail) {
             params.load_mode        = LLAMA_LOAD_MODE_NONE;
@@ -2040,6 +2055,11 @@ static void common_auto_pin(common_params & params) {
                 }
             }
             params.load_pin_budget = pool + (mem > margin ? mem - margin : 0);
+            // --moe pin-pct=N: at most N% of the machine's RAM pinned (the reserved pool always counts). Pinning all it can left DeepSeek (232 GiB) 12 GiB beside 109 GiB pinned: the page cache of the
+            // mapped rest stayed at 0, the kernel scanned 140 million pages a second and a second request's 16k pass read at 335 MB/s (user 2026-11-02: "make it %", fork/runs/paths.csv dsp-*)
+            if (const char * pct = llama_moe_get_opt("pin-pct"); pct && ram_total > 0) {
+                params.load_pin_budget = std::max(pool, std::min(params.load_pin_budget, ram_total / 100 * (size_t) std::max(0, atoi(pct))));
+            }
             llama_moe_set_opt("pin-budget", std::to_string(params.load_pin_budget).c_str());
         }
     }

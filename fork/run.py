@@ -1883,6 +1883,7 @@ DIAG_ENV = ("POOL_LIVE", "PERF_LEDGER", "GGML_CUDA_SCRATCH_CHECK")   # diagnosti
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
+                             + f",planner-log=/tmp/perf-{build}{LOGTAG}.planner.log"   # every pick and what it measured, with timestamps: tail -f it during a run; the cell keeps it as TAG.planner.log
                              + f",hotmaps={HOTMAPS}"   # the hot maps per topic of every model (--moe dynhot) in the repo's fork/hotmaps, published with runs.db (branch runs-db); a cell's own hotmaps= comes after and wins
                              + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
                              + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
@@ -3066,7 +3067,13 @@ def row_layout(logf):
     paths = collections.Counter(x.strip() for x in re.findall(r"prompt call of \d+ tokens: ([^(]+?) \(", last))
     if not pools:
         return ""
-    return (f"pool {'+'.join(f'{float(v):.0f}' for v in pools.values())} MiB margin {'/'.join(margins.values())} paths " + (", ".join(f"{k} {n}" for k, n in paths.most_common()) or "-"))
+    try:   # planner.log beside the server log: the calls that ran 1.3 x or more behind the best known at their size
+        slow = [re.search(r"prompt call of (\d+) tokens: (.+?) took (\d+) ms.*?, ([\d.]+) x, SLOW", l) for l in open(logf[:-4] + ".planner.log", errors="replace") if ", SLOW" in l]
+    except OSError:
+        slow = []
+    worst = max((m for m in slow if m), key=lambda m: float(m.group(4)), default=None)
+    return (f"pool {'+'.join(f'{float(v):.0f}' for v in pools.values())} MiB margin {'/'.join(margins.values())} paths " + (", ".join(f"{k} {n}" for k, n in paths.most_common()) or "-")
+            + (f" | {len(slow)} slow calls, worst {worst.group(1)} tokens {worst.group(2)} {float(worst.group(3)) / 1e3:.1f} s, {worst.group(4)} x" if worst else ""))
 
 
 def answer_checks(row, key):
@@ -7764,9 +7771,11 @@ def nomount_args(args, model=None):
         if t == "-pin": out += ["-lm", "pin"]   # force the weights into pinned RAM (the default `auto` maps them, or pins when the model fits); the pool is wanted, so this is not a no-mount cell
         elif t == "-nm":
             out += ["-lm", "mmap"]
-            try: gb = float(tok[i + 1])   # `-nm 101`: pin at most 101 GB of the model (tensor order), map the rest (--moe pin-budget, read by the loader with mmap on)
+            try:   # `-nm 101`: pin at most 101 GB of the model (tensor order), map the rest (--moe pin-budget, read by the loader with mmap on). `-nm 70%`: that share of the machine's RAM
+                v = tok[i + 1]
+                gb = float(v[:-1]) / 100 * (int(open("/proc/meminfo").readline().split()[1]) / 2**20) if v.endswith("%") else float(v)
             except (IndexError, ValueError): pass
-        elif gb and i and tok[i - 1] == "-nm": continue   # the GB value itself
+        elif i and tok[i - 1] == "-nm" and re.fullmatch(r"[\d.]+%?", t): continue   # the GB value itself, 0 too
         else: out.append(t)
     if gb:
         nb = int(gb * 2**30)
@@ -7818,6 +7827,8 @@ def cmd_cell(a):
         used = [int(x) for i, x in enumerate(r.stdout.split()) if card_is_mine(i)]
         if used and max(used) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
+    try: os.remove(f"/tmp/perf-{a.builds}.planner.log")   # the planner log appends: one cell, one file
+    except OSError: pass
     keep_pool = os.environ.get("RUN_KEEP_POOL") == "1"   # run -nm: the pool stays mounted for the whole list (a remount after fragmentation gets only part of it back: 49-58 of 108 pages, 2026-10-22)
     too_big = False
     if keep_pool and os.path.ismount("/mnt/huge1g") and os.path.exists(HUGE_NR):
@@ -7863,6 +7874,8 @@ def cmd_cell(a):
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
         f.write(f"== {re.sub(r'^pf(?=\d+k)', '', a.test)} {args}\n" + "".join(l + "\n" for l in lines))
     if a.builds.count(",") == 0:
+        try: shutil.copy(f"/tmp/perf-{a.builds}.planner.log", os.path.join(Q5, a.tag + ".planner.log"))
+        except OSError: pass
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
         try:   # the start before the last one (the cold run of a clean-state cell), when it belongs to this cell
