@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+o2-glm-s500,glm,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/o2-glm-s500.ini",
+o2-mimo-s500,mimo,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/o2-mimo-s500.ini",

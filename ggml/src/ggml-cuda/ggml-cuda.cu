@@ -3120,8 +3120,8 @@ static bool ggml_backend_cuda_obs_trace_read_fork(int n_layer, int32_t * n_tok, 
 // every MUL_MAT_ID node of the graph loop (fused into gate/up/glu or not: the fused path never calls ggml_cuda_mul_mat_id), gate tensor only: one count
 // per router pick into the full counters, and the decode trace
 static void ggml_cuda_obs_full_count(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * ids) {
-    const char * nm = src0->name;
-    if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32 || ctx.device >= GGML_CUDA_MAX_DEVICES || !g_obs_full[ctx.device]) {
+    const char * nm = strstr(src0->name, "blk.");   // staged passes read the scheduler's copy, CUDA1#blk.12...#0
+    if (nm == nullptr || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32 || ctx.device >= GGML_CUDA_MAX_DEVICES || !g_obs_full[ctx.device]) {
         return;
     }
     const int il = atoi(nm + 4);
@@ -3138,8 +3138,8 @@ static void ggml_cuda_obs_full_count(ggml_backend_cuda_context & ctx, const ggml
 }
 
 static void ggml_cuda_obs_count(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * ids) {
-    const char * nm = src0->name;
-    if (strncmp(nm, "blk.", 4) != 0 || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32) {
+    const char * nm = strstr(src0->name, "blk.");   // a staged pass reads the scheduler's copy, named CUDA1#blk.12.ffn_gate_exps.weight#0: anchored on "blk." no staged pass was ever counted
+    if (nm == nullptr || !strstr(nm, "ffn_gate_exps") || ids->type != GGML_TYPE_I32) {
         return;
     }
     if (ids->ne[1] > 8) {   // > 8 tokens: a prompt batch, not the answer: the prompt counters (when the expert cache asked for them)
