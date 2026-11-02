@@ -1,0 +1,41 @@
+run 21979 | rc_nan_fixes | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.62 t/s | prompt 9.8 t/s | 1005 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-02 04:23:35
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent (minimal but not ugly).
+
+Let me think about what "smallest" means here. The classic minimal Tetris implementations in JS are around 300-500 bytes for extremely stripped versions (like the famous "Tetris in 140 bytes of JavaScript" or the ~500 byte ones). But those are often barely playable or lack rotation. A good balance: a compact but fully playable Tetris — piece movement, rotation, gravity, line clears, score, game over — in a single HTML file, minified, with a small byte count. I can aim for something like ~600-900 bytes of actual code, presented nicely.
+
+Let me actually write a genuinely compact Tetris. I'll write it carefully and then minify.
+
+Core design:
+- Canvas rendering (small).
+- Grid 10x20 (or smaller like 10x18 to save bytes? Standard is 10x20; I'll keep 10x20 but maybe render smaller cells).
+- Pieces encoded compactly. Classic trick: encode each tetromino as a 16-bit number (4x4 matrix), rotate via bit manipulation. Or use the "all pieces in one string" trick.
+
+A well-known compact approach: represent pieces as arrays of coordinates, or as binary numbers. Rotation of a 4x4 encoded piece: there's a known bit trick where rotating a 4x4 grid encoded in 16 bits can be done with a lookup or arithmetic.
+
+Actually the famous minimal tetris (by Ryan Fok or "tiny tetris") uses:
+
+```js
+c="0,4,10,14,1,7,11,14,1,5,13,14,1,3,7,14,1,3,9,14,1,3,7,11,1,3,7,13".split(",")
+```
+
+Hmm, let me think of my own compact encoding.
+
+Option: each piece = list of 4 rotations, each rotation = list of cell indices in a 4x4 grid (0-15). Encode as a single string of digits? Indices 0-15 need two chars sometimes. Alternative: use base-16 chars in a string, each rotation is 4 hex digits (4 cells), each piece is 4 rotations = 16 hex chars, 7 pieces = 112 chars. That's compact and easy: `p="..."` then parse with parseInt.
+
+Even better: pieces as 16-bit integers, one per rotation, packed. 7 pieces × 4 rotations = 28 numbers. Encode as a string of hex digits, 28×4 = 112 hex chars. Parse: for rotation r of piece p: `m = parseInt(s.substr(p*16+r*4,4),16)` giving a 16-bit mask; cell (x,y) occupied if `m >> (y*4+x) & 1`.
+
+Rotation: just pick next rotation index — no bit rotation needed. That's the simplest and quite compact. 112-char string.
+
+Let me define pieces in a 4x4 box with rotations. Standard SRS-ish shapes. Let me carefully construct hex strings.
+
+Represent each rotation as 16-bit: bit index = y*4 + x, bit 0 = top-left (x=0,y=0). I'll draw shapes in a 4x4 grid.
+
+I (I piece): horizontal: row y=1, x=0..3 → bits: y=1: x0..3 → indices 4,5,6,7 → mask 0x00F0? bits 4-7 set = 0b0000111100000000? Wait bit 4..7 set means value = 0x00F0 (since bits 4-7 = 0xF0 in the second nibble... let me compute: bit n set contributes 2^n. bits 4,5,6,7 → 16+32+64+128 = 240 = 0xF0. As 4 hex digits: 0x00F0 → "00F0".
+
+I vertical: x=2, y=0..3 → bits 2, 6, 10, 14 → 4+64+1024+16384 = 17476 = 0x4444 → "4444".
+
+I piece rotations: horizontal, vertical, horizontal, vertical → "00F0","4444","00F0","4444".
+
+O piece:
+---

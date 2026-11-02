@@ -1,0 +1,50 @@
+run 22006 | rel_prompt_auto | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.93 t/s | prompt 9.8 t/s | 1005 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-02 04:55:08
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent (minimal but not ugly).
+
+Let me think about what "smallest" means here. I should aim for a very compact single-file HTML with embedded JS. I can minify aggressively: short variable names, no spaces, compact logic. But I should also keep it readable enough to explain. Actually, the user asked for smallest — I'll deliver a heavily minified version, and in my explanation I can describe how it works. Maybe I can provide both: the minified one-liner-ish file, and briefly explain the technique. But the deliverable should be the smallest one.
+
+Let me design a minimal Tetris:
+
+Core features needed for it to be a real Tetris:
+- 10×20 board
+- 7 tetrominoes with rotation (SRS-lite or simple rotation)
+- Piece falls, arrow keys: left/right move, up rotate, down soft drop
+- Line clear, score
+- Game over
+- Gravity timer
+
+Minimal approach: use canvas for rendering. Represent pieces as arrays of rotation states? A classic trick: encode each tetromino as a 4x4 (or 2x2/3x3) matrix and rotate by transposing+reversing. Or use the classic "binary encoding" trick.
+
+A very compact known approach: pieces as arrays of coordinates in each rotation. Or store each piece as a 2D array and rotate with `p[0].map((_,i)=>p.map(r=>r[i]).reverse())`.
+
+Even more compact: encode each tetromino as a list of cell offsets per rotation. Classic golfed Tetris implementations exist. Let me write my own.
+
+Let me think about the smallest sensible implementation.
+
+Board: 10 wide, 20 tall. Store as array of strings? Or array of arrays of ints. Colors: could color by piece, but for size, maybe monochrome or a few colors. For "smallest", color adds bytes. But I want it to look decent. A tiny palette: color per piece via a small string. Actually I can color cells by piece index using a palette string like `"#fc3#fc3..."` hmm.
+
+Let me think about a compact representation:
+
+Pieces (I, O, T, S, Z, J, L). Each has 4 rotations. A compact encoding: for each piece, a string of 16 bits per rotation? Or use the trick: define each piece as a 4x4 grid encoded as a 16-bit number per rotation, or as a single number with 4 rotations packed.
+
+Known golf trick: represent each rotation of each piece as a bitmask in a 4x4 box, pack all into one big number, extract with bit shifts. E.g., each piece's 4 rotations × 16 cells = 64 bits per piece; 7 pieces = 448 bits. That's a big integer — JS can handle via BigInt but that's clunky. Alternative: store per-piece array of 4 numbers (16-bit each). That's compact: `P=[0x0F00,0x2222,0x6220,...]` style — this is the famous "tetris in a tweet" encoding? Actually there's a known tiny Tetris using piece encodings like:
+
+Classic tiny tetris (by @fskjb or "Tetris in 140 bytes"?). There's a famous one: "Tetris in 140 characters of JavaScript" doesn't exist fully, but there are small ones around 200-500 bytes.
+
+Let me just write my own compact one, aiming for maybe ~600-900 bytes of JS plus minimal HTML. I'll try to make it genuinely small but functional and not embarrassing.
+
+Plan:
+
+```html
+<!doctype html><html><meta charset=utf8><title>T</title><body style=...><canvas id=c width=100 height=200></canvas><script>...</script>
+```
+
+Actually to keep it small, inline styles minimal. Maybe dark background, canvas centered.
+
+Data:
+
+- Board B: array of 20 rows, each row array of 10 cells, values 0 or piece color index (1-7). Initialize `B=Array(20).fill(0).map(_=>Array(10).fill(0))` — compact: `B=[...Array(20)].map(_=>Array(10).fill(0))`.
+
+- Pieces: I'll encode each tetromino as a set of 4 rotation matrices? That's a lot of bytes.
+---

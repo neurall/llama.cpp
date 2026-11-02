@@ -1,0 +1,21 @@
+run 21968 | rc_nan_fixes | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 51.03 t/s | prompt 75.9 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-02 04:16:20
+
+The user wants the smallest HTML Tetris game. I'll give a compact single-file Tetris. "Smallest" — so keep it tight. But I don't want to just dump a bare minified blob with no framing. A tiny self-contained HTML file is the whole point here. Let me write a compact but readable minimal Tetris.
+
+Let me write it carefully so it actually works.
+
+```html
+<!doctype html><meta charset=utf-8><title>Tetris</title>
+<body style=margin:0;background:#111;color:#eee;font:14px/1.4 monospace;display:grid;place-items:center;height:100vh>
+<canvas id=c width=240 height=480 style=background:#000;image-rendering:pixelated></canvas>
+<script>
+// minimal tetris
+</script>
+```
+
+Let me write the game logic compactly.
+
+Board: 10x20, cell 12px? canvas 240x480 → cell 24? 10*24=240, 20*24=480. Good.
+
+Pieces as
+---

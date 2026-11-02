@@ -1,0 +1,14 @@
+run 21995 | rel_prompt_auto | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 51.53 t/s | prompt 75.7 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-02 04:47:56
+
+The user wants the smallest HTML Tetris game. The request is literally "smallest" — so minified/compact code is the goal. But I don't want a bare, ugly page. Even a tiny game deserves a crafted shell around it: a background with some life to it, motion, strong typography on the surrounding page, micro-interactions, and clear feedback on key presses.
+
+There's a real tension here: "smallest html tetris game" — they want minimal code. I should honor that: deliver a genuinely tiny self-contained Tetris in one HTML file. But I can still make it look great — a compact file that's beautifully designed. The constraint is file size, not visual ambition.
+
+Let me think about the balance. I'll deliver:
+1. A single-file Tetris that's genuinely compact but well-designed (dark playfield, neon accents, ghost piece, next queue, score, level, lines).
+2. Surrounding page with a bit of character: title, controls, keyboard hints.
+
+Actually, "smallest" — I should probably give the minified one-liner version as the star, plus a readable version. Let me think about what's most useful.
+
+Best approach: Build a real
+---

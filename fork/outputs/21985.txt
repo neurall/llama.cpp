@@ -1,0 +1,5 @@
+run 21985 | rel_prompt_auto | paris | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 374.99 t/s | prompt 312.1 t/s | 8 tokens | args: -np 1 | power 200+200 W | 2026-11-02 04:45:21
+
+
+---
+Paris is the capital of France.

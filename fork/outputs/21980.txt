@@ -1,0 +1,37 @@
+run 21980 | rc_nan_fixes | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.46 t/s | prompt 7.1 t/s | 1005 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-02 04:25:47
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent (minimal but not ugly).
+
+Let me think about what "smallest" means here. I'll aim for a very compact single-file HTML with a canvas, minimal code, but still functional: 7 tetrominoes, rotation, movement, gravity, line clearing, score, game over, restart. Keyboard controls. Maybe touch controls? Touch adds bytes. The user asked for smallest, so I'll prioritize compactness but keep it genuinely playable.
+
+Let me design the smallest Tetris I can write while keeping it readable-ish and functional. I'll write it in a compact style but not obfuscated to the point of being broken. I should count bytes roughly and mention the size.
+
+Key components:
+1. Canvas element.
+2. Board: 10×20 grid.
+3. 7 pieces with rotations. Smallest encoding: use strings or arrays. A classic trick: encode each tetromino as a set of coordinates in a 4×4 matrix, rotate by transforming coordinates. Or use the "each piece is a 2D array, rotate = transpose+reverse" trick.
+
+Compact approach: define pieces as arrays of [x,y] pairs within a 4×4 (or 3×3) box, rotate with (x,y) -> (y, 3-x) for 4×4 or (y, size-1-x) for NxN. Actually simpler: store each piece as a matrix (array of arrays), rotate by mapping.
+
+Even more compact: use bit patterns. Each tetromino in a 4×4 grid = 16 bits. Represent as numbers. Rotation = rotate bits. That's complex.
+
+A well-known compact Tetris in JS uses strings like "0F10C22..." etc. Let me just write my own compact version.
+
+Let me write it:
+
+```html
+<!doctype html><title>T</title><body><canvas id=c width=120 height=240></canvas><script>
+...
+</script>
+```
+
+Board 10 wide, 20 tall, cell 12px → canvas 120×240. That's small visually. Maybe scale up with CSS: `canvas{width:240px}` etc. Or use cell size 16 → 160×320. Let's use 12px cells and CSS scale ×2 for crispness? Actually image-rendering: pixelated with CSS scaling gives a nice retro look. Let's do canvas 120×240, CSS width 240px, image-rendering: pixelated. That looks intentional and retro.
+
+Colors: I could color pieces per type (7 colors) — adds bytes. For smallest, maybe monochrome or 2 colors. But I care about aesthetics; a single accent color on dark background with grid can look sharp. Let's do: background dark (#111 or similar), blocks in a warm accent color, ghost/current piece brighter, locked blocks dimmer. Actually differentiating current piece vs locked helps playability. Two colors: current = bright, locked = dim. That's tiny.
+
+Hmm, but "smallest" — the user wants minimal bytes. I'll keep it lean but polished: dark bg, one accent color, subtle grid lines maybe skip. Score display via document.title or a small div? Drawing score on canvas costs bytes. Alternative: show score in the tab title — `document.title = s` — very few bytes and kind of a neat trick. Or a `<b>` element updated. Title update is cute: score in tab title. But maybe better to have it visible on page. A tiny `<p id=s>` updated with innerText costs ~30 bytes. Let's do title — it's a fun minimal touch. Actually let me do both? No — smallest. I'll put score in title. Hmm, but user may not notice. Let me put a small line under canvas: `<p id=o>` showing score and game over message. That's more usable. Cost is small.
+
+Controls: ArrowLeft/Right move, ArrowUp rotate, ArrowDown soft drop, Space hard drop? Hard drop is nice; costs a few bytes. Also 'p' pause? Skip pause for size. Game over: when new piece collides immediately. Restart: press any key / R. Let's make: on game over, show "Game Over - press R" and R restarts. Or simply any key restarts. Keep it simple: R restarts.
+
+Gravity: setInterval or requestAnimationFrame with drop counter. Compact: use setInterval(drop, speed)? Speed increases with lines cleared? Nice-to-have. Let's
+---

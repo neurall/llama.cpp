@@ -1,0 +1,35 @@
+run 22103 | gather_threads_madvise_phases | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.58 t/s | prompt 800.5 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=65498251264 | power 220+280 W | 2026-11-02 10:09:14
+
+<think>The user wants a code review of this C++ source file. Let me analyze it thoroughly.
+
+Let me go through the file systematically, looking for bugs, style issues, performance concerns, security issues, and design problems.
+
+Let me start reading carefully...
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner call already handles `min_items == 0` for the separator part. Let me trace through:
+     - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1)` — this builds `item (sep item)*` or `item (sep item){0,max-1}`
+     - Then wraps in `(...)?` if min_items == 0
+     - This seems correct for `item (sep item)*` with optional first item.
+   - When `max_items == 0`, returns `""` — but what if `min_items > 0`? That would be an invalid state (min > max), but it silently returns empty string. Could be a bug if the caller doesn't validate.
+
+2. **`build_min_max_int` function:**
+   - This is complex. Let me look for issues.
+   - `decimals_left` parameter — the name suggests decimal digits but it's used for integer digits. Misleading name.
+   - `top_level` parameter controls whether leading zeros are allowed.
+   - The `uniform_range` lambda is complex and recursive. Let me check for edge cases.
+   - When `min_value < 0 && max_value < 0`: negates both and recurses. But what about `min_value == INT64_MIN`? `-min_value` would overflow. Actually, `has_min` checks `min_value != INT64_MIN`, so if `min_value == INT64_MIN`, `has_min` is false. But in the `min_value < 0 && max_value < 0` branch, `has_min` is true, so `min_value > INT64_MIN`. But `-min_value` could still overflow if `min_value == INT64_MIN + 1`... no, `-INT64_MIN` is the issue. Since `has_min` is true, `min_value != INT64_MIN`, so `-min_value` is safe. Wait, but `-min_value` when `min_value` is negative gives a positive value. The issue would be if `min_value == INT64_MIN`, but that's excluded by `has_min`. OK.
+   - Actually wait: `min_value < 0 && max_value < 0` → `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN`, `has_min` is false, so we wouldn't enter this branch. If `min_value == INT64_MIN + 1`, `-min_value = INT64_MAX`, which is fine. So no overflow here.
+   - But what about `min_value < 0` (but `max_value >= 0`)? `build_min_max_int(0, -min_value, ...)`. Same reasoning — `has_min` is true so `min_value != INT64_MIN`, so `-min_value` is safe.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if the rule already exists with the same content, return the existing name. If it exists with different content, append a number. This seems reasonable but could be slow with many rules.
+   - The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` — this finds the first index where either the name doesn't exist or the rule matches. Then it sets `_rules[key] = rule`. If the name exists with matching rule, it overwrites (which is fine since it's the same). If the name doesn't exist, it creates it. Seems correct.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a reasonable rollback mechanism.
+   - However, `_rules` is a `std::map<std::string, std::string>` — copying the entire map on every pattern visit could be expensive if there are many rules.
+
+5. **`_pattern_to_rule` function:**
+   - Complex regex-to-grammar conversion.
+   - `sub_rule_ids` is a local `unordered_map` used for deduplicating sub-rules within a pattern. The key is the rule content, value is the rule ID. But the rule ID generation uses `sub_rule_ids.size()` which could collide if entries are removed... but they're never

@@ -1,0 +1,59 @@
+run 22007 | rel_prompt_auto | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.5 t/s | prompt 9.2 t/s | 1005 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-02 04:57:22
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. Classic minimal Tetris implementations in JS golf are around 200-500 bytes for extremely stripped versions (often barely playable). A reasonable, actually playable minimal Tetris can be ~500-800 bytes of code. I should aim for something genuinely compact but functional: gravity, movement, rotation, line clears, game over, score maybe.
+
+Let me design a truly minimal but playable Tetris:
+
+Core requirements:
+- 10×20 board
+- 7 tetrominoes (or fewer for minimalism — but real Tetris needs 7; I can encode them compactly)
+- Fall timer
+- Left/right movement, rotation, (maybe soft drop)
+- Line clear + score
+- Game over detection
+
+Compact encoding of pieces: Each tetromino can be represented as a set of 4 cells in a 4×4 or via bit patterns. A classic trick: represent each rotation state as a 16-bit number (4×4 grid), and rotations as precomputed or computed by rotating bits.
+
+A very compact known approach: pieces as arrays of coordinates, rotate by (x,y)->(y, 3-x) or similar within a bounding box.
+
+Let me write compact JS:
+
+```js
+B=document, X=B.all... 
+```
+
+Let me actually write it carefully, then golf it.
+
+Plan:
+- Canvas 10×20 cells, cell size ~12px → canvas 120×240. Or use a single canvas with border.
+- Board as array of 200 (or 20 strings of 10? numbers easier).
+- Piece: current shape as list of [x,y] offsets; rotate by mapping.
+
+Compact piece data: The 7 pieces in one rotation each (then rotate programmatically). Represent each piece as a 4-bit-pair encoded string? Or as numbers.
+
+Simplest compact: define shapes as arrays of 4 coordinates encoded in a single number: each cell 4 bits x + 4 bits y? Or use string like "011011100110" ... Hmm.
+
+Known golfed tetris approaches: e.g., the famous "Tetris in 140 bytes" doesn't exist fully, but there are ~219-byte-ish minimal ones on codegolf.SE that are barely playable. I want playable.
+
+Let me write my own clean-ish minimal version first, then compress.
+
+Data: pieces as arrays of [x,y]:
+
+I: [[0,1],[1,1],[2,1],[3,1]] in 4×4 box
+O: [[1,0],[2,0],[1,1],[2,1]] in 4x4? O in 2x2 box
+T: [[1,0],[0,1],[1,1],[2,1]]
+S: [[1,0],[2,0],[0,1],[1,1]]
+Z: [[0,0],[1,0],[1,1],[2,1]]
+J: [[0,0],[0,1],[1,1],[2,1]]
+L: [[1,0],[2,0],[0,1],[1,1]]... wait L is [[2,0],[0,1],[1,1],[2,1]].
+
+Hmm, S and L: S: top row cells at x=1,2; bottom row x=0,1. L: top row x=2; bottom row x=0,1,2. J: top row x=0; bottom x=0,1,2. T: top x=1; bottom 0,1,2.
+
+Compact encoding: encode each piece as a string of 8 hex digits? Each cell = (x<<4)|y? Or better: encode as a 16-bit bitmask per piece (4×4 grid), and rotation computed by bit rotation within the 4×4 grid.
+
+Rotating a 4×4 bitmask 90°: bit index i = y*4+x maps to new index... rotation clockwise: (x,y) -> (3-y, x)? Let's define: new position (x', y') where x' = 3-y, y' = x. Then bit at index y*4+x goes to index x*4 + (3-y). So newMask |= ((mask>>i)&1) << (x*4+(3-y)) where x=i%4, y=i/4|0.
+
+That's a compact rotate
+---

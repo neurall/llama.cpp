@@ -1,0 +1,12 @@
+name,model,n,test,tokens,args,extra
+qc-auto-1,qwen36,2,pf1k1k,64,"",--hog-gpu 4.5
+qc-auto-2,qwen36,2,pf2k1k,64,"",--hog-gpu 4.5
+qc-auto-4,qwen36,2,pf4k1k,64,"",--hog-gpu 4.5
+qc-auto-8,qwen36,2,pf8k1k,64,"",--hog-gpu 4.5
+qc-auto-10,qwen36,2,pf10k1k,64,"",--hog-gpu 4.5
+qc-chain-1,qwen36,2,pf1k1k,64,"--moe pp-path=chain",--hog-gpu 4.5
+qc-chain-4,qwen36,2,pf4k1k,64,"--moe pp-path=chain",--hog-gpu 4.5
+qc-chain-10,qwen36,2,pf10k1k,64,"--moe pp-path=chain",--hog-gpu 4.5
+qc-stream-1,qwen36,2,pf1k1k,64,"--moe pp-path=stream",--hog-gpu 4.5
+qc-stream-4,qwen36,2,pf4k1k,64,"--moe pp-path=stream",--hog-gpu 4.5
+qc-stream-10,qwen36,2,pf10k1k,64,"--moe pp-path=stream",--hog-gpu 4.5

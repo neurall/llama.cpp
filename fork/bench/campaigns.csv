@@ -6300,3 +6300,6 @@ gather_threads_madvise_phases-mi-101-pf8k1k,2026-11-02 10:13:21,bench /m/m/3/MiM
 gather_threads_madvise_phases-qi-44-pf12k1k,2026-11-02 10:16:23,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds gather_threads_madvise_phases variants v test pf12k n=2,,
 gather_threads_madvise_phases-qi-62-pf12k1k,2026-11-02 10:18:40,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds gather_threads_madvise_phases variants v test pf12k n=2,,
 gather_threads_madvise_phases-qi-all-pf12k1k,2026-11-02 10:20:44,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds gather_threads_madvise_phases variants v test pf12k n=2,,
+autopin_probe-dsa-auto-pf16k1k,2026-11-02 10:27:27,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds autopin_probe variants v test pf16k n=2,,
+autopin_probe-gla-auto-pf5k1k,2026-11-02 10:32:36,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds autopin_probe variants v test pf5k n=2,,
+autopin_probe-mia-auto-pf8k1k,2026-11-02 10:41:38,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds autopin_probe variants v test pf8k n=2,,
