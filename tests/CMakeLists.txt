@@ -361,7 +361,8 @@ if (GGML_METAL AND NOT GGML_BACKEND_DL)
     target_include_directories(test-metal-graph-optimize PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src ${PROJECT_SOURCE_DIR}/ggml/src/ggml-metal)
 endif()
 
-llama_build(test-backend-ops.cpp LINK ggml)
+find_package(Threads REQUIRED)
+llama_build(test-backend-ops.cpp LINK ggml Threads::Threads)   # std::thread here; before glibc 2.34 (the release image) pthread_join lives in libpthread
 
 llama_build_and_test(test-backend-tensor.cpp LINK ggml)
 
