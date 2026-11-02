@@ -492,7 +492,7 @@ void llama_moe_stats_log_fork(const char * kind, const char * text) {
             f = fopen(p, "a");
             if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
             else if (ftell(f) == 0 && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0) {
-                fprintf(f, "# wall clock, seconds since start, type, text. DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, KVZ KV zone, DEW decode window, STA engine status, GPU cards, HST host\n");
+                fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, KVZ KV zone, DEW decode window, STA engine status, GPU cards, HST host\n");
             }
         }
     }
@@ -586,6 +586,8 @@ std::string llama_moe_stats_io_fork(int who) {
 }
 
 void llama_moe_decision_fork(const char * name, const char * value, const char * why) {
+    // the server's phase changes (load, idle, prefill, decode) are events of stats.log, not decisions; through here because llama.h stays as it is
+    if (strcmp(name, "phase") == 0) { llama_moe_stats_log_fork("PHA", value); return; }
     const std::string line = std::string(name) + " = " + value + " (" + why + ")";
     std::lock_guard<std::mutex> lk(g_tok_mu);
     const int64_t t = (int64_t) time(nullptr);
@@ -748,7 +750,7 @@ void llama_moe_prompt_progress_fork(uint32_t done) {
         const std::string pass_line = format("prompt pass %u/%u: %u tokens in %.1f s (%.0f t/s)%s, %u of %u done after %.1f s", pass, passes,
                 done - prev, s_pass, s_pass > 0 ? (done - prev) / s_pass : 0.0, hs2, done, tokens, s_all);
         LLAMA_LOG_WARN("%s: %s\n", __func__, pass_line.c_str());
-        llama_moe_stats_log_fork("PAS", pass_line.c_str());
+        llama_moe_stats_log_fork("PAS", (pass_line + format(", %.2f ms per token", done > prev ? s_pass * 1e3 / (done - prev) : 0.0)).c_str());
     }
 }
 // a prompt call (more than one token) finished: tokens, milliseconds

@@ -683,6 +683,7 @@ static int server_run_instance(common_params & params, server_role & role, commo
     ctx_http.is_ready.store(true);
 
     SRV_INF("%s", "model loaded\n");
+    llama_moe_decision_fork("phase", "load -> idle: model loaded", "");
 
     shutdown_handler = [&](int) {
         mcp_mgr.shutdown();

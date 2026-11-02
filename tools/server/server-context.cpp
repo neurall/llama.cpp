@@ -945,6 +945,7 @@ struct server_slot {
     }
 
     void print_timings() const {
+        llama_moe_decision_fork("phase", string_format("decode -> idle: %d tokens %.1f s %.1f t/s %.1f ms per token", (int) stats.n_gen, stats.t_gen_ms() / 1e3, stats.n_gen_tps(), stats.t_gen_per_token_ms()).c_str(), "");
         // fork: the request's totals in the decisions, so stats.log (--moe stats) tells requests apart and a drop reads against the picks around it
         llama_moe_decision_fork("request", string_format("prompt %d tokens %.1f s %.1f t/s, decode %d tokens %.1f s %.1f t/s", (int) stats.n_prompt_processed, stats.t_prompt_ms() / 1e3, stats.n_prompt_tps(),
                 (int) stats.n_gen, stats.t_gen_ms() / 1e3, stats.n_gen_tps()).c_str(), "the request's totals");
@@ -5257,6 +5258,7 @@ private:
 
             if (slot.stats.n_gen == 1) {
                 slot.stats.update_prompt_last();
+                llama_moe_decision_fork("phase", string_format("prefill -> decode: %d tokens %.1f s %.1f t/s %.2f ms per token", (int) slot.stats.n_prompt_processed, slot.stats.t_prompt_ms() / 1e3, slot.stats.n_prompt_tps(), slot.stats.t_prompt_per_token_ms()).c_str(), "");
                 slot.t_print_last = t_now;
                 slot.n_gen_last = 0;
             }

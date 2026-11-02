@@ -892,6 +892,19 @@ static void *                     g_moe_fill_ud = NULL;
 // card holds, data[id - lo] = the expert's bytes on the card or NULL, *buffer = the buffer they are in. Declared locally (no shared header, see g_xcopy_dst_ordered).
 typedef int (*ggml_backend_moe_where_fn_t)(const struct ggml_tensor * weight, int32_t lo, int32_t hi, ggml_backend_dev_t dev, const void ** data,
                                            ggml_backend_buffer_t * buffer, void * user_data);
+// fork: bytes of a host weight straight from its file (--moe read-direct, the expert cache sets it): a weight that stayed mapped reads as page faults and 128 KiB readahead on
+// the thread that issues the upload, with every byte through the page cache. Returns where the n bytes at off start, inside dst (cap bytes), or NULL; dst NULL only asks whether this
+// weight can be read that way. Declared locally (no shared header, see g_xcopy_dst_ordered).
+typedef const void * (*ggml_backend_moe_read_fn_t)(const struct ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * user_data);
+static ggml_backend_moe_read_fn_t g_moe_read_fn = NULL;
+static void *                     g_moe_read_ud = NULL;
+extern "C" {
+    GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);
+}
+void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data) {
+    g_moe_read_fn = fn;
+    g_moe_read_ud = user_data;
+}
 static ggml_backend_moe_where_fn_t g_moe_where_fn = NULL;
 static void *                      g_moe_where_ud = NULL;
 extern "C" {
@@ -1591,6 +1604,18 @@ struct ggml_backend_sched_split {
 // Prefetch state of ONE card: expert tensors of its splits are uploaded on `backend` (a second instance of the card, its own stream) into `n_slots` staging slots
 // while the card computes the previous split. Each card that computes expert matmuls has its own ring: the multi-GPU prompt split gives every card a half of
 // the experts, and a ring for one card only left the other card's half on the slow path (read ids, sync, copy, compute, strictly in turn).
+// fork: the pinned chunks a direct read lands in, one set per card. An upload from pinned memory is queued and returns, so a chunk is taken again only when its event says the copy is done.
+#define GGML_SCHED_RD_CHUNKS 16
+#define GGML_SCHED_RD_CHUNK  ((size_t) 32 << 20)
+#define GGML_SCHED_RD_SLOT   (GGML_SCHED_RD_CHUNK + 3*4096)   // the block grid on both sides, and the alignment of the start
+struct sched_rd_ring {
+    ggml_backend_dev_t    dev;
+    ggml_backend_buffer_t buf;
+    ggml_backend_event_t  ev[GGML_SCHED_RD_CHUNKS];
+    bool                  used[GGML_SCHED_RD_CHUNKS];
+    int                   next;
+};
+
 struct sched_pf_ring {
     ggml_backend_dev_t      dev;
     int                     n_slots;                 // 0 = off for this card
@@ -1617,6 +1642,8 @@ struct ggml_backend_sched {
     // (the expert cache lends them). Removed by the #29943 merge, ported back here onto the callback-copy loop.
     struct sched_pf_ring    prefetch_ring[GGML_SCHED_MAX_PF_RINGS];   // one staging ring per card that runs expert matmuls (its own stream, events, slots, lent region)
     int                     prefetch_n_rings;
+    struct sched_rd_ring    rd_ring[GGML_SCHED_MAX_PF_RINGS];   // fork: --moe read-direct, ggml_backend_sched_upload_weight
+    int                     rd_n_rings;
     int                     prefetch_n_slots;        // configured number of slots per ring (0 = off); a ring drops to fewer when memory is short
     size_t                  prefetch_slot_bytes;     // largest staged expert tensor (padded), set while splits are scanned
     int n_backends;
@@ -2575,6 +2602,48 @@ static bool ggml_backend_sched_is_host_weight(const struct ggml_tensor * t) {
         ggml_backend_buffer_is_host(t->buffer);
 }
 
+// fork: [off, off + n) of a host weight into its copy on the card, on this backend's stream. Weights the expert cache can read direct (--moe read-direct: they stayed mapped) go from
+// the file into pinned chunks at the SSD's queue depth; all others from their host memory, as ever. A failed read leaves the rest to the mapping.
+static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n) {
+    size_t done = 0;
+    if (g_moe_read_fn && g_moe_read_fn(input, 0, 0, NULL, 0, g_moe_read_ud) != NULL) {
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+        struct sched_rd_ring * R = NULL;
+        for (int r = 0; r < sched->rd_n_rings; r++) {
+            if (sched->rd_ring[r].dev == dev) { R = &sched->rd_ring[r]; }
+        }
+        if (!R && sched->rd_n_rings < GGML_SCHED_MAX_PF_RINGS) {
+            ggml_backend_buffer_type_t hb = ggml_backend_dev_host_buffer_type(dev);
+            ggml_backend_buffer_t b = hb ? ggml_backend_buft_alloc_buffer(hb, GGML_SCHED_RD_SLOT*GGML_SCHED_RD_CHUNKS) : NULL;
+            if (b) {
+                R = &sched->rd_ring[sched->rd_n_rings++];
+                R->dev = dev;
+                R->buf = b;
+                for (int i = 0; i < GGML_SCHED_RD_CHUNKS; i++) { R->ev[i] = ggml_backend_event_new(dev); }
+            }
+        }
+        while (R && done < n) {
+            const int i = R->next;
+            if (!R->ev[i]) { break; }
+            R->next = (i + 1) % GGML_SCHED_RD_CHUNKS;
+            if (R->used[i]) {
+                ggml_backend_event_synchronize(R->ev[i]);
+                R->used[i] = false;
+            }
+            const size_t len = std::min(GGML_SCHED_RD_CHUNK, n - done);
+            const void * got = g_moe_read_fn(input, off + done, len, (char *) ggml_backend_buffer_get_base(R->buf) + (size_t) i*GGML_SCHED_RD_SLOT, GGML_SCHED_RD_SLOT, g_moe_read_ud);
+            if (!got) { break; }
+            ggml_backend_tensor_set_async(backend, input_cpy, got, off + done, len);
+            ggml_backend_event_record(R->ev[i], backend);
+            R->used[i] = true;
+            done += len;
+        }
+    }
+    if (done < n) {
+        ggml_backend_tensor_set_async(backend, input_cpy, (const char *) input->data + off + done, off + done, n - done);
+    }
+}
+
 // NVTX ranges (GGML_NVTX=1): the scheduler thread names what it is doing, Nsight Systems shows it with the CUDA calls it contains. Function pointers from the CUDA backend.
 static void (*g_nvtx_push)(const char *) = NULL;
 static void (*g_nvtx_pop)(void) = NULL;
@@ -2683,7 +2752,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
                 const size_t pad = hi < input->ne[2] ? ggml_backend_sched_expert_pad(sched, split_backend_id, input) : 0;
                 NVTX_PUSH("ASYNC expert range %s [%d,%d) -> %s", input->name, (int) lo, (int) hi, ggml_backend_name(split_backend));
                 int64_t * ue = ggml_backend_sched_up_begin(split_backend, (size_t) (hi - lo)*esz + pad);
-                ggml_backend_tensor_set_async(split_backend, input_cpy, (const char *) input->data + off, off, (size_t) (hi - lo)*esz + pad);
+                ggml_backend_sched_upload_weight(sched, split_backend, input, input_cpy, off, (size_t) (hi - lo)*esz + pad);
                 ggml_backend_sched_upload_add(ggml_backend_get_device(split_backend), (uint64_t) (hi - lo)*esz);
                 if (hi == input->ne[2]) {
                     ggml_backend_tensor_zero_tail_fork(split_backend, input_cpy);
@@ -3575,7 +3644,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const bool next_empty = id < q.hi && !q.filled[(size_t) (id - q.lo)];
                 const size_t o = (size_t) run0*esz;
                 const size_t len = (size_t) (id - run0)*esz + (id == q.hi ? padE : (next_empty ? ipad : 0));
-                ggml_backend_tensor_set_async(LR->backend, q.input_cpy, (const char *) q.input->data + o, o, len);
+                ggml_backend_sched_upload_weight(sched, LR->backend, q.input, q.input_cpy, o, len);
                 bytes += (double) (id - run0)*esz;
                 ggml_backend_sched_upload_add(sched->backends[backend_id]->device, (uint64_t) (id - run0)*esz);
                 run0 = -1;
@@ -3823,7 +3892,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 for (int64_t id = p.lo; id < p.hi; ++id) { if (p.far[id]) { wanted[id] = 0; } }
             }
             if ((n_res <= 0 || where_buf == NULL) && wanted.empty()) {
-                ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + off, off, (size_t) (p.hi - p.lo)*esz + pad);
+                ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, off, (size_t) (p.hi - p.lo)*esz + pad);
                 pfs_up_b += (double) (p.hi - p.lo)*esz;
                 ggml_backend_sched_upload_add(s_backend->device, (uint64_t) (p.hi - p.lo)*esz);
             } else {
@@ -3864,14 +3933,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     if (run0 >= 0) {   // a run of missing experts ends here: one upload (with the padding when it reaches the range's end, or a skipped expert follows)
                         const size_t o = (size_t) run0*esz;
                         const size_t n = (size_t) (id - run0)*esz + (id == p.hi ? pad : (skip ? ipad : 0));
-                        ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + o, o, n);
+                        ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, o, n);
                         pfs_up_b += (double) (id - run0)*esz;
                         ggml_backend_sched_upload_add(s_backend->device, (uint64_t) (id - run0)*esz);
                         run0 = -1;
                     } else if (skip && id > p.lo && where[(size_t) (id - 1 - p.lo)] != NULL) {   // a skipped expert behind a resident one: its first bytes are the resident one's padding
-                        ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + (size_t) id*esz, (size_t) id*esz, ipad);
+                        ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, (size_t) id*esz, ipad);
                     } else if (id == p.hi && pad > 0) {   // the range ended with a resident expert: the padding bytes still come from host memory
-                        ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + (size_t) p.hi*esz, (size_t) p.hi*esz, pad);
+                        ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, (size_t) p.hi*esz, pad);
                     }
                     if (res) {
                         srcs.push_back(where[(size_t) (id - p.lo)]);
@@ -4655,6 +4724,10 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
         if (R->backend) {
             ggml_backend_free(R->backend);
         }
+    }
+    for (int r = 0; r < sched->rd_n_rings; r++) {   // every stream was synchronized above: no copy reads these chunks now
+        for (int i = 0; i < GGML_SCHED_RD_CHUNKS; i++) { ggml_backend_event_free(sched->rd_ring[r].ev[i]); }
+        ggml_backend_buffer_free(sched->rd_ring[r].buf);
     }
     ggml_gallocr_free(sched->galloc);
     ggml_free(sched->ctx);

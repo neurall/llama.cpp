@@ -484,7 +484,8 @@ struct moe_cache {
     std::vector<ggml_backend_buffer_t> rd_staging;
     size_t rd_size = 0;
     std::map<int, int> rd_fds;
-    std::atomic<int64_t> rd_bytes{0}, rd_us{0};
+    std::map<const ggml_tensor *, std::pair<int, size_t>> rd_src;   // a weight that stayed mapped -> (its O_DIRECT descriptor, where it starts in the file)
+    int rd_threads = 8;   // --moe read-threads: at 1 MiB blocks, queue depth 8 gave 5.5 GB/s, 2 gave 3.3 (fio on this file)
     size_t bounce_bytes = 0;   // --moe bounce=MB: uploads from mmap'd memory are copied to the pinned staging buffer in chunks of this size first, then DMA'd from there (0: DMA straight from the mmap pages)
     size_t staging_size = 0;
 
@@ -3515,6 +3516,47 @@ static void moe_split_cb(ggml_backend_t backend, void * ud) {
 // one lock, and WITHOUT its side effects: nothing is counted, the admit boot is not ended (a pass asks for every expert of every layer). A block whose upload
 // is still in flight counts as missing. --moe pf-resident=0 does not register it (the old single upload of the range).
 extern "C" {
+    typedef const void * (*ggml_backend_moe_read_fn_t)(const ggml_tensor *, size_t, size_t, void *, size_t, void *);
+    GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there too, no shared header)
+}
+// The scheduler's prompt uploads (ggml_backend_sched_upload_weight): the same read as read_direct in 1 MiB blocks on several threads. Threads start per chunk, as pin_prefetch_run does per tensor.
+// ponytail: 7 thread starts per 32 MiB, about 2% of a core at 5 GB/s; a pool if that ever shows.
+static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * ud) {
+#ifdef _WIN32
+    GGML_UNUSED(weight); GGML_UNUSED(off); GGML_UNUSED(n); GGML_UNUSED(dst); GGML_UNUSED(cap); GGML_UNUSED(ud);
+    return nullptr;
+#else
+    moe_cache * mc = (moe_cache *) ud;
+    const auto it = mc->rd_src.find(weight);
+    if (it == mc->rd_src.end() || it->second.first < 0) { return nullptr; }
+    if (!dst) { return mc; }   // only asked
+    const size_t a = 4096, file_off = it->second.second + off, beg = file_off & ~(a - 1), end = (file_off + n + a - 1) & ~(a - 1), need = file_off + n - beg;
+    uint8_t * buf = (uint8_t *) (((uintptr_t) dst + a - 1) & ~(uintptr_t) (a - 1));
+    if ((size_t) (buf - (uint8_t *) dst) + (end - beg) > cap) { return nullptr; }
+    const int dfd = it->second.first;
+    const size_t total = end - beg, block = (size_t) 1 << 20;
+    std::atomic<size_t> next{0};
+    std::atomic<bool>   fail{false};
+    auto work = [&]() {
+        for (;;) {
+            const size_t o = next.fetch_add(block);
+            if (o >= total || fail.load(std::memory_order_relaxed)) { return; }
+            const size_t want = std::min(block, total - o);
+            const ssize_t r = pread(dfd, buf + o, want, (off_t) (beg + o));
+            if (r < 0 || ((size_t) r < want && o + (size_t) r < need)) { fail.store(true); return; }   // short only past the end of the file
+        }
+    };
+    const int n_th = total <= block ? 0 : std::min<int>(mc->rd_threads - 1, (int) (total / block));
+    std::vector<std::thread> th;
+    th.reserve(n_th);
+    for (int i = 0; i < n_th; ++i) { th.emplace_back([&work]() { unpin_helper(); work(); }); }
+    work();
+    for (auto & x : th) { x.join(); }
+    return fail.load() ? nullptr : (const void *) (buf + (file_off - beg));
+#endif
+}
+
+extern "C" {
     typedef int (*ggml_backend_moe_where_fn_t)(const ggml_tensor *, int32_t, int32_t, ggml_backend_dev_t, const void **, ggml_backend_buffer_t *, void *);
     GGML_API void ggml_backend_set_moe_where_fn_fork(ggml_backend_moe_where_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there, no shared header)
 }
@@ -6208,6 +6250,7 @@ static void stats_status_run(moe_cache * mc) {
 
 void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool own_text) {
     llama_moe_stats_log_fork("REQ", format("begin: %d prompt tokens", n_prompt).c_str());
+    llama_moe_stats_log_fork("PHA", format("idle -> prefill: %d prompt tokens", n_prompt).c_str());
     g_req_prompt.assign(prompt, prompt + (prompt != nullptr ? std::max(0, n_prompt) : 0));
     g_req_own = own_text;
     g_req_boundary.store(true);
@@ -7275,8 +7318,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                         ls2.src_dfd[k2] = it->second;
                         if (it->second >= 0) { rd_mapped += ggml_nbytes(ps[k2]); }
+                        mc->rd_src[ps[k2]] = { it->second, ls2.src_offs[k2] };
                     }
                 }
+                if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
                 if (rd_mapped > 0) {
                     mc->rd_size = max_expert + ((size_t) 1 << 18);   // a slice, what is read past it, and the block grid on both sides
                     for (size_t w = 0; w < mc->staging.size(); ++w) { mc->rd_staging.push_back(ggml_backend_buft_alloc_buffer(pinned_buft, mc->rd_size)); }
@@ -7311,7 +7356,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
             if (llama_moe_log_profile_fork("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
             if (!mc->rd_staging.empty()) {
-                LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT by %d workers\n", rd_mapped / 1073741824.0, n_workers);
+                LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT: prompt uploads on %d threads, %d cache workers\n", rd_mapped / 1073741824.0, mc->rd_threads, n_workers);
             }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
                     mc->bounce_bytes ? "memcpy -> pinned staging (bounce) -> GPU" :
@@ -7452,7 +7497,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         const size_t off = ls.src_offs[k] + (size_t) j.expert*sz;
                         if (const char * got = read_direct(ls.src_dfd[k], rd_ptr, mc->rd_size - 4096, off, sz + (past_in_file ? pb : 0))) {
                             const int64_t dr = ggml_time_us() - tr;
-                            t_read += dr; mc->rd_us += dr; mc->rd_bytes += (int64_t) (sz + (past_in_file ? pb : 0));
+                            t_read += dr;
                             ggml_backend_tensor_set(dsts[k], got, (size_t) j.slot*dsts[k]->nb[2], sz);
                             if (pb > 0) {
                                 ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
@@ -7818,6 +7863,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
         }
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
+        ggml_backend_set_moe_read_fn_fork(mc->rd_src.empty() ? nullptr : moe_read_fn, mc);
         ggml_set_moe_phase_callback(moe_phase_cb, mc);
         {
             const char * e = moe_opt("prefill-d2d");
@@ -9074,7 +9120,8 @@ void llama_moe_cache_step_fork() {
             for (const auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
             const int64_t t = ggml_time_us();
             if (t0 > 0) {
-                llama_moe_stats_log_fork("DEW", format("%lld steps: %.1f t/s, hit %.1f%%; %s", (long long) (mc->n_steps - n0), (double) (mc->n_steps - n0) * 1e6 / (double) std::max<int64_t>(1, t - t0),
+                llama_moe_stats_log_fork("DEW", format("%lld steps: %.1f t/s, %.1f ms per token, hit %.1f%%; %s", (long long) (mc->n_steps - n0), (double) (mc->n_steps - n0) * 1e6 / (double) std::max<int64_t>(1, t - t0),
+                        (double) (t - t0) / 1e3 / (double) std::max<int64_t>(1, mc->n_steps - n0),
                         h + m > h0 + m0 ? 100.0 * (double) (h - h0) / (double) (h + m - h0 - m0) : 0.0, llama_moe_stats_io_fork(2).c_str()).c_str());
             }
             t0 = t; n0 = mc->n_steps; h0 = h; m0 = m;
@@ -10512,7 +10559,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             const double best = b >= 0 ? pp_took_us(b, n1) : 0.0;
             g_pp_total_us += (double) us;
             if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
-            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us,
+            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s, %.2f ms per token)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us, (double) us / 1e3 / std::max(1u, n_tokens),
                     best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "").c_str() : "; first of this size",
                     llama_moe_stats_io_fork(0).c_str());
             llama_moe_stats_log_fork("DON", done.c_str());
@@ -10802,6 +10849,7 @@ void llama_moe_cache_free_fork() {
     ggml_set_moe_obs_callback(nullptr, nullptr);
     ggml_set_moe_phase_callback(nullptr, nullptr);
     ggml_backend_set_moe_src_callback(nullptr, nullptr);
+    ggml_backend_set_moe_read_fn_fork(nullptr, nullptr);
     ggml_backend_set_moe_fill_callback(nullptr, nullptr);
     ggml_backend_set_moe_where_fn_fork(nullptr, nullptr);
     ggml_backend_set_split_callback(nullptr, nullptr);
