@@ -11467,11 +11467,16 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     static const char * const force = moe_opt("pp-path");
     // Upload or CPU is decided behind each layer's router, for every pass, from the real picks and misses x the known costs (llama_moe_cache_jit_fork, user 2026-11-02: "number of miss moes
     // multiplied by known cost"). Here, before any router ran, only the graph is chosen: the decode chain has a CPU side, the prompt chain and the stream have none. The odds of a miss say too little
-    // for that (GLM, 126 tokens: 5.7 s on the CPU or 4.9 s of uploads expected, the decode chain took 2.6 s, k x1 3.5 s), so a size up to the graph's budget, where the CPU can still win, runs the
-    // decode chain once and measured times decide after that: the fastest path measured at this size. Then the prompt chain if its uploads can win, measured the faster.
+    // for that alone: the uploads and the CPU work on the same misses side by side, so the decode chain's time is up x cpu / (up + cpu) (2026-11-02, GLM, MiMo, DeepSeek, cold and warm, 100-token
+    // prompts: 2438 / 2300, 1824 / 2000, 2318 / 2100, 1576 / 1600, 6727 / 7000, 2669 / 2700 ms calculated / taken; a cold DeepSeek with its CPU rate at 1.9 GB/s among them). The stream's time is its
+    // upload U, the most it can take: what the decode chain must beat. Both follow the rates, so the size where they meet moves with the link and the RAM, and comes out as a number: U / time per token
+    // (user 2026-11-02: "we just need to find calc max threshol token count to do misses cpu higher upload and gpu"). What was measured at this size counts first. Then the prompt chain if its uploads can win.
     const double cap = (double) llama_moe_cache_max_batch_cap_fork();
     const double td = pp_took_us(PP_DEC, n), to = pp_other_us(n, PP_DEC);
-    const bool dec_ok = n <= cap && (td <= 0.0 || to <= 0.0 || td < to);
+    const double de = td > 0.0 ? td : up + cpu > 0.0 ? up * cpu / (up + cpu) : 0.0, ot = to > 0.0 ? to : U;   // the decode chain against the fastest other path, measured or calculated
+    // shortcut: no fixed part per token in the calculated time, a cache that holds everything reads as 0 ms and the size runs the decode chain once; add it when such a first call shows up in rows
+    const double dec_max = de > 0.0 ? n * ot / de : cap;
+    const bool dec_ok = n <= cap && n <= dec_max;
     const bool chain = force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
     const bool dec = force ? strcmp(force, "dec") == 0 && n <= cap : dec_ok && !chain;
     if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
@@ -11498,8 +11503,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     }
     std::string links;
     for (int k = 0; k < mc->n_links; ++k) { links += format("%s%.1f", k ? "/" : "", mc->gbs_link[k]); }
-    const std::string pick = format("prompt call of %.0f tokens: %s (%s; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s)",
-            n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, pp_took_us(PP_DEC, n) / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
+    const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s)",
+            n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, std::min(dec_max, cap), de / 1e3, ot / 1e3, td / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
             pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs);
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
