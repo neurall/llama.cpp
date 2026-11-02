@@ -3078,9 +3078,9 @@ def answer_checks(row, key):
     # long answer: a later run that parts from the first is normal. A repeat much shorter or longer than the first is not (the DSpark break: 717 against
     # 887 characters): only that is flagged.
     k = next((i for i, (x, y) in enumerate(zip(first, out)) if x != y), min(len(first), len(out)))
-    # Nor is a repeat that parts in the first tenth: a damaged prompt, with a coherent answer and no NaN to show for it (2026-11-02: the unwritten rows of a fused GLU, parting at
+    # Nor is a repeat that parts in the first 2%: a damaged prompt, with a coherent answer and no NaN to show for it (2026-11-02: the unwritten rows of a fused GLU, parting at
     # character 5 of 802 where the normal drift parts at 342).
-    if k * 10 < len(first):
+    if k * 50 < len(first) and not OVR.get("vary"):   # (--vary: another prompt each run. A short prompt's answer drifts from its first tokens: 80 of 989 is normal, so the first 2% only)
         row["note"] = f"repeat parts at char {k} of {len(first)} | " + str(row.get("note") or "")
         print(col("1;93", f"    REPEAT PARTS EARLY from the cell's first run: at character {k} of {len(first)}: the prompt was computed differently: ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
         return
