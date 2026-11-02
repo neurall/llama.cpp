@@ -32,3 +32,7 @@ ptp-mimo-mix,mimo,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=
 ptp-mimo-chain,mimo,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
 ptp-stock-qwen36,qwen36,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
 ptp-stock-qn_iq4xs,qn_iq4xs,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptq-qwen36-stream,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=200:1000
+ptq-qwen36-mix,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=200:1000
+ptq-qwen36-chain,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=200:1000
+ptq-stock-qwen36,qwen36,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=200:1000
