@@ -1,0 +1,9 @@
+run 22450 | short_calls | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.77 t/s | prompt 22.5 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/sc-glm-t.ini,log=wk | power 220+280 W | 2026-11-02 21:40:32
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. This is an explicit user request that overrides my usual preference for elaborate visuals. A code-golf Tetris is a classic.
+
+Let me think about how to write a genuinely tiny Tetris in a single HTML file. The classic minimal Tetris implementations are around 200-500 bytes of JS plus minimal HTML. Let me try to write one myself, carefully, and make it actually work.
+
+Key components:
+1.
+---

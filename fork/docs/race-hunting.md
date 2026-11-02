@@ -43,7 +43,7 @@ A switch that clears a bug proves nothing until the row shows the same path ran:
 | switch | does |
 |---|---|
 | `--moe race-stress=N` | upload workers sleep 0..N ms before each copy and before reporting it done |
-| `--moe pp-path=stream\|mix\|chain` | every prompt call takes this path: the planner picks by time, so a path may run once in a long request or never. List `fork/runs/paths.csv`: each path, 16k prompt, poison, NaN check and byte check |
+| `--moe pp-path=stream\|mix\|chain\|dec` | every prompt call takes this path: the planner picks by time, so a path may run once in a long request or never. List `fork/runs/paths.csv`: each path, 16k prompt, poison, NaN check and byte check |
 | a shorter `-c` (8192) and a prompt whose length puts a pad boundary (256 cells) inside the answer | the lend and the zone change mid-answer |
 
 ## Hotspots (bug-log rows by 2026-10-28)

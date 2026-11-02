@@ -1,0 +1,17 @@
+run 22465 | dspark_fix3 | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.31 t/s | prompt 59.8 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/ro-mimo-s100.ini | power 220+280 W | 2026-11-02 21:58:18
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+Looking at the includes:
+- `#include "json-schema-to-grammar.h"` - needed
+- `#include "common.h"` - needed
+- `#include "trie.h"` - need to check if trie is used
+- `#include "unicode.h"` - need to check if unicode is used
+
+Standard library includes:
+- `<algorithm>` - need to check
+- `<limits>` - need to check
+- `<map>` - need to check
+- `<regex>` - need to check
+
+---
