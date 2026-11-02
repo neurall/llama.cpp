@@ -1,0 +1,3 @@
+run 21942 | fix_jit_past_last_block | pf128k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix | power 200+200 W | 2026-11-02 03:03:27
+
+ag
