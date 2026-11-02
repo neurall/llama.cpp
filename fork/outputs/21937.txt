@@ -1,0 +1,129 @@
+run 21937 | fix_jit_past_last_block | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 16.69 t/s | prompt 349.0 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,pin-budget=108447924224 -lm mmap | power 200+200 W | 2026-11-02 02:46:37
+
+ends_with(".gguf")) {
+        auto meta = common_gguf_meta_get(params.speculative.draft.mparams.path);
+        if (meta.find("general.speculation.type") != meta.end()) {
+            auto type = meta["general.speculation.type"];
+            if (type == "mtp") {
+                params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+            } else if (type == "dflash") {
+                params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH };
+            } else if (type == "eagle3") {
+                params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 };
+            } else if (type == "dspark") {
+                params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
+            }
+        }
+    }
+
+    // handle preset
+    if (!plan.preset.url.empty()) {
+        handler.preset_path = get_default_local_path(plan.preset.url);
+        common_download_task task;
+        task.url        = plan.preset.url;
+        task.local_path = handler.preset_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    // handle model
+    if (!plan.model_files.empty()) {
+        add_tasks(plan.model_files, plan.primary, params.model);
+    }
+
+    // handle mmproj
+    if (!plan.mmproj_files.empty()) {
+        add_tasks(plan.mmproj_files, plan.mmproj_primary, params.mmproj);
+    }
+
+    // handle draft
+    if (!plan_spec.model_files.empty()) {
+        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
+    }
+
+    // handle mtp
+    if (!plan_spec.mtp.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.mtp.url;
+        task.local_path = plan_spec.mtp.local_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    // handle dflash
+    if (!plan_spec.dflash.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dflash.url;
+        task.local_path = plan_spec.dflash.local_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    // handle eagle3
+    if (!plan_spec.eagle3.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.eagle3.url;
+        task.local_path = plan_spec.eagle3.local_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    // handle dspark
+    if (!plan_spec.dspark.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dspark.url;
+        task.local_path = plan_spec.dspark.local_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    if (tasks.empty()) {
+        return;
+    }
+
+    // if the model is already downloaded, we don't need to download it again
+    if (!params.model.path.empty() && !params.model.hf_repo.empty()) {
+        // check if the model is already downloaded
+        if (std::filesystem::exists(params.model.path)) {
+            // skip the model download
+            tasks.erase(std::remove_if(tasks.begin(), tasks.end(), [&](const common_download_task & task) {
+                return task.local_path == params.model.path;
+            }), tasks.end());
+        }
+    }
+
+    if (tasks.empty()) {
+        return;
+    }
+
+    common_download_start(tasks, opts);
+}
+
+//
+// common_params_parser_init
+//
+
+static void common_params_parser_init(common_params & params, llama_example ex, const std::function<void(common_params &)> & cb) {
+    params.examples.push_back(ex);
+
+    for (const auto & opt : get_common_arg_defs()) {
+        if (opt.is_exclude(ex)) {
+            continue;
+        }
+        if (opt.is_preset_only()) {
+            continue;
+        }
+        if (opt.is_sampling()) {
+            if (params.sampling.do_sample) {
+                params.sampling.params.push_back(opt);
+            }
+            continue;
+        }
+        if (opt.is_spec()) {
+            if (params.speculative.do_spec) {
+                params.speculative.params.push_back(opt);
+            }
+            continue;
+        }
+        params.params.push_back(opt);
+   

@@ -1,0 +1,9 @@
+run 21921 | fix_jit_past_bytes | pf128k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 29.23 t/s | prompt 433.6 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,margin_mb=384 | power 200+200 W | 2026-11-02 02:09:51
+
+ !plan_spec.dspark.local_path.empty();
+    if (spec_sidecar_found) {
+        params.speculative.draft.mparams.hf_file.clear();
+    }
+
+    // when a sidecar type is requested but the draft repo does not ship it, fall back to the main repo
+    const
