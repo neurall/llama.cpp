@@ -2022,6 +2022,21 @@ static size_t common_pass_buffer_reserve(common_params & params) {
     return 0;
 }
 
+// Room left under the container's memory limit (cgroup v2 memory.max minus memory.current), SIZE_MAX when there is none. In a VM or a container MemAvailable says what the host has,
+// not what this process may use (user 2026-11-02: many models will run in dynamic VM environments).
+static size_t common_cgroup_room() {
+#if defined(__linux__)
+    size_t mx = 0, cur = 0;
+    std::ifstream fm("/sys/fs/cgroup/memory.max"), fc("/sys/fs/cgroup/memory.current");
+    std::string v;
+    if (fm >> v && v != "max" && (fc >> cur)) {
+        mx = (size_t) strtoull(v.c_str(), nullptr, 10);
+        return mx > cur ? mx - cur : 0;
+    }
+#endif
+    return SIZE_MAX;
+}
+
 static void common_auto_pin(common_params & params) {
     const size_t model_size = common_model_file_size(params.model.path);
     // pinned weights (no mmap, llama-server only: startup takes longer, pays off over many requests):
@@ -2029,7 +2044,7 @@ static void common_auto_pin(common_params & params) {
     // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
     // in the RAM available now minus the margin below; a model that does not is pinned up to that limit and the rest is mapped
     if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
-        const size_t avail = common_ram_available(true);
+        const size_t avail = std::min(common_ram_available(true), common_cgroup_room());
         // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: a tenth of the machine, at least 4 GiB (user 2026-11-02: a share, not 12 GiB on any machine; was 0 when
         // the model fitted and 4 GiB when it did not until 2026-10-21), plus the largest prompt pass's pinned host buffer (user 2026-10-22: a full-size pass comes before how much of the model is pinned)
         const size_t pass_buf = common_pass_buffer_reserve(params);
@@ -2054,7 +2069,15 @@ static void common_auto_pin(common_params & params) {
                     fclose(f);
                 }
             }
-            params.load_pin_budget = pool + (mem > margin ? mem - margin : 0);
+            // The start value from the ratio of RAM to model (user 2026-11-02: "start from reasonable best base based on ram vs model size ratio", "70% as constant is nonsense"):
+            // what is not pinned and not kept for the system is page cache for the mapped rest, which needs a share h of its bytes cached: avail - pin = margin + h * (model - pin),
+            // so pin = (avail - margin - h * model) / (1 - h). DeepSeek on 125 GiB: 85 GiB pinned was best, 97 starved the cache (swap-in 13k pages/s); GLM 3.0-bit best at 101 or more, MiMo 85 to 101.
+            // The Engram table (TENSOR_READ_LAZY) is never pinned by the loader whatever the budget says. --moe pin-cache=H changes h.
+            const double h = [] { const char * v = llama_moe_get_opt("pin-cache"); return v ? std::min(0.9, std::max(0.0, atof(v))) : 0.15; }();
+            const double eq = ((double) mem - (double) margin - h * (double) model_size) / (1.0 - h);
+            params.load_pin_budget = pool + (eq > 0 ? (size_t) eq : 0);
+            LOG_INF("%s: pin start %.1f GiB = (available %.1f - kept free %.1f - %.2f x model %.1f) / (1 - %.2f), reserved pool %.1f GiB\n", __func__,
+                    params.load_pin_budget / 1073741824.0, mem / 1073741824.0, margin / 1073741824.0, h, model_size / 1073741824.0, h, pool / 1073741824.0);
             // --moe pin-pct=N: at most N% of the machine's RAM pinned (the reserved pool always counts). Pinning all it can left DeepSeek (232 GiB) 12 GiB beside 109 GiB pinned: the page cache of the
             // mapped rest stayed at 0, the kernel scanned 140 million pages a second and a second request's 16k pass read at 335 MB/s (user 2026-11-02: "make it %", fork/runs/paths.csv dsp-*)
             if (const char * pct = llama_moe_get_opt("pin-pct"); pct && ram_total > 0) {

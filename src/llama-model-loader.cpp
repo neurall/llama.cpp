@@ -576,6 +576,18 @@ llama_model_loader::llama_model_loader(
 
     tensor_buft_overrides = param_tensor_buft_overrides_p;
     if (const char * pb = llama_moe_get_opt("pin-budget")) { pin_budget = (size_t) strtoull(pb, nullptr, 10); }   // fork: bytes that may stay pinned although mmap is on
+#if defined(__linux__)
+    // Freeze guard: 109 and 110 GiB pinned froze a 125 GiB machine (2026-11-02), 101 ran. No budget above RAM - 24 GiB unless --moe pin-force=1 (a test of the boundary itself).
+    if (pin_budget > 0 && !llama_moe_get_opt("pin-force")) {
+        const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+        const size_t total = pages > 0 && page > 0 ? (size_t) pages * (size_t) page : 0, keep = (size_t) 24 << 30;
+        if (total > keep && pin_budget > total - keep) {
+            LLAMA_LOG_WARN("%s: pin budget %.1f GiB is above RAM %.1f GiB - 24 GiB (more froze a 125 GiB machine): cut to %.1f GiB; --moe pin-force=1 allows it\n", __func__,
+                    pin_budget / 1073741824.0, total / 1073741824.0, (total - keep) / 1073741824.0);
+            pin_budget = total - keep;
+        }
+    }
+#endif
 
     this->use_mmap      = load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK || load_mode == LLAMA_LOAD_MODE_AUTO;
     this->use_direct_io = load_mode == LLAMA_LOAD_MODE_DIRECT_IO;
