@@ -582,8 +582,8 @@ struct moe_topic_store {
 
     // the merge of the nearest records the cache fills from (urows: the key's unit rows): per layer, each record's counts as shares of that layer's uses,
     // weighted by its similarity (only records at least min_cos alike), scaled so the hottest expert of all layers is 1: one scale, since experts of
-    // different layers compete for the blocks of a size class. Returns the records used and the best similarity. The global map comes in weighted 1 - the
-    // best similarity used (last_wg; none stored: the global map alone). thinking: the records' thinking maps (no global map for those)
+    // different layers compete for the blocks of a size class. Returns the records used and the best similarity. The global map replaces them (last_wg 1) when the best
+    // similarity is under min_cos. thinking: the records' thinking maps (no global map for those)
     size_t merge(const float * urows, size_t k, float min_cos, std::vector<float> & heat, float * best = nullptr, bool thinking = false) {
         heat.assign(rec_cells(), 0.0f);
         auto add_shares = [&](const uint32_t * c, float w) {   // per layer, each expert's share of the layer's uses, times w
@@ -595,17 +595,20 @@ struct moe_topic_store {
             }
         };
         size_t used = 0;
-        float  bused = 0.0f;
         const auto nb = n_rows ? nearest(urows, k) : std::vector<std::pair<float, size_t>>();
         if (best) { *best = nb.empty() ? -1.0f : nb[0].first; }
-        for (const auto & p : nb) {
-            if (p.first < min_cos || p.first <= 0.0f) { break; }   // the weight is the similarity: a record pointing away adds nothing
-            add_shares((thinking ? think : counts).data() + p.second * rec_cells(), p.first);
-            bused = std::max(bused, std::min(1.0f, p.first));
-            last[p.second] = ++clock;
-            used++;
+        // user 2026-11-02: the nearest k records' maps when the best one is at least min_cos alike; the global map ALONE (no blend) when it is far or none
+        // is stored. Blending is out: it may add uploads without a better hit rate (unmeasured, A/B with --moe dynhot-k=4).
+        const bool near = !nb.empty() && nb[0].first > 0.0f && nb[0].first >= min_cos;
+        if (near) {
+            for (const auto & p : nb) {
+                if (p.first < min_cos || p.first <= 0.0f) { break; }   // the weight is the similarity: a record pointing away adds nothing
+                add_shares((thinking ? think : counts).data() + p.second * rec_cells(), p.first);
+                last[p.second] = ++clock;
+                used++;
+            }
         }
-        last_wg = use_glob && glob_req > 0 && !thinking ? 1.0f - bused : 0.0f;
+        last_wg = !near && use_glob && glob_req > 0 && !thinking ? 1.0f : 0.0f;
         if (last_wg > 0.0f) { add_shares(glob.data(), last_wg); }
         const float mx = heat.empty() ? 0.0f : *std::max_element(heat.begin(), heat.end());
         if (mx > 0.0f) { for (float & h : heat) { h /= mx; } }

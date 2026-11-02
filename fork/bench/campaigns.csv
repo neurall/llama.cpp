@@ -6356,3 +6356,5 @@ dspark_fix3-qni3-s500-500in_128out_edit_src,2026-11-02 13:09:09,bench /m/q/1/Qwe
 dspark_fix3-qni3-s1000-1kin_1kout_edit_src,2026-11-02 13:09:55,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dspark_fix3 variants v test edit4c n=2,,
 dspark_fix3-glm-s100-100in_128out_edit_src,2026-11-02 13:11:10,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds dspark_fix3 variants v test edit4c n=2,,
 dspark_fix3-glm-s200-200in_128out_edit_src,2026-11-02 13:13:22,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds dspark_fix3 variants v test edit4c n=2,,
+dspark_fix3-glm-s500-500in_128out_edit_src,2026-11-02 13:14:16,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds dspark_fix3 variants v test edit4c n=2,,
+dspark_fix3-glm-s1000-1kin_1kout_edit_src,2026-11-02 13:15:10,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds dspark_fix3 variants v test edit4c n=2,,

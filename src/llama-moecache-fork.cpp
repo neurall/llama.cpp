@@ -6141,7 +6141,8 @@ static struct topic_t {
     uint64_t            h_sw = 0, m_sw = 0;   // the decode hits and misses at that switch: the two phases' hit rates
     // lookup: the 4 nearest records (only those at least min_cos alike; -1: any); store: a request at least merge_cos alike joins the record. Default 2:
     // never, every prompt a record of its own (user 2026-10-28: merging is offline, a merged map must hit about as well as its parts and keep the hottest of both)
-    float               min_cos = -1.0f, merge_cos = 2.0f;
+    float               min_cos = 0.5f, merge_cos = 2.0f;   // min_cos: under it the record is far, the layer's global map steers (user 2026-11-02)
+    int                 k = 1;                              // records merged for the lookup (--moe dynhot-k)
     int32_t             prev_n = 0;       // tokens of the previous decode call: a prompt starts where a call of more than a step follows a step
     bool                after_prompt = false;   // a prompt began: its first decode step drops the experts foreign to the topic and the request
     uint64_t h0 = 0, m0 = 0;   // decode hits and misses when the request began
@@ -6499,6 +6500,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         }
         if (const char * m = moe_opt("dynhot-max"))   { max_rec = (size_t) atoll(m); }   // records kept: 0 = no limit (while testing)
         if (const char * m = moe_opt("dynhot-min"))   { g_topic.min_cos   = (float) atof(m); }
+        if (const char * m = moe_opt("dynhot-k"))     { g_topic.k = std::max(1, atoi(m)); }
         if (const char * m = moe_opt("dynhot-merge")) { g_topic.merge_cos = (float) atof(m); }   // the 4-bit cosine at which a request joins a record (default 2: never)
         if (const char * m = moe_opt("dynhot-global")) { g_topic.store.use_glob = atoi(m) != 0; }
         if (const char * m = moe_opt("dynhot-same"))   { g_topic.store.same_pool = strcmp(m, "pool") == 0; }   // the same prompt again: replace (a better run's map) | pool (every run's counts)   // 0: the lookup blends the nearest topics only (the A/B against the global map)
@@ -6509,9 +6511,9 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
         }
         static const char * what[] = { "off", "full: the nearest maps pick the cache's experts, every request stored",
             "store: requests stored, the ini's hot experts pick the cache's", "read: the nearest maps pick the cache's experts, nothing stored (frozen)" };
-        LLAMA_LOG_WARN("moe-cache: dynhot: %zu records and a global map of %u requests in %s; dynhot=%s (lookup: the 4 nearest%s%s; a request joins a record at "
-                "cosine >= %.2f)\n", g_topic.store.size(), g_topic.store.glob_req, path.c_str(), what[g_topic.mode],
-                g_topic.min_cos > -1.0f ? tr_fmt(" at cosine >= %.2f", g_topic.min_cos).c_str() : "", g_topic.store.use_glob ? " and the global map" : "", g_topic.merge_cos);
+        LLAMA_LOG_WARN("moe-cache: dynhot: %zu records and a global map of %u requests in %s; dynhot=%s (lookup: the %d nearest%s%s; a request joins a record at "
+                "cosine >= %.2f)\n", g_topic.store.size(), g_topic.store.glob_req, path.c_str(), what[g_topic.mode], g_topic.k,
+                g_topic.min_cos > -1.0f ? tr_fmt(" at cosine >= %.2f", g_topic.min_cos).c_str() : "", g_topic.store.use_glob ? " (the global map when none is near)" : "", g_topic.merge_cos);
     }
     topic_store_pending(mc);   // the request before this prompt, if its end did not store it
     // the server's prompt (the request's own text when the chat template's parts are known, else the whole prompt; its prompt cache may decode only the
@@ -6558,7 +6560,7 @@ static size_t topic_steer(moe_cache * mc, bool thinking, float * best, size_t * 
     if (best) { *best = -1.0f; }
     if (g_topic.store.n_rows != 0 && g_topic.store.n_rows != g_topic.n_rows) { return 0; }   // keys of another row count: nothing to compare with
     const std::vector<float> u = g_topic.store.n_rows ? g_topic.store.unit_rows(g_topic.key.data()) : std::vector<float>();
-    const size_t used = u.empty() ? 0 : g_topic.store.merge(u.data(), 4, g_topic.min_cos, heat, best, thinking);
+    const size_t used = u.empty() ? 0 : g_topic.store.merge(u.data(), (size_t) g_topic.k, g_topic.min_cos, heat, best, thinking);
     size_t n = 0;
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
