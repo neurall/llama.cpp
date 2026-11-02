@@ -364,3 +364,13 @@ Repro: `python3 fork/run.py jobs -c up8kv -b up8_kv_auto10 -r 0 -nm -onl kvb-m90
 What found it: the NaN check named the first tensor (experts' sum on the mix's first layer), `pp-mix=0` proved the path, comparing the answer text of request 1 and 2 showed damage without a NaN, and the poison ledger showed nobody had written the bad row since the graph's lend. A switch that clears a bug proves nothing until the row shows the same path ran (mix calls, pool, margin).
 
 Rows with a mix call on builds `up8_kv_auto10` and `up8_no_gather` are void. Not run yet: `test-backend-ops` GLU fusion test on a GPU, a true PPL row through the fused path.
+
+## 2026-11-02 Qwen Next: an expert uploaded during decode left stale bytes behind its slice
+
+Repro: `python3 fork/run.py jobs -c paths -b up8_ledger2_verify -r 0 -nm -onl dbg-qn-past` (build before the fix, about 6 min). Found by the first run of the forced path list with `--moe verify=1`, not by any answer.
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `src/llama-moecache-fork.cpp`, the JIT upload in decode (and the move of experts between cards) | `pool-verify: BAD moe_cache_down.30 ...: 406 of 1741208 bytes differ, the first at +1740800 (only past the slice)` from request 2 on. Under poison, NaN in the last value of an output row (element 325119 of a 2560-wide tensor) on the mix's pass. Without poison the last value of each row reads stale bytes: wrong, or NaN when they were a graph's or the KV's | a matmul reads past the last row of a slice when rows are not a multiple of 512 values (Qwen Next and Qwen3.8 down rows of 640). The upload workers and the prompt chain wrote those bytes, the JIT upload wrote only the slice. Ledger: the last writer of all 130 flagged blocks was `jit-up` | one rule, `expert_past`, for every writer and for the byte check; the prompt chain now also writes zeros behind the last expert |
+
+Only models with such rows are touched; GLM, MiMo and Qwen3.6 showed 0 bad bytes on every path.

@@ -17,3 +17,4 @@ ptp-qwen36-stream,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense
 ptp-qwen36-mix,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=4:16000
 ptp-qwen36-chain,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=4:16000
 ptp-qwen36-stream-nofuse,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=4:16000 --env GGML_CUDA_DISABLE_FUSION=1
+dbg-qn-past,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=2,ledger=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
