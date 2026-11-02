@@ -1400,6 +1400,21 @@ def apply_power_schedule():
             print(f"power: GPU {i} {cur[i]} -> {w} W" + ("" if r.returncode == 0 else f"  (failed: {r.stderr.strip()[:80]})"), flush=True)
 
 
+IO_LAST = {}
+
+
+def host_io_line():
+    """the live line's disk part: how fast the disks read, the major faults and the kernel's reclaim scans per second since the last call (user 2026-11-02: "add monitoring and logging of our read speed")"""
+    v = {l.split()[0]: int(l.split()[1]) for l in open("/proc/vmstat") if l.startswith(("pgmajfault ", "pgscan_kswapd ", "pgscan_direct "))}
+    rd = sum(int(f[5]) * 512 for f in (l.split() for l in open("/proc/diskstats")) if re.fullmatch(r"nvme\d+n\d+|sd[a-z]", f[2]))
+    t, last = time.time(), dict(IO_LAST)
+    IO_LAST.update(t=t, rd=rd, v=v)
+    if not last: return ""
+    dt = max(t - last["t"], 0.1)
+    d = lambda *ks: sum(v.get(k, 0) - last["v"].get(k, 0) for k in ks) / dt
+    return f"ssd {(rd - last['rd']) / dt / 1e9:.1f}G/s flt {d('pgmajfault') / 1e3:.0f}k scan {d('pgscan_kswapd', 'pgscan_direct') / 1e6:.0f}M"
+
+
 def card_is_mine(i):
     """does this process use card i (nvidia-smi index)? -ng N narrows CUDA_VISIBLE_DEVICES: the judge may sit on the card left over, and a row does not wait for it"""
     vis = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -3072,8 +3087,15 @@ def row_layout(logf):
     except OSError:
         slow = []
     worst = max((m for m in slow if m), key=lambda m: float(m.group(4)), default=None)
+    try:   # read speed of each request's largest call, as planner.log measured it
+        calls = re.findall(r"prompt call of (\d+) tokens: .*? read ([\d.]+) GB at (\d+) MB/s", open(logf[:-4] + ".planner.log", errors="replace").read())
+        top = max((int(c[0]) for c in calls), default=0)
+        rd = [c for c in calls if int(c[0]) == top]
+    except OSError:
+        rd, top = [], 0
     return (f"pool {'+'.join(f'{float(v):.0f}' for v in pools.values())} MiB margin {'/'.join(margins.values())} paths " + (", ".join(f"{k} {n}" for k, n in paths.most_common()) or "-")
-            + (f" | {len(slow)} slow calls, worst {worst.group(1)} tokens {worst.group(2)} {float(worst.group(3)) / 1e3:.1f} s, {worst.group(4)} x" if worst else ""))
+            + (f" | {len(slow)} slow calls, worst {worst.group(1)} tokens {worst.group(2)} {float(worst.group(3)) / 1e3:.1f} s, {worst.group(4)} x" if worst else "")
+            + (f" | {top}-token calls read " + ", ".join(f"{c[1]} GB at {c[2]} MB/s" for c in rd) if rd else ""))
 
 
 def answer_checks(row, key):
@@ -5672,6 +5694,7 @@ def cell_status(t0, expect, label, total=None):
             if k == "RssAnon": pin += int(v.split()[0]) / 2**20
             elif k == "RssFile": mm += int(v.split()[0]) / 2**20
         st = col(37, "cpu ") + level(busy, 50, 90, f"{busy:.0f}%") + col(37, " ram ") + level(ram / (m["MemTotal"] / 2**20), 0.7, 0.9, f"{ram:.0f}G") + " " + col(33, f"pin {pin:.0f}G") + " " + col(36, f"mm {mm:.0f}G") + " " + (col(31, f"swap {swap:.0f}M") if swap > 100 else col(37, f"swap {swap:.0f}M")) + (lambda fr: " " + level(1 - min(fr / 2**30 / 50, 1), 0.6, 0.9, f"disk {fr / 2**30:.0f}G free") if fr >= 0 else "")(int(sysi[4].strip() or -1) if sysi[4].strip().isdigit() else -1) + f" | {gpu}"   # stats first, the bars below
+        if not HOST[0]: st += " " + col(35, host_io_line())
         eng = ""   # engine state line (GET /moe/stats): pass size, threads, context, cache hit rate, time per token, uploads against the probed link and RAM maximum
         try:
             es = json.loads(STATS_FINAL[0] or sysi[5]); sv = es.get("server") or {}; pr = es.get("prompt") or {}; tk = es.get("token_ms") or {}; bw = es.get("bandwidth") or {}; ht = es.get("hit") or {}

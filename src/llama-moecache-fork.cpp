@@ -868,6 +868,7 @@ static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
 void llama_moe_planner_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe planner-log
+std::string llama_moe_planner_io_fork();                                  // what the disk and the kernel did since the last call
 static std::atomic<bool> g_pp_mix_call{true};    // this prompt call may run the prompt mix (llama_moe_cache_pp_decide_fork; a forced path keeps it)
 static std::atomic<bool> g_pp_no_dense{false};   // this prompt call stays on one card: the dense split lost at this size, or nothing was measured to weigh it against
 static bool              g_pp_mix_call_built = true;   // the same when the last graph was finished
@@ -8935,8 +8936,8 @@ void llama_moe_cache_step_fork() {
             for (const auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
             const int64_t t = ggml_time_us();
             if (t0 > 0) {
-                llama_moe_planner_log_fork("decode", format("%lld steps: %.1f t/s, hit %.1f%%", (long long) (mc->n_steps - n0), (double) (mc->n_steps - n0) * 1e6 / (double) std::max<int64_t>(1, t - t0),
-                        h + m > h0 + m0 ? 100.0 * (double) (h - h0) / (double) (h + m - h0 - m0) : 0.0).c_str());
+                llama_moe_planner_log_fork("decode", format("%lld steps: %.1f t/s, hit %.1f%%; %s", (long long) (mc->n_steps - n0), (double) (mc->n_steps - n0) * 1e6 / (double) std::max<int64_t>(1, t - t0),
+                        h + m > h0 + m0 ? 100.0 * (double) (h - h0) / (double) (h + m - h0 - m0) : 0.0, llama_moe_planner_io_fork().c_str()).c_str());
             }
             t0 = t; n0 = mc->n_steps; h0 = h; m0 = m;
         }
@@ -10373,8 +10374,9 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             const double best = b >= 0 ? pp_took_us(b, n1) : 0.0;
             g_pp_total_us += (double) us;
             if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
-            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s)%s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us,
-                    best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "").c_str() : "; first of this size");
+            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us,
+                    best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "").c_str() : "; first of this size",
+                    llama_moe_planner_io_fork().c_str());
             llama_moe_planner_log_fork("done", done.c_str());
         }
         // the first pass of a server that fills a layer runs cold whatever its path (Qwen3.6: 348 ms on the chain, 130 warm; the stream 150 ms over its repeats) and the size would keep that
@@ -10543,6 +10545,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, v.size());
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_planner_log_fork("call", pick.c_str());
+    llama_moe_planner_io_fork();   // the reads of this call start counting here
 }
 
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {

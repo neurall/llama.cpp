@@ -20,6 +20,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <map>
 #include <mutex>
 
@@ -478,6 +479,55 @@ void llama_moe_planner_log_fork(const char * kind, const char * text) {
     const int ms = (int) (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
     fprintf(f, "%s.%03d %9.3f %-8s %s\n", ts, ms, std::chrono::duration<double>(std::chrono::steady_clock::now() - g_planner_t0).count(), kind, text);
     fflush(f);
+}
+
+// For planner.log: what the disk and the kernel did since the last call. This process's reads from storage, its major faults, the kernel's reclaim scans, the page cache and the free RAM (user 2026-11-02:
+// "add monitoring and logging of our read speed": DeepSeek's second request read at 335 MB/s on a drive that does 5.8 GB/s, and nothing said so). Empty without --moe planner-log, and on the first call.
+std::string llama_moe_planner_io_fork() {
+#ifdef __linux__
+    static const bool on = llama_moe_get_opt("planner-log") != nullptr;
+    if (!on) { return ""; }
+    static std::mutex mu;
+    static int64_t t0 = 0;
+    static unsigned long long rb0 = 0, mf0 = 0, sc0 = 0;
+    std::lock_guard<std::mutex> lk(mu);
+    unsigned long long rb = 0, mf = 0, sc = 0, v = 0, cached = 0, free_kb = 0;
+    std::string k;
+    { std::ifstream f("/proc/self/io"); while (f >> k >> v) { if (k == "read_bytes:") { rb = v; } } }
+    {   // majflt: the 10th field behind the process name
+        std::ifstream f("/proc/self/stat");
+        std::string s;
+        std::getline(f, s);
+        const size_t p = s.rfind(')');
+        if (p != std::string::npos) {
+            std::istringstream is(s.substr(p + 1));
+            for (int i = 0; i < 10 && is >> k; ++i) { if (i == 9) { mf = strtoull(k.c_str(), nullptr, 10); } }
+        }
+    }
+    { std::ifstream f("/proc/vmstat"); while (f >> k >> v) { if (k == "pgscan_kswapd" || k == "pgscan_direct") { sc += v; } } }
+    {
+        std::ifstream f("/proc/meminfo");
+        std::string line;
+        while (std::getline(f, line)) {
+            std::istringstream is(line);
+            if (is >> k >> v) {
+                if (k == "Cached:") { cached = v; } else if (k == "MemFree:") { free_kb = v; }
+            }
+        }
+    }
+    const int64_t t = ggml_time_us();
+    std::string out;
+    if (t0 > 0 && t > t0) {
+        const double dt = (double) (t - t0) / 1e6, gb = (double) (rb - rb0) / 1e9;
+        const double faults = (double) (mf - mf0);
+        out = format("read %.1f GB at %.0f MB/s, %.0f KiB per fault, %.0f faults/s, scan %.1f M pages/s, cache %.1f GiB, free %.1f GiB", gb, gb * 1e3 / dt, faults > 0.0 ? (double) (rb - rb0) / 1024.0 / faults : 0.0,
+                faults / dt, (double) (sc - sc0) / dt / 1e6, (double) cached / 1048576.0, (double) free_kb / 1048576.0);
+    }
+    t0 = t; rb0 = rb; mf0 = mf; sc0 = sc;
+    return out;
+#else
+    return "";
+#endif
 }
 
 void llama_moe_decision_fork(const char * name, const char * value, const char * why) {
