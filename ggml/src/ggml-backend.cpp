@@ -3212,6 +3212,43 @@ static bool ggml_backend_sched_nan_check_node(ggml_backend_sched_t sched, int sp
             (long long) first, (long long) (per2 > 0 ? first / per2 : 0), (long long) (t->ne[0] > 0 ? (first / t->ne[0]) % (t->ne[1] > 0 ? t->ne[1] : 1) : 0));
     GGML_LOG_WARN("nan-node:   op_params %d %d, expert range [%d,%d); first node of the split: %s %s\n", (int) t->op_params[0], (int) t->op_params[1],
             (int) t->op_params[8], (int) t->op_params[9], ggml_op_name(split->graph.nodes[0]->op), split->graph.nodes[0]->name);
+    if (t->op == GGML_OP_MUL_MAT_ID && t->type == GGML_TYPE_F32) {
+        // which experts gave the bad values: an output row is (token, the token's n-th expert); with an expert cache's chain src[3] holds the ids, src[4] the table id -> block
+        const int64_t nc = t->ne[0], ns = t->ne[1];
+        std::vector<int64_t> where;
+        std::map<int64_t, int64_t> per_col;
+        {
+            const uint32_t * v = (const uint32_t *) buf.data();
+            const size_t n = ggml_nbytes(t) / 4;
+            for (size_t i = 0; i < n; i++) {
+                if ((v[i] & 0x7f800000u) == 0x7f800000u && (v[i] & 0x007fffffu) != 0) {
+                    if (where.size() < 4096) { where.push_back((int64_t) i); }
+                    per_col[(int64_t) i % nc]++;
+                }
+            }
+        }
+        std::string cols;
+        for (const auto & c : per_col) { if (cols.size() < 160) { cols += " " + std::to_string(c.first) + ":" + std::to_string(c.second); } }
+        GGML_LOG_WARN("nan-node:   bad values per column (column:count):%s\n", cols.c_str());
+        const struct ggml_tensor * ids_t = t->src[4] ? t->src[3] : t->src[2];
+        if (ids_t && read(ids_t)) {
+            const std::vector<uint8_t> ids_b = buf;
+            std::vector<uint8_t> table_b;
+            if (t->src[4] && read(t->src[4])) { table_b = buf; }
+            std::map<int32_t, int64_t> per_expert;
+            for (int64_t w : where) {
+                const int64_t row = w / nc, slot = row % ns, tok = row / ns;
+                per_expert[*(const int32_t *) (ids_b.data() + (size_t) (tok * ids_t->nb[1] + slot * ids_t->nb[0]))]++;
+            }
+            int said = 0;
+            for (const auto & pe : per_expert) {
+                const int32_t block = table_b.empty() || pe.first < 0 || (size_t) (pe.first + 1) * 4 > table_b.size() ? pe.first : ((const int32_t *) table_b.data())[pe.first];
+                const size_t off = block >= 0 ? (size_t) ((const char *) t->src[0]->data - (const char *) ggml_backend_buffer_get_base(t->src[0]->buffer)) + (size_t) block * t->src[0]->nb[2] : 0;
+                if (said++ < 24) { GGML_LOG_WARN("nan-node:   expert %d (%lld bad values of the first %zu): block %d, the weight's slice at byte %zu of its buffer, row bytes %zu\n", pe.first, (long long) pe.second, where.size(), block, off, t->src[0]->nb[1]); }
+            }
+        }
+        read(t);   // the shared buffer back to this tensor for what follows
+    }
     for (int k = 0; k < GGML_MAX_SRC; k++) {
         const struct ggml_tensor * src = t->src[k];
         if (src == NULL) { continue; }
@@ -4289,8 +4326,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             static const int nan_mode = getenv("GGML_SCHED_NAN_CHECK") ? atoi(getenv("GGML_SCHED_NAN_CHECK")) : 0;
             static long nan_graph2 = 0;
             enum ggml_status ec = GGML_STATUS_SUCCESS;
-            if (nan_mode == 2 && sched->n_splits >= ggml_sched_nan_min_splits()) {
-                if (split_id == 0) { nan_graph2++; }
+            // GGML_SCHED_NAN_CHECK_ONLY=word: only the splits whose first node's name holds the word run node by node, the rest at full speed: an input that holds NaN by design
+            // (Qwen Next's inp_mixed_embd under poison) cannot take the one report, and a pass that a NaN check of every node would take minutes for stays short
+            static const char * const nan_only = getenv("GGML_SCHED_NAN_CHECK_ONLY");
+            if (split_id == 0 && nan_mode == 2) { nan_graph2++; }
+            if (nan_mode == 2 && sched->n_splits >= ggml_sched_nan_min_splits() &&
+                    (!nan_only || (split->graph.n_nodes > 0 && strstr(split->graph.nodes[0]->name, nan_only)))) {
                 ggml_sched_trace_install();
                 for (int nj = 0; nj < split->graph.n_nodes && ec == GGML_STATUS_SUCCESS; nj++) {
                     ggml_sched_trace_note(sched, split_id, nj, nan_graph2);

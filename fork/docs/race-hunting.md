@@ -18,6 +18,7 @@ Run the cell with `-r 0` and n = 2 (first and repeat request) and a long enough 
 |---|---|
 | `--env GGML_CUDA_DISABLE_GRAPHS=1` | a replayed CUDA graph uses something that changed since its capture (an address, a size). The 2026-10-28 bug. |
 | `--env GGML_SCHED_NAN_CHECK=2` (every node alone, very slow) | a race between streams or threads: draining after every node closes the window |
+| `--env GGML_SCHED_NAN_CHECK=2 --env GGML_SCHED_NAN_CHECK_ONLY=word` | only the splits whose first node's name holds the word run node by node, so a report goes to the node you are after. A bad MUL_MAT_ID also names its bad columns and the experts and blocks behind them. No fusion in this mode |
 | `--env GGML_SCHED_NAN_CHECK=1` (every split drained) | still there: the fault is inside one split; it names the first tensor with a NaN |
 | `--moe sync=1` (default) / a run with uploads off | uploads racing the graph |
 
