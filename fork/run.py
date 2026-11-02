@@ -38,7 +38,7 @@ Tests:
 Compare decode t/s only between runs with the same output md5 (tetris/chat): the text
 decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat itself.
 """
-import argparse, math, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
+import argparse, atexit, math, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
 import types, collections, tempfile
 
@@ -1403,12 +1403,12 @@ def apply_power_schedule():
 IO_LAST = {}
 
 
-def host_io_line():
+def host_io_line(last_io=IO_LAST):
     """the live line's disk part: how fast the disks read, the major faults and the kernel's reclaim scans per second since the last call (user 2026-11-02: "add monitoring and logging of our read speed")"""
     v = {l.split()[0]: int(l.split()[1]) for l in open("/proc/vmstat") if l.startswith(("pgmajfault ", "pgscan_kswapd ", "pgscan_direct "))}
     rd = sum(int(f[5]) * 512 for f in (l.split() for l in open("/proc/diskstats")) if re.fullmatch(r"nvme\d+n\d+|sd[a-z]", f[2]))
-    t, last = time.time(), dict(IO_LAST)
-    IO_LAST.update(t=t, rd=rd, v=v)
+    t, last = time.time(), dict(last_io)
+    last_io.update(t=t, rd=rd, v=v)
     if not last: return ""
     dt = max(t - last["t"], 0.1)
     d = lambda *ks: sum(v.get(k, 0) - last["v"].get(k, 0) for k in ks) / dt
@@ -1898,7 +1898,7 @@ DIAG_ENV = ("POOL_LIVE", "PERF_LEDGER", "GGML_CUDA_SCRATCH_CHECK")   # diagnosti
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
-                             + f",planner-log=/tmp/perf-{build}{LOGTAG}.planner.log"   # every pick and what it measured, with timestamps: tail -f it during a run; the cell keeps it as TAG.planner.log
+                             + f",stats=/tmp/perf-{build}{LOGTAG}.stats.log"   # every event and status sample of the run, one a line, with timestamps: tail -f it during a run; the cell keeps it as TAG.stats.log
                              + f",hotmaps={HOTMAPS}"   # the hot maps per topic of every model (--moe dynhot) in the repo's fork/hotmaps, published with runs.db (branch runs-db); a cell's own hotmaps= comes after and wins
                              + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
                              + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
@@ -2257,6 +2257,38 @@ def dmon_summary(text, t0=0.0):
     return "|".join(one(v) for _, v in sorted(rx.items()))
 
 
+def stats_sampler(path, stock=False):
+    """stats.log's gpu lines, one a second while a request runs: every card's load, memory load, temperature, power, clock, PCIe traffic both ways and free VRAM, from nvidia-smi dmon (user 2026-11-02: "each gpu temp util", "free vram per gpu").
+    A stock server writes no stat lines of its own, so there the disk and reclaim numbers come from here. Returns the stop function."""
+    try:
+        total = [int(x) for x in subprocess.run([NVSMI, "--query-gpu=memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.split()]
+        p = subprocess.Popen([NVSMI, "dmon", "-s", "putcm", "-d", "1", "-o", "T"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return lambda: None
+    atexit.register(p.terminate)
+    def pump():
+        names, cards, io = [], [], {}
+        with open(path, "a") as out:
+            for line in p.stdout:
+                f = line.split()
+                if line.startswith("#Time"): names = f
+                if line.startswith("#") or len(f) != len(names): continue
+                d = dict(zip(names, f))
+                num = lambda k: float(d[k]) if re.fullmatch(r"[\d.]+", d.get(k, "")) else 0.0
+                i = int(num("gpu"))
+                free = (total[i] - num("fb")) / 1024 if i < len(total) else 0.0
+                cards.append(f"g{i} util {num('sm'):.0f}% mem {num('mem'):.0f}% {num('gtemp'):.0f} C {num('pwr'):.0f} W {num('pclk'):.0f} MHz rx {num('rxpci') / 1024:.2f} tx {num('txpci') / 1024:.2f} GB/s vram free {free:.1f} GiB")
+                if i != len(total) - 1: continue
+                now = time.time(); stamp = time.strftime("%F %T", time.localtime(now)) + f".{int(now * 1000) % 1000:03d}"
+                out.write(f"{stamp} {'-':>9} GPU " + "; ".join(cards) + "\n")
+                if stock: out.write(f"{stamp} {'-':>9} HST " + host_io_line(io) + "\n")
+                out.flush(); cards = []
+    th = threading.Thread(target=pump, daemon=True); th.start()
+    def stop():
+        p.terminate(); th.join(3)
+    return stop
+
+
 def pcie_sampler():
     """host -> device and device -> host PCIe traffic of every GPU while the request runs (nvidia-smi dmon, 1 Hz, MB/s): stop() returns (total GB host->device, peak GB/s of any GPU, mean GB/s of the seconds that moved data, total GB device->host). Cheap enough to be on for every server run."""
     rows = []
@@ -2326,6 +2358,7 @@ def server_run(build, env, args, path, body, render=None):
         perf = (subprocess.Popen(["perf", "record", "-F", "499", "-o", pbase + ".data", "-p", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL), pbase)
     _sys = subprocess.Popen(["bash", "-c", SYS_SH], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True); _sys_t0 = time.time()
     bwstop = pcie_sampler() if GPULOG else (lambda: None)   # the engine's own byte and time counters are the bandwidth record; the nvidia-smi view only with --gpulog
+    stats_stop = stats_sampler(f"/tmp/perf-{build}{LOGTAG}.stats.log", build.startswith("stock"))
     try:
         def clamp_text(txt, n_cl):   # --clamp N: cut to N tokens (the server counts them, so it is right for every tokenizer)
             full = txt
@@ -2433,6 +2466,7 @@ def server_run(build, env, args, path, body, render=None):
             pass
         try:
             bw = bwstop()
+            stats_stop()
             if bw:
                 PROCSTAT.update(pcie_h2d_gb=bw[0], pcie_h2d_peak_gbs=bw[1], pcie_h2d_avg_gbs=bw[2], pcie_d2h_gb=bw[3])
         except Exception:
@@ -3082,20 +3116,20 @@ def row_layout(logf):
     paths = collections.Counter(x.strip() for x in re.findall(r"prompt call of \d+ tokens: ([^(]+?) \(", last))
     if not pools:
         return ""
-    try:   # planner.log beside the server log: the calls that ran 1.3 x or more behind the best known at their size
-        slow = [re.search(r"prompt call of (\d+) tokens: (.+?) took (\d+) ms.*?, ([\d.]+) x, SLOW", l) for l in open(logf[:-4] + ".planner.log", errors="replace") if ", SLOW" in l]
+    try:   # stats.log beside the server log: the calls that ran 1.3 x or more behind the best known at their size
+        slow = [re.search(r"prompt call of (\d+) tokens: (.+?) took (\d+) ms.*?, ([\d.]+) x, SLOW", l) for l in open(logf[:-4] + ".stats.log", errors="replace") if ", SLOW" in l]
     except OSError:
         slow = []
     worst = max((m for m in slow if m), key=lambda m: float(m.group(4)), default=None)
-    try:   # read speed of each request's largest call, as planner.log measured it
-        calls = re.findall(r"prompt call of (\d+) tokens: .*? read ([\d.]+) GB at (\d+) MB/s", open(logf[:-4] + ".planner.log", errors="replace").read())
+    try:   # read speed of each request's largest call, as stats.log measured it
+        calls = re.findall(r"prompt call of (\d+) tokens: .*? ssd (\d+) MB/s \(([\d.]+) GB\)", open(logf[:-4] + ".stats.log", errors="replace").read())
         top = max((int(c[0]) for c in calls), default=0)
         rd = [c for c in calls if int(c[0]) == top]
     except OSError:
         rd, top = [], 0
     return (f"pool {'+'.join(f'{float(v):.0f}' for v in pools.values())} MiB margin {'/'.join(margins.values())} paths " + (", ".join(f"{k} {n}" for k, n in paths.most_common()) or "-")
             + (f" | {len(slow)} slow calls, worst {worst.group(1)} tokens {worst.group(2)} {float(worst.group(3)) / 1e3:.1f} s, {worst.group(4)} x" if worst else "")
-            + (f" | {top}-token calls read " + ", ".join(f"{c[1]} GB at {c[2]} MB/s" for c in rd) if rd else ""))
+            + (f" | {top}-token calls read " + ", ".join(f"{c[2]} GB at {c[1]} MB/s" for c in rd) if rd else ""))
 
 
 def answer_checks(row, key):
@@ -3222,6 +3256,24 @@ def judge_sync(con):
 # The server runs under the name judge-server, so kill_leftovers and wait_host_free (they look for llama-*) leave it to the loop. The loop ends by itself after 10 minutes with nothing to read, and when W10 answers again (unless started by hand).
 JUDGE_LOCAL_PORT, JUDGE_LOCAL_CTX, JUDGE_LOCAL_IDLE = 8190, 16384, 600
 GPU_SUBCOMMANDS = {"jobs", "run", "cell", "cells", "bench", "regress", "quick", "baseline", "calib", "onepass", "plcal"}
+
+
+def cmd_stats(a):
+    """run.py stats [TAG] [--only DEC,STA]: follows the stats.log of the row that runs now (the newest one), line by line, until ctrl-C; with TAG the one a cell kept, printed once. See llama_moe_stats_log_fork for the types."""
+    only = {x.strip() for x in a.only.split(",") if x.strip()}
+    show = lambda l: not only or l.startswith("#") or (len(l.split()) > 3 and l.split()[3] in only)   # date, time, seconds, type
+    if a.tag:
+        for l in open(os.path.join(QDIR, a.tag + ".stats.log"), errors="replace"):
+            if show(l): print(l, end="")
+        return
+    files = sorted(glob.glob("/tmp/perf-*.stats.log"), key=os.path.getmtime)
+    if not files: sys.exit("no stats.log yet: no row has run since the last boot")
+    print("following", files[-1], flush=True)
+    with open(files[-1], errors="replace") as f:
+        while True:
+            l = f.readline()
+            if not l: time.sleep(0.2)
+            elif show(l): print(l, end="", flush=True)
 
 
 def judge_local_pidfile():
@@ -7850,7 +7902,7 @@ def cmd_cell(a):
         used = [int(x) for i, x in enumerate(r.stdout.split()) if card_is_mine(i)]
         if used and max(used) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
-    try: os.remove(f"/tmp/perf-{a.builds}.planner.log")   # the planner log appends: one cell, one file
+    try: os.remove(f"/tmp/perf-{a.builds}.stats.log")   # the planner log appends: one cell, one file
     except OSError: pass
     keep_pool = os.environ.get("RUN_KEEP_POOL") == "1"   # run -nm: the pool stays mounted for the whole list (a remount after fragmentation gets only part of it back: 49-58 of 108 pages, 2026-10-22)
     too_big = False
@@ -7897,7 +7949,7 @@ def cmd_cell(a):
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
         f.write(f"== {re.sub(r'^pf(?=\d+k)', '', a.test)} {args}\n" + "".join(l + "\n" for l in lines))
     if a.builds.count(",") == 0:
-        try: shutil.copy(f"/tmp/perf-{a.builds}.planner.log", os.path.join(Q5, a.tag + ".planner.log"))
+        try: shutil.copy(f"/tmp/perf-{a.builds}.stats.log", os.path.join(Q5, a.tag + ".stats.log"))
         except OSError: pass
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
@@ -10732,6 +10784,9 @@ if __name__ == "__main__":
     gn.add_argument("-n", type=int, default=1, help="how many prompts")
     gn.add_argument("--start", type=int, default=0, help="first prompt number")
     gn.add_argument("--show", action="store_true", help="print the texts")
+    sl = sp.add_parser("stats", help="follow the stats.log of the row that runs now (events and once-a-second status, one line each), or show the one a cell kept")
+    sl.add_argument("tag", nargs="?", default="", help="the cell's tag, e.g. BUILD-ROW: its kept stats.log, printed once")
+    sl.add_argument("--only", default="", help="comma list of line types, e.g. DEC,DON,STA")
     jd = sp.add_parser("judge", help="Qwen3.6 on W10 reads stored answers (fork/judge_w10.py), nonsense makes a row ok=0: what it said so far; --sync its copy and verdicts; IDS or --build reads now")
     jd.add_argument("ids", nargs="*", type=int, help="runs.db row ids to read now, read again even when judged before")
     jd.add_argument("--build", default="", help="read now the rows of this build that have no verdict")
@@ -10756,5 +10811,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

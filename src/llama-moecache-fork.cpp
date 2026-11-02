@@ -85,6 +85,9 @@ static bool     g_split_enabled = false; // the compute buffers were reserved fo
 static double   g_split_speedup = 0.0;   // the transfer speedup that decision was judged by (the per-prompt decision line)
 static std::vector<std::pair<ggml_backend_dev_t, double>> g_early_gbs; // early link probe, until the cache's own probe
 
+void        llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
+std::string llama_moe_stats_io_fork(int who);                                 // what the disk, the memory and the CPU did since this caller's last call
+
 namespace {
 
 // --moe log=c (LLAMA_MOE_CACHE_TRACE=<prefix> moves the files): TRACE=<steps> (ctl file or env) records that many decode steps, after
@@ -382,6 +385,8 @@ struct moe_cache {
     std::mutex                 pin_mtx;
     std::thread                lazy_thr;          // --moe pin-lazy: reads expert tensors into pinned buffers in the background (pin_prefetch_run)
     std::atomic<bool>          lazy_stop{false};
+    std::thread                stats_thr;          // --moe stats: the status lines (stats_status_run)
+    std::atomic<bool>          stats_stop{false};
 
     // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
     // are dropped when it is cached and read back (async readahead) when it is evicted, so RAM holds
@@ -867,8 +872,6 @@ static std::atomic<int64_t> g_mb_auto { 0 };       // outside a prompt call, the
 static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call left a layer fewer blocks than its pass may use: its passes leave the prompt chain
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
-void llama_moe_planner_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe planner-log
-std::string llama_moe_planner_io_fork();                                  // what the disk and the kernel did since the last call
 static std::atomic<bool> g_pp_mix_call{true};    // this prompt call may run the prompt mix (llama_moe_cache_pp_decide_fork; a forced path keeps it)
 static std::atomic<bool> g_pp_no_dense{false};   // this prompt call stays on one card: the dense split lost at this size, or nothing was measured to weigh it against
 static bool              g_pp_mix_call_built = true;   // the same when the last graph was finished
@@ -4280,9 +4283,11 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     if (n_give > 0) { mc->kv_gave_back = true; }
     if (lo != lo_old) { g_kv_epoch++; }
     if (moe_log_has("k") || lo != lo_old) {
-        LLAMA_LOG_WARN("moe-cache: kv-tail %s: zone %zu -> %zu cells at %.1f -> %.1f MiB (%zu B per cell, %zu cells in use%s), %zu blocks taken (%zu experts evicted), %zu given back\n",
+        const std::string zone = format("kv-tail %s: zone %zu -> %zu cells at %.1f -> %.1f MiB (%zu B per cell, %zu cells in use%s), %zu blocks taken (%zu experts evicted), %zu given back",
                 ggml_backend_dev_name(ap.dev), h_old, h, lo_old / 1048576.0, lo / 1048576.0, ap.kv_row, cells,
                 lo != lo_old ? tr_fmt(", %.1f MiB of rows moved", n_used / 1048576.0).c_str() : "", n_take, n_evict, n_give);
+        LLAMA_LOG_WARN("moe-cache: %s\n", zone.c_str());
+        llama_moe_stats_log_fork("KVZ", zone.c_str());
     }
     {   // no block left for an expert on any card that holds a KV zone (the blocks lent to the graph are not the experts' either)
         bool any = false, usable = false;
@@ -6134,7 +6139,47 @@ static std::vector<int32_t> g_req_prompt;   // the tokens of the topic key of th
 static bool                 g_req_own = false;   // they are the request's own text (a chat request's user input), not its whole prompt
 
 // the server's hooks (llama-fork-hooks.h): a request starts; a request ended: the per-expert token ids to the file, so the file is whole while the server waits
+// --moe stats: a status line every --moe stats-ms (default 1000): far more often than the planner decides, so a drop reads against what the machine did in that second (user 2026-11-02: "we need to see
+// stats samples more often than planner makes decisions"). RAM as this engine moves it (this CPU shows no memory counters without root: the CPU's expert reads, the uploads, the prompt streams; all other traffic is
+// missing), each link's uploads against its probed maximum, the cache, then disk, memory and CPU (llama_moe_stats_io_fork). What every card really moved, its load, temperature and free VRAM: the gpu lines from run.py.
+static void stats_status_run(moe_cache * mc) {
+    const char * o = moe_opt("stats-ms");
+    const int64_t period = (int64_t) std::max(50, o ? atoi(o) : 1000) * 1000;
+    int64_t t0 = ggml_time_us(), cpu0 = mc->cpu_bytes.load(), up0 = mc->up_bytes.load(), pf0 = mc->pf_bytes.load(), lk0[MAX_LINKS] = {};
+    for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
+    uint64_t h0 = 0, m0 = 0, n0 = mc->n_steps, u0 = mc->n_uploads, e0 = mc->n_evictions;
+    while (!mc->stats_stop.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        const int64_t t = ggml_time_us();
+        if (t - t0 < period) { continue; }
+        const double dt = (double) (t - t0) / 1e6;
+        const int64_t cpu = mc->cpu_bytes.load(), up = mc->up_bytes.load(), pf = mc->pf_bytes.load();
+        uint64_t h = 0, m = 0;
+        for (const auto & l : mc->layers) { h += l.n_hit; m += l.n_miss; }
+        std::string links;
+        for (int k = 0; k < mc->n_links; ++k) {
+            const int64_t b = mc->link_bytes[k].load() + mc->pf_link[k].load();
+            links += format(" %s %.2f/%.1f", mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", (double) (b - lk0[k]) / dt / 1e9, mc->gbs_link[k]);
+            lk0[k] = b;
+        }
+        size_t todo = 0;
+        int in_flight = 0;
+        {
+            std::lock_guard<std::mutex> wlk(mc->wmtx);
+            todo = mc->todo.size();
+            in_flight = mc->in_flight;
+        }
+        const uint64_t n = mc->n_steps, u = mc->n_uploads, e = mc->n_evictions;
+        const std::string line = format("ram %.2f/%.1f GB/s (cpu %.2f, upload %.2f, stream %.2f); links%s GB/s; hit %.1f%%, steps %.1f/s, uploads %.0f/s, evictions %.0f/s, queue %zu+%d; %s",
+                (double) (cpu - cpu0 + up - up0 + pf - pf0) / dt / 1e9, knobs().ddr_gbs, (double) (cpu - cpu0) / dt / 1e9, (double) (up - up0) / dt / 1e9, (double) (pf - pf0) / dt / 1e9, links.c_str(),
+                h + m > h0 + m0 ? 100.0 * (double) (h - h0) / (double) (h + m - h0 - m0) : 0.0, (double) (n - n0) / dt, (double) (u - u0) / dt, (double) (e - e0) / dt, todo, in_flight, llama_moe_stats_io_fork(1).c_str());
+        llama_moe_stats_log_fork("STA", line.c_str());
+        t0 = t; cpu0 = cpu; up0 = up; pf0 = pf; h0 = h; m0 = m; n0 = n; u0 = u; e0 = e;
+    }
+}
+
 void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool own_text) {
+    llama_moe_stats_log_fork("REQ", format("begin: %d prompt tokens", n_prompt).c_str());
     g_req_prompt.assign(prompt, prompt + (prompt != nullptr ? std::max(0, n_prompt) : 0));
     g_req_own = own_text;
     g_req_boundary.store(true);
@@ -6143,6 +6188,7 @@ void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool
 void llama_tokheat_dump_fork(void);   // llama-context.cpp: --moe tokheat=DIR
 
 void llama_moe_request_end_fork(void) {
+    llama_moe_stats_log_fork("REQ", "end");
     if (g_pjit_layers.load() > 0) {   // prompt calls of this request: what the JIT saw and did (uploads against CPU-computed misses)
         const uint64_t ms = g_pjit_miss.exchange(0), up = g_pjit_up.exchange(0), ly = g_pjit_layers.exchange(0);
         std::string pl;
@@ -7194,6 +7240,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     LLAMA_LOG_WARN("moe-cache: pin-lazy: pinning expert tensors in the background, up to %.1f GiB, the rest stays mapped\n", budget / 1073741824.0);
                 }
             }
+            if (moe_opt("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
                     mc->bounce_bytes ? "memcpy -> pinned staging (bounce) -> GPU" :
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
@@ -8107,7 +8154,7 @@ bool llama_moe_cache_pp_short_fork() {
             const std::string refused = format("prompt chain: layer %d keeps %lld blocks beside the graph, the pass may use %lld experts: this prompt takes the prompt path",
                     l.pub.il, (long long) pp_blocks(mc, l), (long long) std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want));
             LLAMA_LOG_WARN("moe-cache: %s\n", refused.c_str());
-            llama_moe_planner_log_fork("chain", refused.c_str());
+            llama_moe_stats_log_fork("CHN", refused.c_str());
             return true;
         }
     }
@@ -8927,8 +8974,8 @@ void llama_moe_cache_step_fork() {
         }
     }
     struct flush_at_exit { ~flush_at_exit() { flush_tables(); } } flush_guard; // table changes reach the GPU before the next graph
-    {   // planner.log: decode speed and hit rate per 256 steps. Prompt calls count no hits and take long, so a window with one in it says little: read it next to the call lines
-        static const bool on = moe_opt("planner-log") != nullptr;
+    {   // stats.log: decode speed and hit rate per 256 steps. Prompt calls count no hits and take long, so a window with one in it says little: read it next to the call lines
+        static const bool on = moe_opt("stats") != nullptr;
         static int64_t t0 = 0, n0 = 0;
         static uint64_t h0 = 0, m0 = 0;
         if (on && (t0 == 0 || mc->n_steps - n0 >= 256)) {
@@ -8936,8 +8983,8 @@ void llama_moe_cache_step_fork() {
             for (const auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
             const int64_t t = ggml_time_us();
             if (t0 > 0) {
-                llama_moe_planner_log_fork("decode", format("%lld steps: %.1f t/s, hit %.1f%%; %s", (long long) (mc->n_steps - n0), (double) (mc->n_steps - n0) * 1e6 / (double) std::max<int64_t>(1, t - t0),
-                        h + m > h0 + m0 ? 100.0 * (double) (h - h0) / (double) (h + m - h0 - m0) : 0.0, llama_moe_planner_io_fork().c_str()).c_str());
+                llama_moe_stats_log_fork("DEW", format("%lld steps: %.1f t/s, hit %.1f%%; %s", (long long) (mc->n_steps - n0), (double) (mc->n_steps - n0) * 1e6 / (double) std::max<int64_t>(1, t - t0),
+                        h + m > h0 + m0 ? 100.0 * (double) (h - h0) / (double) (h + m - h0 - m0) : 0.0, llama_moe_stats_io_fork(2).c_str()).c_str());
             }
             t0 = t; n0 = mc->n_steps; h0 = h; m0 = m;
         }
@@ -10363,7 +10410,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             path = PP_K;
             for (double m = g_pp_k_m; m > 1.0; m /= 2.0) { ++path; }
         }
-        // planner.log: what this call took against the best known at its size, read before its own measurement goes in. The first run of a path that loses counts against the budget of later tries (pp_try_ok)
+        // stats.log: what this call took against the best known at its size, read before its own measurement goes in. The first run of a path that loses counts against the budget of later tries (pp_try_ok)
         {
             const double n1 = (double) n_tokens / P, took = (double) us / P, was = pp_took_us(path, n1);
             int b = -1;
@@ -10376,8 +10423,8 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
             const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us,
                     best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "").c_str() : "; first of this size",
-                    llama_moe_planner_io_fork().c_str());
-            llama_moe_planner_log_fork("done", done.c_str());
+                    llama_moe_stats_io_fork(0).c_str());
+            llama_moe_stats_log_fork("DON", done.c_str());
         }
         // the first pass of a server that fills a layer runs cold whatever its path (Qwen3.6: 348 ms on the chain, 130 warm; the stream 150 ms over its repeats) and the size would keep that
         // number until the path runs again: not a measurement
@@ -10544,8 +10591,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             n, chain ? "prompt chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
             pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, v.size());
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
-    llama_moe_planner_log_fork("call", pick.c_str());
-    llama_moe_planner_io_fork();   // the reads of this call start counting here
+    llama_moe_stats_log_fork("CAL", pick.c_str());
+    llama_moe_stats_io_fork(0);   // the reads of this call start counting here
 }
 
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
@@ -10745,6 +10792,8 @@ void llama_moe_cache_free_fork() {
         LLAMA_LOG_WARN("moe-cache: router prediction: %" PRIu64 " uploads, %" PRIu64 " published before their layer, %" PRIu64 " used, %" PRIu64 " too late to start, %" PRIu64 " dropped in the queue (layer started), %" PRIu64 " promoted into the cache, %" PRIu64 " token-boundary prefetches\n",
                 mc->n_pred_up, mc->n_pred_pub, mc->n_pred_used, mc->n_pred_late, mc->n_stream_stale, mc->n_promoted, mc->n_tbp);
     }
+    mc->stats_stop.store(true);
+    if (mc->stats_thr.joinable()) { mc->stats_thr.join(); }
     mc->lazy_stop.store(true);
     if (mc->lazy_thr.joinable()) { mc->lazy_thr.join(); }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }

@@ -42,6 +42,8 @@
 #include <unordered_map>
 #include <vector>
 
+void llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
+
 namespace {
 
 // --moe mirror-pool (default on with the compute alias): one card's copies live at the start of its expert pool buffer, in the blocks a prompt pass that
@@ -314,7 +316,6 @@ namespace {
 // A copy crosses the source card's link out and the receiving card's link in, and a link carries both directions at once, so the fill takes as long as the
 // busiest link in its busier direction: max over the cards of max(bytes in, bytes out) / its upload rate (with two cards on x16 + x4: the x4 card's larger
 // direction alone, not both cards' sum).
-void llama_moe_planner_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe planner-log
 
 static std::atomic<double> g_mirror_fill_us { 0.0 };
 static void dsplit_update_fill(const dsplit_set & S) {
@@ -1380,7 +1381,7 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
                     (long long) n_tokens, pc.plan.t_one_ms, pc.plan.t_split_ms, sh.c_str(), g_cards.empty() ? "-" : ggml_backend_dev_name(g_cards.back()),
                     pc.plan.split ? "split" : "one card");
             LLAMA_LOG_WARN("split planner: %s\n", line.c_str());
-            llama_moe_planner_log_fork("split", line.c_str());
+            llama_moe_stats_log_fork("SPL", line.c_str());
         }
     }
     return pc.plan;
@@ -2952,7 +2953,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
                 "helper_expert_share=%.2f cards=%s prompt_tps=%.1f one_card_tps=%s split_tps=%s chosen_by=\"%s\"", (long long) n_tokens, passes, pass, slots, mode.c_str(),
                 gpus.c_str(), skipped.c_str(), tok_share, exp_share, cards.c_str(), (double) n_tokens * 1e6 / (double) us, one.c_str(), spl.c_str(), by.c_str());
         LLAMA_LOG_WARN("prefill decision: %s\n", line.c_str());
-        llama_moe_planner_log_fork("prefill", line.c_str());
+        llama_moe_stats_log_fork("PRE", line.c_str());
     }
     g_pending  = -1;
     g_pend_max = 0;

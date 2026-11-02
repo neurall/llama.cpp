@@ -454,21 +454,25 @@ void llama_moe_token_time_fork(double ms) {
     g_tok_sum_ms += ms;
 }
 // the latest value and reason of each automatic decision; a repeat of the same value only refreshes the time
-// --moe planner-log=PATH: the planner's picks and what they measured afterwards, one line each, with the wall clock and the seconds since the start (close to the server log's clock), apart from
-// the server log: a speed drop reads against this file (user 2026-11-02: "log key planner decisions to separate planner.log with timestamps so we can monitor runs and correlate perf drops more simply").
-// Kinds: decision (every llama_moe_decision_fork), call (a prompt call's path and why), done (what it took against the best known; SLOW), split, prefill, chain, decode (speed and hit rate per 256 steps).
-static const auto g_planner_t0 = std::chrono::steady_clock::now();
-void llama_moe_planner_log_fork(const char * kind, const char * text) {
+// --moe stats=PATH: the planner's picks and what they measured afterwards, one line each, with the wall clock and the seconds since the start (close to the server log's clock), apart from
+// the server log: a speed drop reads against this file (user 2026-11-02: "log key planner decisions to separate stats.log with timestamps so we can monitor runs and correlate perf drops more simply").
+// One event or one status report per line, with a type acronym (user 2026-11-02: "one line per event with timestamp and evt type acronim seems simpler than wastefull csv"; tail -f it to watch a change live, run.py stats does).
+// The first line of the file names the types. STA comes once a second from stats_status_run, GPU once a second from run.py (nvidia-smi dmon).
+static const auto g_stats_t0 = std::chrono::steady_clock::now();
+void llama_moe_stats_log_fork(const char * kind, const char * text) {
     static std::mutex mu;
     static FILE * f = nullptr;
     static bool opened = false;
     std::lock_guard<std::mutex> lk(mu);
     if (!opened) {
         opened = true;
-        const char * p = llama_moe_get_opt("planner-log");
+        const char * p = llama_moe_get_opt("stats");
         if (p && *p) {
             f = fopen(p, "a");
             if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
+            else if (ftell(f) == 0 && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0) {
+                fprintf(f, "# wall clock, seconds since start, type, text. DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, KVZ KV zone, DEW decode window, STA engine status, GPU cards, HST host\n");
+            }
         }
     }
     if (!f) { return; }
@@ -477,55 +481,85 @@ void llama_moe_planner_log_fork(const char * kind, const char * text) {
     char ts[32];
     strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
     const int ms = (int) (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
-    fprintf(f, "%s.%03d %9.3f %-8s %s\n", ts, ms, std::chrono::duration<double>(std::chrono::steady_clock::now() - g_planner_t0).count(), kind, text);
+    fprintf(f, "%s.%03d %9.3f %-3s %s\n", ts, ms, std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count(), kind, text);
     fflush(f);
 }
 
-// For planner.log: what the disk and the kernel did since the last call. This process's reads from storage, its major faults, the kernel's reclaim scans, the page cache and the free RAM (user 2026-11-02:
-// "add monitoring and logging of our read speed": DeepSeek's second request read at 335 MB/s on a drive that does 5.8 GB/s, and nothing said so). Empty without --moe planner-log, and on the first call.
-std::string llama_moe_planner_io_fork() {
+// For stats.log: what the disk, the memory and the CPU did since this caller's last call (who: 0 prompt calls, 1 status lines, 2 decode windows). This process's reads from storage and its page faults; the
+// kernel's reclaim scans and swapping; page cache, free RAM, swap; CPU load and temperature (user 2026-11-02: "add monitoring and logging of our read speed", "log swapping", "cpu temp util", "add page faults":
+// DeepSeek's second request read at 335 MB/s on a drive that does 5.8 GB/s, and nothing said so). Empty without --moe stats, and on a caller's first call.
+std::string llama_moe_stats_io_fork(int who) {
 #ifdef __linux__
-    static const bool on = llama_moe_get_opt("planner-log") != nullptr;
+    static const bool on = llama_moe_get_opt("stats") != nullptr;
     if (!on) { return ""; }
+    struct sample { int64_t t = 0; unsigned long long rb = 0, mj = 0, mn = 0, sc = 0, si = 0, so = 0, all = 0, idle = 0, iow = 0; };
+    static sample last[3];
     static std::mutex mu;
-    static int64_t t0 = 0;
-    static unsigned long long rb0 = 0, mf0 = 0, sc0 = 0;
     std::lock_guard<std::mutex> lk(mu);
-    unsigned long long rb = 0, mf = 0, sc = 0, v = 0, cached = 0, free_kb = 0;
-    std::string k;
-    { std::ifstream f("/proc/self/io"); while (f >> k >> v) { if (k == "read_bytes:") { rb = v; } } }
-    {   // majflt: the 10th field behind the process name
+    sample c;
+    unsigned long long v = 0, cached = 0, free_kb = 0, avail = 0, swap_total = 0, swap_free = 0;
+    std::string k, line;
+    { std::ifstream f("/proc/self/io"); while (f >> k >> v) { if (k == "read_bytes:") { c.rb = v; } } }
+    {   // minflt and majflt: the 8th and 10th fields behind the process name
         std::ifstream f("/proc/self/stat");
-        std::string s;
-        std::getline(f, s);
-        const size_t p = s.rfind(')');
+        std::getline(f, line);
+        const size_t p = line.rfind(')');
         if (p != std::string::npos) {
-            std::istringstream is(s.substr(p + 1));
-            for (int i = 0; i < 10 && is >> k; ++i) { if (i == 9) { mf = strtoull(k.c_str(), nullptr, 10); } }
-        }
-    }
-    { std::ifstream f("/proc/vmstat"); while (f >> k >> v) { if (k == "pgscan_kswapd" || k == "pgscan_direct") { sc += v; } } }
-    {
-        std::ifstream f("/proc/meminfo");
-        std::string line;
-        while (std::getline(f, line)) {
-            std::istringstream is(line);
-            if (is >> k >> v) {
-                if (k == "Cached:") { cached = v; } else if (k == "MemFree:") { free_kb = v; }
+            std::istringstream is(line.substr(p + 1));
+            for (int i = 0; i < 10 && is >> k; ++i) {
+                if (i == 7) { c.mn = strtoull(k.c_str(), nullptr, 10); } else if (i == 9) { c.mj = strtoull(k.c_str(), nullptr, 10); }
             }
         }
     }
-    const int64_t t = ggml_time_us();
-    std::string out;
-    if (t0 > 0 && t > t0) {
-        const double dt = (double) (t - t0) / 1e6, gb = (double) (rb - rb0) / 1e9;
-        const double faults = (double) (mf - mf0);
-        out = format("read %.1f GB at %.0f MB/s, %.0f KiB per fault, %.0f faults/s, scan %.1f M pages/s, cache %.1f GiB, free %.1f GiB", gb, gb * 1e3 / dt, faults > 0.0 ? (double) (rb - rb0) / 1024.0 / faults : 0.0,
-                faults / dt, (double) (sc - sc0) / dt / 1e6, (double) cached / 1048576.0, (double) free_kb / 1048576.0);
+    {
+        std::ifstream f("/proc/vmstat");
+        while (f >> k >> v) {
+            if (k == "pgscan_kswapd" || k == "pgscan_direct") { c.sc += v; } else if (k == "pswpin") { c.si = v; } else if (k == "pswpout") { c.so = v; }
+        }
     }
-    t0 = t; rb0 = rb; mf0 = mf; sc0 = sc;
+    {
+        std::ifstream f("/proc/meminfo");
+        while (std::getline(f, line)) {
+            std::istringstream is(line);
+            if (is >> k >> v) {
+                if (k == "Cached:") { cached = v; } else if (k == "MemFree:") { free_kb = v; } else if (k == "MemAvailable:") { avail = v; }
+                else if (k == "SwapTotal:") { swap_total = v; } else if (k == "SwapFree:") { swap_free = v; }
+            }
+        }
+    }
+    {   // cpu  user nice system idle iowait irq softirq steal
+        std::ifstream f("/proc/stat");
+        f >> k;
+        for (int i = 0; i < 8 && f >> v; ++i) {
+            c.all += v;
+            if (i == 3) { c.idle = v; } else if (i == 4) { c.iow = v; }
+        }
+    }
+    static const std::string temp_path = [] {   // the CPU's sensor: k10temp on AMD, coretemp on Intel
+        std::error_code ec;
+        for (const auto & e : std::filesystem::directory_iterator("/sys/class/hwmon", ec)) {
+            std::ifstream f(e.path() / "name");
+            std::string n;
+            if (f >> n && (n == "k10temp" || n == "coretemp" || n == "zenpower")) { return (e.path() / "temp1_input").string(); }
+        }
+        return std::string();
+    }();
+    double temp_c = 0.0;
+    if (!temp_path.empty()) { std::ifstream f(temp_path); if (f >> v) { temp_c = (double) v / 1e3; } }
+    c.t = ggml_time_us();
+    sample & l = last[who >= 0 && who < 3 ? who : 0];
+    std::string out;
+    if (l.t > 0 && c.t > l.t) {
+        const double dt = (double) (c.t - l.t) / 1e6, bytes = (double) (c.rb - l.rb), mj = (double) (c.mj - l.mj), all = std::max(1.0, (double) (c.all - l.all));
+        out = format("ssd %.0f MB/s (%.1f GB), faults major %.0f/s minor %.0f/s, %.0f KiB per major, scan %.1f M pages/s, swap in %.0f out %.0f pages/s used %.1f GiB, cache %.1f GiB, ram free %.1f avail %.1f GiB, cpu %.0f%% iowait %.0f%% %.0f C",
+                bytes / dt / 1e6, bytes / 1e9, mj / dt, (double) (c.mn - l.mn) / dt, mj > 0.0 ? bytes / 1024.0 / mj : 0.0, (double) (c.sc - l.sc) / dt / 1e6, (double) (c.si - l.si) / dt, (double) (c.so - l.so) / dt,
+                (double) (swap_total - swap_free) / 1048576.0, (double) cached / 1048576.0, (double) free_kb / 1048576.0, (double) avail / 1048576.0,
+                100.0 * (all - (double) (c.idle - l.idle) - (double) (c.iow - l.iow)) / all, 100.0 * (double) (c.iow - l.iow) / all, temp_c);
+    }
+    l = c;
     return out;
 #else
+    GGML_UNUSED(who);
     return "";
 #endif
 }
@@ -538,12 +572,12 @@ void llama_moe_decision_fork(const char * name, const char * value, const char *
     for (auto & d : g_decisions) {
         if (d.name == name) {
             // a changed value, or a new reason of the pass size (once per prompt call); not every reason update: some tuners rewrite theirs with live numbers each step
-            if (d.value != value || (d.why != why && strcmp(name, "ubatch") == 0)) { LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why); llama_moe_planner_log_fork("decision", line.c_str()); }
+            if (d.value != value || (d.why != why && strcmp(name, "ubatch") == 0)) { LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why); llama_moe_stats_log_fork("DEC", line.c_str()); }
             d.value = value; d.why = why; d.t = t; return;   // the reason follows the live numbers too (a tuner updates it as it measures)
         }
     }
     LLAMA_LOG_WARN("%s: decision %s = %s (%s)\n", __func__, name, value, why);
-    llama_moe_planner_log_fork("decision", line.c_str());
+    llama_moe_stats_log_fork("DEC", line.c_str());
     g_decisions.push_back({ name, value, why, t });
 }
 // Adaptive prompt pass size, one trial per decode call (the passes of a call are split up front, so a call is the finest measurable step).
@@ -690,8 +724,10 @@ void llama_moe_prompt_progress_fork(uint32_t done) {
         char hs2[400] = "";   // of the experts this pass asked for: found on the card it needs them on (copied there, upload skipped) / asked of the other card (its layer's cache is there) / the rest comes from RAM
         if (d_asked > 0) { snprintf(hs2, sizeof hs2, ", experts from cache %.0f%% (%lld of %lld asked; %.0f%% belong to the other card's cache, the rest uploaded)", 100.0 * d_found / d_asked, (long long) d_found, (long long) d_asked, 100.0 * d_wrong / d_asked); }
         if (!per_card.empty()) { snprintf(hs2 + strlen(hs2), sizeof hs2 - strlen(hs2), " [%s]", per_card.c_str()); }
-        LLAMA_LOG_WARN("%s: prompt pass %u/%u: %u tokens in %.1f s (%.0f t/s)%s, %u of %u done after %.1f s\n", __func__, pass, passes,
+        const std::string pass_line = format("prompt pass %u/%u: %u tokens in %.1f s (%.0f t/s)%s, %u of %u done after %.1f s", pass, passes,
                 done - prev, s_pass, s_pass > 0 ? (done - prev) / s_pass : 0.0, hs2, done, tokens, s_all);
+        LLAMA_LOG_WARN("%s: %s\n", __func__, pass_line.c_str());
+        llama_moe_stats_log_fork("PAS", pass_line.c_str());
     }
 }
 // a prompt call (more than one token) finished: tokens, milliseconds
