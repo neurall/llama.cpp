@@ -405,37 +405,48 @@ struct moe_cache {
     std::atomic<bool>          lazy_stop{false};
     std::thread                stats_thr;          // --moe stats: the status lines (stats_status_run)
     std::thread                preheat_thr;        // pinned copies of the hot experts that stayed mapped, read once with O_DIRECT before request 1 (preheat_run)
-    // --moe pin-miss=1 (user 2026-11-03: "alloc pin and seek load to them per layer misses"; "keep track what is where, so decode can reuse those already in and pull the rest";
-    // "make it serve both cpu compute in pp or decode or uploads in both"): one pinned arena of expert-slice slots, a RAM tier under the cards' caches. At a layer's router (prompt call
-    // or decode step) the slices of its misses that stayed mapped and are in no slot get one (pm_where: layer, expert*3 + k -> slot; the clock takes the slot used longest ago) and the
-    // readers fill them with O_DIRECT; the CPU branch reads them through ggml-cpu's expert pointer hook (pin_miss_hook) and the uploads DMA from them, instead of the mapping's page
-    // faults or a read of their own. A slot stays until the clock needs it, so the next token finds what this one read. A slice the page cache holds gets no slot: the mapping gives it at
-    // RAM speed. --moe pin-miss=2 also reads ahead (user: "while computing preload the same for next layer"): the next layer's router on this layer's input names its picks (pin_miss_preload).
-    // --moe pin-miss=3 also reads each layer's hot experts from the start of a request (user: "start reading top hot moes per layer, n x 8 oversampled ... by the time it's dense and router
-    // starts most will be there ... keep filling already processed moes with layer 2"): pin_miss_hot_fill.
+    // --moe pin-miss=1 (user 2026-11-03: "alloc pin and seek load to them per layer misses"; "separate moe sized buffers for whole model, keep track who is where, hot count, on pressure evict
+    // coldest and load demanded via offset read"; "make it serve both cpu compute in pp or decode or uploads in both"): a RAM tier under the cards' caches. At a layer's router (prompt call or decode
+    // step) the slices of its misses that stayed mapped and are in no block get one, the size of the slice (pm_where: layer, expert*3 + k -> block), and the readers fill them with O_DIRECT; the CPU
+    // branch reads them through ggml-cpu's expert pointer hook (pin_miss_hook) and the uploads DMA from them, instead of the mapping's page faults or a read of their own. A block stays until RAM is
+    // short: blocks are carved from pinned chunks a background thread adds while RAM lasts (one register per expert would be tens of thousands), then the coldest block by the cache's own score goes.
+    // A slice the page cache holds gets no block: the mapping gives it at RAM speed. --moe pin-miss=2 also reads ahead (user: "while computing preload the same for next layer"): the next layer's
+    // router on this layer's input names its picks (pin_miss_preload). --moe pin-miss=3 also reads each layer's hot experts from the start of a request (user: "start reading top hot moes per layer,
+    // n x 8 oversampled ... by the time it's dense and router starts most will be there ... keep filling already processed moes with layer 2"): pin_miss_hot_fill.
     bool                       pm_on = false;
     bool                       pm_pre = false;
     bool                       pm_hot = false;
     size_t                     pm_hot_next = SIZE_MAX;   // the next layer whose hot list is read, only under mc->mtx
-    std::deque<std::pair<struct layer_state *, int64_t>> pm_qh;   // the hot lists' reads: read when pm_q is empty
     int                        pm_gate = 0;   // the router's gating function (the bias adds to its output)
     std::vector<std::thread>   pm_thr;
     std::mutex                 pm_mtx;
     std::condition_variable    pm_cv;
-    std::deque<std::pair<struct layer_state *, int64_t>> pm_q;   // (layer, slot << 26 | k << 24 | expert)
-    bool                       pm_stop = false;
+    std::deque<std::pair<struct layer_state *, int64_t>> pm_q;    // (layer, block << 26 | k << 24 | expert)
+    std::deque<std::pair<struct layer_state *, int64_t>> pm_qh;   // the hot lists' reads: read when pm_q is empty
+    std::atomic<bool>          pm_stop{false};
     std::atomic<bool>          pm_ready{false};
-    char *                     pm_buf = nullptr;                   // pm_slots blocks of pm_bs bytes each, page aligned (reader 0 takes them: never inside a step)
-    size_t                     pm_bs = 0, pm_slots = 0;
     struct pm_slot {
         std::atomic<const char *> ptr{nullptr};   // the slice once read, PM_LOADING while being read, nullptr = free or failed (the mapping serves it)
         std::atomic<int>          users{0};       // upload workers copying out of it right now
-        int32_t li = -1, key = -1;                // what it holds; only pin_miss_queue, under mc->mtx, like ref and pm_hand
-        bool    ref = false;                      // used since the clock last passed
+        char *  mem = nullptr;                    // its page-aligned bytes, for good once carved
+        size_t  cap = 0;
+        int32_t li = -1, key = -1;                // what it holds; only under mc->mtx
     };
-    std::unique_ptr<pm_slot[]> pm_s;
-    std::vector<std::unique_ptr<std::atomic<int32_t>[]>> pm_where;   // per layer with mapped tensors: expert*3 + k -> slot, -1 = in no slot
-    size_t                     pm_hand = 0;
+    std::unique_ptr<pm_slot[]> pm_s;              // room for one block per mapped slice, carved in use order: a reader, a worker or the hook never see the array move
+    size_t                     pm_n = 0;          // blocks carved so far, only under mc->mtx
+    struct pm_class { size_t size = 0; std::vector<int32_t> all, free; };   // one per distinct slice size, only under mc->mtx
+    std::vector<pm_class>      pm_cls;
+    std::vector<std::array<int8_t, 3>> pm_cls_of; // layer, k -> class
+    uint64_t                   pm_rand = 88172645463325252ULL;
+    char *                     pm_cur = nullptr;  // the chunk being carved, only under mc->mtx
+    size_t                     pm_left = 0;
+    std::thread                pm_grow_thr;       // adds pinned chunks while RAM lasts (pin_miss_grow): a register never runs inside a step
+    std::mutex                 pm_gmtx;
+    std::condition_variable    pm_gcv;
+    std::vector<char *>        pm_chunks;         // chunks ready to carve
+    size_t                     pm_budget = 0, pm_chunk = 0;
+    std::atomic<size_t>        pm_pinned{0};
+    std::vector<std::unique_ptr<std::atomic<int32_t>[]>> pm_where;   // per layer with mapped tensors: expert*3 + k -> block, -1 = in no block
     std::atomic<uint64_t>      pm_reads{0}, pm_bytes{0}, pm_read_us{0}, pm_fail{0}, pm_waits{0}, pm_wait_us{0}, pm_late{0}, pm_full{0}, pm_up{0}, pm_cached{0}, pm_found{0}, pm_router{0}, pm_ahead{0}, pm_hots{0}, pm_drop{0}, pm_evict{0};
     std::atomic<bool>          profile_ready{false};   // profile_preload has set the lifetime counts (ls.glob_count): the preheat may rank the experts
     bool                       pin_on_upload = false;   // --moe pinr>0: pin_slice also copies an expert on its second upload; off when only the preheat fills pin_ptr
@@ -7069,24 +7080,43 @@ static void preheat_run(moe_cache * mc) {
             n_fail, read_errno ? ", first: " : "", read_errno ? strerror(read_errno) : "", n_last);
 }
 
-// --moe pin-miss: the readers. Reader 0 first takes the arena from pin_alloc (one allocation and register, ~3.5 GiB/s: never inside a step), the queue opens after it. A read is the
-// slice plus the bytes a matmul reads past it, with O_DIRECT straight into its page-aligned slot (no page cache, no copy); the slot's pointer is published once all its bytes are there,
-// so the CPU and the uploads never see half a slice.
+// --moe pin-miss: the readers. A read is the slice plus the bytes a matmul reads past it, with O_DIRECT straight into its page-aligned block (no page cache, no copy); the block's pointer is
+// published once all its bytes are there, so the CPU and the uploads never see half a slice.
 static std::string pin_miss_line(const moe_cache * mc) {
     const double us = (double) mc->pm_read_us.load();
-    return format("pin-miss: %" PRIu64 " slices read (%.2f GiB, %.2f GB/s per reader), %" PRIu64 " queued at a router, %" PRIu64 " ahead of it, %" PRIu64 " from hot lists, %" PRIu64 " a router found in the arena, %" PRIu64 " evicted, %" PRIu64 " dropped unread; %" PRIu64 " left to the page cache; %" PRIu64 " uploads from the arena; CPU and upload waits %" PRIu64 " (%.1f ms), %" PRIu64 " late; %" PRIu64 " failed, %" PRIu64 " found no slot",
-            mc->pm_reads.load(), mc->pm_bytes.load() / 1073741824.0, us > 0 ? mc->pm_bytes.load() / us / 1e3 : 0.0, mc->pm_router.load(), mc->pm_ahead.load(), mc->pm_hots.load(), mc->pm_found.load(), mc->pm_evict.load(), mc->pm_drop.load(), mc->pm_cached.load(),
+    return format("pin-miss: %zu blocks, %.2f GiB pinned; %" PRIu64 " slices read (%.2f GiB, %.2f GB/s per reader), %" PRIu64 " queued at a router, %" PRIu64 " ahead of it, %" PRIu64 " from hot lists, %" PRIu64 " a router found in a block, %" PRIu64 " evicted, %" PRIu64 " dropped unread; %" PRIu64 " left to the page cache; %" PRIu64 " uploads from the blocks; CPU and upload waits %" PRIu64 " (%.1f ms), %" PRIu64 " late; %" PRIu64 " failed, %" PRIu64 " found no block",
+            mc->pm_n, mc->pm_pinned.load() / 1073741824.0, mc->pm_reads.load(), mc->pm_bytes.load() / 1073741824.0, us > 0 ? mc->pm_bytes.load() / us / 1e3 : 0.0, mc->pm_router.load(), mc->pm_ahead.load(), mc->pm_hots.load(), mc->pm_found.load(), mc->pm_evict.load(), mc->pm_drop.load(), mc->pm_cached.load(),
             mc->pm_up.load(), mc->pm_waits.load(), mc->pm_wait_us.load() / 1e3, mc->pm_late.load(), mc->pm_fail.load(), mc->pm_full.load());
 }
 
-static void pin_miss_run(moe_cache * mc, int id) {
-    if (id == 0) {
-        char * a = pin_alloc(mc, mc->pm_slots * mc->pm_bs, 4096);
-        mc->pm_buf = a;
-        mc->pm_ready.store(a != nullptr, std::memory_order_release);
-        llama_moe_stats_log_fork("PIN", format("pin-miss: %s: %zu slots of %.2f MiB, %.2f GiB pinned", a ? "ready" : "off, no RAM for the arena",
-                mc->pm_slots, mc->pm_bs / 1048576.0, (double) (mc->pm_slots * mc->pm_bs) / 1073741824.0).c_str());
+// Adds a pinned chunk whenever the one in hand is taken, while RAM lasts above pin_alloc's floor (and --moe pin-miss-gib): the pressure test of the blocks. No chunk ready: pin_miss_block evicts.
+static void pin_miss_grow(moe_cache * mc) {
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lk(mc->pm_gmtx);
+            mc->pm_gcv.wait(lk, [&] { return mc->pm_stop || mc->pm_chunks.empty(); });
+            if (mc->pm_stop) { return; }
+        }
+        if (mc->pm_pinned.load() + mc->pm_chunk > mc->pm_budget || mem_available_bytes() < mc->pm_chunk + ((size_t) 6 << 30)) {
+            std::unique_lock<std::mutex> lk(mc->pm_gmtx);
+            mc->pm_gcv.wait_for(lk, std::chrono::seconds(1), [&] { return mc->pm_stop.load(); });   // RAM may come back: a page cache shrinks, another process ends
+            if (mc->pm_stop) { return; }
+            mc->pm_ready.store(true, std::memory_order_release);   // the blocks that exist serve; none at all: the router's misses keep the mapping
+            continue;
+        }
+        ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, mc->pm_chunk);
+        if (!b) { std::this_thread::sleep_for(std::chrono::seconds(1)); continue; }
+        { std::lock_guard<std::mutex> lk(mc->pin_mtx); mc->pin_chunks.push_back(b); }
+        mc->pm_pinned += mc->pm_chunk;
+        {
+            std::lock_guard<std::mutex> lk(mc->pm_gmtx);
+            mc->pm_chunks.push_back((char *) ggml_backend_buffer_get_base(b));
+        }
+        mc->pm_ready.store(true, std::memory_order_release);
     }
+}
+
+static void pin_miss_run(moe_cache * mc) {
     for (;;) {
         std::pair<layer_state *, int64_t> j;
         {
@@ -7100,15 +7130,15 @@ static void pin_miss_run(moe_cache * mc, int id) {
         layer_state & ls = *j.first;
         const int32_t e = (int32_t) (j.second & 0xffffff);
         const int     k = (int) ((j.second >> 24) & 3);
-        const int32_t s = (int32_t) (j.second >> 26);
+        moe_cache::pm_slot & b = mc->pm_s[j.second >> 26];
         const ggml_tensor * t = k == 0 ? ls.pub.up_src : k == 1 ? ls.pub.gate_src : ls.pub.down_src;
         const size_t sz  = t->nb[2];
         const char * from = nullptr;
         const size_t pb  = expert_past(mc, ls, k, e, t, from);
         const size_t off = ls.src_offs[k] + (size_t) e*sz;
         const int64_t t0 = ggml_time_us();
-        const char * p = read_direct(ls.src_dfd[k], (uint8_t *) mc->pm_buf + (size_t) s * mc->pm_bs, mc->pm_bs, off, sz + pb);
-        mc->pm_s[s].ptr.store(p, std::memory_order_release);   // a failed read: the mapping serves the slice
+        const char * p = read_direct(ls.src_dfd[k], (uint8_t *) b.mem, b.cap, off, sz + pb);
+        b.ptr.store(p, std::memory_order_release);   // a failed read: the mapping serves the slice
         if (!p) { mc->pm_fail++; continue; }
         mc->pm_bytes   += sz + pb;
         mc->pm_read_us += (uint64_t) (ggml_time_us() - t0);
@@ -7132,31 +7162,56 @@ static bool slice_cached(int fd, size_t off, size_t sz) {
 #endif
 }
 
-// A slot for a new slice (mc->mtx held): a free one, else the clock's, one not used since the hand last passed. Never one of the two layers in use (keep0, keep1). Any other layer has ended:
-// the CPU splits run one after the other and a router needs the layer before it, CPU branch and GPU chain, and that chain ran behind its async copies on the same stream (--moe defer, whose
-// chain ends later, turns pin-miss off: pin_miss_start). An upload worker may still be copying out: the seq_cst pair with pin_miss_upload lets one of the two step back.
-static int32_t pin_miss_slot(moe_cache * mc, int keep0, int keep1, int behind) {   // behind: only free slots and the layers before this one ("mark them"), a hot list's limit
-    for (size_t n = 0; n < 2 * mc->pm_slots; ++n) {
-        const int32_t id = (int32_t) mc->pm_hand;
-        mc->pm_hand = (mc->pm_hand + 1) % mc->pm_slots;
-        moe_cache::pm_slot & s = mc->pm_s[id];
-        if (s.li < 0) { return id; }
-        if (s.li >= behind || s.li == keep0 || s.li == keep1 || s.ptr.load(std::memory_order_acquire) == PM_LOADING || s.users.load() > 0) { continue; }
-        if (s.ref) { s.ref = false; continue; }
-        std::atomic<int32_t> & w = mc->pm_where[s.li][s.key];
-        w.store(-1);
-        if (s.users.load() > 0) { w.store(id); continue; }
-        s.li = s.key = -1;
-        mc->pm_evict++;
+// A block for a new slice of class c (mc->mtx held): a free one, a new one from the chunk in hand, else the coldest of 64 sampled blocks of its size by the cache's own score (uses in the last
+// tokens and lifetime count, what the GPU cache evicts by), colder than limit (a guess does not push out a hotter slice; scanning all blocks would cost about 100 us per eviction). Never one of
+// the two layers in use (keep0, keep1), and for a hot list only the layers before `behind` ("mark them"). Any other layer has ended: the CPU splits run one after the other and a router needs the
+// layer before it, CPU branch and GPU chain, and that chain ran behind its async copies on the same stream (--moe defer, whose chain ends later, turns pin-miss off: pin_miss_start). An upload worker
+// may still be copying out: the seq_cst pair with pin_miss_upload lets one of the two step back.
+static int32_t pin_miss_block(moe_cache * mc, int c, int keep0, int keep1, int behind, double limit) {
+    moe_cache::pm_class & cl = mc->pm_cls[c];
+    if (!cl.free.empty()) { const int32_t id = cl.free.back(); cl.free.pop_back(); return id; }
+    if (mc->pm_left < cl.size) {
+        std::lock_guard<std::mutex> lk(mc->pm_gmtx);
+        if (!mc->pm_chunks.empty()) {
+            mc->pm_cur  = mc->pm_chunks.back();
+            mc->pm_left = mc->pm_chunk;
+            mc->pm_chunks.pop_back();
+            mc->pm_gcv.notify_all();
+        }
+    }
+    if (mc->pm_left >= cl.size) {
+        const int32_t id = (int32_t) mc->pm_n++;
+        moe_cache::pm_slot & b = mc->pm_s[id];
+        b.mem = mc->pm_cur; b.cap = cl.size;
+        mc->pm_cur  += cl.size;
+        mc->pm_left -= cl.size;
+        cl.all.push_back(id);
         return id;
     }
-    return -1;
+    int32_t best = -1;
+    double  coldest = limit;
+    for (int n = 0; n < 64 && !cl.all.empty(); ++n) {
+        mc->pm_rand ^= mc->pm_rand << 13; mc->pm_rand ^= mc->pm_rand >> 7; mc->pm_rand ^= mc->pm_rand << 17;
+        const int32_t id = cl.all[mc->pm_rand % cl.all.size()];
+        const moe_cache::pm_slot & b = mc->pm_s[id];
+        if (b.li < 0 || b.li >= behind || b.li == keep0 || b.li == keep1 || b.ptr.load(std::memory_order_acquire) == PM_LOADING || b.users.load() > 0) { continue; }
+        const double sc = score(mc->layers[b.li], b.key / 3);
+        if (sc < coldest) { coldest = sc; best = id; }
+    }
+    if (best < 0) { return -1; }
+    moe_cache::pm_slot & b = mc->pm_s[best];
+    std::atomic<int32_t> & w = mc->pm_where[b.li][b.key];
+    w.store(-1);
+    if (b.users.load() > 0) { w.store(best); return -1; }
+    b.li = b.key = -1;
+    mc->pm_evict++;
+    return best;
 }
 
-// --moe pin-miss: the mapped slices of experts of layer li that are in no slot get one and their reads are queued (mc->mtx held). urgent: its router's real misses (the JIT op of a decode
+// --moe pin-miss: the mapped slices of experts of layer li that are in no block get one and their reads are queued (mc->mtx held). urgent: its router's real misses (the JIT op of a decode
 // or prompt call, the prompt chain's upload op), first in the queue, and those queued ahead of the router go first too; what is still queued for a layer that is past now is read for nobody
 // and leaves the queue. Else the look ahead (pin_miss_preload), last; or a hot list (pin_miss_hot_fill, cur >= -1: the router's layer, -1 = none yet), read when nothing else waits, into free slots and
-// those of layers behind cur only. A slice the page cache holds is left to the mapping. False: some slice found no slot, or the arena is not ready.
+// those of layers behind cur only. A slice the page cache holds is left to the mapping. False: some slice found no block, or none can exist yet.
 static constexpr int PM_NOT_HOT = -2;
 static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & miss, bool urgent, int cur = PM_NOT_HOT) {
     if (!mc->pm_ready.load(std::memory_order_acquire)) { return false; }
@@ -7184,7 +7239,7 @@ static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & 
                 mc->pm_where[jl][key].store(-1);
                 s.ptr.store(nullptr, std::memory_order_release);   // a worker waiting for it takes the mapping
                 s.li = s.key = -1;
-                s.ref = false;
+                mc->pm_cls[mc->pm_cls_of[jl][key % 3]].free.push_back((int32_t) (j.second >> 26));
                 mc->pm_drop++;
             }
             first.insert(first.end(), rest.begin(), rest.end());
@@ -7200,16 +7255,15 @@ static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & 
             const char * from = nullptr;
             if (e + 1 >= t->ne[2] && expert_past(mc, ls, k, e, t, from) > 0) { continue; }   // the last expert's past bytes are padding, not in the file: it keeps the mapping
             std::atomic<int32_t> & w = where[(size_t) e*3 + k];
-            if (const int32_t s = w.load(std::memory_order_relaxed); s >= 0) {
-                mc->pm_s[s].ref = true;
+            if (w.load(std::memory_order_relaxed) >= 0) {
                 if (urgent) { mc->pm_found++; }
-                continue;   // in the arena already, or being read
+                continue;   // in a block already, or being read
             }
             if (slice_cached(ls.src_fd[k], ls.src_offs[k] + (size_t) e*t->nb[2], t->nb[2])) { mc->pm_cached++; continue; }
-            const int32_t s = room ? pin_miss_slot(mc, li, hot ? li : keep, hot ? cur : INT32_MAX) : -1;
-            if (s < 0) { room = false; if (!hot) { mc->pm_full++; } continue; }   // no slot: this slice keeps the mapping
+            const int32_t s = room || !urgent ? pin_miss_block(mc, mc->pm_cls_of[li][k], li, hot ? li : keep, hot ? cur : INT32_MAX, urgent ? 1e300 : score(ls, e)) : -1;
+            if (s < 0) { room = false; if (urgent) { mc->pm_full++; } continue; }   // no block: this slice keeps the mapping
             moe_cache::pm_slot & sl = mc->pm_s[s];
-            sl.li = li; sl.key = e*3 + k; sl.ref = true;
+            sl.li = li; sl.key = e*3 + k;
             sl.ptr.store(PM_LOADING, std::memory_order_relaxed);
             w.store(s, std::memory_order_release);
             jobs.emplace_back(&ls, (int64_t) s << 26 | (int64_t) k << 24 | e);
@@ -7226,9 +7280,9 @@ static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & 
     return room;
 }
 
-// --moe pin-miss=3, mc->mtx held: from the next layer on, the top n x 8 experts of a layer by its lifetime count that are not on the card go into the arena, in layer order, as far as there are
-// free slots. A router (cur, its layer) marks the layers before it as done: their slots take the next list ("keep filling already processed moes"). A layer the router has passed gets free
-// slots only (next token's use), without them the lists go on behind the router. Nothing is known without a stored or running count: the router's misses work as before.
+// --moe pin-miss=3, mc->mtx held: from the next layer on, the top n x 8 experts of a layer by its lifetime count that are not on the card get blocks, in layer order, as far as blocks can be had. A
+// router (cur, its layer) marks the layers before it as done: their colder blocks take the next list ("keep filling already processed moes"). A layer the router has passed gets new blocks only (next
+// token's use), without them the lists go on ahead of the router. Nothing is known without a stored or running count: the router's misses work as before.
 static void pin_miss_hot_fill(moe_cache * mc, int cur) {
     const size_t want = (size_t) mc->n_expert_used * 8;
     while (mc->pm_hot_next < mc->layers.size()) {
@@ -7242,9 +7296,9 @@ static void pin_miss_hot_fill(moe_cache * mc, int cur) {
         const size_t m = std::min(want, ids.size());
         std::partial_sort(ids.begin(), ids.begin() + m, ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
         ids.resize(m);
-        if (pin_miss_queue(mc, li, ids, false, li <= cur ? -1 : cur)) { mc->pm_hot_next++; continue; }
-        if (li > cur) { return; }                 // no slot for it now: the next router frees a layer more
-        mc->pm_hot_next = (size_t) cur + 1;       // behind the router with no free slot left: on with the layers ahead of it
+        const bool placed = pin_miss_queue(mc, li, ids, false, li <= cur ? -1 : cur);
+        mc->pm_hot_next = placed || li > cur ? (size_t) li + 1 : (size_t) cur + 1;   // once per layer in a request: a list retried at every router would cost more than it gives
+        if (!placed && li > cur) { return; }      // the next list at the next router, when one more layer is done
     }
 }
 
@@ -7298,7 +7352,7 @@ static const char * pin_miss_wait(moe_cache * mc, std::atomic<const char *> & sl
     return p > PM_LOADING ? p : nullptr;
 }
 
-// the slice (k, e) of layer li in the arena; nullptr when it is in no slot. For the op's own layer (see pin_miss_slot), so the slot cannot change while the caller uses it.
+// the slice (k, e) of layer li in its block; nullptr when it has none. For the op's own layer (see pin_miss_block), so the block cannot change while the caller uses it.
 static const char * pin_miss_lookup(moe_cache * mc, int li, int k, int32_t e) {
     std::atomic<int32_t> * where = mc->pm_where[li].get();
     if (!where) { return nullptr; }
@@ -7306,8 +7360,8 @@ static const char * pin_miss_lookup(moe_cache * mc, int li, int k, int32_t e) {
     return s < 0 ? nullptr : pin_miss_wait(mc, mc->pm_s[s].ptr);
 }
 
-// an upload worker's copy of slice (k, e) of layer li from the arena into dst at byte dst_off (sz bytes, then the pb bytes a matmul reads past it); false when it is in no slot. A worker runs
-// at any time, so it holds the slot while it copies (users, seq_cst with pin_miss_slot).
+// an upload worker's copy of slice (k, e) of layer li from its block into dst at byte dst_off (sz bytes, then the pb bytes a matmul reads past it); false when it has none. A worker runs
+// at any time, so it holds the block while it copies (users, seq_cst with pin_miss_block).
 static bool pin_miss_upload(moe_cache * mc, int li, int k, int32_t e, ggml_tensor * dst, size_t dst_off, size_t sz, size_t pb) {
     std::atomic<int32_t> * where = mc->pm_where[li].get();
     if (!where) { return false; }
@@ -7346,7 +7400,7 @@ static void miss_upload_async(moe_cache * mc, ggml_backend_t be, layer_state & l
 }
 
 // ggml-cpu's MUL_MAT_ID asks this for each expert it computes (every thread, once per expert and op): the pinned slot of a mapped layer's expert, or nullptr
-// for the tensor's own data (pinned layers, other tensors, slices in no slot). The CPU computes the layer whose router came last: its slots stay (pin_miss_slot).
+// for the tensor's own data (pinned layers, other tensors, slices in no block). The CPU computes the layer whose router came last: its blocks stay (pin_miss_block).
 static std::unordered_map<const ggml_tensor *, std::pair<int, int>> g_pm_map;   // weight tensor -> (layer index, k); filled once before the hook is set, read only after
 static const void * pin_miss_hook(const ggml_tensor * src0, int64_t e) {
     const auto it = g_pm_map.find(src0);
@@ -7355,19 +7409,24 @@ static const void * pin_miss_hook(const ggml_tensor * src0, int64_t e) {
     return pin_miss_lookup(mc, it->second.first, it->second.second, (int32_t) e);
 }
 
-// --moe pin-miss: the arena (half of what RAM leaves above pin_alloc's 6 GiB floor, the rest stays with the page cache: other mapped tensors, Engram, the slices it holds; no more slots than
-// there are mapped slices; --moe pin-miss-gib=N for a test), the CPU hook's tensor map, the readers (as many as the read probe found best for prompt uploads). Load time only.
+// --moe pin-miss: the slice sizes, room for a block per mapped slice, the CPU hook's tensor map, the thread that adds pinned chunks while RAM lasts (--moe pin-miss-gib=N caps them for a test), the
+// readers (as many as the read probe found best for prompt uploads). Load time only.
 static void pin_miss_start(moe_cache * mc) {
     if (moe_opt("defer")) { LLAMA_LOG_WARN("moe-cache: pin-miss: off (--moe defer: the deferred chain ends after the next router)\n"); return; }
-    size_t bs = 0, n_mapped = 0, b_mapped = 0;
+    size_t n_mapped = 0, b_mapped = 0, bmax = 0;
+    std::map<size_t, int> cls;
     mc->pm_where.resize(mc->layers.size());
+    mc->pm_cls_of.assign(mc->layers.size(), { -1, -1, -1 });
     for (size_t li = 0; li < mc->layers.size(); ++li) {
         layer_state & ls = mc->layers[li];
         const ggml_tensor * ts[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
         for (int k = 0; k < 3; ++k) {
             if (ls.src_dfd[k] < 0) { continue; }   // pinned at load, or no O_DIRECT for its file
             const size_t past = ls.pcls >= 0 ? mc->pool[ls.pcls].past[k] : 0;
-            bs = std::max(bs, ((ts[k]->nb[2] + past + 4095) & ~(size_t) 4095) + 4096);   // + a page: the read starts on the page boundary below the slice
+            const size_t bs = ((ts[k]->nb[2] + past + 4095) & ~(size_t) 4095) + 4096;   // + a page: the read starts on the page boundary below the slice
+            const auto it = cls.emplace(bs, (int) cls.size()).first;
+            mc->pm_cls_of[li][k] = (int8_t) it->second;
+            bmax = std::max(bmax, bs);
             n_mapped += (size_t) ts[k]->ne[2];
             b_mapped += ggml_nbytes(ts[k]);
             g_pm_map[ts[k]] = { (int) li, k };
@@ -7378,19 +7437,18 @@ static void pin_miss_start(moe_cache * mc) {
             }
         }
     }
-    const size_t avail = mem_available_bytes(), floor_b = (size_t) 6 << 30, left = avail > floor_b ? avail - floor_b : 0;
-    const char * gib = moe_opt("pin-miss-gib");
-    const size_t budget = gib ? std::min(left, (size_t) (atof(gib) * 1073741824.0)) : left / 2;
-    const size_t slots = bs ? std::min(n_mapped, budget / bs) : 0;
-    if (slots < 3) {
-        LLAMA_LOG_WARN("moe-cache: pin-miss: off (%s)\n", bs ? "no RAM for the arena" : "no expert tensor stayed mapped");
+    if (n_mapped == 0 || cls.size() > 127) {
+        LLAMA_LOG_WARN("moe-cache: pin-miss: off (%s)\n", n_mapped ? "too many slice sizes" : "no expert tensor stayed mapped");
         g_pm_map.clear();
         mc->pm_where.clear();
         return;
     }
-    mc->pm_bs = bs; mc->pm_slots = slots;
-    mc->pin_budget = mc->pin_used + slots * bs + 4096;   // the arena is all it holds
-    mc->pm_s.reset(new moe_cache::pm_slot[slots]);
+    mc->pm_cls.resize(cls.size());
+    for (const auto & c : cls) { mc->pm_cls[c.second].size = c.first; }
+    const char * gib = moe_opt("pin-miss-gib");
+    mc->pm_budget = gib ? (size_t) (atof(gib) * 1073741824.0) : SIZE_MAX / 2;
+    mc->pm_chunk  = std::max<size_t>((size_t) 256 << 20, bmax * 8);
+    mc->pm_s.reset(new moe_cache::pm_slot[n_mapped]);
     bool hook = false;
     if (ggml_backend_reg_t cpu = ggml_backend_reg_by_name("CPU")) {
         auto set = (void (*)(const void * (*)(const ggml_tensor *, int64_t))) ggml_backend_reg_get_proc_address(cpu, "ggml_backend_cpu_set_expert_ptr_hook");
@@ -7401,9 +7459,10 @@ static void pin_miss_start(moe_cache * mc) {
     const char pm_mode = [] { const char * v = moe_opt("pin-miss"); return v ? v[0] : '1'; }();
     mc->pm_pre = pm_mode == '2' || pm_mode == '3';
     mc->pm_hot = pm_mode == '3';
-    for (int i = 0; i < n; ++i) { mc->pm_thr.emplace_back(pin_miss_run, mc, i); }
-    LLAMA_LOG_WARN("moe-cache: pin-miss: arena of %zu slots of %.2f MiB = %.2f GiB pinned (%.1f GiB available, %.1f GiB of expert weights mapped, %zu slices), %d readers, CPU branch %s, %s\n",
-            slots, bs / 1048576.0, (double) (slots * bs) / 1073741824.0, avail / 1073741824.0, b_mapped / 1073741824.0, n_mapped, n,
+    mc->pm_grow_thr = std::thread(pin_miss_grow, mc);
+    for (int i = 0; i < n; ++i) { mc->pm_thr.emplace_back(pin_miss_run, mc); }
+    LLAMA_LOG_WARN("moe-cache: pin-miss: blocks the size of each slice (%zu sizes, up to %.2f MiB) from %.0f MiB pinned chunks added while RAM lasts (%.1f GiB available, %.1f GiB of expert weights mapped, %zu slices), %d readers, CPU branch %s, %s\n",
+            cls.size(), bmax / 1048576.0, mc->pm_chunk / 1048576.0, mem_available_bytes() / 1073741824.0, b_mapped / 1073741824.0, n_mapped, n,
             hook ? "reads them through the expert hook" : "keeps the mapping (no hook in this CPU backend)", mc->pm_hot ? "reads hot lists from a request's start and the next layer ahead" : mc->pm_pre ? "reads the next layer ahead" : "reads at the router");
 }
 
@@ -12341,8 +12400,11 @@ void llama_moe_cache_free_fork() {
             if (set) { set(nullptr); }
         }
         { std::lock_guard<std::mutex> lk(mc->pm_mtx); mc->pm_stop = true; }
+        { std::lock_guard<std::mutex> lk(mc->pm_gmtx); }
         mc->pm_cv.notify_all();
+        mc->pm_gcv.notify_all();
         for (auto & t : mc->pm_thr) { t.join(); }
+        if (mc->pm_grow_thr.joinable()) { mc->pm_grow_thr.join(); }
         g_pm_map.clear();
         LLAMA_LOG_WARN("moe-cache: %s\n", pin_miss_line(mc).c_str());
     }
