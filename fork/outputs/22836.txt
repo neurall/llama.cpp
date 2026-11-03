@@ -1,0 +1,41 @@
+run 22836 | lock_populate | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 59.14 t/s | prompt 162.2 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-base.ini --moe sim-ram=32768 | power 220+280 W | 2026-11-03 16:33:13
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to ship a bare terminal-looking block — even a tiny game deserves to feel alive and to look considered. I'll keep it compact but add a tasteful CRT/arcade aesthetic, keyboard controls, next-piece preview, score/lines/level, ghost piece, hold, pause, game over overlay, subtle animations, background grid glow.
+
+Balance: "smallest" means keep it one file, no dependencies, reasonably short code. I'll aim for a tight but readable implementation — maybe ~150-200 lines total. Not golfed to unreadable, but compact. I'll mention size.
+
+Design: arcade cabinet vibe. For a Tetris screen, the natural palette is the official tetromino colors — cyan, blue, orange, yellow, green, red, magenta — on a dark board. Rather than a near-black background with a single neon accent, I want that whole multi-hue set, which is characteristic of the game itself. Let me use a deep blue-slate background (#0b1020-ish) with a subtle scanline/grid ambient layer, plus a warm off-white panel. Actually let's do a slightly desaturated navy/plum with an ambient animated gradient wash and a faint grid.
+
+Typography: display face — something arcade/geometric. Use Google Fonts? That adds a dependency but keeps it one file. "smallest" — maybe use system fonts to stay dependency-free. But I want a distinctive display face paired with a readable body face. I can link Google Fonts (still one file). Let's use a condensed display like "Bungee" or "Chakra Petch" or "Silkscreen" (pixel). Silkscreen is very Tetris-y pixel. Pair with "Space Grotesk" or "IBM Plex Mono". Let's do display: 'Silkscreen' (pixel, 400/700) for the wordmark and numbers, body: 'Space Grotesk' for instructions. That's a nice pairing.
+
+Hmm, but "smallest" — a font link is 1 line. Fine. I'll include it with a fallback stack.
+
+Layout: the playfield itself should be the first thing you see, framed like an arcade screen, rather than a generic header. Left: title + stats + next/hold panels; center: board; right: controls legend. Or a single cabinet with the board dominant.
+
+Let me design: a "cabinet" grid:
+- Header strip: TETRIS wordmark with each letter colored in tetromino colors (nice characteristic touch), plus a tiny blinking "INSERT COIN"-esque status.
+- Main: 3-column: left rail (HELD piece, stats: score/lines/level), board canvas, right rail (NEXT queue of 3, controls legend).
+- Footer: keys.
+
+Use canvas for the board — smallest and smoothest. Canvas 2D rendering with devicePixelRatio.
+
+Features to include (compact):
+- 7-bag randomizer
+- SRS-ish rotation with simple wall kicks (small kick table)
+- Ghost piece
+- Hold
+- 1 piece preview queue (or 3)
+- Lock delay? Keep simple: gravity + soft drop + hard drop.
+- Line clear animation (flash row)
+- Level speed up
+- Pause (P), restart (R)
+- Score: 100/300/500/800 × level; soft drop +1, hard drop +2/cell
+- Combo? skip for size.
+- Touch buttons for mobile? Adds size. Maybe minimal on-screen buttons for mobile — nice but "smallest". I'll add a compact touch pad row that's hidden on desktop via media query. Hmm, that adds ~20 lines. I think it's worth it for aliveness. Let me include a small touch control row shown only on coarse pointers.
+
+Micro-interactions:
+- Stat numbers pop/scale when they change (CSS animation triggered by class toggle).
+- Next/Hold panels with subtle glow.
+- Board frame with inner shadow, scanlines overlay, vignette.
+- Ambient background: animated conic/radial wash + faint moving grid + falling tetromino silhouettes? A subtle background of slowly drifting tetromino outlines would be very characteristic and "alive". I can do that with CSS pseudo-elements and
+---

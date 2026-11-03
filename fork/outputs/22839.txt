@@ -1,0 +1,55 @@
+run 22839 | lock_populate | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.83 t/s | prompt 176.8 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-base.ini --moe sim-ram=65536 | power 220+280 W | 2026-11-03 16:41:30
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+But I don't want to just ship the most golfed one-liner — the most interesting take is a tiny file that's still genuinely nice to look at and feel good to play. So: smallest code, but with real polish — good colors, subtle animations, score/level, next piece preview, keyboard controls. Keep it small but alive.
+
+Balance: "smallest" is the ask. So I should keep the code genuinely compact — but not unreadable. Let me aim for a single file, maybe ~60-90 lines, with CSS that makes it feel good. That respects "smallest" while producing something crafted.
+
+Let me design:
+- Canvas-based 10x20 board.
+- Next piece preview small canvas.
+- Score, lines, level.
+- Keys: arrows, space (hard drop), Z/X rotate, P pause.
+- Touch buttons? That adds size. Maybe minimal — skip, or add tiny mobile buttons. Keep small: skip, but mention keys.
+
+Actually a compact touch control row could be nice but adds bulk. Let me include a very small one since it makes it playable on phones... Hmm, "smallest" — I'll keep it lean but include a compact swipe/key pad? Let me skip touch and keep it tight. Actually, I'll add a minimal footer with key hints.
+
+Design: dark background, but I don't want the tired near-black-with-one-neon-accent look. Tetris pieces are inherently 7 colors, so I get a full palette for free — that's the natural way in. Let me use a deep slate/blue-black layered background with a subtle grid and a soft ambient gradient, plus a slight scanline/vignette. Piece colors: classic Tetris palette (cyan, blue, orange, yellow, green, purple, red).
+
+Typography: I want a distinctive display face against a readable body face. Use a monospace-ish techy display — e.g., "Chakra Petch" or "Press Start 2P"? Press Start 2P is pixel-y and characteristic. Pair with a readable body like "IBM Plex Mono" or "Space Grotesk". Google Fonts import adds a line but fine. Actually for "smallest", a font link is one line. Let's do: display = "Silkscreen" or "Press Start 2P", body = "IBM Plex Mono". Good pairing.
+
+Hmm, but offline? Fonts via CDN link. Fine.
+
+Layout: the board itself should be the thing you land on, not a generic title block. Board left, HUD right (score, level, next, hold?). Keep hold out for size. Actually hold is ~6 lines. Skip.
+
+Let me write compact but readable JS.
+
+Implementation plan:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;600&display=swap" rel=stylesheet>
+<style>...</style>
+<div class=wrap>
+ <canvas id=g width=300 height=600>
+ <aside>
+   <h1>TETRIS</h1>
+   <div class=stat><b>SCORE</b><i id=s>0</i></div>
+   ...
+   <canvas id=n width=80 height=80>
+   <p class=k>← → move · ↑/X rotate · ↓ soft · SPACE drop · P hold</p>
+ </aside>
+</div>
+<canvas id=fx> maybe not.
+```
+
+Game logic compact:
+
+Piece definitions via strings? A compact way: use the standard matrix rotation with matrices defined as arrays.
+
+Compact approach: define pieces as arrays of coordinates per rotation? Simplest small code: each piece is a matrix (array of rows), rotate by transpose+reverse.
+
+```js
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,1],[0,1,0]],[[0,
+---

@@ -1837,6 +1837,8 @@ def _pin_flag_needed(build, args):
     decides), `--load-mode pin` is added for every non-stock build."""
     if build.startswith("stock") or "--load-mode" in args or "-lm" in args:
         return False
+    if any("sim-ram=" in str(a) for a in args):   # -simram: the server takes its RAM after this check, so "fits the RAM available" is false by then; the engine's own rule (partial pin) is what a small machine runs
+        return False
     try:
         import glob as _g
         size = sum(os.path.getsize(f) for f in _g.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", MODEL))) if MODEL and os.path.exists(MODEL) else 0

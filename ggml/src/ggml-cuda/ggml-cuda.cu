@@ -1757,13 +1757,24 @@ static void apply_helper_cpus() {
 static void apply_helper_cpus() {}
 #endif
 
-static void ggml_cuda_populate(char * p, size_t n) {
+// Fills n bytes at p with pages from 16 threads, so the register that follows finds them present (it pins several times faster than when it faults them in
+// itself). lock: anonymous pages, which kswapd can swap out before the register pins them (zram takes fresh zero pages for free); the register then swaps
+// them back in under reclaim throttling, for minutes (2026-11-03, GLM and MiMo). So each thread populates its part with mlock (populated and locked in one
+// step; ggml_cuda_register_chunked unlocks after the register), and where mlock is refused (RLIMIT_MEMLOCK: 8 MiB under systemd's default) it populates
+// nothing: the register then faults and pins page by page, slower but with no page that can leave in between. Returns the bytes populated.
+static size_t ggml_cuda_populate(char * p, size_t n, bool lock) {
     const size_t nt = 16, ch = ((n / nt) + 4095) & ~(size_t) 4095;
+    std::atomic<size_t> done{0};
     std::vector<std::thread> th;
     for (size_t i = 0; i < nt && i * ch < n; i++) {
-        th.emplace_back([=] { apply_helper_cpus(); madvise(p + i * ch, std::min(ch, n - i * ch), 23 /* MADV_POPULATE_WRITE */); });
+        th.emplace_back([=, &done] {
+            apply_helper_cpus();
+            const size_t len = std::min(ch, n - i * ch);
+            if (lock ? mlock(p + i * ch, len) == 0 : madvise(p + i * ch, len, 23 /* MADV_POPULATE_WRITE */) == 0) { done += len; }
+        });
     }
     for (auto & t : th) { t.join(); }
+    return done;
 }
 
 // The range is registered in chunks by a background thread while the loader reads the weights into it (reading into populated memory
@@ -1863,6 +1874,7 @@ static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<
                     fprintf(stderr, "ggml_cuda_host_malloc_registered: registering chunk at %zu GiB failed, the rest stays unpinned\n", off >> 30);
                     return;
                 }
+                munlock(sp->base + off, std::min(sp->chunk, sp->size - off));   // populated locked, see ggml_cuda_populate
                 sp->done = std::min(sp->size, off + sp->chunk);
             }
             fprintf(stderr, "ggml_cuda_host_malloc_registered: all registered %.1f s after populate\n", (ggml_time_us() - t_pop) / 1e6);
@@ -1999,7 +2011,7 @@ static char * ggml_cuda_hugefs_map(size_t size, const std::string & key, std::un
         return nullptr;
     }
     st->fd = fd; st->warm = warm; st->map_len = len;
-    if (!warm) { ggml_cuda_populate((char *) p, len); }
+    if (!warm) { ggml_cuda_populate((char *) p, len, false); }
     return (char *) p;
 }
 
@@ -2050,7 +2062,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         const int    hsh  = (page == ((size_t) 1 << 30) ? 30 : 21) << 26; // MAP_HUGE_SHIFT
         if (want > 0 && mmap(ptr + h, want, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_HUGETLB | hsh, -1, 0) != MAP_FAILED) {
             head = h; reserved = want; rpage = page;
-            ggml_cuda_populate(ptr + head, reserved);
+            ggml_cuda_populate(ptr + head, reserved, false);
             break;
         }
     }
@@ -2059,16 +2071,16 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     const size_t rest_n = reserved && head + reserved >= size ? 0 : size - (reserved ? head + reserved : 0);   // 0: the pool covers the whole buffer
     if (reserved && head > 0) {
         madvise(ptr, head, MADV_NOHUGEPAGE);
-        ggml_cuda_populate(ptr, head);
+        ggml_cuda_populate(ptr, head, true);
     }
     const size_t huge = rest_n == 0 ? 0 : std::min(rest_n, (size_t) ((double) ggml_cuda_free_huge_bytes() * (getenv("GGML_CUDA_THP_SHARE") ? atof(getenv("GGML_CUDA_THP_SHARE")) : 0.7)) & ~(size_t) (two_mb - 1));
     if (huge > 0) {
         madvise(rest, huge, MADV_HUGEPAGE);
-        ggml_cuda_populate(rest, huge);
+        ggml_cuda_populate(rest, huge, true);
     }
     if (huge < rest_n) {
         madvise(rest + huge, rest_n - huge, MADV_NOHUGEPAGE);
-        ggml_cuda_populate(rest + huge, rest_n - huge);
+        ggml_cuda_populate(rest + huge, rest_n - huge, true);
     }
     const int64_t t_pop = ggml_time_us();
     fprintf(stderr, "%s: %.1f GiB populated in %.1f s (%.1f reserved %zu MiB pages, %.1f THP, %.1f small)\n", __func__, size / 1073741824.0,
@@ -4312,7 +4324,7 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
                 // populated and locked in one step, unlocked once registered: a populated page left unlocked until the register can be swapped out first and
                 // swapped back in by the register under reclaim throttling (see ggml_cuda_register_chunked). Without the lock (RLIMIT_MEMLOCK) a memset populates.
                 const bool locked = mlock(p, cap) == 0;
-                if (!locked) { memset(p, 0, cap); }
+                // not locked (RLIMIT_MEMLOCK): no fill at all, the register faults the pages in and pins them in one step (a fill first leaves them swappable)
                 if (cudaHostRegister(p, cap, cudaHostRegisterPortable | cudaHostRegisterMapped) == cudaSuccess) {
                     e.host = p; e.mapped = true;
                     if (locked) { munlock(p, cap); }
