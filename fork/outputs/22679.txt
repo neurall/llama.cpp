@@ -1,0 +1,47 @@
+run 22679 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 59.03 t/s | prompt 42.0 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-base.ini | power 220+280 W | 2026-11-03 08:57:49
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file with working Tetris.
+
+But I don't want to just ship the most golfed one-liner — I'd rather make it genuinely playable and feel crafted, with a distinctive look, keyboard + touch controls, next-piece preview, hold, level/score, line-clear flash, pause, game over. Keep the code reasonably compact (it's a "smallest" ask) but complete and functional.
+
+Balance: they asked for smallest. I should honor that — deliver a compact single file — but make it feel crafted rather than a bare canvas. I'll keep it tight but with good typography, a layered background, micro-interactions.
+
+Let me write it.
+
+Design direction: Tetris is inherently colorful, so rather than a single dark background with one bright accent, I'll lean on the full piece palette. Let's do a "blueprint / arcade CRT" feel. A distinctive display face: something blocky/technical. Use Google Fonts? Smallest game — but I can include a font link. Let's use a display face like "Bungee" or "Silkscreen" or "Press Start 2P" (pixel). Pair with a readable body face like "IBM Plex Mono" or "Space Grotesk". 
+
+Let's do: display = "Bungee Shade"? too heavy. Maybe display = "Silkscreen" (pixel arcade) paired with body = "IBM Plex Mono". That's characteristic of Tetris (Game Boy pixel aesthetic). Good.
+
+Palette: dark slate-blue background with a subtle grid, plus the 7 tetromino colors which are inherently multi-color. Add a layered background: faint grid lines + a very subtle animated scanline/vignette. That's ambient and characteristic.
+
+Layout: open with the playfield itself, not a generic header. Left rail: score/level/lines stats with big numerals; right rail: next queue + hold; center: board. Header strip above with the title in pixel type, small.
+
+Actually to keep it "smallest", I'll keep the HTML lean but the CSS gives it character.
+
+Implementation plan (compact but readable):
+
+- Canvas 160x320 (10x20 at 16px) with devicePixelRatio scaling? Keep simple: canvas width=300 height=600, cell 30.
+- Board array 10x20.
+- Pieces S Z I J L O T with rotation matrices via string rotation.
+- Use compact piece definitions: `P='0123'` indices into color string, and shapes as arrays.
+
+Compact approach: standard "SRS-ish" using matrices.
+
+```js
+const S={I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],J:[[1,0,0],[1,1,1],[0,0,0]],L:[[0,0,1],[1,1,1],[0,0,0]],O:[[1,1],[1,1]],S:[[0,1,1],[1,1,0],[0,0,0]],T:[[0,1,0],[1,1,1],[0,0,0]],Z:[[1,1,0],[0,1,1],[0,0,0]]}
+```
+Rotation: transpose+reverse.
+
+Colors: I cyan #22d3ee? Let's pick a nicer palette: 
+I: #3ddbd9 (teal), J: #4f7cff (blue), L: #ff9f43 (orange), O: #ffd93d (yellow), S: #4ade80 (green), T: #c084fc (purple), Z: #ff5d5d (red).
+
+Rendering: draw blocks with a slight bevel (lighter top-left, darker bottom-right) for tactility. Ghost piece outline.
+
+Features:
+- 7-bag randomizer (small code, better play).
+- Next queue of 3.
+- Hold.
+- Score: 100/300/500/800 × level, soft drop +1, hard drop +2/cell.
+- Levels: level up every 10 lines, speed curve.
+- Lock delay? Skip for compactness;
+---

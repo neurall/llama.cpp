@@ -1,0 +1,7 @@
+run 22732 | rc_live_rates | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 16.97 t/s | prompt 826.7 t/s | 60 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix | power 220+280 W | 2026-11-03 10:56:35
+
+<think></think>R-5043=2585
+R-1618=8511
+R-3586=3987
+R-7723=5728
+R-3735=8997

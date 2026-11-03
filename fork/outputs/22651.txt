@@ -1,0 +1,69 @@
+run 22651 | warm_cpu | tetrisc | Qwen3.8-27B-IQ4_NL.gguf | decode 45.34 t/s | prompt 35.2 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-03 08:29:28
+
+The user is asking for the smallest HTML Tetris game. "Smallest" is the key constraint — they want a minimal, compact Tetris in a single HTML file. But I still want it to be a polished, working game — small in code size, but complete and playable.
+
+Let me think about what "smallest" means: minimal code, single file, no dependencies. I should write a compact but complete Tetris: 10x20 board, 7 pieces, rotation, line clearing, score, next piece preview, game over, keyboard controls.
+
+I can make it small while still feeling crafted: nice colors, a subtle background, a clean monospace/display font pairing, a score display, a next-piece preview. But "smallest" is the explicit request — so I should prioritize compactness. Aim for a genuinely small single file (around 2–4 KB of JS) while keeping it playable and looking decent.
+
+Let me write a compact Tetris:
+
+```html
+<!html><head><meta charset=utf-8><title>Tetris</title>
+<style>
+body{background:#0f1220;display:flex;gap:20px;justify-content:center;align-items:center;height:100vh;margin:0;font-family:monospace}
+canvas{background:#000;border:2px solid #444}
+</style></head><body>
+<canvas id=c width=200 height=400></canvas>
+<canvas id=n width=100 height=100></canvas>
+<pre id=s>SCORE 0</pre>
+<script>
+...
+</script>
+```
+
+Let me write the JS compactly:
+
+```js
+const W=10,H=20,S=20,c=c.getContext('2d'),n=n.getContext('2d');
+```
+
+Wait, `c` is the canvas id, and I need the context. Let me rename.
+
+Pieces: use a string or array. Compact approach: define tetrominoes as arrays of rotation states, or use a rotation function.
+
+Classic compact approach:
+
+```js
+const P=[
+ [1,1,1,1], // I
+ [1,1,1,0,1,1,0,0,1,1,0,0], // J
+ ...
+]
+```
+
+Simpler: define each piece as a matrix and rotate it.
+
+```js
+const T={
+ I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+ O:[[1,1],[1,1]],
+ T:[[0,1,0],[1,1,1],[0,0,0]],
+ S:[[0,1,1],[1,1,0],[0,0,0]],
+ Z:[[1,1,0],[0,1,1],[0,0,0]],
+ J:[[1,0,0],[1,1,1],[0,0,0]],
+ L:[[0,0,1],[1,1,1],[0,0,0]]
+};
+```
+
+Rotation: `m.map((r,i)=>m[0].map((_,j)=>m[j][i]))` for clockwise: new[j][len-1-i] = m[i][j]. CW rotation: `m[0].map((_,j)=>m.map(r=>r[j]).reverse())`.
+
+Game loop:
+
+```js
+let g=Array.from({length:20},()=>Array(10).fill(0)),p,x,y,sc=0,over=0;
+function rot(m){return m[0].map((_,j)=>m.map(r=>r[j]).reverse())}
+function hit(m,px,py){for(let j=0;j<m.length;j++)for(let i=0;i<m[j].length;i++)if(m[j][i]&&(g[py+j]&&g[py+j][px+i]||px+i<0||px+i>9||py+j>19))return 1}
+function drop(){if(!hit(p,x,y+1))y++;else{p.forEach((r,j)=>r.forEach((v,i)=>v&&(g[y+j][x+i]=v)));clear();spawn()}}
+function clear(){for(let j=0;j<20;j++)if(g[j].every(v=>v)){g.splice(j,1);g.unshift(Array(
+---

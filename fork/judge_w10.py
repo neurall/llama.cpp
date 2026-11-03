@@ -38,6 +38,24 @@ Slice of its output:
 Reply as JSON. why: what you saw, at most 10 words. quality: 5 coherent, on the task and well made; 4 coherent and on the task; 3 coherent but weak or drifting off the task; 2 partly broken as described above; 1 broken as described above."""
 
 
+# RISE-Judge (2026-11-03): the quality scale above made it call coherent unfinished code and terse "Need ..." reasoning nonsense. A plain label does not: on the labelled dev set
+# (fork/docs/judge-dev.md) good 24/24, loop/noise/half-broken copies 36/36, shuffled words 7/12. JUDGE_PROMPT=quality brings the scale back (Qwen3.6 server).
+LABELS = """Below is a slice of text written by a language model. It can be prose or code, and may start or end mid-word.
+
+Classify it:
+fine: real words or code that read sensibly, even if wrong, unfinished, or with similar blocks repeated
+garbled: random tokens or symbols, shuffled words, words from several languages for no reason, sentences falling apart
+loop: one phrase repeated again and again
+
+Slice:
+<<<
+{part}
+>>>
+
+Reply as JSON with the label."""
+LABELS_SCHEMA = {"type": "object", "properties": {"label": {"type": "string", "enum": ["fine", "garbled", "loop"]}}, "required": ["label"]}
+
+
 def is_garbage(text):
     """'!!!!!!...': the logits are NaN or broken, argmax is token 0. Such a run reports fine speeds and a 99% hit rate (the same token uses the same experts): GLM kv-tail 33 t/s 2026-10-17; the gather mask
     2026-11-01 fooled a day of rows on GLM and Qwen Next. Never a valid row, --keep-loops or not; a repeat cannot help."""
@@ -69,9 +87,11 @@ def judge_text(url, text, ask="", parts=PARTS):
         end, res = len(ids), {"verdict": "good", "quality": 6, "why": "", "parts": 0, "of": len(sizes), "tokens": 0}
         for n in sizes:
             part = post(url, "/detokenize", {"tokens": ids[max(0, end - n):end]})["content"]
-            r = post(url, "/v1/chat/completions", {"messages": [{"role": "user", "content": TEXT.format(ask=cut_ask(ask) or "(not available)", part=part)}], "max_tokens": 64, "temperature": 0, "seed": 1, "cache_prompt": False,
-                                                   "chat_template_kwargs": {"enable_thinking": False}, "response_format": {"type": "json_schema", "json_schema": {"schema": SCHEMA}}})
+            labels = os.environ.get("JUDGE_PROMPT", "labels") == "labels"
+            r = post(url, "/v1/chat/completions", {"messages": [{"role": "user", "content": LABELS.format(part=part) if labels else TEXT.format(ask=cut_ask(ask) or "(not available)", part=part)}], "max_tokens": 64, "temperature": 0, "seed": 1, "cache_prompt": False,
+                                                   "chat_template_kwargs": {"enable_thinking": False}, "response_format": {"type": "json_schema", "json_schema": {"schema": LABELS_SCHEMA if labels else SCHEMA}}})
             d = json.loads(r["choices"][0]["message"]["content"])
+            if labels: d = {"quality": 4 if d["label"] == "fine" else 1, "why": d["label"]}
             res["parts"] += 1; res["tokens"] += min(n, end); end -= n
             if d["quality"] < res["quality"]: res.update(quality=d["quality"], why=d["why"])   # the worst piece speaks for the answer
             if d["quality"] <= BAD:

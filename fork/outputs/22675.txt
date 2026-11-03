@@ -1,0 +1,73 @@
+run 22675 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-old.ini cpu-ram-gbs=38 ram-ceiling-gbs=44 | power 220+280 W | 2026-11-03 08:54:49
+
+The user wants the smallest HTML Tetris game. The literal ask is "smallest" — so code golf-ish, minimal. But I want it to actually feel good to use, not just be tiny. The tension: "smallest" is explicit. I should deliver a compact, dense Tetris in one HTML file — small but playable and polished. Let me aim for genuinely compact code (a few hundred bytes-ish... realistically ~1-2KB) while still feeling alive: nice board, next piece, score, level, ghost piece maybe.
+
+But "smallest" is the request. I should honor it: produce a tiny single-file Tetris. I can add a brief note about size and maybe a slightly-fleshed version. Let me write a compact but complete Tetris.
+
+Let me write it carefully so it actually works.
+
+Approach: canvas-based, minimal.
+
+```html
+<canvas id=c width=160 height=320><script>
+with(c)fillStyle='#111',fillRect(0,0,160,320)
+```
+
+Let me design a compact Tetris.
+
+Standard minimal implementation:
+
+```js
+c=document.body.children[0]
+x=c.getContext`2d`
+S=0 // score
+G=[] // grid 10x20 of color index
+P=0 // piece index
+O=0 // rotation
+X=3,Y=0 // position
+```
+
+Piece shapes as strings or as bit patterns. A classic golf approach: use the 4x4 bit representation.
+
+Compact approach: define pieces as arrays of coordinates via a string.
+
+```js
+T=[7,4,1,2,6,4,4,1,7,2,2,8,7,1,4,4,7,4,1,1] // no
+```
+
+Better: represent each tetromino as a 4-bit-per-row rotation using a number. Classic golfed Tetris uses:
+
+```
+P=[0x66,0x74,0x2E,0x76,0x1E,0x6C,0x36] // 4x4 bitmaps? 
+```
+
+Hmm, let's use a simpler approach: each piece defined by 4 cells offsets, and rotation via (x,y)->(y,-x).
+
+```js
+K=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[0,1],[1,1]],...]
+```
+
+That's verbose. Alternative golf trick: pieces as strings of 4 numbers encoding offsets.
+
+Let me use: `P='0222 0011 0123 0112 0122 0012 0122'`... need y too.
+
+Trick: encode each piece as 4 numbers where n = x + y*4? Actually offsets within a 3x3 box: index = x*3+y or x+y<<2.
+
+Pieces (in 3x3 or 4x1 box):
+- I: (0,1),(1,1),(2,1),(3,1) — but rotation with 4x1 in a 4x4 box. Use 4x4 box for I, 3x3 for others. Simpler: use 4x4 box for all, rotate about center of 4x4: (x,y)->(3-y,x)? That doesn't work well for 3x3 pieces.
+
+Simplest robust: store each piece as list of [x,y] offsets, and precompute 4 rotations by rotating (x,y)->(y,-x) then normalizing (subtract min). That's compact and correct.
+
+So: `P=[[0,1,2,3],[0,1,2,3]]`... need y.
+
+Encode as string: each piece = "x,y" pairs. Let's do:
+
+```js
+P='0 1 2 3|0 1|0 1 2|1 2|0 1 2|0 1 2|0 1 2'
+```
+Not enough.
+
+Let me just use arrays of numbers where value = x + 4*y (i.e., x | y<<2):
+
+- I: 0,1,2,3 (y=0 row) → rotate: (x,y)->(y
+---

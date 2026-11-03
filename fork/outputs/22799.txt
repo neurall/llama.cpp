@@ -1,0 +1,120 @@
+run 22799 | rc_live_rates | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 19.44 t/s | prompt 384.6 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini | power 220+280 W | 2026-11-03 13:10:52
+
+ends_with(".gguf")) {
+        auto meta = common_gguf_meta_get(params.speculative.draft.mparams.path);
+        if (meta.find("general.speculation.type") != meta.end()) {
+            auto type = meta["general.speculation.type"];
+            if (type == "mtp") {
+                params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+            } else if (type == "dflash") {
+                params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH };
+            } else if (type == "eagle3") {
+                params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 };
+            } else if (type == "dspark") {
+                params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
+            }
+        }
+    }
+
+    // handle preset
+    if (!plan.preset.url.empty()) {
+        auto preset_path = get_default_local_path(plan.preset.url);
+        common_download_task task;
+        task.url        = plan.preset.url;
+        task.local_path = preset_path;
+        task.opts       = opts;
+        task.on_done    = [&, preset_path]() {
+            handler.found_preset = true;
+            handler.preset_path  = preset_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle model
+    if (!plan.model_files.empty()) {
+        add_tasks(plan.model_files, plan.primary, params.model);
+    }
+
+    // handle mmproj
+    if (!plan.mmproj_files.empty()) {
+        add_tasks(plan.mmproj_files, plan.mmproj_primary, params.mmproj);
+        handler.found_mmproj = true;
+    }
+
+    // handle draft
+    if (!plan_spec.model_files.empty()) {
+        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
+    }
+
+    // handle mtp
+    if (!plan_spec.mtp.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.mtp.url;
+        task.local_path = plan_spec.mtp.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            handler.found_mtp = true;
+            handler.mtp       = plan_spec.mtp;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle dflash
+    if (!plan_spec.dflash.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dflash.url;
+        task.local_path = plan_spec.dflash.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            handler.found_mtp = true;
+            handler.mtp       = plan_spec.dflash;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle eagle3
+    if (!plan_spec.eagle3.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.eagle3.url;
+        task.local_path = plan_spec.eagle3.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            handler.found_mtp = true;
+            handler.mtp       = plan_spec.eagle3;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle dspark
+    if (!plan_spec.dspark.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dspark.url;
+        task.local_path = plan_spec.dspark.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            handler.found_mtp = true;
+            handler.mtp       = plan_spec.dspark;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle preset
+    if (!plan.preset.url.empty()) {
+        auto preset_path = get_default_local_path(plan.preset.url);
+        common_download_task task;
+        task.url        = plan.preset.url;
+        task.local_path = preset_path;
+        task.opts       = opts;
+        task.on_done    = [&, preset_path]() {
+            handler.found_preset = true;
+            handler.preset_path  = preset_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle model
+    if (!plan.model_files.empty()) {
+        add_tasks(plan.model_files, plan.primary, params.model);
+    }
+
+    // handle

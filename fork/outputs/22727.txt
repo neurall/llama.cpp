@@ -1,0 +1,16 @@
+run 22727 | rc_live_rates | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.56 t/s | prompt 128.2 t/s | 259 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=dec | power 220+280 W | 2026-11-03 10:47:12
+
+<think>The user wants me to extract the comment lines of the form "record R-xxxx holds code yyyy" and write them as R-xxxx=yyyy, one per line, in order.
+
+Let me find them:
+1. "note for the reader: record R-8028 holds code 2624." → R-8028=2624
+2. "note for the reader: record R-7448 holds code 6783." → R-7448=6783
+3. "note for the reader: record R-2031 holds code 8666." → R-2031=8666
+4. "note for the reader: record R-3715 holds code 9760." → R-3715=9760
+5. "note for the reader: record R-8167 holds code 3135." → R-8167=3135
+
+That's 5 records in order.</think>R-8028=2624
+R-7448=6783
+R-2031=8666
+R-3715=9760
+R-8167=3135

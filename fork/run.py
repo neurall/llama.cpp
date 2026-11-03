@@ -1997,6 +1997,37 @@ def slots_progress():
 
 
 _CPU_LAST = {}
+def stall_dump():
+    """a stalled run (log silent, GPUs and CPU idle) keeps its evidence before the server is killed: every thread's state and kernel wait (/proc, no root needed), meminfo and swap, and
+    gdb's stacks when ptrace is allowed. Appended to the run's stats.log (user 2026-11-03: stalls and crashes must be diagnosable from that file). 2026-11-03: GLM repeat request hung after `DEC ubatch` with idle GPUs"""
+    out = [f"{time.strftime('%Y-%m-%d %H:%M:%S')}         STALL dump: log silent, GPUs and CPU idle"]
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            if open(d + "/comm").read().strip() != "llama-server": continue
+            out.append(f"STALL pid {d[6:]}")
+            for t in sorted(glob.glob(d + "/task/[0-9]*"), key=lambda x: int(x.rsplit("/", 1)[1])):
+                st = open(t + "/stat").read(); comm = st[st.index("(") + 1:st.rindex(")")]; state = st.rsplit(")", 1)[1].split()[0]
+                try: wch = open(t + "/wchan").read()
+                except OSError: wch = "?"
+                try: sysc = open(t + "/syscall").read().split()[0]
+                except (OSError, IndexError): sysc = "?"
+                out.append(f"STALL  tid {t.rsplit('/', 1)[1]} {comm} state {state} wchan {wch} syscall {sysc}")
+            g = subprocess.run(["gdb", "-p", d[6:], "-batch", "-ex", "thread apply all bt 12"], capture_output=True, text=True, timeout=90)
+            out += ["STALL  gdb " + l for l in (g.stdout + g.stderr).splitlines() if l.strip()][:400]
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError): continue
+    try:   # the kernel log of the last 3 minutes: OOM kills, hung tasks, and the NVIDIA driver's "Cannot map memory" (a pinned host buffer that could not be mapped, seen with every GLM stall 2026-11-03)
+        k = subprocess.run(["journalctl", "-k", "--since", "-3min", "--no-pager"], capture_output=True, text=True, timeout=20).stdout
+        out += ["STALL  kern " + l for l in k.splitlines() if re.search(r"oom|killed|blocked for|Cannot map|NVRM|Xid", l, re.I)][:40]
+    except (OSError, subprocess.SubprocessError): pass
+    try: out += ["STALL  buddy " + l.strip() for l in open("/proc/buddyinfo")]   # free blocks per order (4 KiB x 2^order): fragmentation at the time of the stall
+    except OSError: pass
+    try: out += ["STALL  " + l.strip() for l in open("/proc/meminfo") if l.split(":")[0] in ("MemAvailable", "SwapFree", "Dirty", "Mlocked")]
+    except OSError: pass
+    try:
+        with open(WATCH_LOG[:-4] + ".stats.log", "a") as f: f.write("\n".join(out) + "\n")
+    except (OSError, TypeError): print("\n".join(out[:30]), flush=True)
+
+
 def server_cpu_busy(min_ticks=20):
     """True when a llama-server process used >= min_ticks CPU ticks (1/100 s) since the last call: it is working even though the log is silent and the GPUs are idle"""
     busy = False
@@ -2068,6 +2099,7 @@ def post(path, body, timeout=3600, every=10, idle_polls=2):
                 print(f"progress {time.time() - t0:5.0f} s: ctx {pr[0]} tokens, decoded {pr[1]}, tail {pr[2][-12:]!r}", flush=True); last = pr
         idle = 0 if (gpu_busy() or server_cpu_busy()) else idle + 1   # a silent log and idle GPUs are no stall while the server burns CPU (lazy pinning of a model bigger than free RAM: 3.5-bit GLM, 2026-10-20, two false stops)
         if idle >= idle_polls:
+            stall_dump()
             raise RuntimeError(f"run stopped: server log silent and GPUs idle for {idle * every} s (after {time.time() - t0:.0f} s)")
     if "e" in box: raise box["e"]
     return box["r"]

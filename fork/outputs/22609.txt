@@ -1,0 +1,14 @@
+run 22609 | warm_cpu | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.45 t/s | prompt 69.8 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-mimo-s100.ini,log=wk | power 220+280 W | 2026-11-03 07:28:28
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+Looking at the file, I need to identify which parts are never used. Let me examine:
+
+1. The includes - some may be unused
+2. The `using json = common_json;` - this is likely used
+3. The `build_repetition` function - need to check if it's used
+
+Since the file is truncated (only shows the beginning), I need to work with what's given. Let me look at what's shown:
+
+- `#include "json-schema-to-grammar.h"` -
+---

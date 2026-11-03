@@ -1,0 +1,52 @@
+run 22666 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 50.76 t/s | prompt 59.3 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-base.ini | power 220+280 W | 2026-11-03 08:46:51
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core instinct to honor is compactness — a tiny single-file HTML Tetris. But I don't want to deliver something bland or barely functional; even a small file can have care in it: a CRT-ish playfield, a next-piece preview, hold, score/level/lines, keyboard feedback, ghost piece, line-clear flash, particle burst, sound via WebAudio.
+
+Balance: they asked for "smallest" — so keep it compact, single file, no dependencies. But I can still make it feel alive: a tight arcade cabinet aesthetic, distinctive display type (monospace pixel-ish via system fonts... hmm, no external fonts if "smallest"? I could link Google Fonts but that adds weight. Maybe use a font stack with a display feel. Actually I can keep it small but include one Google Font link for display — that's small in bytes. Let's use something like "Press Start 2P"? That's very characteristic of the subject — retro arcade pixel type. Pair with a readable body face like "Space Grotesk" or IBM Plex Mono. Press Start 2P is the most characteristic for Tetris. But it's heavy visually and hard to read at length; use it for the logo/HUD numbers only, and pair with a readable mono/sans for body.
+
+Hmm, "smallest" — I'll keep the HTML compact but rich in feel. Let me aim for a single file, ~150 lines, canvas-based, with:
+
+- Layered background: subtle scanlines, grid, ambient glow, vignette.
+- Arcade cabinet framing: title lockup, HUD with score/level/lines, next queue (3 pieces), hold.
+- Canvas playfield 10x20 with ghost piece, well grid, line-clear flash animation.
+- Sound: tiny WebAudio blips (toggleable, muted by default? Better: enabled after first keypress since autoplay policies).
+- Controls: arrows, Z/X rotate, space hard drop, C hold, P pause. Touch buttons for mobile? Adds size. Maybe minimal touch support via swipe? Keep it modest — add small on-screen buttons only on touch devices? Could skip. I'll add a compact key legend instead.
+- Micro-interactions: buttons hover, level-up flash, line clear particles, piece-lock shake, game over overlay with restart.
+
+Palette: rather than a plain dark field with one glowing accent, I want the playfield to read like a lit arcade screen with depth, so a deep slate-blue field carrying several hues. Tetromino colors are inherently multi-hue (cyan, yellow, purple, green, red, blue, orange) — that gives me a lively polychrome set for free. Background: deep ink-blue/graphite with a subtle warm ambient and a lit arcade screen feel. Use a slightly desaturated navy/charcoal with a warm amber secondary and colored tetrominoes. That gives multiple hues, so it's not mono-with-one-neon.
+
+Layout: open with the game itself — the cabinet/playfield is the most characteristic thing about Tetris, so lead with it rather than any generic header. Left: title + HUD + stats; center: playfield; right: next queue + hold + controls legend. Asymmetric.
+
+Implementation details (compact but correct):
+
+```js
+const W=10,H=20,S=22 // cell size
+```
+Use canvas 220x440 plus devicePixelRatio scaling.
+
+Pieces as strings/matrices. Standard SRS-ish with simple rotation via matrix rotate and wall kicks (basic ±1, ±2 tries).
+
+Game loop with requestAnimationFrame and drop interval based on level.
+
+Line clear: flash row white for ~120ms then remove.
+
+Scoring: 100/300/500/800 * level, soft drop +1, hard drop +2/cell.
+
+Hold, next queue of 3 with 7-bag randomizer.
+
+Ghost piece outline.
+
+Particles on line clear — small squares flying. Keep it simple.
+
+Sound: WebAudio square-wave blips: move, rotate, lock, clear, levelup, gameover.
+
+Let me write it carefully but compactly.
+
+HTML structure:
+
+```html
+<div class="cab">
+  <header class="brand">... TETRIS ...</header>
+  <aside class="rail">score/level/lines + hold</aside>
+  <main class="stage"><canvas
+---

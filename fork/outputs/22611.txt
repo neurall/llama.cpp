@@ -1,0 +1,10 @@
+run 22611 | warm_cpu | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 29.21 t/s | prompt 68.9 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-mimo-s200.ini,log=wk | power 220+280 W | 2026-11-03 07:30:42
+
+The user wants me to delete code in this file that is never used. Let me analyze the code carefully.
+
+Looking at the file, it's a partial file (it ends mid-line with `item_rule + "*`). The user wants me to identify and remove code that is never used.
+
+Let me analyze each function and variable:
+
+1. `build_repetition` - This is a static function. I need to check if it's used elsewhere in the file. Since the file is truncated, I can't see the full file, but based on what's shown, this function is defined but I need to check if it's called
+---

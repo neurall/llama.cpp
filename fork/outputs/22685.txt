@@ -1,0 +1,25 @@
+run 22685 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 48.13 t/s | prompt 162.9 t/s | 256 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/nsys-warm_cpu.ini | power 220+280 W | 2026-11-03 09:02:36
+
+The user wants the smallest HTML Tetris game. The ask is minimal: "generate smallest html tetris game."
+
+The user wants smallest — so compact code. But I can still make it feel good: a tiny bit of polish without bloating. Balance: keep it genuinely small but playable. Maybe I'll give a compact single-file Tetris with minimal CSS. The key deliverable is smallness.
+
+Let me write a compact Tetris in one HTML file.
+
+Key features: board 10x20, 7 pieces, rotation, line clear, score, level/speed, game over, keyboard controls, pause/restart.
+
+Let me write it tight but readable-ish.
+
+```html
+<canvas id=c width=300 height=600></canvas>
+```
+
+Use canvas for smallest rendering code.
+
+Approach:
+
+```js
+const B=10,H=20,S=30,X=c.getContext('2d');
+let g=[...Array(H)].map(_=>Array(B).fill(0)),p,r,s=0,l=1,d=1e3,t=0,o=0;
+const P='0400,0000,222
+---

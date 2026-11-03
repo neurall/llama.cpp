@@ -1,0 +1,71 @@
+run 22639 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 49.23 t/s | prompt 41.5 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-03 08:17:39
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+But I don't want to ship a bare terminal dump — a Tetris game is a visual, tactile thing, so the wrapper around it should feel alive and characteristic of the subject. I'll keep the code compact but give the page a genuine arcade-cabinet feel: a layered background, some motion and micro-interactions, strong typographic contrast, and a distinctive display face paired with a readable body face.
+
+Balance: "smallest" means the code should be tight and readable, not bloated. I'll aim for a compact single-file game (~100-150 lines) but with a nicely styled arcade cabinet shell. Keep it honest: mention it's compact.
+
+Let me design:
+
+- Layout: an arcade cabinet-ish frame. Left: the playfield (canvas or DOM grid). Right: score/level/lines, next piece preview, hold, controls legend.
+- Background: layered — a subtle CRT scanline overlay, a dark deep-blue/graphite base with a grid pattern, ambient glow that pulses.
+- Typography: display face — something arcade-y. Google Fonts: "Press Start 2P" is the classic pixel face but heavy; maybe "Chakra Petch" or "Bungee"? Let's pair "Press Start 2P" (display, tiny usage) with "IBM Plex Mono" or "Space Grotesk" for body. Actually Press Start 2P at small sizes for labels is very characteristic of Tetris. Pair with "DM Sans"? Let's do: display = "Press Start 2P" for the logo/score numbers, body = "Space Grotesk" or "IBM Plex Sans". I'll use Press Start 2P + IBM Plex Mono for the readouts, and Space Grotesk for body copy. Maybe two fonts is enough: Press Start 2P (display) + Space Grotesk (body). Numbers in Press Start 2P look great.
+
+Colors: Tetromino colors are canonical — cyan I, blue J, violet L, orange O, yellow T, green S, red Z. Use those as the accent palette against a deep graphite/ink background with a warm off-white text. A near-black background with one neon accent would feel thin, but here the tetromino colors give me a full seven-color palette to play with, which suits the game.
+
+Implementation: canvas-based, small code. Use a canvas for the board, draw blocks with a slight bevel. Add a ghost piece. Add line-clear flash animation. Add level speed. Add keyboard controls + touch buttons for mobile.
+
+Keep code small: 
+
+```js
+const W=10,H=20,S=24;
+```
+
+Pieces as strings or matrices. Compact approach: use the classic "S" matrix rotation trick:
+
+```js
+const P=[,[[0,1],[2,1],[1,1],[1,2]],...]
+```
+
+Simpler compact approach: define pieces as arrays of coordinates, rotate by (x,y)->(y,-x) around center. Let me use the well-known compact method:
+
+```js
+const S='IOTSZJL';
+```
+
+Actually the classic tiny Tetris uses:
+
+```js
+const pieces = {
+ I:[[0,1,2,3]], ...
+}
+```
+
+Let me use the "matrix rotate" approach with each piece as a square matrix:
+
+```js
+const P=[
+ [[0,1,1,0],[0,1,1,0]], // O (2x2? )
+]
+```
+
+Rotation of non-square matrices is awkward. Use square matrices:
+- I: 4x4
+- O: 2x2
+- T,S,Z,J,L: 3x3
+
+Rotation: transpose + reverse rows.
+
+Compact:
+
+```js
+const P=[
+ [[1,1],[1,1]],                                        // O
+ [[0,1,0],[1,1,1]],                                    // T
+ [[0,1,1],[1,1,0]],                                    // S
+ [[1,1,0],[0,1,1]],                                    // Z
+ [[1,0,0],[1,1,1]],                                    // J
+ [[0,0,1],[1,1,1]],                                    // L
+ [[0,0,0,0],[1,1,1,1
+---

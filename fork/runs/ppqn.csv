@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+qn-base,qwen38,2,tetrisc,1024,--moe state=/tmp/runstate/ppk/qn-base.ini,
+qn-old,qwen38,2,tetrisc,1024,--moe state=/tmp/runstate/ppk/qn-old.ini cpu-ram-gbs=38 ram-ceiling-gbs=44,
+qn-noprobe,qwen38,2,tetrisc,1024,--moe state=/tmp/runstate/ppk/qn-np.ini log-profile=off,

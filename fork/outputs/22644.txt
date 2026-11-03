@@ -1,0 +1,42 @@
+run 22644 | dspark_fix3 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.52 t/s | prompt 145.2 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 220+280 W | 2026-11-03 08:23:35
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+But I don't want to just ship the most golfed one-liner — the most interesting take is a *tiny* implementation that still feels genuinely crafted: a real playable Tetris with crisp visuals, keyboard feedback, score/level, next-piece preview, all in a small single file. Balance: keep the code compact (that's the ask) but make it feel alive — a nice board, subtle motion, a next-piece ghost, particle-ish line-clear feedback, strong type contrast.
+
+Let me write a compact but readable Tetris in one HTML file. Keep it small-ish (a few KB), but with good design.
+
+Design considerations:
+- For a Tetris game, the most characteristic thing to open with is the playfield itself, not some chrome. So the game IS the hero. A monospace/technical display face fits — Tetris is Soviet-era, technical, arcade. I want a distinctive display face paired with a readable body/UI face.
+- Colors: Tetris pieces are inherently polychrome — 7 tetromino colors are the natural palette, so the background should be a dark neutral that lets those seven colors carry the identity. I'll use a dark slate/graphite background with a subtle layered gradient/grid, and the 7 classic tetromino colors as the accent system. That's honest to the subject.
+- Type: display face — something distinctive. Options via Google Fonts: "Chakra Petch", "Orbitron" (overused sci-fi), "Silkscreen"/"Press Start 2P" (pixel, very characteristic of arcade), "Bungee", "Archivo Black", "Space Grotesk". For Tetris, a pixel/arcade display face is characteristic. Pair "Silkscreen" (pixel display) with "IBM Plex Mono" or "Space Grotesk" for body. Actually let me use "Chakra Petch" for numerals/UI... Hmm.
+
+I'll go: display = "Silkscreen" (pixel, arcade, distinctive) for the wordmark and big numbers; body/UI = "Space Grotesk" or "IBM Plex Mono". Big number readouts in Silkscreen look great and are characteristic. But Silkscreen at large sizes for numbers is fine.
+
+Actually, maybe better: display = "Bungee" — no, too heavy. Let's do Silkscreen + IBM Plex Mono. Hmm, two mono-ish. Space Grotesk is a geometric sans, readable. Good pairing: pixel display + geometric sans body.
+
+Layout: a three-column-ish arcade cabinet layout: left = score/level/lines stats with big numerals, center = playfield, right = next queue + hold + controls legend. That's rich but not a row of equal cards.
+
+Features to include while keeping code small:
+- 10x20 board, 7 pieces with SRS-ish rotation (simple rotation matrices), wall kick minimal (try offsets).
+- Ghost piece.
+- Hold piece.
+- Next queue (3).
+- Score, lines, level, speed curve.
+- Line clear animation (flash).
+- Pause, restart, game over overlay.
+- Keyboard: arrows, space (hard drop), Z/X rotate, C hold, P pause, R restart.
+- Touch buttons? Maybe minimal on-screen buttons for mobile. That adds size. I could add a compact touch pad shown on small screens. Keep it small — maybe skip, or add a tiny mobile control row. I'll add a small touch control bar that only shows on coarse pointers — nice completeness.
+
+Micro-interactions: 
+- Stat numbers pop/scale when they change.
+- Line clear flash + row collapse.
+- Piece lock thud (board shake slightly on hard drop).
+- Hover on control legend keys.
+- Level-up banner.
+- Background: subtle animated grid / scanline, plus a faint drifting tetromino pattern? Keep tasteful: a CSS radial gradient + repeating grid, and a very slow-moving conic sheen. Ambient.
+
+Sound: could add tiny WebAudio beeps — adds ~15 lines and a lot of life. Include with a mute toggle. Yes, small AudioContext blips.
+
+Code golf vs readable: The user asked "smallest". I'll keep the code tight but not unreadable, and mention the size. Aim for a single file, maybe ~5-6KB of code plus CSS
+---

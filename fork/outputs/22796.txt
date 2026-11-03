@@ -1,0 +1,120 @@
+run 22796 | rc_live_rates | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 71.67 t/s | prompt 1604.3 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini --moe sim-vram=4608 | power 220+280 W | 2026-11-03 12:09:26
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    if (mask.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    for (size_t i = 0; i < mask.size(); i++) {
+        char c = mask[i];
+        if (c == '0' || c == '1') {
+            cpumask.push_back(c - '0');
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool parse_cpu_range(const std::string & range, std::vector<int32_t> & cpumask) {
+    if (range.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    auto parts = string_split<std::string>(range, '-');
+    if (parts.size() != 2) {
+        return false;
+    }
+    int32_t lo = std::stoi(parts[0]);
+    int32_t hi = std::stoi(parts[1]);
+    if (lo > hi) {
+        return false;
+    }
+    for (int32_t i = lo; i <= hi; i++) {
+        cpumask.push_back(i);
+    }
+    return true;
+}
+
+static bool is_cpu_mask_valid(const std::vector<int32_t> & cpumask) {
+    if (cpumask.empty()) {
+        return false;
+    }
+    for (int32_t cpu : cpumask) {
+        if (cpu < 0 || cpu > 1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool is_cpu_range_valid(const std::vector<int32_t> & cpumask) {
+    if (cpumask.empty()) {
+        return false;
+    }
+    for (int32_t cpu : cpumask) {
+        if (cpu < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool is_cpu_mask_valid(const std::vector<int32_t> & cpumask, int32_t n_threads) {
+    if (cpumask.empty()) {
+        return false;
+    }
+    if (cpumask.size() != n_threads) {
+        return false;
+    }
+    return is_cpu_mask_valid(cpumask);
+}
+
+static bool is_cpu_range_valid(const std::vector<int32_t> & cpumask, int32_t n_threads) {
+    if (cpumask.empty()) {
+        return false;
+    }
+    if (cpumask.size() != n_threads) {
+        return false;
+    }
+    return is_cpu_range_valid(cpumask);
+}
+
+static bool is_cpu_mask_valid(const std::vector<int32_t> & cpumask, int32_t n_threads, int32_t n_threads_batch) {
+    if (cpumask.empty()) {
+        return false;
+    }
+    if (cpumask.size() != n_threads + n_threads_batch) {
+        return false;
+    }
+    return is_cpu_mask_valid(cpumask);
+}
+
+static bool is_cpu_range_valid(const std::vector<int32_t> & cpumask, int32_t n_threads, int32_t n_threads_batch) {
+    if (cpumask.empty()) {
+        return false;
+    }
+    if (cpumask.size() != n_threads + n_threads_batch) {
+        return false;
+    }
+    return is_cpu_range_valid(cpumask);
+}
+
+static bool is_cpu_mask_valid(const std::vector<int32_t> & cpumask, int32_t n_threads, int32_t n_threads_batch, int32_t n_threads_http) {
+    if (cpumask.empty()) {
+        return false;
+    }
+    if (cpumask.size() != n_threads + n_threads_batch + n_threads_http) {
+        return false;
+    }
+    return is_cpu_mask_valid(cpumask);
+}
+
+static bool is_cpu_range_valid(const std::vector<int32_t> & cpumask, int32_t n_threads, int32_t n_threads_batch, int32

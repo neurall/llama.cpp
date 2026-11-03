@@ -1,0 +1,93 @@
+run 22646 | warm_cpu | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 158.36 t/s | prompt 143.8 t/s | 1007 tokens | args: -np 1 | power 220+280 W | 2026-11-03 08:25:45
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the "smallest HTML Tetris game". This means a single HTML file (or minimal structure) that implements a playable Tetris game using HTML, CSS, and JavaScript. The goal is to minimize code size while maintaining core functionality (grid, pieces, movement, rotation, collision, line clearing, scoring, game over).
+
+2.  **Identify Core Requirements for Tetris:**
+   - 10x20 grid
+   - 7 tetromino shapes (I, O, T, S, Z, J, L)
+   - Piece movement (left, right, down)
+   - Piece rotation
+   - Collision detection (walls, existing blocks)
+   - Line clearing
+   - Scoring
+   - Game over condition
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimize Code Strategy:**
+   - Use a single HTML file with inline CSS and JS.
+   - Use `<canvas>` for rendering (more compact than DOM elements).
+   - Use compact variable names and bitwise/array tricks where possible.
+   - Avoid external libraries.
+   - Keep logic minimal but functional.
+   - Use a compact representation for pieces (e.g., arrays of coordinates or bit patterns).
+   - Use a single loop for game logic.
+
+4.  **Draft - Mental Code Structure:**
+   ```html
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <style>
+       canvas { background: #000; display: block; margin: auto; }
+     </style>
+   </head>
+   <body>
+     <canvas id="c" width="200" height="400"></canvas>
+     <script>
+       // Game logic here
+     </script>
+   </body>
+   </html>
+   ```
+
+5.  **Develop Core Logic (Mental Refinement):**
+   - Grid: 10x20 array of 0/1
+   - Pieces: Define as arrays of [x,y] relative to center, or use rotation matrices.
+   - Rotation: Standard Tetris rotation can be done with a lookup table or simple transformation.
+   - Movement: Check bounds and collision before moving.
+   - Line clearing: Check rows, remove filled ones, shift down.
+   - Controls: Arrow keys + space for drop.
+   - Loop: `setInterval` or `requestAnimationFrame` with a tick counter.
+
+   Let's aim for ~300-400 bytes of JS. That's aggressive but possible.
+
+   Key optimizations:
+   - Use a 1D array for grid (200 cells)
+   - Piece shapes as strings or arrays
+   - Rotation: precompute or use simple math
+   - Collision: check bounds and grid
+   - Clear lines: iterate rows, count filled, remove
+   - Score: +10 per line
+   - Game over: when new piece can't spawn
+
+   Let's write it step-by-step, then compress.
+
+   ```javascript
+   const c = document.getElementById('c');
+   const ctx = c.getContext('2d');
+   const W = 10, H = 20;
+   const grid = Array(H * W).fill(0);
+   const pieces = [
+     [[0,0],[1,0],[2,0],[3,0]], // I
+     [[0,0],[1,0],[0,1],[1,1]], // O
+     [[0,0],[1,0],[2,0],[1,1]], // T
+     [[0,0],[1,0],[2,0],[1,-1]], // S
+     [[0,0],[1,0],[2,0],[0,-1]], // Z
+     [[0,0],[1,0],[2,0],[0,1]], // J
+     [[0,0],[1,0],[2,0],[2,1]]  // L
+   ];
+   // Actually, standard Tetris shapes are better represented with rotation in mind.
+   // Let's use a simpler approach: define shapes as arrays of offsets, and rotate by swapping x/y and negating.
+   ```
+
+   Better piece representation:
+   ```javascript
+   const P = [
+     [[0,0],[1,0],[2,0],[3,0]], // I
+     [[0,0],[1,0],[0,1],[1,1]], // O
+     [[0,0],[1,0],[2,0],[1,1]], // T
+
+---

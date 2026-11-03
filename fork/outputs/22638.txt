@@ -1,0 +1,67 @@
+run 22638 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 50.03 t/s | prompt 167.7 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-03 08:16:55
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+But I don't want to ship a bare terminal dump — a Tetris game is a visual, tactile thing, so the wrapper around it should feel alive and characteristic of the subject. I'll keep the code compact but give it real craft: a genuinely small playable Tetris in one file, with a layered background, motion, and micro-interactions.
+
+Balance: "smallest" is the explicit ask. So the game logic should be terse. But I can still make the presentation nice without bloating the logic much. Let me aim for a tight single file — maybe ~120 lines total — with terse JS, and a nicely designed shell.
+
+Let me write compact Tetris:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>...</style>
+<canvas id=c></style>
+<script>
+// compact tetris
+</script>
+```
+
+Design direction: a CRT/arcade cabinet feel fits Tetris well. But I don't want the obvious near-black + single neon accent look — it's overdone. Let me do something else: a Soviet-constructivist / retro-arcade palette? Tetris origins: Soviet, 1984. A constructivist vibe: warm red-orange, off-white paper, deep ink, bold geometric type. That's distinctive and alive.
+
+Actually, the classic Tetris piece colors (cyan, blue, orange, yellow, green, purple, red) already give a multi-color palette — that's inherently characteristic. So the shell can be a warm paper/ink constructivist look with the board as a dark well, and the pieces providing the color.
+
+Let me design:
+- Background: layered — a subtle diagonal stripe pattern + halftone dots + a slow-moving gradient wash. Ambient.
+- Layout: an asymmetric layout — big display type on the left ("TETRIS" rotated vertically maybe), the board in the middle, stats panel on the right.
+- Typography: display face — something bold and geometric. Google Fonts: "Archivo Black" or "Bungee" or "Big Shoulders Display". Body: "Space Grotesk" or "IBM Plex Mono". Pair "Archivo Black" (display) with "IBM Plex Mono" (body/UI numerals). Good contrast.
+
+Actually for smallest, maybe avoid external fonts... but the design instruction wants a distinctive display face. A Google Fonts link is one line. Fine.
+
+Let me build:
+
+Structure:
+```
+<div class=cab>
+  <aside class=brand>  vertical TETRIS + 1984 + controls legend
+  <main> canvas + overlay
+  <aside class=panel> score, level, lines, next piece, hold?
+</div>
+```
+
+Keep it small: score, level, lines, next.
+
+Game logic compact:
+
+```js
+const W=10,H=20,S=24;
+let g=[...Array(H)].map(_=>Array(W).fill(0)), p, n, sc=0, ln=0, lv=1, t=0, ov=0;
+const P='0000,0220,0000|0000,0020,0222|0000,0002,0222|0000,0220,0220|0000,0222,0200|0000,0200,0222|0000,0222,0000'
+```
+
+Hmm, simpler: define shapes as arrays of matrices.
+
+```js
+const S7=[
+[[0,0,0],[1,1,1],[0,1,0]], // T
+[[2,2],[2,2]],            // O
+[[0,3,0],[3,3,3]],        // J? 
+...
+]
+```
+
+Let me use standard:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]
+O: [[2,2],[2,2]]
+T: [[0,3,0],[3,3,3],[0,0,
+---

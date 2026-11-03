@@ -1,0 +1,50 @@
+run 22678 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.98 t/s | prompt 179.1 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-base.ini | power 220+280 W | 2026-11-03 08:57:03
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file with working Tetris.
+
+But I don't want to just ship the most golfed one-liner — I'd rather make it genuinely playable and feel crafted, with a distinctive look, keyboard + touch controls, next-piece preview, hold, level/score, line-clear flash, pause, game over. Keep the code reasonably compact (it's a "smallest" ask) but complete and functional.
+
+Balance: they asked for smallest. I should honor that — deliver a compact single file — but make it polished. I'll keep it tight but with good craft. Maybe ~120 lines. Let me write it well.
+
+Design: Tetris is the subject, so open with the playfield itself, not a generic header. Use a distinctive display face for the score/labels. Pair a display face with a readable body face. Google Fonts... but "smallest" — maybe use system fonts? Hmm. I could use a single Google Font link for display (e.g., "Chakra Petch" or "Bungee" or "Silkscreen" for a pixel/arcade feel). Silkscreen is very Tetris/arcade. Pair with a readable body face like "Space Grotesk" or IBM Plex Mono. Let's do display: "Silkscreen" (pixel arcade) and body: "IBM Plex Mono" or "Space Grotesk". Actually Silkscreen at large sizes for the score numerals is characteristic. Good.
+
+Palette: Game Boy Tetris is iconic — that's a great, distinctive, subject-characteristic palette: olive-green LCD (#9bbc0f, #8bac0f, #306230, #0f380f). That's bold and purposeful. But maybe a bit gimmicky? It's actually a strong, characteristic choice. Alternatively, a dark CRT with bright tetromino colors.
+
+Let me do a hybrid: dark slate/graphite background with a subtle grid + scanline ambient, tetromino colors as the accent system (cyan, yellow, purple, green, red, blue, orange). A flat near-black field with one neon accent would feel generic; a layered dark background with a full multi-hue tetromino palette reads as genuinely Tetris. Let's do a deep blue-graphite layered background with a faint grid, plus a warm off-white panel. Hmm.
+
+Actually, let me go with something more distinctive: a "blueprint/console" look — deep teal-navy field, with a paper-ish side panel? Mixing light panel with dark playfield gives strong contrast.
+
+Let me design:
+- Background: layered — deep ink (#101a24) with a radial glow, a repeating grid, and slow-drifting falling tetromino silhouettes in the background (ambient motion). That's a living element.
+- Left: playfield canvas with a bezel/frame, subtle inner shadow, ghost piece.
+- Right: score panel with huge Silkscreen numerals, level, lines, next queue (3 pieces), hold.
+- Bottom: controls legend with keycap styling.
+- Micro-interactions: keycaps light up when the corresponding key is pressed; line clear flash + score bump animation; piece-lock thud; level-up pulse.
+
+Keep it one file, canvas-based.
+
+Implementation plan (compact but readable):
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<link fonts>
+<style>...</style>
+<body>
+ <div class=wrap>
+  <header> TETRIS wordmark + tagline </header>
+  <main>
+   <div class=cabinet><canvas id=g width=300 height=600></canvas><div id=over>...</div></div>
+   <aside> score, stats, next, hold, keys </aside>
+  </main>
+ </div>
+<script>...</script>
+```
+
+Game logic:
+- 10x20 board.
+- Pieces as matrices with rotation via transpose+reverse.
+- SRS-ish simple wall kicks: try offsets [0,-1,1,-2,2].
+- 7-bag randomizer.
+- Ghost piece.
+- Lock delay: keep simple — gravity drop, on ground lock after short delay? Simplest: lock immediately on landing tick. But that feels bad. Let's add a small lock delay (
+---

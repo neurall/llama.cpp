@@ -1,0 +1,6 @@
+run 22658 | warm_cpu | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 38.08 t/s | prompt 42.3 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/io-on.ini,log=wk | power 220+280 W | 2026-11-03 08:37:52
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design smallest HTML Tetris. Need include controls, scoring? "smallest" means compact. Need maybe use canvas and keyboard. Need implement Tetris mechanics: board 10x20
+---
