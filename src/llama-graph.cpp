@@ -36,6 +36,8 @@
 
 int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used);   // src/llama-moecache-fork.cpp: the prompt chain
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
+bool llama_moe_cache_pm_pre_fork();
+void llama_moe_cache_pm_preload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * pred, int64_t n_picks);
 ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork * pub);
 extern "C" { GGML_API double ggml_backend_pred_get_fork(); }   // ggml-backend.cpp: predicted staging of this pass   // the prompt mix: the card whose ring takes this layer's misses, null = no mix
 #include <string>
@@ -2917,7 +2919,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
         mc_cpu_backend = mc_mix_b ? nullptr : cpu_backend;   // the mix runs on the GPUs alone
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
-        if (pw && pw->buffer && mcache->pred_on && !mc_pp && !mc_mix_b) {
+        if (pw && pw->buffer && mcache->pred_on && (!mc_pp || llama_moe_cache_pm_pre_fork()) && !mc_mix_b) {
             // the next layers' router logits from this layer's input (learned predictors, else the next
             // router), on their GPU in the split before the CPU copy; handed to the CPU gate op as src[4]
             // ([n_expert*ahead, n_tokens]), where the cache's observer reads them
@@ -2926,6 +2928,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
                 if (wdev && ggml_backend_get_device(b) == wdev && b != cpu_backend) {
                     ggml_tensor * x2 = ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens);
+                    if (mc_pp && n_tokens > n_expert) {   // --moe pin-miss=2 on the prompt chain: a row per expert of the layer names what the pass needs, all rows would cost a big matmul per layer
+                        x2 = ggml_cont(ctx0, ggml_view_2d(ctx0, x2, n_embd, n_expert, (n_tokens / n_expert) * x2->nb[1], 0));
+                    }
                     // all lookaheads in one matmul ([n_expert * K, n_tokens], the stacked layout the cache reads)
                     mc_pred = ggml_mul_mat(ctx0, mcache->pred_q ? mcache->pred_q : pw, x2);
                     ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
@@ -3039,7 +3044,17 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     memcpy(dst->data, a->data, ggml_nbytes(a));
                 }
             };
-            ggml_tensor * jit = ggml_map_custom1(ctx0, selected_experts, mc_pp ? pp_op : jit_op, 1, (void *) mcache);
+            // --moe pin-miss=2: the next layer's reads are queued first, this layer's real misses go ahead of them in the queue and its upload then waits for them
+            ggml_custom2_op_t pp_pm_op = [](ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * p, int ith, int nth, void * ud) {
+                GGML_UNUSED(nth);
+                if (ith == 0) {
+                    llama_moe_cache_pm_preload_fork((const llama_moe_cache_layer_fork *) ud, p, a->ne[0]);
+                    llama_moe_cache_pp_upload_fork((const llama_moe_cache_layer_fork *) ud, a);
+                    memcpy(dst->data, a->data, ggml_nbytes(a));
+                }
+            };
+            ggml_tensor * jit = mc_pp && mc_pred ? ggml_map_custom2(ctx0, selected_experts, mc_pred, pp_pm_op, 1, (void *) mcache)
+                                                 : ggml_map_custom1(ctx0, selected_experts, mc_pp ? pp_op : jit_op, 1, (void *) mcache);
             ggml_backend_sched_set_tensor_backend(sched, jit, cpu_backend);
             cb(jit, "ffn_moe_cache_jit", il);
             ggml_build_forward_expand(gf, jit);
