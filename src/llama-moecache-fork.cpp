@@ -6948,7 +6948,7 @@ static unsigned long long pp_self_read_bytes();
 // mapped (the pin and the GPU cache hold the rest), are asked for from the file in the order of their counts, so request 1 finds them in the page cache instead of
 // faulting them in at 0.8 GB/s (DeepSeek cold: a 2-token call took 10 s). The budget is the share of the model the pin planner already leaves to the page cache
 // (--moe pin-cache, 0.15 of the mapped experts); the reads are kept to 512 MiB ahead of what the disk has delivered, wait while a prompt call runs and stop when
-// a request has been served or the budget is spent. --moe preheat=0 switches it off. No hot map (empty state) means nothing to read.
+// a request has been served or the budget is spent. Off by default; --moe preheat=1 switches it on. No hot map (empty state) means nothing to read.
 static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages the kernel has swapped out since boot
     unsigned long long v = 0;
     if (FILE * f = fopen("/proc/vmstat", "r")) {
@@ -6964,7 +6964,7 @@ static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages th
 // first (ls.pin_ptr, the same array --moe pinr fills). The uploads of a miss then come from pinned RAM, not from the SSD at 0.8 to 1.6 GB/s; a mapped pointer is
 // never touched (a touch pulls in one page, then 128 KiB). The budget is the share the pin planner leaves to the page cache (--moe pin-cache, 0.15 of the mapped
 // experts). It waits during prompt calls, stops when decode starts, when the budget is spent, or at the first sign of swapping (a swap-out, or free memory under what it
-// would be after the whole budget). --moe preheat=0 switches it off. No hot map (empty state) means nothing to read.
+// would be after the whole budget). Off by default; --moe preheat=1 switches it on. No hot map (empty state) means nothing to read.
 static void preheat_run(moe_cache * mc) {
     // the hot counts come from the usage profile (profile_preload), which runs after the cache is set up: wait for it, give up when a request has started or the engine stops
     while (!mc->profile_ready.load(std::memory_order_acquire)) {
@@ -8118,7 +8118,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     while (fgets(line, sizeof line, mf)) { if (sscanf(line, "MemTotal: %zu kB", &kb) == 1) { mem_total = kb * 1024; break; } }
                     fclose(mf);
                 }
-                const bool ph_on = [] { const char * v = moe_opt("preheat"); return !(v && v[0] == '0'); }();   // default on
+                const bool ph_on = [] { const char * v = moe_opt("preheat"); return v && v[0] == '1'; }();   // default off (preheat5, 2026-11-03: the server's own warm-up stops it and request 1 follows at once: 2 experts read in 11 s, while its 6.3 GiB arena leaves the page cache); =1 on
                 // the preheat works per layer (src_dfd: that layer's experts stayed mapped), so a model whose first layers are pinned in tensor order still gets it; pinr wants all weights mapped
                 if (gpu && !mc->staging[0] && ((pinr > 0 && !src_pinned) || ph_on) && mem_total) {
                     mc->pin_buft   = ggml_backend_dev_host_buffer_type(gpu);
@@ -8203,7 +8203,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
             if (llama_moe_log_profile_fork("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
-            if (const char * ph = moe_opt("preheat"); !(ph && ph[0] == '0') && gpu && !mc->rd_staging.empty()) { mc->preheat_thr = std::thread(preheat_run, mc); }   // default on; =0 off; rd_staging: some experts stayed mapped
+            if (const char * ph = moe_opt("preheat"); ph && ph[0] == '1' && gpu && !mc->rd_staging.empty()) { mc->preheat_thr = std::thread(preheat_run, mc); }   // default off; =1 on; rd_staging: some experts stayed mapped
             if (!mc->rd_staging.empty()) {
                 LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT: prompt uploads on %d threads, %d cache workers\n", rd_mapped / 1073741824.0, mc->rd_threads, n_workers);
             }
