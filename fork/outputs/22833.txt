@@ -1,0 +1,103 @@
+run 22833 | lock_before_pin | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.78 t/s | prompt 573.6 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini | power 220+280 W | 2026-11-03 15:16:07
+
+ params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+             params.speculative.ngram_simple.size_n = 4;
+             params.speculative.ngram_simple.size_m = 1;
+             params.speculative.ngram_simple.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-default"},
+        string_format("enable default ngram speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
+            params.speculative.ngram_mod.n_match = 24;
+            params.speculative.ngram_mod.n_min = 48;
+            params.speculative.ngram_mod.n_max = 64;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-simple-default"},
+        string_format("enable default ngram-simple speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+            params.speculative.ngram_simple.size_n = 4;
+            params.speculative.ngram_simple.size_m = 1;
+            params.speculative.ngram_simple.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-map-k-default"},
+        string_format("enable default ngram-map-k speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+            params.speculative.ngram_map_k.size_n = 4;
+            params.speculative.ngram_map_k.size_m = 1;
+            params.speculative.ngram_map_k.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-map-k4v-default"},
+        string_format("enable default ngram-map-k4v speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V);
+            params.speculative.ngram_map_k4v.size_n = 4;
+            params.speculative.ngram_map_k4v.size_m = 1;
+            params.speculative.ngram_map_k4v.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-draft-default"},
+        string_format("enable default draft speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT);
+            params.speculative.draft.n_max = 4;
+            params.speculative.draft.n_min = 1;
+            params.speculative.draft.p_min = 0.75f;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-draft-mtp-default"},
+        string_format("enable default draft MTP speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+            params.speculative.draft.n_max = 4;
+            params.speculative.draft.n_min = 1;
+            params.speculative.draft.p_min = 0.75f;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-draft-dflash-default"},
+        string_format("enable default draft DFlash speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+            params.speculative.draft.n_max = 4;
+            params.speculative.draft.n_min = 1;
+            params.speculative.draft.p_min = 0.75f;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-draft-eagle3-default"},
+        string_format("enable default draft Eagle3 speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3);
+            params.speculative.draft.n_max = 4;
+            params.speculative.draft.n_min = 1;
+            params.speculative.draft.p_min = 0.75f;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-draft-dspark-default"},
+        string_format("enable default draft DSpark speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK);
+            params.speculative.draft.n_max = 

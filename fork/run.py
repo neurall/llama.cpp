@@ -2012,7 +2012,12 @@ def stall_dump():
                 try: sysc = open(t + "/syscall").read().split()[0]
                 except (OSError, IndexError): sysc = "?"
                 out.append(f"STALL  tid {t.rsplit('/', 1)[1]} {comm} state {state} wchan {wch} syscall {sysc}")
-            g = subprocess.run(["gdb", "-p", d[6:], "-batch", "-ex", "thread apply all bt 12"], capture_output=True, text=True, timeout=90)
+                if state == "D":   # the kernel call chain of a thread stuck in the kernel (root only: sudo -n, skipped without it)
+                    k = subprocess.run(["sudo", "-n", "cat", t + "/stack"], capture_output=True, text=True, timeout=10)
+                    out += [f"STALL   kstack {l}" for l in k.stdout.splitlines()][:40]
+            # ptrace_scope=1 keeps a plain gdb out: sudo -n when it works without a password, else plain gdb (which then says why)
+            sudo = ["sudo", "-n"] if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=10).returncode == 0 else []
+            g = subprocess.run(sudo + ["gdb", "-p", d[6:], "-batch", "-ex", "thread apply all bt 25"], capture_output=True, text=True, timeout=120)
             out += ["STALL  gdb " + l for l in (g.stdout + g.stderr).splitlines() if l.strip()][:400]
         except (OSError, ValueError, IndexError, subprocess.SubprocessError): continue
     try:   # the kernel log of the last 3 minutes: OOM kills, hung tasks, and the NVIDIA driver's "Cannot map memory" (a pinned host buffer that could not be mapped, seen with every GLM stall 2026-11-03)
@@ -2021,11 +2026,19 @@ def stall_dump():
     except (OSError, subprocess.SubprocessError): pass
     try: out += ["STALL  buddy " + l.strip() for l in open("/proc/buddyinfo")]   # free blocks per order (4 KiB x 2^order): fragmentation at the time of the stall
     except OSError: pass
-    try: out += ["STALL  " + l.strip() for l in open("/proc/meminfo") if l.split(":")[0] in ("MemAvailable", "SwapFree", "Dirty", "Mlocked")]
+    try: out += ["STALL  " + l.strip() for l in open("/proc/meminfo") if l.split(":")[0] in ("MemFree", "MemAvailable", "Active(anon)", "Inactive(anon)", "Active(file)", "Inactive(file)",
+                                                                                     "Unevictable", "Mlocked", "SwapFree", "Dirty", "AnonHugePages", "Shmem", "KReclaimable")]
+    except OSError: pass
+    try:   # reclaim and compaction throttle when isolated pages exceed the LRU (too_many_isolated): mlocked pinned weights leave the LRU small
+        keep = ("nr_isolated_", "nr_inactive_", "nr_active_", "nr_unevictable", "nr_mlock", "compact_", "thp_fault_", "allocstall_", "pgscan_direct", "pgsteal_direct", "pswp")
+        out.append("STALL  vmstat " + " ".join(l.strip() for l in open("/proc/vmstat") if l.startswith(keep)))
     except OSError: pass
     try:
         with open(WATCH_LOG[:-4] + ".stats.log", "a") as f: f.write("\n".join(out) + "\n")
     except (OSError, TypeError): print("\n".join(out[:30]), flush=True)
+    try:   # its own file too: the stats.log of a cell is rewritten by the next run of the same cell (the 14:43 stall's dump was lost that way, 2026-11-03)
+        with open(os.path.join(QDIR, time.strftime("stall-%Y%m%d-%H%M%S.txt")), "w") as f: f.write("\n".join(out) + "\n")
+    except OSError: pass
 
 
 def server_cpu_busy(min_ticks=20):

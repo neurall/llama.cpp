@@ -1826,6 +1826,12 @@ static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<
     // The registration pins every page and can stall for good when the kernel's memory compaction fights over them (kcompactd at 100%, pages stuck "isolated";
     // seen once on a 47 GiB pin). A stalled pin is an error, not something to run on: after GGML_CUDA_PIN_STALL_S the process bails with a fixed message and exit
     // code 75 (EX_TEMPFAIL), so a caller can tell it from a crash and start again.
+    // Locked from the populate to the end of the register: a populated page that is not pinned yet can be swapped out under memory pressure (zram takes the
+    // zero pages for free), and the register then faults every such page back in under reclaim throttling, for minutes (2026-11-03: GLM's staging block
+    // 4.8 GiB out at the start of a pass, then 946 pages/s back in; MiMo's last weight chunk at load hit the 180 s PIN_STALL three times). mlock only locks
+    // pages already present (and faults in any that left meanwhile); refused (RLIMIT_MEMLOCK) it changes nothing. Unlocked after the register: the
+    // driver's pin holds the pages from then on, and --moe pin-mlock decides alone whether the weights stay locked.
+    const bool locked = mlock(ptr, first) == 0;
     struct reg_call { std::atomic<int> state{0}; cudaError_t err = cudaSuccess; };
     auto rc = std::make_shared<reg_call>();
     std::thread([rc, ptr, first, reg_flags] { rc->err = cudaHostRegister(ptr, first, reg_flags); rc->state = 1; }).detach();
@@ -1846,6 +1852,7 @@ static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<
         fflush(stderr);
         _exit(75);
     }
+    if (locked) { munlock(ptr, first); }
     st->done = first;
     ggml_cuda_reg_state * sp = st.get();
     if (first < size) {
@@ -4251,7 +4258,24 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
     std::lock_guard<std::mutex> lk(g_xstage_mu);
     ggml_cuda_xstage_ring & R = g_xstage[ctx_src->device][ctx_dst->device];
     const bool small = n <= GGML_CUDA_XSTAGE_SMALL;
-    ggml_cuda_xstage_block & e = small ? R.small[R.cur_small++ % GGML_CUDA_XSTAGE_N_SMALL] : R.big[R.cur_big++ % GGML_CUDA_XSTAGE_N_BIG];
+    const unsigned slot = small ? R.cur_small++ % GGML_CUDA_XSTAGE_N_SMALL : R.cur_big++ % GGML_CUDA_XSTAGE_N_BIG;
+    ggml_cuda_xstage_block & e = small ? R.small[slot] : R.big[slot];
+    if (!small && e.cap < n) {
+        // fork: a new big block is pinned host memory taken in the middle of a request, beside ~100 GiB of pinned weights, and that pin can stall in kernel
+        // reclaim for minutes (GLM 14k prompt 2026-11-03: main thread in cudaHostRegister, wchan reclaim_throttle, then the driver's "Cannot map memory").
+        // The ring pointer runs on between requests, so request 2 reached slots request 1 never filled. A slot too small for this tensor first takes the
+        // oldest block that is big enough and already written out: no new pin and no wait. A new block is pinned only when no such block exists.
+        ggml_cuda_set_device(ctx_dst->device);
+        for (unsigned k = 1; k < GGML_CUDA_XSTAGE_N_BIG; ++k) {
+            ggml_cuda_xstage_block & o = R.big[(slot + k) % GGML_CUDA_XSTAGE_N_BIG];
+            if (o.cap < n) { continue; }
+            const cudaError_t q = o.used ? cudaEventQuery(o.h2d_done) : cudaSuccess;
+            if (q == cudaErrorNotReady) { (void) cudaGetLastError(); continue; }
+            CUDA_CHECK(q);
+            std::swap(e, o);
+            break;
+        }
+    }
     if (e.d2h_done == nullptr) {
         ggml_cuda_set_device(ctx_src->device);
         CUDA_CHECK(cudaEventCreateWithFlags(&e.d2h_done, cudaEventDisableTiming));
@@ -4276,17 +4300,30 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
         // stream of GLM-5.3-Flash cost 0.4 s of a 14 s prompt pass the first time it crossed the cards (nsys: one layer 430 ms longer); registered huge pages
         // pin several times faster (see ggml_cuda_host_malloc_registered). cudaHostAlloc stays the fallback and the path for small blocks.
         if (!small) {
+            const int64_t t0 = ggml_time_us();
             void * p = mmap(nullptr, cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             if (p != MAP_FAILED) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+                // huge pages only while free 2 MiB blocks cover the block: past them every huge page needs compaction, which stalls beside the pinned weights
+                (void) madvise(p, cap, ggml_cuda_free_huge_bytes() >= 2 * cap ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+#else
                 (void) madvise(p, cap, MADV_HUGEPAGE);
-                memset(p, 0, cap);
+#endif
+                // populated and locked in one step, unlocked once registered: a populated page left unlocked until the register can be swapped out first and
+                // swapped back in by the register under reclaim throttling (see ggml_cuda_register_chunked). Without the lock (RLIMIT_MEMLOCK) a memset populates.
+                const bool locked = mlock(p, cap) == 0;
+                if (!locked) { memset(p, 0, cap); }
                 if (cudaHostRegister(p, cap, cudaHostRegisterPortable | cudaHostRegisterMapped) == cudaSuccess) {
                     e.host = p; e.mapped = true;
+                    if (locked) { munlock(p, cap); }
                 } else {
                     (void) cudaGetLastError();
                     munmap(p, cap);
                 }
             }
+            // one line per new big block (a handful per process): a slow pin here is the mid-request stall above, visible in the server log
+            GGML_LOG_WARN("%s: new %.0f MiB staging block CUDA%d -> CUDA%d slot %u: %s in %.2f s\n", __func__, cap / 1048576.0, ctx_src->device, ctx_dst->device, slot,
+                          e.host ? "pinned" : "pin failed", (ggml_time_us() - t0) / 1e6);
         }
 #endif
         // portable: pinned for every CUDA context, the two cards read and write the same block
