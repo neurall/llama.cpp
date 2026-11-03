@@ -38,7 +38,7 @@ Tests:
 Compare decode t/s only between runs with the same output md5 (tetris/chat): the text
 decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat itself.
 """
-import argparse, atexit, math, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
+import argparse, atexit, math, csv, glob, hashlib, io, json, os, random, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
 import types, collections, tempfile
 
@@ -1202,6 +1202,28 @@ def ovr_prompt(default):
         p = open(p[1:]).read()
     return (p or default) + "\n" * PROMPT_TWEAK
 GREEDY = {"temperature": 0, "top_p": 1, "top_k": 1}
+
+
+def canary_text(src, n_tok, k=5):
+    """--canary N: about N tokens of the source with k record codes hidden in comment lines across it, and a question at the end that only a correct
+    prompt pass can answer (user 2026-11-03: "a complex prompt that cannot be answered correctly with corrupt memory", before any poison bug fishing).
+    Returns the text and the wanted {record: code}; deterministic per N"""
+    rnd = random.Random(n_tok)
+    body = src[:int(n_tok * 3.8)]   # ~3.8 characters per token of code on the tokenizers here: the list sets -c with room to spare
+    want = {f"R-{rnd.randrange(1000, 10000)}": str(rnd.randrange(1000, 10000)) for _ in range(k)}
+    cuts = sorted(body.rfind("\n", 0, int(len(body) * f)) + 1 for f in [(i + 0.5) / k for i in range(k)])
+    parts, last = [], 0
+    for c, (rid, code) in zip(cuts, want.items()):
+        parts += [body[last:c], f"// note for the reader: record {rid} holds code {code}.\n"]; last = c
+    parts.append(body[last:])
+    q = (f"\n\nThe source above contains {k} comment lines of the form \"record R-xxxx holds code yyyy\". Write each of them as R-xxxx=yyyy, "
+         "one per line, in the order they appear in the source. Write nothing else.")
+    return "".join(parts) + q, want
+
+
+def canary_score(out, want):
+    """record codes the answer gives right (any separator, the last 20 characters before the code)"""
+    return sum(bool(re.search(re.escape(rid) + r"\D{0,20}" + code + r"(?!\d)", out or "")) for rid, code in want.items())
 ANTILOOP = {"repeat_penalty": 1.15, "repeat_last_n": 256}   # --antiloop: the same penalty for every build of a cell; it changes the text, so a loop-prone base model (OLMoE) produces a real answer. Speed and cache hit rate are not touched by it (a sampler step on the logits)
 if sys.argv[1:2] == ["run"] and "-al" in sys.argv:   # run ... -al: the same switch on demand for a list run (a cell option of its own, so no other subcommand's -al is touched)
     sys.argv.remove("-al"); sys.argv.insert(1, "--antiloop")
@@ -2591,10 +2613,14 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             elif _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
                 _need = int(54092 * int(_pfn.group(1)) * 1000 / 12294); _pf_text = (_pf_text * (_need // max(len(_pf_text), 1) + 1))[:_need]   # beyond the source (256k contexts): the source again, the speeds do not depend on the text
             _pf_text = OVR.get("prefix", "") + _pf_text
-            if OVR.get("prefix"):   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
+            _canary = int(OVR.get("canary") or 0)
+            if _canary:
+                _pf_text, _canary_want = canary_text(_pf_text, _canary)
+            if OVR.get("prefix") or _canary:   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
                 res, logf = server_run(build, env, args, "/v1/chat/completions",
                                        {"messages": [{"role": "user", "content": _pf_text}], "max_tokens": int(OVR.get("tokens") or 1024), **GREEDY, "cache_prompt": False,
-                                        "reasoning_format": "none", **({"logprobs": True, "top_logprobs": 1} if os.environ.get("RUN_DBG_TOKENS") else {})})   # DeepSeek V4.1 chat answers came back with content "" (everything generated is thinking, 256 of 256 tokens, finish length, no reasoning_content): the parser dropped it; "none" leaves the raw text in content, so every answer is stored and loop-checked (2026-10-26)
+                                        "reasoning_format": "none", **({"chat_template_kwargs": {"enable_thinking": False}} if OVR.get("nothink") else {}),
+                                        **({"logprobs": True, "top_logprobs": 1} if os.environ.get("RUN_DBG_TOKENS") else {})})   # DeepSeek V4.1 chat answers came back with content "" (everything generated is thinking, 256 of 256 tokens, finish length, no reasoning_content): the parser dropped it; "none" leaves the raw text in content, so every answer is stored and loop-checked (2026-10-26)
             else:
               _np = int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32))
               if OVR.get("chat"):   # --chat: an instruct model gets its chat template (raw cut text: Qwen3.8 stopped after 1 token at 40k, 2026-10-18); /completion keeps the clamp and the loop guard
@@ -2651,6 +2677,14 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)
             row.update(cache_stats(open(logf).read()))
             row.update(ok=1 if row.get("pp_tps") else 0, args=" ".join(args))
+            if _canary:   # exact answer check: a wrong code means the prompt was computed wrong (or the model cannot recall it: compare with a stock or one-card row)
+                _got = canary_score(row["output"], _canary_want)
+                row["note"] = f"canary {_got}/{len(_canary_want)} | " + str(row.get("note") or "")
+                if _got < len(_canary_want):
+                    row["ok"] = 0
+                    print(col("1;91", f"    CANARY FAILED: {_got} of {len(_canary_want)} record codes right; wanted {_canary_want}"), flush=True)
+                else:
+                    print(col("1;92", f"    canary: {_got} of {len(_canary_want)} record codes right"), flush=True)
             return row
         if test == "agent":
             args = COMMON + ["-c", "16384", "-ub", "2048", "-b", "2048"]
@@ -3917,7 +3951,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink", "gen"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink", "gen", "canary"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if OVR.get("gen") is not None: a.test = "gen"   # --gen on any run: generated prompts in place of the test's own
@@ -4983,6 +5017,8 @@ def add_overrides(sub):
     sub.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run takes the next slice of the prompt text (a repeated text finds every expert it used in the cache, no real prompt does)")
     sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
     sub.add_argument("--gen", help="generated prompts in place of the test's own, repetition k = prompt k: in=A:B,out=A:B,task=kinds of GEN_TASKS (latin|french|german|medical|legal|equations|scifi|py|js|cpp|java|html|code|prose|explain|data|math|chat) or free text,topic=a|b,seed=N,first=K (see gen_prompt; '' = defaults)")
+    sub.add_argument("--canary", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
+                     help="pf tests: about N tokens of the source with 5 record codes hidden in it and a question at the end; the answer is checked exactly (a wrong code fails the row)")
     sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
@@ -7949,7 +7985,7 @@ def cmd_cell(a):
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--vary"] if getattr(a, "vary", None) else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else []) + (["--gen", a.gen] if getattr(a, "gen", None) is not None else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--vary"] if getattr(a, "vary", None) else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else []) + (["--canary", str(a.canary)] if getattr(a, "canary", None) else []) + (["--gen", a.gen] if getattr(a, "gen", None) is not None else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
@@ -10767,6 +10803,7 @@ if __name__ == "__main__":
     ce.add_argument("--chat", metavar="INSTR", help="pf tests through the chat template with this instruction in front (instruct models)")
     ce.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="cut the prompt to N[k] tokens (pf128k clamped to 48k = a 48k prompt)")
     ce.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run the next slice of the prompt text")
+    ce.add_argument("--canary", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="pf tests: N[k] tokens with 5 hidden record codes, answer checked exactly")
     br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
     br.add_argument("target", nargs="?", default="prerelease2")
     br.add_argument("--repo", default=os.getcwd(), help="the checkout to look at / merge in")

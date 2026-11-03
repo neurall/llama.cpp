@@ -1,0 +1,20 @@
+name,model,n,test,tokens,args,extra
+ca-glm-auto,glm,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0",--canary 16k --ctx 24576 --nothink
+ca-glm-stream,glm,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--canary 16k --ctx 24576 --nothink
+ca-glm-mix,glm,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--canary 16k --ctx 24576 --nothink
+ca-glm-chain,glm,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--canary 16k --ctx 24576 --nothink
+ca-glm-dec,glm,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=dec",--canary 1k --ctx 4096 --nothink
+ca-mimo-auto,mimo,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0",--canary 16k --ctx 24576 --nothink
+ca-mimo-stream,mimo,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--canary 16k --ctx 24576 --nothink
+ca-mimo-mix,mimo,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--canary 16k --ctx 24576 --nothink
+ca-mimo-chain,mimo,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--canary 16k --ctx 24576 --nothink
+ca-mimo-dec,mimo,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=dec",--canary 1k --ctx 4096 --nothink
+ca-ds-auto,ds,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0",--canary 15k --ctx 20480 --nothink
+ca-ds-stream,ds,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--canary 15k --ctx 20480 --nothink
+ca-ds-mix,ds,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--canary 15k --ctx 20480 --nothink
+ca-ds-chain,ds,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--canary 15k --ctx 20480 --nothink
+ca-ds-dec,ds,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=dec",--canary 1k --ctx 4096 --nothink
+ca-qn_iq4xs-auto,qn_iq4xs,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0",--canary 24k --ctx 36864 --nothink
+ca-qn_iq4xs-stream,qn_iq4xs,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--canary 24k --ctx 36864 --nothink
+ca-qn_iq4xs-mix,qn_iq4xs,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--canary 24k --ctx 36864 --nothink
+ca-qn_iq4xs-chain,qn_iq4xs,1,pf128k,512,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--canary 24k --ctx 36864 --nothink
