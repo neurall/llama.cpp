@@ -1000,6 +1000,39 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
 // the copy sleeps until then; the copy itself then runs at full speed. The average rate over many copies (the expert uploads of a prefill pass are thousands of
 // copies of a few MB) is the cap; a single large copy still finishes at wire speed, so the cap is not exact for one-off transfers. The startup upload probe in
 // llama.cpp goes through the same path (ggml_backend_tensor_set), so the automatic selection sees the capped bandwidth like a real narrow link.
+// GGML_CUDA_UPCHECK=1 (development): every host-to-device copy of 16 KiB or more says whether its source is pinned (registered) memory. The first copy from pageable memory per tensor name
+// (layer numbers squashed) is logged at once, the totals at exit and at every 2 GiB: the answer to "do all our GPU uploads go from pinned memory".
+static void ggml_cuda_upcheck(const void * src, size_t size, const char * name) {
+    static const bool on = getenv("GGML_CUDA_UPCHECK") != nullptr;
+    if (!on || size < 16384) { return; }
+    struct upcheck_stats {
+        std::mutex mtx;
+        std::map<std::string, std::array<uint64_t, 4>> by;   // pinned bytes, pageable bytes, pinned copies, pageable copies
+        uint64_t pin = 0, page = 0, next = 2ull << 30;
+        void print(const char * when) {
+            fprintf(stderr, "upcheck %s: %.2f GiB from pinned memory, %.2f GiB from pageable memory\n", when, pin / 1073741824.0, page / 1073741824.0);
+            for (const auto & kv : by) {
+                if (kv.second[1] > 0) { fprintf(stderr, "upcheck   PAGEABLE %-40s %8.1f MiB in %" PRIu64 " copies (pinned: %.1f MiB in %" PRIu64 ")\n", kv.first.c_str(), kv.second[1] / 1048576.0, kv.second[3], kv.second[0] / 1048576.0, kv.second[2]); }
+            }
+        }
+        ~upcheck_stats() { print("at exit"); }
+    };
+    static upcheck_stats S;
+    cudaPointerAttributes a;
+    bool pinned = false;
+    if (cudaPointerGetAttributes(&a, src) == cudaSuccess) { pinned = a.type == cudaMemoryTypeHost; } else { (void) cudaGetLastError(); }
+    std::string key = name ? name : "?";
+    for (char & c : key) { if (c >= '0' && c <= '9') { c = '#'; } }
+    key.erase(std::unique(key.begin(), key.end(), [](char x, char y) { return x == '#' && y == '#'; }), key.end());
+    std::lock_guard<std::mutex> lk(S.mtx);
+    auto & e = S.by[key];
+    (pinned ? S.pin : S.page) += size;
+    e[pinned ? 0 : 1] += size;
+    e[pinned ? 2 : 3]++;
+    if (!pinned && e[3] == 1) { fprintf(stderr, "upcheck: first copy from PAGEABLE memory: '%s' %.2f MiB\n", key.c_str(), size / 1048576.0); }
+    if (S.pin + S.page >= S.next) { S.next += 2ull << 30; S.print("so far"); }
+}
+
 static void ggml_cuda_h2d_pace(int device, size_t size) {
     static const std::vector<double> caps = [] {
         std::vector<double> c(GGML_CUDA_MAX_DEVICES, 0.0);
@@ -1070,6 +1103,7 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
 
     ggml_cuda_set_device(ctx->device);
     ggml_cuda_h2d_pace(ctx->device, size);
+    ggml_cuda_upcheck(data, size, tensor->name);
     ggml_cuda_dma(cudaStreamPerThread, ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
         CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     });
@@ -1113,6 +1147,7 @@ static void ggml_backend_cuda_buffer_set_tensor_n(ggml_backend_buffer_t buffer, 
         if (sizes[i] == 0) {
             continue;
         }
+        ggml_cuda_upcheck(data[i], sizes[i], tensors[i]->name);
         CUDA_CHECK(cudaMemcpyAsync(
             (char *) tensors[i]->data + offsets[i],
             data[i],
@@ -4154,6 +4189,7 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
     ggml_cuda_h2d_pace(cuda_ctx->device, size);
+    ggml_cuda_upcheck(data, size, tensor->name);
     ggml_cuda_dma(cuda_ctx->stream(), cuda_ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
         CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
     });
@@ -8507,6 +8543,7 @@ static void ggml_backend_cuda_set_tensor_nosync_fork(ggml_tensor * tensor, const
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buf->context;
     ggml_cuda_set_device(ctx->device);
     ggml_cuda_h2d_pace(ctx->device, size);
+    ggml_cuda_upcheck(data, size, tensor->name);
     ggml_cuda_dma(cudaStreamPerThread, ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
         CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     });
