@@ -2982,23 +2982,20 @@ def cmd_gen(a):
         if a.show: print(p["text"], flush=True)
 
 
-def prep_model(keep_out=False):
-    """Drop other models' pages from RAM first (fadvise, no root) so they are not evicted during the run, and read this model
-    into the page cache when it fits in RAM (bigger than RAM: the throwaway run before each measured run caches the used experts).
-    keep_out (a cell with --moe pin-miss): that engine reads past the page cache and the cell measures the SSD, so this model leaves the page cache too and no dd runs."""
+def prep_model():
+    """Every model's pages leave RAM before a cell, this model's too (fadvise, no root), so run 1 gets what a start after a reboot gets, whatever ran before. A kept server keeps its model's pages:
+    that cell asked for a warm start. Never read the model in here: a dd of every model under 85% of RAM stood here until 2026-11-03, it made run 1's page-cache reads look like RAM
+    and load times look short, stock's too. Rows before that date are warm on those models (user: "dd was cheating")."""
     import glob
     cur = set(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", MODEL)))
-    for f in (glob.glob(os.path.join(MODELS_DIR, "**", "*.gguf"), recursive=True) if MODELS_DIR else []) + (sorted(cur) if keep_out else []):
-        if keep_out or f not in cur:
-            try:
-                fd = os.open(f, os.O_RDONLY)
-                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-                os.close(fd)
-            except OSError:
-                pass
-    size = sum(os.path.getsize(f) for f in cur)
-    if not keep_out and size < 0.85 * os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"):
-        subprocess.run(["dd", f"if={MODEL}", "of=/dev/null", "bs=16M"], stderr=subprocess.DEVNULL)
+    drop = set(glob.glob(os.path.join(MODELS_DIR, "**", "*.gguf"), recursive=True) if MODELS_DIR else [])
+    for f in (drop - cur if kept_get() else drop | cur):
+        try:
+            fd = os.open(f, os.O_RDONLY)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.close(fd)
+        except OSError:
+            pass
 
 
 _PL = {}
@@ -3934,7 +3931,7 @@ def cmd_run(a):
     extra = dict(kv.split("=", 1) for kv in a.env)
     global CAMPAIGN
     CAMPAIGN = a.campaign or ""
-    prep_model("pin-miss" in str(a.args))
+    prep_model()
     for i in range(a.n):
         for build in [resolve_build(x) for x in a.builds]:
             run_cell(build.rstrip("/"), a.test, extra, a.plain, a.args, a.bare, a.note, warm=warm_wanted(a.warm, a.no_warm, MODEL))
@@ -4886,7 +4883,7 @@ def cmd_bench(a):
     for model in [fcfg.model(x) for x in a.models.split(",")]:   # an alias of models.ini (q36) or a path
         MODEL = model
         if not m:
-            prep_model(any("pin-miss" in str(v) for v in variants.values()))
+            prep_model()
         cells = [(build, name, (stock_variants.get(name, variants[names[0]] if name == "default" and len(names) == 1 and not stock_variants else "") if build.startswith("stock") else variants[name]))   # a stock cell takes the cell's one --variant text too (run -a "-ub 17600 -b 17600" was dropped: the server ran with the defaults)
                  for build in [resolve_build(x) for x in a.builds.split(",")] for name in (list(dict.fromkeys(["default"] + list(stock_variants))) if build.startswith("stock") else names)]
         # a variant may set environment variables: "env:KEY=VALUE" words (e.g. lru='env:LLAMA_MOE_CACHE_POLICY=lru'), the rest are server args
