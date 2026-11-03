@@ -7532,8 +7532,10 @@ static void pin_miss_start(moe_cache * mc) {
 #ifndef _WIN32
     // --moe pin-miss-trap=1, development: nothing should read the mapped expert tensors any more, so their pages lose all access and a reader crashes with its stack instead of silently faulting from
     // the SSD (a t->data read compiles without the mapping's header, so taking that out would not find it). Pages a tensor shares with its neighbours in the file stay readable.
-    if (const char * tr = moe_opt("pin-miss-trap"); tr && tr[0] == '1') {
+    // =2: the whole file leaves the address space, dense tensors' part too: no gguf in /proc/PID/maps. DeepSeek's Engram table is read through its mapping, so not on that model.
+    if (const char * tr = moe_opt("pin-miss-trap"); tr && (tr[0] == '1' || tr[0] == '2')) {
         size_t trapped = 0;
+        std::map<char *, size_t> files;
         for (const layer_state & ls : mc->layers) {
             const ggml_tensor * ts[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
             for (int k = 0; k < 3; ++k) {
@@ -7541,13 +7543,19 @@ static void pin_miss_start(moe_cache * mc) {
                 const uintptr_t beg = ((uintptr_t) ts[k]->data + 4095) & ~(uintptr_t) 4095;
                 const uintptr_t end = ((uintptr_t) ts[k]->data + ggml_nbytes(ts[k])) & ~(uintptr_t) 4095;
                 if (end > beg && mprotect((void *) beg, end - beg, PROT_NONE) == 0) { trapped += end - beg; }
+                struct stat st;
+                if (tr[0] == '2' && fstat(ls.src_fd[k], &st) == 0) { files[(char *) ts[k]->data - ls.src_offs[k]] = (size_t) st.st_size; }
             }
+        }
+        for (const auto & f : files) {
+            GGML_ASSERT(((uintptr_t) f.first & 4095) == 0);   // the loader maps a whole file from its start
+            if (mmap(f.first, (f.second + 4095) & ~(size_t) 4095, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0) == MAP_FAILED) { LLAMA_LOG_WARN("moe-cache: pin-miss-trap: file not unmapped: %s\n", strerror(errno)); }
         }
         struct sigaction sa = {};
         sa.sa_sigaction = pin_miss_trap_signal;
         sa.sa_flags = SA_SIGINFO;
         sigaction(SIGSEGV, &sa, nullptr);
-        LLAMA_LOG_WARN("moe-cache: pin-miss-trap: %.1f GiB of mapped expert tensors now crash their reader\n", trapped / 1073741824.0);
+        LLAMA_LOG_WARN("moe-cache: pin-miss-trap: %.1f GiB of mapped expert tensors now crash their reader, %zu whole files unmapped\n", trapped / 1073741824.0, files.size());
     }
 #endif
     LLAMA_LOG_WARN("moe-cache: pin-miss: %zu slice sizes, one pinned buffer each: %s = %.1f GiB in %.1f s (%.1f GiB of RAM available, %.1f GiB kept free; %.1f GiB of expert weights in %zu slices), %d readers, CPU branch %s, %s\n",
