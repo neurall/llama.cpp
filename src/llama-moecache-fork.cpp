@@ -93,6 +93,11 @@ static uint64_t g_split_epoch = 0, g_split_epoch_built = 0;
 static bool     g_split_enabled = false; // the compute buffers were reserved for a split (decided before the first reserve)
 static double   g_split_speedup = 0.0;   // the transfer speedup that decision was judged by (the per-prompt decision line)
 static std::vector<std::pair<ggml_backend_dev_t, double>> g_early_gbs; // early link probe, until the cache's own probe
+// The rate the model file was read at while the pin loader filled RAM (GB/s, 0 = no pin loader ran): the start of the stream's SSD cost until a stream pass has measured its own (llama_moe_cache_pp_decide_fork)
+static std::atomic<double> g_load_read_gbs{ 0.0 };
+// The server is warm once its first filling prompt call or its first request is over (user 2026-11-03: "ignore lower than expected vals as those are first cold outliers or start measuring after n tokens when warm"):
+// until then the CPU phases do not feed the CPU rate, the start-up probe's value stands (DeepSeek's first phases read mapped experts cold: 1.8 GB/s against 31.6 probed, then 7.9, then 19)
+static std::atomic<bool> g_warm{ false };
 
 void        llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
 std::string llama_moe_stats_io_fork(int who);                                 // what the disk, the memory and the CPU did since this caller's last call
@@ -713,6 +718,7 @@ static void pin_prefetch_run(moe_cache * mc, size_t budget) {
             posix_fadvise(ls.src_fd[k], (off_t) ls.src_offs[k], (off_t) nb, POSIX_FADV_DONTNEED);   // and the page cache behind them
 #endif
             used += nb; ++n_pinned;
+            g_load_read_gbs.store((double) used / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3);
             if (used >= next_log) {
                 LLAMA_LOG_WARN("moe-cache: pin-lazy: %.1f of %.1f GiB pinned (%d tensors, %.1f s, %.2f GiB/s)\n", used / 1073741824.0, std::min(budget, total) / 1073741824.0,
                         n_pinned, (ggml_time_us() - t0) / 1e6, used / 1073741824.0 / std::max(1e-3, (ggml_time_us() - t0) / 1e6));
@@ -870,7 +876,7 @@ struct knobs_t {
     double slow_stay = 0;     // tier min stay (steps); off: never won in A/B
     double margin    = -1;  // fixed pay-back margin; -1: 0 (deterministic mode 4); -2: from upload timing (CPU GB/s / link GB/s)
     double budget    = -1;  // fixed swaps per step, -1: from upload timing
-    double cpu_gbs   = 38;  // CPU read rate alone (ddrbw, 6 threads, DDR4-3200 ECC); pay-back margin, DDR demand before measured
+    double cpu_gbs   = 0;   // CPU read rate alone, 0 = not measured yet: resource_probe sets it at the start, the CPU phases refine it live (cpu_gbs_meas); --moe cpu-ram-gbs fixes it for a test
     double link      = 1;   // pay-back margin per upload link (0: one margin from the average upload)
     double gate      = 0;   // uploads wait (up to GATE_MAX_US per tensor) while the CPU computes uncached experts: no DDR4 contention
     double gate_max_us = -1;  // max wait for DDR room per tensor copy; -1: the measured mean layer time
@@ -885,7 +891,7 @@ struct knobs_t {
     double wait        = 1;    // the step waits for queued cache swaps (0: never; finished uploads are published at splits)
     double chunk_kb    = -1;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
     double margin_mb   = 0;     // VRAM kept free per GPU after the cache is sized; 0: 384 (the engine sets it from the measured run-time growth)
-    double ddr_gbs     = 44;   // fork/bench/ddrbw: CPU + both DMAs together peak at 44-45 GB/s (DDR4-3200 ECC, 2 ch); GATE=3: an upload starts only while DDR demand + its link rate stays under this
+    double ddr_gbs     = 0;    // CPU + the DMAs together at their peak, 0 = not measured yet (resource_probe sets it); GATE=3: an upload starts only while DDR demand + its link rate stays under this
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
     double slotkeep  = 0;   // a prediction may only replace a stream slot holding a lower-scored one of this step
@@ -972,6 +978,10 @@ knobs_t & knobs() {
     }();
     return k;
 }
+// The CPU's read rate now (user 2026-11-03: "in any circumstance a constant ... people have each different hw"): the live average of its phases, else the start-up probe's; 0 while neither exists,
+// and no decision may lean on a number then
+static double cpu_gbs_now(const moe_cache * mc) { return mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs; }
+
 
 // GPU_SHAPE knob: flips the CPU backend's GPU-shaped math (quants.c, ggml_cpu_set_gpu_shape). Between decode steps, so one graph compute never mixes both.
 static void apply_gpu_shape(double v) {
@@ -1772,6 +1782,7 @@ void llama_moe_observe_save() {
     }
 }
 
+static double early_link_gbs(ggml_backend_dev_t d);   // pinned host to device GB/s, measured once per process (defined below, outside the anonymous namespace resource_probe sits in)
 namespace {
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy);
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
@@ -2397,7 +2408,7 @@ void moe_phase_cb(int busy, size_t bytes, void * ud) {
         mc->cpu_busy = true;
         mc->cpu_bytes += (int64_t) bytes;
         mc->cpu_bytes_phase = (int64_t) bytes;
-        mc->cpu_mbs_on = (int64_t) ((mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs) * 1e3);
+        mc->cpu_mbs_on = (int64_t) (cpu_gbs_now(mc) * 1e3);
         mc->ddr_mbs += mc->cpu_mbs_on;
     } else {
         mc->cpu_busy = false;
@@ -2405,7 +2416,7 @@ void moe_phase_cb(int busy, size_t bytes, void * ud) {
         mc->busy_n++;
         mc->ddr_mbs -= mc->cpu_mbs_on;
         const int64_t dt = t - mc->busy_t0;
-        if (mc->cpu_bytes_phase > 0 && dt > 0) {
+        if (mc->cpu_bytes_phase > 0 && dt > 0 && g_warm.load(std::memory_order_relaxed)) {
             const double gbs = (double) mc->cpu_bytes_phase / dt / 1e3;
             mc->cpu_gbs_meas = mc->cpu_gbs_meas > 0 ? 0.95*mc->cpu_gbs_meas + 0.05*gbs : gbs;
         }
@@ -2783,7 +2794,8 @@ void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
     const int k = ls.link;
     mc->ev_n[k]++;
     mc->ev_hits[k]    += ls.up_hits[e];
-    const double cpu_us = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]) / (knobs().cpu_gbs * 1e3);
+    const double cg = cpu_gbs_now(mc);
+    const double cpu_us = cg > 0.0 ? (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]) / (cg * 1e3) : 0.0;
     mc->ev_paid[k]    += ls.up_hits[e] * cpu_us >= ls.up_cost[e];
     mc->pr[13]        += !(ls.up_hits[e] * cpu_us >= ls.up_cost[e]);
     mc->ev_life_us[k] += (double) (ggml_time_us() - ls.up_t[e]);
@@ -3258,6 +3270,10 @@ void resource_probe(moe_cache * mc) {
     if (!moe_opt("ram-ceiling-gbs")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
     // the DDR budget gate (GATE=3) needs the budget just measured: on by default then (GLM short chat +6%, MiMo +16% in a pair); the tuner can turn it off
     if (!user_knobs().count("UPLOAD_WAIT")) { knobs().gate = 3; }
+    // The link rates are the early benchmark's (early_link_gbs: measured once per process, the fastest of four copies), shared, not measured a second time; the loop above only had them alone for the CPU/links mix
+    for (int k = 0; k < mc->n_links; ++k) {
+        if (const double e = early_link_gbs(mc->link_dev[k]); e > 0.0) { link_alone[k] = e; }
+    }
     std::string links, rs;
     for (int k = 0; k < mc->n_links; ++k) {
         mc->gbs_link[k] = link_alone[k];
@@ -6955,6 +6971,7 @@ void llama_tokheat_dump_fork(void);   // llama-context.cpp: --moe tokheat=DIR
 
 void llama_moe_request_end_fork(void) {
     llama_moe_stats_log_fork("REQ", "end");
+    g_warm.store(true);
     if (g_pjit_layers.load() > 0) {   // prompt calls of this request: what the JIT saw and did (uploads against CPU-computed misses)
         const uint64_t ms = g_pjit_miss.exchange(0), up = g_pjit_up.exchange(0), ly = g_pjit_layers.exchange(0);
         std::string pl;
@@ -8682,8 +8699,8 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         return;
     }
     const double S   = (double) (pub->up_src->nb[2] + pub->gate_src->nb[2] + pub->down_src->nb[2]);
-    const double rc  = (mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs) * 1e3; // bytes/us
-    const double rcc = std::min(rc, std::max(0.0, knobs().ddr_gbs * 1e3 - rl * 1e3));
+    const double rc  = cpu_gbs_now(mc) * 1e3; // bytes/us, 0 = not measured: nothing is computed on the CPU then
+    const double rcc = knobs().ddr_gbs > 0.0 ? std::min(rc, std::max(0.0, knobs().ddr_gbs * 1e3 - rl * 1e3)) : rc;   // the RAM budget, when it is known
     const double rlb = rl * 1e3;
     const int    m   = (int) miss.size();
     // the experts with the most tokens are the dearest on the CPU (its time grows with them, an upload's does not): they are uploaded first
@@ -8702,7 +8719,16 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // --moe jit-all=1 (user 2026-10-29: "no point until you achieve fully deterministic moe replay"): every miss of this token goes to the GPU, none to
     // the CPU: the CPU's float results differ from the GPU's, and greedy runs of one prompt diverged after a median 5 tokens when the CPU computed some
     static const bool jit_all = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();
-    if (jit_all) { kb = m; }
+    if (jit_all || rc <= 0.0) { kb = m; }
+    {   // stats.log SWT: the call's misses switch between the CPU, a mix and uploads (user 2026-11-02: "in stats.log log switching from missed moes from cpu to uploads"); one line per switch, not per layer
+        static std::atomic<int> last_mode[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };   // per link: the cards' pass sizes differ, the rule can flip on one and not on the other
+        const int mode = kb == 0 ? 0 : kb == m ? 2 : 1;
+        if (last_mode[lk & 7].exchange(mode) != mode) {
+            static const char * const nm[3] = { "CPU", "CPU and uploads", "uploads" };
+            llama_moe_stats_log_fork("SWT", format("%s call, link %d (%.1f GB/s), layer %d: misses go to %s (%d of %d uploaded, %d tokens; layer takes %.0f ms with them, %.0f ms all on the CPU, %.0f ms all uploaded)",
+                    prompt ? "prompt" : "decode", lk, rl, pub->il, nm[mode], kb, m, (int) ids->ne[1], T(kb) / 1e3, T(0) / 1e3, T(m) / 1e3).c_str());
+        }
+    }
     if (kb == 0) {
         return;
     }
@@ -9282,9 +9308,13 @@ static double early_link_gbs(ggml_backend_dev_t d) {
         t.ne[0] = (int64_t) n; t.ne[1] = t.ne[2] = t.ne[3] = 1; t.nb[0] = 1; t.nb[1] = t.nb[2] = t.nb[3] = n;
         const void * src = ggml_backend_buffer_get_base(hbuf);
         ggml_backend_tensor_set(&t, src, 0, n); // warm-up
-        const int64_t t0 = ggml_time_us();
-        for (int r = 0; r < 4; ++r) { ggml_backend_tensor_set(&t, src, 0, n); }
-        gbs = 4.0 * n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3;
+        // each copy timed alone, the fastest kept (user 2026-11-03: "upload moes sized data to gpu 3 times and pick and keep in mem fastest"): contention and clock dips only lower a reading, and the one
+        // value serves the placement, the prefill split and every rate the planner calculates with
+        for (int r = 0; r < 4; ++r) {
+            const int64_t t0 = ggml_time_us();
+            ggml_backend_tensor_set(&t, src, 0, n);
+            gbs = std::max(gbs, (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3);
+        }
     }
     if (hbuf) { ggml_backend_buffer_free(hbuf); }
     if (dbuf) { ggml_backend_buffer_free(dbuf); }
@@ -10013,7 +10043,7 @@ void llama_moe_cache_step_fork() {
 
     // a swap must pay for itself: over the count's horizon the candidate saves
     // (count_c - count_v) CPU expert evals of t_cpu each, and costs one upload
-    const double cpu_gbs = knobs().cpu_gbs;
+    const double cpu_gbs = cpu_gbs_now(mc);   // the live rate: the pay-back margin follows the CPU as it is now
     // per upload link: a slow (x4) link pays more per swap, so its experts are only replaced by clearly hotter ones
     uint32_t margin = 1;
     int link_margin[MAX_LINKS] = {};
@@ -10607,7 +10637,7 @@ int64_t llama_moe_cache_max_batch_cap_fork() {
         for (int k = 0; k < g_cache->n_links; ++k) {
             if (g_cache->gbs_link[k] > 0.0 && (r <= 0.0 || g_cache->gbs_link[k] < r)) { r = g_cache->gbs_link[k]; }
         }
-        dec = r > 0.0 ? g_mb_auto.load(std::memory_order_relaxed) * (int64_t) std::ceil(knobs().cpu_gbs / r) : 0;
+        dec = r > 0.0 && knobs().cpu_gbs > 0.0 ? g_mb_auto.load(std::memory_order_relaxed) * (int64_t) std::ceil(knobs().cpu_gbs / r) : 0;
     }
     return std::max({ g_mb_auto.load(std::memory_order_relaxed), mb_fixed(), dec });
 }
@@ -10792,6 +10822,30 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
 // Measured on MiMo, 4k prompt, one x16: 8 passes with 6 slots 127 t/s, 2 passes with 2 slots 471, one pass without slots 544: one pass wins when the upload
 // dominates; Qwen3.8-Flash-Next at 8k (compute 6.4 s against 1.3 s of upload) wins with two staged passes. --moe pass-plan=0: equal passes as before.
 static std::mutex g_pp_mu;
+// What a stream pass reads from the SSD (user 2026-11-03: "count the stream's compute and SSD read in its calculated time, using the measured rates"). DeepSeek (232 GiB on 125 GiB of RAM) streamed
+// 30 to 49 GB through the mapping in a 277-token call, 13.6 to 17.5 s at 2.1 to 2.9 GB/s, where the upload over the link alone said 4.5 s. g_pp_ssd_m: the bytes of the experts this call's stream
+// takes from tensors that are still mapped (set where the call is decided, used where it ends); g_pp_ssd_gbs: the mapped bytes per second the stream passes got through (read_bytes over 1 GiB says the SSD was read at all).
+static double              g_pp_ssd_m   = 0.0;
+static double              g_pp_ssd_gbs = 0.0;
+static unsigned long long  g_pp_rb0     = 0;
+// The decode chain's calculated time against what it took (user 2026-11-03: "it must be measured live as perf fluctuates and the cpu path can become slower ... when we remove mmap this algo will autoadapt"):
+// g_pp_de0 the calculation of the call being decided, g_pp_dec_ratio the moving average of took / calculated over the decode-chain calls so far (0 = none yet, read as 1). A faster memory path under the
+// CPU makes the ratio fall and the decode chain reach further, a slower one the other way.
+static double              g_pp_de0       = 0.0;
+static double              g_pp_dec_ratio = 0.0;
+static unsigned long long pp_self_read_bytes() {
+#ifdef __linux__
+    unsigned long long v = 0;
+    if (FILE * f = fopen("/proc/self/io", "r")) {
+        char line[128];
+        while (fgets(line, sizeof(line), f)) { if (sscanf(line, "read_bytes: %llu", &v) == 1) { break; } }
+        fclose(f);
+    }
+    return v;
+#else
+    return 0;
+#endif
+}
 static double     g_pp_c_us  = 0.0;   // compute of one prompt token on the offload card in a pass (us), 0 = not measured yet
 static void pp_c_us_stored();   // an earlier start's value until this start measured its own (below)
 static uint32_t   g_pp_n     = 0;     // the last planned prompt: its tokens, passes, pass size and upload estimate (to read its measurement)
@@ -11303,6 +11357,15 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             path = PP_K;
             for (double m = g_pp_k_m; m > 1.0; m /= 2.0) { ++path; }
         }
+        // the SSD rate of the stream: the bytes the process read from storage over this call (only a stream pass, which reads the mapped experts; the chains read few)
+        if (g_pp_ssd_m > 0.0 && path != PP_DEC && path != PP_CHAIN && path != PP_DENSE) {
+            const unsigned long long rb = pp_self_read_bytes();
+            if (rb > g_pp_rb0 + (1ull << 30)) {
+                const double g = g_pp_ssd_m / ((double) us * 1e3);   // mapped bytes through the pass per second: the page cache holds a part of them (DeepSeek 2026-11-03: 30 GB read of 110 GB mapped), so the bytes read alone would over-count
+                g_pp_ssd_gbs = g_pp_ssd_gbs > 0.0 ? 0.7 * g_pp_ssd_gbs + 0.3 * g : g;
+            }
+        }
+        g_pp_ssd_m = 0.0;
         // stats.log: what this call took against the best known at its size, read before its own measurement goes in. The first run of a path that loses counts against the budget of later tries (pp_try_ok)
         {
             const double n1 = (double) n_tokens / P, took = (double) us / P, was = pp_took_us(path, n1);
@@ -11328,11 +11391,16 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         const bool fills = !mc->layers.empty() && (double) n_tokens / P * (double) mc->n_expert_used >= (double) mc->layers[0].expert_slot.size();
         if (cold && fills) {
             cold = false;
+            g_warm.store(true);
         } else if (path == PP_DEC && cold_dec) {
             cold_dec = false;
         } else {
             auto & t = g_pp_took[path][pp_bucket((double) n_tokens / P)];
             t.n = (double) n_tokens / P; t.us = (double) us / P;
+            if (path == PP_DEC && g_pp_de0 > 0.0) {   // the first call of the path is not counted above (it pays the preload's uploads): neither here
+                const double q = ((double) us / P) / g_pp_de0;
+                g_pp_dec_ratio = g_pp_dec_ratio > 0.0 ? 0.7 * g_pp_dec_ratio + 0.3 * q : q;
+            }
         }
     }
     // a chain pass neither: its uploads add to its compute, as one token's compute it told the split planner one card takes 1288 ms where it streams in 500
@@ -11421,12 +11489,15 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     struct cost { double l1p, us, cu; };   // log(1 - its share of the picks), its upload over its layer's link, the CPU's time for one token routed to it
     std::vector<cost> v;
     double U = 0.0, Um = 0.0;   // the stream's upload, without and with the prompt mix
+    double M = 0.0;             // of the stream's bytes, the ones read from the SSD: tensors still on the mapping
     int n_expert = 0;
     bool has_slower = false;
+    bool cpu_known = false;   // the CPU's read rate is measured: without it the decode chain's time cannot be calculated, and no prompt call takes it
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
         const double r0 = mc->gbs_link[0] * 1e3;   // bytes / us
-        const double rc = (mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs) * 1e3;   // as llama_moe_cache_jit_fork
+        const double rc = cpu_gbs_now(mc) * 1e3;   // as llama_moe_cache_jit_fork
+        cpu_known = rc > 0.0;
         for (const auto & l : mc->layers) {
             if (!l.pub.up_src || !l.pub.gate_src || !l.pub.down_src) {
                 continue;
@@ -11435,14 +11506,21 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             has_slower = has_slower || l.link > 0;
             const double S  = (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
             const double rl = mc->gbs_link[l.link] * 1e3;
+            double Sm = 0.0;   // one expert of this layer, as far as its tensors are not pinned (the mapping reads them from the file)
+            for (int k = 0; k < 3; ++k) {
+                const ggml_tensor * t = k == 0 ? l.pub.up_src : k == 1 ? l.pub.gate_src : l.pub.down_src;
+                if (l.src_fd[k] < 0 || !t->buffer) { continue; }
+                const char * b = (const char *) ggml_backend_buffer_get_base(t->buffer);
+                if ((const char *) t->data >= b && (const char *) t->data < b + ggml_backend_buffer_get_size(t->buffer)) { Sm += (double) t->nb[2]; }
+            }
             double all = (double) l.glob_count.size();
             for (const auto x : l.glob_count) { all += (double) x; }
             for (size_t e = 0; e < l.expert_slot.size(); ++e) {
                 const bool on_card = l.expert_slot[e] >= 0;
-                if (r0 > 0 && !(on_card && l.link == 0)) { U += S / r0; }   // the fastest link's card holds it: copied there, else it streams
+                if (r0 > 0 && !(on_card && l.link == 0)) { U += S / r0; M += Sm; }   // the fastest link's card holds it: copied there, else it streams
                 if (r0 > 0 && !on_card) { Um += S / r0; }                    // the mix: computed on its home card if a card holds it
                 if (!on_card && rl > 0) {
-                    v.push_back({ std::log1p(-std::min(1.0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all)), S / rl, S / rc });
+                    v.push_back({ std::log1p(-std::min(1.0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all)), S / rl, rc > 0.0 ? S / rc : 0.0 });
                 }
             }
         }
@@ -11471,14 +11549,22 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // prompts: 2438 / 2300, 1824 / 2000, 2318 / 2100, 1576 / 1600, 6727 / 7000, 2669 / 2700 ms calculated / taken; a cold DeepSeek with its CPU rate at 1.9 GB/s among them). The stream's time is its
     // upload U, the most it can take: what the decode chain must beat. Both follow the rates, so the size where they meet moves with the link and the RAM, and comes out as a number: U / time per token
     // (user 2026-11-02: "we just need to find calc max threshol token count to do misses cpu higher upload and gpu"). What was measured at this size counts first. Then the prompt chain if its uploads can win.
-    const double cap = (double) llama_moe_cache_max_batch_cap_fork();
     const double td = pp_took_us(PP_DEC, n), to = pp_other_us(n, PP_DEC);
-    const double de = td > 0.0 ? td : up + cpu > 0.0 ? up * cpu / (up + cpu) : 0.0, ot = to > 0.0 ? to : U;   // the decode chain against the fastest other path, measured or calculated
+    // The stream reads the experts no card holds: over the link, and from the SSD where their tensors are still mapped. Both run side by side (the reads fill the staging slots the link empties), so the
+    // slower one is its time; the SSD's rate is what the stream passes read at so far, none before the first one.
+    const double ssd_rate = g_pp_ssd_gbs > 0.0 ? g_pp_ssd_gbs : g_load_read_gbs.load();   // a stream pass's own rate, until one ran: the loader's (user 2026-11-03: a short first prompt should not default to the stream)
+    const double Ts = ssd_rate > 0.0 ? std::max(U, M / (ssd_rate * 1e3)) : U;
+    g_pp_ssd_m = M;
+    g_pp_rb0 = pp_self_read_bytes();
+    const double de0 = up + cpu > 0.0 ? up * cpu / (up + cpu) : 0.0;
+    g_pp_de0 = de0;
+    const double de = td > 0.0 ? td : de0 * (g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0), ot = to > 0.0 ? to : Ts;   // the decode chain against the fastest other path, measured or calculated
     // shortcut: no fixed part per token in the calculated time, a cache that holds everything reads as 0 ms and the size runs the decode chain once; add it when such a first call shows up in rows
-    const double dec_max = de > 0.0 ? n * ot / de : cap;
-    const bool dec_ok = n <= cap && n <= dec_max;
+    // no cap beside it (user 2026-11-03, DeepSeek: a node budget of 384 refused the chain at 409 tokens where it was calculated 2.7 times faster): the crossover decides, up to the pass limit
+    const double dec_max = de > 0.0 ? n * ot / de : (double) ub_max;
+    const bool dec_ok = cpu_known && n <= dec_max;
     const bool chain = force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
-    const bool dec = force ? strcmp(force, "dec") == 0 && n <= cap : dec_ok && !chain;
+    const bool dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
     if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
     g_pp_dec = dec;
     g_pp_mb = chain || dec ? ub_max : 0;
@@ -11503,9 +11589,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     }
     std::string links;
     for (int k = 0; k < mc->n_links; ++k) { links += format("%s%.1f", k ? "/" : "", mc->gbs_link[k]); }
-    const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s)",
-            n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, std::min(dec_max, cap), de / 1e3, ot / 1e3, td / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
-            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs);
+    const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s; stream reads %.1f GB from the SSD at %.2f GB/s; decode chain ran at %.2f x its calculated time)",
+            n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, std::min(dec_max, (double) ub_max), de / 1e3, ot / 1e3, td / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
+            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, g_pp_ssd_gbs, g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0);
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
     llama_moe_stats_io_fork(0);   // the reads of this call start counting here

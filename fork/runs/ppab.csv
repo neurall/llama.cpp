@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+ab-mimo-t-old,mimo,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/ab-mimo-t-old.ini",--ctx 4096
+ab-mimo-t-new,mimo,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/ab-mimo-t-new.ini,log=wk",--ctx 4096

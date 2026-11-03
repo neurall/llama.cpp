@@ -5015,7 +5015,7 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     // activation/down/concat per 4-token chunk of batches up to max_batch. The
     // scheduler is sized before the cache exists, so budget for it up front.
     if (cparams.moe_cache) {
-        const uint32_t nt = (uint32_t) std::min<int64_t>(n_tokens, llama_moe_cache_max_batch_cap_fork());
+        const uint32_t nt = n_tokens;   // the decode chain may take a prompt call as far as its calculated crossover (llama_moe_cache_pp_decide_fork), up to the pass limit: no smaller budget
         res += model.hparams.n_layer() * (16u + 12u * ((nt + 3) / 4));
     }
 

@@ -17,3 +17,4 @@ dc-ds-s300,ds,2,300in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/dc-ds-s
 dc-ds-s500,ds,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/dc-ds-s500.ini,log=wk",
 df-ds-s200,ds,2,200in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/df-ds-s200.ini,log=wk,pp-path=dec",
 fs-ds-s200,ds,2,200in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/fs-ds-s200.ini,log=wk,pp-path=stream",
+np-glm-s100,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/np-glm-s100.ini,log=wk,probe=0",

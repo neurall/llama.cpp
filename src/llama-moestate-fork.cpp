@@ -492,7 +492,7 @@ void llama_moe_stats_log_fork(const char * kind, const char * text) {
             f = fopen(p, "a");
             if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
             else if (ftell(f) == 0 && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0) {
-                fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, KVZ KV zone, DEW decode window, STA engine status, GPU cards, HST host\n");
+                fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, SWT misses switch between CPU and uploads, KVZ KV zone, DEW decode window, STA engine status, GPU cards, HST host\n");
             }
         }
     }
