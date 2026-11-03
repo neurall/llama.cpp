@@ -1425,6 +1425,16 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         return nullptr;
     }
 
+    // fork: --moe pin-miss: an expert tensor kept on the host is mapped and not read: its router has its slices read into pinned blocks (llama-moecache-fork.cpp). A lazy tensor is that, whatever the load
+    // mode, and the memory-fit pass (no_alloc) gets the same answer. Experts the placement keeps on a card are read as ever.
+    if (!is_lazy && llama_moe_get_opt("pin-miss") && tn.str().find("_exps.") != std::string::npos && ggml_backend_buft_is_host(buft)) {
+        const auto mode = lazy.mode;
+        lazy.mode = LLAMA_LAZY_MODE_ON;
+        is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()));
+        lazy.mode = mode;
+        if (is_lazy) { buft = lazy_read::buft(); }
+    }
+
     ggml_context * ctx = ctx_for_buft(buft);
 
     // if duplicated, check if the original tensor was allocated in the same buffer type context and avoid creating a new one

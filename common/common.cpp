@@ -2047,6 +2047,12 @@ static void common_auto_pin(common_params & params) {
     // cache uploads and prompt processing read them by direct DMA,
     // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
     // in the RAM available now minus the margin below; a model that does not is pinned up to that limit and the rest is mapped
+    if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO && llama_moe_get_opt("pin-miss")) {
+        // --moe pin-miss: the experts are not read at load (their router does, into the pinned blocks), the rest of the model is read into its place: no share of the model to work out
+        params.load_mode = LLAMA_LOAD_MODE_NONE;
+        LOG_INF("%s: --moe pin-miss: expert weights unread at load, the rest read without the mapping\n", __func__);
+        return;
+    }
     if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
         const size_t avail = std::min(common_ram_available(true), common_cgroup_room());
         // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: a tenth of the machine, at least 4 GiB (user 2026-11-02: a share, not 12 GiB on any machine; was 0 when
