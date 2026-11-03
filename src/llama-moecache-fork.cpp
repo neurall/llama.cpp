@@ -6963,12 +6963,12 @@ static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages th
 // counts most, which stayed mapped (the pin and the GPU cache hold the rest), are read ONCE with O_DIRECT (no page cache, no second copy) into pinned slots, hottest
 // first (ls.pin_ptr, the same array --moe pinr fills). The uploads of a miss then come from pinned RAM, not from the SSD at 0.8 to 1.6 GB/s; a mapped pointer is
 // never touched (a touch pulls in one page, then 128 KiB). The budget is the share the pin planner leaves to the page cache (--moe pin-cache, 0.15 of the mapped
-// experts). It waits during prompt calls, stops when decode starts, when the budget is spent, or at the first sign of swapping (a swap-out, or free memory under what it
+// experts). It waits during prompt calls, goes on through decode and later requests (user 2026-11-03), stops when the budget is spent, or at the first sign of swapping (a swap-out, or free memory under what it
 // would be after the whole budget). Off by default; --moe preheat=1 switches it on. No hot map (empty state) means nothing to read.
 static void preheat_run(moe_cache * mc) {
     // the hot counts come from the usage profile (profile_preload), which runs after the cache is set up: wait for it, give up when a request has started or the engine stops
     while (!mc->profile_ready.load(std::memory_order_acquire)) {
-        if (mc->stats_stop.load() || mc->n_steps > 0) { return; }
+        if (mc->stats_stop.load()) { return; }   // a request in flight no longer ends it: the reads go on between and during requests
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     struct cand { uint64_t n; size_t li; int32_t e; };
@@ -6994,7 +6994,7 @@ static void preheat_run(moe_cache * mc) {
     bool spent = false;
     const char * why = "budget spent";
     for (const cand & x : c) {
-        if (mc->stats_stop.load() || mc->n_steps > 0) { why = "a request is running"; break; }
+        if (mc->stats_stop.load()) { why = "the engine stopped"; break; }   // keeps reading through requests (they only pause it: prompt calls below); user 2026-11-03: preheat that keeps reading during requests
         if ((++n_seen & 31) == 0 && swap_out_pages() > sw0) { why = "the system swapped, swap guard"; break; }   // the arena itself is checked once by pin_alloc; O_DIRECT reads add no memory
         while (g_prompt_call.load(std::memory_order_relaxed) && !mc->stats_stop.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
         layer_state & ls = mc->layers[x.li];
