@@ -8097,15 +8097,18 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     fclose(mf);
                 }
                 const bool ph_on = [] { const char * v = moe_opt("preheat"); return !(v && v[0] == '0'); }();   // default on
-                if (gpu && !src_pinned && !mc->staging[0] && (pinr > 0 || ph_on) && mem_total) {
+                // the preheat works per layer (src_dfd: that layer's experts stayed mapped), so a model whose first layers are pinned in tensor order still gets it; pinr wants all weights mapped
+                if (gpu && !mc->staging[0] && ((pinr > 0 && !src_pinned) || ph_on) && mem_total) {
                     mc->pin_buft   = ggml_backend_dev_host_buffer_type(gpu);
-                    mc->pin_on_upload = pinr > 0;
-                    if (pinr > 0) {
+                    mc->pin_on_upload = pinr > 0 && !src_pinned;
+                    if (mc->pin_on_upload) {
                         mc->pin_budget = (size_t) (std::min(pinr, 10.0) / 10.0 * (double) mem_total);
                     } else {   // the preheat: the share of the mapped experts the pin planner leaves to the page cache (--moe pin-cache, 0.15)
                         double mapped = 0.0;
                         for (const auto & ls3 : mc->layers) {
-                            for (const ggml_tensor * t3 : { ls3.pub.up_src, ls3.pub.gate_src, ls3.pub.down_src }) { mapped += (double) t3->nb[2] * (double) t3->ne[2]; }
+                            for (const ggml_tensor * t3 : { ls3.pub.up_src, ls3.pub.gate_src, ls3.pub.down_src }) {
+                                if (t3->buffer && ggml_backend_buffer_get_type(t3->buffer) != mc->pin_buft) { mapped += (double) t3->nb[2] * (double) t3->ne[2]; }   // only the tensors that stayed mapped
+                            }
                         }
                         const char * pc = llama_moe_get_opt("pin-cache");
                         mc->pin_budget = (size_t) (mapped * (pc ? std::min(0.9, std::max(0.0, atof(pc))) : 0.15));
@@ -8118,7 +8121,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             for (size_t e2 = 0; e2 < ne; ++e2) { ls2.pin_ptr[k2][e2].store(nullptr); }
                         }
                     }
-                    LLAMA_LOG_WARN("moe-cache: %s: up to %.1f GiB of expert slices pinned%s, the rest stays mmap'd\n", pinr > 0 ? "pinr" : "preheat", mc->pin_budget / 1073741824.0, pinr > 0 ? " as they are uploaded" : " from the hot map before request 1");
+                    LLAMA_LOG_WARN("moe-cache: %s: up to %.1f GiB of expert slices pinned%s, the rest stays mmap'd\n", mc->pin_on_upload ? "pinr" : "preheat", mc->pin_budget / 1073741824.0, mc->pin_on_upload ? " as they are uploaded" : " from the hot map before request 1");
                 }
             }
             // --moe read-direct=1: the expert tensors that did not fit the pin budget are read from their file past the page cache (read_direct)
