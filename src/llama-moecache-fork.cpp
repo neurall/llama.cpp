@@ -7406,15 +7406,24 @@ static void miss_upload_async(moe_cache * mc, ggml_backend_t be, layer_state & l
     }
 }
 
-// ggml-cpu's MUL_MAT_ID asks this for each expert it computes (every thread, once per expert and op): the pinned slot of a mapped layer's expert, or nullptr
-// for the tensor's own data (pinned layers, other tensors, slices in no block). The CPU computes the layer whose router came last: its blocks stay (pin_miss_block).
+// ggml-cpu's MUL_MAT_ID asks this for each expert it computes (every thread, once per expert and op): the pinned slot of a mapped layer's expert, read now if nobody asked for it, or nullptr
+// for the tensor's own data (pinned layers, other tensors, no block to be had, a failed read). The CPU computes the layer whose router came last: its blocks stay (pin_miss_block).
 static std::unordered_map<const ggml_tensor *, std::pair<int, int>> g_pm_map;   // weight tensor -> (layer index, k); filled once before the hook is set, read only after
 static const void * pin_miss_hook(const ggml_tensor * src0, int64_t e) {
     const auto it = g_pm_map.find(src0);
     moe_cache * mc = g_cache;
     if (it == g_pm_map.end() || !mc || e < 0 || e >= src0->ne[2]) { return nullptr; }
-    const char * p = pin_miss_lookup(mc, it->second.first, it->second.second, (int32_t) e);
-    if (!p) { mc->pm_map_cpu++; }
+    const int li = it->second.first, k = it->second.second;
+    const char * p = pin_miss_lookup(mc, li, k, (int32_t) e);
+    if (!p) {   // no router asked for it: a graph without a router's op (the scheduler's own path of a small call leaves the matmul on the CPU). The same request a router makes, then the same wait.
+        const std::vector<int32_t> one(1, (int32_t) e);
+        {
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            pin_miss_queue(mc, li, one, true);
+        }
+        p = pin_miss_lookup(mc, li, k, (int32_t) e);
+        if (!p) { mc->pm_map_cpu++; }
+    }
     return p;
 }
 
