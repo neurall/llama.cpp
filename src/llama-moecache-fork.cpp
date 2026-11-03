@@ -446,6 +446,7 @@ struct moe_cache {
     struct pm_class { size_t size = 0; int32_t first = 0, n = 0; std::vector<int32_t> free; };   // one per distinct slice size: its blocks [first, first + n), the free ones (only under mc->mtx)
     std::vector<pm_class>      pm_cls;
     std::vector<std::array<int8_t, 3>> pm_cls_of; // layer, k -> class
+    int                        pm_wrap = -1;      // list position of the last model layer when its look ahead names layer 0 of the next token (from this token's embedding), else -1
     std::vector<int32_t>       pm_ord, pm_rank;   // list positions in model-layer order (the list is not: Qwen3.6 starts at layer 21), and each position's place in it
     uint64_t                   pm_rand = 88172645463325252ULL;
     size_t                     pm_pinned = 0;
@@ -710,6 +711,7 @@ static size_t expert_past(const moe_cache * mc, const layer_state & ls, int k, i
 static const char * const PM_LOADING = (const char *) 2;
 }  // namespace (reopened below)
 static void pin_miss_preload(moe_cache * mc, size_t tl, const ggml_tensor * pred, int64_t n_picks);   // below, outside this namespace
+static int pm_ahead_pos(const moe_cache * mc, size_t li);   // below: the layer the look ahead from position li reads for
 namespace {
 
 const char * pin_slice(moe_cache * mc, layer_state & ls, int k, int32_t e, size_t sz, const ggml_tensor * src) {
@@ -2762,9 +2764,8 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             }
         }
     }
-    if (mc->pm_pre && pred && pred->type == GGML_TYPE_F32) {   // the next model layer, which may sit at the other end of the list
-        const size_t nx = (li + 1) % mc->layers.size();
-        if (mc->layers[nx].pub.il == mc->layers[li].pub.il + 1) { pin_miss_preload(mc, nx, pred, n_ids); }
+    if (mc->pm_pre && pred && pred->type == GGML_TYPE_F32) {   // the next model layer, which may sit at the other end of the list; layer 0 of the next token from the last
+        if (const int nx = pm_ahead_pos(mc, li); nx >= 0) { pin_miss_preload(mc, (size_t) nx, pred, n_ids); }
     }
     if (knobs().predict != 0 && !prefill && mc->pred_m > 0 && pred && pred->type == GGML_TYPE_F32 && pred->ne[1] == n_tokens && li + 1 < mc->layers.size()) {
         const int64_t ne    = (int64_t) mc->layers[li + 1].expert_slot.size();
@@ -7215,7 +7216,7 @@ static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & 
     layer_state & ls = mc->layers[li];
     const bool hot  = cur != PM_NOT_HOT;
     const int  rk   = mc->pm_rank[li];   // model order, not list order
-    const int  keep = urgent ? (rk + 1 < (int) mc->pm_ord.size() ? mc->pm_ord[rk + 1] : -1) : (rk > 0 ? mc->pm_ord[rk - 1] : -1);   // a router keeps what was read ahead for the next layer, the look ahead keeps the layer computing now
+    const int  keep = urgent ? (rk + 1 < (int) mc->pm_ord.size() ? mc->pm_ord[rk + 1] : -1) : (rk > 0 ? mc->pm_ord[rk - 1] : mc->pm_ord.back());   // layer 0's look ahead runs during the last layer   // a router keeps what was read ahead for the next layer, the look ahead keeps the layer computing now
     if (urgent) {
         std::lock_guard<std::mutex> lk(mc->pm_mtx);
         if (!mc->pm_q.empty() || !mc->pm_qh.empty()) {
@@ -7415,6 +7416,13 @@ static const char * pin_miss_wait(moe_cache * mc, std::atomic<const char *> & sl
         mc->pm_wait_us += (uint64_t) (ggml_time_us() - t0);
     }
     return p > PM_LOADING ? p : nullptr;
+}
+
+// --moe pin-miss: the list position the look ahead from position li reads for: the next model layer (it may sit at the other end of the list), layer 0 from the last layer (pm_wrap), else -1
+static int pm_ahead_pos(const moe_cache * mc, size_t li) {
+    if ((int) li == mc->pm_wrap && !mc->pm_ord.empty()) { return mc->pm_ord[0]; }
+    const size_t nx = (li + 1) % mc->layers.size();
+    return mc->layers[nx].pub.il == mc->layers[li].pub.il + 1 ? (int) nx : -1;
 }
 
 // the slice (k, e) of layer li in its block; nullptr when it has none. For the op's own layer (see pin_miss_block), so the block cannot change while the caller uses it.
@@ -9327,6 +9335,18 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     routers.push_back(w);
                 }
+                size_t tpos = (li + 1) % nl;   // the layer the look ahead reads for
+                if (routers.empty() && pm_only && !mc->pm_ord.empty() && (int) li == mc->pm_ord.back()) {   // the last model layer: layer 0 of the next token, on this token's embedding
+                    const size_t p0 = (size_t) mc->pm_ord[0];
+                    const int    i0 = mc->layers[p0].pub.il;
+                    ggml_tensor * w = i0 < (int) model.layers.size() ? model.layers[i0].ffn_gate_inp : nullptr;
+                    if (w && w->buffer && w->ne[0] == n_embd && w->ne[1] == (int64_t) mc->layers[p0].expert_slot.size()) {
+                        routers.push_back(w);
+                        tpos = p0;
+                        mc->pm_wrap = (int) li;
+                        LLAMA_LOG_WARN("moe-cache: pin-miss: the last layer (%d) looks ahead for layer %d of the next token, through this token's embedding\n", pub.il, i0);
+                    }
+                }
                 if (routers.empty()) {
                     const int il1 = mc->layers[(li + 1) % nl].pub.il;
                     const ggml_tensor * w1 = il1 < (int) model.layers.size() ? model.layers[il1].ffn_gate_inp : nullptr;
@@ -9334,7 +9354,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             !w1 ? "missing" : !w1->buffer ? "has no buffer" : "present", w1 ? (long long) w1->ne[1] : -1LL, mc->layers[(li + 1) % nl].expert_slot.size(), w1 ? (long long) w1->ne[0] : -1LL, (long long) n_embd);
                     continue;
                 }
-                if (pm_only && mc->layers[(li + 1) % nl].src_dfd[0] < 0 && mc->layers[(li + 1) % nl].src_dfd[1] < 0 && mc->layers[(li + 1) % nl].src_dfd[2] < 0) {
+                if (pm_only && mc->layers[tpos].src_dfd[0] < 0 && mc->layers[tpos].src_dfd[1] < 0 && mc->layers[tpos].src_dfd[2] < 0) {
                     continue;   // nothing of the next layer to read: no matmul for it
                 }
                 pub.pred_w = routers[0];
@@ -9880,14 +9900,19 @@ bool llama_moe_cache_pp_short_fork() {
 bool llama_moe_cache_pm_pre_fork() {
     return g_cache && g_cache->pm_pre;
 }
+// the graph's look ahead from this layer takes the token embeddings instead of the layer's input: the last layer guesses layer 0 of the next token (user: "rest tokens layer 0 prefetched during last
+// token last layer via cur token router and cur token emb")
+bool llama_moe_cache_pred_wrap_fork(const llama_moe_cache_layer_fork * pub) {
+    const moe_cache * mc = g_cache;
+    return mc && mc->pm_wrap >= 0 && &mc->layers[mc->pm_wrap].pub == pub;
+}
 void llama_moe_cache_pm_preload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * pred, int64_t n_picks) {
     moe_cache * mc = g_cache;
     if (!mc || !mc->pm_pre) { return; }
     std::lock_guard<std::mutex> lock(mc->mtx);
     for (size_t li = 0; li < mc->layers.size(); ++li) {
         if (&mc->layers[li].pub == pub) {
-            const size_t nx = (li + 1) % mc->layers.size();
-            if (mc->layers[nx].pub.il == mc->layers[li].pub.il + 1) { pin_miss_preload(mc, nx, pred, n_picks); }
+            if (const int nx = pm_ahead_pos(mc, li); nx >= 0) { pin_miss_preload(mc, (size_t) nx, pred, n_picks); }
             return;
         }
     }
@@ -10991,8 +11016,13 @@ void llama_moe_cache_step_fork() {
         for (size_t li = 0; li < nl; ++li) {
             auto & pub = mc->layers[li].pub;
             bool on = false;
-            for (int k = 1; k <= std::max(1, pub.pred_ahead) && li + k < nl; ++k) {
-                on = on || miss[li + k] > thr;
+            if (mc->pm_on) {   // --moe pin-miss: the layer the look ahead reads for, in model order (layer 0 of the next token from the last layer)
+                const int t = pm_ahead_pos(mc, li);
+                on = t >= 0 && miss[(size_t) t] > thr;
+            } else {
+                for (int k = 1; k <= std::max(1, pub.pred_ahead) && li + k < nl; ++k) {
+                    on = on || miss[li + k] > thr;
+                }
             }
             on = on && (knobs().predict != 0 || mc->pm_pre);
             if (on != pub.pred_on) {

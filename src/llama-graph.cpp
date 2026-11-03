@@ -38,6 +38,7 @@ int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
 bool llama_moe_cache_pm_pre_fork();
 void llama_moe_cache_pm_preload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * pred, int64_t n_picks);
+bool llama_moe_cache_pred_wrap_fork(const llama_moe_cache_layer_fork * pub);   // the last layer's look ahead: layer 0 of the next token, on the token embeddings
 ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork * pub);
 extern "C" { GGML_API double ggml_backend_pred_get_fork(); }   // ggml-backend.cpp: predicted staging of this pass   // the prompt mix: the card whose ring takes this layer's misses, null = no mix
 #include <string>
@@ -2927,7 +2928,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
                 ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
                 if (wdev && ggml_backend_get_device(b) == wdev && b != cpu_backend) {
-                    ggml_tensor * x2 = ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens);
+                    ggml_tensor * te = res->t_inp_embd;
+                    const bool wrap = llama_moe_cache_pred_wrap_fork(mcache) && te && te->type == GGML_TYPE_F32 && te->ne[0] == n_embd && te->ne[1] == n_tokens;
+                    ggml_tensor * x2 = wrap ? te : ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens);
                     if (mc_pp && n_tokens > n_expert) {   // --moe pin-miss=2 on the prompt chain: a row per expert of the layer names what the pass needs, all rows would cost a big matmul per layer
                         x2 = ggml_cont(ctx0, ggml_view_2d(ctx0, x2, n_embd, n_expert, (n_tokens / n_expert) * x2->nb[1], 0));
                     }
