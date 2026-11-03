@@ -2559,6 +2559,8 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     } else if (params.load_pin_budget > 0) {
         LOG_INF("%s: weights pinned as far as they reach: the model does not fit pinned RAM, up to %.1f GiB pinned (in tensor order), the rest mapped (mmap / page cache)\n", __func__,
             params.load_pin_budget / 1073741824.0);
+    } else if (llama_moe_get_opt("pin-miss")) {
+        LOG_INF("%s: expert weights in pinned blocks read past the page cache (--moe pin-miss), the rest as load mode %s\n", __func__, llama_load_mode_name(params.load_mode));
     } else {
         LOG_INF("%s: weights NOT pinned: mmap / page cache (load mode %s)\n", __func__, llama_load_mode_name(params.load_mode));
     }

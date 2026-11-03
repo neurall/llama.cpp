@@ -55,6 +55,9 @@
 #endif
 #include <pthread.h>
 #include <sched.h>
+#if defined(__GLIBC__)
+#include <execinfo.h>   // the stack of --moe pin-miss-trap
+#endif
 #else
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -816,7 +819,8 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
 // fio, PC1 3700X: 8 sync threads 5.9 GB/s, libaio 1 thread qd32 4.7 GB/s and the same with 16 busy cores; PC2 3600: 3.6 against 3.46 (3.3 with 12 cores busy, 4 sync threads 3.4).
 // The async engine needs no free cores, the pool wins when cores are free: rd_pick_mode starts from the free cores and then follows what each engine measured on the real reads.
 // Ladder when the async engine is not there (old kernel, seccomp, Windows): the pread pool. Windows overlapped I/O would be the same shape (completion port), not written.
-static std::atomic<int> g_aio_ok{0};   // --moe read-aio=1 turns the async engine on; off by default until its A/B has run on a real model
+static std::atomic<int> g_aio_ok{0};   // --moe read-aio=1 or 2 turns the async engine on (see rd_pick_mode); off by default until its A/B has run on a real model
+static constexpr size_t RD_PICK_MIN = (size_t) 3 << 20;   // the smallest read that picks an engine (DeepSeek's slices are 3.26 MiB)
 #ifdef MOE_HAVE_AIO
 struct aio_ctx_t { aio_context_t ctx = 0; ~aio_ctx_t() { if (ctx) { syscall(SYS_io_destroy, ctx); } } };
 // bytes [beg, beg + total) of fd into buf (4096-aligned); `need` = bytes that exist (a short block past it is the end of the file). False: nothing usable, the caller reads again with pread.
@@ -859,52 +863,38 @@ static bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size
 }
 #endif
 
-// The engine for the next big read: 0 = pread pool, 1 = kernel AIO. Starts from the cores free now (pool needs rd_threads of them), then each engine's measured GB/s (moving average
-// over its last reads) decides; every 16th big read runs the other engine so both numbers stay fresh and a changed load is seen. Switches are logged.
-static std::atomic<int>      g_rd_mode{-1};
-static std::atomic<uint32_t> g_rd_calls{0};
-static std::atomic<double>   g_rd_gbs[2] = { 0.0, 0.0 };
-static int free_cores_now() {
+// The engine for the next big read: 0 = threads (blocking preads), 1 = kernel AIO. --moe read-aio=0 threads (default until measured on real models), =2 AIO, =1 by the global CPU load: threads while
+// cores are free (user 2026-11-03: "threads if cpu usage low as faster, overlapped if cpu usage 80% or higher"). Switches are logged.
+static std::atomic<int>   g_rd_mode{0};
+static std::atomic<float> g_cpu_util{0.0f};   // the whole machine's CPU load, 0..1, as of the last cpu_util_now
+static std::atomic<bool>  g_aio_force{false};
+static float cpu_util_now() {
 #ifdef __linux__
-    static std::mutex mx; static uint64_t last_busy = 0, last_all = 0; static int64_t last_us = 0; static int cached = -1;
+    static std::mutex mx; static uint64_t last_busy = 0, last_all = 0; static int64_t last_us = 0;
     std::lock_guard<std::mutex> lk(mx);
     const int64_t now = ggml_time_us();
-    if (cached >= 0 && now - last_us < 500000) { return cached; }
+    if (last_us != 0 && now - last_us < 500000) { return g_cpu_util.load(std::memory_order_relaxed); }
+    last_us = now;
     FILE * f = fopen("/proc/stat", "r");
-    if (!f) { return cached = (int) std::thread::hardware_concurrency(); }
+    if (!f) { return g_cpu_util.load(std::memory_order_relaxed); }
     unsigned long long v[8] = { 0 };
     const int n = fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
     fclose(f);
-    if (n < 4) { return cached = (int) std::thread::hardware_concurrency(); }
+    if (n < 4) { return g_cpu_util.load(std::memory_order_relaxed); }
     uint64_t all = 0; for (int i = 0; i < 8; ++i) { all += v[i]; }
     const uint64_t idle = v[3] + v[4], busy = all - idle;
-    const int hw = (int) std::thread::hardware_concurrency();
-    if (last_all != 0 && all > last_all) { cached = (int) std::lround((double) hw * (1.0 - (double) (busy - last_busy) / (double) (all - last_all))); }
-    else { cached = hw; }
-    last_busy = busy; last_all = all; last_us = now;
-    return cached;
-#else
-    return (int) std::thread::hardware_concurrency();
+    if (last_all != 0 && all > last_all) { g_cpu_util.store((float) (busy - last_busy) / (float) (all - last_all), std::memory_order_relaxed); }
+    last_busy = busy; last_all = all;
 #endif
+    return g_cpu_util.load(std::memory_order_relaxed);
 }
-static int rd_pick_mode(int rd_threads, bool & explore) {
-    explore = false;
+static int rd_pick_mode() {
     if (!g_aio_ok.load()) { return 0; }
-    int m = g_rd_mode.load();
-    if (m < 0) { m = free_cores_now() >= rd_threads ? 0 : 1; g_rd_mode.store(m); }
-    if (g_rd_calls.fetch_add(1) % 16 == 15) { explore = true; return 1 - m; }
-    const double a = g_rd_gbs[m].load(), b = g_rd_gbs[1 - m].load();
-    if (a > 0 && b > 1.1 * a) {
-        g_rd_mode.store(1 - m);
-        LLAMA_LOG_WARN("moe-cache: read engine %s -> %s (%.2f against %.2f GB/s, %d cores free)\n", m ? "kernel AIO" : "pread pool", m ? "pread pool" : "kernel AIO", b, a, free_cores_now());
-        return 1 - m;
-    }
+    if (g_aio_force.load()) { return 1; }
+    const float u = cpu_util_now();
+    const int   m = u >= 0.8f ? 1 : 0;
+    if (g_rd_mode.exchange(m) != m) { LLAMA_LOG_WARN("moe-cache: read engine %s -> %s (CPU %.0f%% busy)\n", m ? "threads" : "kernel AIO", m ? "kernel AIO" : "threads", u * 100.0f); }
     return m;
-}
-static void rd_note(int mode, size_t bytes, int64_t us) {
-    if (us <= 0) { return; }
-    const double g = (double) bytes / ((double) us * 1e3), old = g_rd_gbs[mode].load();
-    g_rd_gbs[mode].store(old > 0 ? 0.7 * old + 0.3 * g : g);
 }
 
 // --moe read-direct: bytes of a mapped expert tensor read with O_DIRECT into a worker's pinned buffer. Through the mapping a slice is read by page faults and 128 KiB
@@ -919,7 +909,7 @@ static const char * read_direct(int dfd, uint8_t * buf, size_t cap, size_t off, 
     if (end - beg > cap) { return nullptr; }
     size_t got = 0;
 #ifdef MOE_HAVE_AIO
-    if (end - beg >= ((size_t) 4 << 20) && g_rd_mode.load() == 1 && aio_read_range(dfd, buf, beg, end - beg, need)) { return (const char *) buf + (off - beg); }
+    if (end - beg >= RD_PICK_MIN && rd_pick_mode() == 1 && aio_read_range(dfd, buf, beg, end - beg, need)) { return (const char *) buf + (off - beg); }   // threads or AIO, per read, as the CPU's load changes
 #endif
     while (got < need) {
         const ssize_t r = pread(dfd, buf + got, end - beg - got, (off_t) (beg + got));
@@ -4142,13 +4132,7 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     const int dfd = it->second.first;
     const size_t total = end - beg, block = (size_t) 1 << 20;
 #ifdef MOE_HAVE_AIO
-    bool explore = false;
-    const int mode = total >= ((size_t) 4 << 20) ? rd_pick_mode(mc->rd_threads, explore) : 0;
-    if (mode == 1) {
-        const int64_t t0 = ggml_time_us();
-        if (aio_read_range(dfd, buf, beg, total, need)) { rd_note(1, total, ggml_time_us() - t0); return (const void *) (buf + (file_off - beg)); }
-    }
-    const int64_t t_pool0 = ggml_time_us();
+    if (total >= RD_PICK_MIN && rd_pick_mode() == 1 && aio_read_range(dfd, buf, beg, total, need)) { return (const void *) (buf + (file_off - beg)); }
 #endif
     std::atomic<size_t> next{0};
     std::atomic<bool>   fail{false};
@@ -4167,9 +4151,6 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     for (int i = 0; i < n_th; ++i) { th.emplace_back([&work]() { unpin_helper(); work(); }); }
     work();
     for (auto & x : th) { x.join(); }
-#ifdef MOE_HAVE_AIO
-    if (total >= ((size_t) 4 << 20) && !fail.load()) { rd_note(0, total, ggml_time_us() - t_pool0); }
-#endif
     return fail.load() ? nullptr : (const void *) (buf + (file_off - beg));
 #endif
 }
@@ -7085,9 +7066,9 @@ static void preheat_run(moe_cache * mc) {
 // published once all its bytes are there, so the CPU and the uploads never see half a slice.
 static std::string pin_miss_line(const moe_cache * mc) {
     const double us = (double) mc->pm_read_us.load();
-    return format("pin-miss: %" PRId64 " of %zu blocks in use, %.2f GiB pinned; %" PRIu64 " slices read (%.2f GiB, %.2f GB/s per reader), %" PRIu64 " of them from the page cache, %" PRIu64 " queued at a router, %" PRIu64 " ahead of it, %" PRIu64 " from hot lists, %" PRIu64 " a router found in a block, %" PRIu64 " evicted, %" PRIu64 " dropped unread; %" PRIu64 " uploads from the blocks; CPU and upload waits %" PRIu64 " (%.1f ms), %" PRIu64 " late; %" PRIu64 " failed, %" PRIu64 " found no block; through the mapping: %" PRIu64 " slices by the CPU, %" PRIu64 " by uploads",
+    return format("pin-miss: %" PRId64 " of %zu blocks in use, %.2f GiB pinned; %" PRIu64 " slices read (%.2f GiB, %.2f GB/s per reader), %" PRIu64 " of them from the page cache, %" PRIu64 " queued at a router, %" PRIu64 " ahead of it, %" PRIu64 " from hot lists, %" PRIu64 " a router found in a block, %" PRIu64 " evicted, %" PRIu64 " dropped unread; %" PRIu64 " uploads from the blocks; CPU and upload waits %" PRIu64 " (%.1f ms), %" PRIu64 " late; %" PRIu64 " failed, %" PRIu64 " found no block; through the mapping: %" PRIu64 " slices by the CPU, %" PRIu64 " by uploads; read engine %s, CPU %.0f%% busy",
             mc->pm_held.load(), mc->pm_n, mc->pm_pinned / 1073741824.0, mc->pm_reads.load(), mc->pm_bytes.load() / 1073741824.0, us > 0 ? mc->pm_bytes.load() / us / 1e3 : 0.0, mc->pm_cached.load(), mc->pm_router.load(), mc->pm_ahead.load(), mc->pm_hots.load(), mc->pm_found.load(), mc->pm_evict.load(), mc->pm_drop.load(),
-            mc->pm_up.load(), mc->pm_waits.load(), mc->pm_wait_us.load() / 1e3, mc->pm_late.load(), mc->pm_fail.load(), mc->pm_full.load(), mc->pm_map_cpu.load(), mc->pm_map_up.load());
+            mc->pm_up.load(), mc->pm_waits.load(), mc->pm_wait_us.load() / 1e3, mc->pm_late.load(), mc->pm_fail.load(), mc->pm_full.load(), mc->pm_map_cpu.load(), mc->pm_map_up.load(), g_aio_force.load() || g_rd_mode.load() == 1 ? "kernel AIO" : "threads", cpu_util_now() * 100.0f);
 }
 
 // a slice in the page cache (see below): declared here for the readers
@@ -7313,9 +7294,8 @@ static void pin_miss_fill(moe_cache * mc) {
     while (mc->pm_reads.load() + mc->pm_fail.load() < want) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
     const double t_ram = (ggml_time_us() - t0) / 1e6;
     int64_t t_prog = ggml_time_us();   // a worker that cannot run yet (nothing waits for it at load) must not hold the load: no job done for 10 s ends the wait
-    size_t  last = SIZE_MAX;
+    size_t  last = SIZE_MAX, left = 0;
     for (;;) {
-        size_t left = 0;
         {
             std::lock_guard<std::mutex> lk(mc->wmtx);
             left = mc->todo.size() + (size_t) mc->in_flight;
@@ -7326,7 +7306,7 @@ static void pin_miss_fill(moe_cache * mc) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     LLAMA_LOG_WARN("moe-cache: pin-miss: before any request: %" PRIu64 " slices of the next hottest experts in RAM (%.1f GiB, %.1f s, %zu experts ranked), the VRAM preload's uploads ended %.1f s later, %zu left\n",
-            want, mc->pm_bytes.load() / 1073741824.0, t_ram, picks.size(), (ggml_time_us() - t0) / 1e6 - t_ram, last == SIZE_MAX ? (size_t) 0 : last);
+            want, mc->pm_bytes.load() / 1073741824.0, t_ram, picks.size(), (ggml_time_us() - t0) / 1e6 - t_ram, left);
 }
 
 // --moe pin-miss=2, mc->mtx held: the next layer's router on this layer's input ([n_expert, rows], block 0 of the predictor's output when it has several, the same look the prompt ring's
@@ -7438,6 +7418,19 @@ static const void * pin_miss_hook(const ggml_tensor * src0, int64_t e) {
     return p;
 }
 
+#ifndef _WIN32
+static void pin_miss_trap_signal(int, siginfo_t * si, void *) {
+    char b[96];
+    const int n = snprintf(b, sizeof b, "moe-cache: pin-miss-trap: SIGSEGV at %p, the reader's stack:\n", si->si_addr);
+    if (write(2, b, (size_t) n) < 0) { _exit(134); }
+#if defined(__GLIBC__)
+    void * trace[64];
+    backtrace_symbols_fd(trace, backtrace(trace, 64), 2);
+#endif
+    _exit(134);
+}
+#endif
+
 // --moe pin-miss: walks the expert tensors for the slice sizes and how many of each, pins one buffer per size for its share of what RAM can hold (--moe pin-miss-gib=N caps it for a test), the CPU hook's
 // tensor map, the readers (as many as the read probe found best for prompt uploads). Load time only: no page cache competes for RAM now, so the pool takes all that is available above a floor.
 static void pin_miss_start(moe_cache * mc) {
@@ -7518,12 +7511,36 @@ static void pin_miss_start(moe_cache * mc) {
         auto set = (void (*)(const void * (*)(const ggml_tensor *, int64_t))) ggml_backend_reg_get_proc_address(cpu, "ggml_backend_cpu_set_expert_ptr_hook");
         if (set) { set(pin_miss_hook); hook = true; }
     }
-    const int n = std::max(1, mc->rd_threads);
+    // The probe found that many 1 MiB reads best: the SSD wants those bytes in flight, so smaller slices take more readers (35B, 0.29 MiB: 4 readers 2.26 GB/s, 16 3.47, 32 3.83, at 0.1 core).
+    // Past 32 nothing was gained, and more bytes in flight would keep an urgent read waiting longer. --moe read-threads sets it by hand.
+    const int rt = std::max(1, mc->rd_threads);
+    const int n  = moe_opt("read-threads") ? rt : std::max(rt, std::min(32, (int) std::ceil(rt * 1048576.0 * (double) n_mapped / (double) b_blocks)));
     mc->pm_on = true;
     const char pm_mode = [] { const char * v = moe_opt("pin-miss"); return v ? v[0] : '1'; }();
     mc->pm_pre = pm_mode == '2' || pm_mode == '3';
     mc->pm_hot = pm_mode == '3';
     for (int i = 0; i < n; ++i) { mc->pm_thr.emplace_back(pin_miss_run, mc); }
+#ifndef _WIN32
+    // --moe pin-miss-trap=1, development: nothing should read the mapped expert tensors any more, so their pages lose all access and a reader crashes with its stack instead of silently faulting from
+    // the SSD (a t->data read compiles without the mapping's header, so taking that out would not find it). Pages a tensor shares with its neighbours in the file stay readable.
+    if (const char * tr = moe_opt("pin-miss-trap"); tr && tr[0] == '1') {
+        size_t trapped = 0;
+        for (const layer_state & ls : mc->layers) {
+            const ggml_tensor * ts[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+            for (int k = 0; k < 3; ++k) {
+                if (ls.src_dfd[k] < 0) { continue; }
+                const uintptr_t beg = ((uintptr_t) ts[k]->data + 4095) & ~(uintptr_t) 4095;
+                const uintptr_t end = ((uintptr_t) ts[k]->data + ggml_nbytes(ts[k])) & ~(uintptr_t) 4095;
+                if (end > beg && mprotect((void *) beg, end - beg, PROT_NONE) == 0) { trapped += end - beg; }
+            }
+        }
+        struct sigaction sa = {};
+        sa.sa_sigaction = pin_miss_trap_signal;
+        sa.sa_flags = SA_SIGINFO;
+        sigaction(SIGSEGV, &sa, nullptr);
+        LLAMA_LOG_WARN("moe-cache: pin-miss-trap: %.1f GiB of mapped expert tensors now crash their reader\n", trapped / 1073741824.0);
+    }
+#endif
     LLAMA_LOG_WARN("moe-cache: pin-miss: %zu slice sizes, one pinned buffer each: %s = %.1f GiB in %.1f s (%.1f GiB of RAM available, %.1f GiB kept free; %.1f GiB of expert weights in %zu slices), %d readers, CPU branch %s, %s\n",
             cls.size(), sizes.c_str(), mc->pm_pinned / 1073741824.0, (ggml_time_us() - t_pin) / 1e6, avail / 1073741824.0, floor_b / 1073741824.0, b_mapped / 1073741824.0, n_mapped, n,
             hook ? "reads them through the expert hook" : "keeps the mapping (no hook in this CPU backend)", mc->pm_hot ? "the next hottest before any request, hot lists from a request's start and the next layer ahead" : mc->pm_pre ? "reads the next layer ahead" : "reads at the router");
@@ -8672,7 +8689,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                 }
 #ifdef MOE_HAVE_AIO
-                if (const char * ra = moe_opt("read-aio")) { g_aio_ok.store(atoi(ra) != 0 ? 1 : 0); }
+                if (const char * ra = moe_opt("read-aio")) { g_aio_ok.store(atoi(ra) != 0 ? 1 : 0); g_aio_force.store(atoi(ra) == 2); }
 #endif
                 if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
                 else if (rd_mapped > 0) { mc->rd_threads = read_threads_probe(mc->rd_fds, mc->profile); }
@@ -8718,6 +8735,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT: prompt uploads on %d threads, %d cache workers\n", rd_mapped / 1073741824.0, mc->rd_threads, n_workers);
             }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
+                    mc->pm_on ? "from the pinned blocks (--moe pin-miss)" :
                     mc->bounce_bytes ? "memcpy -> pinned staging (bounce) -> GPU" :
                     mc->staging[0] ? "pread -> pinned staging -> GPU" :
                     src_pinned     ? "from pinned host memory (direct DMA)" :
@@ -8726,7 +8744,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 static const char * const pol[] = { "halve", "window", "hybrid", "add", "lru", "rel", "crf", "slru" };
                 char sb[320];
                 snprintf(sb, sizeof sb, "slots=%d workers=%d links=%d upload=%s bounce_kb=%zu policy=%s", (int) mc->n_slots, n_workers, n_links,
-                        mc->bounce_bytes ? "bounce" : mc->staging[0] ? "pread" : src_pinned ? "pinned-dma" : "mmap-pageable",
+                        mc->pm_on ? "pinned-blocks" : mc->bounce_bytes ? "bounce" : mc->staging[0] ? "pread" : src_pinned ? "pinned-dma" : "mmap-pageable",
                         (size_t) (mc->bounce_bytes >> 10), pol[(int) get_policy()]);
                 mc->settings = sb;
             }
