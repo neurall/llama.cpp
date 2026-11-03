@@ -6930,6 +6930,16 @@ static unsigned long long pp_self_read_bytes();
 // faulting them in at 0.8 GB/s (DeepSeek cold: a 2-token call took 10 s). The budget is the share of the model the pin planner already leaves to the page cache
 // (--moe pin-cache, 0.15 of the mapped experts); the reads are kept to 512 MiB ahead of what the disk has delivered, wait while a prompt call runs and stop when
 // a request has been served or the budget is spent. --moe preheat=0 switches it off. No hot map (empty state) means nothing to read.
+static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages the kernel has swapped out since boot
+    unsigned long long v = 0;
+    if (FILE * f = fopen("/proc/vmstat", "r")) {
+        char line[128];
+        while (fgets(line, sizeof line, f)) { if (sscanf(line, "pswpout %llu", &v) == 1) { break; } }
+        fclose(f);
+    }
+    return v;
+}
+
 static void preheat_run(moe_cache * mc) {
     struct cand { uint64_t n; size_t li; int32_t e; };
     std::vector<cand> c;
@@ -6947,11 +6957,16 @@ static void preheat_run(moe_cache * mc) {
     if (c.empty() || budget <= 0.0) { return; }
     std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.n > b.n; });
     const int64_t t0 = ggml_time_us();
-    const unsigned long long rb0 = pp_self_read_bytes();
+    const unsigned long long rb0 = pp_self_read_bytes(), sw0 = swap_out_pages();
+    // no swapping (user 2026-11-03): stop when the kernel swaps anything out, or when free memory falls below what it would be after the whole budget (someone else is taking RAM)
+    const double floor_avail = (double) mem_available_bytes() - budget;
     double issued = 0.0;
     size_t n = 0;
+    const char * why = "budget spent";
     for (const cand & x : c) {
-        if (mc->stats_stop.load() || issued >= budget || mc->n_steps > 0) { break; }   // a request has decoded: the page cache is now the request's
+        if (mc->stats_stop.load() || mc->n_steps > 0) { why = "a request is running"; break; }
+        if (issued >= budget) { break; }
+        if ((n & 31) == 0 && (swap_out_pages() > sw0 || (double) mem_available_bytes() < floor_avail)) { why = "memory is tight, swap guard"; break; }   // a request has decoded: the page cache is now the request's
         while (g_prompt_call.load(std::memory_order_relaxed) && !mc->stats_stop.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
         const layer_state & ls = mc->layers[x.li];
         readahead(ls, x.e);
@@ -6959,7 +6974,7 @@ static void preheat_run(moe_cache * mc) {
         n++;
         while (issued - (double) (pp_self_read_bytes() - rb0) > 536870912.0 && !mc->stats_stop.load() && mc->n_steps == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
     }
-    LLAMA_LOG_WARN("moe-cache: preheat: %zu hot experts (%.1f GiB of a %.1f GiB budget) asked for from the file in %.1f s, hottest first\n", n, issued / 1073741824.0, budget / 1073741824.0, (ggml_time_us() - t0) / 1e6);
+    LLAMA_LOG_WARN("moe-cache: preheat: %zu hot experts (%.1f GiB of a %.1f GiB budget) asked for from the file in %.1f s, hottest first; stopped: %s\n", n, issued / 1073741824.0, budget / 1073741824.0, (ggml_time_us() - t0) / 1e6, why);
 }
 
 static void stats_status_run(moe_cache * mc) {
