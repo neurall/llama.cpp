@@ -1,3 +1,4 @@
 name,model,n,test,tokens,args,extra
 io-ds-t-on,ds,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/io-on.ini,log=wk",--ctx 4096
 io-ds-t-off,ds,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/io-off.ini,read-direct=0,log=wk",--ctx 4096
+io-ds-t-ra,ds,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/io-ra.ini,log=wk",--ctx 4096 --env LLAMA_MOE_CACHE_PREDICT_RA=1
