@@ -658,17 +658,7 @@ static ggml_backend_feature * ggml_backend_cpu_get_features(ggml_backend_reg_t r
     GGML_UNUSED(reg);
 }
 
-// Per-expert source pointers for MUL_MAT_ID (the fork's sparse pinned pool): a hook returns the pinned copy of expert `expert` of the weight tensor `src0`, or nullptr
-// to read it where the tensor says (the mapping). Set through get_proc_address; read once per expert per op by the two mul_mat_id paths.
-extern "C" {
-const void * (*ggml_cpu_expert_ptr_hook)(const struct ggml_tensor * src0, int64_t expert) = nullptr;
-}
-static void ggml_backend_cpu_set_expert_ptr_hook(const void * (*hook)(const struct ggml_tensor *, int64_t)) { ggml_cpu_expert_ptr_hook = hook; }
-
 static void * ggml_backend_cpu_get_proc_address(ggml_backend_reg_t reg, const char * name) {
-    if (strcmp(name, "ggml_backend_cpu_set_expert_ptr_hook") == 0) {
-        return (void *) ggml_backend_cpu_set_expert_ptr_hook;
-    }
     if (strcmp(name, "ggml_backend_set_n_threads") == 0) {
         ggml_backend_set_n_threads_t fct = ggml_backend_cpu_set_n_threads;
         return (void *)fct;
