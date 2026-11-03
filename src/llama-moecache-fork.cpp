@@ -6930,6 +6930,24 @@ static unsigned long long pp_self_read_bytes();
 // faulting them in at 0.8 GB/s (DeepSeek cold: a 2-token call took 10 s). The budget is the share of the model the pin planner already leaves to the page cache
 // (--moe pin-cache, 0.15 of the mapped experts); the reads are kept to 512 MiB ahead of what the disk has delivered, wait while a prompt call runs and stop when
 // a request has been served or the budget is spent. --moe preheat=0 switches it off. No hot map (empty state) means nothing to read.
+// A touch of a mapped pointer pulls in the first page only (then 128 KiB of readahead, one fault at a time): MADV_POPULATE_READ (Linux 5.14) reads the whole range
+// and puts it in this process' page tables, so the CPU branch never faults on it. It waits for the read, so the preheat lags it behind the asynchronous WILLNEED.
+static void populate_expert(const layer_state & ls, int32_t expert) {
+#if !defined(_WIN32) && defined(__linux__)
+    static const size_t pg = (size_t) sysconf(_SC_PAGESIZE);
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22
+#endif
+    for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
+        const uintptr_t a   = (uintptr_t) t->data + (size_t) expert*t->nb[2];
+        const uintptr_t beg = a & ~(uintptr_t) (pg - 1);
+        madvise((void *) beg, a + t->nb[2] - beg, MADV_POPULATE_READ);   // an old kernel answers EINVAL: nothing happens, the WILLNEED read stands
+    }
+#else
+    GGML_UNUSED(ls); GGML_UNUSED(expert);
+#endif
+}
+
 static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages the kernel has swapped out since boot
     unsigned long long v = 0;
     if (FILE * f = fopen("/proc/vmstat", "r")) {
@@ -6970,6 +6988,7 @@ static void preheat_run(moe_cache * mc) {
         while (g_prompt_call.load(std::memory_order_relaxed) && !mc->stats_stop.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
         const layer_state & ls = mc->layers[x.li];
         readahead(ls, x.e);
+        if (n >= 8) { populate_expert(mc->layers[c[n - 8].li], c[n - 8].e); }   // 8 experts behind: its read is under way or done, now map it
         issued += (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
         n++;
         while (issued - (double) (pp_self_read_bytes() - rb0) > 536870912.0 && !mc->stats_stop.load() && mc->n_steps == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
