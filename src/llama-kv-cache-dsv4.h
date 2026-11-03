@@ -157,6 +157,9 @@ public:
     const std::vector<uint32_t> & get_rs_idx() const;
     void update_rs_for_ubatches(const std::vector<llama_ubatch> & ubatches);
 
+    // copy the sources into their mirrors after a state read
+    void refill_comp_mirrors();
+
 private:
     llama_hparams hparams_raw;
     llama_hparams hparams_csa;
@@ -177,6 +180,12 @@ private:
 
     // [n_layer] layer -> layer whose compressed-KV storage it reads (itself, its V4.1 kv source or a mirror), -1 = none
     std::vector<int32_t> comp_read;
+
+    bool comp_mirrors_stale = false;
+
+    // fork: per compressed cache (csa, hca, lid) the first stream, the stream count and the rows of the last state read: refill_comp_mirrors copies only
+    // these (with kv-tail a mirror is a strided view whose address range past the used cells may hold expert blocks, a whole copy would write over them)
+    uint32_t comp_mirrors_read[3][3] = {};
 
     std::unique_ptr<llama_kv_cache_iswa> kv_raw;
     std::unique_ptr<llama_kv_cache>      kv_csa;
@@ -226,7 +235,7 @@ public:
     std::vector<ggml_tensor *> get_k_rot() const;
 
     void set_input_k_idxs(ggml_tensor * dst) const;
-    void set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
+    void set_input_attn_mask(const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const;
 
     // token history of the raw (window) cells, for host-side n-gram hashing (deepseek41 Engram)
     void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
@@ -422,5 +431,5 @@ private:
 
     const llama_memory_status status;
 
-    const llama_kv_cache_dsv4 * kv = nullptr;
+    llama_kv_cache_dsv4 * kv = nullptr;
 };
