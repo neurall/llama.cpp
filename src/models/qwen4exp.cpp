@@ -812,13 +812,13 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         }
                     }
                     if (!qsa) {
-                        att = ds_attn_cache(mctx_attn, ia->get_k_idxs(), ia->get_v_idxs(), ia->get_kq_mask(), q, k, v, {}, ia->self_k_rot[il], ia->self_v_rot[il], kq_scale, il);
+                        att = ds_attn_cache(mctx_attn, ia->get_k_idxs(), ia->get_v_idxs(), ia->self_attn_mask.raw, q, k, v, {}, ia->self_k_rot[il], ia->self_v_rot[il], kq_scale, il);
                     } else {
                         const int64_t kpool  = inp_kpool->kpool;
                         const int64_t n_pool = inp_kpool->pool_cells->ne[0];
                         const int64_t n_new  = inp_kpool->n_new;
                         const int64_t n_kv   = inp_kpool->n_kv;
-                        ggml_tensor * kq_mask = ia->get_kq_mask();
+                        ggml_tensor * kq_mask = ia->self_attn_mask.raw;
                         GGML_ASSERT(hparams.dsv4_compress_ratios[il] == kpool);
                         // 1. every range's K / V into the attention cache, before anything reads it
                         ds_skip();

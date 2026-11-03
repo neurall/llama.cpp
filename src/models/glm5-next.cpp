@@ -909,7 +909,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                 const int64_t n_new               = inp_kpool->n_new;
                 const int64_t n_kv                = mctx_lid->get_n_kv();
                 const bool    full_idx            = hparams.is_indexer_full(il);
-                ggml_tensor * kq_mask   = inp_attn->get_kq_mask();
+                ggml_tensor * kq_mask   = inp_attn->self_attn_mask.raw;
                 std::vector<ggml_tensor *> qa(NR), iq(NR), iw(NR);
                 // 1. per range on its card: projections; the cache writes run where the caches are (both ranges, before anything reads them)
                 for (size_t r = 0; r < NR; ++r) {

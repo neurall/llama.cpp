@@ -5983,14 +5983,14 @@ ggml_tensor * llm_graph_context::ds_join(const std::vector<ggml_tensor *> & xs, 
 
 std::vector<ggml_tensor *> llm_graph_context::ds_attn_kv(llm_graph_input_attn_kv * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
                                                           const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
-    return ds_attn_cache(inp->mctx, inp->get_k_idxs(), inp->get_v_idxs(), inp->get_kq_mask(), q, k, v, sinks, inp->self_k_rot[il], inp->self_v_rot[il], kq_scale, il);
+    return ds_attn_cache(inp->mctx, inp->get_k_idxs(), inp->get_v_idxs(), inp->self_attn_mask.raw, q, k, v, sinks, inp->self_k_rot[il], inp->self_v_rot[il], kq_scale, il);
 }
 
 std::vector<ggml_tensor *> llm_graph_context::ds_attn_kv(llm_graph_input_attn_kv_iswa * inp, const std::vector<ggml_tensor *> & q, const std::vector<ggml_tensor *> & k,
                                                           const std::vector<ggml_tensor *> & v, const std::vector<ggml_tensor *> & sinks, float kq_scale, int il) const {
     const bool swa = hparams.is_swa(il);
     return ds_attn_cache(swa ? inp->mctx->get_swa() : inp->mctx->get_base(), swa ? inp->get_k_idxs_swa() : inp->get_k_idxs(),
-                         swa ? inp->get_v_idxs_swa() : inp->get_v_idxs(), swa ? inp->get_kq_mask_swa() : inp->get_kq_mask(), q, k, v, sinks,
+                         swa ? inp->get_v_idxs_swa() : inp->get_v_idxs(), swa ? inp->self_attn_mask_swa.raw : inp->self_attn_mask.raw, q, k, v, sinks,
                          (swa ? inp->self_k_rot_swa : inp->self_k_rot)[il], (swa ? inp->self_v_rot_swa : inp->self_v_rot)[il], kq_scale, il);
 }
 
