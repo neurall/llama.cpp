@@ -1497,6 +1497,8 @@ UseGgmlGemm2:;
 
 // ggml_compute_forward_mul_mat_id
 
+extern const void * (*ggml_cpu_expert_ptr_hook)(const struct ggml_tensor * src0, int64_t expert);   // ggml-cpu.cpp
+
 #define MMID_MATRIX_ROW(row_id, i1) matrix_rows[(row_id)*ids->ne[0]*ids->ne[1] + (i1)]
 
 struct mmid_row_mapping {
@@ -1791,6 +1793,7 @@ static void ggml_compute_forward_mul_mat_id_impl(
         }
 
         const char * src0_cur = (const char *) src0->data + cur_a * nb02;
+        if (ggml_cpu_expert_ptr_hook) { const void * pe = ggml_cpu_expert_ptr_hook(src0, cur_a); if (pe) { src0_cur = (const char *) pe; } }   // the sparse pinned pool's copy of this expert
         const void * wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
         const size_t row_size = ggml_row_size(vec_dot_type, ne10);
 
