@@ -444,11 +444,12 @@ struct moe_cache {
     struct pm_class { size_t size = 0; int32_t first = 0, n = 0; std::vector<int32_t> free; };   // one per distinct slice size: its blocks [first, first + n), the free ones (only under mc->mtx)
     std::vector<pm_class>      pm_cls;
     std::vector<std::array<int8_t, 3>> pm_cls_of; // layer, k -> class
+    std::vector<int32_t>       pm_ord, pm_rank;   // list positions in model-layer order (the list is not: Qwen3.6 starts at layer 21), and each position's place in it
     uint64_t                   pm_rand = 88172645463325252ULL;
     size_t                     pm_pinned = 0;
     std::atomic<int64_t>       pm_held{0};        // blocks that hold or await a slice
     std::vector<std::unique_ptr<std::atomic<int32_t>[]>> pm_where;   // per layer with mapped tensors: expert*3 + k -> block, -1 = in no block
-    std::atomic<uint64_t>      pm_reads{0}, pm_bytes{0}, pm_read_us{0}, pm_fail{0}, pm_waits{0}, pm_wait_us{0}, pm_late{0}, pm_full{0}, pm_up{0}, pm_cached{0}, pm_found{0}, pm_router{0}, pm_ahead{0}, pm_hots{0}, pm_drop{0}, pm_evict{0};
+    std::atomic<uint64_t>      pm_reads{0}, pm_bytes{0}, pm_read_us{0}, pm_fail{0}, pm_waits{0}, pm_wait_us{0}, pm_late{0}, pm_full{0}, pm_up{0}, pm_cached{0}, pm_found{0}, pm_router{0}, pm_ahead{0}, pm_hots{0}, pm_drop{0}, pm_evict{0}, pm_ring_pool{0}, pm_ring_ssd{0};
     std::atomic<bool>          profile_ready{false};   // profile_preload has set the lifetime counts (ls.glob_count): the preheat may rank the experts
     bool                       pin_on_upload = false;   // --moe pinr>0: pin_slice also copies an expert on its second upload; off when only the preheat fills pin_ptr
     std::atomic<bool>          stats_stop{false};
@@ -2759,7 +2760,10 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             }
         }
     }
-    if (mc->pm_pre && pred && pred->type == GGML_TYPE_F32 && li + 1 < mc->layers.size()) { pin_miss_preload(mc, li + 1, pred, n_ids); }
+    if (mc->pm_pre && pred && pred->type == GGML_TYPE_F32) {   // the next model layer, which may sit at the other end of the list
+        const size_t nx = (li + 1) % mc->layers.size();
+        if (mc->layers[nx].pub.il == mc->layers[li].pub.il + 1) { pin_miss_preload(mc, nx, pred, n_ids); }
+    }
     if (knobs().predict != 0 && !prefill && mc->pred_m > 0 && pred && pred->type == GGML_TYPE_F32 && pred->ne[1] == n_tokens && li + 1 < mc->layers.size()) {
         const int64_t ne    = (int64_t) mc->layers[li + 1].expert_slot.size();
         const int64_t n_blk = pred->ne[0] / ne;
@@ -4119,6 +4123,8 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
 #endif
 }
 
+static bool pin_miss_ring_copy(moe_cache * mc, const ggml_tensor * weight, size_t off, size_t n, uint8_t * out);   // below: --moe pin-miss, the stream ring's bytes from the pool's blocks
+
 // The scheduler's prompt uploads (ggml_backend_sched_upload_weight): the same read as read_direct in 1 MiB blocks on several threads. Threads start per chunk, as pin_prefetch_run does per tensor.
 // ponytail: 7 thread starts per 32 MiB, about 2% of a core at 5 GB/s; a pool if that ever shows.
 static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * ud) {
@@ -4130,6 +4136,8 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     const auto it = mc->rd_src.find(weight);
     if (it == mc->rd_src.end() || it->second.first < 0) { return nullptr; }
     if (!dst) { return mc; }   // only asked
+    if (mc->pm_on && n <= cap && pin_miss_ring_copy(mc, weight, off, n, (uint8_t *) dst)) { mc->pm_ring_pool += n; return dst; }   // all of it in the pool: RAM speed, no SSD
+    if (mc->pm_on) { mc->pm_ring_ssd += n; }
     const size_t a = 4096, file_off = it->second.second + off, beg = file_off & ~(a - 1), end = (file_off + n + a - 1) & ~(a - 1), need = file_off + n - beg;
     uint8_t * buf = (uint8_t *) (((uintptr_t) dst + a - 1) & ~(uintptr_t) (a - 1));
     if ((size_t) (buf - (uint8_t *) dst) + (end - beg) > cap) { return nullptr; }
@@ -7070,21 +7078,22 @@ static void preheat_run(moe_cache * mc) {
 // published once all its bytes are there, so the CPU and the uploads never see half a slice.
 static std::string pin_miss_line(const moe_cache * mc) {
     const double us = (double) mc->pm_read_us.load();
-    return format("pin-miss: %" PRId64 " of %zu blocks in use, %.2f GiB pinned; %" PRIu64 " slices read (%.2f GiB, %.2f GB/s per reader), %" PRIu64 " of them from the page cache, %" PRIu64 " queued at a router, %" PRIu64 " ahead of it, %" PRIu64 " from hot lists, %" PRIu64 " a router found in a block, %" PRIu64 " evicted, %" PRIu64 " dropped unread; %" PRIu64 " uploads from the blocks; CPU and upload waits %" PRIu64 " (%.1f ms), %" PRIu64 " late; %" PRIu64 " failed, %" PRIu64 " waits for a block; read engine %s, CPU %.0f%% busy",
+    return format("pin-miss: %" PRId64 " of %zu blocks in use, %.2f GiB pinned; %" PRIu64 " slices read (%.2f GiB, %.2f GB/s per reader), %" PRIu64 " of them from the page cache, %" PRIu64 " queued at a router, %" PRIu64 " ahead of it, %" PRIu64 " from hot lists, %" PRIu64 " a router found in a block, %" PRIu64 " evicted, %" PRIu64 " dropped unread; %" PRIu64 " uploads from the blocks; CPU and upload waits %" PRIu64 " (%.1f ms), %" PRIu64 " late; %" PRIu64 " failed, %" PRIu64 " waits for a block; stream ring %.2f GiB from the blocks, %.2f GiB from the SSD; read engine %s, CPU %.0f%% busy",
             mc->pm_held.load(), mc->pm_n, mc->pm_pinned / 1073741824.0, mc->pm_reads.load(), mc->pm_bytes.load() / 1073741824.0, us > 0 ? mc->pm_bytes.load() / us / 1e3 : 0.0, mc->pm_cached.load(), mc->pm_router.load(), mc->pm_ahead.load(), mc->pm_hots.load(), mc->pm_found.load(), mc->pm_evict.load(), mc->pm_drop.load(),
-            mc->pm_up.load(), mc->pm_waits.load(), mc->pm_wait_us.load() / 1e3, mc->pm_late.load(), mc->pm_fail.load(), mc->pm_full.load(), g_aio_force.load() || g_rd_mode.load() == 1 ? "kernel AIO" : "threads", cpu_util_now() * 100.0f);
+            mc->pm_up.load(), mc->pm_waits.load(), mc->pm_wait_us.load() / 1e3, mc->pm_late.load(), mc->pm_fail.load(), mc->pm_full.load(), mc->pm_ring_pool.load() / 1073741824.0, mc->pm_ring_ssd.load() / 1073741824.0, g_aio_force.load() || g_rd_mode.load() == 1 ? "kernel AIO" : "threads", cpu_util_now() * 100.0f);
 }
 
 // --moe pin-miss-layers=1: per layer, in slices since the start: m = asked for at its router with no block (a read started then), a = found in a block the look ahead asked for, h = a hot list's, o = one a router asked for
 // before (an earlier token or layer pass); each as ready/late (the read had ended / was still under way when the router came).
 static std::string pin_miss_layers(const moe_cache * mc) {
     std::string r;
-    for (size_t li = 0; li < mc->layers.size() && mc->pm_ls; ++li) {
+    for (size_t k = 0; k < mc->pm_ord.size() && mc->pm_ls; ++k) {
+        const size_t li = (size_t) mc->pm_ord[k];
         const moe_cache::pm_lstat & s = mc->pm_ls[li];
         if (!mc->pm_where[li]) { continue; }
-        r += format("%sL%zu m%u a%u/%u h%u/%u o%u/%u", r.empty() ? "" : " | ", li, s.miss.load(), s.hit[1][1].load(), s.hit[1][0].load(), s.hit[2][1].load(), s.hit[2][0].load(), s.hit[0][1].load(), s.hit[0][0].load());
+        r += format("%sL%d m%u a%u/%u h%u/%u o%u/%u", r.empty() ? "" : " | ", mc->layers[li].pub.il, s.miss.load(), s.hit[1][1].load(), s.hit[1][0].load(), s.hit[2][1].load(), s.hit[2][0].load(), s.hit[0][1].load(), s.hit[0][0].load());
     }
-    return "pin-miss per layer (slices; m miss at the router, a/h/o found ready/late from the look ahead / hot list / earlier router): " + r;
+    return "pin-miss per layer, model order (slices; m miss at the router, a/h/o found ready/late from the look ahead / hot list / earlier router): " + r;
 }
 
 // a slice in the page cache (see below): declared here for the readers
@@ -7165,7 +7174,7 @@ static int32_t pin_miss_block(moe_cache * mc, int c, int keep0, int keep1, int b
         mc->pm_rand ^= mc->pm_rand << 13; mc->pm_rand ^= mc->pm_rand >> 7; mc->pm_rand ^= mc->pm_rand << 17;
         const int32_t id = cl.first + (int32_t) (mc->pm_rand % (uint64_t) cl.n);
         const moe_cache::pm_slot & b = mc->pm_s[id];
-        if (b.li < 0 || b.li >= behind || b.li == keep0 || b.li == keep1 || b.ptr.load(std::memory_order_acquire) == PM_LOADING || b.users.load() > 0) { continue; }
+        if (b.li < 0 || mc->pm_rank[b.li] >= behind || b.li == keep0 || b.li == keep1 || b.ptr.load(std::memory_order_acquire) == PM_LOADING || b.users.load() > 0) { continue; }
         const double sc = score(mc->layers[b.li], b.key / 3);
         if (sc < coldest) { coldest = sc; best = id; }
     }
@@ -7199,7 +7208,8 @@ static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & 
     if (!where) { return true; }   // pinned at load
     layer_state & ls = mc->layers[li];
     const bool hot  = cur != PM_NOT_HOT;
-    const int  keep = urgent ? li + 1 : li - 1;   // a router keeps what was read ahead for the next layer, the look ahead keeps the layer computing now
+    const int  rk   = mc->pm_rank[li];   // model order, not list order
+    const int  keep = urgent ? (rk + 1 < (int) mc->pm_ord.size() ? mc->pm_ord[rk + 1] : -1) : (rk > 0 ? mc->pm_ord[rk - 1] : -1);   // a router keeps what was read ahead for the next layer, the look ahead keeps the layer computing now
     if (urgent) {
         std::lock_guard<std::mutex> lk(mc->pm_mtx);
         if (!mc->pm_q.empty() || !mc->pm_qh.empty()) {
@@ -7214,7 +7224,7 @@ static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & 
                 const int     jl  = (int) (j.first - mc->layers.data());
                 const int32_t key = (int32_t) (j.second & 0xffffff) * 3 + (int32_t) ((j.second >> 24) & 3);
                 if (jl == li && want[key]) { first.push_back(j); continue; }
-                if (jl == li || jl == li + 1) { rest.push_back(j); continue; }
+                if (mc->pm_rank[jl] == rk || mc->pm_rank[jl] == rk + 1) { rest.push_back(j); continue; }
                 pin_miss_free(mc, jl, key, (int32_t) (j.second >> 26));
                 mc->pm_drop++;
             }
@@ -7262,8 +7272,10 @@ static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & 
 // token's use), without them the lists go on ahead of the router. Nothing is known without a stored or running count: the router's misses work as before.
 static void pin_miss_hot_fill(moe_cache * mc, int cur) {
     const size_t want = (size_t) mc->n_expert_used * 8;
-    while (mc->pm_hot_next < mc->layers.size()) {
-        const int li = (int) mc->pm_hot_next;
+    const int    rc   = cur < 0 ? -1 : mc->pm_rank[cur];   // the router's layer in model order: the lists go layer 0 first, as the model computes
+    while (mc->pm_hot_next < mc->pm_ord.size()) {
+        const int rl = (int) mc->pm_hot_next;
+        const int li = mc->pm_ord[rl];
         if (!mc->pm_where[li]) { mc->pm_hot_next++; continue; }
         layer_state & ls = mc->layers[li];
         std::vector<int32_t> ids;
@@ -7273,9 +7285,9 @@ static void pin_miss_hot_fill(moe_cache * mc, int cur) {
         const size_t m = std::min(want, ids.size());
         std::partial_sort(ids.begin(), ids.begin() + m, ids.end(), [&](int32_t a, int32_t b) { return ls.glob_count[a] > ls.glob_count[b]; });
         ids.resize(m);
-        const bool placed = pin_miss_queue(mc, li, ids, false, li <= cur ? -1 : cur);
-        mc->pm_hot_next = placed || li > cur ? (size_t) li + 1 : (size_t) cur + 1;   // once per layer in a request: a list retried at every router would cost more than it gives
-        if (!placed && li > cur) { return; }      // the next list at the next router, when one more layer is done
+        const bool placed = pin_miss_queue(mc, li, ids, false, rl <= rc ? -1 : rc);
+        mc->pm_hot_next = placed || rl > rc ? (size_t) rl + 1 : (size_t) rc + 1;   // once per layer in a request: a list retried at every router would cost more than it gives
+        if (!placed && rl > rc) { return; }      // the next list at the next router, when one more layer is done
     }
 }
 
@@ -7314,10 +7326,18 @@ static void pin_miss_fill(moe_cache * mc) {
         }
     }
     std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
+    const size_t n_ranked = picks.size();
+    for (const int32_t li : mc->pm_ord) {   // then everything else, in model order, while free blocks last: a pool that holds the whole model holds it before request 1, as -lm pin does
+        if (!mc->pm_where[li]) { continue; }
+        const layer_state & ls = mc->layers[li];
+        for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) {
+            if (!(ls.glob_count[e] > 0 && ls.expert_slot[e] < 0 && !ls.queued[e])) { picks.push_back({ 0.0, li, e }); }
+        }
+    }
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
         std::vector<int32_t> one(1);
-        for (const pick & p : picks) { one[0] = p.e; pin_miss_queue(mc, p.li, one, false, -1); }
+        for (const pick & p : picks) { one[0] = p.e; if (!pin_miss_queue(mc, p.li, one, false, -1)) { break; } }   // false: no free block left
     }
     const uint64_t want = mc->pm_hots.load();
     while (mc->pm_reads.load() + mc->pm_fail.load() < want) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
@@ -7336,6 +7356,7 @@ static void pin_miss_fill(moe_cache * mc) {
     }
     LLAMA_LOG_WARN("moe-cache: pin-miss: before any request: %" PRIu64 " slices of the next hottest experts in RAM (%.1f GiB, %.1f s, %zu experts ranked), the VRAM preload's uploads ended %.1f s later, %zu left\n",
             want, mc->pm_bytes.load() / 1073741824.0, t_ram, picks.size(), (ggml_time_us() - t0) / 1e6 - t_ram, left);
+    LLAMA_LOG_WARN("moe-cache: pin-miss: %zu experts ranked by the profile, %zu more queued in model order as free blocks allowed\n", n_ranked, picks.size() - n_ranked);
 }
 
 // --moe pin-miss=2, mc->mtx held: the next layer's router on this layer's input ([n_expert, rows], block 0 of the predictor's output when it has several, the same look the prompt ring's
@@ -7432,6 +7453,47 @@ static bool pin_miss_upload(moe_cache * mc, int li, int k, int32_t e, ggml_tenso
     return p != nullptr;
 }
 
+static std::unordered_map<const ggml_tensor *, std::pair<int, int>> g_pm_map;   // weight tensor -> (layer index, k); filled once before the hook is set, read only after
+
+// --moe pin-miss: bytes [off, off + n) of an expert tensor (a chunk of the stream ring, not aligned to experts) copied into out from the pool's blocks; false when an expert of the range has no
+// block (the ring then reads the chunk from the SSD). Past the last expert: the tensor's padding, zeros. Each block is held while it is copied (users, as pin_miss_upload). A few threads: one
+// memcpy stream reaches about 10-20 GB/s, the links take 26.
+static bool pin_miss_ring_copy(moe_cache * mc, const ggml_tensor * weight, size_t off, size_t n, uint8_t * out) {
+    const auto it = g_pm_map.find(weight);
+    if (it == g_pm_map.end()) { return false; }
+    const int li = it->second.first, k = it->second.second;
+    std::atomic<int32_t> * where = mc->pm_where[li].get();
+    if (!where) { return false; }
+    const size_t sz = weight->nb[2];
+    const int64_t e0 = (int64_t) (off / sz), e1 = (int64_t) ((off + n - 1) / sz);
+    for (int64_t e = e0; e <= e1 && e < weight->ne[2]; ++e) { if (where[(size_t) e*3 + k].load(std::memory_order_acquire) < 0) { return false; } }   // cheap check first: no copy of a chunk that falls back anyway
+    std::atomic<int64_t> next{e0};
+    std::atomic<bool>    fail{false};
+    auto work = [&]() {
+        for (;;) {
+            const int64_t e = next.fetch_add(1);
+            if (e > e1 || fail.load(std::memory_order_relaxed)) { return; }
+            const size_t a = std::max(off, (size_t) e*sz), b = std::min(off + n, (size_t) (e + 1)*sz);
+            if (e >= weight->ne[2]) { memset(out + (a - off), 0, b - a); continue; }
+            std::atomic<int32_t> & w = where[(size_t) e*3 + k];
+            const int32_t sid = w.load();
+            if (sid < 0) { fail.store(true); return; }
+            moe_cache::pm_slot & sl = mc->pm_s[sid];
+            sl.users++;
+            const char * p = w.load() == sid ? pin_miss_wait(mc, sl.ptr) : nullptr;
+            if (p) { memcpy(out + (a - off), p + (a - (size_t) e*sz), b - a); }
+            sl.users--;
+            if (!p) { fail.store(true); return; }
+        }
+    };
+    const int n_th = n < ((size_t) 4 << 20) ? 0 : 3;
+    std::vector<std::thread> th;
+    for (int i = 0; i < n_th; ++i) { th.emplace_back([&work]() { unpin_helper(); work(); }); }
+    work();
+    for (auto & x : th) { x.join(); }
+    return !fail.load();
+}
+
 // a miss's slice k to dst at dst_off on stream be, with the bytes a matmul reads past it: from its slot (pinned: DMA) when it has one, else from the mapping. The async copy may outlive
 // the call: the slot passes on only after the next layer's router ids came back, behind this layer's chain on the same stream.
 static void miss_upload_async(moe_cache * mc, ggml_backend_t be, layer_state & ls, int li, int k, int32_t id, ggml_tensor * dst, size_t dst_off) {
@@ -7451,8 +7513,7 @@ static void miss_upload_async(moe_cache * mc, ggml_backend_t be, layer_state & l
 // ggml-cpu's MUL_MAT_ID asks this for each expert it computes (every thread, once per expert and op): the pinned slot of a mapped layer's expert, read now if nobody asked for it, or nullptr
 // for the tensor's own data (pinned layers, other tensors, no block to be had, a failed read). The CPU computes the layer whose router came last: its blocks stay (pin_miss_block).
 static std::atomic<bool> g_other_lazy{false};   // the loader made a lazy tensor that is not an expert (llama_moe_note_other_lazy_fork)
-void llama_moe_note_other_lazy_fork() { g_other_lazy.store(true); }
-static std::unordered_map<const ggml_tensor *, std::pair<int, int>> g_pm_map;   // weight tensor -> (layer index, k); filled once before the hook is set, read only after
+void llama_moe_note_other_lazy_fork() { g_other_lazy.store(true); }   // weight tensor -> (layer index, k); filled once before the hook is set, read only after
 static const void * pin_miss_hook(const ggml_tensor * src0, int64_t e) {
     const auto it = g_pm_map.find(src0);
     moe_cache * mc = g_cache;
@@ -7482,6 +7543,11 @@ static void pin_miss_start(moe_cache * mc) {
     std::vector<size_t> n_of;
     mc->pm_where.resize(mc->layers.size());
     mc->pm_cls_of.assign(mc->layers.size(), { -1, -1, -1 });
+    mc->pm_ord.resize(mc->layers.size());
+    std::iota(mc->pm_ord.begin(), mc->pm_ord.end(), 0);
+    std::stable_sort(mc->pm_ord.begin(), mc->pm_ord.end(), [&](int32_t a, int32_t b) { return mc->layers[a].pub.il < mc->layers[b].pub.il; });
+    mc->pm_rank.resize(mc->layers.size());
+    for (size_t r = 0; r < mc->pm_ord.size(); ++r) { mc->pm_rank[mc->pm_ord[r]] = (int32_t) r; }
     for (size_t li = 0; li < mc->layers.size(); ++li) {
         layer_state & ls = mc->layers[li];
         const ggml_tensor * ts[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
@@ -7556,6 +7622,7 @@ static void pin_miss_start(moe_cache * mc) {
     }
     // The probe found that many 1 MiB reads best: the SSD wants those bytes in flight, so smaller slices take more readers (35B, 0.29 MiB: 4 readers 2.26 GB/s, 16 3.47, 32 3.83, at 0.1 core).
     // Past 32 nothing was gained, and more bytes in flight would keep an urgent read waiting longer. --moe read-threads sets it by hand.
+    { std::string ord; for (const layer_state & l : mc->layers) { ord += format("%s%d", ord.empty() ? "" : " ", l.pub.il); } LLAMA_LOG_WARN("moe-cache: pin-miss: layer list order (model layer per position): %s\n", ord.c_str()); }
     const int rt = std::max(1, mc->rd_threads);
     const int n  = moe_opt("read-threads") ? rt : std::max(rt, std::min(32, (int) std::ceil(rt * 1048576.0 * (double) n_mapped / (double) b_blocks)));
     mc->pm_on = true;
@@ -9216,28 +9283,32 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             const size_t stride = (size_t) std::max(1, pst ? atoi(pst) : 1);
             const char * pq8 = moe_opt("predict-q8");
             const bool use_q8 = !(pq8 && pq8[0] == '0');
-            for (size_t li = 0; mc->pred_m > 0 && li + 1 < nl; ++li) {
+            for (size_t li = 0; mc->pred_m > 0 && li < nl && (li + 1 < nl || pm_only); ++li) {   // pin-miss: the list's last position is layer 20 of Qwen3.6, whose next layer is at its start
                 if (li % stride != 0) {
                     continue;
                 }
                 auto & pub = mc->layers[li].pub;
                 const int64_t n_embd = pub.up_src->ne[0];
                 std::vector<ggml_tensor *> routers;
-                for (int k = 0; k < std::max(1, mc->pred_ahead) && li + 1 + k < nl; ++k) {
-                    const int il = mc->layers[li + 1 + k].pub.il;
+                for (int k = 0; k < std::max(1, mc->pred_ahead) && (li + 1 + k < nl || pm_only); ++k) {
+                    const int il = mc->layers[(li + 1 + k) % nl].pub.il;
                     if (il != pub.il + 1 + k || il >= (int) model.layers.size()) {
                         break;
                     }
                     ggml_tensor * w = model.layers[il].ffn_gate_inp;
-                    if (!w || !w->buffer || w->ne[0] != n_embd || w->ne[1] != (int64_t) mc->layers[li + 1 + k].expert_slot.size()) {
+                    if (!w || !w->buffer || w->ne[0] != n_embd || w->ne[1] != (int64_t) mc->layers[(li + 1 + k) % nl].expert_slot.size()) {
                         break;
                     }
                     routers.push_back(w);
                 }
                 if (routers.empty()) {
+                    const int il1 = mc->layers[(li + 1) % nl].pub.il;
+                    const ggml_tensor * w1 = il1 < (int) model.layers.size() ? model.layers[il1].ffn_gate_inp : nullptr;
+                    LLAMA_LOG_WARN("moe-cache: look ahead from layer %d: none (next MoE layer %d; its router %s, rows %lld against %zu experts, width %lld against %lld)\n", pub.il, il1,
+                            !w1 ? "missing" : !w1->buffer ? "has no buffer" : "present", w1 ? (long long) w1->ne[1] : -1LL, mc->layers[(li + 1) % nl].expert_slot.size(), w1 ? (long long) w1->ne[0] : -1LL, (long long) n_embd);
                     continue;
                 }
-                if (pm_only && mc->layers[li + 1].src_dfd[0] < 0 && mc->layers[li + 1].src_dfd[1] < 0 && mc->layers[li + 1].src_dfd[2] < 0) {
+                if (pm_only && mc->layers[(li + 1) % nl].src_dfd[0] < 0 && mc->layers[(li + 1) % nl].src_dfd[1] < 0 && mc->layers[(li + 1) % nl].src_dfd[2] < 0) {
                     continue;   // nothing of the next layer to read: no matmul for it
                 }
                 pub.pred_w = routers[0];
@@ -9786,8 +9857,12 @@ void llama_moe_cache_pm_preload_fork(const llama_moe_cache_layer_fork * pub, con
     moe_cache * mc = g_cache;
     if (!mc || !mc->pm_pre) { return; }
     std::lock_guard<std::mutex> lock(mc->mtx);
-    for (size_t li = 0; li + 1 < mc->layers.size(); ++li) {
-        if (&mc->layers[li].pub == pub) { pin_miss_preload(mc, li + 1, pred, n_picks); return; }
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        if (&mc->layers[li].pub == pub) {
+            const size_t nx = (li + 1) % mc->layers.size();
+            if (mc->layers[nx].pub.il == mc->layers[li].pub.il + 1) { pin_miss_preload(mc, nx, pred, n_picks); }
+            return;
+        }
     }
 }
 
