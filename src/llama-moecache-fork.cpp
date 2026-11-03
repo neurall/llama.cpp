@@ -8750,7 +8750,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 #endif
                 if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
                 else if (rd_mapped > 0) { mc->rd_threads = read_threads_probe(mc->rd_fds, mc->profile); }
-                if (rd_mapped > 0) {
+                const char * pm_req = moe_opt("pin-miss");
+                const bool   pm_ask = pm_req && (pm_req[0] == '1' || pm_req[0] == '2' || pm_req[0] == '3');   // --moe pin-miss: the pool's blocks are the only read buffers, no staging buffer per worker
+                if (rd_mapped > 0 && !pm_ask) {
                     mc->rd_size = max_expert + ((size_t) 1 << 18);   // a slice, what is read past it, and the block grid on both sides
                     for (size_t w = 0; w < mc->staging.size(); ++w) { mc->rd_staging.push_back(ggml_backend_buft_alloc_buffer(pinned_buft, mc->rd_size)); }
                 }
@@ -8784,11 +8786,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
             if (llama_moe_log_profile_fork("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
             if (const char * ph = moe_opt("preheat"); ph && ph[0] == '1' && gpu && !mc->rd_staging.empty()) { mc->preheat_thr = std::thread(preheat_run, mc); }   // default off; =1 on; rd_staging: some experts stayed mapped
-            else if (const char * pm = moe_opt("pin-miss"); pm && (pm[0] == '1' || pm[0] == '2' || pm[0] == '3') && gpu && !mc->rd_staging.empty() && !mc->pin_buft) {   // default off; not with the preheat or pinr (one arena)
+            else if (const char * pm = moe_opt("pin-miss"); pm && (pm[0] == '1' || pm[0] == '2' || pm[0] == '3') && gpu && rd_mapped > 0 && !mc->pin_buft) {   // default off; not with the preheat or pinr (one arena)
                 mc->pin_buft = ggml_backend_dev_host_buffer_type(gpu);
                 pin_miss_start(mc);
             }
-            if (!mc->rd_staging.empty()) {
+            if (rd_mapped > 0) {
                 LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT: prompt uploads on %d threads, %d cache workers\n", rd_mapped / 1073741824.0, mc->rd_threads, n_workers);
             }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
@@ -8923,10 +8925,17 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                     }
                     const int64_t tr = ggml_time_us();
-                    if (mc->pm_on && ls.src_dfd[k] >= 0) {   // --moe pin-miss: the slice its router queued into the layer buffer, no read of this worker's own
+                    if (mc->pm_on && ls.src_dfd[k] >= 0) {   // --moe pin-miss: the slice from its pool block (queued by its router, else asked for now and waited for); a block lost to an eviction between the two is asked for again
                         const char * pf = nullptr;
                         const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], pf);
-                        if (pin_miss_upload(mc, (int) j.layer_idx, k, j.expert, dsts[k], (size_t) j.slot*dsts[k]->nb[2], sz, pb)) { t_read += ggml_time_us() - tr; continue; }
+                        bool ok = false;
+                        for (int a = 0; a < 100 && !ok; ++a) {
+                            pin_miss_need(mc, (int) j.layer_idx, k, j.expert, false);
+                            ok = pin_miss_upload(mc, (int) j.layer_idx, k, j.expert, dsts[k], (size_t) j.slot*dsts[k]->nb[2], sz, pb);
+                        }
+                        GGML_ASSERT(ok && "pin-miss: an upload found no block");
+                        t_read += ggml_time_us() - tr;
+                        continue;
                     }
                     if (ls.pin_ptr[k]) {   // the preheat's pinned copy of this expert (no read at all): straight to the card
                         const char * pc = ls.pin_ptr[k][j.expert].load(std::memory_order_acquire);
