@@ -4130,6 +4130,7 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
 }
 
 static bool pin_miss_ring_copy(moe_cache * mc, const ggml_tensor * weight, size_t off, size_t n, uint8_t * out);   // below: --moe pin-miss, the stream ring's bytes from the pool's blocks
+static size_t pin_miss_ring_part(moe_cache * mc, const ggml_tensor * weight, size_t off, size_t n, uint8_t * out, std::vector<std::pair<size_t, size_t>> & rest);   // below: the part the blocks hold
 
 // The scheduler's prompt uploads (ggml_backend_sched_upload_weight): the same read as read_direct in 1 MiB blocks on several threads. Threads start per chunk, as pin_prefetch_run does per tensor.
 // ponytail: 7 thread starts per 32 MiB, about 2% of a core at 5 GB/s; a pool if that ever shows.
@@ -4143,11 +4144,46 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     if (it == mc->rd_src.end() || it->second.first < 0) { return nullptr; }
     if (!dst) { return mc; }   // only asked
     if (mc->pm_on && n <= cap && pin_miss_ring_copy(mc, weight, off, n, (uint8_t *) dst)) { mc->pm_ring_pool += n; return dst; }   // all of it in the pool: RAM speed, no SSD
-    if (mc->pm_on) { mc->pm_ring_ssd += n; }
     const size_t a = 4096, file_off = it->second.second + off, beg = file_off & ~(a - 1), end = (file_off + n + a - 1) & ~(a - 1), need = file_off + n - beg;
     uint8_t * buf = (uint8_t *) (((uintptr_t) dst + a - 1) & ~(uintptr_t) (a - 1));
     if ((size_t) (buf - (uint8_t *) dst) + (end - beg) > cap) { return nullptr; }
     const int dfd = it->second.first;
+    if (mc->pm_on) {   // a pool smaller than the model: the experts its blocks hold come from there, only the rest from the SSD (35B, 4 GiB pool: a 16k prompt read 13 GiB, the blocks gave 0.9)
+        std::vector<std::pair<size_t, size_t>> rest;   // tensor offsets [a, b) to read
+        uint8_t * out = buf + (file_off - beg);
+        const size_t got = pin_miss_ring_part(mc, weight, off, n, out, rest);
+        if (got > 0) {
+            std::vector<std::pair<size_t, size_t>> pieces;   // page-aligned file pieces of at most 1 MiB, as offsets from beg (a page may also hold a neighbour's bytes: the same bytes its block gave)
+            for (const auto & r : rest) {
+                const size_t fa = (it->second.second + r.first) & ~(a - 1), fb = std::min(end, (it->second.second + r.second + a - 1) & ~(a - 1));
+                for (size_t o = fa; o < fb; o += (size_t) 1 << 20) { pieces.push_back({ o - beg, std::min(fb, o + ((size_t) 1 << 20)) - beg }); }
+            }
+            std::atomic<size_t> nx{0};
+            std::atomic<bool>   bad{false};
+            auto rd = [&]() {
+                for (;;) {
+                    const size_t i = nx.fetch_add(1);
+                    if (i >= pieces.size() || bad.load(std::memory_order_relaxed)) { return; }
+                    const size_t o = pieces[i].first, want = pieces[i].second - o;
+                    const ssize_t r = pread(dfd, buf + o, want, (off_t) (beg + o));
+                    if (r < 0 || ((size_t) r < want && o + (size_t) r < need)) { bad.store(true); return; }
+                }
+            };
+            const int n_th = std::min<int>(mc->rd_threads - 1, (int) pieces.size() - 1);
+            std::vector<std::thread> th;
+            for (int i = 0; i < n_th; ++i) { th.emplace_back([&rd]() { unpin_helper(); rd(); }); }
+            rd();
+            for (auto & x : th) { x.join(); }
+            if (!bad.load()) {
+                // a page read over a held expert's edge wrote the same bytes its block gave
+                mc->pm_ring_pool += got;
+                mc->pm_ring_ssd  += n - got;
+                return (const void *) out;
+            }
+            // a failed read: the whole chunk from the file below
+        }
+        mc->pm_ring_ssd += n;
+    }
     const size_t total = end - beg, block = (size_t) 1 << 20;
 #ifdef MOE_HAVE_AIO
     if (total >= RD_PICK_MIN && rd_pick_mode() == 1 && aio_read_range(dfd, buf, beg, total, need)) { return (const void *) (buf + (file_off - beg)); }
@@ -7525,6 +7561,37 @@ static bool pin_miss_ring_copy(moe_cache * mc, const ggml_tensor * weight, size_
     work();
     for (auto & x : th) { x.join(); }
     return !fail.load();
+}
+
+// the experts of [off, off + n) that are in blocks, copied into out (out[0] = tensor byte off); the tensor byte ranges left over go to rest. Returns the bytes copied, 0 when no expert was held
+// (rest is then not filled). Past the last expert counts as left over (the file has those bytes).
+static size_t pin_miss_ring_part(moe_cache * mc, const ggml_tensor * weight, size_t off, size_t n, uint8_t * out, std::vector<std::pair<size_t, size_t>> & rest) {
+    const auto it = g_pm_map.find(weight);
+    if (it == g_pm_map.end()) { return 0; }
+    const int li = it->second.first, k = it->second.second;
+    std::atomic<int32_t> * where = mc->pm_where[li].get();
+    if (!where) { return 0; }
+    const size_t sz = weight->nb[2];
+    const int64_t e0 = (int64_t) (off / sz), e1 = (int64_t) ((off + n - 1) / sz);
+    size_t got = 0;
+    for (int64_t e = e0; e <= e1; ++e) {
+        const size_t a = std::max(off, (size_t) e*sz), b = std::min(off + n, (size_t) (e + 1)*sz);
+        bool ok = false;
+        if (e < weight->ne[2]) {
+            std::atomic<int32_t> & w = where[(size_t) e*3 + k];
+            if (const int32_t sid = w.load(); sid >= 0) {
+                moe_cache::pm_slot & sl = mc->pm_s[sid];
+                sl.users++;
+                const char * p = w.load() == sid ? pin_miss_wait(mc, sl.ptr) : nullptr;
+                if (p) { memcpy(out + (a - off), p + (a - (size_t) e*sz), b - a); ok = true; }
+                sl.users--;
+            }
+        }
+        if (ok) { got += b - a; continue; }
+        if (!rest.empty() && rest.back().second == a) { rest.back().second = b; } else { rest.push_back({ a, b }); }
+    }
+    if (got == 0) { rest.clear(); }
+    return got;
 }
 
 // a miss's slice k to dst at dst_off on stream be, with the bytes a matmul reads past it: from its slot (pinned: DMA) when it has one, else from the mapping. The async copy may outlive
