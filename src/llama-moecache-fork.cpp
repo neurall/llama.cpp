@@ -403,6 +403,7 @@ struct moe_cache {
     std::atomic<bool>          lazy_stop{false};
     std::thread                stats_thr;          // --moe stats: the status lines (stats_status_run)
     std::thread                preheat_thr;        // pinned copies of the hot experts that stayed mapped, read once with O_DIRECT before request 1 (preheat_run)
+    std::atomic<bool>          profile_ready{false};   // profile_preload has set the lifetime counts (ls.glob_count): the preheat may rank the experts
     bool                       pin_on_upload = false;   // --moe pinr>0: pin_slice also copies an expert on its second upload; off when only the preheat fills pin_ptr
     std::atomic<bool>          stats_stop{false};
 
@@ -1986,6 +1987,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             picks.push_back({ (double) ls.glob_count[ids[i]] / (double) std::max<uint64_t>(1, total), il, ids[i] });   // share of the layer's picks: comparable across layers
         }
     }
+    mc->profile_ready.store(true, std::memory_order_release);
     std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
     for (const auto & pk : picks) {
         auto & ls = mc->layers[pk.il];
@@ -6957,6 +6959,11 @@ static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages th
 // experts). It waits during prompt calls, stops when decode starts, when the budget is spent, or at the first sign of swapping (a swap-out, or free memory under what it
 // would be after the whole budget). --moe preheat=0 switches it off. No hot map (empty state) means nothing to read.
 static void preheat_run(moe_cache * mc) {
+    // the hot counts come from the usage profile (profile_preload), which runs after the cache is set up: wait for it, give up when a request has started or the engine stops
+    while (!mc->profile_ready.load(std::memory_order_acquire)) {
+        if (mc->stats_stop.load() || mc->n_steps > 0) { return; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
     struct cand { uint64_t n; size_t li; int32_t e; };
     std::vector<cand> c;
     for (size_t li = 0; li < mc->layers.size(); ++li) {
