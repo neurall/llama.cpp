@@ -402,7 +402,8 @@ struct moe_cache {
     std::thread                lazy_thr;          // --moe pin-lazy: reads expert tensors into pinned buffers in the background (pin_prefetch_run)
     std::atomic<bool>          lazy_stop{false};
     std::thread                stats_thr;          // --moe stats: the status lines (stats_status_run)
-    std::thread                preheat_thr;        // page-cache preheat of the hot experts that stayed mapped (preheat_run)
+    std::thread                preheat_thr;        // pinned copies of the hot experts that stayed mapped, read once with O_DIRECT before request 1 (preheat_run)
+    bool                       pin_on_upload = false;   // --moe pinr>0: pin_slice also copies an expert on its second upload; off when only the preheat fills pin_ptr
     std::atomic<bool>          stats_stop{false};
 
     // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
@@ -618,6 +619,38 @@ static size_t mem_available_bytes() {
 
 // the pinned copy of expert e's slice of tensor k, or nullptr. Made on the SECOND upload of the expert (the first only marks it: an expert that is never evicted and uploaded again gains
 // nothing from a copy, and every copy duplicates the page cache) while the pinr budget lasts
+// the next sz bytes of the pinned chunk pool (--moe pinr / the preheat), nullptr when the budget is spent or RAM is low
+static char * pin_alloc(moe_cache * mc, size_t sz) {
+    std::lock_guard<std::mutex> lk(mc->pin_mtx);
+    if (mc->pin_used + sz > mc->pin_budget) {
+        return nullptr;
+    }
+    if (mc->pin_left < sz) {
+        const size_t chunk = (size_t) 256 << 20;
+        if (mem_available_bytes() < chunk + ((size_t) 6 << 30)) {   // never push the system into swapping
+            LLAMA_LOG_WARN("moe-cache: pinr: stopped at %.1f GiB pinned (RAM available is low)\n", mc->pin_used / 1073741824.0);
+            mc->pin_budget = mc->pin_used;
+            return nullptr;
+        }
+        ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, chunk);
+        if (!b) {
+            mc->pin_budget = mc->pin_used;
+            return nullptr;
+        }
+        mc->pin_chunks.push_back(b);
+        mc->pin_cur  = (char *) ggml_backend_buffer_get_base(b);
+        mc->pin_left = chunk;
+    }
+    char * dst = mc->pin_cur;
+    mc->pin_cur  += sz;
+    mc->pin_left -= sz;
+    mc->pin_used += sz;
+    if (++mc->pin_n % 2048 == 0) {
+        LLAMA_LOG_WARN("moe-cache: pinr: %.1f of %.1f GiB pinned (%" PRIu64 " expert slices)\n", mc->pin_used / 1073741824.0, mc->pin_budget / 1073741824.0, mc->pin_n);
+    }
+    return dst;
+}
+
 const char * pin_slice(moe_cache * mc, layer_state & ls, int k, int32_t e, size_t sz, const ggml_tensor * src) {
     if (!mc->pin_buft || !ls.pin_ptr[k]) {
         return nullptr;
@@ -627,42 +660,16 @@ const char * pin_slice(moe_cache * mc, layer_state & ls, int k, int32_t e, size_
     if (p0 > seen) {
         return p0;
     }
+    if (!mc->pin_on_upload) {   // only the preheat fills the copies
+        return nullptr;
+    }
     if (p0 == nullptr) {
         ls.pin_ptr[k][e].store(seen, std::memory_order_release);
         return nullptr;
     }
-    char * dst = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(mc->pin_mtx);
-        if (ls.pin_ptr[k][e].load(std::memory_order_acquire) > seen) {
-            return ls.pin_ptr[k][e].load();
-        }
-        if (mc->pin_used + sz > mc->pin_budget) {
-            return nullptr;
-        }
-        if (mc->pin_left < sz) {
-            const size_t chunk = (size_t) 256 << 20;
-            if (mem_available_bytes() < chunk + ((size_t) 6 << 30)) {   // never push the system into swapping
-                LLAMA_LOG_WARN("moe-cache: pinr: stopped at %.1f GiB pinned (RAM available is low)\n", mc->pin_used / 1073741824.0);
-                mc->pin_budget = mc->pin_used;
-                return nullptr;
-            }
-            ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, chunk);
-            if (!b) {
-                mc->pin_budget = mc->pin_used;
-                return nullptr;
-            }
-            mc->pin_chunks.push_back(b);
-            mc->pin_cur  = (char *) ggml_backend_buffer_get_base(b);
-            mc->pin_left = chunk;
-        }
-        dst = mc->pin_cur;
-        mc->pin_cur  += sz;
-        mc->pin_left -= sz;
-        mc->pin_used += sz;
-        if (++mc->pin_n % 2048 == 0) {
-            LLAMA_LOG_WARN("moe-cache: pinr: %.1f of %.1f GiB pinned (%" PRIu64 " expert slices)\n", mc->pin_used / 1073741824.0, mc->pin_budget / 1073741824.0, mc->pin_n);
-        }
+    char * dst = pin_alloc(mc, sz);
+    if (!dst) {
+        return nullptr;
     }
     memcpy(dst, (const char *) src->data + (size_t) e*sz, sz);
     ls.pin_ptr[k][e].store(dst, std::memory_order_release);
@@ -6930,24 +6937,6 @@ static unsigned long long pp_self_read_bytes();
 // faulting them in at 0.8 GB/s (DeepSeek cold: a 2-token call took 10 s). The budget is the share of the model the pin planner already leaves to the page cache
 // (--moe pin-cache, 0.15 of the mapped experts); the reads are kept to 512 MiB ahead of what the disk has delivered, wait while a prompt call runs and stop when
 // a request has been served or the budget is spent. --moe preheat=0 switches it off. No hot map (empty state) means nothing to read.
-// A touch of a mapped pointer pulls in the first page only (then 128 KiB of readahead, one fault at a time): MADV_POPULATE_READ (Linux 5.14) reads the whole range
-// and puts it in this process' page tables, so the CPU branch never faults on it. It waits for the read, so the preheat lags it behind the asynchronous WILLNEED.
-static void populate_expert(const layer_state & ls, int32_t expert) {
-#if !defined(_WIN32) && defined(__linux__)
-    static const size_t pg = (size_t) sysconf(_SC_PAGESIZE);
-#ifndef MADV_POPULATE_READ
-#define MADV_POPULATE_READ 22
-#endif
-    for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
-        const uintptr_t a   = (uintptr_t) t->data + (size_t) expert*t->nb[2];
-        const uintptr_t beg = a & ~(uintptr_t) (pg - 1);
-        madvise((void *) beg, a + t->nb[2] - beg, MADV_POPULATE_READ);   // an old kernel answers EINVAL: nothing happens, the WILLNEED read stands
-    }
-#else
-    GGML_UNUSED(ls); GGML_UNUSED(expert);
-#endif
-}
-
 static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages the kernel has swapped out since boot
     unsigned long long v = 0;
     if (FILE * f = fopen("/proc/vmstat", "r")) {
@@ -6958,42 +6947,61 @@ static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages th
     return v;
 }
 
+// Before the first request (user 2026-11-03: "load all hot moes to ram ... prior req", then "stick to our array of pinned moe buffers"): the experts the state's hot map
+// counts most, which stayed mapped (the pin and the GPU cache hold the rest), are read ONCE with O_DIRECT (no page cache, no second copy) into pinned slots, hottest
+// first (ls.pin_ptr, the same array --moe pinr fills). The uploads of a miss then come from pinned RAM, not from the SSD at 0.8 to 1.6 GB/s; a mapped pointer is
+// never touched (a touch pulls in one page, then 128 KiB). The budget is the share the pin planner leaves to the page cache (--moe pin-cache, 0.15 of the mapped
+// experts). It waits during prompt calls, stops when decode starts, when the budget is spent, or at the first sign of swapping (a swap-out, or free memory under what it
+// would be after the whole budget). --moe preheat=0 switches it off. No hot map (empty state) means nothing to read.
 static void preheat_run(moe_cache * mc) {
     struct cand { uint64_t n; size_t li; int32_t e; };
     std::vector<cand> c;
-    double per_mapped = 0.0;   // bytes of one expert (three tensors) in the mapped layers, summed over layers, to get the budget
+    size_t cap = 0;
     for (size_t li = 0; li < mc->layers.size(); ++li) {
         const layer_state & ls = mc->layers[li];
-        if (ls.src_dfd[0] < 0 || ls.src_dfd[1] < 0 || ls.src_dfd[2] < 0) { continue; }
-        per_mapped += (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]) * (double) ls.expert_slot.size();
+        if (ls.src_dfd[0] < 0 || ls.src_dfd[1] < 0 || ls.src_dfd[2] < 0 || !ls.pin_ptr[0] || !ls.pin_ptr[1] || !ls.pin_ptr[2]) { continue; }
+        for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) { cap = std::max<size_t>(cap, t->nb[2]); }
         for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
             if (ls.glob_count[e] > 0 && ls.expert_slot[e] < 0) { c.push_back({ ls.glob_count[e], li, e }); }
         }
     }
-    const double h = [] { const char * v = llama_moe_get_opt("pin-cache"); return v ? std::min(0.9, std::max(0.0, atof(v))) : 0.15; }();
-    const double budget = h * per_mapped;
-    if (c.empty() || budget <= 0.0) { return; }
+    if (c.empty() || mc->pin_budget == 0) { return; }
     std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.n > b.n; });
+    cap += 8192;
+    void * raw = nullptr;
+    if (posix_memalign(&raw, 4096, cap) != 0) { return; }
+    uint8_t * buf = (uint8_t *) raw;
     const int64_t t0 = ggml_time_us();
-    const unsigned long long rb0 = pp_self_read_bytes(), sw0 = swap_out_pages();
-    // no swapping (user 2026-11-03): stop when the kernel swaps anything out, or when free memory falls below what it would be after the whole budget (someone else is taking RAM)
-    const double floor_avail = (double) mem_available_bytes() - budget;
-    double issued = 0.0;
+    const unsigned long long sw0 = swap_out_pages();
+    const double floor_avail = (double) mem_available_bytes() - (double) mc->pin_budget;
     size_t n = 0;
+    bool spent = false;
     const char * why = "budget spent";
     for (const cand & x : c) {
         if (mc->stats_stop.load() || mc->n_steps > 0) { why = "a request is running"; break; }
-        if (issued >= budget) { break; }
-        if ((n & 31) == 0 && (swap_out_pages() > sw0 || (double) mem_available_bytes() < floor_avail)) { why = "memory is tight, swap guard"; break; }   // a request has decoded: the page cache is now the request's
+        if ((n & 31) == 0 && (swap_out_pages() > sw0 || (double) mem_available_bytes() < floor_avail)) { why = "memory is tight, swap guard"; break; }
         while (g_prompt_call.load(std::memory_order_relaxed) && !mc->stats_stop.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
-        const layer_state & ls = mc->layers[x.li];
-        readahead(ls, x.e);
-        if (n >= 8) { populate_expert(mc->layers[c[n - 8].li], c[n - 8].e); }   // 8 experts behind: its read is under way or done, now map it
-        issued += (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
+        layer_state & ls = mc->layers[x.li];
+        bool ok = true;
+        const char * dst[3] = { nullptr, nullptr, nullptr };
+        const char * from = nullptr;
+        for (int k = 0; k < 3 && ok; ++k) {
+            const ggml_tensor * t = k == 0 ? ls.pub.up_src : k == 1 ? ls.pub.gate_src : ls.pub.down_src;
+            const size_t sz = t->nb[2];
+            if (expert_past(mc, ls, k, x.e, t, from) != 0) { ok = false; break; }   // the last expert reads past its slice: leave it to the mapping
+            const char * got = read_direct(ls.src_dfd[k], buf, cap - 4096, ls.src_offs[k] + (size_t) x.e*sz, sz);
+            char * d = got ? pin_alloc(mc, sz) : nullptr;
+            if (!d) { ok = false; if (got) { spent = true; } break; }
+            memcpy(d, got, sz);
+            dst[k] = d;
+        }
+        if (spent) { break; }
+        if (!ok) { continue; }   // a partly copied expert is simply not published (its pinned bytes stay unused)
+        for (int k = 0; k < 3; ++k) { ls.pin_ptr[k][x.e].store(dst[k], std::memory_order_release); }
         n++;
-        while (issued - (double) (pp_self_read_bytes() - rb0) > 536870912.0 && !mc->stats_stop.load() && mc->n_steps == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
     }
-    LLAMA_LOG_WARN("moe-cache: preheat: %zu hot experts (%.1f GiB of a %.1f GiB budget) asked for from the file in %.1f s, hottest first; stopped: %s\n", n, issued / 1073741824.0, budget / 1073741824.0, (ggml_time_us() - t0) / 1e6, why);
+    free(raw);
+    LLAMA_LOG_WARN("moe-cache: preheat: %zu hot experts, %.1f of %.1f GiB pinned in %.1f s, hottest first; stopped: %s\n", n, mc->pin_used / 1073741824.0, mc->pin_budget / 1073741824.0, (ggml_time_us() - t0) / 1e6, why);
 }
 
 static void stats_status_run(moe_cache * mc) {
@@ -8086,9 +8094,20 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     while (fgets(line, sizeof line, mf)) { if (sscanf(line, "MemTotal: %zu kB", &kb) == 1) { mem_total = kb * 1024; break; } }
                     fclose(mf);
                 }
-                if (gpu && !src_pinned && !mc->staging[0] && pinr > 0 && mem_total) {
+                const bool ph_on = [] { const char * v = moe_opt("preheat"); return !(v && v[0] == '0'); }();   // default on
+                if (gpu && !src_pinned && !mc->staging[0] && (pinr > 0 || ph_on) && mem_total) {
                     mc->pin_buft   = ggml_backend_dev_host_buffer_type(gpu);
-                    mc->pin_budget = (size_t) (std::min(pinr, 10.0) / 10.0 * (double) mem_total);
+                    mc->pin_on_upload = pinr > 0;
+                    if (pinr > 0) {
+                        mc->pin_budget = (size_t) (std::min(pinr, 10.0) / 10.0 * (double) mem_total);
+                    } else {   // the preheat: the share of the mapped experts the pin planner leaves to the page cache (--moe pin-cache, 0.15)
+                        double mapped = 0.0;
+                        for (const auto & ls3 : mc->layers) {
+                            for (const ggml_tensor * t3 : { ls3.pub.up_src, ls3.pub.gate_src, ls3.pub.down_src }) { mapped += (double) t3->nb[2] * (double) t3->ne[2]; }
+                        }
+                        const char * pc = llama_moe_get_opt("pin-cache");
+                        mc->pin_budget = (size_t) (mapped * (pc ? std::min(0.9, std::max(0.0, atof(pc))) : 0.15));
+                    }
                     for (auto & ls2 : mc->layers) {
                         const ggml_tensor * ps[3] = { ls2.pub.up_src, ls2.pub.gate_src, ls2.pub.down_src };
                         for (int k2 = 0; k2 < 3; ++k2) {
@@ -8097,7 +8116,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             for (size_t e2 = 0; e2 < ne; ++e2) { ls2.pin_ptr[k2][e2].store(nullptr); }
                         }
                     }
-                    LLAMA_LOG_WARN("moe-cache: pinr=%.1f: up to %.1f GiB of expert slices pinned as they are uploaded, the rest stays mmap'd\n", pinr, mc->pin_budget / 1073741824.0);
+                    LLAMA_LOG_WARN("moe-cache: %s: up to %.1f GiB of expert slices pinned%s, the rest stays mmap'd\n", pinr > 0 ? "pinr" : "preheat", mc->pin_budget / 1073741824.0, pinr > 0 ? " as they are uploaded" : " from the hot map before request 1");
                 }
             }
             // --moe read-direct=1: the expert tensors that did not fit the pin budget are read from their file past the page cache (read_direct)
@@ -8292,6 +8311,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                     }
                     const int64_t tr = ggml_time_us();
+                    if (ls.pin_ptr[k]) {   // the preheat's pinned copy of this expert (no read at all): straight to the card
+                        const char * pc = ls.pin_ptr[k][j.expert].load(std::memory_order_acquire);
+                        const char * pc_from = nullptr;
+                        if (pc > (const char *) 1 && expert_past(mc, ls, k, j.expert, srcs[k], pc_from) == 0) {
+                            ggml_backend_tensor_set(dsts[k], pc, (size_t) j.slot*dsts[k]->nb[2], sz);
+                            continue;
+                        }
+                    }
                     if (rd_ptr && ls.src_dfd[k] >= 0) {
                         // a slice that stayed mapped: the file into this worker's pinned buffer, then DMA. The bytes a matmul reads past the slice come with it.
                         const char * past = nullptr;
