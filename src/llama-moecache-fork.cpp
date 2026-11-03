@@ -620,8 +620,10 @@ static size_t mem_available_bytes() {
 // the pinned copy of expert e's slice of tensor k, or nullptr. Made on the SECOND upload of the expert (the first only marks it: an expert that is never evicted and uploaded again gains
 // nothing from a copy, and every copy duplicates the page cache) while the pinr budget lasts
 // the next sz bytes of the pinned chunk pool (--moe pinr / the preheat), nullptr when the budget is spent or RAM is low
-static char * pin_alloc(moe_cache * mc, size_t sz) {
+static char * pin_alloc(moe_cache * mc, size_t sz, size_t align = 1) {   // align 4096: the block starts on a page, so an O_DIRECT read can land in it
     std::lock_guard<std::mutex> lk(mc->pin_mtx);
+    const size_t pad = align > 1 ? (size_t) ((align - ((uintptr_t) mc->pin_cur & (align - 1))) & (align - 1)) : 0;
+    if (mc->pin_left >= pad + sz && pad > 0) { mc->pin_cur += pad; mc->pin_left -= pad; mc->pin_used += pad; }
     if (mc->pin_used + sz > mc->pin_budget) {
         return nullptr;
     }
@@ -638,7 +640,7 @@ static char * pin_alloc(moe_cache * mc, size_t sz) {
             return nullptr;
         }
         mc->pin_chunks.push_back(b);
-        mc->pin_cur  = (char *) ggml_backend_buffer_get_base(b);
+        mc->pin_cur  = (char *) ggml_backend_buffer_get_base(b);   // the registered anonymous memory of ggml_cuda_host_malloc_registered: huge pages while free 2 MiB blocks last, one register
         mc->pin_left = chunk;
     }
     char * dst = mc->pin_cur;
@@ -6956,21 +6958,15 @@ static unsigned long long swap_out_pages() {   // /proc/vmstat pswpout: pages th
 static void preheat_run(moe_cache * mc) {
     struct cand { uint64_t n; size_t li; int32_t e; };
     std::vector<cand> c;
-    size_t cap = 0;
     for (size_t li = 0; li < mc->layers.size(); ++li) {
         const layer_state & ls = mc->layers[li];
         if (ls.src_dfd[0] < 0 || ls.src_dfd[1] < 0 || ls.src_dfd[2] < 0 || !ls.pin_ptr[0] || !ls.pin_ptr[1] || !ls.pin_ptr[2]) { continue; }
-        for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) { cap = std::max<size_t>(cap, t->nb[2]); }
         for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
             if (ls.glob_count[e] > 0 && ls.expert_slot[e] < 0) { c.push_back({ ls.glob_count[e], li, e }); }
         }
     }
     if (c.empty() || mc->pin_budget == 0) { return; }
     std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.n > b.n; });
-    cap += 8192;
-    void * raw = nullptr;
-    if (posix_memalign(&raw, 4096, cap) != 0) { return; }
-    uint8_t * buf = (uint8_t *) raw;
     const int64_t t0 = ggml_time_us();
     const unsigned long long sw0 = swap_out_pages();
     const double floor_avail = (double) mem_available_bytes() - (double) mc->pin_budget;
@@ -6989,18 +6985,24 @@ static void preheat_run(moe_cache * mc) {
             const ggml_tensor * t = k == 0 ? ls.pub.up_src : k == 1 ? ls.pub.gate_src : ls.pub.down_src;
             const size_t sz = t->nb[2];
             if (expert_past(mc, ls, k, x.e, t, from) != 0) { ok = false; break; }   // the last expert reads past its slice: leave it to the mapping
-            const char * got = read_direct(ls.src_dfd[k], buf, cap - 4096, ls.src_offs[k] + (size_t) x.e*sz, sz);
-            char * d = got ? pin_alloc(mc, sz) : nullptr;
-            if (!d) { ok = false; if (got) { spent = true; } break; }
-            memcpy(d, got, sz);
-            dst[k] = d;
+            const size_t off = ls.src_offs[k] + (size_t) x.e*sz, beg = off & ~(size_t) 4095, end = (off + sz + 4095) & ~(size_t) 4095;
+            char * d = pin_alloc(mc, end - beg, 4096);   // the O_DIRECT read lands in the pinned block itself: no staging buffer, no copy, no page cache
+            if (!d) { ok = false; spent = true; break; }
+            size_t got = 0;
+            while (got < off + sz - beg) {
+                const ssize_t rr = pread(ls.src_dfd[k], d + got, end - beg - got, (off_t) (beg + got));
+                if (rr <= 0) { break; }
+                got += (size_t) rr;
+                if (got < off + sz - beg && (got & 4095)) { break; }
+            }
+            if (got < off + sz - beg) { ok = false; break; }   // a failed read: the expert stays mapped, its block stays unused
+            dst[k] = d + (off - beg);
         }
         if (spent) { break; }
         if (!ok) { continue; }   // a partly copied expert is simply not published (its pinned bytes stay unused)
         for (int k = 0; k < 3; ++k) { ls.pin_ptr[k][x.e].store(dst[k], std::memory_order_release); }
         n++;
     }
-    free(raw);
     LLAMA_LOG_WARN("moe-cache: preheat: %zu hot experts, %.1f of %.1f GiB pinned in %.1f s, hottest first; stopped: %s\n", n, mc->pin_used / 1073741824.0, mc->pin_budget / 1073741824.0, (ggml_time_us() - t0) / 1e6, why);
 }
 
