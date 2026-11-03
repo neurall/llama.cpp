@@ -402,6 +402,7 @@ struct moe_cache {
     std::thread                lazy_thr;          // --moe pin-lazy: reads expert tensors into pinned buffers in the background (pin_prefetch_run)
     std::atomic<bool>          lazy_stop{false};
     std::thread                stats_thr;          // --moe stats: the status lines (stats_status_run)
+    std::thread                preheat_thr;        // page-cache preheat of the hot experts that stayed mapped (preheat_run)
     std::atomic<bool>          stats_stop{false};
 
     // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
@@ -6923,6 +6924,44 @@ static bool                 g_req_own = false;   // they are the request's own t
 // --moe stats: a status line every --moe stats-ms (default 10000; was 1000, user 2026-11-02: "writes a status line every second maybe hurting perf not needed so often 10-30s is fine"). Earlier: "we need to see
 // stats samples more often than planner makes decisions"). RAM as this engine moves it (this CPU shows no memory counters without root: the CPU's expert reads, the uploads, the prompt streams; all other traffic is
 // missing), each link's uploads against its probed maximum, the cache, then disk, memory and CPU (llama_moe_stats_io_fork). What every card really moved, its load, temperature and free VRAM: the gpu lines from run.py.
+static unsigned long long pp_self_read_bytes();
+// Before the first request (user 2026-11-03: "load all hot moes to ram to preheat pagecache prior req"): the experts the state's hot map counts most, which stayed
+// mapped (the pin and the GPU cache hold the rest), are asked for from the file in the order of their counts, so request 1 finds them in the page cache instead of
+// faulting them in at 0.8 GB/s (DeepSeek cold: a 2-token call took 10 s). The budget is the share of the model the pin planner already leaves to the page cache
+// (--moe pin-cache, 0.15 of the mapped experts); the reads are kept to 512 MiB ahead of what the disk has delivered, wait while a prompt call runs and stop when
+// a request has been served or the budget is spent. --moe preheat=0 switches it off. No hot map (empty state) means nothing to read.
+static void preheat_run(moe_cache * mc) {
+    struct cand { uint64_t n; size_t li; int32_t e; };
+    std::vector<cand> c;
+    double per_mapped = 0.0;   // bytes of one expert (three tensors) in the mapped layers, summed over layers, to get the budget
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        const layer_state & ls = mc->layers[li];
+        if (ls.src_dfd[0] < 0 || ls.src_dfd[1] < 0 || ls.src_dfd[2] < 0) { continue; }
+        per_mapped += (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]) * (double) ls.expert_slot.size();
+        for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
+            if (ls.glob_count[e] > 0 && ls.expert_slot[e] < 0) { c.push_back({ ls.glob_count[e], li, e }); }
+        }
+    }
+    const double h = [] { const char * v = llama_moe_get_opt("pin-cache"); return v ? std::min(0.9, std::max(0.0, atof(v))) : 0.15; }();
+    const double budget = h * per_mapped;
+    if (c.empty() || budget <= 0.0) { return; }
+    std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.n > b.n; });
+    const int64_t t0 = ggml_time_us();
+    const unsigned long long rb0 = pp_self_read_bytes();
+    double issued = 0.0;
+    size_t n = 0;
+    for (const cand & x : c) {
+        if (mc->stats_stop.load() || issued >= budget || mc->n_steps > 0) { break; }   // a request has decoded: the page cache is now the request's
+        while (g_prompt_call.load(std::memory_order_relaxed) && !mc->stats_stop.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+        const layer_state & ls = mc->layers[x.li];
+        readahead(ls, x.e);
+        issued += (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
+        n++;
+        while (issued - (double) (pp_self_read_bytes() - rb0) > 536870912.0 && !mc->stats_stop.load() && mc->n_steps == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
+    }
+    LLAMA_LOG_WARN("moe-cache: preheat: %zu hot experts (%.1f GiB of a %.1f GiB budget) asked for from the file in %.1f s, hottest first\n", n, issued / 1073741824.0, budget / 1073741824.0, (ggml_time_us() - t0) / 1e6);
+}
+
 static void stats_status_run(moe_cache * mc) {
     const char * o = moe_opt("stats-ms");
     const int64_t period = (int64_t) std::max(50, o ? atoi(o) : 10000) * 1000;
@@ -8084,6 +8123,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
             if (llama_moe_log_profile_fork("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
+            if (const char * ph = moe_opt("preheat"); !(ph && ph[0] == '0') && gpu && !mc->rd_staging.empty()) { mc->preheat_thr = std::thread(preheat_run, mc); }   // default on; =0 off; rd_staging: some experts stayed mapped
             if (!mc->rd_staging.empty()) {
                 LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT: prompt uploads on %d threads, %d cache workers\n", rd_mapped / 1073741824.0, mc->rd_threads, n_workers);
             }
@@ -11798,6 +11838,7 @@ void llama_moe_cache_free_fork() {
     }
     mc->stats_stop.store(true);
     if (mc->stats_thr.joinable()) { mc->stats_thr.join(); }
+    if (mc->preheat_thr.joinable()) { mc->preheat_thr.join(); }
     mc->lazy_stop.store(true);
     if (mc->lazy_thr.joinable()) { mc->lazy_thr.join(); }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
