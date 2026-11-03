@@ -418,6 +418,8 @@ struct moe_cache {
     // --moe pin-miss=2 also reads ahead: the next layer's router on this layer's input names its picks (pin_miss_preload). --moe pin-miss=3 also fills what the VRAM preload leaves with the next hottest
     // experts before any request (pin_miss_fill), and reads each layer's hot experts from a request's start (pin_miss_hot_fill).
     bool                       pm_on = false;
+    std::atomic<bool>          pm_all{false};     // every slice of the model is in a block: no slice can lose its block, uploads DMA straight from them (moe_block_fn)
+    size_t                     pm_slices = 0;     // all expert slices that stayed mapped
     bool                       pm_pre = false;
     bool                       pm_hot = false;
     size_t                     pm_hot_next = SIZE_MAX;   // the next layer whose hot list is read, only under mc->mtx
@@ -4060,7 +4062,10 @@ static void moe_split_cb(ggml_backend_t backend, void * ud) {
 extern "C" {
     typedef const void * (*ggml_backend_moe_read_fn_t)(const ggml_tensor *, size_t, size_t, void *, size_t, void *);
     GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there too, no shared header)
+    typedef const void * (*ggml_backend_moe_block_fn_t)(const ggml_tensor *, int64_t, size_t *, void *);
+    GGML_API void ggml_backend_set_moe_block_fn_fork(ggml_backend_moe_block_fn_t fn, void * user_data);   // ggml-backend.cpp
 }
+static const void * moe_block_fn(const ggml_tensor * weight, int64_t e, size_t * avail, void * ud);   // below: --moe pin-miss, an expert's slice in its pinned block
 // The O_DIRECT read thread count from the machine, not a constant (user 2026-11-02: "8 t is nice on epyc but hardly on 3600"): 1 MiB blocks on n threads for 0.2 s each, n = 1, 2, 4, 8 and
 // 16 up to the hardware threads / 2; the smallest n within 7% of the best bandwidth wins, so a drive that one or two threads fill leaves the other cores to compute.
 // Costs about 1 s at start. Falls back to 8 (the old default) when the file cannot be read direct.
@@ -7168,6 +7173,7 @@ static bool slice_cached(int fd, size_t off, size_t sz) {
 static int32_t pin_miss_block(moe_cache * mc, int c, int keep0, int keep1, int behind, double limit) {
     moe_cache::pm_class & cl = mc->pm_cls[c];
     if (!cl.free.empty()) { const int32_t id = cl.free.back(); cl.free.pop_back(); mc->pm_held++; return id; }
+    if (mc->pm_all.load(std::memory_order_relaxed)) { return -1; }   // never with the whole model held: stream copies read the blocks asynchronously (moe_block_fn)
     int32_t best = -1;
     double  coldest = limit;
     for (int n = 0; n < 64 && cl.n > 0; ++n) {
@@ -7356,7 +7362,9 @@ static void pin_miss_fill(moe_cache * mc) {
     }
     LLAMA_LOG_WARN("moe-cache: pin-miss: before any request: %" PRIu64 " slices of the next hottest experts in RAM (%.1f GiB, %.1f s, %zu experts ranked), the VRAM preload's uploads ended %.1f s later, %zu left\n",
             want, mc->pm_bytes.load() / 1073741824.0, t_ram, picks.size(), (ggml_time_us() - t0) / 1e6 - t_ram, left);
-    LLAMA_LOG_WARN("moe-cache: pin-miss: %zu experts ranked by the profile, %zu more queued in model order as free blocks allowed\n", n_ranked, picks.size() - n_ranked);
+    mc->pm_all.store(mc->pm_held.load() == (int64_t) mc->pm_slices && mc->pm_evict.load() == 0);
+    LLAMA_LOG_WARN("moe-cache: pin-miss: %zu experts ranked by the profile, %zu more queued in model order as free blocks allowed; %s\n", n_ranked, picks.size() - n_ranked,
+            mc->pm_all.load() ? "the pool holds the whole model: stream uploads DMA straight from its blocks" : "the pool holds part of the model: stream uploads copy from its blocks or read the SSD");
 }
 
 // --moe pin-miss=2, mc->mtx held: the next layer's router on this layer's input ([n_expert, rows], block 0 of the predictor's output when it has several, the same look the prompt ring's
@@ -7454,6 +7462,23 @@ static bool pin_miss_upload(moe_cache * mc, int li, int k, int32_t e, ggml_tenso
 }
 
 static std::unordered_map<const ggml_tensor *, std::pair<int, int>> g_pm_map;   // weight tensor -> (layer index, k); filled once before the hook is set, read only after
+
+// The scheduler's stream uploads ask this per expert: the slice's pinned block when the pool holds the whole model (pm_all: nothing is evicted, so a block outlives any async copy from it), and in
+// *avail the bytes there from the slice's start, its past bytes included. nullptr: the ring as before.
+static const void * moe_block_fn(const ggml_tensor * weight, int64_t e, size_t * avail, void * ud) {
+    moe_cache * mc = (moe_cache *) ud;
+    if (!mc->pm_all.load(std::memory_order_acquire)) { return nullptr; }
+    const auto it = g_pm_map.find(weight);
+    if (it == g_pm_map.end() || e < 0 || e >= weight->ne[2]) { return nullptr; }
+    const int li = it->second.first, k = it->second.second;
+    const int32_t sid = mc->pm_where[li][(size_t) e*3 + k].load(std::memory_order_acquire);
+    if (sid < 0) { return nullptr; }
+    const char * p = mc->pm_s[sid].ptr.load(std::memory_order_acquire);
+    if (p == nullptr || p == PM_LOADING) { return nullptr; }
+    const layer_state & ls = mc->layers[li];
+    *avail = weight->nb[2] + (ls.pcls >= 0 ? mc->pool[ls.pcls].past[k] : 0);
+    return p;
+}
 
 // --moe pin-miss: bytes [off, off + n) of an expert tensor (a chunk of the stream ring, not aligned to experts) copied into out from the pool's blocks; false when an expert of the range has no
 // block (the ring then reads the chunk from the SSD). Past the last expert: the tensor's padding, zeros. Each block is held while it is copied (users, as pin_miss_upload). A few threads: one
@@ -7590,6 +7615,7 @@ static void pin_miss_start(moe_cache * mc) {
         mc->pm_where.clear();
         return;
     }
+    mc->pm_slices = n_mapped;
     mc->pm_s.reset(new moe_cache::pm_slot[n_blocks]);
     mc->pm_ls.reset(new moe_cache::pm_lstat[mc->layers.size()]);
     mc->pm_n = n_blocks;
@@ -9406,6 +9432,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         }
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
         ggml_backend_set_moe_read_fn_fork(mc->rd_src.empty() ? nullptr : moe_read_fn, mc);
+        ggml_backend_set_moe_block_fn_fork(mc->pm_on ? moe_block_fn : nullptr, mc);
         ggml_set_moe_phase_callback(moe_phase_cb, mc);
         {
             const char * e = moe_opt("prefill-d2d");
@@ -12208,7 +12235,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         // the first call on the decode chain neither: 2 tokens took GLM 3065 ms next to the preload's uploads, 106 ms for 4 tokens later, and that call may be the only one of its size
         static bool cold = true, cold_dec = true;
         const bool fills = !mc->layers.empty() && (double) n_tokens / P * (double) mc->n_expert_used >= (double) mc->layers[0].expert_slot.size();
-        if (cold && fills) {
+        if (cold && fills && path != PP_DEC) {   // the decode chain's first filling pass counts: a cold number only makes the stream look better, an uncounted one let a 14240-token pass take the chain
             cold = false;
             g_warm.store(true);
         } else if (path == PP_DEC && cold_dec) {
@@ -12368,7 +12395,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // prompts: 2438 / 2300, 1824 / 2000, 2318 / 2100, 1576 / 1600, 6727 / 7000, 2669 / 2700 ms calculated / taken; a cold DeepSeek with its CPU rate at 1.9 GB/s among them). The stream's time is its
     // upload U, the most it can take: what the decode chain must beat. Both follow the rates, so the size where they meet moves with the link and the RAM, and comes out as a number: U / time per token
     // (user 2026-11-02: "we just need to find calc max threshol token count to do misses cpu higher upload and gpu"). What was measured at this size counts first. Then the prompt chain if its uploads can win.
-    const double td = pp_took_us(PP_DEC, n), to = pp_other_us(n, PP_DEC);
+    // the decode chain measured at this size, else at the largest size below scaled by the tokens (35B, 4608 MiB: 1222 tokens took 1947 ms where 50 were calculated; with only the calculation
+    // the 14240-token pass took the chain for 15.2 s where the stream takes 3.4)
+    const double td = pp_scaled_us(PP_DEC, n), to = pp_other_us(n, PP_DEC);
     // The stream reads the experts no card holds: over the link, and from the SSD where their tensors are still mapped. Both run side by side (the reads fill the staging slots the link empties), so the
     // slower one is its time; the SSD's rate is what the stream passes read at so far, none before the first one.
     const double ssd_rate = g_pp_ssd_gbs > 0.0 ? g_pp_ssd_gbs : g_load_read_gbs.load();   // a stream pass's own rate, until one ran: the loader's (user 2026-11-03: a short first prompt should not default to the stream)
@@ -12533,6 +12562,7 @@ void llama_moe_cache_free_fork() {
     ggml_set_moe_phase_callback(nullptr, nullptr);
     ggml_backend_set_moe_src_callback(nullptr, nullptr);
     ggml_backend_set_moe_read_fn_fork(nullptr, nullptr);
+    ggml_backend_set_moe_block_fn_fork(nullptr, nullptr);
     ggml_backend_set_dma_hook_fork(nullptr);
     ggml_backend_set_moe_fill_callback(nullptr, nullptr);
     ggml_backend_set_moe_where_fn_fork(nullptr, nullptr);
