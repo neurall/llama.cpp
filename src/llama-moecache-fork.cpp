@@ -6965,7 +6965,12 @@ static void preheat_run(moe_cache * mc) {
             if (ls.glob_count[e] > 0 && ls.expert_slot[e] < 0) { c.push_back({ ls.glob_count[e], li, e }); }
         }
     }
-    if (c.empty() || mc->pin_budget == 0) { return; }
+    if (c.empty() || mc->pin_budget == 0) {
+        size_t mapped_layers = 0, with_counts = 0;
+        for (const auto & ls : mc->layers) { mapped_layers += ls.src_dfd[0] >= 0 && ls.src_dfd[1] >= 0 && ls.src_dfd[2] >= 0; for (uint64_t g : ls.glob_count) { with_counts += g > 0; } }
+        LLAMA_LOG_WARN("moe-cache: preheat: nothing to read (%zu candidate experts, budget %.1f GiB, %zu of %zu layers mapped for direct reads, %zu experts with hot counts)\n", c.size(), mc->pin_budget / 1073741824.0, mapped_layers, mc->layers.size(), with_counts);
+        return;
+    }
     std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.n > b.n; });
     const int64_t t0 = ggml_time_us();
     const unsigned long long sw0 = swap_out_pages();
