@@ -628,7 +628,8 @@ static char * pin_alloc(moe_cache * mc, size_t sz, size_t align = 1) {   // alig
         return nullptr;
     }
     if (mc->pin_left < sz) {
-        const size_t chunk = (size_t) 256 << 20;
+        // the preheat's arena is ONE registered buffer of the whole budget (one allocation, one register, huge pages while free 2 MiB blocks last); --moe pinr grows in 256 MiB steps
+        const size_t chunk = mc->pin_on_upload ? (size_t) 256 << 20 : std::max<size_t>(sz, (mc->pin_budget - mc->pin_used + 4095) & ~(size_t) 4095);
         if (mem_available_bytes() < chunk + ((size_t) 6 << 30)) {   // never push the system into swapping
             LLAMA_LOG_WARN("moe-cache: pinr: stopped at %.1f GiB pinned (RAM available is low)\n", mc->pin_used / 1073741824.0);
             mc->pin_budget = mc->pin_used;
