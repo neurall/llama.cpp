@@ -1,0 +1,13 @@
+run 22587 | no_cap | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.33 t/s | prompt 86.1 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-glm-s300.ini,log=wk | power 200+200 W | 2026-11-03 07:00:14
+
+The user wants me to delete code in `json-schema-to-grammar.cpp` that is never used. I need to analyze the file and figure out which functions/variables are unused.
+
+Let me think about what this file contains. This is from llama.cpp's `common/json-schema-to-grammar.cpp`. Let me recall the structure of that file.
+
+The file contains:
+1. `build_repetition` - static helper function
+2. `build_min_max_int` - static helper function (the snippet cuts off here)
+3. A `SchemaGrammar` class or similar with methods like:
+   - `add_rule`
+   - `
+---

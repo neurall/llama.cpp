@@ -1,0 +1,4 @@
+run 22585 | no_cap | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 27.53 t/s | prompt 67.1 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-ds-s500.ini,log=wk | power 200+200 W | 2026-11-03 06:57:18
+
+We need answer user asks: "Delete the code in this file that is never used." They provided partial file? Need identify unused code in common/json-schema-to-grammar.cpp. Need likely from llama.cpp source. Need inspect full file? They only pasted beginning truncated at build_min_max_int. Need determine unused functions/static helpers? Need answer likely provide code deletion? Need understand task: They want delete code in this file that is never used. We need identify unused code in file. But only snippet incomplete. Need maybe from actual llama.cpp common/json-schema-to-grammar.cpp. Need recall source. Let's
+---

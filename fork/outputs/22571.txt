@@ -1,0 +1,9 @@
+run 22571 | live_rates | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.71 t/s | prompt 59.9 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-glm-s200.ini,log=wk | power 200+200 W | 2026-11-03 06:37:41
+
+The user wants me to delete code in `json-schema-to-grammar.cpp` that is never used. I need to analyze the file and identify unused code. However, I only have a partial file shown (it's cut off mid-function). Let me think about what this file typically contains based on the llama.cpp project, since this appears to be from llama.cpp's `common/json-schema-to-grammar.cpp`.
+
+Let me recall the actual content of llama.cpp's `common/json-schema-to-grammar.cpp`. This file implements a JSON schema to grammar converter. Let me reconstruct it from memory:
+
+```cpp
+// file: common/json-schema
+---
