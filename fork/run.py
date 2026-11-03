@@ -2607,21 +2607,19 @@ def generate(build, env, args, prompt, n, chat, extra=None, tag=None):
 
 
 def prep_model():
-    """Drop other models' pages from RAM first (fadvise, no root) so they are not evicted during the run, and read this model
-    into the page cache when it fits in RAM (bigger than RAM: the throwaway run before each measured run caches the used experts)."""
+    """Every model's pages leave RAM before a cell, this model's too (fadvise, no root), so run 1 gets what a start after a reboot gets, whatever ran before. A kept server keeps its model's pages:
+    that cell asked for a warm start. Never read the model in here: a dd of every model under 85% of RAM stood here until 2026-11-03, it made run 1's page-cache reads look like RAM
+    and load times look short, stock's too. Rows before that date are warm on those models (user: "dd was cheating")."""
     import glob
     cur = set(glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", MODEL)))
-    for f in (glob.glob(os.path.join(MODELS_DIR, "**", "*.gguf"), recursive=True) if MODELS_DIR else []):
-        if f not in cur:
-            try:
-                fd = os.open(f, os.O_RDONLY)
-                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-                os.close(fd)
-            except OSError:
-                pass
-    size = sum(os.path.getsize(f) for f in cur)
-    if size < 0.85 * os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"):
-        subprocess.run(["dd", f"if={MODEL}", "of=/dev/null", "bs=16M"], stderr=subprocess.DEVNULL)
+    drop = set(glob.glob(os.path.join(MODELS_DIR, "**", "*.gguf"), recursive=True) if MODELS_DIR else [])
+    for f in (drop - cur if kept_get() else drop | cur):
+        try:
+            fd = os.open(f, os.O_RDONLY)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.close(fd)
+        except OSError:
+            pass
 
 
 _PL = {}
