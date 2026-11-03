@@ -655,6 +655,8 @@ static char * pin_alloc(moe_cache * mc, size_t sz, size_t align = 1) {   // alig
     return dst;
 }
 
+static size_t expert_past(const moe_cache * mc, const layer_state & ls, int k, int32_t expert, const ggml_tensor * src, const char * & from);
+
 const char * pin_slice(moe_cache * mc, layer_state & ls, int k, int32_t e, size_t sz, const ggml_tensor * src) {
     if (!mc->pin_buft || !ls.pin_ptr[k]) {
         return nullptr;
@@ -671,11 +673,16 @@ const char * pin_slice(moe_cache * mc, layer_state & ls, int k, int32_t e, size_
         ls.pin_ptr[k][e].store(seen, std::memory_order_release);
         return nullptr;
     }
-    char * dst = pin_alloc(mc, sz);
+    const char * from = nullptr;
+    const size_t pb = expert_past(mc, ls, k, e, src, from);
+    if (pb > 0 && e + 1 >= src->ne[2]) {   // the last expert's past bytes are padding, not the mapping's: no copy
+        return nullptr;
+    }
+    char * dst = pin_alloc(mc, sz + pb);
     if (!dst) {
         return nullptr;
     }
-    memcpy(dst, (const char *) src->data + (size_t) e*sz, sz);
+    memcpy(dst, (const char *) src->data + (size_t) e*sz, sz + pb);   // with the bytes a matmul reads past the slice (the next expert's), like the preheat's copies
     ls.pin_ptr[k][e].store(dst, std::memory_order_release);
     return dst;
 }
@@ -6982,13 +6989,13 @@ static void preheat_run(moe_cache * mc) {
     std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.n > b.n; });
     const int64_t t0 = ggml_time_us();
     const unsigned long long sw0 = swap_out_pages();
-    const double floor_avail = (double) mem_available_bytes() - (double) mc->pin_budget;
-    size_t n = 0;
+    size_t n = 0, n_seen = 0, n_fail = 0, n_last = 0;
+    int read_errno = 0;
     bool spent = false;
     const char * why = "budget spent";
     for (const cand & x : c) {
         if (mc->stats_stop.load() || mc->n_steps > 0) { why = "a request is running"; break; }
-        if ((n & 31) == 0 && (swap_out_pages() > sw0 || (double) mem_available_bytes() < floor_avail)) { why = "memory is tight, swap guard"; break; }
+        if ((++n_seen & 31) == 0 && swap_out_pages() > sw0) { why = "the system swapped, swap guard"; break; }   // the arena itself is checked once by pin_alloc; O_DIRECT reads add no memory
         while (g_prompt_call.load(std::memory_order_relaxed) && !mc->stats_stop.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
         layer_state & ls = mc->layers[x.li];
         bool ok = true;
@@ -6997,18 +7004,19 @@ static void preheat_run(moe_cache * mc) {
         for (int k = 0; k < 3 && ok; ++k) {
             const ggml_tensor * t = k == 0 ? ls.pub.up_src : k == 1 ? ls.pub.gate_src : ls.pub.down_src;
             const size_t sz = t->nb[2];
-            if (expert_past(mc, ls, k, x.e, t, from) != 0) { ok = false; break; }   // the last expert reads past its slice: leave it to the mapping
-            const size_t off = ls.src_offs[k] + (size_t) x.e*sz, beg = off & ~(size_t) 4095, end = (off + sz + 4095) & ~(size_t) 4095;
+            const size_t pb = expert_past(mc, ls, k, x.e, t, from);   // bytes a matmul reads past the slice: the next expert's, read along (as the upload worker does)
+            if (pb > 0 && x.e + 1 >= t->ne[2]) { ok = false; n_last++; break; }   // the last expert's past bytes are padding, not in the file: it stays with the mapping
+            const size_t off = ls.src_offs[k] + (size_t) x.e*sz, beg = off & ~(size_t) 4095, end = (off + sz + pb + 4095) & ~(size_t) 4095;
             char * d = pin_alloc(mc, end - beg, 4096);   // the O_DIRECT read lands in the pinned block itself: no staging buffer, no copy, no page cache
             if (!d) { ok = false; spent = true; break; }
             size_t got = 0;
-            while (got < off + sz - beg) {
+            while (got < off + sz + pb - beg) {
                 const ssize_t rr = pread(ls.src_dfd[k], d + got, end - beg - got, (off_t) (beg + got));
-                if (rr <= 0) { break; }
+                if (rr <= 0) { if (rr < 0 && !read_errno) { read_errno = errno; } break; }
                 got += (size_t) rr;
-                if (got < off + sz - beg && (got & 4095)) { break; }
+                if (got < off + sz + pb - beg && (got & 4095)) { break; }
             }
-            if (got < off + sz - beg) { ok = false; break; }   // a failed read: the expert stays mapped, its block stays unused
+            if (got < off + sz + pb - beg) { ok = false; n_fail++; break; }   // a failed read: the expert stays mapped, its block stays unused
             dst[k] = d + (off - beg);
         }
         if (spent) { break; }
@@ -7016,7 +7024,8 @@ static void preheat_run(moe_cache * mc) {
         for (int k = 0; k < 3; ++k) { ls.pin_ptr[k][x.e].store(dst[k], std::memory_order_release); }
         n++;
     }
-    LLAMA_LOG_WARN("moe-cache: preheat: %zu hot experts, %.1f of %.1f GiB pinned in %.1f s, hottest first; stopped: %s\n", n, mc->pin_used / 1073741824.0, mc->pin_budget / 1073741824.0, (ggml_time_us() - t0) / 1e6, why);
+    LLAMA_LOG_WARN("moe-cache: preheat: %zu hot experts, %.1f of %.1f GiB pinned in %.1f s, hottest first; stopped: %s; %zu failed reads%s%s, %zu last experts left mapped\n", n, mc->pin_used / 1073741824.0, mc->pin_budget / 1073741824.0, (ggml_time_us() - t0) / 1e6, why,
+            n_fail, read_errno ? ", first: " : "", read_errno ? strerror(read_errno) : "", n_last);
 }
 
 static void stats_status_run(moe_cache * mc) {
@@ -8332,8 +8341,13 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     if (ls.pin_ptr[k]) {   // the preheat's pinned copy of this expert (no read at all): straight to the card
                         const char * pc = ls.pin_ptr[k][j.expert].load(std::memory_order_acquire);
                         const char * pc_from = nullptr;
-                        if (pc > (const char *) 1 && expert_past(mc, ls, k, j.expert, srcs[k], pc_from) == 0) {
+                        const size_t pb = pc > (const char *) 1 ? expert_past(mc, ls, k, j.expert, srcs[k], pc_from) : 0;
+                        if (pc > (const char *) 1 && (pb == 0 || j.expert + 1 < srcs[k]->ne[2])) {   // the preheat read the past bytes along (the last expert is never preheated)
                             ggml_backend_tensor_set(dsts[k], pc, (size_t) j.slot*dsts[k]->nb[2], sz);
+                            if (pb > 0) {
+                                ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
+                                ggml_backend_tensor_set(&z, pc + sz, 0, pb);
+                            }
                             continue;
                         }
                     }
