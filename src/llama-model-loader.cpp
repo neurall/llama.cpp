@@ -1,6 +1,8 @@
 #include "llama-model-loader.h"
 #include "llama-moestate-fork.h"
 
+void llama_moe_note_other_lazy_fork();   // llama-moecache-fork.cpp: --moe pin-miss keeps the file mapped when a tensor besides the experts is read through it
+
 #if defined(__linux__)
 #include <fcntl.h>
 #include <sched.h>
@@ -1402,6 +1404,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     if (flags & TENSOR_READ_LAZY) {
         // the decision must not depend on the load mode, or the memory-fit pass (no_alloc, no mmap)
         is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()));
+        if (is_lazy && !no_alloc) { llama_moe_note_other_lazy_fork(); }   // --moe pin-miss keeps the file mapped: this tensor is read through it
     }
 
     ggml_tensor t_meta = *cur;

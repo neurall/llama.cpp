@@ -89,6 +89,9 @@
 #include <chrono>
 #include <charconv>
 #include <cinttypes>
+#if defined(__GLIBC__)
+#include <execinfo.h>
+#endif
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -1029,7 +1032,13 @@ static void ggml_cuda_upcheck(const void * src, size_t size, const char * name) 
     (pinned ? S.pin : S.page) += size;
     e[pinned ? 0 : 1] += size;
     e[pinned ? 2 : 3]++;
-    if (!pinned && e[3] == 1) { fprintf(stderr, "upcheck: first copy from PAGEABLE memory: '%s' %.2f MiB\n", key.c_str(), size / 1048576.0); }
+    if (!pinned && e[3] == 1) {
+        fprintf(stderr, "upcheck: first copy from PAGEABLE memory: '%s' %.2f MiB, from:\n", key.c_str(), size / 1048576.0);
+#if defined(__GLIBC__)
+        void * trace[24];
+        backtrace_symbols_fd(trace, backtrace(trace, 24), 2);
+#endif
+    }
     if (S.pin + S.page >= S.next) { S.next += 2ull << 30; S.print("so far"); }
 }
 

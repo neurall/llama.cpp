@@ -235,6 +235,7 @@ bool    llama_moe_cache_get_info_fork(struct llama_tuning_info * info);
 const llama_moe_cache_layer_fork * llama_moe_cache_lookup_fork(const ggml_tensor * up_exps);
 // JIT miss offload (LLAMA_MOE_CACHE_UPLOAD_NOW): called with a layer's router ids on the host before its cache chain launches
 void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
+void llama_moe_note_other_lazy_fork();   // the loader made a lazy tensor that is not an expert: --moe pin-miss keeps the file mapped
 
 // apply throttled LRU updates; call between graph executions only
 void llama_moe_cache_step_fork();

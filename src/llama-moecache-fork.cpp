@@ -434,7 +434,11 @@ struct moe_cache {
         char *  mem = nullptr;                    // its page-aligned bytes in its class's buffer
         size_t  cap = 0;
         int32_t li = -1, key = -1;                // what it holds; only under mc->mtx
+        uint8_t org = 0;                          // who asked for it first: 0 a router, 1 the look ahead, 2 a hot list; only under mc->mtx
     };
+    // per layer, in slices: asked for by its router with no block (miss), found in a block at its router by who asked first (org) and whether the read had ended (ready) or not (late)
+    struct pm_lstat { std::atomic<uint32_t> miss{0}, hit[3][2]; pm_lstat() { for (auto & o : hit) { o[0] = 0; o[1] = 0; } } };
+    std::unique_ptr<pm_lstat[]> pm_ls;
     std::unique_ptr<pm_slot[]> pm_s;              // all blocks, each class's in one run
     size_t                     pm_n = 0;          // all blocks; fixed at load
     struct pm_class { size_t size = 0; int32_t first = 0, n = 0; std::vector<int32_t> free; };   // one per distinct slice size: its blocks [first, first + n), the free ones (only under mc->mtx)
@@ -444,7 +448,7 @@ struct moe_cache {
     size_t                     pm_pinned = 0;
     std::atomic<int64_t>       pm_held{0};        // blocks that hold or await a slice
     std::vector<std::unique_ptr<std::atomic<int32_t>[]>> pm_where;   // per layer with mapped tensors: expert*3 + k -> block, -1 = in no block
-    std::atomic<uint64_t>      pm_reads{0}, pm_bytes{0}, pm_read_us{0}, pm_fail{0}, pm_waits{0}, pm_wait_us{0}, pm_late{0}, pm_full{0}, pm_up{0}, pm_cached{0}, pm_found{0}, pm_router{0}, pm_ahead{0}, pm_hots{0}, pm_drop{0}, pm_evict{0}, pm_map_cpu{0}, pm_map_up{0};
+    std::atomic<uint64_t>      pm_reads{0}, pm_bytes{0}, pm_read_us{0}, pm_fail{0}, pm_waits{0}, pm_wait_us{0}, pm_late{0}, pm_full{0}, pm_up{0}, pm_cached{0}, pm_found{0}, pm_router{0}, pm_ahead{0}, pm_hots{0}, pm_drop{0}, pm_evict{0};
     std::atomic<bool>          profile_ready{false};   // profile_preload has set the lifetime counts (ls.glob_count): the preheat may rank the experts
     bool                       pin_on_upload = false;   // --moe pinr>0: pin_slice also copies an expert on its second upload; off when only the preheat fills pin_ptr
     std::atomic<bool>          stats_stop{false};
@@ -7066,9 +7070,21 @@ static void preheat_run(moe_cache * mc) {
 // published once all its bytes are there, so the CPU and the uploads never see half a slice.
 static std::string pin_miss_line(const moe_cache * mc) {
     const double us = (double) mc->pm_read_us.load();
-    return format("pin-miss: %" PRId64 " of %zu blocks in use, %.2f GiB pinned; %" PRIu64 " slices read (%.2f GiB, %.2f GB/s per reader), %" PRIu64 " of them from the page cache, %" PRIu64 " queued at a router, %" PRIu64 " ahead of it, %" PRIu64 " from hot lists, %" PRIu64 " a router found in a block, %" PRIu64 " evicted, %" PRIu64 " dropped unread; %" PRIu64 " uploads from the blocks; CPU and upload waits %" PRIu64 " (%.1f ms), %" PRIu64 " late; %" PRIu64 " failed, %" PRIu64 " found no block; through the mapping: %" PRIu64 " slices by the CPU, %" PRIu64 " by uploads; read engine %s, CPU %.0f%% busy",
+    return format("pin-miss: %" PRId64 " of %zu blocks in use, %.2f GiB pinned; %" PRIu64 " slices read (%.2f GiB, %.2f GB/s per reader), %" PRIu64 " of them from the page cache, %" PRIu64 " queued at a router, %" PRIu64 " ahead of it, %" PRIu64 " from hot lists, %" PRIu64 " a router found in a block, %" PRIu64 " evicted, %" PRIu64 " dropped unread; %" PRIu64 " uploads from the blocks; CPU and upload waits %" PRIu64 " (%.1f ms), %" PRIu64 " late; %" PRIu64 " failed, %" PRIu64 " waits for a block; read engine %s, CPU %.0f%% busy",
             mc->pm_held.load(), mc->pm_n, mc->pm_pinned / 1073741824.0, mc->pm_reads.load(), mc->pm_bytes.load() / 1073741824.0, us > 0 ? mc->pm_bytes.load() / us / 1e3 : 0.0, mc->pm_cached.load(), mc->pm_router.load(), mc->pm_ahead.load(), mc->pm_hots.load(), mc->pm_found.load(), mc->pm_evict.load(), mc->pm_drop.load(),
-            mc->pm_up.load(), mc->pm_waits.load(), mc->pm_wait_us.load() / 1e3, mc->pm_late.load(), mc->pm_fail.load(), mc->pm_full.load(), mc->pm_map_cpu.load(), mc->pm_map_up.load(), g_aio_force.load() || g_rd_mode.load() == 1 ? "kernel AIO" : "threads", cpu_util_now() * 100.0f);
+            mc->pm_up.load(), mc->pm_waits.load(), mc->pm_wait_us.load() / 1e3, mc->pm_late.load(), mc->pm_fail.load(), mc->pm_full.load(), g_aio_force.load() || g_rd_mode.load() == 1 ? "kernel AIO" : "threads", cpu_util_now() * 100.0f);
+}
+
+// --moe pin-miss-layers=1: per layer, in slices since the start: m = asked for at its router with no block (a read started then), a = found in a block the look ahead asked for, h = a hot list's, o = one a router asked for
+// before (an earlier token or layer pass); each as ready/late (the read had ended / was still under way when the router came).
+static std::string pin_miss_layers(const moe_cache * mc) {
+    std::string r;
+    for (size_t li = 0; li < mc->layers.size() && mc->pm_ls; ++li) {
+        const moe_cache::pm_lstat & s = mc->pm_ls[li];
+        if (!mc->pm_where[li]) { continue; }
+        r += format("%sL%zu m%u a%u/%u h%u/%u o%u/%u", r.empty() ? "" : " | ", li, s.miss.load(), s.hit[1][1].load(), s.hit[1][0].load(), s.hit[2][1].load(), s.hit[2][0].load(), s.hit[0][1].load(), s.hit[0][0].load());
+    }
+    return "pin-miss per layer (slices; m miss at the router, a/h/o found ready/late from the look ahead / hot list / earlier router): " + r;
 }
 
 // a slice in the page cache (see below): declared here for the readers
@@ -7102,12 +7118,20 @@ static void pin_miss_run(moe_cache * mc) {
             if (pread_full(ls.src_fd[k], b.mem, rd, off)) { p = b.mem; mc->pm_cached++; }
         }
         if (!p) { p = read_direct(ls.src_dfd[k], (uint8_t *) b.mem, b.cap, off, rd); }
-        if (p && pb > 0 && !past_in_file) { memset((char *) p + sz, 0, pb); }
-        b.ptr.store(p, std::memory_order_release);   // a failed read: the mapping serves the slice
-        if (!p) { mc->pm_fail++; continue; }
+        if (!p) {   // O_DIRECT refused or failed: the same bytes through the page cache, three tries
+            mc->pm_fail++;
+            for (int a = 0; a < 3 && !p; ++a) { if (pread_full(ls.src_fd[k], b.mem, rd, off)) { p = b.mem; } }
+        }
+        if (!p) { LLAMA_LOG_ERROR("moe-cache: pin-miss: layer slice %s expert %d: no read of %zu bytes at %zu worked (%s)\n", t->name, e, rd, off, strerror(errno)); GGML_ABORT("pin-miss: a slice could not be read"); }
+        if (pb > 0 && !past_in_file) { memset((char *) p + sz, 0, pb); }
+        b.ptr.store(p, std::memory_order_release);
         mc->pm_bytes   += rd;
         mc->pm_read_us += (uint64_t) (ggml_time_us() - t0);
-        if ((++mc->pm_reads & 4095) == 0) { llama_moe_stats_log_fork("PIN", pin_miss_line(mc).c_str()); }
+        if ((++mc->pm_reads & 4095) == 0) {
+            llama_moe_stats_log_fork("PIN", pin_miss_line(mc).c_str());
+            static const bool lay = moe_opt("pin-miss-layers") != nullptr;
+            if (lay) { llama_moe_stats_log_fork("PINL", pin_miss_layers(mc).c_str()); }
+        }
     }
 }
 
@@ -7204,14 +7228,19 @@ static bool pin_miss_queue(moe_cache * mc, int li, const std::vector<int32_t> & 
         for (int k = 0; k < 3; ++k) {
             if (ls.src_dfd[k] < 0) { continue; }   // pinned at load (tensor order): its data is pinned memory already
             std::atomic<int32_t> & w = where[(size_t) e*3 + k];
-            if (w.load(std::memory_order_relaxed) >= 0) {
-                if (urgent) { mc->pm_found++; }
+            if (const int32_t held = w.load(std::memory_order_relaxed); held >= 0) {
+                if (urgent) {
+                    mc->pm_found++;
+                    if (mc->pm_ls) { mc->pm_ls[li].hit[mc->pm_s[held].org][mc->pm_s[held].ptr.load(std::memory_order_acquire) == PM_LOADING ? 0 : 1]++; }
+                }
                 continue;   // in a block already, or being read
             }
             const int32_t s = room || !urgent ? pin_miss_block(mc, mc->pm_cls_of[li][k], li, hot ? li : keep, hot ? cur : INT32_MAX, urgent ? 1e300 : score(ls, e)) : -1;
-            if (s < 0) { room = false; if (urgent) { mc->pm_full++; } continue; }   // no block: an upload reads it itself, the CPU takes the mapping (counted)
+            if (s < 0) { room = false; if (urgent) { mc->pm_full++; } continue; }   // no block now: the caller waits for one (pin_miss_need)
             moe_cache::pm_slot & sl = mc->pm_s[s];
             sl.li = li; sl.key = e*3 + k;
+            sl.org = urgent ? 0 : hot ? 2 : 1;
+            if (urgent && mc->pm_ls) { mc->pm_ls[li].miss++; }
             sl.ptr.store(PM_LOADING, std::memory_order_relaxed);
             w.store(s, std::memory_order_release);
             jobs.emplace_back(&ls, (int64_t) s << 26 | (int64_t) k << 24 | e);
@@ -7350,7 +7379,7 @@ static const char * pin_miss_wait(moe_cache * mc, std::atomic<const char *> & sl
             const int64_t  now = ggml_time_us();
             const uint64_t n   = mc->pm_reads.load(std::memory_order_relaxed);
             if (n != n_prog) { n_prog = n; t_prog = now; }
-            if (now - t_prog > 500000) { mc->pm_late++; return nullptr; }   // no read ended for half a second: the mapping serves it
+            if (now - t_prog > 30000000) { LLAMA_LOG_ERROR("moe-cache: pin-miss: no read ended for 30 s\n"); GGML_ABORT("pin-miss: the readers are stuck"); }
             std::this_thread::yield();
         }
         mc->pm_waits++;
@@ -7365,6 +7394,19 @@ static const char * pin_miss_lookup(moe_cache * mc, int li, int k, int32_t e) {
     if (!where) { return nullptr; }
     const int32_t s = where[(size_t) e*3 + k].load(std::memory_order_acquire);
     return s < 0 ? nullptr : pin_miss_wait(mc, mc->pm_s[s].ptr);
+}
+
+// the slice (k, e) of layer li in its block, for sure: asked for like a router would (first in the queue) when it has none, and a free or evictable block waited for. Stops with a message after 30 s
+// without one (a pool smaller than two layers' slices). locked: the caller holds mc->mtx.
+static const char * pin_miss_need(moe_cache * mc, int li, int k, int32_t e, bool locked) {
+    if (const char * p = pin_miss_lookup(mc, li, k, e)) { return p; }
+    const std::vector<int32_t> one(1, e);
+    for (int64_t t0 = ggml_time_us();; ) {
+        if (locked) { pin_miss_queue(mc, li, one, true); } else { std::lock_guard<std::mutex> lk(mc->mtx); pin_miss_queue(mc, li, one, true); }
+        if (const char * p = pin_miss_lookup(mc, li, k, e)) { return p; }
+        if (ggml_time_us() - t0 > 30000000) { LLAMA_LOG_ERROR("moe-cache: pin-miss: no block for layer %d expert %d in 30 s (%" PRId64 " of %zu in use)\n", li, (int) e, mc->pm_held.load(), mc->pm_n); GGML_ABORT("pin-miss: pool too small"); }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 // an upload worker's copy of slice (k, e) of layer li from its block into dst at byte dst_off (sz bytes, then the pb bytes a matmul reads past it); false when it has none. A worker runs
@@ -7397,8 +7439,8 @@ static void miss_upload_async(moe_cache * mc, ggml_backend_t be, layer_state & l
     const size_t sz = src->nb[2];
     const char * from = nullptr;
     const size_t pb = expert_past(mc, ls, k, id, src, from);
-    const char * p = mc->pm_on && ls.src_dfd[k] >= 0 ? pin_miss_lookup(mc, li, k, id) : nullptr;
-    if (p) { mc->pm_up++; } else if (mc->pm_on && ls.src_dfd[k] >= 0) { mc->pm_map_up++; }
+    const char * p = mc->pm_on && ls.src_dfd[k] >= 0 ? pin_miss_need(mc, li, k, id, true) : nullptr;
+    if (p) { mc->pm_up++; }
     ggml_backend_tensor_set_async(be, dst, p ? p : (const char *) src->data + (size_t) id*sz, dst_off, sz);
     if (pb) {
         ggml_tensor z = expert_past_view(dst, dst_off + sz, pb);
@@ -7408,23 +7450,14 @@ static void miss_upload_async(moe_cache * mc, ggml_backend_t be, layer_state & l
 
 // ggml-cpu's MUL_MAT_ID asks this for each expert it computes (every thread, once per expert and op): the pinned slot of a mapped layer's expert, read now if nobody asked for it, or nullptr
 // for the tensor's own data (pinned layers, other tensors, no block to be had, a failed read). The CPU computes the layer whose router came last: its blocks stay (pin_miss_block).
+static std::atomic<bool> g_other_lazy{false};   // the loader made a lazy tensor that is not an expert (llama_moe_note_other_lazy_fork)
+void llama_moe_note_other_lazy_fork() { g_other_lazy.store(true); }
 static std::unordered_map<const ggml_tensor *, std::pair<int, int>> g_pm_map;   // weight tensor -> (layer index, k); filled once before the hook is set, read only after
 static const void * pin_miss_hook(const ggml_tensor * src0, int64_t e) {
     const auto it = g_pm_map.find(src0);
     moe_cache * mc = g_cache;
     if (it == g_pm_map.end() || !mc || e < 0 || e >= src0->ne[2]) { return nullptr; }
-    const int li = it->second.first, k = it->second.second;
-    const char * p = pin_miss_lookup(mc, li, k, (int32_t) e);
-    if (!p) {   // no router asked for it: a graph without a router's op (the scheduler's own path of a small call leaves the matmul on the CPU). The same request a router makes, then the same wait.
-        const std::vector<int32_t> one(1, (int32_t) e);
-        {
-            std::lock_guard<std::mutex> lk(mc->mtx);
-            pin_miss_queue(mc, li, one, true);
-        }
-        p = pin_miss_lookup(mc, li, k, (int32_t) e);
-        if (!p) { mc->pm_map_cpu++; }
-    }
-    return p;
+    return pin_miss_need(mc, it->second.first, it->second.second, (int32_t) e, false);   // no router may have asked for it (a small call's stock graph): asked for now, and waited for
 }
 
 #ifndef _WIN32
@@ -7492,6 +7525,7 @@ static void pin_miss_start(moe_cache * mc) {
         return;
     }
     mc->pm_s.reset(new moe_cache::pm_slot[n_blocks]);
+    mc->pm_ls.reset(new moe_cache::pm_lstat[mc->layers.size()]);
     mc->pm_n = n_blocks;
     const int64_t t_pin = ggml_time_us();
     std::string sizes;
@@ -7533,7 +7567,12 @@ static void pin_miss_start(moe_cache * mc) {
     // --moe pin-miss-trap=1, development: nothing should read the mapped expert tensors any more, so their pages lose all access and a reader crashes with its stack instead of silently faulting from
     // the SSD (a t->data read compiles without the mapping's header, so taking that out would not find it). Pages a tensor shares with its neighbours in the file stay readable.
     // =2: the whole file leaves the address space, dense tensors' part too: no gguf in /proc/PID/maps. DeepSeek's Engram table is read through its mapping, so not on that model.
-    if (const char * tr = moe_opt("pin-miss-trap"); tr && (tr[0] == '1' || tr[0] == '2')) {
+    // Default =2 (user: "in this version we are replacing all mmap"): the model's file leaves the address space and the page cache once the load ends, so nothing competes with the pool for RAM and a
+    // stray reader crashes with its stack. =0 keeps the mapping; =1 takes the experts' pages only. A model with another lazy tensor (DeepSeek's Engram table) keeps its mapping until that has a class too.
+    const char * tr_opt = moe_opt("pin-miss-trap");
+    const char   tr_def[2] = { g_other_lazy.load() ? '0' : '2', 0 };
+    if (g_other_lazy.load() && !tr_opt) { LLAMA_LOG_WARN("moe-cache: pin-miss: the file stays mapped: a tensor besides the experts is read through it\n"); }
+    if (const char * tr = tr_opt ? tr_opt : tr_def; tr[0] == '1' || tr[0] == '2') {
         size_t trapped = 0;
         std::map<char *, size_t> files;
         for (const layer_state & ls : mc->layers) {
@@ -7548,6 +7587,7 @@ static void pin_miss_start(moe_cache * mc) {
             }
         }
         for (const auto & f : files) {
+            for (const auto & ls : mc->layers) { for (int k = 0; k < 3; ++k) { if (ls.src_fd[k] >= 0) { posix_fadvise(ls.src_fd[k], 0, 0, POSIX_FADV_DONTNEED); } } }   // and its pages in the page cache
             GGML_ASSERT(((uintptr_t) f.first & 4095) == 0);   // the loader maps a whole file from its start
             if (mmap(f.first, (f.second + 4095) & ~(size_t) 4095, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0) == MAP_FAILED) { LLAMA_LOG_WARN("moe-cache: pin-miss-trap: file not unmapped: %s\n", strerror(errno)); }
         }
@@ -8933,7 +8973,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             ggml_backend_tensor_set(dsts[k], staging_ptr, bdst + off, n);
                         }
                     } else if (ggml_backend_buffer_is_host(srcs[k]->buffer)) {
-                        if (mc->pm_on && ls.src_dfd[k] >= 0) { mc->pm_map_up++; }
+                        GGML_ASSERT(!(mc->pm_on && ls.src_dfd[k] >= 0) && "pin-miss: an upload would read the model's mapping");
                         // chunk: set, or the bytes this link moves in a quarter of the measured mean CPU phase (the budget is
                         // re-checked ~4 times per phase)
                         const size_t ch = knobs().gate < 3 || knobs().chunk_kb == 0 ? 0 :
@@ -9455,8 +9495,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             ggml_tensor *       dsts[3] = { pub->jit_up_c, pub->jit_gate_c, pub->jit_down_c };
             for (int k = 0; k < 3; ++k) {
                 const size_t sz = srcs[k]->nb[2];
-                const char * p = mc->pm_on && ls.src_dfd[k] >= 0 ? pin_miss_lookup(mc, (int) (lsp - mc->layers.data()), k, id) : nullptr;   // --moe pin-miss: its pinned slot
-                if (!p && mc->pm_on && ls.src_dfd[k] >= 0) { mc->pm_map_up++; }
+                const char * p = mc->pm_on && ls.src_dfd[k] >= 0 ? pin_miss_need(mc, (int) (lsp - mc->layers.data()), k, id, true) : nullptr;   // --moe pin-miss: its pinned slot
                 ggml_backend_tensor_set_async(be, dsts[k], p ? p : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) ps*dsts[k]->nb[2], sz);
             }
             ls.pool_expert[ps] = id;
@@ -12505,6 +12544,7 @@ void llama_moe_cache_free_fork() {
         for (auto & t : mc->pm_thr) { t.join(); }
         g_pm_map.clear();
         LLAMA_LOG_WARN("moe-cache: %s\n", pin_miss_line(mc).c_str());
+        if (moe_opt("pin-miss-layers")) { LLAMA_LOG_WARN("moe-cache: %s\n", pin_miss_layers(mc).c_str()); }
     }
     mc->lazy_stop.store(true);
     if (mc->lazy_thr.joinable()) { mc->lazy_thr.join(); }
