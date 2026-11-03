@@ -11083,9 +11083,10 @@ void llama_moe_cache_step_fork() {
         for (size_t li = 0; li < nl; ++li) {
             auto & pub = mc->layers[li].pub;
             bool on = false;
-            if (mc->pm_on) {   // --moe pin-miss: the layer the look ahead reads for, in model order (layer 0 of the next token from the last layer)
+            if (mc->pm_on) {   // --moe pin-miss: the layer the look ahead reads for, in model order (layer 0 of the next token from the last layer); always while the pool holds part of the
+                // model (its misses go to the SSD however well the cards hit: 35B, 4 GiB pool, 96% VRAM hits switched it off and the routers did all reads), never when it holds all of it
                 const int t = pm_ahead_pos(mc, li);
-                on = t >= 0 && miss[(size_t) t] > thr;
+                on = t >= 0 && !mc->pm_all.load(std::memory_order_relaxed);
             } else {
                 for (int k = 1; k <= std::max(1, pub.pred_ahead) && li + k < nl; ++k) {
                     on = on || miss[li + k] > thr;
