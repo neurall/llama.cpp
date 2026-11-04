@@ -1752,7 +1752,17 @@ static size_t ggml_cuda_free_huge_bytes() {
         }
     }
     fclose(f);
-    return total * (size_t) page;
+    // buddyinfo also counts the free blocks of CMA areas, but a huge page placed there must move out before the register can pin it, into a free 2 MiB block
+    // outside them, which a nearly fully pinned machine no longer has: GLM 3.0bit's last 8.5 GiB (5.1 GiB THP) stalled 180 s with 89.5 GiB pinned, the same
+    // buffer in 4 KiB pages pinned (2026-11-04, PC1: 6.4 GiB CMA free). So CmaFree, mostly whole blocks, is left out.
+    size_t cma = 0;
+    if (FILE * m = fopen("/proc/meminfo", "r")) {
+        unsigned long long kb = 0;
+        while (fgets(line, sizeof(line), m)) { if (sscanf(line, "CmaFree: %llu kB", &kb) == 1) { cma = (size_t) kb << 10; break; } }
+        fclose(m);
+    }
+    total *= (size_t) page;
+    return total > cma ? total - cma : 0;
 }
 
 // Free pages of the administrator's reserved huge-page pool (sudo sh -c 'echo N > /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages',

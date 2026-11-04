@@ -7397,7 +7397,8 @@ static void pin_miss_fill(moe_cache * mc) {
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
         std::vector<int32_t> one(1);
-        for (const pick & p : picks) { one[0] = p.e; if (!pin_miss_queue(mc, p.li, one, false, -1)) { break; } }   // false: no free block left
+        // false: some size class has no free block left; the others go on (GLM 3.0bit: its 4.5 MiB class filled in the first layers, a break there left 11 of 98 GiB read)
+        for (const pick & p : picks) { one[0] = p.e; pin_miss_queue(mc, p.li, one, false, -1); }
     }
     const uint64_t want = mc->pm_hots.load();
     while (mc->pm_reads.load() + mc->pm_fail.load() < want) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
