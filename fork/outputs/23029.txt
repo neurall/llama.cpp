@@ -1,0 +1,4 @@
+run 23029 | read_pipe | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 15.16 t/s | prompt 15.5 t/s | 64 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt30_glm_pipe512q32.ini,pin-miss=3,log=wk,read-pipe=1,read-chunk=512,read-qd=32 | power 220+280 W | 2026-11-04 09:21:05
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as
+---

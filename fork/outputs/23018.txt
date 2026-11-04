@@ -1,0 +1,14 @@
+run 23018 | read_chunk | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 18.43 t/s | prompt 17.5 t/s | 64 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt29_thr.ini,pin-miss=3,log=wk | power 220+280 W | 2026-11-04 09:00:15
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#0
+---

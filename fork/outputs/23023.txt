@@ -1,0 +1,9 @@
+run 23023 | read_pipe | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 17.79 t/s | prompt 17.7 t/s | 64 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt30_mimo_pipe256q64.ini,pin-miss=3,log=wk,read-pipe=1,read-chunk=256,read-qd=64 | power 220+280 W | 2026-11-04 09:10:15
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+- A canvas or grid to display the game
+- Piece definitions (tetrominoes)
+- Game loop (falling, collision,
+---

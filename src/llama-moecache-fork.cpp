@@ -181,6 +181,14 @@ std::string tr_fmt(const char * fmt, ...) {
 
 constexpr int MAX_LINKS = 16; // GPUs with a cache (their host->GPU links are measured, never assumed)
 
+// Visit history (user 2026-11-04: "each moe router selects gets last picked timestamp and delta to last one stored in last 10 in mem and flushed every 10s to ini as usual", "only deltas are stored
+// not timestamps", "if the revisit was 111ms then its 0000 0111 ... make it ascii char so plus code of 'a'"): per expert the time of its last pick (memory only) and its last VIS_N gaps between picks, each as
+// ONE ascii character 'a' + the number of decades of ms the gap reaches (the set bits of the thermometer 1 ms, 10 ms, 100 ms ...): 'a' under 1 ms, 'b' 1-9 ms, 'c' 10-99 ms, 'd' 100-999 ms, 'e' 1-9.9 s,
+// 'f' 10 s ... 'z'. The newest gap goes in front and pushes the oldest out; '.' marks a place with no gap yet. The state file keeps the VIS_N characters per expert as they are, so a run continues the history
+// of the one before. Only collected and saved for now, nothing reads them yet (task 208: tier classes by revisit time); the histogram below decides whether the unit should move to sub-millisecond.
+static constexpr int VIS_N = 10;
+struct vis_t { uint64_t last_us = 0; uint8_t r[VIS_N] = { 0 }; uint8_t head = 0, n = 0; };
+
 struct layer_state {
     llama_moe_cache_layer_fork pub;
 
@@ -210,6 +218,8 @@ struct layer_state {
 
     std::vector<uint64_t> glob_count;     // expert id -> lifetime uses
     std::vector<uint64_t> glob_base;      // the counts a profile preloaded at start (research emb=1 records this run's counts: glob_count - glob_base)
+    std::vector<vis_t>    vis;            // expert id -> its visit history (see vis_t); under the cache lock
+    bool                  vis_dirty = false;   // picks since the last flush to the state file
     std::vector<uint32_t> topic_cnt;      // expert id -> uses in the request being served (prompt and answer): its own term of the eviction score (hot maps per topic, --moe dynhot)
     std::vector<uint32_t> topic_dec;      // expert id -> uses in its answer (the decode steps the hit rate counts): its record keeps the hottest of these (topic_hottest)
     std::vector<uint32_t> topic_think;    // the same while it thinks (between <think> and </think>): the record's second map
@@ -441,6 +451,10 @@ struct moe_cache {
     std::atomic<int>           pm_bg_in{0};              // hot-queue reads being made now
     int                        pm_gate = 0;   // the router's gating function (the bias adds to its output)
     std::vector<std::thread>   pm_thr;
+    std::thread                vis_thr;            // flushes the visit history to the state file every 10 s
+    std::atomic<bool>          vis_stop{false};
+    std::mutex                 vis_m;
+    std::condition_variable    vis_cv;
     std::mutex                 pm_mtx;
     std::condition_variable    pm_cv;
     std::deque<std::pair<struct layer_state *, int64_t>> pm_q;    // (layer, block << 26 | k << 24 | expert)
@@ -687,6 +701,15 @@ static size_t meminfo_bytes(const char * key) {   // a /proc/meminfo line's valu
 static size_t mem_available_bytes() {
     return meminfo_bytes("MemAvailable");
 }
+// free pages of the administrator's reserved 1 GiB pool, in bytes (0 without one). MemAvailable does not count them, yet the pinned allocator takes them first:
+// a pool of 109 pages and 10 GiB available used to size the pin-miss pool at 0 (2026-11-04)
+static size_t free_reserved_1g_bytes() {
+    FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r");
+    unsigned long long n = 0;
+    if (!f || fscanf(f, "%llu", &n) != 1) { n = 0; }
+    if (f) { fclose(f); }
+    return (size_t) n << 30;
+}
 
 // the pinned copy of expert e's slice of tensor k, or nullptr. Made on the SECOND upload of the expert (the first only marks it: an expert that is never evicted and uploaded again gains
 // nothing from a copy, and every copy duplicates the page cache) while the pinr budget lasts
@@ -854,7 +877,10 @@ static constexpr size_t RD_PICK_MIN = (size_t) 3 << 20;   // the smallest read t
 struct aio_ctx_t { aio_context_t ctx = 0; ~aio_ctx_t() { if (ctx) { syscall(SYS_io_destroy, ctx); } } };
 // bytes [beg, beg + total) of fd into buf (4096-aligned); `need` = bytes that exist (a short block past it is the end of the file). False: nothing usable, the caller reads again with pread.
 static bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need) {
-    constexpr int QD = 32; constexpr size_t BLK = (size_t) 1 << 20;
+    constexpr int QD = 32;
+    // chunk size of every request: --moe read-chunk=KiB (default 1024). bench_aio on the PC1 SSD (2026-11-04): 256 KiB chunks with 64+ requests in flight read 5.3 GB/s on the DeepSeek
+    // file (4.4 with 1 MiB), 3.5 on MiMo (2.6), 2.7 on GLM (2.0); 4 MiB chunks were the slowest. A 2.6 MiB slice is 11 chunks of 256 KiB, so 8 readers keep 88 in flight
+    static const size_t BLK = [] { const char * e = moe_opt("read-chunk"); const long kb = e ? atol(e) : 1024; return (size_t) std::max(64L, std::min(4096L, kb)) << 10; }();
     if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
     thread_local aio_ctx_t c;
     if (!c.ctx && syscall(SYS_io_setup, QD, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
@@ -1868,6 +1894,129 @@ void llama_moe_observe_save() {
     }
 }
 
+// ---- visit history: collect (vis_pick, under the cache lock), load and flush (state keys vis.<layer> = VIS_N characters per expert, its last gaps newest first as 'a' + the decades of ms the gap reaches, '.' none yet)
+static inline uint64_t vis_now_us() {   // monotonic: gaps are only compared inside one run
+    timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t) ts.tv_sec * 1000000u + (uint64_t) ts.tv_nsec / 1000u;
+}
+static inline uint8_t vis_level(uint64_t us) {   // the gap as a thermometer of decades (user: "111ms is 0000 0111"): bit i set when the gap is unit * 10^i or more; its number of set bits is the level: 0 under one unit, 1 for 1-9 units, 2 for 10-99 ... capped at 25
+    // unit: --moe visit-unit=US (default 1000 = 1 ms). The first population (MiMo and GLM decode, 2026-11-04): nothing between 100 us and 10 ms, 3% duplicates under 100 us, the mass at 10 ms - 1 s, 20% at 1-10 s:
+    // visit-unit=10000 starts the thermometer at the token time
+    static const uint64_t unit = [] { const char * e = moe_opt("visit-unit"); return (uint64_t) std::max(1L, e ? atol(e) : 1000L); }();
+    return us < unit ? 0 : (uint8_t) std::min(25.0, 1.0 + std::floor(std::log10((double) us / (double) unit)));
+}
+// The population of the gaps first, then the meaning of each character (user 2026-11-04: "observe moe revisit times histogram population first then decide what range each bit means"):
+// every gap in 10 steps per decade from 1 us (bin 0) to 10^12 us (bin 119), decode picks and prompt picks apart; saved as vis.hist.decode / vis.hist.prompt (all runs added up) and logged at the end
+static constexpr int VIS_BINS = 120;
+static uint64_t g_vis_hist[2][VIS_BINS];   // [0] decode, [1] prompt; written under the cache lock
+static inline void vis_pick(layer_state & ls, int32_t id, int ph) {   // ph: 0 a decode pick, 1 a prompt pick
+    if ((size_t) id >= ls.vis.size()) { return; }
+    vis_t & v = ls.vis[id];
+    const uint64_t now = vis_now_us();
+    if (v.last_us == 0) { v.last_us = now; return; }   // the first pick of this run has no gap
+    if (now <= v.last_us) { return; }
+    const uint64_t gap = now - v.last_us;
+    g_vis_hist[ph][std::min(VIS_BINS - 1, (int) (10.0 * std::log10((double) gap)))]++;
+    v.r[v.head] = vis_level(gap);
+    v.head = (uint8_t) ((v.head + 1) % VIS_N);
+    if (v.n < VIS_N) { v.n++; }
+    v.last_us = now;
+    ls.vis_dirty = true;
+}
+static bool vis_on() {
+    static const bool on = [] { const char * e = moe_opt("visit"); return !e || atoi(e) != 0; }();
+    return on;
+}
+static std::string vis_encode(const std::vector<vis_t> & vs) {   // VIS_N characters per expert, newest gap first
+    std::string r(vs.size() * VIS_N, '.');
+    for (size_t e = 0; e < vs.size(); ++e) {
+        const vis_t & v = vs[e];
+        for (int i = 0; i < v.n; ++i) { r[e*VIS_N + (size_t) i] = (char) ('a' + v.r[(v.head + VIS_N - 1 - i) % VIS_N]); }   // 'a'..'z'
+    }
+    return r;
+}
+static bool vis_decode(const std::string & text, std::vector<vis_t> & vs) {
+    if (text.size() != vs.size() * VIS_N) { return false; }
+    for (size_t e = 0; e < vs.size(); ++e) {
+        int n = 0;
+        while (n < VIS_N && text[e*VIS_N + (size_t) n] >= 'a' && text[e*VIS_N + (size_t) n] <= 'z') { ++n; }
+        vis_t v;
+        for (int i = n - 1; i >= 0; --i) { v.r[v.head] = (uint8_t) (text[e*VIS_N + (size_t) i] - 'a'); v.head = (uint8_t) ((v.head + 1) % VIS_N); }   // oldest first, the newest ends at head - 1
+        v.n = (uint8_t) n;
+        vs[e] = v;
+    }
+    return true;
+}
+static void vis_flush(moe_cache * mc) {
+    std::vector<std::pair<std::string, std::string>> kv;
+    for (auto & ls : mc->layers) {
+        std::vector<vis_t> copy;
+        {
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            if (!ls.vis_dirty) { continue; }
+            copy = ls.vis; ls.vis_dirty = false;
+        }
+        kv.emplace_back("vis." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), vis_encode(copy));
+    }
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        for (int ph = 0; ph < 2; ++ph) {
+            int last = VIS_BINS - 1; while (last > 0 && g_vis_hist[ph][last] == 0) { --last; }
+            std::string h;
+            for (int b = 0; b <= last; ++b) { h += (b ? " " : "") + std::to_string((unsigned long long) g_vis_hist[ph][b]); }
+            kv.emplace_back(ph ? "vis.hist.prompt" : "vis.hist.decode", h);
+        }
+    }
+    if (!kv.empty()) { moe_state_set(mc->profile, kv); }
+}
+// the earlier runs' history from the state file, then the flush thread
+static void vis_start(moe_cache * mc) {
+    if (!vis_on() || mc->profile.empty()) { return; }
+    std::vector<std::pair<std::string, std::string>> sect;
+    size_t known = 0, seen = 0;
+    if (moe_state_section_kv(mc->profile, sect)) {
+        for (auto & ls : mc->layers) {
+            if (ls.vis.empty()) { continue; }
+            const std::string key = "vis." + std::to_string(parse_layer_from_name(ls.pub.up_src->name));
+            const auto it = std::find_if(sect.begin(), sect.end(), [&](const auto & q) { return q.first == key; });
+            if (it == sect.end()) { continue; }
+            std::vector<vis_t> vs(ls.vis.size());
+            if (vis_decode(it->second, vs)) { ls.vis = std::move(vs); }
+        }
+    }
+    for (int ph = 0; ph < 2; ++ph) {   // the gaps of earlier runs: the population adds up
+        const auto it = std::find_if(sect.begin(), sect.end(), [&](const auto & q) { return q.first == (ph ? "vis.hist.prompt" : "vis.hist.decode"); });
+        if (it == sect.end()) { continue; }
+        std::istringstream is(it->second);
+        unsigned long long x; int b = 0;
+        while (b < VIS_BINS && (is >> x)) { g_vis_hist[ph][b++] += x; }
+    }
+    for (auto & ls : mc->layers) { for (const auto & v : ls.vis) { seen += v.n != 0; known += 1; } }
+    LLAMA_LOG_WARN("moe-cache: visit history: %zu of %zu experts have one in the state file; picks are timed; its last %d gaps (one letter each: a under 1 ms, b 1-9 ms, c 10-99 ms, d 100-999 ms, e seconds ...) are flushed every 10 s\n", seen, known, VIS_N);
+    mc->vis_thr = std::thread([mc] {
+        std::unique_lock<std::mutex> lk(mc->vis_m);
+        while (!mc->vis_stop.load()) {
+            mc->vis_cv.wait_for(lk, std::chrono::seconds(10));
+            if (mc->vis_stop.load()) { break; }
+            lk.unlock(); vis_flush(mc); lk.lock();
+        }
+    });
+}
+static void vis_end(moe_cache * mc) {
+    if (mc->vis_thr.joinable()) {
+        { std::lock_guard<std::mutex> lk(mc->vis_m); mc->vis_stop = true; }
+        mc->vis_cv.notify_all();
+        mc->vis_thr.join();
+        vis_flush(mc);
+        for (int ph = 0; ph < 2; ++ph) {   // the population per decade of the gap (all runs), for deciding what each character should mean
+            static const char * const nm[VIS_BINS / 10] = { "1us", "10us", "100us", "1ms", "10ms", "100ms", "1s", "10s", "100s", "1000s", "10^4s", "10^5s" };
+            std::string line; uint64_t tot = 0;
+            for (int d = 0; d < VIS_BINS / 10; ++d) { uint64_t c = 0; for (int b = 0; b < 10; ++b) { c += g_vis_hist[ph][d*10 + b]; } tot += c; if (c) { line += tr_fmt(" %s:%llu", nm[d], (unsigned long long) c); } }
+            if (tot) { LLAMA_LOG_WARN("moe-cache: visit gaps (%s picks, %llu in all runs, per decade from):%s\n", ph ? "prompt" : "decode", (unsigned long long) tot, line.c_str()); }
+        }
+    }
+}
+
 static double early_link_gbs(ggml_backend_dev_t d);   // pinned host to device GB/s, measured once per process (defined below, outside the anonymous namespace resource_probe sits in)
 namespace {
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy);
@@ -2665,6 +2814,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
                 g_exptok.seen[c]++;
                 g_exptok.dirty = true;
             }
+            vis_pick(*ls, id, prefill ? 1 : 0);
             ls->topic_max = std::max(ls->topic_max, ++ls->topic_cnt[id]);   // the request's own map (hot maps per topic): prompt and answer, whatever the lifetime counts take
             if (!prefill && g_topic_answer.load(std::memory_order_relaxed)) {   // what its record stores: the answer's uses, per phase (not a short prompt's tokens)
                 (g_topic_thinking.load(std::memory_order_relaxed) ? ls->topic_think : ls->topic_dec)[id]++;
@@ -4297,6 +4447,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     if (it->second.second == 0 && expert >= 0 && expert < (int32_t) ls.expert_slot.size()) {
         ls.expert_count[expert]++;
         ls.topic_max = std::max(ls.topic_max, ++ls.topic_cnt[expert]);
+        vis_pick(ls, expert, 1);
         ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[expert]);
     }
     // an expert the pass takes from RAM: its bytes cross this card's link (live bandwidth of the prompt phase)
@@ -7171,14 +7322,11 @@ static bool pin_miss_wait_all() {
     return all;
 }
 
-static void pin_miss_run(moe_cache * mc) {
-    for (;;) {
-        std::pair<layer_state *, int64_t> j;
-        bool bg = false;
-        {
-            std::unique_lock<std::mutex> lk(mc->pm_mtx);
+// The next read for a reader. 1: taken (j, bg); 0: none to take now (block false); -1: the readers are stopping. Blocks (block true) until there is a read it may take.
+static int pm_take(moe_cache * mc, std::pair<layer_state *, int64_t> & j, bool & bg, bool block) {
+    std::unique_lock<std::mutex> lk(mc->pm_mtx);
             for (;;) {
-                if (mc->pm_stop) { return; }
+                if (mc->pm_stop) { return -1; }
                 if (!mc->pm_q.empty()) { break; }
                 // --moe load-wait=vram (requests run while the pool fills): hot-queue reads (the fill, the hot lists) take only what is spare (user 2026-11-04: "background reads during a
                 // request also only in spare cpu and spare mem and ssd bw"): between requests all readers; during one a single read at a time, none while the CPU computes experts or the
@@ -7197,46 +7345,155 @@ static void pin_miss_run(moe_cache * mc) {
                     lk.lock();
                     if (fed) { continue; }
                 }
+                if (!block) { return 0; }   // the pipelined reader has reads in flight: look again after they land
                 if (mc->pm_qh.empty() && mc->pm_fill_end.load()) { mc->pm_cv.wait(lk); } else { mc->pm_cv.wait_for(lk, std::chrono::milliseconds(2)); }   // a hot read waits for spare room: look again soon
             }
-            bg = mc->pm_q.empty();
-            auto & q = bg ? mc->pm_qh : mc->pm_q;
-            j = q.front();
-            q.pop_front();
-            if (bg) { mc->pm_bg_in++; }
+    bg = mc->pm_q.empty();
+    auto & q = bg ? mc->pm_qh : mc->pm_q;
+    j = q.front();
+    q.pop_front();
+    if (bg) { mc->pm_bg_in++; }
+    return 1;
+}
+
+// One slice read: what the reader works out before it reads (pm_job_open), the read with its fallbacks (pm_job_sync), and what it does when the bytes are in (pm_job_close).
+struct pm_job {
+    layer_state * ls = nullptr; int32_t e = 0; int k = 0; moe_cache::pm_slot * b = nullptr; const ggml_tensor * t = nullptr;
+    size_t sz = 0, pb = 0, off = 0, rd = 0, beg = 0, end = 0, need = 0; bool past_in_file = false, bg = false; int64_t t0 = 0;
+    size_t next = 0, total = 0, done = 0; bool bad = false;   // pipelined reads: bytes of [beg, end) submitted, to submit, landed; a chunk that failed
+};
+static void pm_job_open(moe_cache * mc, const std::pair<layer_state *, int64_t> & j, bool bg, pm_job & J) {
+    J.ls = j.first; J.bg = bg;
+    layer_state & ls = *J.ls;
+    J.e = (int32_t) (j.second & 0xffffff);
+    J.k = (int) ((j.second >> 24) & 3);
+    J.b = &mc->pm_s[j.second >> 26];
+    J.t = J.k == 0 ? ls.pub.up_src : J.k == 1 ? ls.pub.gate_src : ls.pub.down_src;
+    J.sz = J.t->nb[2];
+    const char * from = nullptr;
+    J.pb  = expert_past(mc, ls, J.k, J.e, J.t, from);
+    J.off = ls.src_offs[J.k] + (size_t) J.e*J.sz;
+    J.past_in_file = J.e + 1 < J.t->ne[2];   // behind the last expert its past bytes are the tensor's padding, zeros, not in the file
+    J.rd  = J.sz + (J.past_in_file ? J.pb : 0);
+    J.t0  = ggml_time_us();
+    J.beg = J.off & ~(size_t) 4095; J.end = (J.off + J.rd + 4095) & ~(size_t) 4095; J.need = J.off + J.rd - J.beg;
+    J.next = J.done = 0; J.total = J.end - J.beg; J.bad = false;
+}
+// the bytes of the slice in J.b->mem (the page cache's at RAM speed when it holds the slice, else O_DIRECT, else three buffered tries); the address where the slice starts
+static const char * pm_job_sync(moe_cache * mc, pm_job & J) {
+    layer_state & ls = *J.ls; const int k = J.k; moe_cache::pm_slot & b = *J.b;
+    const char * p = nullptr;
+    if (slice_cached(ls.src_fd[k], J.off, J.sz)) {   // RAM speed, no SSD read
+        if (pread_full(ls.src_fd[k], b.mem, J.rd, J.off)) { p = b.mem; mc->pm_cached++; }
+    }
+    if (!p) { p = read_direct(ls.src_dfd[k], (uint8_t *) b.mem, b.cap, J.off, J.rd); }
+    if (!p) {   // O_DIRECT refused or failed: the same bytes through the page cache, three tries
+        mc->pm_fail++;
+        for (int a = 0; a < 3 && !p; ++a) { if (pread_full(ls.src_fd[k], b.mem, J.rd, J.off)) { p = b.mem; } }
+    }
+    if (!p) { LLAMA_LOG_ERROR("moe-cache: pin-miss: layer slice %s expert %d: no read of %zu bytes at %zu worked (%s)\n", J.t->name, J.e, J.rd, J.off, strerror(errno)); GGML_ABORT("pin-miss: a slice could not be read"); }
+    return p;
+}
+static void pm_job_close(moe_cache * mc, pm_job & J, const char * p) {
+    if (J.pb > 0 && !J.past_in_file) { memset((char *) p + J.sz, 0, J.pb); }
+    J.b->ptr.store(p, std::memory_order_release);
+    if (J.bg) { mc->pm_bg_in--; mc->pm_cv.notify_all(); }
+    mc->pm_bytes   += J.rd;
+    mc->pm_read_us += (uint64_t) (ggml_time_us() - J.t0);
+    if ((++mc->pm_reads & 4095) == 0) {
+        llama_moe_stats_log_fork("PIN", pin_miss_line(mc).c_str());
+        static const bool lay = moe_opt("pin-miss-layers") != nullptr;
+        if (lay) { llama_moe_stats_log_fork("PINL", pin_miss_layers(mc).c_str()); }
+    }
+}
+
+#ifdef MOE_HAVE_AIO
+// --moe read-pipe (default on): ONE chunk queue per reader instead of one slice at a time (user 2026-11-04: "aio_read_range handles one slice at a time ... seems bad design"). The reader keeps up to read-qd
+// (default 32) chunks of read-chunk KiB (default 256) in flight on its own AIO context and starts the next slice's chunks the moment a slot frees, so the queue never drains at a slice
+// boundary; a slice is ready when its last chunk has landed. bench_aio on the PC1 SSD: 256 KiB chunks with 64+ in flight read 5.3 GB/s (DeepSeek file), 3.5 (MiMo), 2.7 (GLM) against 4.4, 2.6, 2.0
+// for 1 MiB blocks one at a time. Chunks do not care what they belong to: any tensor, any model. False: no AIO on this kernel, the caller reads slice by slice.
+static bool pm_pipe_on() {   // default on (MiMo fill 44.3 -> 32.3 s, GLM 50 -> 41.4 s, 2026-11-04); --moe read-pipe=0 reads slice by slice
+    static const bool on = [] { const char * e = moe_opt("read-pipe"); return !e || atoi(e) != 0; }();
+    return on;
+}
+static bool pin_miss_run_pipe(moe_cache * mc) {
+    static const size_t BLK = [] { const char * e = moe_opt("read-chunk"); const long kb = e ? atol(e) : 256; return (size_t) std::max(64L, std::min(4096L, kb)) << 10; }();
+    static const int QD = [] { const char * e = moe_opt("read-qd"); const int q = e ? atoi(e) : 32; return std::max(4, std::min(256, q)); }();
+    constexpr int MAXJ = 16;
+    aio_ctx_t c;
+    if (syscall(SYS_io_setup, QD, &c.ctx) != 0) { c.ctx = 0; return false; }
+    struct slot_t { int job; size_t rel, want; };
+    std::vector<iocb> cbs(QD); std::vector<io_event> ev(QD); std::vector<slot_t> slot(QD); std::vector<int> free_slot(QD);
+    for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
+    int n_free = QD;
+    pm_job jobs[MAXJ]; bool used[MAXJ] = { false };
+    std::deque<int> pending;   // jobs with chunks still to submit, in the order taken
+    int active = 0; bool stopping = false;
+    auto close_job = [&](int ji) {
+        pm_job & J = jobs[ji];
+        const char * p = J.bad ? pm_job_sync(mc, J) : (const char *) J.b->mem + (J.off - J.beg);   // a failed chunk: the whole slice again, slice by slice
+        pm_job_close(mc, J, p);
+        used[ji] = false; --active;
+    };
+    for (;;) {
+        for (;;) {
+            // chunks of the jobs taken so far first, while slots are free
+            while (n_free > 0 && !pending.empty()) {
+                const int ji = pending.front(); pm_job & J = jobs[ji];
+                const size_t want = std::min(BLK, J.total - J.next);
+                const int s = free_slot[--n_free];
+                iocb & cb = cbs[s];
+                memset(&cb, 0, sizeof(iocb));
+                cb.aio_lio_opcode = IOCB_CMD_PREAD; cb.aio_fildes = (uint32_t) J.ls->src_dfd[J.k];
+                cb.aio_buf = (uint64_t) (uintptr_t) (J.b->mem + J.next); cb.aio_nbytes = want; cb.aio_offset = (int64_t) (J.beg + J.next); cb.aio_data = (uint64_t) s;
+                slot[s] = { ji, J.next, want };
+                iocb * ps[1] = { &cb };
+                if (syscall(SYS_io_submit, c.ctx, 1L, ps) != 1) {   // refused: this slice is read slice by slice once its chunks in flight have landed
+                    ++n_free; J.bad = true; J.total = J.next; pending.pop_front();
+                    if (J.done == J.total) { close_job(ji); }
+                    continue;
+                }
+                J.next += want;
+                if (J.next >= J.total) { pending.pop_front(); }
+            }
+            if (n_free == 0 || active >= MAXJ || stopping) { break; }
+            std::pair<layer_state *, int64_t> j; bool bg = false;
+            const int r = pm_take(mc, j, bg, active == 0);   // blocks only while nothing is in flight
+            if (r < 0) { stopping = true; break; }
+            if (r == 0) { break; }
+            int ji = 0; while (used[ji]) { ++ji; }
+            pm_job & J = jobs[ji];
+            pm_job_open(mc, j, bg, J);
+            if (J.ls->src_dfd[J.k] < 0 || J.end - J.beg > J.b->cap || slice_cached(J.ls->src_fd[J.k], J.off, J.sz)) {   // RAM speed or no O_DIRECT file: slice by slice
+                pm_job_close(mc, J, pm_job_sync(mc, J));
+                continue;
+            }
+            used[ji] = true; ++active; pending.push_back(ji);
         }
-        layer_state & ls = *j.first;
-        const int32_t e = (int32_t) (j.second & 0xffffff);
-        const int     k = (int) ((j.second >> 24) & 3);
-        moe_cache::pm_slot & b = mc->pm_s[j.second >> 26];
-        const ggml_tensor * t = k == 0 ? ls.pub.up_src : k == 1 ? ls.pub.gate_src : ls.pub.down_src;
-        const size_t sz  = t->nb[2];
-        const char * from = nullptr;
-        const size_t pb  = expert_past(mc, ls, k, e, t, from);
-        const size_t off = ls.src_offs[k] + (size_t) e*sz;
-        const bool past_in_file = e + 1 < t->ne[2];   // behind the last expert its past bytes are the tensor's padding, zeros, not in the file
-        const size_t rd = sz + (past_in_file ? pb : 0);
-        const int64_t t0 = ggml_time_us();
-        const char * p = nullptr;
-        if (slice_cached(ls.src_fd[k], off, sz)) {   // RAM speed, no SSD read
-            if (pread_full(ls.src_fd[k], b.mem, rd, off)) { p = b.mem; mc->pm_cached++; }
+        if (active == 0) { if (stopping) { return true; } continue; }
+        const long got = syscall(SYS_io_getevents, c.ctx, 1L, (long) QD, ev.data(), (struct timespec *) nullptr);
+        if (got < 0) { if (errno == EINTR) { continue; } GGML_ABORT("pin-miss: kernel AIO lost its context"); }
+        for (long i = 0; i < got; ++i) {
+            const int s = (int) ev[i].data; const slot_t sl = slot[s]; pm_job & J = jobs[sl.job];
+            if (ev[i].res < 0 || ((size_t) ev[i].res < sl.want && sl.rel + (size_t) ev[i].res < J.need)) { J.bad = true; }   // a short block past the end of the file is the end
+            J.done += sl.want; free_slot[n_free++] = s;
+            if (J.done == J.total && J.next == J.total) { close_job(sl.job); }
         }
-        if (!p) { p = read_direct(ls.src_dfd[k], (uint8_t *) b.mem, b.cap, off, rd); }
-        if (!p) {   // O_DIRECT refused or failed: the same bytes through the page cache, three tries
-            mc->pm_fail++;
-            for (int a = 0; a < 3 && !p; ++a) { if (pread_full(ls.src_fd[k], b.mem, rd, off)) { p = b.mem; } }
-        }
-        if (!p) { LLAMA_LOG_ERROR("moe-cache: pin-miss: layer slice %s expert %d: no read of %zu bytes at %zu worked (%s)\n", t->name, e, rd, off, strerror(errno)); GGML_ABORT("pin-miss: a slice could not be read"); }
-        if (pb > 0 && !past_in_file) { memset((char *) p + sz, 0, pb); }
-        b.ptr.store(p, std::memory_order_release);
-        if (bg) { mc->pm_bg_in--; mc->pm_cv.notify_all(); }
-        mc->pm_bytes   += rd;
-        mc->pm_read_us += (uint64_t) (ggml_time_us() - t0);
-        if ((++mc->pm_reads & 4095) == 0) {
-            llama_moe_stats_log_fork("PIN", pin_miss_line(mc).c_str());
-            static const bool lay = moe_opt("pin-miss-layers") != nullptr;
-            if (lay) { llama_moe_stats_log_fork("PINL", pin_miss_layers(mc).c_str()); }
-        }
+    }
+}
+#endif
+
+static void pin_miss_run(moe_cache * mc) {
+#ifdef MOE_HAVE_AIO
+    if (pm_pipe_on() && pin_miss_run_pipe(mc)) { return; }
+#endif
+    for (;;) {
+        std::pair<layer_state *, int64_t> j;
+        bool bg = false;
+        if (pm_take(mc, j, bg, true) < 0) { return; }
+        pm_job J;
+        pm_job_open(mc, j, bg, J);
+        pm_job_close(mc, J, pm_job_sync(mc, J));
     }
 }
 
@@ -7766,7 +8023,8 @@ static void pin_miss_start(moe_cache * mc) {
     // once the pool holds nearly all of it (2026-11-04, MiMo 3bit: 99 GiB pinned, the last 3.2 GiB size class stalled 180 s in the register, 35% of the time memory-stalled;
     // PC1 has 9.4 GiB of CMA blocks although CmaTotal says 0)
     const size_t cma = meminfo_bytes("CmaFree");
-    size_t room = avail > floor_b + cma ? avail - floor_b - cma : 0;
+    const size_t pool_b = free_reserved_1g_bytes();   // reserved 1 GiB pages: taken whole by the pinned allocator, no floor, no CMA
+    size_t room = (avail > floor_b + cma ? avail - floor_b - cma : 0) + pool_b;
     if (const char * gib = moe_opt("pin-miss-gib")) { room = std::min(room, (size_t) (atof(gib) * 1073741824.0)); }
     const double share = b_blocks > 0 ? std::min(1.0, (double) room / (double) b_blocks) : 0.0;
     size_t n_blocks = 0;
@@ -7860,8 +8118,8 @@ static void pin_miss_start(moe_cache * mc) {
         LLAMA_LOG_WARN("moe-cache: pin-miss-trap: %.1f GiB of mapped expert tensors now crash their reader, %zu whole files unmapped\n", trapped / 1073741824.0, files.size());
     }
 #endif
-    LLAMA_LOG_WARN("moe-cache: pin-miss: %zu slice sizes, one pinned buffer each: %s = %.1f GiB in %.1f s (%.1f GiB of RAM available, %.1f GiB kept free, %.1f GiB in CMA blocks; %.1f GiB of expert weights in %zu slices), %d readers, CPU branch %s, %s\n",
-            cls.size(), sizes.c_str(), mc->pm_pinned / 1073741824.0, (ggml_time_us() - t_pin) / 1e6, avail / 1073741824.0, floor_b / 1073741824.0, cma / 1073741824.0, b_mapped / 1073741824.0, n_mapped, n,
+    LLAMA_LOG_WARN("moe-cache: pin-miss: %zu slice sizes, one pinned buffer each: %s = %.1f GiB in %.1f s (%.1f GiB of RAM available + %.1f GiB free in the reserved 1 GiB pool, %.1f GiB kept free, %.1f GiB in CMA blocks; %.1f GiB of expert weights in %zu slices), %d readers, CPU branch %s, %s\n",
+            cls.size(), sizes.c_str(), mc->pm_pinned / 1073741824.0, (ggml_time_us() - t_pin) / 1e6, avail / 1073741824.0, pool_b / 1073741824.0, floor_b / 1073741824.0, cma / 1073741824.0, b_mapped / 1073741824.0, n_mapped, n,
             hook ? "reads them through the expert hook" : "keeps the mapping (no hook in this CPU backend)", mc->pm_hot ? "the next hottest before any request, hot lists from a request's start and the next layer ahead" : mc->pm_pre ? "reads the next layer ahead" : "reads at the router");
 }
 
@@ -8892,6 +9150,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
             ls.glob_count.assign(n_expert, 0);
             ls.topic_cnt.assign(n_expert, 0);
+            if (vis_on()) { ls.vis.assign(n_expert, vis_t{}); }
             ls.topic_dec.assign(n_expert, 0);
             ls.topic_think.assign(n_expert, 0);
             ls.topic_heat.assign(n_expert, 0.0f);
@@ -9415,6 +9674,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 #endif
         resource_probe(mc);
         numa_probe(mc);
+        vis_start(mc);
         if (const size_t n = profile_preload(mc, model)) {
             LLAMA_LOG_WARN("moe-cache: preloading %zu experts (usage profile)\n", n);
         } else {
@@ -12609,6 +12869,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                     if (u[e]) {
                         ls.expert_count[e]++;
                         ls.topic_max = std::max(ls.topic_max, ++ls.topic_cnt[e]);
+                        vis_pick(ls, e, 1);
                         ls.glob_max = std::max(ls.glob_max, ++ls.glob_count[e]);
                     }
                 }
@@ -13030,6 +13291,7 @@ void llama_moe_cache_free_fork() {
     for (auto & t : mc->workers) {
         t.join();
     }
+    vis_end(mc);
     profile_save(mc);
     uint64_t h = 0, m = 0;
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
