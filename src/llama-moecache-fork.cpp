@@ -256,6 +256,7 @@ struct layer_state {
     std::vector<uint8_t>  queued;
     std::vector<uint8_t>  prefetched;
     std::vector<uint8_t>  ahead_up;   // expert id -> the prompt chain's look ahead queued it for this layer, not yet seen by its router (pp_ahead_queue)
+    std::vector<int64_t>  up_begin;   // expert id -> when a worker began copying it, written under wmtx; 0: no copy running (--moe dec-wait)
 
     // swap pay-back accounting, per expert: when its current copy finished uploading (0: not uploaded,
     // e.g. adopted from prefill), what that upload cost, and the decode hits it served since
@@ -753,7 +754,9 @@ static size_t expert_past(const moe_cache * mc, const layer_state & ls, int k, i
 // pm_ptr marker: a pin-miss read under way (below every real pointer)
 static const char * const PM_LOADING = (const char *) 2;
 }  // namespace (reopened below)
-static void pin_miss_preload(moe_cache * mc, size_t tl, const ggml_tensor * pred, int64_t n_picks);   // below, outside this namespace
+static void pin_miss_preload(moe_cache * mc, size_t tl, const ggml_tensor * pred, int64_t n_picks, int dec = -1);   // below, outside this namespace; dec >= 0: a decode look ahead this many layers past the next, which may upload (dec_ahead_on)
+static bool dec_ahead_on();                                                                                              // below: --moe dec-ahead
+static void dec_ahead_seen(moe_cache * mc, layer_state & ls, const ggml_tensor * ids);                                   // below: this layer's router came, what the look ahead sent for it is scored
 static int pm_ahead_pos(const moe_cache * mc, size_t li);   // below: the layer the look ahead from position li reads for
 namespace {
 
@@ -2937,8 +2940,17 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             }
         }
     }
+    if (!prefill && dec_ahead_on()) { dec_ahead_seen(mc, *ls, ids); }
     if (mc->pm_pre && pred && pred->type == GGML_TYPE_F32) {   // the next model layer, which may sit at the other end of the list; layer 0 of the next token from the last
-        if (const int nx = pm_ahead_pos(mc, li); nx >= 0) { pin_miss_preload(mc, (size_t) nx, pred, n_ids); }
+        int nx = pm_ahead_pos(mc, li);
+        if (nx >= 0) { pin_miss_preload(mc, (size_t) nx, pred, n_ids, !prefill && dec_ahead_on() ? 0 : -1); }
+        if (!prefill && dec_ahead_on() && mc->pm_all.load(std::memory_order_relaxed) && mc->pred_ahead > 1) {   // --moe pp-ahead=N: the routers of the layers after it, stacked in one matmul
+            for (int d = 1; d < mc->pred_ahead && nx >= 0; ++d) {
+                const int nn = (nx + 1) % (int) mc->layers.size();
+                nx = mc->layers[nn].pub.il == mc->layers[nx].pub.il + 1 ? nn : -1;   // the pass ends at the model's last layer
+                if (nx >= 0) { pin_miss_preload(mc, (size_t) nx, pred, n_ids, d); }
+            }
+        }
     }
     if (knobs().predict != 0 && !prefill && mc->pred_m > 0 && pred && pred->type == GGML_TYPE_F32 && pred->ne[1] == n_tokens && li + 1 < mc->layers.size()) {
         const int64_t ne    = (int64_t) mc->layers[li + 1].expert_slot.size();
@@ -2995,6 +3007,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
 // publish a finished upload (mtx held, no graph reading this layer's table)
 void publish_job(moe_cache * mc, const upload_job & j) {
     auto & ls = mc->layers[j.layer_idx];
+    ls.up_begin[j.expert] = 0;
     if (j.skipped) {
         ls.slot_in_flight[j.slot] = false;
         ls.queued[j.expert]       = 0;
@@ -7751,17 +7764,158 @@ static bool pin_miss_feed(moe_cache * mc) {
 // --moe pin-miss=2, mc->mtx held: the next layer's router on this layer's input ([n_expert, rows], block 0 of the predictor's output when it has several, the same look the prompt ring's
 // early router takes): the n picks of a row, in rows spaced so a layer's experts each get about one, the same score as the real selection; the ones not on the card are read now, while
 // this layer computes. A wrong guess costs its read and may be of use later; a real miss the look did not name is queued at the router, ahead of what is left of this.
-static void pin_miss_preload(moe_cache * mc, size_t tl, const ggml_tensor * pred, int64_t n_picks) {
+// --moe dec-ahead=1: the decode chain's look ahead uploads too, once the whole model is in RAM: nothing is left to read, the router's picks for the next layer go to VRAM below the misses
+// (user 2026-11-04: "queue all next layer uploads right below our misses"). A hit saves the CPU's turn at the expert (nsys, MiMo: a card waits about 200 us per layer with misses) and the
+// upload runs beside the computing: the links are 12-27% used. Evicts the coldest of that layer the look ahead does not name; dec-ahead=2: only when the expert is hotter by the link's pay back.
+static int dec_ahead_mode() {
+    static const int m = [] { const char * e = moe_opt("dec-ahead"); return e ? atoi(e) : 0; }();
+    return m;
+}
+static bool dec_ahead_on() { return dec_ahead_mode() != 0; }
+static std::atomic<uint64_t> g_da_q{0}, g_da_ready{0}, g_da_late{0}, g_da_unused{0}, g_da_refused{0};
+
+// the router of this layer came: what the look ahead sent for it landed in time, is still on its way, or was not picked (its block stays with it: the eviction rule decides)
+static void dec_ahead_seen(moe_cache * mc, layer_state & ls, const ggml_tensor * ids) {
+    (void) mc;
+    bool any = false;
+    for (const uint8_t a : ls.ahead_up) { if (a) { any = true; break; } }
+    if (!any) { return; }
+    for (int64_t t = 0; t < ids->ne[1]; ++t) {
+        for (int64_t i = 0; i < ids->ne[0]; ++i) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (e < 0 || e >= (int32_t) ls.ahead_up.size() || !ls.ahead_up[e]) { continue; }
+            ls.ahead_up[e] = 0;
+            (ls.expert_slot[e] >= 0 ? g_da_ready : g_da_late)++;
+        }
+    }
+    for (uint8_t & a : ls.ahead_up) { if (a) { a = 0; g_da_unused++; } }
+}
+
+// the look ahead's picks for layer tl (best first) that VRAM lacks go to the upload workers: as many as land before that layer's router, from the measured times (lead = the layers until it x a
+// layer's time, over one expert's upload on its link), minus what its link has queued before them; none on a link too slow to land one in time (x4: 1.4 ms an expert). mc->mtx held.
+static constexpr int64_t DA_ORD = -((int64_t) 1 << 24);   // upload_job::ord of a look ahead: behind a router's own request, before the step's swaps (0)
+static void dec_ahead_queue(moe_cache * mc, size_t tl, const std::vector<int32_t> & cand, const std::vector<uint8_t> & picked, int d) {
+    layer_state & ls = mc->layers[tl];
+    if (ls.pub.jit_n > 0 || ls.ahead_up.empty()) { return; }
+    const double up_us = mc->link_us[ls.link];
+    int room = up_us > 0 ? (int) ((d + 1) * mean_layer_us(mc) / up_us) : 1;
+    {
+        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        for (const auto & q : mc->todo) { room -= q.ord < 0 && mc->layers[q.layer_idx].link == ls.link; }
+    }
+    std::vector<upload_job> jobs;
+    const int64_t now = ggml_time_us();
+    for (size_t i = 0; i < cand.size() && (int) jobs.size() < room; ++i) {
+        const int32_t id = cand[i];
+        double best;
+        const slot_pick pk = pick_slot(mc, tl, [&](layer_state & lo, size_t o, int32_t x) {
+            return o != tl || pinned(mc, lo, x) || picked[x] ? -1.0 : score(lo, x);   // mid-token: another layer's table may be on its card already
+        }, best);
+        if (pk.slot < 0) { break; }
+        const int32_t victim = pk.owner >= 0 ? mc->layers[pk.owner].slot_expert[pk.slot] : -1;
+        if (victim >= 0 && dec_ahead_mode() == 2 && score(ls, id) < score(ls, victim) + pay_back(mc->link_margin[ls.link])) { g_da_refused++; continue; }
+        if (victim >= 0) { evict_slot(mc, mc->layers[pk.owner], pk.slot); }
+        pool_take(mc, tl, pk.slot);
+        led_upload(mc, "dec-ahead-q", tl, id, pk.slot, false);
+        ls.slot_in_flight[pk.slot] = true;
+        ls.queued[id]              = 1;
+        ls.ahead_up[id]            = 1;
+        upload_job j { tl, id, pk.slot };
+        j.ord      = DA_ORD + (int64_t) d * 4096 + (int64_t) i;   // the nearest layer first
+        j.urgent   = true;
+        j.t_queued = now;
+        jobs.push_back(j);
+        g_da_q++;
+    }
+    if (jobs.empty()) { return; }
+    {
+        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        for (const auto & j : jobs) { mc->todo.push_back(j); }
+    }
+    mc->wcv.notify_all();
+}
+
+// --moe dec-wait=1 (user 2026-11-04: "even thou it was not in time router will wait much less just needs patience"): an expert this layer's router picked is on its way: the queue has it, no
+// second upload. The layer waits for the copy when it lands sooner than the CPU would compute the expert (its bytes over the CPU's measured rate): the CPU and the chain start that much later,
+// the CPU has one expert less. A look ahead's copy that has not started: picked, it goes to the head of the queue; not picked, it is dropped. mc->mtx held by lock, released while waiting.
+static bool dec_wait_on() {
+    static const bool on = [] { const char * e = moe_opt("dec-wait"); return e && atoi(e) != 0; }();
+    return on;
+}
+static std::atomic<uint64_t> g_dw_waits{0}, g_dw_us{0}, g_dw_landed{0}, g_dw_late{0}, g_da_drop{0};
+static void dec_wait_late(moe_cache * mc, layer_state & ls, size_t li, const ggml_tensor * ids, std::unique_lock<std::mutex> & lock) {
+    std::vector<uint8_t> used(ls.expert_slot.size(), 0);
+    for (int64_t t = 0; t < ids->ne[1]; ++t) {
+        for (int64_t i = 0; i < ids->ne[0]; ++i) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (e >= 0 && e < (int32_t) used.size()) { used[e] = 1; }
+        }
+    }
+    const double rc     = cpu_gbs_now(mc) * 1e3;   // bytes/us
+    const double cpu_us = rc > 0 ? (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]) / rc : 0.0;
+    const double up_us  = mc->link_us[ls.link];
+    std::vector<int32_t> w;
+    {
+        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        const int64_t now = ggml_time_us();
+        for (auto it = mc->todo.begin(); it != mc->todo.end(); ) {
+            if (it->layer_idx == li && it->ord >= DA_ORD && it->ord < 0) {
+                if (used[it->expert]) { it->ord = PP_ORD_ROUTER + now; ++it; continue; }
+                upload_job d = *it;
+                d.skipped = true;
+                d.done    = true;
+                mc->done.push_back(d);
+                g_da_drop++;
+                it = mc->todo.erase(it);
+                continue;
+            }
+            ++it;
+        }
+        for (int32_t e = 0; e < (int32_t) used.size(); ++e) {
+            if (!used[e] || ls.expert_slot[e] >= 0 || !ls.queued[e] || ls.up_begin[e] == 0) { continue; }
+            if (up_us - (double) (now - ls.up_begin[e]) < cpu_us) { w.push_back(e); }
+        }
+    }
+    if (!w.empty()) {
+        lock.unlock();
+        const int64_t t0 = ggml_time_us();
+        bool all = false;
+        while (!all && ggml_time_us() - t0 < (int64_t) cpu_us) {   // spins: the wait is under one CPU expert's time, a sleep would lose it
+            all = true;
+            std::lock_guard<std::mutex> wlk(mc->wmtx);
+            for (const int32_t e : w) {
+                all = all && std::any_of(mc->done.begin(), mc->done.end(), [&](const upload_job & j) { return j.layer_idx == li && j.expert == e; });
+            }
+        }
+        g_dw_waits++;
+        g_dw_us += (uint64_t) (ggml_time_us() - t0);
+        (all ? g_dw_landed : g_dw_late) += w.size();
+        lock.lock();
+    }
+    std::vector<upload_job> fin;   // what landed for this layer counts now: the next split would publish it after the CPU started on it
+    {
+        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        for (size_t i = 0; i < mc->done.size(); ) {
+            if (mc->done[i].layer_idx == li) { fin.push_back(mc->done[i]); mc->done[i] = mc->done.back(); mc->done.pop_back(); } else { ++i; }
+        }
+    }
+    for (const auto & j : fin) { publish_job(mc, j); }
+}
+
+static void pin_miss_preload(moe_cache * mc, size_t tl, const ggml_tensor * pred, int64_t n_picks, int dec) {
     layer_state & ls = mc->layers[tl];
     const int64_t ne = (int64_t) ls.expert_slot.size(), nr = pred->ne[1];
-    if (pred->ne[0] < ne || ne == 0) { return; }
+    const int64_t blk = dec > 0 ? dec : 0;   // the stacked layout: [n_expert * K, n_tokens], nearest first
+    if (pred->ne[0] < (blk + 1) * ne || ne == 0) { return; }
     const auto & bias = mc->pred_b[tl];
     const int32_t m = (int32_t) std::min<int64_t>(n_picks, ne);
+    static const int32_t da_k = [] { const char * e = moe_opt("dec-ahead-k"); return e ? atoi(e) : INT32_MAX; }();   // --moe dec-ahead-k=N: only the router's top N go to VRAM, they are the likelier
+    const int32_t mk = dec >= 0 && mc->pm_all.load(std::memory_order_relaxed) ? std::min(m, da_k) : m;
     std::vector<float>   sc((size_t) ne);
     std::vector<int32_t> idx((size_t) ne), cand;
     std::vector<uint8_t> seen((size_t) ne, 0);
     for (int64_t t = 0; t < nr; t += std::max<int64_t>(1, nr / ne)) {
-        const float * lg = (const float *) ((const char *) pred->data + t*pred->nb[1]);
+        const float * lg = (const float *) ((const char *) pred->data + t*pred->nb[1]) + blk*ne;
         for (int64_t e = 0; e < ne; ++e) {
             sc[e] = bias.empty() ? lg[e] : (mc->pm_gate == LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS ? sqrtf(log1pf(expf(lg[e]))) : 1.0f/(1.0f + expf(-lg[e]))) + bias[e];
             idx[e] = (int32_t) e;
@@ -7771,9 +7925,10 @@ static void pin_miss_preload(moe_cache * mc, size_t tl, const ggml_tensor * pred
             const int32_t e = idx[j];
             if (seen[e]) { continue; }
             seen[e] = 1;
-            if (ls.expert_slot[e] < 0 && !ls.queued[e]) { cand.push_back(e); }
+            if (j < mk && ls.expert_slot[e] < 0 && !ls.queued[e]) { cand.push_back(e); }
         }
     }
+    if (dec >= 0 && !cand.empty() && mc->pm_all.load(std::memory_order_relaxed)) { dec_ahead_queue(mc, tl, cand, seen, dec); return; }
     std::sort(cand.begin(), cand.end());   // the order the prompt chain's copies ask for them
     if (!cand.empty()) { pin_miss_queue(mc, (int) tl, cand, false); }
 }
@@ -9164,6 +9319,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             ls.queued.assign(n_expert, 0);
             ls.prefetched.assign(n_expert, 0);
             ls.ahead_up.assign(n_expert, 0);
+            ls.up_begin.assign(n_expert, 0);
             ls.adopt_mask.assign(n_expert, 0);
 
             std::vector<int32_t> dummy(n_expert, ns);
@@ -9378,6 +9534,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     auto it = mine();
                     j = *it;
                     mc->todo.erase(it);
+                    mc->layers[j.layer_idx].up_begin[j.expert] = ggml_time_us();
                     mc->in_flight++;
                     mc->in_flight_stream += j.stream || j.bg;
                 }
@@ -9878,7 +10035,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         [&] { std::string r; for (int c : cpus) r += " " + std::to_string(c); return r; }().c_str(), cpus.size());
                 }
                 ggml_backend_set_split_callback(moe_split_cb, mc);
-                if (pm_only) { LLAMA_LOG_WARN("moe-cache: pin-miss: the next layer's router looks ahead from %zu layers, no uploads\n", n_pred); }
+                if (pm_only) { LLAMA_LOG_WARN("moe-cache: pin-miss: the next layer's router looks ahead from %zu layers, %s\n", n_pred, dec_ahead_on() ? "uploads below the misses once the whole model is in RAM (--moe dec-ahead)" : "no uploads"); }
                 else {
                     LLAMA_LOG_WARN("moe-cache: router prediction for %zu layers: top-%d, up to %d uploads per layer\n",
                             n_pred, mc->pred_m, mc->pred_max);
@@ -9953,7 +10110,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     if (!mc || knobs().jit == 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(mc->mtx);
+    std::unique_lock<std::mutex> lock(mc->mtx);
     layer_state * lsp = nullptr;
     for (auto & l : mc->layers) {
         if (&l.pub == pub) { lsp = &l; break; }
@@ -9970,6 +10127,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     if (!be || rl <= 0) {
         return;
     }
+    if (!prompt && dec_wait_on()) { dec_wait_late(mc, ls, (size_t) (lsp - mc->layers.data()), ids, lock); }
     std::vector<int32_t> cur, miss;
     std::vector<int32_t> ntok(ls.expert_slot.size(), 0);   // tokens of this call routed to each expert: the CPU computes every one of them, an upload costs the same for 1 or 100
     for (int64_t t = 0; t < ids->ne[1]; ++t) {
@@ -11681,7 +11839,7 @@ void llama_moe_cache_step_fork() {
             if (mc->pm_on) {   // --moe pin-miss: the layer the look ahead reads for, in model order (layer 0 of the next token from the last layer); always while the pool holds part of the
                 // model (its misses go to the SSD however well the cards hit: 35B, 4 GiB pool, 96% VRAM hits switched it off and the routers did all reads), never when it holds all of it
                 const int t = pm_ahead_pos(mc, li);
-                on = t >= 0 && !mc->pm_all.load(std::memory_order_relaxed);
+                on = t >= 0 && (!mc->pm_all.load(std::memory_order_relaxed) || dec_ahead_on());
             } else {
                 for (int k = 1; k <= std::max(1, pub.pred_ahead) && li + k < nl; ++k) {
                     on = on || miss[li + k] > thr;
@@ -13292,6 +13450,14 @@ void llama_moe_cache_free_fork() {
         t.join();
     }
     vis_end(mc);
+    if (g_da_q.load() > 0) {
+        LLAMA_LOG_WARN("moe-cache: decode look ahead (--moe dec-ahead): %" PRIu64 " uploads queued, of them %" PRIu64 " landed before their router picked them, %" PRIu64 " still on their way, %" PRIu64 " not picked (%" PRIu64 " of them dropped unstarted); %" PRIu64 " refused by the pay back\n",
+                g_da_q.load(), g_da_ready.load(), g_da_late.load(), g_da_unused.load(), g_da_drop.load(), g_da_refused.load());
+    }
+    if (g_dw_waits.load() > 0) {
+        LLAMA_LOG_WARN("moe-cache: decode waits for uploads on their way (--moe dec-wait): %" PRIu64 " layers waited %.1f ms in all, %" PRIu64 " experts landed in the wait, %" PRIu64 " did not\n",
+                g_dw_waits.load(), g_dw_us.load() / 1e3, g_dw_landed.load(), g_dw_late.load());
+    }
     profile_save(mc);
     uint64_t h = 0, m = 0;
     for (auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
@@ -13415,3 +13581,35 @@ bool pinned(const moe_cache * mc, const layer_state & ls, int32_t e) {
 
 // C-linkage, exported entry for the server (llama.h): the planner above is a C++ function other engine files declare locally
 uint32_t llama_moe_prefill_pass_fork(uint32_t n_tokens, uint32_t ub_max) { return llama_moe_cache_prefill_ubatch_fork(n_tokens, ub_max); }
+
+#if defined(__linux__)
+// The pool's 1 GiB pages the weights leave free hold the heap too (user 2026-11-04: "how come heap alloc doesnt take from them"): the kernel hands them out only on request, and glibc asks only
+// through a tunable it reads at process start, so the process starts itself once more with it. One arena: each would take a page of its own. No mmap chunks: those would stay on 4 KiB pages. A
+// pool that runs out: glibc goes on with ordinary pages; a glibc before 2.35 ignores the tunable. MiMo, 2 pages: first prompt 36 -> 41 t/s, decode 35.3 -> 36.0 t/s, RAM beside the pool stays free
+// (35B leaves 84 pages idle while the server's heap and staging ran the rest of the RAM out). --moe heap-pool=0: off.
+__attribute__((constructor)) static void moe_heap_on_pool() {
+    if (getenv("GLIBC_TUNABLES")) { return; }
+    char exe[4096];
+    const ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0) { return; }
+    exe[n] = 0;
+    const char * base = strrchr(exe, '/');
+    if (strncmp(base ? base + 1 : exe, "llama-", 6) != 0) { return; }   // our tools only, not a program that loads the library
+    auto rd = [](const char * path) { long v = 0; if (FILE * f = fopen(path, "r")) { if (fscanf(f, "%ld", &v) != 1) { v = 0; } fclose(f); } return v; };
+    if (rd("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages") - rd("/sys/kernel/mm/hugepages/hugepages-1048576kB/resv_hugepages") < 2) { return; }
+    std::string cmd;
+    if (FILE * f = fopen("/proc/self/cmdline", "r")) {
+        char buf[65536];
+        size_t got;
+        while ((got = fread(buf, 1, sizeof(buf), f)) > 0) { cmd.append(buf, got); }
+        fclose(f);
+    }
+    if (cmd.empty() || cmd.find("heap-pool=0") != std::string::npos) { return; }
+    std::vector<char *> argv;
+    for (size_t i = 0; i < cmd.size(); i += strlen(&cmd[i]) + 1) { argv.push_back(&cmd[i]); }
+    argv.push_back(nullptr);
+    setenv("GLIBC_TUNABLES", "glibc.malloc.hugetlb=1073741824:glibc.malloc.arena_max=1:glibc.malloc.mmap_max=0", 1);
+    execv("/proc/self/exe", argv.data());
+    unsetenv("GLIBC_TUNABLES");   // it did not start: this process goes on as it is
+}
+#endif

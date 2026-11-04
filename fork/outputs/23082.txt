@@ -1,0 +1,51 @@
+run 23082 | inline_wait | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.39 t/s | prompt 26.9 t/s | 1024 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt42-glm-t-pin.ini,pin-miss=3,log=wk | power 220+280 W | 2026-11-04 12:29:40
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. This is an explicit user request that overrides my usual preference for elaborate visuals. Let me write a genuinely tiny Tetris in a single HTML file.
+
+Let me think about how to write the most compact Tetris possible.
+
+Classic minimal Tetris implementations exist. Let me design my own, aiming for a very small byte count while still being a real, playable Tetris: 7 tetrominoes, rotation, line clearing, score, game over, gravity, keyboard controls.
+
+Approach: canvas rendering, a single piece array encoded compactly, rotation via matrix math or precomputed strings.
+
+Let me think about the most compact encoding.
+
+Common trick: represent each tetromino as a set of coordinates in a 4x4 or use strings like "0110110" etc. Or use the classic "binary numbers" trick.
+
+A very compact known approach: pieces as arrays of rotations encoded as bitmasks. E.g., each piece rotation is a 16-bit number representing a 4x4 grid. Then drawing: for i in 0..15, if bitmask>>i &1, draw cell at (i%4, i/4).
+
+Pieces (I, J, L, O, S, T, Z) with rotations. To keep it small, I can define each piece as one base shape and rotate the coordinate matrix mathematically. Rotation of a matrix: (x,y) -> (y, N-1-x) for clockwise rotation in an NxN box. For I piece, a 4x4 box; others 3x3 or 2x2 (O). Actually rotating within different box sizes works if we store each piece as a square matrix of its bounding box.
+
+Compact encoding: store pieces as strings of bits. E.g.:
+
+I: 4x4: rows "0010,0010,0010,0010"? Hmm, better to use a 4-wide representation.
+
+Alternative super-compact trick used in famous minimal tetris (like the 140-byte-ish ones) uses clever math, but those are often incomplete (no all 7 pieces, no rotation). I want a real playable one but still tiny.
+
+Let me aim for something like ~600-800 bytes of actual code, minified-ish but still somewhat readable? The user asked for "smallest" — I should genuinely minimize. I'll write it compactly, maybe with short variable names, minimal whitespace, but still a working game with colors, score, next piece maybe? Next piece adds bytes. Keep it: 7 pieces, rotation (4 rotations via math), gravity, collision, line clear, score, speed increase, game over, restart. Controls: arrows + Z/X or up for rotate. Maybe just arrows: left/right move, up rotate, down soft drop. Space for hard drop? Hard drop is cheap to add (loop move down until collision). 
+
+Rendering: canvas 2D, draw cells as filled rects with slight distinction per piece color? Colors add bytes (array of 7 colors). Could use a single hue-based color: `hsl(i*36,50%,50%)` — cheap! Piece index i, color = hsl. That's tiny and gives distinct colors. 
+
+Grid: 10x20 standard. Cell size ~ maybe 12px? Canvas 120x240 plus scaling. Use ctx.scale? Or just cell=15, canvas 150x300. Keep small.
+
+Let me draft the code.
+
+Data:
+- Grid: 2D array 20 rows x 10 cols, values 0 or piece index+1.
+- Current piece: {x, y, r (rotation index), t (type index)}.
+- Shapes: define each tetromino as a matrix; rotate by transposing+reversing.
+
+Compact shape definition: 
+
+One classic compact encoding: each tetromino as a list of [x,y] pairs? Or as binary rows.
+
+Let me try: define shapes as arrays of strings? E.g.
+
+S = {I:[[1,1,1,1]], ...} no.
+
+A neat trick: store each piece as a single number whose binary digits encode a 4x4 (or 3x3) grid. For rotation, we can rotate the decoded matrix.
+
+Even neater: precompute all 4 rotations as bitmasks and store pieces as arrays of 4 numbers. That's more bytes of data but simpler code. Alternatively store base and compute rotations on the fly with a rotate function — code is small: rotate(m) returns m[0].map((_,i)=>m.map(r=>r[i]).reverse()) — transpose + reverse rows = clockwise rotation. That's one line.
+
+Shapes as compact strings: e.g. "010111000"
+---

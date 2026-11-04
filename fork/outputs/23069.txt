@@ -1,0 +1,121 @@
+run 23069 | inline_wait | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.82 t/s | prompt 35.5 t/s | 1024 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt41-inl.ini,pin-miss=3,log=wk,swap-lead=0,upload-wait=0,wait-swaps=1,idle-up=0,upload-share=0.25 | power 220+280 W | 2026-11-04 12:04:01
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+4. Score
+
+Let me write a compact version:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// ... game code
+</script>
+</body>
+</html>
+```
+
+Let me write a compact but functional Tetris game. I'll use a canvas and keep the code as small as possible while still being functional.
+
+Let me think about the structure:
+
+- Grid: 10 columns x 20 rows
+- Pieces: I, O, T, S, Z, J, L
+- Each piece has rotation states
+- Game loop with requestAnimationFrame or setInterval
+
+Let me write this compactly:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let grid=[],score=0,piece,nextPiece,gameOver=false;
+
+// Initialize grid
+for(let r=0;r<H;r++)grid[r]=[];
+for(let r=0;r<H;r++)for(let col=0;col<W;col++)grid[r][col]=0;
+
+// Piece definitions - each piece is an array of [row, col] offsets
+const pieces=[
+  [[0,0],[0,1],[0,2],[0,3]], // I
+  [[0,0],[0,1],[1,0],[1,1]], // O
+  [[0,0],[0,1],[0,2],[1,1]], // T
+  [[0,1],[0,2],[1,0],[1,1]], // S
+  [[0,0],[0,1],[1,1],[1,2]], // Z
+  [[0,0],[1,0],[1,1],[1,2]], // J
+  [[0,2],[1,0],[1,1],[1,2]]  // L
+];
+const colors=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+
+function newPiece(){
+  let i=Math.floor(Math.random()*7);
+  return {type:i,rot:0,x:3,y:0};
+}
+
+function getBlocks(p){
+  let blocks=pieces[p.type];
+  // Rotate
+  let r=p.rot%4;
+  let result=[];
+  for(let b of blocks){
+    let [row,col]=b;
+    for(let i=0;i<r;i++){
+      // Rotate 90 degrees: (row,col) -> (col, -row) but we need to adjust
+      let nr=col, nc=-row;
+      row=nr; col=nc;
+    }
+    // Normalize to positive
+    result.push([row,col]);
+  }
+  // Find min row and col to normalize
+  let minR=Math.min(...result.map(b=>b[0]));
+  let minC=Math.min(...result.map(b=>b[1]));
+  return result.map(b=>[b[0]-minR,b[1]-minC]);
+}
+```
+
+Hmm, this is getting complex. Let me think of a simpler approach.
+
+Actually, let me use a different approach - define each piece as a 2D array and rotate the array.
+
+```javascript
+const pieces=[
+  [[1,1,1,1]], // I
+  [[1,1],[1,1]], // O
+  [[1,1,1],[0,1,0]], // T
+  [[0,1,1],[1,1,0]], // S
+  [[1,1,0],[0,1,1]], // Z
+  [[1,0,0],[1,1,1]], // J
+  [[0,0,1],[1,1,1]]  // L
+];
+```
+
+Rotation: transpose and reverse rows (or reverse rows and transpose).
+
+Let me write a compact version:
+
+```javascript
+function rotate(m){
+  return m[0].map((_,i)=>m.map(r=>r[i]).reverse());
+}
+```
+
+Wait, that's rotate clockwise. Let me verify:
+- m = [[1,1,1],[0,1,0]]
+- m[0].map((_,i) => m.map(r => r[i]).reverse())
+- i=0: m.map(r => r[0]).reverse() = [
+---

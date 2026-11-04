@@ -1,0 +1,40 @@
+run 23061 | dec_ahead | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.28 t/s | prompt 32.1 t/s | 951 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt39-a1k2.ini,pin-miss=3,log=wk,swap-lead=0,upload-wait=0,upload-share=0.5,wait-swaps=1,idle-up=0,dec-ahead=1,pp-ahead=2 | power 220+280 W | 2026-11-04 11:38:43
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal Tetris game with:
+- Canvas-based rendering
+- All 7 tetrominoes
+- Rotation
+- Line clearing
+- Score
+- Game over
+
+Let me make it as compact as possible while still being functional.
+---
+```html
+<!DOCTYPE html><html><head><title>Tetris</title><style>body{margin:0;background:#000;color:#fff;font-family:monospace;text-align:center}canvas{border:1px solid #333}</style></head><body><canvas id="c" width="300" height="600"></canvas><div id="s">Score:0</div><script>
+const c=document.getElementById('c'),x=c.getContext('2d'),s=document.getElementById('s');
+const W=10,H=20,S=30;
+let g=Array.from({length:H},()=>Array(W).fill(0)),score=0,over=false;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0],[1,0],[1,1]],[[0,1],[0,1],[1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]]];
+const C=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+let p,px,py,pi;
+function spawn(){pi=Math.floor(Math.random()*7);p=P[pi].map(r=>[...r]);px=3;py=0;if(collide())over=true}
+function collide(){return p.some((r,ry)=>r.some((v,rx)=>v&&(px+rx<0||px+rx>=W||py+ry>=H||g[py+ry][px+rx])))}
+function merge(){p.forEach((r,ry)=>r.forEach((v,rx)=>{if(v)g[py+ry][px+rx]=pi+1}))}
+function clear(){for(let y=H-1;y>=0;y--){if(g[y].every(v=>v)){g.splice(y,1);g.unshift(Array(W).fill(0));score+=100;s.textContent='Score:'+score;y++}}}
+function rotate(){let t=p[0].map((_,i)=>p.map(r=>r[i]).reverse());let o=px;p[0]=t;px+=1;if(collide()){px-=2;if(collide()){px=o;p[0]=p[0].map((_,i)=>p[0].map(r=>r[i]).reverse());return}}}
+function draw(){x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);g.forEach((r,y)=>r.forEach((v,rx)=>{if(v){x.fillStyle=C[v-1];x.fillRect(rx*S,y*S,S-1,S-1)}}));if(!over)p.forEach((r,ry)=>r.forEach((v,rx)=>{if(v){x.fillStyle=C[pi];x.fillRect((px+rx)*S,(py+ry)*S,S-1,S-1)}}));if(over){x.fillStyle='#f00';x.font='30px monospace';x.fillText('GAME OVER',50,300)}}
+function tick(){if(over)return;py++;if(collide()){py--;merge();clear();py=0;px=3;spawn()}draw()}
+document.onkeydown=e=>{if(over)return;if(e.key==='ArrowLeft'){px--;if(collide())px++}if(e.key==='ArrowRight'){px++;if(collide())px--}if(e.key==='ArrowDown'){py++;if(collide()){py--;merge();clear();py=0;px=3;spawn()}}if(e.key==='ArrowUp')rotate();draw()};
+spawn();draw();setInterval(tick,500);
+</script></body></html>
+```
+
+**Features:**
+- All 7 tetrominoes with correct colors
+- Arrow keys: ← → move, ↓ soft drop, ↑ rotate
+- Line clearing + scoring (100 pts/line)
+- Game over detection
+- ~1.5KB total

@@ -1,0 +1,11 @@
+run 23040 | visit_hist2 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt32_off3.ini,sim-vram=4608,dense-split=0,pin-miss=3,log=wk,read-pipe=0,visit=0 | power 220+280 W | 2026-11-04 09:42:30
+
+<think>
+
+</think>
+
+R-5043=2585
+R-1618=8511
+R-3586=3987
+R-3735=8997
+R-7723=5728

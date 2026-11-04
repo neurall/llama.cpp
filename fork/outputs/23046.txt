@@ -1,0 +1,142 @@
+run 23046 | visit_hist2 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 35.33 t/s | prompt 35.2 t/s | 1024 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt35-pin.ini,pin-miss=3,log=wk | power 220+280 W | 2026-11-04 10:09:03
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid for the game board
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+4. Score
+
+Let me write a compact version:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// ... game code
+</script>
+</body>
+</html>
+```
+
+Let me write a compact but functional Tetris game. I'll use a canvas and keep the code as small as possible while still being functional.
+
+Let me think about the pieces:
+- I: [[1,1,1,1]]
+- O: [[1,1],[1,1]]
+- T: [[0,1,0],[1,1,1]]
+- S: [[0,1,1],[1,1,0]]
+- Z: [[1,1,0],[0,1,1]]
+- J: [[1,0,0],[1,1,1]]
+- L: [[0,0,1],[1,1,1]]
+
+Board: 10 wide, 20 tall.
+
+Let me write this compactly:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let board=Array.from({length:H},()=>Array(W).fill(0));
+let piece,px,py,score=0;
+const pieces=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[0,1,1],[1,1,0]],
+ [[1,1,0],[0,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]]
+];
+const colors=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+
+function newPiece(){
+  let i=Math.floor(Math.random()*7);
+  piece=pieces[i];
+  piece.color=colors[i];
+  px=3;py=0;
+}
+
+function collide(dx,dy,p){
+  p=p||piece;
+  for(let r=0;r<p.length;r++)
+    for(let c=0;c<p[r].length;c++)
+      if(p[r][c]){
+        let nx=px+dx+c,ny=py+dy+r;
+        if(nx<0||nx>=W||ny>=H||(ny>=0&&board[ny][nx]))return true;
+      }
+  return false;
+}
+
+function rotate(){
+  let p=piece.map((_,i)=>piece.map(r=>r[i]).reverse());
+  if(!collide(0,0,p))piece=p;
+}
+
+function merge(){
+  for(let r=0;r<piece.length;r++)
+    for(let c=0;c<piece[r].length;c++)
+      if(piece[r][c])board[py+r][px+c]=piece.color;
+}
+
+function clear(){
+  for(let r=H-1;r>=0;r--){
+    if(board[r].every(v=>v)){
+      board.splice(r,1);
+      board.unshift(Array(W).fill(0));
+      score+=100;
+      r++;
+    }
+  }
+}
+
+function draw(){
+  x.fillStyle='#000';
+  x.fillRect(0,0,c.width,c.height);
+  // draw board
+  for(let r=0;r<H;r++)
+    for(let c=0;c<W;c++)
+      if(board[r][c]){
+        x.fillStyle=board[r][c];
+        x.fillRect(c*S,r*S,S-1,S-1);
+      }
+  // draw piece
+  if(piece){
+    x.fillStyle=piece.color;
+    for(let r=0;r<piece.length;r++)
+      for(let c=0;c<piece[r].length;c++)
+        if(piece[r][c])
+          x.fillRect((px+c)*S,(py+r)*S,S-1,S-1);
+  }
+  // score
+  x.fillStyle='#fff';
+  x.font='20px sans-serif';
+  x.fillText('Score:'+score,10,25);
+}
+
+function drop(){
+  if(!collide(0,1)){
+    py++;
+  }else{
+    merge();
+    clear();
+    newPiece();
+    if(collide(0,0))gameOver();
+  }
+}
+
+function gameOver(){
+  clearInterval(interval);
+  x.fillStyle='#fff';
+  x.font='40px
+---

@@ -1,0 +1,111 @@
+run 23058 | dec_ahead | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.02 t/s | prompt 36.1 t/s | 1024 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt39-base1.ini,pin-miss=3,log=wk,swap-lead=0,upload-wait=0,upload-share=0.5,wait-swaps=1,idle-up=0 | power 220+280 W | 2026-11-04 11:32:35
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+4. Score
+
+Let me write a compact version:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// ... game code
+</script>
+</body>
+</html>
+```
+
+Let me write a compact but functional Tetris game. I'll use a canvas and keep the code as small as possible while still being functional.
+
+Let me think about the structure:
+
+- Grid: 10 columns x 20 rows
+- Pieces: I, O, T, S, Z, J, L
+- Each piece has rotation states
+- Game loop with requestAnimationFrame or setInterval
+
+Let me write this compactly:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let grid=[],score=0,piece,nextPiece;
+
+// Tetromino definitions - each is a set of [row, col] offsets
+const pieces=[
+  [[0,0],[0,1],[0,2],[0,3]], // I
+  [[0,0],[0,1],[1,0],[1,1]], // O
+  [[0,0],[0,1],[0,2],[1,1]], // T
+  [[0,1],[0,2],[1,0],[1,1]], // S
+  [[0,0],[0,1],[1,1],[1,2]], // Z
+  [[0,0],[1,0],[1,1],[1,2]], // J
+  [[0,2],[1,0],[1,1],[1,2]]  // L
+];
+const colors=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+
+// Initialize grid
+for(let r=0;r<H;r++)grid[r]=[];
+for(let r=0;r<H;r++)for(let c=0;c<W;c++)grid[r][c]=0;
+
+function newPiece(){
+  let i=Math.floor(Math.random()*7);
+  return {type:i,rot:0,x:3,y:0};
+}
+
+function rotate(p){
+  // Rotate piece cells
+  let cells=p.cells.map(([r,c])=>[c,-r]);
+  // Normalize
+  let minR=Math.min(...cells.map(c=>c[0]));
+  let minC=Math.min(...cells.map(c=>c[1]));
+  return cells.map(([r,c])=>[r-minR,c-minC]);
+}
+```
+
+Hmm, let me think more carefully. I need to handle rotation properly. Let me use a simpler approach where each piece is defined as a matrix and I rotate the matrix.
+
+Actually, let me think about this differently. Let me define pieces as 4x4 or smaller matrices and rotate them.
+
+Let me write a cleaner, more compact version:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const COLS=10,ROWS=20,SIZE=30;
+let grid=Array.from({length:ROWS},()=>Array(COLS).fill(0));
+let score=0,gameOver=false;
+
+// Pieces as matrices
+const PIECES=[
+  [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], // I
+  [[1,1],[1,1]], // O
+  [[0,1,0],[1,1,1],[0,0,0]], // T
+  [[0,1,1],[1,1,0],[0,0,0]], // S
+  [[1,1,0],[0,1,1],[0,0,0]], // Z
+  [[1,0,0],[1,1,1],[0,0,0]], // J
+  [[0,0,1],[1,1,1],[0,0,0]]  // L
+];
+const COLORS=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+
+let piece,px,py;
+
+function rotateMatrix(m){
+  return m[0].map((_,i)=>m.map(r=>r[i]).reverse());
+}
+
+function newPiece(){
+ 
+---

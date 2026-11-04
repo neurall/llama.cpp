@@ -1,0 +1,95 @@
+run 23043 | visit_hist2 | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.34 t/s | prompt 34.7 t/s | 1024 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt34-pin1.ini,pin-miss=3,log=wk | power 220+280 W | 2026-11-04 09:58:46
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+4. Score
+
+Let me write a compact version:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// ... game code
+</script>
+</body>
+</html>
+```
+
+Let me write a compact but functional Tetris game. I'll use a canvas and keep the code as small as possible while still being functional.
+
+Let me think about the structure:
+
+- Grid: 10 columns x 20 rows
+- Pieces: I, O, T, S, Z, J, L
+- Each piece has rotation states
+- Game loop with requestAnimationFrame or setInterval
+
+Let me write this compactly:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let grid=[],score=0,piece,nextPiece;
+
+// Initialize grid
+for(let r=0;r<H;r++)grid[r]=[];
+for(let r=0;r<H;r++)for(let col=0;col<W;col++)grid[r][col]=0;
+
+// Piece definitions - each piece as array of [row,col] offsets for each rotation
+const pieces=[
+  // I
+  [[[0,0],[0,1],[0,2],[0,3]],[[0,0],[1,0],[2,0],[3,0]]],
+  // O
+  [[[0,0],[0,1],[1,0],[1,1]]],
+  // T
+  [[[0,0],[0,1],[0,2],[1,1]],[[0,1],[1,0],[1,1],[2,1]],[[1,0],[1,1],[1,2],[0,1]],[[0,1],[1,1],[2,1],[1,2]]],
+  // S
+  [[[0,1],[0,2],[1,0],[1,1]],[[0,0],[1,0],[1,1],[2,1]]],
+  // Z
+  [[[0,0],[0,1],[1,1],[1,2]],[[0,1],[1,0],[1,1],[2,0]]],
+  // J
+  [[[0,0],[1,0],[1,1],[1,2]],[[0,1],[1,1],[2,0],[2,1]],[[1,0],[1,1],[1,2],[2,2]],[[0,0],[0,1],[1,0],[2,0]]],
+  // L
+  [[[0,2],[1,0],[1,1],[1,2]],[[0,0],[1,0],[2,0],[2,1]],[[1,0],[1,1],[1,2],[2,0]],[[0,0],[0,1],[1,1],[2,1]]]
+];
+
+const colors=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+```
+
+Actually, let me think about this more carefully. I want it to be small but functional. Let me write a complete, working Tetris game.
+
+Let me use a more compact approach:
+
+```html
+<!DOCTYPE html>
+<html><head><title>Tetris</title>
+<style>body{background:#111;color:#fff;font-family:monospace}canvas{display:block;margin:auto}</style>
+</head><body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let g=[],sc=0,p,rot,col,pr,pc,gameOver=false;
+
+// init grid
+for(let r=0;r<H;r++){g[r]=[];for(let i=0;i<W;i++)g[r][i]=0}
+
+// pieces: each is array of rotations, each rotation is array of [r,c] offsets
+const P=[
+ [[[0,0],[0,1],[0,2],[0,3]],[[0,0],[1,0],[2,0],[3,0]]], // I
+ [[[0,0
+---

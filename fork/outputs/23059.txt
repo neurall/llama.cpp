@@ -1,0 +1,42 @@
+run 23059 | dec_ahead | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 29.61 t/s | prompt 32.7 t/s | 1024 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt39-a1.ini,pin-miss=3,log=wk,swap-lead=0,upload-wait=0,upload-share=0.5,wait-swaps=1,idle-up=0,dec-ahead=1 | power 220+280 W | 2026-11-04 11:34:37
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+- A canvas or grid for the game board
+- Tetromino pieces (I, O, T, S, Z, J, L)
+- Movement (left, right, down, rotate)
+- Collision detection
+- Line clearing
+- Score
+- Game over
+
+Let me write a compact version:
+---
+```html
+<!DOCTYPE html>
+<html><body><canvas id="c" width="300" height="600"></canvas><script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=30;
+let g=[],p,px,py,pr,sc=0,go=0,iv;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]];
+const C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+for(let r=0;r<H;r++)g[r]=[];for(let r=0;r<H;r++)for(let c2=0;c2<W;c2++)g[r][c2]=0;
+
+function spawn(){p=P[Math.random()*7|0];px=3;py=0;pr=0;rot();if(coll(0,0))go=1}
+function rot(){let t=p[0][0].length;let r=[];for(let i=0;i<t;i++){r[i]=[];for(let j=0;j<p.length;j++)r[i][j]=p[p.length-1-j][i]}p=r}
+function coll(dx,dy){for(let r=0;r<p.length;r++)for(let c2=0;c2<p[r].length;c2++)if(p[r][c2]){let nx=px+c2+dx,ny=py+r+dy;if(nx<0||nx>=W||ny>=H||(ny>=0&&g[ny][nx]))return 1}return 0}
+function merge(){for(let r=0;r<p.length;r++)for(let c2=0;c2<p[r].length;c2++)if(p[r][c2]){let ny=py+r;if(ny>=0)g[ny][px+c2]=1}}
+function clear(){for(let r=H-1;r>=0;r--){if(g[r].every(v=>v)){g.splice(r,1);g.unshift(new Array(W).fill(0));sc+=100;r++}}}
+function draw(){x.fillStyle='#000';x.fillRect(0,0,c.width,c.height);for(let r=0;r<H;r++)for(let c2=0;c2<W;c2++)if(g[r][c2]){x.fillStyle='#08f';x.fillRect(c2*S,r*S,S-1,S-1)}if(!go&&p){for(let r=0;r<p.length;r++)for(let c2=0;c2<p[r].length;c2++)if(p[r][c2]){x.fillStyle='#f80';x.fillRect((px+c2)*S,(py+r)*S,S-1,S-1)}}x.fillStyle='#fff';x.font='20px monospace';x.fillText('Score:'+sc,10,25);if(go){x.fillStyle='#f00';x.font='30px monospace';x.fillText('GAME OVER',60,300)}}
+function tick(){if(go)return;if(!coll(0,1))py++;else{merge();clear();spawn()}draw()}
+function move(dx,dy){if(!go&&!coll(dx,dy)){px+=dx;py+=dy}draw()}
+document.onkeydown=e=>{if(go)return;let k=e.key;if(k==='ArrowLeft')move(-1,0);else if(k==='ArrowRight')move(1,0);else if(k==='ArrowDown')move(0,1);else if(k==='ArrowUp'){let t=[...p];rot();if(coll(0,0))p=t;draw()}else if(k===' '){while(!coll(0,1))py++;merge();clear();spawn();draw()}};
+spawn();iv=setInterval(tick,500);draw();
+</script></body></html>
+```
+
+
+
+**Features:**
+- **Arrow keys** — move/rotate pieces
+- **Space** — hard

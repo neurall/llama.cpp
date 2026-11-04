@@ -1107,6 +1107,19 @@ static void ggml_cuda_dma(cudaStream_t stream, int device, const void * dst, siz
     copy();
 }
 
+// A copy over 64 KiB waits in the card's copy engine behind every big upload queued before it, from any stream (nsys, MiMo: 0 of 48034 started inside one; a layer's 128 KiB CPU result waited
+// up to 570 us on x4). One of 64 KiB or less goes inline in its own stream and passes them (up to 77% started inside one). So a small copy a chain waits for goes in such pieces.
+static void ggml_cuda_h2d_copy(void * dst, const void * data, size_t size, cudaStream_t stream) {
+    static const size_t piece = [] { const char * e = getenv("GGML_CUDA_INLINE_KB"); return (e ? (size_t) atoi(e) : (size_t) 64) << 10; }();   // 0: one copy (A/B)
+    if (piece > 0 && size > piece && size <= 16 * piece) {
+        for (size_t o = 0; o < size; o += piece) {
+            CUDA_CHECK(cudaMemcpyAsync((char *) dst + o, (const char *) data + o, std::min(piece, size - o), cudaMemcpyHostToDevice, stream));
+        }
+        return;
+    }
+    CUDA_CHECK(cudaMemcpyAsync(dst, data, size, cudaMemcpyHostToDevice, stream));
+}
+
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
@@ -1114,7 +1127,7 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     ggml_cuda_h2d_pace(ctx->device, size);
     ggml_cuda_upcheck(data, size, tensor->name);
     ggml_cuda_dma(cudaStreamPerThread, ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
-        CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+        ggml_cuda_h2d_copy((char *) tensor->data + offset, data, size, cudaStreamPerThread);
     });
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
@@ -4210,7 +4223,7 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
     ggml_cuda_h2d_pace(cuda_ctx->device, size);
     ggml_cuda_upcheck(data, size, tensor->name);
     ggml_cuda_dma(cuda_ctx->stream(), cuda_ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
-        CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
+        ggml_cuda_h2d_copy((char *) tensor->data + offset, data, size, cuda_ctx->stream());
     });
 }
 
@@ -4360,7 +4373,7 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
             { CUDA_CHECK(cudaFreeHost(e.host)); }
             e.host = nullptr; e.dev = nullptr; e.cap = 0; e.used = false; e.mapped = false;
         }
-        const size_t cap = small ? GGML_CUDA_XSTAGE_SMALL : GGML_PAD(n, (size_t) 2 << 20);
+        size_t cap = small ? GGML_CUDA_XSTAGE_SMALL : GGML_PAD(n, (size_t) 2 << 20);
         ggml_cuda_set_device(ctx_src->device);
 #ifdef __linux__
         // A large block is anonymous memory on transparent huge pages, registered with the driver: cudaHostAlloc pins about 1.3 GiB/s, so the 524 MB residual
@@ -4368,11 +4381,21 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
         // pin several times faster (see ggml_cuda_host_malloc_registered). cudaHostAlloc stays the fallback and the path for small blocks.
         if (!small) {
             const int64_t t0 = ggml_time_us();
-            void * p = mmap(nullptr, cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            // the reserved 1 GiB pages the weights left free first: a prompt's 3-4 GiB block beside a full pool ran the machine out of RAM (2026-11-04: the memory guard killed the server, then the kernel)
+            void * p = MAP_FAILED;
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+            const size_t gib = (size_t) 1 << 30;
+            if (ggml_cuda_free_reserved_huge_bytes(gib) >= GGML_PAD(cap, gib)) {
+                p = mmap(nullptr, GGML_PAD(cap, gib), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | (30 << 26), -1, 0);   // MAP_HUGE_SHIFT 26
+                if (p != MAP_FAILED) { cap = GGML_PAD(cap, gib); }
+            }
+#endif
+            const bool on_pool = p != MAP_FAILED;
+            if (!on_pool) { p = mmap(nullptr, cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); }
             if (p != MAP_FAILED) {
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
                 // huge pages only while free 2 MiB blocks cover the block: past them every huge page needs compaction, which stalls beside the pinned weights
-                (void) madvise(p, cap, ggml_cuda_free_huge_bytes() >= 2 * cap ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+                if (!on_pool) { (void) madvise(p, cap, ggml_cuda_free_huge_bytes() >= 2 * cap ? MADV_HUGEPAGE : MADV_NOHUGEPAGE); }
 #else
                 (void) madvise(p, cap, MADV_HUGEPAGE);
 #endif
@@ -4389,8 +4412,8 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
                 }
             }
             // one line per new big block (a handful per process): a slow pin here is the mid-request stall above, visible in the server log
-            GGML_LOG_WARN("%s: new %.0f MiB staging block CUDA%d -> CUDA%d slot %u: %s in %.2f s\n", __func__, cap / 1048576.0, ctx_src->device, ctx_dst->device, slot,
-                          e.host ? "pinned" : "pin failed", (ggml_time_us() - t0) / 1e6);
+            GGML_LOG_WARN("%s: new %.0f MiB staging block CUDA%d -> CUDA%d slot %u: %s%s in %.2f s\n", __func__, cap / 1048576.0, ctx_src->device, ctx_dst->device, slot,
+                          e.host ? "pinned" : "pin failed", on_pool ? " (reserved 1 GiB pages)" : "", (ggml_time_us() - t0) / 1e6);
         }
 #endif
         // portable: pinned for every CUDA context, the two cards read and write the same block

@@ -1,0 +1,41 @@
+run 23075 | inline_wait | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.74 t/s | prompt 35.3 t/s | 896 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt41-a2w.ini,pin-miss=3,log=wk,swap-lead=0,upload-wait=0,wait-swaps=1,idle-up=0,upload-share=0.25,dec-ahead=2,dec-wait=1 | power 220+280 W | 2026-11-04 12:16:10
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+- A canvas or grid to display the game
+- Piece definitions (tetrominoes)
+- Game loop (falling, collision, line clearing)
+- Controls (left, right, rotate, drop)
+- Score
+
+Let me write a compact version:
+---
+```html
+<!DOCTYPE html><html><body><canvas id=c width=200 height=400></canvas><script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=20;
+let g=[],p,px,py,pr,sc=0,over=false;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0],[1,0],[1,1]],[[0,1],[0,1],[1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]]];
+const C=['#0ff','#ff0','#f0f','#00f','#f80','#0f0','#f00'];
+function rot(m){let n=m[0].map((_,i)=>m.map(r=>r[i]).reverse());return n}
+function col(a,b,c,d){return a.map((r,i)=>r.map((v,j)=>v&&g[b+i]?.[c+j])).flat().some(v=>v)}
+function mv(dx,dy){if(!col(p,py+dy,px+dx,pr)){px+=dx;py+=dy;return 1}}
+function drop(){while(mv(0,1));lock()}
+function lock(){p.forEach((r,i)=>r.forEach((v,j)=>v&&(g[py+i][px+j]=1)));for(let i=H-1;i>=0;i--)if(g[i].every(v=>v)){g.splice(i,1);g.unshift(Array(W).fill(0));sc+=100}spawn()}
+function spawn(){p=P[Math.random()*7|0];px=3;py=0;pr=0;if(col(p,py,px,pr))over=1}
+function draw(){x.clearRect(0,0,200,400);g.forEach((r,i)=>r.forEach((v,j)=>v&&(x.fillStyle='#fff',x.fillRect(j*S,i*S,S,S))));if(!over){p.forEach((r,i)=>r.forEach((v,j)=>v&&(x.fillStyle=C[P.indexOf(p)],x.fillRect((px+j)*S,(py+i)*S,S,S))))}x.fillStyle='#fff';x.font='10px monospace';x.fillText('Score:'+sc,5,15);if(over)x.fillText('GAME OVER',60,200)}
+function tick(){if(over)return;if(!mv(0,1))lock();draw();setTimeout(tick,500)}
+document.onkeydown=e=>{if(over)return;let k=e.key;if(k==='ArrowLeft')mv(-1,0);else if(k==='ArrowRight')mv(1,0);else if(k==='ArrowUp'){let n=rot(p);if(!col(n,py,px,pr))p=n;else if(!col(n,py,px-1,pr)){p=n;px--}else if(!col(n,py,px+1,pr)){p=n;px++}}else if(k==='ArrowDown')mv(0,1);else if(k===' ')drop();draw()};
+g=Array.from({length:H},()=>Array(W).fill(0));spawn();tick();
+</script></body></html>
+```
+
+
+
+**Features:**
+- **Arrow keys** — move/rotate pieces
+- **Space** — hard drop
+- **Line clears** — +100 points each
+- **Game over** detection
+
+Save as `.html` and open in a browser. It's a single file with no dependencies — just canvas, vanilla JS, and ~40 lines of code.
