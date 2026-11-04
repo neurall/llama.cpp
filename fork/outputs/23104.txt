@@ -1,0 +1,11 @@
+run 23104 | heap_pool | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 69.48 t/s | prompt 2121.7 t/s | 60 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt46-q36-noheap-1.ini,sim-vram=4608,dense-split=0,pin-miss=3,log=wk,heap-pool=0 -lm pin | power 220+280 W | 2026-11-04 14:43:14
+
+<think>
+
+</think>
+
+R-5043=2585
+R-1618=8511
+R-3586=3987
+R-3735=8997
+R-7723=5728

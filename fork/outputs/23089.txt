@@ -1,0 +1,12 @@
+run 23089 | heap_pool | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 17.73 t/s | prompt 657.0 t/s | 64 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt43-mimo-pin.ini,dense-split=0,pin-miss=3,log=wk | power 220+280 W | 2026-11-04 13:52:30
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    // otherwise fall back to logical cores
+    return std::thread::hardware_concurrency();
+}
+
+int32_t common_cpu_get_num_cores() {
+    int32_t num_cores = common_cpu_get_num
