@@ -4223,7 +4223,8 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
     ggml_cuda_h2d_pace(cuda_ctx->device, size);
     ggml_cuda_upcheck(data, size, tensor->name);
     ggml_cuda_dma(cuda_ctx->stream(), cuda_ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
-        ggml_cuda_h2d_copy((char *) tensor->data + offset, data, size, cuda_ctx->stream());
+        // one copy, not inline pieces: this path carries the expert uploads, nothing waits for them piece by piece (35B, 0.281 MiB tensors in 64 KiB pieces: link 17 -> 13 GB/s, a 1.5 s pass 117 ms longer)
+        CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
     });
 }
 
