@@ -433,6 +433,10 @@ struct moe_cache {
     bool                       pm_pre = false;
     bool                       pm_hot = false;
     size_t                     pm_hot_next = SIZE_MAX;   // the next layer whose hot list is read, only under mc->mtx
+    std::vector<std::pair<int32_t, int32_t>> pm_fill;    // pin_miss_fill's list (layer, expert), hottest first: queued a few at a time by readers with nothing to read (pin_miss_feed), only under mc->mtx
+    size_t                     pm_fill_at = 0;           // the next of pm_fill to queue, only under mc->mtx
+    int64_t                    pm_fill_t0 = 0;
+    std::atomic<bool>          pm_fill_end{true};        // pm_fill is through (or was never made)
     int                        pm_gate = 0;   // the router's gating function (the bias adds to its output)
     std::vector<std::thread>   pm_thr;
     std::mutex                 pm_mtx;
@@ -7157,14 +7161,27 @@ static std::string pin_miss_layers(const moe_cache * mc) {
 
 // a slice in the page cache (see below): declared here for the readers
 static bool slice_cached(int fd, size_t off, size_t sz);
+static bool pin_miss_feed(moe_cache * mc);
 
 static void pin_miss_run(moe_cache * mc) {
     for (;;) {
         std::pair<layer_state *, int64_t> j;
         {
             std::unique_lock<std::mutex> lk(mc->pm_mtx);
-            mc->pm_cv.wait(lk, [&] { return mc->pm_stop || !mc->pm_q.empty() || !mc->pm_qh.empty(); });
-            if (mc->pm_stop) { return; }
+            for (;;) {
+                if (mc->pm_stop) { return; }
+                if (!mc->pm_q.empty() || !mc->pm_qh.empty()) { break; }
+                if (mc->pm_fill_end.load()) { mc->pm_cv.wait(lk); continue; }
+                // nothing to read: the next few of the fill list. The cache's lock only by try_lock: its holder may be waiting in pin_miss_need for a read this reader would make
+                lk.unlock();
+                bool fed = false;
+                {
+                    std::unique_lock<std::mutex> lm(mc->mtx, std::try_to_lock);
+                    if (lm.owns_lock()) { fed = pin_miss_feed(mc); }
+                }
+                lk.lock();
+                if (!fed) { mc->pm_cv.wait_for(lk, std::chrono::milliseconds(5)); }
+            }
             auto & q = !mc->pm_q.empty() ? mc->pm_q : mc->pm_qh;
             j = q.front();
             q.pop_front();
@@ -7368,9 +7385,10 @@ static void pin_miss_router(moe_cache * mc, layer_state & ls, int li, const ggml
     if (mc->pm_hot) { pin_miss_hot_fill(mc, li); }
 }
 
-// --moe pin-miss=3, at load, once the VRAM preload has its experts (each layer's hottest): what is left of the pool takes the next hottest of the whole model, hottest first across layers (share of the
-// layer's picks, as the preload ranks them). The load waits for these reads and for the preload's uploads (user: "read hot moes right away + upload to vram, then refill left space from remaining hots
-// that fit, prior any req"): the server's warm-up and request 1 would stop anything that ran beside them.
+// --moe pin-miss=3, at load, once the VRAM preload has queued its experts (each layer's hottest): what is left of the pool takes the next hottest of the whole model, hottest first across layers (share
+// of the layer's picks, as the preload ranks them), then the rest in model order. Read in spare read time only, behind every router's read (pin_miss_feed): a request no longer waits for them (user
+// 2026-11-04: "remove hot moes preload and do them just per layer in spare bw"; MiMo's and GLM's 98 GiB took 43-55 s before request 1). The load still waits for the VRAM preload's uploads: their
+// reads are urgent ones, which a request's routers would drop.
 static void pin_miss_fill(moe_cache * mc) {
     if (!mc->pm_hot) { return; }
     const int64_t t0 = ggml_time_us();
@@ -7396,13 +7414,15 @@ static void pin_miss_fill(moe_cache * mc) {
     }
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
-        std::vector<int32_t> one(1);
-        // false: some size class has no free block left; the others go on (GLM 3.0bit: its 4.5 MiB class filled in the first layers, a break there left 11 of 98 GiB read)
-        for (const pick & p : picks) { one[0] = p.e; pin_miss_queue(mc, p.li, one, false, -1); }
+        mc->pm_fill.clear();
+        mc->pm_fill.reserve(picks.size());
+        for (const pick & p : picks) { mc->pm_fill.emplace_back(p.li, p.e); }
+        mc->pm_fill_at = 0;
+        mc->pm_fill_t0 = t0;
+        mc->pm_fill_end = mc->pm_fill.empty();
+        if (mc->pm_fill.empty()) { mc->pm_all.store(mc->pm_held.load() == (int64_t) mc->pm_slices && mc->pm_evict.load() == 0); }
     }
-    const uint64_t want = mc->pm_hots.load();
-    while (mc->pm_reads.load() + mc->pm_fail.load() < want) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
-    const double t_ram = (ggml_time_us() - t0) / 1e6;
+    mc->pm_cv.notify_all();   // idle readers start on the list
     int64_t t_prog = ggml_time_us();   // a worker that cannot run yet (nothing waits for it at load) must not hold the load: no job done for 10 s ends the wait
     size_t  last = SIZE_MAX, left = 0;
     for (;;) {
@@ -7415,11 +7435,30 @@ static void pin_miss_fill(moe_cache * mc) {
         if (ggml_time_us() - t_prog > 10000000) { break; }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    LLAMA_LOG_WARN("moe-cache: pin-miss: before any request: %" PRIu64 " slices of the next hottest experts in RAM (%.1f GiB, %.1f s, %zu experts ranked), the VRAM preload's uploads ended %.1f s later, %zu left\n",
-            want, mc->pm_bytes.load() / 1073741824.0, t_ram, picks.size(), (ggml_time_us() - t0) / 1e6 - t_ram, left);
-    mc->pm_all.store(mc->pm_held.load() == (int64_t) mc->pm_slices && mc->pm_evict.load() == 0);
-    LLAMA_LOG_WARN("moe-cache: pin-miss: %zu experts ranked by the profile, %zu more queued in model order as free blocks allowed; %s\n", n_ranked, picks.size() - n_ranked,
-            mc->pm_all.load() ? "the pool holds the whole model: stream uploads DMA straight from its blocks" : "the pool holds part of the model: stream uploads copy from its blocks or read the SSD");
+    LLAMA_LOG_WARN("moe-cache: pin-miss: before any request: %.1f GiB in RAM, the VRAM preload's uploads ended %.1f s after the load (%zu left); the rest of the pool fills in spare read time: "
+            "%zu experts ranked by the profile, %zu more in model order as free blocks allow\n",
+            mc->pm_bytes.load() / 1073741824.0, (ggml_time_us() - t0) / 1e6, left, n_ranked, picks.size() - n_ranked);
+}
+
+// A reader with nothing to read (mc->mtx held, taken by try_lock): the next few of pin_miss_fill's list go to the hot queue, into free blocks only (pin_miss_queue with cur -1), at most 32 slices,
+// so blocks held for reads not yet made stay few and a router's read never waits behind them. True while the list lasts. At its end: does the pool hold the whole model (pm_all)?
+static bool pin_miss_feed(moe_cache * mc) {
+    if (mc->pm_fill_end.load()) { return false; }
+    const uint64_t q0 = mc->pm_hots.load();
+    std::vector<int32_t> one(1);
+    for (int n = 0; n < 512 && mc->pm_fill_at < mc->pm_fill.size() && mc->pm_hots.load() - q0 < 32; ++n) {
+        const auto & pr = mc->pm_fill[mc->pm_fill_at++];
+        one[0] = pr.second;
+        pin_miss_queue(mc, pr.first, one, false, -1);   // false: a size class has no free block left; the others go on
+    }
+    if (mc->pm_fill_at >= mc->pm_fill.size()) {
+        mc->pm_fill_end = true;
+        mc->pm_all.store(mc->pm_held.load() == (int64_t) mc->pm_slices && mc->pm_evict.load() == 0);
+        LLAMA_LOG_WARN("moe-cache: pin-miss: the RAM pool's fill list is through %.1f s after the load: %" PRId64 " of %zu blocks hold or await a slice; %s\n",
+                (ggml_time_us() - mc->pm_fill_t0) / 1e6, mc->pm_held.load(), mc->pm_n,
+                mc->pm_all.load() ? "the pool holds the whole model: stream uploads DMA straight from its blocks" : "the pool holds part of the model: stream uploads copy from its blocks or read the SSD");
+    }
+    return true;
 }
 
 // --moe pin-miss=2, mc->mtx held: the next layer's router on this layer's input ([n_expert, rows], block 0 of the predictor's output when it has several, the same look the prompt ring's
