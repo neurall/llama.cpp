@@ -1,0 +1,39 @@
+run 23005 | fill_cls_thp | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.18 t/s | prompt 35.9 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt24_map.ini,log=wk | power 220+280 W | 2026-11-04 07:37:47
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+4. Score
+
+Let me write a compact version:
+
+```html
+<!DOCTYPE html>
+<html>
+<head><title>Tetris</title></head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+// ... tetris game code
+</script>
+</body>
+</html>
+```
+
+Let me write a compact but functional Tetris game. I'll try to keep it small while still being playable.
+
+```html
+<!DOCTYPE html>
+<html>
+<head><title>Tetris</title></head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let grid=[],score=0
+---

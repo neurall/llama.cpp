@@ -6801,3 +6801,7 @@ pt22-glm-8-tetrisc,2026-11-04 07:15:10,bench glm builds fill_cls_thp variants v 
 pt22-mimo-8-tetrisc,2026-11-04 07:19:33,bench mimo builds fill_cls_thp variants v test tetrisc n=2,,
 pt23-glm-8-tetrisc,2026-11-04 07:24:04,bench glm builds fill_cls_thp variants v test tetrisc n=2,,
 pt23-mimo-8-tetrisc,2026-11-04 07:27:47,bench mimo builds fill_cls_thp variants v test tetrisc n=2,,
+pt24-map-tetrisc,2026-11-04 07:37:41,bench mimo builds fill_cls_thp variants v test tetrisc n=1,,
+pt24-pin-tetrisc,2026-11-04 07:39:27,bench mimo builds fill_cls_thp variants v test tetrisc n=1,,
+pt25-mimo-tetrisc,2026-11-04 07:45:12,bench mimo builds fill_spare variants v test tetrisc n=2,,
+pt25-glm-tetrisc,2026-11-04 07:48:18,bench glm builds fill_spare variants v test tetrisc n=2,,
