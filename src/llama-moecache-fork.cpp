@@ -7670,7 +7670,10 @@ static void pin_miss_start(moe_cache * mc) {
             }
         }
     }
-    const size_t floor_b = (size_t) 6 << 30;   // pin_alloc's floor: the system, the graphs' host buffers, what the Engram table keeps in the page cache
+    // what RAM keeps beside the pool: the system, the graphs' host buffers, what the Engram table keeps in the page cache. --moe pin-miss-free=GiB (default 6) for the test of
+    // the floor (user 2026-11-04: "keep 4-8g for os. try both"): with no page cache to compete with, the pool can take all the rest
+    static const double free_gib = [] { const char * e = moe_opt("pin-miss-free"); return e ? std::max(0.0, atof(e)) : 6.0; }();
+    const size_t floor_b = (size_t) (free_gib * 1073741824.0);
     const size_t avail = mem_available_bytes();
     size_t room = avail > floor_b ? avail - floor_b : 0;
     if (const char * gib = moe_opt("pin-miss-gib")) { room = std::min(room, (size_t) (atof(gib) * 1073741824.0)); }
