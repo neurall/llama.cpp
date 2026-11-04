@@ -12669,10 +12669,14 @@ static bool pp_mix_pick(double n, int n_used, int n_expert, const char ** why) {
 static double pp_k_pick(double n, double r, double U, int n_used, int n_expert, const char ** why) {
     double best = 0.0, t_best = r > 0.0 ? r : std::numeric_limits<double>::max();
     bool last_won = true;
+    // What a try may risk where nothing is measured at this size yet. A long prompt reports only at its end, so each of its calls asks here again. With picks spread evenly exp(-x) of the experts
+    // stay unasked at x = n * picks / experts: past x = 4.6, under 1%, a prediction has nothing to skip (MiMo, 16384 tokens: 104.24 GB uploaded against 104.36, 16% slower), and the pass goes against
+    // the budget with at least its upload. Below that a new short size starts on a prediction (GLM, 100 tokens: 27 -> 32 t/s).
+    const double unmeasured = n * (double) n_used / (double) n_expert < 4.6 ? 0.0 : U;
     for (int i = 0; PP_K + i < PP_PATHS && (double) n_used * (double) (1 << i) < (double) n_expert; ++i) {
         const double t = pp_took_us(PP_K + i, n);
         if (t <= 0.0) {
-            if (last_won && U > pp_pass_floor(n) && (n * (double) n_used < (double) n_expert || pp_try_ok(best > 0.0 ? t_best : r))) { *why = "one try of a prediction"; return (double) (1 << i); }
+            if (last_won && U > pp_pass_floor(n) && (n * (double) n_used < (double) n_expert || pp_try_ok(best > 0.0 ? t_best : r > 0.0 ? r : unmeasured))) { *why = "one try of a prediction"; return (double) (1 << i); }
             break;
         }
         last_won = t < t_best;
@@ -13274,7 +13278,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     if (why_mix[0]) { why = why_mix; }
     static const bool k_auto = moe_opt("pp-k") == nullptr;   // --moe pp-k fixes it, pp-k=0 turns it off
     const double r = pp_took_us(mix ? PP_MIX : PP_RING, n);
-    const double m = k_auto && !force && !chain && !dec && !why_mix[0] ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
+    // not on a split pass: it reports as dense, so the try would never get a time and would run again at every call; and the rankings need each layer's input from the other cards too (MiMo: 3.84 GB more a pass)
+    const bool k_can = k_auto && !force && !chain && !dec && !why_mix[0] && llama_dsplit_cur_fork() != 1;
+    const double m = k_can ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
     if (k_auto) { ggml_backend_pred_set_fork(m); }
     double o = 0.0;   // the fastest one-card stream measured here
     for (int p = 0; p < PP_PATHS; ++p) {
