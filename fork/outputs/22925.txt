@@ -1,0 +1,11 @@
+run 22925 | pin_miss_trap | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pp36.ini,sim-vram=4608,pin-miss=3,pin-miss-trap=1,dense-split=0,pp-path=mix,log=wk | power 220+280 W | 2026-11-03 22:34:09
+
+<think>
+
+</think>
+
+R-5043=2585
+R-1618=8511
+R-3586=3987
+R-3735=8997
+R-7723=5728

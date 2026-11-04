@@ -1,0 +1,11 @@
+run 22937 | pin_no_file_map | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 78.65 t/s | prompt 576.5 t/s | 60 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pp36.ini,sim-vram=4608,pin-miss=3,pin-miss-trap=2,dense-split=0,pp-path=dec,log=wk | power 220+280 W | 2026-11-03 22:55:40
+
+<think>
+
+</think>
+
+R-8028=2624
+R-7448=6783
+R-2031=8666
+R-3715=9760
+R-8167=3135

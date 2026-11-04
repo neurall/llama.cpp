@@ -1,0 +1,20 @@
+run 22868 | pinned_misses | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 14.32 t/s | prompt 12.6 t/s | 256 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/pm1-ds-2.ini,log=wk,pin-miss=1 | power 220+280 W | 2026-11-03 19:58:05
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas 10x20. Controls arrow keys, rotate up, space drop? Need implement.
+
+Need "smallest html tetris game" likely wants code. We can make compact but readable. Need ensure no bugs.
+
+Let's craft minimal Tetris in HTML. Use canvas 200x400? Grid 10x20, cell 20. Use JS.
+
+Need implement tetromino shapes. Could use arrays. Need collision, rotation, line clear, scoring, game over. Need maybe requestAnimationFrame or setInterval. Minimal.
+
+Let's design.
+
+HTML:
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tetris</title>
+<style>body{background:#111;color:#fff;font:14px monospace
+---

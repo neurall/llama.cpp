@@ -1,0 +1,7 @@
+run 22913 | pin_miss_arena | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 6.89 t/s | prompt 37.1 t/s | 60 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=dec --moe pin-miss=2,sim-ram=32768 | power 220+280 W | 2026-11-03 21:29:50
+
+<think></think>R-8028=2624
+R-7448=6783
+R-2031=8666
+R-3715=9760
+R-8167=3135

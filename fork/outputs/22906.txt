@@ -1,0 +1,7 @@
+run 22906 | pin_miss_arena | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 7.76 t/s | prompt 428.1 t/s | 40 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain --moe pin-miss=2 | power 220+280 W | 2026-11-03 21:18:23
+
+</think>R-7743=4104
+R-8460=5880
+R-5437=3446
+R-6543=7342
+R-1438=3692
