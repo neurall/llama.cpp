@@ -1,0 +1,19 @@
+run 23002 | fill_cls_thp | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 23.0 t/s | prompt 25.9 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt23_glm_8.ini,log=wk | power 220+280 W | 2026-11-04 07:25:57
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minified request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, but still make it playable and not broken. The "smallest" constraint overrides my usual preference for elaborate visuals — but I can still make it look decent within a tiny footprint (a dark background, colored blocks via canvas).
+
+Let me think about how to write a genuinely compact Tetris.
+
+Key components:
+1. Canvas rendering of the board + falling piece.
+2. 7 tetromino shapes with colors.
+3. Rotation (can be done via string manipulation or precomputed).
+4. Gravity timer, movement, collision, line clear, score, game over, restart.
+5. Keyboard controls: left/right/down, rotate, drop.
+
+A classic minimal Tetris approach: represent shapes as arrays of coordinates or as strings. A very compact known trick: use binary encoding of pieces.
+
+Let me design my own compact version.
+
+Approach: board as a 2D array (or a single array of numbers). Pieces as arrays of
+---
