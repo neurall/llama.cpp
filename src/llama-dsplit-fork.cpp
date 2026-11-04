@@ -318,6 +318,9 @@ namespace {
 // direction alone, not both cards' sum).
 
 static std::atomic<double> g_mirror_fill_us { 0.0 };
+// The fill as measured, kept per model, cards and build: the bytes over the link say far too little (35B, 1.5 GiB of copies: 125 ms calculated, 678-777 ms taken, so a 1112-token call split at 820 t/s against 1563 on one card)
+static std::atomic<double> g_mirror_fill_meas_us { 0.0 };
+static double dsplit_fill_us() { const double m = g_mirror_fill_meas_us.load(); return m > 0.0 ? m : g_mirror_fill_us.load(); }
 static void dsplit_update_fill(const dsplit_set & S) {
     std::map<ggml_backend_dev_t, double> in, out;
     for (const auto & kv : S.copies) {
@@ -801,6 +804,10 @@ static void dsplit_calib_load(const llama_model & model) {
             }
         }
     }
+    if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_fill_ms"), v) && atof(v.c_str()) > 0.0) {
+        g_mirror_fill_meas_us = atof(v.c_str()) * 1e3;
+        LLAMA_LOG_WARN("split planner: copy fill %.0f ms from the state file\n", atof(v.c_str()));
+    }
     if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_calib4"), v)) {
         const double c = atof(v.c_str());
         if (c >= 0.5 && c <= 3.0) { g_split_calib.store(c); g_calib_n = 0; LLAMA_LOG_WARN("split planner: calibration %.2f from the state file (a prior: the first measured split pass replaces it)\n", c); }
@@ -1023,7 +1030,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     // Both are paid once per request, so they are spread over its passes (before 2026-10-17 every pass carried the whole refill: 63 times over in a 255k prompt).
     // The passes of the request so far are about cells / T (the call's cells include the earlier calls of the same prompt).
     const double n_pass = std::max(1.0, cells / std::max<double>(1.0, (double) T));
-    best_split += g_mirror_fill_us.load() / n_pass;   // the copy of the dense weights into the lent blocks, before the first layer (see dsplit_update_fill)
+    best_split += dsplit_fill_us() / n_pass;   // the copy of the dense weights into the lent blocks, before the first layer (see dsplit_update_fill)
     {
         const double touched = 1.0 - std::pow(1.0 - n_used / n_exp, (double) T);
         best_split += touched * dense_bytes / (B[x] * 1e3) * llama_moe_live_get("refill_weight") / n_pass;   // live: POST /moe/params
@@ -1364,7 +1371,7 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
     dsplit_calib_load(model);
     const int b = dsplit_bucket_of(n_tokens);
     auto & pc = g_plans[b];
-    const double fill_now = g_mirror_fill_us.load();
+    const double fill_now = dsplit_fill_us();
     if (pc.n_tokens != n_tokens || pc.c_us != c_us || pc.fill != fill_now) {
         pc.fill     = fill_now;
         pc.n_tokens = n_tokens;
@@ -2515,6 +2522,11 @@ void llama_dsplit_note_fill_fork(double ms) {   // llama_context::moe_mirror_fil
     dsf_load();
     g_dsf_ps.fill_ms += ms;
     dsf_upd(g_dsf_fill, ms);   // in memory only: before the first fill of a run the planner's estimate (copy bytes / link rate) stands
+    g_mirror_fill_meas_us = ms * 1e3;
+    if (dsplit_state_on() && !g_calib_section.empty()) {
+        char v[32]; snprintf(v, sizeof v, "%.1f", ms);
+        moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_fill_ms"), v } });
+    }
 }
 
 // A prompt pass that ran on one card, for /moe/stats and run.py's pass table (the split balance only reports split passes). The scheduler stamps every pass of
