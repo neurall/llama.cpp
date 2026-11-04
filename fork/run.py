@@ -1856,16 +1856,6 @@ def server_start(build, env, args):
         try:
             return _server_start_once(build, env, args)
         except RuntimeError as e:
-            if "[PIN_FAIL]" in str(e) and attempt < PIN_ATTEMPTS:
-                # the engine could not map its cache file from the pool and nothing else holds it: mount the pool again, same size
-                print(f"pin pool broken, attempt {attempt}/{PIN_ATTEMPTS}: {str(e)[-200:]}: unmount + mount", flush=True)
-                try:
-                    n_pool = int(open(HUGE_NR).read().strip())
-                    cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
-                    cmd_hugepool(argparse.Namespace(action="mount", what=[f"{n_pool}g"] if n_pool > 0 else []))
-                except SystemExit as x:
-                    sys.exit(f"pin pool remount failed: {x}")
-                continue
             if "[PIN_STALL]" not in str(e):
                 raise
             print(f"pin stall, attempt {attempt}/{PIN_ATTEMPTS}: {str(e)[-200:]}", flush=True)
@@ -6982,34 +6972,6 @@ def stock_latest(dry=False):
     return name
 
 
-def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
-    """Size the huge-page pool for the next model: ceil(model GiB) pages (GLM 109.4 GiB -> 110, MiMo 107.7 -> 108), no more, so the rest of the RAM stays free and nothing swaps.
-    A pool that is too small is unmounted (cached files deleted) and mounted again; one the model fits in is kept, so models run back to back on one pool and one load."""
-    need = max(-(-model_bytes >> 30), 1)
-    have = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
-    why = ""
-    if have >= need and os.path.ismount(mnt): return   # a pool the model fits in stays as it is: every unmount fragments RAM further (the stock cells unmount in the caller, then the next model mounts its own size)
-    while subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0: time.sleep(5)   # nothing may map the pool while it is rebuilt
-    import contextlib, io
-    quiet = lambda a: contextlib.redirect_stdout(io.StringIO())   # the mount's own output is long: the list prints one line, "pool 101->108g"
-    try:
-        with quiet(0): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
-        # the old pool is gone: its RAM is back. Mounting more than the machine can spare is what froze PC1 (110g): check first, mount only what leaves headroom
-        avail = int([l for l in open("/proc/meminfo") if l.startswith("MemAvailable")][0].split()[1]) >> 20
-        if need + 8 <= avail:   # 8 GiB stay free beyond MemAvailable (~117 GiB here): MiMo 108 passes, GLM 110 does not (110g froze PC1 and core-dumped other programs, 2026-10-19)
-            with quiet(0): cmd_hugepool(argparse.Namespace(action="mount", what=[f"{need}g"]))
-    except SystemExit as e:
-        why = "memory fragmented (a reboot clears it)" if "fragmented" in str(e) else str(e)[:70]   # the mount's own text is long: one short reason on the pool line
-    got = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
-    if 0 < got < need:   # a smaller pool plus the rest pinned from fragmented RAM stalls (PIN_STALL): better no pool, the binary then pins from ordinary RAM, slower but it loads
-        try:
-            with quiet(0): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
-        except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
-        got = 0
-    if have == got == 0 and getattr(run_list_pool, "told", 0): return   # still no pool: said once per list, not before every model
-    run_list_pool.told = 1
-    print(col(33, f"pool {have}->{got}g") + (col(31, f" (wanted {need}g, running without a pool" + (f": {why}" if why else "") + ")") if got < need else ""), flush=True)
-
 
 RUN_LIVE = QDIR + "/run-list.json"   # {pid, log} of the detached list run
 
@@ -7362,8 +7324,8 @@ def run_list_detached(name, argv):
 def run_list(name, argv):
     """`run.py jobs NAME [-b B] [-o TEXT] [-s] [-dsc] [-nm] [-w] [-r N] [-n]`: run the cells listed in fork/runs/NAME.csv (columns name, model, n, test, tokens, args, extra), one after the other,
     each through `cell` (waits for free GPUs, checks the pool, logs to q5h). The campaign of a row is B-name (B defaults to `latest`, the newest dev build), so a rerun
-    with another build never collides. A failed cell is reported and the list goes on. -o keeps the rows whose name contains TEXT; -d runs the biggest models first, a model's rows together. Before each new model the pool is
-    rebuilt to its size (run_list_pool; --no-pool skips that). Lists: gainers, reg, ctx."""
+    with another build never collides. A failed cell is reported and the list goes on. -o keeps the rows whose name contains TEXT; -d runs the biggest models first, a model's rows together. The pool of 1 GiB pages
+    is reserved at boot and never touched by a run: every model size shares it. Lists: gainers, reg, ctx."""
     ap = argparse.ArgumentParser(prog=f"run.py jobs {name}")
     ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-t", "--test", help="rows whose test is TEXT (comma list): best1k = only the best-prompt input rows, edit4c, tetrisc"); ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
@@ -7374,7 +7336,7 @@ def run_list(name, argv):
     ap.add_argument("--status", action="store_true", help="print the table of the cells run today (the -nrt table: t/s, pp, stock, gains) and the cells still to run; nothing is run, started or touched (the web view calls this)")
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
-    ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
+    ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="with GB (-nm 101) our cells load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped; a run never touches the pool, with or without -nm")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
     ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state) on a server of its own: run 1 is the cold start of a new user, run 2 runs on the same server (warm). Two builds compared this way learn from zero on the same prompt, so they should arrive at the same speed (reg tests); the user's state file is not touched. No cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
@@ -7405,7 +7367,6 @@ def run_list(name, argv):
     if o.dense_split: o.cell_args = (o.cell_args + " dense-split=" + {"on": "1", "off": "0"}.get(o.dense_split, o.dense_split)).strip()
     if o.status: o.not_today = o.not_today or 1; o.nodl = True
     if o.day and not o.power: o.power = "220/280"
-    if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.no_stats: os.environ["RUN_NS"] = "1"
     if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
     if o.n_gpus is not None and o.machine == "pc1":   # this host: the children (cells, servers) see the chosen cards only, numbered in the listed order
@@ -7606,16 +7567,9 @@ def run_list(name, argv):
     total_s = sum(x or fill for x in exp_all); done_s = 0; run_t0 = time.time()   # expected seconds of the whole list, from runs.db
     try:
         for r in rows:
-            key = (r["model"], r["_b"].startswith("stock"))   # the official stock binary knows no pool: it runs without one (the pool's RAM is its page cache), ours size it per model
+            key = (r["model"], r["_b"].startswith("stock"))
             if key != last_model and not o.no_pool and not o.dry and not nomount_args((r.get("args") or "") + " " + (r.get("extra") or ""))[1]:
                 last_model = key; live_clear(); kept_kill()
-                if key[1]:
-                    if os.path.ismount("/mnt/huge1g"):
-                        try:
-                            import contextlib, io
-                            with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
-                        except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
-                else: run_list_pool(size(r))
             if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)   # after the pool line: which model the next cells run
             tag = f"{r['_b']}-{r['name']}"
             cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else [])
@@ -7630,17 +7584,11 @@ def run_list(name, argv):
             if not o.dry and not r["_b"].startswith("stock") and not (r.get("args") or "").strip(): learn_bestpp(r["model"], r["test"], tag)
             if not o.dry and not r["_b"].startswith("stock"): learn_att(r["model"], tag)
             done_s += ex or fill
-    finally:   # the cells' lines, then the pool: it holds its RAM whether a model uses it or not: give it back when the list ends, also on Ctrl-C or an error
+    finally:   # the cells' lines
         if CELL_LINES and not o.dry:   # the final block, complete for a screenshot: the machine, then every cell with what it measured
             live_clear(); print("\n" + (col(1, hw_line()) + "\n" if any(not x.get("skipped") for x in CELL_REC) else "") + "\n".join(final_table(CELL_REC) or CELL_LINES) + ("\n" + col(90, "repro  " + os.environ["RUNPY_REPRO"]) if os.environ.get("RUNPY_REPRO") else ""), flush=True)   # the command line under the table: copy it to repeat the run; the machine line is at the top already when no cell ran
         if CELL_LINES and not o.dry: open(f"{QDIR}/{o.build}-{name}.list.txt", "a").write("\n".join(CELL_LINES) + "\n")   # the screen shows only the current cell; the finished cells' lines go here
-        if not o.dry: kept_kill()   # the kept server holds the pool: it goes before the unmount
-        if not o.no_pool and not o.dry and os.path.ismount("/mnt/huge1g"):
-            try:
-                import contextlib, io
-                with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
-                print("pool ->0g", flush=True)
-            except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
+        if not o.dry: kept_kill()
     print(f"[{name}] {len(rows)} cells, failed: {', '.join(bad) or 'none'}")
     return 1 if bad else 0
 
@@ -7963,7 +7911,7 @@ def nomount_args(args, model=None):
     return shlex.join(out), no or mode in ("mmap", "auto", "dio")
 
 
-def pool_sanity(mnt="/mnt/huge1g", model=None):
+def pool_sanity(mnt="/mnt/huge1g"):
     """Before a load (no server runs: the GPUs are free): delete what a crashed server left in the huge-page pool. An unfinished fill (.w.part) or an empty file whose
     lock nobody holds is stale and would eat pool pages the next model needs. Then compare the pool's used pages with the files' pages: more used than the files
     hold means pages leaked into an orphaned mapping (only a reboot or unmount gives them back): said loudly instead of a later PIN_STALL."""
@@ -7981,17 +7929,9 @@ def pool_sanity(mnt="/mnt/huge1g", model=None):
                 else: held += os.path.getsize(p)
         except OSError as e:
             print(f"pool_sanity: {f}: {e}", flush=True)
-    if model and os.path.exists(model):   # a pool smaller than the model: the rest would be pinned from fragmented RAM and stall (PIN_STALL), without a pool it loads, slower
-        need = -(-sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", model))) >> 30)
-        have = int(open(HUGE_NR).read())
-        if have < need:
-            print(f"pool_sanity: pool {have} GiB < model {need} GiB, unmounting it (the model pins from ordinary RAM)", flush=True)
-            try: cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
-            except SystemExit as e: print(f"pool_sanity: unmount failed: {e}", flush=True)
-            return
     used = int(open(HUGE_NR).read()) - int(open(HUGE_FREE).read())
     if used > -(-held >> 30):
-        print(f"pool_sanity: WARNING pool has {used} GiB pages in use but the cache files hold {-(-held >> 30)}: leaked pages, `hugepool unmount` + mount (or reboot) frees them", flush=True)
+        print(f"pool_sanity: WARNING pool has {used} GiB pages in use but the cache files hold {-(-held >> 30)}: leaked pages, a reboot frees them", flush=True)
 
 
 def cmd_cell(a):
@@ -8006,12 +7946,11 @@ def cmd_cell(a):
         time.sleep(5)
     try: os.remove(f"/tmp/perf-{a.builds}.stats.log")   # the planner log appends: one cell, one file
     except OSError: pass
-    keep_pool = os.environ.get("RUN_KEEP_POOL") == "1"   # run -nm: the pool stays mounted for the whole list (a remount after fragmentation gets only part of it back: 49-58 of 108 pages, 2026-10-22)
     too_big = False
-    if keep_pool and os.path.ismount("/mnt/huge1g") and os.path.exists(HUGE_NR):
+    if os.path.ismount("/mnt/huge1g") and os.path.exists(HUGE_NR):
         need = -(-sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", a.model))) >> 30)
-        too_big = int(open(HUGE_NR).read()) < need   # GLM 3.0 (109.4 GiB) in the 108 pool: this cell loads without the pool, the pool is kept
-    if not nomount_args(a.args)[1] and not kept_get(): pool_sanity(model=None if keep_pool else a.model)
+        too_big = int(open(HUGE_NR).read()) < need   # bigger than a mounted pool's file cache: this cell loads without that cache, the pages stay reserved
+    if not nomount_args(a.args)[1] and not kept_get(): pool_sanity()
     # the build name "latest" is the symlink the newest dev build moves (cmd_build): resolved HERE, after the wait, so a queued cell runs the newest binary of the moment, and
     # every row, log and tag carries the real build name
     a.builds = ",".join(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, "latest"))) if b == "latest" else resolve_build(b) for b in a.builds.split(","))
