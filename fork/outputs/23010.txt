@@ -1,0 +1,19 @@
+run 23010 | fill_spare | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.1 t/s | prompt 6.0 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt25_glm.ini,pin-miss=3,log=wk | power 220+280 W | 2026-11-04 07:49:58
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, minified, but still functional and playable.
+
+Let me think about what "smallest Tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but complete Tetris:
+
+Features I should include for it to feel like real Tetris:
+- 10×20 board
+- 7 tetrominoes (I, O, T, S, Z, J, L) with proper shapes
+- Rotation (at least simple rotation, ideally with basic wall kicks or at least not breaking)
+- Line clearing with gravity of stack above
+- Score (lines cleared), maybe level/speed increase
+- Next piece preview (nice to have, adds bytes — maybe skip or include tiny)
+- Keyboard controls: left/right/down, rotate, hard drop maybe
+- Game over detection
+- Rendering — canvas is smallest
+
+Let me try
+---

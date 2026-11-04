@@ -437,6 +437,8 @@ struct moe_cache {
     size_t                     pm_fill_at = 0;           // the next of pm_fill to queue, only under mc->mtx
     int64_t                    pm_fill_t0 = 0;
     std::atomic<bool>          pm_fill_end{true};        // pm_fill is through (or was never made)
+    std::atomic<bool>          pm_busy{false};           // a request runs: hot-queue reads (the hot lists) only with spare SSD, CPU and RAM, one at a time
+    std::atomic<int>           pm_bg_in{0};              // hot-queue reads being made now
     int                        pm_gate = 0;   // the router's gating function (the bias adds to its output)
     std::vector<std::thread>   pm_thr;
     std::mutex                 pm_mtx;
@@ -7163,28 +7165,45 @@ static std::string pin_miss_layers(const moe_cache * mc) {
 static bool slice_cached(int fd, size_t off, size_t sz);
 static bool pin_miss_feed(moe_cache * mc);
 
+// --moe load-wait: full (default) request 1 waits for the whole pool and the VRAM preload; vram only for the VRAM preload, the rest reads beside the requests (see pin_miss_fill)
+static bool pin_miss_wait_all() {
+    static const bool all = [] { const char * w = moe_opt("load-wait"); return !w || strcmp(w, "vram") != 0; }();
+    return all;
+}
+
 static void pin_miss_run(moe_cache * mc) {
     for (;;) {
         std::pair<layer_state *, int64_t> j;
+        bool bg = false;
         {
             std::unique_lock<std::mutex> lk(mc->pm_mtx);
             for (;;) {
                 if (mc->pm_stop) { return; }
-                if (!mc->pm_q.empty() || !mc->pm_qh.empty()) { break; }
-                if (mc->pm_fill_end.load()) { mc->pm_cv.wait(lk); continue; }
-                // nothing to read: the next few of the fill list. The cache's lock only by try_lock: its holder may be waiting in pin_miss_need for a read this reader would make
-                lk.unlock();
-                bool fed = false;
-                {
-                    std::unique_lock<std::mutex> lm(mc->mtx, std::try_to_lock);
-                    if (lm.owns_lock()) { fed = pin_miss_feed(mc); }
+                if (!mc->pm_q.empty()) { break; }
+                // --moe load-wait=vram (requests run while the pool fills): hot-queue reads (the fill, the hot lists) take only what is spare (user 2026-11-04: "background reads during a
+                // request also only in spare cpu and spare mem and ssd bw"): between requests all readers; during one a single read at a time, none while the CPU computes experts or the
+                // RAM's demand leaves no room for another 0.5 GB/s. The default load (full) reads all as fast as it can: "throttle bg loads only when req during load is enabled"
+                const double ddr = knobs().ddr_gbs;
+                const bool bg_ok = pin_miss_wait_all() || !mc->pm_busy.load() || (mc->pm_bg_in.load() < 1 && !mc->cpu_busy.load() && (ddr <= 0 || (double) mc->ddr_mbs.load() + 500.0 <= ddr * 1e3));
+                if (bg_ok && !mc->pm_qh.empty()) { break; }
+                if (bg_ok && !mc->pm_fill_end.load()) {
+                    // nothing to read: the next few of the fill list. The cache's lock only by try_lock: its holder may be waiting in pin_miss_need for a read this reader would make
+                    lk.unlock();
+                    bool fed = false;
+                    {
+                        std::unique_lock<std::mutex> lm(mc->mtx, std::try_to_lock);
+                        if (lm.owns_lock()) { fed = pin_miss_feed(mc); }
+                    }
+                    lk.lock();
+                    if (fed) { continue; }
                 }
-                lk.lock();
-                if (!fed) { mc->pm_cv.wait_for(lk, std::chrono::milliseconds(5)); }
+                if (mc->pm_qh.empty() && mc->pm_fill_end.load()) { mc->pm_cv.wait(lk); } else { mc->pm_cv.wait_for(lk, std::chrono::milliseconds(2)); }   // a hot read waits for spare room: look again soon
             }
-            auto & q = !mc->pm_q.empty() ? mc->pm_q : mc->pm_qh;
+            bg = mc->pm_q.empty();
+            auto & q = bg ? mc->pm_qh : mc->pm_q;
             j = q.front();
             q.pop_front();
+            if (bg) { mc->pm_bg_in++; }
         }
         layer_state & ls = *j.first;
         const int32_t e = (int32_t) (j.second & 0xffffff);
@@ -7210,6 +7229,7 @@ static void pin_miss_run(moe_cache * mc) {
         if (!p) { LLAMA_LOG_ERROR("moe-cache: pin-miss: layer slice %s expert %d: no read of %zu bytes at %zu worked (%s)\n", t->name, e, rd, off, strerror(errno)); GGML_ABORT("pin-miss: a slice could not be read"); }
         if (pb > 0 && !past_in_file) { memset((char *) p + sz, 0, pb); }
         b.ptr.store(p, std::memory_order_release);
+        if (bg) { mc->pm_bg_in--; mc->pm_cv.notify_all(); }
         mc->pm_bytes   += rd;
         mc->pm_read_us += (uint64_t) (ggml_time_us() - t0);
         if ((++mc->pm_reads & 4095) == 0) {
@@ -7386,9 +7406,10 @@ static void pin_miss_router(moe_cache * mc, layer_state & ls, int li, const ggml
 }
 
 // --moe pin-miss=3, at load, once the VRAM preload has queued its experts (each layer's hottest): what is left of the pool takes the next hottest of the whole model, hottest first across layers (share
-// of the layer's picks, as the preload ranks them), then the rest in model order. Read in spare read time only, behind every router's read (pin_miss_feed): a request no longer waits for them (user
-// 2026-11-04: "remove hot moes preload and do them just per layer in spare bw"; MiMo's and GLM's 98 GiB took 43-55 s before request 1). The load still waits for the VRAM preload's uploads: their
-// reads are urgent ones, which a request's routers would drop.
+// of the layer's picks, as the preload ranks them), then the rest in model order, as free blocks allow. The readers take the list a few at a time (pin_miss_feed), all of them while no request
+// runs. --moe load-wait says what request 1 waits for (user 2026-11-04: "add option to delay 1st req to full load done or vram loads done", "make wait for full load default so we see proper
+// stable best cold numbers"): full (default) the whole list read and the VRAM preload's uploads; vram only those uploads, the rest then reads in spare read time (MiMo, GLM: request 1 34-35 s
+// after the load instead of 47-55 s, but slower while the reads go on). Never less: the VRAM preload's reads are urgent ones, which a request's routers would drop.
 static void pin_miss_fill(moe_cache * mc) {
     if (!mc->pm_hot) { return; }
     const int64_t t0 = ggml_time_us();
@@ -7423,6 +7444,15 @@ static void pin_miss_fill(moe_cache * mc) {
         if (mc->pm_fill.empty()) { mc->pm_all.store(mc->pm_held.load() == (int64_t) mc->pm_slices && mc->pm_evict.load() == 0); }
     }
     mc->pm_cv.notify_all();   // idle readers start on the list
+    const bool all = pin_miss_wait_all();
+    while (all) {   // the list through and every read it queued made
+        {
+            std::lock_guard<std::mutex> lk(mc->pm_mtx);
+            if (mc->pm_fill_end.load() && mc->pm_qh.empty() && mc->pm_bg_in.load() == 0) { break; }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    const double t_ram = (ggml_time_us() - t0) / 1e6;
     int64_t t_prog = ggml_time_us();   // a worker that cannot run yet (nothing waits for it at load) must not hold the load: no job done for 10 s ends the wait
     size_t  last = SIZE_MAX, left = 0;
     for (;;) {
@@ -7435,9 +7465,9 @@ static void pin_miss_fill(moe_cache * mc) {
         if (ggml_time_us() - t_prog > 10000000) { break; }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    LLAMA_LOG_WARN("moe-cache: pin-miss: before any request: %.1f GiB in RAM, the VRAM preload's uploads ended %.1f s after the load (%zu left); the rest of the pool fills in spare read time: "
-            "%zu experts ranked by the profile, %zu more in model order as free blocks allow\n",
-            mc->pm_bytes.load() / 1073741824.0, (ggml_time_us() - t0) / 1e6, left, n_ranked, picks.size() - n_ranked);
+    LLAMA_LOG_WARN("moe-cache: pin-miss: before any request (--moe load-wait=%s): %.1f GiB in RAM after %.1f s, the VRAM preload's uploads ended %.1f s later (%zu left); %zu experts ranked by the profile, "
+            "%zu more in model order as free blocks allow%s\n", all ? "full" : "vram", mc->pm_bytes.load() / 1073741824.0, t_ram, (ggml_time_us() - t0) / 1e6 - t_ram, left, n_ranked,
+            picks.size() - n_ranked, all ? "" : ", read in spare read time from now on");
 }
 
 // A reader with nothing to read (mc->mtx held, taken by try_lock): the next few of pin_miss_fill's list go to the hot queue, into free blocks only (pin_miss_queue with cur -1), at most 32 slices,
@@ -7873,6 +7903,7 @@ static void stats_status_run(moe_cache * mc) {
 
 void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool own_text) {
     llama_moe_stats_log_fork("REQ", format("begin: %d prompt tokens", n_prompt).c_str());
+    if (moe_cache * mc = g_cache; mc && mc->pm_on) { mc->pm_busy = true; }
     if (moe_cache * mc = g_cache; mc && mc->pm_hot) {   // --moe pin-miss=3: the hot lists start now, before the first layer's router
         std::lock_guard<std::mutex> lock(mc->mtx);
         mc->pm_hot_next = 0;
@@ -7888,6 +7919,7 @@ void llama_tokheat_dump_fork(void);   // llama-context.cpp: --moe tokheat=DIR
 
 void llama_moe_request_end_fork(void) {
     llama_moe_stats_log_fork("REQ", "end");
+    if (moe_cache * mc = g_cache; mc && mc->pm_on) { mc->pm_busy = false; mc->pm_cv.notify_all(); }   // hot reads take every reader again
     g_warm.store(true);
     if (g_pjit_layers.load() > 0) {   // prompt calls of this request: what the JIT saw and did (uploads against CPU-computed misses)
         const uint64_t ms = g_pjit_miss.exchange(0), up = g_pjit_up.exchange(0), ly = g_pjit_layers.exchange(0);

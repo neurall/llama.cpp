@@ -6805,3 +6805,4 @@ pt24-map-tetrisc,2026-11-04 07:37:41,bench mimo builds fill_cls_thp variants v t
 pt24-pin-tetrisc,2026-11-04 07:39:27,bench mimo builds fill_cls_thp variants v test tetrisc n=1,,
 pt25-mimo-tetrisc,2026-11-04 07:45:12,bench mimo builds fill_spare variants v test tetrisc n=2,,
 pt25-glm-tetrisc,2026-11-04 07:48:18,bench glm builds fill_spare variants v test tetrisc n=2,,
+pt25-q36-pf128k,2026-11-04 07:51:48,bench qwen36 builds fill_spare variants v test pf128k n=1,,
