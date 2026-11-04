@@ -1243,17 +1243,19 @@ bool llama_context::swap_layers_fork(int a, int b) {
 }
 
 // fork: --moe max-batch=auto: how long a 16- and a 64-token batch take on the cache path, and a streamed pass of two larger sizes (second run of each: graphs built, uploads settled),
-// on varied tokens so the routing is not one fixed expert set. The context is cleared after each run.
+// on varied tokens so the routing is not one fixed expert set, other tokens each run: a repeat finds every expert and the cache path looks faster than it is. The context is cleared after each run.
 void llama_context::moe_probe_costs_fork() {
     const int64_t t_start = ggml_time_us();
     const llama_token n_vocab = (llama_token) model.vocab.n_tokens();
     llama_moe_cache_probe_begin_fork();
+    int64_t salt = 0;
     auto run = [&](int n) -> double {
         llama_batch_ext batch(this);
+        salt += 104729;
         for (int i = 0; i < n; ++i) {
             const int32_t idx = batch.add_token(0);
             llama_pos pos[GGML_MROPE_SECTIONS] = { i, i, i, 0 };
-            if (idx < 0 || !batch.set_token_id(idx, (llama_token) ((1000 + (int64_t) i * 7919) % std::max<llama_token>(n_vocab, 2))) ||
+            if (idx < 0 || !batch.set_token_id(idx, (llama_token) ((1000 + salt + (int64_t) i * 7919) % std::max<llama_token>(n_vocab, 2))) ||
                 !batch.set_token_pos(idx, pos) || !batch.set_output(idx, i == n - 1)) {
                 return -1.0;
             }

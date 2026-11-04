@@ -12336,7 +12336,7 @@ int64_t llama_moe_cache_max_batch_cap_fork() {
         }
         dec = r > 0.0 && knobs().cpu_gbs > 0.0 ? g_mb_auto.load(std::memory_order_relaxed) * (int64_t) std::ceil(knobs().cpu_gbs / r) : 0;
     }
-    return std::max({ g_mb_auto.load(std::memory_order_relaxed), mb_fixed(), dec });
+    return std::max({ (int64_t) 128, g_mb_auto.load(std::memory_order_relaxed), mb_fixed(), dec });   // 128: the probe's largest cache-path batch at least, as in the release
 }
 
 // Exact mode (the CPU backend's GPU-shaped math on, GPU_SHAPE knob / GGML_CPU_GPU_SHAPE): the CPU copies the GPU's one-token kernel (mul_mat_vec_q, 4 warps
@@ -12420,6 +12420,24 @@ static double mb_eval(const mb_pts & p, double n, bool flat_below) {
     const double slope = (p.us[i] - p.us[i - 1]) / (p.n[i] - p.n[i - 1]);
     return std::max(0.0, p.us[i - 1] + slope * (n - p.n[i - 1]));
 }
+// The switch of a prompt call between the decode chain and the stream: the smallest n where the stream is not slower, n* = a / (c - b) with a the stream's upload, c the decode chain per token,
+// b the stream per token, all from the probe's timed batches. Past the largest batch each curve goes on with its last slope: no cap beside it (user 2026-11-03, DeepSeek: a node budget of 384
+// refused the chain at 409 tokens where it was 2.7 times faster). A decode chain call that took longer than the stream's curve at its size moves the switch below it (report).
+static std::atomic<int64_t> g_mb_cross { 0 };   // 0 = no probe: g_mb_auto stands in
+static mb_pts g_mb_st;                          // the stream's curve, under g_pp_mu after the start
+static int64_t mb_switch(const mb_pts & cache, const mb_pts & stream) {
+    const int64_t top = 1 << 20;
+    for (int64_t n = 8; n <= top; ++n) {
+        if (mb_eval(stream, (double) n, true) <= mb_eval(cache, (double) n, false)) {
+            return n;
+        }
+    }
+    return top;
+}
+static int64_t crossover(const mb_pts & cache, const mb_pts & stream);
+static void mb_apply(const mb_pts & cache, const mb_pts & stream) {
+    if (pp_chain_on()) { g_mb_st = stream; g_mb_cross = mb_switch(cache, stream); } else { g_mb_auto = crossover(cache, stream); }
+}
 static int64_t crossover(const mb_pts & cache, const mb_pts & stream) {
     const int64_t cap = llama_moe_cache_max_batch_cap_fork();
     if (cache.n.empty() || stream.n.empty()) {
@@ -12463,15 +12481,15 @@ static bool mb_decode(const std::string & v, int slots, mb_pts & c, mb_pts & s) 
 
 bool llama_moe_cache_probe_wanted_fork() {
     moe_cache * mc = g_cache;
-    if (!mc || !mb_is_auto() || pp_chain_on()) {   // the prompt chain decides per prompt call (llama_moe_cache_pp_decide_fork); the probe is for --moe pp-chain=0
+    if (!mc || !mb_is_auto()) {
         return false;
     }
     std::string v;
     mb_pts c, st;
-    if (!mc->profile.empty() && moe_state_get(mc->profile, hw_key("batch.cost2"), v) && mb_decode(v, mc->n_slots, c, st)) {   // stored by an earlier start: no probe, just compute
+    if (!mc->profile.empty() && moe_state_get(mc->profile, hw_key("batch.cost3"), v) && mb_decode(v, mc->n_slots, c, st)) {   // stored by an earlier start: no probe, just compute. cost3: timed on tokens the run before did not use
         mb_monotone(c); mb_monotone(st);
-        g_mb_auto = crossover(c, st);
-        LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (stored probe)\n", (long long) g_mb_auto.load());
+        mb_apply(c, st);
+        LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (stored probe)\n", (long long) (pp_chain_on() ? g_mb_cross.load() : g_mb_auto.load()));
         return false;
     }
     return true;
@@ -12495,13 +12513,13 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
         return;   // probe failed: the limit stays
     }
     mb_monotone(c); mb_monotone(st);
-    g_mb_auto = crossover(c, st);
+    mb_apply(c, st);
     std::string msg;
     for (size_t i = 0; i < c.n.size(); ++i) { msg += " c" + std::to_string((int) c.n[i]) + "=" + std::to_string((int) (c.us[i] / 1e3)) + "ms"; }
     for (size_t i = 0; i < st.n.size(); ++i) { msg += " s" + std::to_string((int) st.n[i]) + "=" + std::to_string((int) (st.us[i] / 1e3)) + "ms"; }
-    LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (timed batches, cache path c / streamed s:%s)\n", (long long) g_mb_auto.load(), msg.c_str());
+    LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (timed batches, cache path c / streamed s:%s)\n", (long long) (pp_chain_on() ? g_mb_cross.load() : g_mb_auto.load()), msg.c_str());
     if (!mc->profile.empty()) {
-        moe_state_set(mc->profile, { { hw_key("batch.cost2"), mb_encode((int) mc->n_slots, c, st) } });
+        moe_state_set(mc->profile, { { hw_key("batch.cost3"), mb_encode((int) mc->n_slots, c, st) } });
     }
 }
 
@@ -13103,6 +13121,10 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 const double q = ((double) us / P) / g_pp_de0;
                 g_pp_dec_ratio = g_pp_dec_ratio > 0.0 ? 0.7 * g_pp_dec_ratio + 0.3 * q : q;
             }
+            if (const double s = (double) n_tokens / P; path == PP_DEC && !g_mb_st.n.empty() && s >= 8.0 && s <= (double) g_mb_cross.load() && (double) us / P > mb_eval(g_mb_st, s, true)) {
+                g_mb_cross = (int64_t) s - 1;   // the probe's tokens were kinder than this prompt's
+                LLAMA_LOG_WARN("moe-cache: decode chain took %.0f ms on %.0f tokens where the stream takes %.0f: the switch moves below it\n", (double) us / P / 1e3, s, mb_eval(g_mb_st, s, true) / 1e3);
+            }
         }
     }
     // a chain pass neither: its uploads add to its compute, as one token's compute it told the split planner one card takes 1288 ms where it streams in 500
@@ -13185,6 +13207,11 @@ double llama_moe_cache_compute_att_us_fork() {
 // P = 1 - (1 - p)^n, with p the expert's share of the layer's picks so far: k (count + 1) / (all counts + experts), so a model nobody ran yet counts as uniform.
 void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     moe_cache * mc = g_cache;
+    if (const int64_t p = g_mb_probe.load(std::memory_order_relaxed); p >= 0) {   // the start-up probe forces its path: the decode chain up to its limit, or the stream
+        g_pp_dec = p > 0;
+        g_pp_mix_call = false;
+        return;
+    }
     if (!mc || !pp_chain_allowed() || !mb_is_auto() || ub_max == 0 || mc->n_links <= 0) {
         return;
     }
@@ -13263,23 +13290,25 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     const double de0 = up + cpu > 0.0 ? up * cpu / (up + cpu) : 0.0;
     g_pp_de0 = de0;
     const double de = td > 0.0 ? td : de0 * (g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0), ot = to > 0.0 ? to : Ts;   // the decode chain against the fastest other path, measured or calculated
-    // shortcut: no fixed part per token in the calculated time, a cache that holds everything reads as 0 ms and the size runs the decode chain once; add it when such a first call shows up in rows
-    // no cap beside it (user 2026-11-03, DeepSeek: a node budget of 384 refused the chain at 409 tokens where it was calculated 2.7 times faster): the crossover decides, up to the pass limit
-    const double dec_max = de > 0.0 ? n * ot / de : (double) ub_max;
+    // The release's rule (user 2026-11-04: back to it, from a good start): stream or graph by the switch the probe measured (mb_switch). Up to it the decode chain pulls only what the tokens ask, above it the stream
+    // takes every expert. The tries per size and the calculated reach of 2026-11-01 to 11-04 stay behind --moe pp-tries=1: with no fixed part per token in the calculation, 35B on 2342 tokens said 147 ms and took 3.2 s.
+    static const bool tries = [] { const char * e = moe_opt("pp-tries"); return e && atoi(e) != 0; }();
+    const int64_t cross = g_mb_cross.load(std::memory_order_relaxed);
+    const double dec_max = tries ? (de > 0.0 ? n * ot / de : (double) ub_max) : (double) (cross > 0 ? cross : g_mb_auto.load(std::memory_order_relaxed));
     const bool dec_ok = cpu_known && n <= dec_max;
-    const bool chain = force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
+    const bool chain = force ? strcmp(force, "chain") == 0 : tries && !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
     const bool dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
-    if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
+    if (force) { why = "--moe pp-path"; } else if (!tries) { why = dec ? "up to the measured switch" : "past the measured switch"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
     g_pp_dec = dec;
     g_pp_mb = chain || dec ? ub_max : 0;
     const char * why_mix = "";
-    const bool mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && !dec && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
+    const bool mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : tries && !chain && !dec && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
     g_pp_mix_call = mix;
     if (why_mix[0]) { why = why_mix; }
     static const bool k_auto = moe_opt("pp-k") == nullptr;   // --moe pp-k fixes it, pp-k=0 turns it off
     const double r = pp_took_us(mix ? PP_MIX : PP_RING, n);
     // not on a split pass: it reports as dense, so the try would never get a time and would run again at every call; and the rankings need each layer's input from the other cards too (MiMo: 3.84 GB more a pass)
-    const bool k_can = k_auto && !force && !chain && !dec && !why_mix[0] && llama_dsplit_cur_fork() != 1;
+    const bool k_can = tries && k_auto && !force && !chain && !dec && !why_mix[0] && llama_dsplit_cur_fork() != 1;
     const double m = k_can ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
     if (k_auto) { ggml_backend_pred_set_fork(m); }
     double o = 0.0;   // the fastest one-card stream measured here
