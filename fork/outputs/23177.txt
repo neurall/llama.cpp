@@ -1,0 +1,8 @@
+run 23177 | probe_switch | pf1k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 64.85 t/s | prompt 1400.2 t/s | 32 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt63-1k.ini,sim-vram=4608,dense-split=0,pin-miss=3,log=wk -lm pin | power 220+280 W | 2026-11-04 22:00:35
+
+ } else {
+            digit_range(from[i], to[i]);
+        }
+    };
+
+    auto from_str = std::to_string(min_value);

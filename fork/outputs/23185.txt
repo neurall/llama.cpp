@@ -1,0 +1,8 @@
+run 23185 | fill_inline | pf1k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 67.22 t/s | prompt 865.5 t/s | 32 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt65-1k.ini,sim-vram=4608,pin-miss=3,log=wk -lm pin | power 220+280 W | 2026-11-04 22:09:00
+
+ } else {
+            digit_range(from[i], to[i]);
+        }
+    };
+
+    auto from_str = std::to_string(min_value);

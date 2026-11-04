@@ -1,0 +1,9 @@
+run 23134 | pred_one_try | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.82 t/s | prompt 517.0 t/s | 64 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt54-glm-one.ini,dense-split=0,pin-miss=3,log=wk -lm pin | power 220+280 W | 2026-11-04 18:07:52
+
+    return num_physical_cores > 0 ? num_physical_cores : default_threads;
+#endif
+    unsigned int n_threads = std::thread::hardware_concurrency();
+    return n_threads > 0 ? (n_threads <= 4 ? n_threads : n_threads/2) : 4;
+}
+
+std::string common

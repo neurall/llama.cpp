@@ -1,0 +1,11 @@
+run 23128 | up8_gather_rows | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 15.54 t/s | prompt 940.9 t/s | 64 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_pt53-nold.ini,log=wk -lm pin | power 220+280 W | 2026-11-04 17:37:20
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return static_cast<int32_t>(std::thread::hardware_concurrency());
+}
+
+int32_t common_cpu_get_num_cores() {
+    int32_t num_cores = common_cpu_get_num_physical_cores
