@@ -4386,7 +4386,9 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
             void * p = MAP_FAILED;
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
             const size_t gib = (size_t) 1 << 30;
-            if (ggml_cuda_free_reserved_huge_bytes(gib) >= GGML_PAD(cap, gib)) {
+            // a block smaller than one page stays ordinary memory: the page is zeroed in full by the lock (35B prompt: 8 hand-off blocks of 10 MiB each took a whole 1 GiB page,
+            // 70-110 ms apiece = 0.64 s of a 1.0 s pass with the upload stream idle; 2-4 ms as 2 MiB padded memory). Only a block of a page or more can run the machine out of RAM.
+            if (cap >= gib && ggml_cuda_free_reserved_huge_bytes(gib) >= GGML_PAD(cap, gib)) {
                 p = mmap(nullptr, GGML_PAD(cap, gib), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | (30 << 26), -1, 0);   // MAP_HUGE_SHIFT 26
                 if (p != MAP_FAILED) { cap = GGML_PAD(cap, gib); }
             }

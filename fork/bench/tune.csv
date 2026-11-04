@@ -2135,3 +2135,6 @@ ts,commit,line
 2026-11-04 10:31:51,83bd3fe495+e1c859b9,"moe-cache: self-tune: PRED_N ms/token 4:32.45 6:27.97 8:25.11 12:29.68 -> 8 (clear, 3 slices each)"
 2026-11-04 10:33:51,83bd3fe495+e1c859b9,"moe-cache: self-tune: PRED_N ms/token 4:31.94 6:27.58 8:25.17 12:29.85 -> 8 (clear, 3 slices each)"
 2026-11-04 12:34:22,d60a45b6b9+caf1df01,"moe-cache: self-tune: SWAP_LEAD ms/token 0:43.81 -2:46.46 -> 0 (best mean, 8 slices each)"
+2026-11-04 23:03:31,2dd161b80e+bb938854,"moe-cache: self-tune: SWAP_LEAD ms/token 0:45.73 -2:50.09 -> 0 (best mean, 8 slices each)"
+2026-11-04 23:03:31,2dd161b80e+bb938854,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:47.32 3:44.55 -> 3 (best mean, 8 slices each)"
+2026-11-04 23:09:04,2dd161b80e+bb938854,"moe-cache: self-tune: SWAP_LEAD ms/token 0:47.81 -2:54.03 -> 0 (best mean, 8 slices each)"
