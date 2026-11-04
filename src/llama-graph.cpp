@@ -36,6 +36,8 @@
 
 int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used);   // src/llama-moecache-fork.cpp: the prompt chain
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
+void llama_moe_cache_pp_upload_pred_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids, const ggml_tensor * pred);   // the chain op with the look ahead's routers
+bool llama_moe_cache_pp_ahead_fork();   // the prompt chain looks ahead: its layers get the look ahead's routers
 bool llama_moe_cache_pm_pre_fork();
 void llama_moe_cache_pm_preload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * pred, int64_t n_picks);
 bool llama_moe_cache_pred_wrap_fork(const llama_moe_cache_layer_fork * pub);   // the last layer's look ahead: layer 0 of the next token, on the token embeddings
@@ -2920,7 +2922,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
         mc_cpu_backend = mc_mix_b ? nullptr : cpu_backend;   // the mix runs on the GPUs alone
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
-        if (pw && pw->buffer && mcache->pred_on && (!mc_pp || llama_moe_cache_pm_pre_fork()) && !mc_mix_b) {
+        if (pw && pw->buffer && (mcache->pred_on || (mc_pp && llama_moe_cache_pp_ahead_fork())) && (!mc_pp || llama_moe_cache_pm_pre_fork()) && !mc_mix_b) {
             // the next layers' router logits from this layer's input (learned predictors, else the next
             // router), on their GPU in the split before the CPU copy; handed to the CPU gate op as src[4]
             // ([n_expert*ahead, n_tokens]), where the cache's observer reads them
@@ -3052,7 +3054,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 GGML_UNUSED(nth);
                 if (ith == 0) {
                     llama_moe_cache_pm_preload_fork((const llama_moe_cache_layer_fork *) ud, p, a->ne[0]);
-                    llama_moe_cache_pp_upload_fork((const llama_moe_cache_layer_fork *) ud, a);
+                    llama_moe_cache_pp_upload_pred_fork((const llama_moe_cache_layer_fork *) ud, a, p);
                     memcpy(dst->data, a->data, ggml_nbytes(a));
                 }
             };
