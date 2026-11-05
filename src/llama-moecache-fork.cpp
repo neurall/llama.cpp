@@ -11184,7 +11184,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
     GGML_UNUSED(t0);
 }
 
-// --moe layer-heat=1|fit: which expert layers each GPU holds for decode, by how HOT they are. Any number of GPUs.
+// --moe layer-heat=1|fit|rev (rev: the opposite rule, hottest layers on the strongest card, for A/B): which expert layers each GPU holds for decode, by how HOT they are. Any number of GPUs.
 //
 // Why. A decode step computes a missed expert on the CPU and uploads it for later; the step waits for the uploads of the step before. Behind a slow link
 // that wait is what a layer costs: MiMo-V2.6-Flash, x16 + x4, layers by share in model order, decode after a 12k prompt: 30% of the layers on the x4
@@ -11209,7 +11209,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
 bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backend_dev_t> & layer_dev, const std::vector<double> & lay_dense_b,
         const std::vector<double> & lay_exp_b) {
     const char * e = moe_opt("layer-heat");
-    const int mode = !e ? 0 : strcmp(e, "fit") == 0 ? 2 : atoi(e) != 0 ? 1 : 0;
+    const int mode = !e ? 0 : strcmp(e, "fit") == 0 ? 2 : strcmp(e, "rev") == 0 ? 3 : atoi(e) != 0 ? 1 : 0;   // rev (an A/B arm, user 2026-11-05): the hottest layers on the STRONGEST card
     if (mode == 0) {
         return false;
     }
@@ -11286,8 +11286,9 @@ bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backe
     const double cap_max = cards.back().cap;
     std::vector<int> n_take(cards.size(), 0);
     double lambda = -1.0;
-    if (mode == 1) {
+    if (mode == 1 || mode == 3) {
         for (size_t g = 0; g < cards.size(); ++g) { n_take[g] = cards[g].n_now; }
+        if (mode == 3) { std::reverse(cards.begin(), cards.end()); std::reverse(n_take.begin(), n_take.end()); }   // the strongest card takes the hottest layers, each card keeps its number
     } else {
         // experts a layer needs (as a share of its experts) to miss at most m of its uses
         const auto need_frac = [](const lay & l, double m) {
@@ -11340,7 +11341,7 @@ bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backe
         txt += tr_fmt("%s%s (capability %.2f of the strongest: link %.1f GB/s, result latency %.0f us): %zu layers:%s", g ? "; " : "",
                 ggml_backend_dev_name(cards[g].dev), cards[g].cap / cap_max, cards[g].gbs, cards[g].res_us, mine.size(), ls.c_str());
     }
-    LLAMA_LOG_WARN("moe-cache: layer-heat=%s: hottest layers on the weakest card%s: %s\n", mode == 2 ? "fit" : "1",
+    LLAMA_LOG_WARN("moe-cache: layer-heat=%s: hottest layers on the %s card%s: %s\n", mode == 2 ? "fit" : mode == 3 ? "rev" : "1", mode == 3 ? "strongest" : "weakest",
             lambda >= 0 ? tr_fmt(" (miss budget of the strongest card %.3f)", lambda).c_str() : "", txt.c_str());
     return true;
 }
