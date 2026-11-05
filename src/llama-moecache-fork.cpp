@@ -97,6 +97,7 @@ static uint64_t g_split_epoch = 0, g_split_epoch_built = 0;
 static bool     g_split_enabled = false; // the compute buffers were reserved for a split (decided before the first reserve)
 static double   g_split_speedup = 0.0;   // the transfer speedup that decision was judged by (the per-prompt decision line)
 static std::vector<std::pair<ggml_backend_dev_t, double>> g_early_gbs; // early link probe, until the cache's own probe
+static int g_early_rd_threads = 0;   // the O_DIRECT read thread count the early machine benchmark found (0 = it did not run); read_threads_probe is not asked again
 // The rate the model file was read at while the pin loader filled RAM (GB/s, 0 = no pin loader ran): the start of the stream's SSD cost until a stream pass has measured its own (llama_moe_cache_pp_decide_fork)
 static std::atomic<double> g_load_read_gbs{ 0.0 };
 // The server is warm once its first filling prompt call or its first request is over (user 2026-11-03: "ignore lower than expected vals as those are first cold outliers or start measuring after n tokens when warm"):
@@ -8181,7 +8182,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 if (const char * ra = moe_opt("read-aio")) { g_aio_ok.store(atoi(ra) != 0 ? 1 : 0); }
 #endif
                 if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
-                else if (rd_mapped > 0) { mc->rd_threads = read_threads_probe(mc->rd_fds, mc->profile); }
+                else if (rd_mapped > 0) { mc->rd_threads = g_early_rd_threads > 0 ? g_early_rd_threads : read_threads_probe(mc->rd_fds, mc->profile); }
                 if (rd_mapped > 0) {
                     mc->rd_size = max_expert + ((size_t) 1 << 18);   // a slice, what is read past it, and the block grid on both sides
                     for (size_t w = 0; w < mc->staging.size(); ++w) { mc->rd_staging.push_back(ggml_backend_buft_alloc_buffer(pinned_buft, mc->rd_size)); }
@@ -9467,6 +9468,88 @@ static double early_link_gbs(ggml_backend_dev_t d) {
     if (dbuf) { ggml_backend_buffer_free(dbuf); }
     g_early_gbs.push_back({ d, gbs });
     return gbs;
+}
+
+// The machine's three bandwidths, measured as early as possible (right after the model file size is read, before the layers are placed) and kept in the state file section [machine]
+// (user 2026-11-05: "measure maxssd speed as early as possible, the same for big vram uploads, measure and store achieved ram read bw and pcie achieved bw"). Every later span of stats.log
+// that reads the SSD logs its rate as a share of the SSD maximum, so an inefficient big read stands out.
+//   ssd_max_gbs.<dev>          O_DIRECT 1 MiB reads, best of 1..hardware threads/2 (read_threads_probe), per block device of the model file; measured once, then stored
+//   ram_read_gbs.<threads>     sequential read of 1 GiB by hardware threads/2 threads, best of three passes; measured once, then stored
+//   h2d_gbs.<gpu index>.<name> pinned host to device, 64 MiB copies, the fastest of four (early_link_gbs); measured at every start (0.1 s), stored with the value before
+LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
+    if (!moe_state_enabled() || !model_path || !*model_path) { return; }
+    const double t0 = llama_moe_span_now_fork();
+    const std::string sec = "machine";
+    const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+    std::string v;
+#ifndef _WIN32
+    struct stat st;
+    if (stat(model_path, &st) == 0) {
+        const std::string key = format("ssd_max_gbs.%llu", (unsigned long long) st.st_dev);
+        const double s0 = llama_moe_span_now_fork();
+        if (moe_state_get(sec, key, v) && atof(v.c_str()) > 0.0 && moe_state_get(sec, format("read_threads.%u", hw), v) && atoi(v.c_str()) > 0) {
+            g_early_rd_threads = atoi(v.c_str());
+            moe_state_get(sec, key, v);
+            llama_moe_ssd_max_fork(atof(v.c_str()));
+            LLAMA_LOG_WARN("moe-cache: machine: SSD maximum %.2f GB/s, %d read threads (stored)\n", atof(v.c_str()), g_early_rd_threads);
+        } else {
+            const int dfd = open(model_path, O_RDONLY | O_DIRECT);
+            if (dfd >= 0) {
+                std::map<int, int> fds{{ 0, dfd }};
+                g_early_rd_threads = read_threads_probe(fds, sec);   // sets the maximum (llama_moe_ssd_max_fork) and stores read_threads.<hw> and ssd_max_gbs.<hw> in [machine]
+                close(dfd);
+                if (moe_state_get(sec, format("ssd_max_gbs.%u", hw), v)) { moe_state_set(sec, {{ key, v }}); }   // read_threads_probe keys the maximum by threads; the early bench by drive
+                llama_moe_span_fork("machine benchmark: SSD maximum (O_DIRECT, best thread count)", s0, llama_moe_span_now_fork(), 0, "SSD probe");
+            }
+        }
+    }
+#endif
+    {   // RAM read: the pinned weights and the stream ring are read by the CPU and the DMA engines at this rate at most
+        const std::string key = format("ram_read_gbs.%u", hw / 2);
+        const double s0 = llama_moe_span_now_fork();
+        if (moe_state_get(sec, key, v) && atof(v.c_str()) > 0.0) {
+            LLAMA_LOG_WARN("moe-cache: machine: RAM read %.2f GB/s with %u threads (stored)\n", atof(v.c_str()), hw / 2);
+        } else {
+            const size_t n = (size_t) 1 << 30;
+            std::vector<uint64_t> buf(n / 8, 1);   // touched here, so the passes read resident memory
+            const unsigned nt = hw / 2;
+            double best = 0.0;
+            for (int pass = 0; pass < 3; ++pass) {
+                std::vector<std::thread> th;
+                std::atomic<uint64_t> sink{0};
+                const int64_t t1 = ggml_time_us();
+                for (unsigned i = 0; i < nt; ++i) {
+                    th.emplace_back([&, i]() {
+                        const size_t a = buf.size() / nt * i, b = i + 1 == nt ? buf.size() : buf.size() / nt * (i + 1);
+                        uint64_t x = 0;
+                        for (size_t k = a; k < b; ++k) { x += buf[k]; }
+                        sink += x;
+                    });
+                }
+                for (auto & t : th) { t.join(); }
+                best = std::max(best, (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t1) / 1e3);
+            }
+            moe_state_set(sec, {{ key, format("%.3f", best) }});
+            LLAMA_LOG_WARN("moe-cache: machine: RAM read %.2f GB/s with %u threads (measured)\n", best, nt);
+            llama_moe_span_fork("machine benchmark: RAM read (1 GiB, all threads)", s0, llama_moe_span_now_fork(), n, "RAM probe");
+        }
+    }
+    {   // PCIe: every card, measured now (the value is also the one the placement and the splits use, see early_link_gbs)
+        const double s0 = llama_moe_span_now_fork();
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t d = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            const double g = early_link_gbs(d);
+            const std::string key = format("h2d_gbs.%zu.%s", i, ggml_backend_dev_name(d));
+            std::string old;
+            moe_state_get(sec, key, old);
+            moe_state_set(sec, {{ key, format("%.3f", g) }});
+            LLAMA_LOG_WARN("moe-cache: machine: PCIe upload to %s %.2f GB/s (stored before: %s)\n", ggml_backend_dev_name(d), g, old.empty() ? "none" : old.c_str());
+        }
+        llama_moe_span_fork("machine benchmark: PCIe uploads to every card", s0, llama_moe_span_now_fork(), 0, "PCIe probe");
+    }
+    llama_moe_decision_fork("stage", "machine bandwidths measured (SSD maximum, RAM read, PCIe uploads)", "");
+    GGML_UNUSED(t0);
 }
 
 // --moe layer-heat=1|fit: which expert layers each GPU holds for decode, by how HOT they are. Any number of GPUs.

@@ -1922,6 +1922,7 @@ static uint32_t common_fits_ubatch(common_params & params) {
     return SAFE;
 }
 
+LLAMA_API void llama_moe_early_bench_fork(const char * model_path);   // llama-moecache-fork.cpp (no shared header)
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 static void common_moe_cache_auto_impl(common_params & params);
 
@@ -2154,6 +2155,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     int    n_gpu;
     common_gpu_free(vram_free, vram_max, n_gpu);
     llama_moe_decision_fork("stage", "model file size and free VRAM read", "");
+    llama_moe_early_bench_fork(params.model.path.c_str());   // SSD maximum, RAM read and PCIe upload rates: measured once, kept in the state file section [machine]
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
     const size_t reserve = (size_t) n_gpu << 30;
     // --moe mode=cache is honored even when the model fits: the fit path returns before the placement is decided
