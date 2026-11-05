@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <string>
+#include <thread>
 #include <vector>
 #include <cctype>
 #include <chrono>
@@ -459,6 +460,7 @@ void llama_moe_token_time_fork(double ms) {
 // One event or one status report per line, with a type acronym (user 2026-11-02: "one line per event with timestamp and evt type acronim seems simpler than wastefull csv"; tail -f it to watch a change live, run.py stats does).
 // The first line of the file names the types. STA comes once a second from stats_status_run, GPU once a second from run.py (nvidia-smi dmon).
 static const auto g_stats_t0 = std::chrono::steady_clock::now();
+static const auto g_stats_wall0 = std::chrono::system_clock::now();   // the wall clock of the same instant: a line may carry an earlier time than the moment it is written
 // --moe log-profile=NAME[+NAME]: what the engine logs on top of its own server log (user 2026-11-02: "make all the heavy binary logging optional on demand, logging profiles"; "just planner and make stats included
 // every profile"). Every profile writes the status lines of stats.log. stats: only those. planner: its event lines too. activations: the per-prompt hot maps too (--moe dynhot=store, until now on by default: it
 // records them and nothing reads them back in that mode). all: every one of these. off: nothing. Without the key: planner when --moe stats=PATH is given, else nothing. A key of its own (--moe dynhot=full, ledger=1,
@@ -476,7 +478,7 @@ bool llama_moe_log_profile_fork(const char * name) {
     return false;
 }
 
-void llama_moe_stats_log_fork(const char * kind, const char * text) {
+static void stats_emit(const char * kind, const char * text, double at) {   // at: seconds since the start of the process this line is for, or negative for now
     static std::mutex mu;
     static FILE * f = nullptr;
     static bool opened = false;
@@ -492,18 +494,64 @@ void llama_moe_stats_log_fork(const char * kind, const char * text) {
             f = fopen(p, "a");
             if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
             else if (ftell(f) == 0 && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0) {
-                fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, SWT misses switch between CPU and uploads, KVZ KV zone, DEW decode window, STA engine status, GPU cards, HST host\n");
+                fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, SPN one big operation with its start, stop, bytes and rate (start-up stages, prompt calls, fills), DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, SWT misses switch between CPU and uploads, KVZ KV zone, DEW decode window, STA engine status, GPU cards, HST host\n");
             }
         }
     }
     if (!f) { return; }
-    const auto now = std::chrono::system_clock::now();
+    const double rel = at >= 0.0 ? at : std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count();
+    const auto now = g_stats_wall0 + std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::duration<double>(rel));
     const time_t t = std::chrono::system_clock::to_time_t(now);
     char ts[32];
     strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
     const int ms = (int) (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
-    fprintf(f, "%s.%03d %9.3f %-3s %s\n", ts, ms, std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count(), kind, text);
+    fprintf(f, "%s.%03d %9.3f %-3s %s\n", ts, ms, rel, kind, text);
     fflush(f);
+}
+
+void llama_moe_stats_log_fork(const char * kind, const char * text) { stats_emit(kind, text, -1.0); }
+
+// Spans (user 2026-11-05: "every big load logged in mem and flushed in stats.log, one timestamp start stop events per line ... more info in the debug trace phase, we waste less on nsys,
+// we spot deviations on any run, not just on demand rare nsys"): one line per big operation with its start, its stop, its bytes and the rate. The hot path only appends a record
+// to memory; a thread writes the records out every second and at exit, sorted by start. Records exist only with the planner log profile on, as every other line of stats.log.
+struct moe_span_rec { double t0, t1; uint64_t bytes; char what[72]; char where[16]; unsigned tid; };
+static std::mutex g_span_mu;
+static std::vector<moe_span_rec> g_span_buf;
+
+double llama_moe_span_now_fork() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count(); }
+
+static void span_flush() {
+    std::vector<moe_span_rec> v;
+    { std::lock_guard<std::mutex> lk(g_span_mu); v.swap(g_span_buf); }
+    std::sort(v.begin(), v.end(), [](const moe_span_rec & a, const moe_span_rec & b) { return a.t0 < b.t0; });
+    for (const auto & r : v) {
+        const double dur = r.t1 - r.t0;
+        std::string line = format("%s: start %.3f stop %.3f dur %.1f ms", r.what, r.t0, r.t1, dur * 1e3);
+        if (r.bytes) { line += format(", %.1f MiB at %.2f GB/s", (double) r.bytes / 1048576.0, dur > 0.0 ? (double) r.bytes / dur / 1e9 : 0.0); }
+        if (r.where[0]) { line += format(", %s", r.where); }
+        line += format(", thread %u", r.tid);
+        stats_emit("SPN", line.c_str(), r.t0);
+    }
+}
+
+namespace {
+struct span_flusher {   // defined after the buffer: at exit it is destroyed first, and writes what is left
+    std::thread th;
+    std::atomic<bool> stop { false };
+    span_flusher() { th = std::thread([this] { while (!stop.load()) { for (int i = 0; i < 50 && !stop.load(); ++i) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); } span_flush(); } span_flush(); }); }
+    ~span_flusher() { stop = true; if (th.joinable()) { th.join(); } }
+};
+}
+
+void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where) {
+    static const bool on = llama_moe_log_profile_fork("planner");
+    if (!on) { return; }
+    static span_flusher flusher;   // the thread starts with the first span
+    moe_span_rec r = { t0, t1, bytes, {}, {}, (unsigned) (std::hash<std::thread::id>()(std::this_thread::get_id()) % 100000) };
+    snprintf(r.what, sizeof r.what, "%s", what);
+    snprintf(r.where, sizeof r.where, "%s", where ? where : "");
+    std::lock_guard<std::mutex> lk(g_span_mu);
+    g_span_buf.push_back(r);
 }
 
 // For stats.log: what the disk, the memory and the CPU did since this caller's last call (who: 0 prompt calls, 1 status lines, 2 decode windows). This process's reads from storage and its page faults; the
@@ -588,6 +636,16 @@ std::string llama_moe_stats_io_fork(int who) {
 void llama_moe_decision_fork(const char * name, const char * value, const char * why) {
     // the server's phase changes (load, idle, prefill, decode) are events of stats.log, not decisions; through here because llama.h stays as it is
     if (strcmp(name, "phase") == 0) { llama_moe_stats_log_fork("PHA", value); return; }
+    // start-up stages (user 2026-11-05: "measure and log all stages and delta times to stats.log as they are happening"): a span from the end of the previous stage to this one
+    if (strcmp(name, "stage") == 0) {
+        static std::mutex mu;
+        static double last = 0.0;   // the first stage counts from the start of the process
+        const double now = llama_moe_span_now_fork();
+        double t0;
+        { std::lock_guard<std::mutex> lk(mu); t0 = last; last = now; }
+        llama_moe_span_fork((std::string("start-up: ") + value).c_str(), t0, now, 0, "");
+        return;
+    }
     const std::string line = std::string(name) + " = " + value + " (" + why + ")";
     std::lock_guard<std::mutex> lk(g_tok_mu);
     const int64_t t = (int64_t) time(nullptr);
