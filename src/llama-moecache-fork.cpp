@@ -11901,6 +11901,15 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
 
 
 // Blocks of the expert pools that hold an expert now, and all blocks (lent and free ones count in the total): how full the cache is when a prompt starts.
+// the engine's byte counters, for the per-token lines of stats.log (llama-moestate-fork.cpp): cpu compute, uploads, prompt streaming, then every link's bytes; 0 when no cache runs
+int llama_moe_cache_counters_fork(int64_t * v, int cap) {
+    moe_cache * mc = g_cache;
+    if (!mc || cap < 3 + mc->n_links) { return 0; }
+    v[0] = mc->cpu_bytes.load(); v[1] = mc->up_bytes.load(); v[2] = mc->pf_bytes.load();
+    for (int k = 0; k < mc->n_links; ++k) { v[3 + k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
+    return 3 + mc->n_links;
+}
+
 void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total) {
     *filled = *total = 0;
     moe_cache * mc = g_cache;

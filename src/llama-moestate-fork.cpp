@@ -11,6 +11,9 @@
 #include <vector>
 #include <cctype>
 #include <chrono>
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -448,7 +451,9 @@ static double g_pp_ms = 0;
 static std::map<uint32_t, double> g_ub_tps;   // EMA of prompt tokens/s per pass size
 static uint32_t g_ub_cur = 0, g_ub_calls_since = 0;
 
+static void tok_window_note(double ms);
 void llama_moe_token_time_fork(double ms) {
+    tok_window_note(ms);
     std::lock_guard<std::mutex> lk(g_tok_mu);
     g_tok_ring[g_tok_n % 64] = ms;
     g_tok_n++;
@@ -642,11 +647,65 @@ std::string llama_moe_stats_io_fork(int who) {
 #endif
 }
 
+// Per-token engine counters (user 2026-11-05: "for gpu you cant sample every 10 tokens but you can do prior and after the kernel run and divide by token count"): before and after a run of decode
+// calls (10 tokens) or a prompt pass the engine's byte counters (llama_moe_cache_counters_fork: CPU compute, uploads, prompt streaming, every link) and every card's NVML energy counter are read, and the
+// difference is divided by the tokens: bytes per token per link, joules and watts per card. TOK lines come every 10 decode tokens, the same numbers close each PAS line.
+#ifdef __linux__
+static std::vector<unsigned long long> nvml_energy_mj_all() {
+    static void * h = dlopen("libnvidia-ml.so.1", RTLD_NOW);
+    typedef int (*init_t)(); typedef int (*count_t)(unsigned *); typedef int (*handle_t)(unsigned, void **); typedef int (*en_f)(void *, unsigned long long *);
+    static std::vector<void *> dev;
+    static en_f fe = nullptr;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (!h) { return; }
+        auto init = (init_t) dlsym(h, "nvmlInit_v2"); auto cnt = (count_t) dlsym(h, "nvmlDeviceGetCount_v2"); auto hnd = (handle_t) dlsym(h, "nvmlDeviceGetHandleByIndex_v2");
+        fe = (en_f) dlsym(h, "nvmlDeviceGetTotalEnergyConsumption");
+        unsigned n = 0;
+        if (!init || !cnt || !hnd || !fe || init() != 0 || cnt(&n) != 0) { fe = nullptr; return; }
+        dev.assign(n, nullptr);
+        for (unsigned i = 0; i < n; ++i) { if (hnd(i, &dev[i]) != 0) { dev[i] = nullptr; } }
+    });
+    std::vector<unsigned long long> out;
+    if (!fe) { return out; }
+    for (void * d : dev) { unsigned long long e = 0; if (d) { fe(d, &e); } out.push_back(e); }
+    return out;
+}
+#else
+static std::vector<unsigned long long> nvml_energy_mj_all() { return {}; }
+#endif
+int llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
+struct tok_snap { int64_t c[8] = {}; int n = 0; std::vector<unsigned long long> e; double t = 0.0; };
+static tok_snap tok_snap_now() { tok_snap s; s.n = llama_moe_cache_counters_fork(s.c, 8); s.e = nvml_energy_mj_all(); s.t = llama_moe_span_now_fork(); return s; }
+static std::string tok_per_token(const tok_snap & a, const tok_snap & b, double tokens) {
+    const double wall = b.t - a.t;
+    if (a.n == 0 || b.n != a.n || tokens <= 0 || wall <= 0) { return ""; }
+    auto mib = [&](int i) { return (double) (b.c[i] - a.c[i]) / 1048576.0 / tokens; };
+    std::string s = format("per token: cpu %.2f MiB, upload %.2f MiB, stream %.2f MiB", mib(0), mib(1), mib(2));
+    for (int k = 3; k < a.n; ++k) { s += format(", link%d %.2f MiB (%.2f GB/s)", k - 3, mib(k), (double) (b.c[k] - a.c[k]) / wall / 1e9); }
+    for (size_t g = 0; g < a.e.size() && g < b.e.size(); ++g) { s += format(", g%zu %.2f J (%.0f W)", g, (double) (b.e[g] - a.e[g]) / 1e3 / tokens, (double) (b.e[g] - a.e[g]) / 1e3 / wall); }
+    return s;
+}
+static void tok_window_note(double ms) {   // one decode call of one token took ms
+    static std::mutex mu;
+    static tok_snap base;
+    static int cnt = 0;
+    static double sum_ms = 0.0, last_end = 0.0;
+    std::lock_guard<std::mutex> lk(mu);
+    const double now = llama_moe_span_now_fork();
+    if (now - last_end > 0.5 || base.n == 0) { base = tok_snap_now(); cnt = 0; sum_ms = 0.0; last_end = now; return; }   // a new run of tokens starts counting after its first one
+    last_end = now; ++cnt; sum_ms += ms;
+    if (cnt >= 10) {
+        const tok_snap e = tok_snap_now();
+        llama_moe_stats_emit_at_fork("TOK", format("10 tokens: %.2f ms per token (engine), %.2f ms per token (wall); %s", sum_ms / cnt, (e.t - base.t) * 1e3 / cnt, tok_per_token(base, e, cnt).c_str()).c_str(), e.t);
+        base = e; cnt = 0; sum_ms = 0.0;
+    }
+}
+
 // Fast GPU samples (user 2026-11-05: "the 13k call is too short for the samples, collect stats every 10 tokens but flush to file every 10 s"): every card's load, PCIe traffic both ways, power, clock and
 // free VRAM from NVML (loaded at run time, nothing links to it) every --moe stats-fast-ms (default 100 ms, 0 = off), kept in memory and written as SMP lines of stats.log every 10 s with the time of
 // each sample. A 3 s prompt call so shows its own link traffic; the once-a-10-s GPU lines of run.py (nvidia-smi) stay as the overview. Cards are numbered as nvidia-smi does (g0, g1).
 #ifdef __linux__
-#include <dlfcn.h>
 static void fast_gpu_sampler_start() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -823,7 +882,9 @@ static int64_t g_live_c0[4][3] = {};   // per card (link): asked / found / wrong
 void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total);   // src/llama-moecache-fork.cpp
 bool llama_moe_cache_staging_counts_fork(int64_t * asked, int64_t * found, int64_t * wrong);
 bool llama_moe_cache_staging_card_fork(int k, const char ** name, int64_t * asked, int64_t * found, int64_t * wrong);   // src/llama-moecache-fork.cpp   // src/llama-moecache-fork.cpp
+static tok_snap g_pass_snap;   // the counters at the end of the previous pass of the running prompt call (or at its start)
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch) {
+    g_pass_snap = tok_snap_now();
     if (n_tokens > 1) {   // (before g_tok_mu: the cache lock is taken inside, the other code takes it first)
         uint64_t filled, total;
         llama_moe_cache_fill_fork(&filled, &total);
@@ -873,7 +934,9 @@ void llama_moe_prompt_progress_fork(uint32_t done) {
         const std::string pass_line = format("prompt pass %u/%u: %u tokens in %.1f s (%.0f t/s)%s, %u of %u done after %.1f s", pass, passes,
                 done - prev, s_pass, s_pass > 0 ? (done - prev) / s_pass : 0.0, hs2, done, tokens, s_all);
         LLAMA_LOG_WARN("%s: %s\n", __func__, pass_line.c_str());
-        llama_moe_stats_log_fork("PAS", (pass_line + format(", %.2f ms per token", done > prev ? s_pass * 1e3 / (done - prev) : 0.0)).c_str());
+        const tok_snap pass_end = tok_snap_now();
+        llama_moe_stats_log_fork("PAS", (pass_line + format(", %.2f ms per token; ", done > prev ? s_pass * 1e3 / (done - prev) : 0.0) + tok_per_token(g_pass_snap, pass_end, done - prev)).c_str());
+        g_pass_snap = pass_end;
     }
 }
 // a prompt call (more than one token) finished: tokens, milliseconds
