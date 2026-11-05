@@ -909,7 +909,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                 const int64_t n_new               = inp_kpool->n_new;
                 const int64_t n_kv                = mctx_lid->get_n_kv();
                 const bool    full_idx            = hparams.is_indexer_full(il);
-                ggml_tensor * kq_mask   = inp_attn->get_kq_mask();
+                ggml_tensor * kq_mask   = inp_attn->self_attn_mask.raw;
                 std::vector<ggml_tensor *> qa(NR), iq(NR), iw(NR);
                 // 1. per range on its card: projections; the cache writes run where the caches are (both ranges, before anything reads them)
                 for (size_t r = 0; r < NR; ++r) {
@@ -1003,7 +1003,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
                     ggml_tensor * mask = ggml_reshape_4d(ctx0, sel, n_kv, nr, 1, 1);
                     ggml_tensor * k = mctx_mla->get_k(ctx0, il);
                     ggml_tensor * v = ggml_view_4d(ctx0, k, kv_lora_rank, k->ne[1], k->ne[2], k->ne[3], k->nb[1], k->nb[2], k->nb[3], 0);
-                    ggml_tensor * o = build_attn_mha(qa[r], k, v, nullptr, mask, nullptr, Lr.wv_b, inp_kpool->n_sel, kq_scale, il);
+                    ggml_tensor * o = build_attn_mha(qa[r], k, v, nullptr, mask, nullptr, nullptr, Lr.wv_b, inp_kpool->n_sel, kq_scale, il);
                     cr[r] = ggml_mul_mat(ctx0, Lr.wo, o);
                     pin(R[r].b);
                 }
@@ -1490,7 +1490,7 @@ llama_model_glm5_next::graph::build_dsa_layer(
 
     cb(sel, "kq_mask_dsa", il);
 
-    ggml_tensor * out = build_attn_mha(q_absorbed, k, v, nullptr, sel, nullptr, layer.wv_b, inp_kpool->n_sel, kq_scale, il);
+    ggml_tensor * out = build_attn_mha(q_absorbed, k, v, nullptr, sel, nullptr, nullptr, layer.wv_b, inp_kpool->n_sel, kq_scale, il);
     cb(out, "kqv_out", il);
 
     out = ggml_mul_mat(ctx0, layer.wo, out);

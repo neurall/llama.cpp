@@ -1050,6 +1050,9 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     const int32_t * target_layer_ids   = nullptr; // model_dft's extract layer indices
     uint32_t        target_layer_ids_n = 0;
 
+    // inject target features from the target's device buffer instead of host copies (fork: off by default, env LLAMA_DFLASH_DEV=1 enables)
+    bool use_dev_features = false;
+
     common_speculative_impl_draft_dflash(const common_params_speculative & params, uint32_t n_seq,
             common_speculative_type type = COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)
         : common_speculative_impl(type, n_seq, params.draft.n_max)
@@ -1184,6 +1187,25 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
         }
 
+        // the device buffer keeps layers in ascending id order, the fc input expects target_layer_ids order
+        {
+            const char * env = getenv("LLAMA_DFLASH_DEV");
+            const bool ascending = std::adjacent_find(target_layer_ids, target_layer_ids + target_layer_ids_n,
+                    [](int32_t a, int32_t b) { return a >= b; }) == target_layer_ids + target_layer_ids_n;
+
+            // fork: never with the DSpark ring (n_keep > 0): the device buffer replaces the host copies the ring and gather_features read. Off by default,
+            // LLAMA_DFLASH_DEV=1 turns it on: its buffer (target layers x n_embd x n_batch on the target's card) is outside the fork's VRAM plan
+            use_dev_features = n_keep == 0 && !is_lilicorr && ascending && env != nullptr && atoi(env) != 0;
+            if (use_dev_features) {
+                llama_set_embeddings_layer_inp_dev(ctx_tgt, true);
+                use_dev_features = llama_supports_embd_row(ctx_dft);
+                if (!use_dev_features) {
+                    llama_set_embeddings_layer_inp_dev(ctx_tgt, false);
+                }
+            }
+            LOG_INF("%s: DFlash target features via %s\n", __func__, use_dev_features ? "device buffer" : "host copies");
+        }
+
         // DFlash2 reads its selector lattice from h_nextn and never consumes raw logits.
         llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ !is_dflash2 && !is_lilicorr);
         llama_set_causal_attn(ctx_dft, causal_attn); // DFlash needs non-causal attention unless the model says otherwise
@@ -1310,6 +1332,28 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                     }
                     continue;
                 }
+            }
+
+            if (use_dev_features) {
+                // upstream #31506: the features are the target batch rows in the target's device buffer (no host copy; only without the ring)
+                for (int32_t offset = 0; offset < n_rows; offset += n_ubatch) {
+                    const int32_t n_chunk = std::min(n_ubatch, n_rows - offset);
+                    batch_inject.clear();
+                    for (int32_t i = 0; i < n_chunk; ++i) {
+                        const int32_t   row        = beg + offset + i;
+                        const llama_pos p          = batch_in.tokens[row].pos[0];
+                        const llama_pos pos_arr[4] = { p, p, p, 0 };
+                        batch_inject.add_embd_row(row, pos_arr, seq_id, false);
+                    }
+                    const int32_t rc = llama_process(this->params.ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch_inject.get());
+                    n_dft_calls++;
+                    if (rc != 0) {
+                        LOG_ERR("%s: llama_process(ctx_dft) failed rc=%d (n_tokens=%d, offset=%d)\n",
+                                __func__, rc, (int) n_chunk, (int) offset);
+                        return false;
+                    }
+                }
+                continue;
             }
 
             std::vector<llama_pos> pos;
@@ -2183,6 +2227,29 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         const int32_t i_h = std::min<int32_t>(n_accepted, n_rows - 1);
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
         std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
+    }
+
+    bool get_state(llama_seq_id seq_id, std::vector<uint8_t> & data) const override {
+        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
+            return false;
+        }
+
+        const size_t row_bytes = (size_t) n_embd * sizeof(float);
+        data.resize(row_bytes);
+        std::memcpy(data.data(), pending_h[seq_id].data(), row_bytes);
+        return true;
+    }
+
+    void set_state(llama_seq_id seq_id, const std::vector<uint8_t> & data) override {
+        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
+            return;
+        }
+
+        const size_t row_bytes = (size_t) n_embd * sizeof(float);
+        if (data.size() != row_bytes) {
+            return;
+        }
+        std::memcpy(pending_h[seq_id].data(), data.data(), row_bytes);
     }
 };
 

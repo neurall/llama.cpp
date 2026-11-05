@@ -812,13 +812,13 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         }
                     }
                     if (!qsa) {
-                        att = ds_attn_cache(mctx_attn, ia->get_k_idxs(), ia->get_v_idxs(), ia->get_kq_mask(), q, k, v, {}, ia->self_k_rot[il], ia->self_v_rot[il], kq_scale, il);
+                        att = ds_attn_cache(mctx_attn, ia->get_k_idxs(), ia->get_v_idxs(), ia->self_attn_mask.raw, q, k, v, {}, ia->self_k_rot[il], ia->self_v_rot[il], kq_scale, il);
                     } else {
                         const int64_t kpool  = inp_kpool->kpool;
                         const int64_t n_pool = inp_kpool->pool_cells->ne[0];
                         const int64_t n_new  = inp_kpool->n_new;
                         const int64_t n_kv   = inp_kpool->n_kv;
-                        ggml_tensor * kq_mask = ia->get_kq_mask();
+                        ggml_tensor * kq_mask = ia->self_attn_mask.raw;
                         GGML_ASSERT(hparams.dsv4_compress_ratios[il] == kpool);
                         // 1. every range's K / V into the attention cache, before anything reads it
                         ds_skip();
@@ -878,7 +878,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                             if (kq_mask2d[r] == nullptr) { kq_mask2d[r] = ggml_reshape_2d(ctx0, ds_rows(kq_mask, r), n_kv, nr); }
                             sel = ggml_add(ctx0, ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0), kq_mask2d[r]);
                             ggml_tensor * mask = ggml_reshape_4d(ctx0, sel, n_kv, nr, 1, 1);   // the selection mask carries the causal mask
-                            att[r] = build_attn_mha(q[r], mctx_attn->get_k(ctx0, il), mctx_attn->get_v(ctx0, il), nullptr, mask, nullptr, nullptr, n_sel, kq_scale, il);
+                            att[r] = build_attn_mha(q[r], mctx_attn->get_k(ctx0, il), mctx_attn->get_v(ctx0, il), nullptr, mask, nullptr, nullptr, nullptr, n_sel, kq_scale, il);
                             ds_pin(ds_r[r].b);
                         }
                     }
@@ -1454,7 +1454,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
     sel = ggml_reshape_4d(ctx0, sel, sel->ne[0], sel->ne[1]/n_stream, 1, n_stream);
     cb(sel, "kq_mask_qsa", il);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, sel, nullptr, nullptr, n_sel, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, sel, nullptr, nullptr, nullptr, n_sel, kq_scale, il);
     cb(cur, "kqv_out", il);
 
     // the rotation is its own inverse, so undo it on the value side of the output
@@ -1892,7 +1892,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
                 conv_states_all->nb[1],
                 (slot * mem_size + kv_head) * row_size);
 
-        ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_cont(ctx0, tail), dst));
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, tail, dst));
     }
 
     return conv_input;
