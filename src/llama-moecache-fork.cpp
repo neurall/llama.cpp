@@ -63,8 +63,11 @@
 #include <windows.h>
 #endif
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // exported in llama.h; "stage" writes one span of the start-up to stats.log
-void llama_moe_ssd_max_fork(double gbs);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
-void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);   // llama-moestate-fork.cpp: one line of stats.log for one big operation
+void llama_moe_ssd_max_fork(double gbs, const char * state_key);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
+void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);
+void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double at);   // llama-moestate-fork.cpp: a line of stats.log with the time of the event
+void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total);
+   // llama-moestate-fork.cpp: one line of stats.log for one big operation
 double llama_moe_span_now_fork();   // seconds since the start of the process, the time base of the spans
 
 // learned predictors: this decode trains them / the current graph was built with the update nodes
@@ -7040,6 +7043,53 @@ static void preheat_run(moe_cache * mc) {
             n_fail, read_errno ? ", first: " : "", read_errno ? strerror(read_errno) : "", n_last);
 }
 
+// Fast engine windows (user 2026-11-05: "for every 10 tokens we for sure know how much data we sent where", "and what time per token was, and saturation of ram, vram and pcie bandwidth"): every
+// --moe stats-fast-ms (default 100 ms, 0 = off) the engine's own byte counters are read and the change since the last window is kept in memory, written as UPL lines of stats.log every 10 s with the
+// window's own time. A line has the decode steps of the window and the time per token they took, RAM traffic (CPU compute, uploads, prompt streaming) against the RAM ceiling, every link's
+// traffic against its probed maximum, and how full the cache in VRAM is. Windows where nothing moved are not written. A 3 s prompt call so shows its own rates, not a 10 s average.
+static void fast_window_run(moe_cache * mc) {
+    const char * o = moe_opt("stats-fast-ms");
+    const int period_ms = o ? atoi(o) : 100;
+    if (period_ms <= 0) { return; }
+    struct win { double t, dt; uint64_t steps; int64_t cpu, up, pf, lk[MAX_LINKS]; uint64_t filled, total; };
+    std::vector<win> buf;
+    int64_t t0 = ggml_time_us(), cpu0 = mc->cpu_bytes.load(), up0 = mc->up_bytes.load(), pf0 = mc->pf_bytes.load(), lk0[MAX_LINKS] = {};
+    for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
+    uint64_t n0 = mc->n_steps;
+    double last_flush = llama_moe_span_now_fork();
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
+        const int64_t t = ggml_time_us();
+        win w = {};
+        w.t = llama_moe_span_now_fork(); w.dt = (double) (t - t0) / 1e6;
+        const int64_t cpu = mc->cpu_bytes.load(), up = mc->up_bytes.load(), pf = mc->pf_bytes.load();
+        const uint64_t n = mc->n_steps;
+        w.steps = n - n0; w.cpu = cpu - cpu0; w.up = up - up0; w.pf = pf - pf0;
+        bool any = w.steps || w.cpu || w.up || w.pf;
+        for (int k = 0; k < mc->n_links; ++k) {
+            const int64_t b = mc->link_bytes[k].load() + mc->pf_link[k].load();
+            w.lk[k] = b - lk0[k]; lk0[k] = b; any = any || w.lk[k];
+        }
+        t0 = t; cpu0 = cpu; up0 = up; pf0 = pf; n0 = n;
+        if (any) { llama_moe_cache_fill_fork(&w.filled, &w.total); buf.push_back(w); }
+        if (w.t - last_flush >= 10.0) {
+            last_flush = w.t;
+            for (const auto & x : buf) {
+                std::string links;
+                for (int k = 0; k < mc->n_links; ++k) {
+                    const double g = (double) x.lk[k] / x.dt / 1e9;
+                    links += format(" %s %.2f GB/s (%.0f%% of %.1f)", mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", g, mc->gbs_link[k] > 0 ? 100.0 * g / mc->gbs_link[k] : 0.0, mc->gbs_link[k]);
+                }
+                const double ram = (double) (x.cpu + x.up + x.pf) / x.dt / 1e9, ceil = knobs().ddr_gbs;
+                llama_moe_stats_emit_at_fork("UPL", format("window %.0f ms: steps %llu%s; ram %.2f GB/s (%.0f%% of %.1f; cpu %.2f, upload %.2f, stream %.2f); links%s; cache %llu/%llu blocks (%.0f%%)",
+                        x.dt * 1e3, (unsigned long long) x.steps, x.steps ? format(" (%.1f ms per token)", x.dt * 1e3 / (double) x.steps).c_str() : "", ram, ceil > 0 ? 100.0 * ram / ceil : 0.0, ceil,
+                        (double) x.cpu / x.dt / 1e9, (double) x.up / x.dt / 1e9, (double) x.pf / x.dt / 1e9, links.c_str(), (unsigned long long) x.filled, (unsigned long long) x.total,
+                        x.total ? 100.0 * (double) x.filled / (double) x.total : 0.0).c_str(), x.t - x.dt);
+            }
+            buf.clear();
+        }
+    }
+}
 static void stats_status_run(moe_cache * mc) {
     const char * o = moe_opt("stats-ms");
     const int64_t period = (int64_t) std::max(50, o ? atoi(o) : 10000) * 1000;
@@ -8217,6 +8267,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
             if (llama_moe_log_profile_fork("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
+            if (llama_moe_log_profile_fork("planner")) { std::thread(fast_window_run, mc).detach(); }
             if (const char * ph = moe_opt("preheat"); ph && ph[0] == '1' && gpu && !mc->rd_staging.empty()) { mc->preheat_thr = std::thread(preheat_run, mc); }   // default off; =1 on; rd_staging: some experts stayed mapped
             if (!mc->rd_staging.empty()) {
                 LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT: prompt uploads on %d threads, %d cache workers\n", rd_mapped / 1073741824.0, mc->rd_threads, n_workers);
