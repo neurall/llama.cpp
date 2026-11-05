@@ -5298,6 +5298,9 @@ def cmd_publish(a):
     if getattr(a, "local", False):   # the runs-db commit (runs.db and the hot maps) built locally, nothing pushed
         return _publish_db(here, push=False)
     br = _git(tree, "branch", "--show-current")
+    # no commit names Claude, Anthropic or a co-author (owner 2026-11-05): checked here and by the pre-push hook (fork/check_attribution.py --install)
+    if subprocess.run([sys.executable, "-I", os.path.join(here, "check_attribution.py"), "--push", tree, br]).returncode:
+        sys.exit("publish: refused, see above")
     for ref in [f"refs/heads/{br}:refs/heads/{br}"]:
         subprocess.run(["git", "-C", tree, "push", "neurall", ref], check=True)
     _publish_db(here)
