@@ -11156,7 +11156,8 @@ bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backe
     for (char & c : name) {
         if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; }
     }
-    if (!moe_state_section_kv(name + " 0", kv, true)) {
+    // the section is named after the model FILE and its size (moe_state_section), not the display name: the lookup by display name never matched, so layer-heat never moved a layer (found 2026-11-05, pt78 x4 cells)
+    if (!moe_state_section_kv(moe_state_section(model), kv, true) && !moe_state_section_kv(name + " 0", kv, true)) {
         LLAMA_LOG_WARN("moe-cache: layer-heat: no saved usage profile for %s, layers stay where the split put them\n", name.c_str());
         return false;
     }
