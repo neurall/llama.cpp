@@ -510,7 +510,7 @@ static void stats_emit(const char * kind, const char * text, double at) {   // a
 }
 
 void llama_moe_stats_log_fork(const char * kind, const char * text) { stats_emit(kind, text, -1.0); }
-static void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double at) { stats_emit(kind, text, at); }
+void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double at) { stats_emit(kind, text, at); }
 
 // Spans (user 2026-11-05: "every big load logged in mem and flushed in stats.log, one timestamp start stop events per line ... more info in the debug trace phase, we waste less on nsys,
 // we spot deviations on any run, not just on demand rare nsys"): one line per big operation with its start, its stop, its bytes and the rate. The hot path only appends a record
