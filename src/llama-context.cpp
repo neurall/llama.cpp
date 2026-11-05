@@ -1661,6 +1661,7 @@ void llama_context::sched_reserve() {
                 line += format(" | %s: graph + scratch %.0f MiB, room %.0f MiB", ggml_backend_dev_name(d), s[i] / 1048576.0, llama_moe_cache_alias_room_fork(d, u) / 1048576.0);
             }
             LLAMA_LOG_WARN("%s: micro-batch from the pools: %u tokens (%s, %d measure-only reserves)%s\n", __func__, u, how, probes, line.c_str());
+            llama_moe_decision_fork("stage", "micro-batch size chosen", "");
         };
         if (fits(hi)) {
             say(hi, "the configured size fits");

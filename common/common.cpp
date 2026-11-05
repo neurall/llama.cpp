@@ -2159,6 +2159,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     size_t vram_free, vram_max;
     int    n_gpu;
     common_gpu_free(vram_free, vram_max, n_gpu);
+    llama_moe_decision_fork("stage", "model file size and free VRAM read", "");
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
     const size_t reserve = (size_t) n_gpu << 30;
     // --moe mode=cache is honored even when the model fits: the fit path returns before the placement is decided
@@ -2227,6 +2228,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 mode.c_str(), model_size / 1073741824.0, vram_free / 1073741824.0, path.c_str());
         }
         use_cache = mode != "stock";
+        llama_moe_decision_fork("stage", "placement decided", "");
         if (!g_moe_auto_mode.empty()) {
             ggml_set_abort_callback(moe_auto_abort_cb);   // a decision that is recorded may also be recorded as failed
         }
@@ -2253,6 +2255,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     if (params.n_ctx == 0) {
         const uint32_t fit_ctx = common_auto_ctx(params);
         llama_moe_set_opt("kv-budget-ctx", std::to_string(fit_ctx).c_str());   // the context the cache gets when the tail layout is declined (llama_context)
+        llama_moe_decision_fork("stage", "context size decided", "");
         params.n_ctx = fit_ctx ? fit_ctx : 17408; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more (17408 = the 16294-token "12k" benchmark prompt + 1k answer; with --moe kv-tail=1 there is no default at all)
     }
     if (common_autotune_on(params)) {
@@ -2561,6 +2564,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             params.load_pin_budget / 1073741824.0);
     } else if (llama_moe_get_opt("pin-miss")) {
         LOG_INF("%s: expert weights in pinned blocks read past the page cache (--moe pin-miss), the rest as load mode %s\n", __func__, llama_load_mode_name(params.load_mode));
+        llama_moe_decision_fork("stage", "model tensors loaded, dense weights on the cards", "");
     } else {
         LOG_INF("%s: weights NOT pinned: mmap / page cache (load mode %s)\n", __func__, llama_load_mode_name(params.load_mode));
     }

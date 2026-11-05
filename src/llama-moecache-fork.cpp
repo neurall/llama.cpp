@@ -67,6 +67,9 @@
 #endif
 #include <windows.h>
 #endif
+void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // exported in llama.h; "stage" writes one span of the start-up to stats.log
+void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);   // llama-moestate-fork.cpp: one line of stats.log for one big operation
+double llama_moe_span_now_fork();   // seconds since the start of the process, the time base of the spans
 
 // learned predictors: this decode trains them / the current graph was built with the update nodes
 // values that depend on the card set and its links are stored under the place prefix (place.g<gpus>.<id>.v3, set by the tool), like the link rates
@@ -3569,6 +3572,7 @@ void resource_probe(moe_cache * mc) {
     }
     LLAMA_LOG_WARN("moe-cache: probe: links alone%s GB/s; CPU threads:GB/s alone/with links %s -> CPU %.1f GB/s "
         "(saturated by %d threads), RAM budget %.1f GB/s\n", links.c_str(), rs.c_str(), cpu_alone, n_sat, knobs().ddr_gbs);
+    llama_moe_decision_fork("stage", "link and CPU speed probe", "");
 }
 
 // physical cores (first SMT thread of each) per L3 domain, domains in order of their first CPU; empty if unknown
@@ -4310,6 +4314,7 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
     std::string row;
     for (size_t k = 0; k < cands.size(); ++k) { row += format(" %d:%.2f", cands[k], gbs[k]); }
     LLAMA_LOG_WARN("moe-cache: read-direct: probe GB/s by threads%s -> %d threads (the smallest within 7%% of the best %.2f GB/s)\n", row.c_str(), cands[pick], best);
+    llama_moe_decision_fork("stage", "SSD read probe", "");
     if (!section.empty()) { moe_state_set(section, {{ key, std::to_string(cands[pick]) }}); }
     return cands[pick];
 #endif
@@ -5408,6 +5413,7 @@ bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_
             tiers_logged = true;
             LLAMA_LOG_WARN("kv-fit: KV tiers with the expert cache at its floor: f16 up to %zu tokens, q8_0/q8_0 up to %zu, q4_0/q4_0 up to %zu (%.1f KB of f16 KV per token over all cards); beyond that the KV would have to live in RAM\n",
                     cp.f16, cp.k8v8, cp.k4v4, cp.row_f16 / 1024.0);
+            llama_moe_decision_fork("stage", "KV size fit computed", "");
         }
     }
     const bool reset = n_tokens < 64;   // a decode graph ends the plan of the last prompt
@@ -7757,6 +7763,8 @@ static bool pin_miss_feed(moe_cache * mc) {
         LLAMA_LOG_WARN("moe-cache: pin-miss: the RAM pool's fill list is through %.1f s after the load: %" PRId64 " of %zu blocks hold or await a slice; %s\n",
                 (ggml_time_us() - mc->pm_fill_t0) / 1e6, mc->pm_held.load(), mc->pm_n,
                 mc->pm_all.load() ? "the pool holds the whole model: stream uploads DMA straight from its blocks" : "the pool holds part of the model: stream uploads copy from its blocks or read the SSD");
+        { const double t1 = llama_moe_span_now_fork(); llama_moe_span_fork("pin-miss: expert weights SSD -> pinned RAM buffers", t1 - (double) (ggml_time_us() - mc->pm_fill_t0) / 1e6, t1, (uint64_t) mc->pm_pinned, "O_DIRECT reads"); }
+        llama_moe_decision_fork("stage", "expert weights read from the SSD into the pinned buffers", "");
     }
     return true;
 }
@@ -8276,6 +8284,7 @@ static void pin_miss_start(moe_cache * mc) {
     LLAMA_LOG_WARN("moe-cache: pin-miss: %zu slice sizes, one pinned buffer each: %s = %.1f GiB in %.1f s (%.1f GiB of RAM available + %.1f GiB free in the reserved 1 GiB pool, %.1f GiB kept free, %.1f GiB in CMA blocks; %.1f GiB of expert weights in %zu slices), %d readers, CPU branch %s, %s\n",
             cls.size(), sizes.c_str(), mc->pm_pinned / 1073741824.0, (ggml_time_us() - t_pin) / 1e6, avail / 1073741824.0, pool_b / 1073741824.0, floor_b / 1073741824.0, cma / 1073741824.0, b_mapped / 1073741824.0, n_mapped, n,
             hook ? "reads them through the expert hook" : "keeps the mapping (no hook in this CPU backend)", mc->pm_hot ? "the next hottest before any request, hot lists from a request's start and the next layer ahead" : mc->pm_pre ? "reads the next layer ahead" : "reads at the router");
+    llama_moe_decision_fork("stage", "pinned RAM buffers allocated (populate and register)", "");
 }
 
 static void stats_status_run(moe_cache * mc) {
@@ -9148,6 +9157,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 LLAMA_LOG_WARN("moe-cache: block pool on %s: %zu layers, %.1f MiB, size classes: %s; no blocks reserved per layer\n", ggml_backend_buft_name(buft),
                         cands.size(), total / 1048576.0, cls_txt.c_str());
+                llama_moe_decision_fork("stage", "VRAM expert pool of one card sized", "");
                 {
                     moe_cache::alias_pool ap;
                     ap.buf  = pbuf;
@@ -9461,6 +9471,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                 }
                 LLAMA_LOG_WARN("moe-cache: pin-mlock: %.1f GiB of pinned weights locked in %.1f ms, %.1f GiB refused (RLIMIT_MEMLOCK)\n", locked / 1073741824.0, (ggml_time_us() - t_ml) / 1e3, failed / 1073741824.0);
+                llama_moe_decision_fork("stage", "pinned weights lock step", "");
             }
 #endif
             {   // --moe pin-lazy: the loader mapped the weights without reading them; pin the expert tensors in the background up to --moe pin-budget
@@ -10089,6 +10100,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 std::min_element(mc->layers.begin(), mc->layers.end(), [](auto & a, auto & b) { return a.pub.n_slots < b.pub.n_slots; })->pub.n_slots,
                 std::max_element(mc->layers.begin(), mc->layers.end(), [](auto & a, auto & b) { return a.pub.n_slots < b.pub.n_slots; })->pub.n_slots,
                 mc->max_inserts, vram/1024.0/1024.0);
+        llama_moe_decision_fork("stage", "expert cache enabled", "");
     }();
 }
 
@@ -12490,6 +12502,7 @@ bool llama_moe_cache_probe_wanted_fork() {
         mb_monotone(c); mb_monotone(st);
         mb_apply(c, st);
         LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (stored probe)\n", (long long) (pp_chain_on() ? g_mb_cross.load() : g_mb_auto.load()));
+        llama_moe_decision_fork("stage", "max-batch switch read from the state file", "");
         return false;
     }
     return true;
@@ -12518,6 +12531,7 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
     for (size_t i = 0; i < c.n.size(); ++i) { msg += " c" + std::to_string((int) c.n[i]) + "=" + std::to_string((int) (c.us[i] / 1e3)) + "ms"; }
     for (size_t i = 0; i < st.n.size(); ++i) { msg += " s" + std::to_string((int) st.n[i]) + "=" + std::to_string((int) (st.us[i] / 1e3)) + "ms"; }
     LLAMA_LOG_WARN("moe-cache: max-batch auto = %lld (timed batches, cache path c / streamed s:%s)\n", (long long) (pp_chain_on() ? g_mb_cross.load() : g_mb_auto.load()), msg.c_str());
+    llama_moe_decision_fork("stage", "max-batch switch probe timed (cache path against stream)", "");
     if (!mc->profile.empty()) {
         moe_state_set(mc->profile, { { hw_key("batch.cost3"), mb_encode((int) mc->n_slots, c, st) } });
     }
@@ -13101,6 +13115,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                     best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "").c_str() : "; first of this size",
                     llama_moe_stats_io_fork(0).c_str());
             llama_moe_stats_log_fork("DON", done.c_str());
+            { const double t1 = llama_moe_span_now_fork(); llama_moe_span_fork(format("prompt call: %s, %u tokens", pp_path_name(path).c_str(), n_tokens).c_str(), t1 - (double) us / 1e6, t1, 0, ""); }
         }
         // the first pass of a server that fills a layer runs cold whatever its path (Qwen3.6: 348 ms on the chain, 130 warm; the stream 150 ms over its repeats) and the size would keep that
         // number until the path runs again: not a measurement

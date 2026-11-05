@@ -1908,6 +1908,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             txt += format(" %s=%d(%s)", ggml_backend_dev_name(devices[i].dev), n, rng.empty() ? "-" : rng.c_str());
         }
         LLAMA_LOG_WARN("%s: layer layout: rule=%s%s output=%s\n", __func__, rule, txt.c_str(), ggml_backend_dev_name(pimpl->dev_output.dev));
+        llama_moe_decision_fork("stage", "model layers placed on the cards (layer layout)", "");
     }
 
     const auto TENSOR_NOT_REQUIRED = llama_model_loader::TENSOR_NOT_REQUIRED;

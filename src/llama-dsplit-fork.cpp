@@ -179,6 +179,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
             c.bytes = GGML_PAD(cur, (size_t) 2 << 20);
             LLAMA_LOG_WARN("%s: dense split: %zu dense tensors (%.1f MiB) for %s, held in its expert pool only while a prompt pass splits\n", __func__, src.size(),
                     c.bytes / 1048576.0, ggml_backend_dev_name(D));
+            llama_moe_decision_fork("stage", "dense-split copy lists built for one card", "");
             S.copies[D] = std::move(c);
             continue;
         }
@@ -2517,7 +2518,10 @@ static void dsplit_pass_end_locked() {
         }
     }
 }
-void llama_dsplit_note_fill_fork(double ms) {   // llama_context::moe_mirror_fill: the copies of this prompt were filled (part of the split pass decided last)
+void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);   // llama-moestate-fork.cpp: one line of stats.log for one big operation
+double llama_moe_span_now_fork();   // seconds since the start of the process, the time base of the spans
+void llama_dsplit_note_fill_fork(double ms) {
+    { const double t1 = llama_moe_span_now_fork(); llama_moe_span_fork("dense-split copy fill (dense weights of the other card into the expert pool)", t1 - ms / 1e3, t1, 0, ""); }   // llama_context::moe_mirror_fill: the copies of this prompt were filled (part of the split pass decided last)
     std::lock_guard<std::mutex> dl(g_dsf_mu);
     dsf_load();
     g_dsf_ps.fill_ms += ms;
