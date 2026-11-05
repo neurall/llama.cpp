@@ -522,7 +522,8 @@ double llama_moe_span_now_fork() { return std::chrono::duration<double>(std::chr
 
 // The drive's measured maximum (the read probe, GB/s): a span whose `where` is "SSD..." or "O_DIRECT..." also logs its rate as a share of it, so an inefficient big read stands out.
 static std::atomic<double> g_ssd_max_gbs{0.0};
-void llama_moe_ssd_max_fork(double gbs) { g_ssd_max_gbs.store(gbs); }
+static std::string g_ssd_max_key;   // state file key ([machine]) the maximum is kept under; empty = not kept
+void llama_moe_ssd_max_fork(double gbs, const char * state_key) { g_ssd_max_gbs.store(gbs); if (state_key) { g_ssd_max_key = state_key; } }
 
 static void span_flush() {
     std::vector<moe_span_rec> v;
@@ -533,7 +534,15 @@ static void span_flush() {
         std::string line = format("%s: start %.3f stop %.3f dur %.1f ms", r.what, r.t0, r.t1, dur * 1e3);
         if (r.bytes) { line += format(", %.1f MiB at %.2f GB/s", (double) r.bytes / 1048576.0, dur > 0.0 ? (double) r.bytes / dur / 1e9 : 0.0); }
         if (r.where[0]) { line += format(", %s", r.where); }
-        const double mx = g_ssd_max_gbs.load();
+        double mx = g_ssd_max_gbs.load();
+        const double rate = dur > 0.0 ? (double) r.bytes / dur / 1e9 : 0.0;
+        // the probe reads for 0.2 s a candidate and under-reads a long sequential read: a big read that beats the maximum raises it (and the stored value), so the share never passes 100%
+        if (mx > 0.0 && rate > mx * 1.02 && r.bytes >= ((uint64_t) 256 << 20) && (!strncmp(r.where, "SSD", 3) || !strncmp(r.where, "O_DIRECT", 8))) {
+            mx = rate;
+            g_ssd_max_gbs.store(mx);
+            if (!g_ssd_max_key.empty()) { moe_state_set("machine", {{ g_ssd_max_key, format("%.3f", mx) }}); }
+            line += format(", new SSD maximum");
+        }
         if (r.bytes && dur > 0.0 && mx > 0.0 && (!strncmp(r.where, "SSD", 3) || !strncmp(r.where, "O_DIRECT", 8))) {
             line += format(", %.0f%% of the measured SSD maximum %.2f GB/s", 100.0 * (double) r.bytes / dur / 1e9 / mx, mx);
         }

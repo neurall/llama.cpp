@@ -68,7 +68,7 @@
 #include <windows.h>
 #endif
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // exported in llama.h; "stage" writes one span of the start-up to stats.log
-void llama_moe_ssd_max_fork(double gbs);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
+void llama_moe_ssd_max_fork(double gbs, const char * state_key);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
 void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);   // llama-moestate-fork.cpp: one line of stats.log for one big operation
 double llama_moe_span_now_fork();   // seconds since the start of the process, the time base of the spans
 
@@ -4277,7 +4277,7 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
     std::string old;
     if (!section.empty() && moe_state_get(section, key, old) && atoi(old.c_str()) > 0) {
         std::string mx;
-        if (moe_state_get(section, mkey, mx) && atof(mx.c_str()) > 0.0) { llama_moe_ssd_max_fork(atof(mx.c_str())); }
+        if (moe_state_get(section, mkey, mx) && atof(mx.c_str()) > 0.0) { llama_moe_ssd_max_fork(atof(mx.c_str()), nullptr); }
         LLAMA_LOG_WARN("moe-cache: read-direct: %d threads (stored probe)\n", atoi(old.c_str()));
         return atoi(old.c_str());
     }
@@ -4320,7 +4320,7 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
     for (size_t k = 0; k < cands.size(); ++k) { row += format(" %d:%.2f", cands[k], gbs[k]); }
     LLAMA_LOG_WARN("moe-cache: read-direct: probe GB/s by threads%s -> %d threads (the smallest within 7%% of the best %.2f GB/s)\n", row.c_str(), cands[pick], best);
     llama_moe_decision_fork("stage", "SSD read probe", "");
-    llama_moe_ssd_max_fork(best);
+    llama_moe_ssd_max_fork(best, nullptr);
     if (!section.empty()) { moe_state_set(section, {{ key, std::to_string(cands[pick]) }, { mkey, format("%.3f", best) }}); }
     return cands[pick];
 #endif
@@ -11051,7 +11051,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
         if (moe_state_get(sec, key, v) && atof(v.c_str()) > 0.0 && moe_state_get(sec, format("read_threads.%u", hw), v) && atoi(v.c_str()) > 0) {
             g_early_rd_threads = atoi(v.c_str());
             moe_state_get(sec, key, v);
-            llama_moe_ssd_max_fork(atof(v.c_str()));
+            llama_moe_ssd_max_fork(atof(v.c_str()), key.c_str());
             LLAMA_LOG_WARN("moe-cache: machine: SSD maximum %.2f GB/s, %d read threads (stored)\n", atof(v.c_str()), g_early_rd_threads);
         } else {
             const int dfd = open(model_path, O_RDONLY | O_DIRECT);
@@ -11059,7 +11059,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
                 std::map<int, int> fds{{ 0, dfd }};
                 g_early_rd_threads = read_threads_probe(fds, sec);   // sets the maximum (llama_moe_ssd_max_fork) and stores read_threads.<hw> and ssd_max_gbs.<hw> in [machine]
                 close(dfd);
-                if (moe_state_get(sec, format("ssd_max_gbs.%u", hw), v)) { moe_state_set(sec, {{ key, v }}); }   // read_threads_probe keys the maximum by threads; the early bench by drive
+                if (moe_state_get(sec, format("ssd_max_gbs.%u", hw), v)) { moe_state_set(sec, {{ key, v }}); llama_moe_ssd_max_fork(atof(v.c_str()), key.c_str()); }   // read_threads_probe keys the maximum by threads; the early bench by drive
                 llama_moe_span_fork(format("machine benchmark: SSD maximum %.2f GB/s (O_DIRECT, %d threads)", moe_state_get(sec, format("ssd_max_gbs.%u", hw), v) ? atof(v.c_str()) : 0.0, g_early_rd_threads).c_str(), s0, llama_moe_span_now_fork(), 0, "SSD probe");
             }
         }
