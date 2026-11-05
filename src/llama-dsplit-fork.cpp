@@ -1879,6 +1879,14 @@ void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
         B.ref_v = B.ref_v > 0.0 && B.phase == 2 ? 0.5 * (B.ref_v + B.v) : B.v;
         B.phase = 2;
         if (--B.wait > 0) { return; }
+        // Only an expert card that waits for its expert uploads has something a helper's link or compute can take over (Qwen3.6-35B at 35% VRAM: the x16 card
+        // waited 3-7 ms of a 1100 ms pass for uploads, and every trial step came out slower per token; user 2026-11-05: it only works on big models).
+        if (B.uw.size() != n || B.uw[x] < 0.05 * B.span) {
+            B.wait = 8;
+            LLAMA_LOG_WARN("split experts: none on the helpers: %s waited %.0f ms of %.0f for its uploads (under 5%%), nothing for the helpers to take over\n",
+                    ggml_backend_dev_name(B.dev[x]), B.uw.size() == n ? B.uw[x] : 0.0, B.span);
+            return;
+        }
         std::vector<double> fi(x, 0.0);
         bool any = false;
         std::string calc;
