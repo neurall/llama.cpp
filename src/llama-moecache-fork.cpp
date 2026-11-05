@@ -63,6 +63,7 @@
 #include <windows.h>
 #endif
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // exported in llama.h; "stage" writes one span of the start-up to stats.log
+void llama_moe_ssd_max_fork(double gbs);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
 void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);   // llama-moestate-fork.cpp: one line of stats.log for one big operation
 double llama_moe_span_now_fork();   // seconds since the start of the process, the time base of the spans
 
@@ -4028,8 +4029,11 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
     if (dfd < 0 || fstat(dfd, &st) != 0 || st.st_size < ((off_t) 1 << 30)) { return 8; }
     // kept with the model's other start measurements (links, RAM), keyed by the hardware threads: a later start skips the probe
     const std::string key = format("read_threads.%u", std::thread::hardware_concurrency());
+    const std::string mkey = format("ssd_max_gbs.%u", std::thread::hardware_concurrency());
     std::string old;
     if (!section.empty() && moe_state_get(section, key, old) && atoi(old.c_str()) > 0) {
+        std::string mx;
+        if (moe_state_get(section, mkey, mx) && atof(mx.c_str()) > 0.0) { llama_moe_ssd_max_fork(atof(mx.c_str())); }
         LLAMA_LOG_WARN("moe-cache: read-direct: %d threads (stored probe)\n", atoi(old.c_str()));
         return atoi(old.c_str());
     }
@@ -4072,7 +4076,8 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
     for (size_t k = 0; k < cands.size(); ++k) { row += format(" %d:%.2f", cands[k], gbs[k]); }
     LLAMA_LOG_WARN("moe-cache: read-direct: probe GB/s by threads%s -> %d threads (the smallest within 7%% of the best %.2f GB/s)\n", row.c_str(), cands[pick], best);
     llama_moe_decision_fork("stage", "SSD read probe", "");
-    if (!section.empty()) { moe_state_set(section, {{ key, std::to_string(cands[pick]) }}); }
+    llama_moe_ssd_max_fork(best);
+    if (!section.empty()) { moe_state_set(section, {{ key, std::to_string(cands[pick]) }, { mkey, format("%.3f", best) }}); }
     return cands[pick];
 #endif
 }

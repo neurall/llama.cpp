@@ -520,6 +520,10 @@ static std::vector<moe_span_rec> g_span_buf;
 
 double llama_moe_span_now_fork() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count(); }
 
+// The drive's measured maximum (the read probe, GB/s): a span whose `where` is "SSD..." or "O_DIRECT..." also logs its rate as a share of it, so an inefficient big read stands out.
+static std::atomic<double> g_ssd_max_gbs{0.0};
+void llama_moe_ssd_max_fork(double gbs) { g_ssd_max_gbs.store(gbs); }
+
 static void span_flush() {
     std::vector<moe_span_rec> v;
     { std::lock_guard<std::mutex> lk(g_span_mu); v.swap(g_span_buf); }
@@ -529,6 +533,10 @@ static void span_flush() {
         std::string line = format("%s: start %.3f stop %.3f dur %.1f ms", r.what, r.t0, r.t1, dur * 1e3);
         if (r.bytes) { line += format(", %.1f MiB at %.2f GB/s", (double) r.bytes / 1048576.0, dur > 0.0 ? (double) r.bytes / dur / 1e9 : 0.0); }
         if (r.where[0]) { line += format(", %s", r.where); }
+        const double mx = g_ssd_max_gbs.load();
+        if (r.bytes && dur > 0.0 && mx > 0.0 && (!strncmp(r.where, "SSD", 3) || !strncmp(r.where, "O_DIRECT", 8))) {
+            line += format(", %.0f%% of the measured SSD maximum %.2f GB/s", 100.0 * (double) r.bytes / dur / 1e9 / mx, mx);
+        }
         line += format(", thread %u", r.tid);
         stats_emit("SPN", line.c_str(), r.t0);
     }
