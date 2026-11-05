@@ -1397,14 +1397,14 @@ double llama_dsplit_plan_share_fork(int64_t n_tokens) {
     return it == g_plans.end() || !it->second.plan.valid ? -1.0 : it->second.plan.share;
 }
 
-// --moe split-experts=auto|0|1: who decides whether the helpers in a split also take experts. 0 (default, user's order 2026-10-23: tune the dense split alone
+// --moe split-experts=auto|0|1: who decides whether the helpers in a split also take experts. 0 (user's order 2026-10-23: tune the dense split alone
 // first, so its timing problems are not mixed with the experts'; the experts on the prefill cards come after): dense split only, the helpers take token
-// ranges of the dense part and no experts (the card with the fastest link computes them all). auto: the split planner, the balance's trial and the tuner decide,
+// ranges of the dense part and no experts (the card with the fastest link computes them all). auto (the default since 2026-11-05): the balance's trial (dsplit_expert_trial) decides from what the measured pass leaves idle; the older split planner and tuner,
 // per layer and pass size. 1: dense split plus experts as before the planner (the link-ratio start and the per-layer controller), whatever the planner says.
 int llama_dsplit_experts_mode_fork() {
     static const int mode = [] {
         const char * e = llama_moe_get_opt("split-experts");
-        if (!e) { return 0; }
+        if (!e) { return -1; }   // auto (2026-11-05): the balance tries experts on the helpers by what the measured pass leaves idle (dsplit_expert_trial)
         if (strcmp(e, "auto") == 0) { return -1; }
         return atoi(e) != 0 ? 1 : 0;
     }();
@@ -1488,6 +1488,7 @@ struct dsplit_bal {
     uint32_t plim = 0;                     // the pass limit that pass ran under (all cards): a pass with fewer tokens is its call's last, the rest of the prompt
     int    phase = 0, n = 0, still = 0;    // phase: 0 balancing the token shares, 1 experts on trial, 2 the dense split alone (experts abandoned), 3 with experts
     double ref_v = 0.0;                    // us per token of the dense split alone: the trial's reference
+    int    wait = 2;                       // dense-alone passes to measure before the next try of experts on the helpers (2 at first, 8 after an abandoned try)
     double v = 0.0;                        // us per token of the last pass (its span on the cards)
     std::string last;                      // what the last step did (/moe/stats, the log)
 };
@@ -1844,6 +1845,78 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
             100.0 * worst, window, fx.c_str());
     dsplit_zw_save();
 }
+
+// Experts on the helpers (--moe split-experts=auto, the default; user 2026-11-05: "create that auto dense + moes transition"). The dense split alone leaves the helper
+// idle for most of the pass (Qwen3.6-35B at 35% VRAM, x16 + x4: the x4 card computed 199 ms of a 1136 ms pass); its experts cost it hand-offs of the other cards' tokens, its
+// own expert compute and its own uploads over its link, so the helper may take only as many as fit its idle time. Everything comes from the last measured pass:
+//   idle_i   the card's wait for the other cards (measured by cause)
+//   extra_i  what ALL the experts would add to card i's chain: the larger of the expert card's expert time scaled by the dense time per token of the two cards and the
+//            expert card's upload bytes over card i's link (compute and upload overlap), plus the other cards' tokens crossing to it
+//   f_i      the start: half the idle time over extra_i (the other half stays, the chain must not become the long pole); under 2% the try is not made
+// Then the pass is the judge, as in the comment above dsplit_bal: faster per token than the dense split alone (ref_v): kept, f_i x1.5 while the card still idles more than
+// 10% of the pass; slower: f_i halves; below 2% together the experts are abandoned (dense split alone) and tried again after 8 passes. Helper experts that do not
+// fit behind the copies are dropped by the veto below, which makes it wait 8 passes too.
+void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
+    const size_t n = B.dev.size();
+    if (llama_dsplit_experts_mode_fork() != -1 || n < 2 || T <= 0 || B.f.size() != n || B.f_run.size() != n || B.xw.size() != n || B.v <= 0.0) { return; }
+    const size_t x = n - 1;
+    double fh = 0.0;
+    for (size_t i = 0; i < x; ++i) { fh += B.f_run[i]; }   // the helpers' share of the experts in the pass just measured
+    const auto set_f = [&](const std::vector<double> & fi) {
+        double sum = 0.0;
+        for (size_t i = 0; i < x; ++i) { B.f[i] = fi[i]; sum += fi[i]; }
+        B.f[x] = 1.0 - sum;
+    };
+    std::string why;
+    if (fh <= 0.0) {   // measured: the dense split alone
+        B.ref_v = B.ref_v > 0.0 && B.phase == 2 ? 0.5 * (B.ref_v + B.v) : B.v;
+        B.phase = 2;
+        if (--B.wait > 0) { return; }
+        std::vector<double> fi(x, 0.0);
+        bool any = false;
+        std::string calc;
+        for (size_t i = 0; i < x; ++i) {
+            const double link = dsplit_link_once(B.dev[i]);
+            if (B.tok[i] <= 0 || link <= 0.0 || B.c[i] <= 0.0 || B.c[x] <= 0.0 || B.m[x] <= 0.0) { continue; }
+            const double comp = B.m[x] * B.c[i] / B.c[x];                    // ms: all of the expert card's expert work, at card i's speed
+            const double upl  = B.gb_up[x] / link * 1e3;                     // ms: all of the expert card's expert uploads over card i's link
+            const double hand = B.hop[i] * (double) (T - B.tok[i]) / 1e3;    // ms: the other cards' tokens crossing to card i
+            const double extra = std::max(comp, upl) + hand;
+            fi[i] = extra > 0.0 ? std::min(1.0, 0.5 * B.xw[i] / extra) : 0.0;
+            calc += format("%s%s idle %.0f ms, all experts would add %.0f ms (compute %.0f, upload %.0f, hand-offs %.0f): start %.0f%%", calc.empty() ? "" : "; ",
+                    ggml_backend_dev_name(B.dev[i]), B.xw[i], extra, comp, upl, hand, 100.0 * fi[i]);
+            any = any || fi[i] >= 0.02;
+        }
+        if (!any) { B.wait = 8; LLAMA_LOG_WARN("split experts: the helpers keep none (%s)\n", calc.empty() ? "nothing measured on them" : calc.c_str()); return; }
+        set_f(fi);
+        B.phase = 1;
+        LLAMA_LOG_WARN("split experts: trial, reference %.1f us/token: %s\n", B.ref_v, calc.c_str());
+        return;
+    }
+    // measured with experts on the helpers
+    const bool better = B.v < B.ref_v * 0.99;
+    std::vector<double> fi(B.f_run.begin(), B.f_run.begin() + x);
+    double tot = 0.0;
+    if (better) {
+        bool idle = false;
+        for (size_t i = 0; i < x; ++i) {
+            if (fi[i] > 0.0 && B.xw[i] > 0.10 * B.span) { fi[i] = std::min(1.0, fi[i] * 1.5); idle = true; }
+        }
+        B.phase = idle ? 1 : 3;
+        why = format("faster than the dense split alone (%.1f against %.1f us/token)%s", B.v, B.ref_v, idle ? ": more" : ": settled");
+    } else {
+        for (size_t i = 0; i < x; ++i) { fi[i] *= 0.5; }
+        why = format("not faster than the dense split alone (%.1f against %.1f us/token): half", B.v, B.ref_v);
+    }
+    for (double v : fi) { tot += v; }
+    if (tot < 0.02) {
+        std::fill(fi.begin(), fi.end(), 0.0);
+        B.phase = 2; B.wait = 8;
+        why += ": abandoned, the dense split alone, a new try in 8 passes";
+    }
+    set_f(fi);
+    LLAMA_LOG_WARN("split experts: %s; helpers now %.0f%% of the experts\n", why.c_str(), 100.0 * tot);
+}
 // one measured split pass of bucket b: the step of the balance (under g_plan_mu)
 void dsplit_bal_step(int b) {
     dsplit_card_stat st[16]; long gen = 0;
@@ -1937,6 +2010,7 @@ void dsplit_bal_step(int b) {
     }
     // the next pass's shares: the zero-wait rule from this pass's measured times (dsplit_zw); every expert stays on the expert card (the dense split alone)
     dsplit_zw_step(B, T);
+    dsplit_expert_trial(B, T);
     const std::string msg = format("zero-wait shares (%s)", g_zw.src.c_str());
     B.last = msg;
     std::string cards;
@@ -2111,6 +2185,7 @@ bool llama_dsplit_drop_experts_fork(int64_t n_tokens) {
     std::fill(B.f.begin(), B.f.end(), 0.0);
     B.f.back() = 1.0;
     B.phase = 2;
+    B.wait = 8;
     B.last = "the helpers' experts did not fit in memory: the dense split alone";
     LLAMA_LOG_WARN("split balance: a pass of %lld tokens with %.0f%% of the experts on the helpers does not fit: the experts stay on %s\n", (long long) n_tokens,
             100.0 * fh, ggml_backend_dev_name(B.dev.back()));
