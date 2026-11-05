@@ -6985,3 +6985,6 @@ pt71-nopool-pinned2m-16k-pf16k,2026-11-05 08:26:15,bench qwen36 builds xstage_sm
 pt71-nopool-pinned2m-tet-tetrisc,2026-11-05 08:27:46,bench qwen36 builds xstage_small_block variants v test tetrisc n=2,,
 pt72-stg-pf1k,2026-11-05 09:15:45,bench qwen36 builds stage_log variants v test pf1k n=2,,
 pt73-span-pf1k,2026-11-05 09:20:53,bench qwen36 builds span_log variants v test pf1k n=2,,
+pt74-machine-pf1k,2026-11-05 09:33:36,bench qwen36 builds machine_bw variants v test pf1k n=2,,
+pt75-machine-pf1k,2026-11-05 09:36:19,bench qwen36 builds machine_bw variants v test pf1k n=2,,
+pt76-machine-pf1k,2026-11-05 09:38:43,bench qwen36 builds machine_bw variants v test pf1k n=2,,
