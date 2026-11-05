@@ -7999,8 +7999,11 @@ static const char * pin_miss_need(moe_cache * mc, int li, int k, int32_t e, bool
 }
 
 // an upload worker's copy of slice (k, e) of layer li from its block into dst at byte dst_off (sz bytes, then the pb bytes a matmul reads past it); false when it has none. A worker runs
-// at any time, so it holds the block while it copies (users, seq_cst with pin_miss_block).
-static bool pin_miss_upload(moe_cache * mc, int li, int k, int32_t e, ggml_tensor * dst, size_t dst_off, size_t sz, size_t pb) {
+// at any time, so it holds the block while it copies (users, seq_cst with pin_miss_block). The copy is queued without a sync, as the pinned path above does: the worker syncs once per job and only
+// then gives the block back (held: the block it still holds, else -1). ggml_backend_tensor_set here waited after every slice and cut a slice of 64 KiB to 1 MiB into 64 KiB inline pieces meant for
+// small copies a chain waits for: a 0.86 MiB job took 69 us instead of 44 on x16 and the planner read the slower link as 13 GB/s against 20.5, and sent more misses to the CPU (user 2026-11-05).
+static bool pin_miss_upload(moe_cache * mc, int li, int k, int32_t e, ggml_tensor * dst, size_t dst_off, size_t sz, size_t pb, int32_t & held) {
+    held = -1;
     std::atomic<int32_t> * where = mc->pm_where[li].get();
     if (!where) { return false; }
     std::atomic<int32_t> & w = where[(size_t) e*3 + k];
@@ -8010,6 +8013,17 @@ static bool pin_miss_upload(moe_cache * mc, int li, int k, int32_t e, ggml_tenso
     sl.users++;
     const char * p = w.load() == s ? pin_miss_wait(mc, sl.ptr) : nullptr;
     if (p) {
+        const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dst->buffer) ? nullptr : cuda_set_nosync();
+        if (ns) {
+            ns(dst, p, dst_off, sz);
+            if (pb > 0) {
+                ggml_tensor z = expert_past_view(dst, dst_off + sz, pb);
+                ns(&z, p + sz, 0, pb);
+            }
+            mc->pm_up++;
+            held = s;
+            return true;
+        }
         ggml_backend_tensor_set(dst, p, dst_off, sz);
         if (pb > 0) {
             ggml_tensor z = expert_past_view(dst, dst_off + sz, pb);
@@ -9656,6 +9670,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 int64_t t_read = 0;
                 bool nosync_used = false;   // some tensor of this job was queued without a sync: wait for all of them once, after the loop
                 bool up_failed   = false;   // a tensor of this job could not be uploaded: the job is dropped (skipped), the slot must not be published as holding the expert
+                int32_t pm_held[3];         // --moe pin-miss: the blocks this job's queued copies read, given back after its sync
+                int pm_n_held = 0;
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
                     const int64_t link_mbs = (int64_t) ((mc->gbs_link[ls.link] > 0 ? mc->gbs_link[ls.link] : 10.0) * 1e3);
@@ -9692,7 +9708,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         bool ok = false;
                         for (int a = 0; a < 100 && !ok; ++a) {
                             pin_miss_need(mc, (int) j.layer_idx, k, j.expert, false);
-                            ok = pin_miss_upload(mc, (int) j.layer_idx, k, j.expert, dsts[k], (size_t) j.slot*dsts[k]->nb[2], sz, pb);
+                            int32_t held = -1;
+                            ok = pin_miss_upload(mc, (int) j.layer_idx, k, j.expert, dsts[k], (size_t) j.slot*dsts[k]->nb[2], sz, pb, held);
+                            if (held >= 0) { pm_held[pm_n_held++] = held; nosync_used = true; }
                         }
                         GGML_ASSERT(ok && "pin-miss: an upload found no block");
                         t_read += ggml_time_us() - tr;
@@ -9794,6 +9812,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                 }
                 if (nosync_used) { cuda_thread_sync(); }
+                for (int h = 0; h < pm_n_held; ++h) { mc->pm_s[pm_held[h]].users--; }
                 race_stress_sleep();   // --moe race-stress: the copy is done, its report comes late
                 if (up_failed) { j.skipped = true; }
                 if (uap) { pool_leave(*uap, ulo, uhi, true); }
