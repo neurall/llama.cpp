@@ -871,6 +871,20 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         if "ask" not in [r[1] for r in con.execute("PRAGMA table_info(outputs)")]: con.execute("ALTER TABLE outputs ADD COLUMN ask TEXT")
         con.execute("INSERT INTO outputs (ts, hw, build, test, model, md5, uniq4, chars, code, text, ask) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9), ask))
         con.commit(); con.close()
+    def insert_stats(ts, hw, build, test, tag, args, text):
+        """the stats.log of a cell (zlib) into table stats: when, machine, build with its commit, branch and uncommitted-diff hash, test, cell tag and the cell's command line; the sources the build was made from
+        (the commit's uncommitted diff, bin/SOURCE.diff) go once into table sources, keyed by commit + patch hash, so every logged inefficiency can be traced to the code that ran (user 2026-11-05)"""
+        if not text: return
+        import zlib
+        bi = build_info(build)
+        con = connect()
+        con.execute("CREATE TABLE IF NOT EXISTS stats (ts TEXT, hw TEXT, build TEXT, [commit] TEXT, branch TEXT, patch TEXT, test TEXT, tag TEXT, args TEXT, log BLOB)")
+        con.execute("CREATE TABLE IF NOT EXISTS sources (commit_ TEXT, patch TEXT, diff BLOB, PRIMARY KEY (commit_, patch))")
+        con.execute("INSERT INTO stats VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, bi.get("commit", ""), bi.get("branch", ""), bi.get("patch", ""), test, tag, args, zlib.compress(text.encode(), 9)))
+        sd = os.path.join(HERE, build, "SOURCE.diff")
+        if bi.get("patch", "0") not in ("", "0") and os.path.exists(sd):
+            con.execute("INSERT OR IGNORE INTO sources VALUES (?,?,?)", (bi.get("commit", ""), bi["patch"], zlib.compress(open(sd, "rb").read(), 9)))
+        con.commit(); con.close()
     EMB = os.path.join(HERE, "bench", "embhot.csv")
     def ensure_emb(con):
         con.execute("CREATE TABLE IF NOT EXISTS embhot (ts TEXT, hw TEXT, build TEXT, test TEXT, model TEXT, embhex TEXT, hots TEXT)")
@@ -905,8 +919,18 @@ consistent best = the highest value that at least two runs agree on within 5% (a
                 rows.append(d)
         return cols, rows
     def load():
-        if os.path.exists(DB): os.remove(DB)
+        keep = {}   # tables the CSV does not hold (stats logs and the sources of their builds) survive the rebuild
+        if os.path.exists(DB):
+            old = sqlite3.connect(DB)
+            for t in ("stats", "sources"):
+                if old.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (t,)).fetchone():
+                    keep[t] = (old.execute(f"SELECT sql FROM sqlite_master WHERE name = '{t}'").fetchone()[0], old.execute(f"SELECT * FROM {t}").fetchall())
+            old.close()
+            os.remove(DB)
         con = connect()
+        for t, (ddl, rows) in keep.items():
+            con.execute(ddl)
+            if rows: con.executemany(f"INSERT INTO {t} VALUES (" + ",".join("?" * len(rows[0])) + ")", rows)
         cols, rows = read_csv_rows()
         ensure(con, cols)
         for r in rows:
@@ -5424,6 +5448,7 @@ def cmd_build(a):
                        capture_output=True)
     srcs = ["src", "common", "include", "ggml", "tools/server"]
     patch = subprocess.run(["git", "-C", W, "diff", "HEAD", "--"] + srcs, capture_output=True).stdout
+    if patch: open(os.path.join(binp, "SOURCE.diff"), "wb").write(patch)   # the uncommitted sources of this build, kept with it (runs.db table sources)
     info = (f"commit={_git(W, 'rev-parse', '--short', 'HEAD')}\nbranch={_git(W, 'rev-parse', '--abbrev-ref', 'HEAD')}\npatch={hashlib.sha1(patch).hexdigest()[:8] if patch else 0}\n"
             f"image=llama-rel-el8@{iid}\n")
     if a.release:
@@ -7992,6 +8017,10 @@ def cmd_cell(a):
     if a.builds.count(",") == 0:
         try: shutil.copy(f"/tmp/perf-{a.builds}.stats.log", os.path.join(Q5, a.tag + ".stats.log"))
         except OSError: pass
+        try:   # the same file into runs.db (table stats), with the build's commit and the cell's command line
+            import runlog
+            runlog.insert_stats(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t_cell0)), local_hw(), a.builds, a.test, a.tag, args, open(os.path.join(Q5, a.tag + ".stats.log"), errors="replace").read())
+        except Exception as e: print("runs.db stats:", e, file=sys.stderr)
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
         try:   # the start before the last one (the cold run of a clean-state cell), when it belongs to this cell
