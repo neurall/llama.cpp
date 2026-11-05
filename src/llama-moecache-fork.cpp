@@ -63,7 +63,7 @@
 #include <windows.h>
 #endif
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // exported in llama.h; "stage" writes one span of the start-up to stats.log
-void llama_moe_ssd_max_fork(double gbs, const char * state_key);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
+void llama_moe_ssd_max_fork(double gbs);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
 void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);
 void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double at);   // llama-moestate-fork.cpp: a line of stats.log with the time of the event
 void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total);
