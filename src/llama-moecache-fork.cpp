@@ -11060,7 +11060,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
                 g_early_rd_threads = read_threads_probe(fds, sec);   // sets the maximum (llama_moe_ssd_max_fork) and stores read_threads.<hw> and ssd_max_gbs.<hw> in [machine]
                 close(dfd);
                 if (moe_state_get(sec, format("ssd_max_gbs.%u", hw), v)) { moe_state_set(sec, {{ key, v }}); }   // read_threads_probe keys the maximum by threads; the early bench by drive
-                llama_moe_span_fork("machine benchmark: SSD maximum (O_DIRECT, best thread count)", s0, llama_moe_span_now_fork(), 0, "SSD probe");
+                llama_moe_span_fork(format("machine benchmark: SSD maximum %.2f GB/s (O_DIRECT, %d threads)", moe_state_get(sec, format("ssd_max_gbs.%u", hw), v) ? atof(v.c_str()) : 0.0, g_early_rd_threads).c_str(), s0, llama_moe_span_now_fork(), 0, "SSD probe");
             }
         }
     }
@@ -11092,7 +11092,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
             }
             moe_state_set(sec, {{ key, format("%.3f", best) }});
             LLAMA_LOG_WARN("moe-cache: machine: RAM read %.2f GB/s with %u threads (measured)\n", best, nt);
-            llama_moe_span_fork("machine benchmark: RAM read (1 GiB, all threads)", s0, llama_moe_span_now_fork(), n, "RAM probe");
+            llama_moe_span_fork(format("machine benchmark: RAM read %.2f GB/s (1 GiB, %u threads, best of 3 passes)", best, nt).c_str(), s0, llama_moe_span_now_fork(), 0, "RAM probe");
         }
     }
     {   // PCIe: every card, measured now (the value is also the one the placement and the splits use, see early_link_gbs)
