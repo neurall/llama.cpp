@@ -494,7 +494,7 @@ static void stats_emit(const char * kind, const char * text, double at) {   // a
             f = fopen(p, "a");
             if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
             else if (ftell(f) == 0 && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0) {
-                fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, SPN one big operation with its start, stop, bytes and rate (start-up stages, prompt calls, fills), DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, SWT misses switch between CPU and uploads, KVZ KV zone, DEW decode window, STA engine status, GPU cards, HST host\n");
+                fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, SPN one big operation with its start, stop, bytes and rate (start-up stages, prompt calls, fills), DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, SWT misses switch between CPU and uploads, KVZ KV zone, DEW decode window, STA engine status, GPU cards (once a 10 s, run.py), SMP fast GPU samples every 100 ms from NVML (load, PCIe rx and tx, power, clock, free VRAM; flushed every 10 s), HST host\n");
             }
         }
     }
@@ -510,6 +510,7 @@ static void stats_emit(const char * kind, const char * text, double at) {   // a
 }
 
 void llama_moe_stats_log_fork(const char * kind, const char * text) { stats_emit(kind, text, -1.0); }
+static void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double at) { stats_emit(kind, text, at); }
 
 // Spans (user 2026-11-05: "every big load logged in mem and flushed in stats.log, one timestamp start stop events per line ... more info in the debug trace phase, we waste less on nsys,
 // we spot deviations on any run, not just on demand rare nsys"): one line per big operation with its start, its stop, its bytes and the rate. The hot path only appends a record
@@ -650,6 +651,61 @@ std::string llama_moe_stats_io_fork(int who) {
 #endif
 }
 
+// Fast GPU samples (user 2026-11-05: "the 13k call is too short for the samples, collect stats every 10 tokens but flush to file every 10 s"): every card's load, PCIe traffic both ways, power, clock and
+// free VRAM from NVML (loaded at run time, nothing links to it) every --moe stats-fast-ms (default 100 ms, 0 = off), kept in memory and written as SMP lines of stats.log every 10 s with the time of
+// each sample. A 3 s prompt call so shows its own link traffic; the once-a-10-s GPU lines of run.py (nvidia-smi) stay as the overview. Cards are numbered as nvidia-smi does (g0, g1).
+#ifdef __linux__
+#include <dlfcn.h>
+static void fast_gpu_sampler_start() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (!llama_moe_log_profile_fork("planner")) { return; }
+        const char * o = llama_moe_get_opt("stats-fast-ms");
+        const int period_ms = o ? atoi(o) : 100;
+        if (period_ms <= 0) { return; }
+        std::thread([period_ms] {
+            void * h = dlopen("libnvidia-ml.so.1", RTLD_NOW);
+            if (!h) { return; }
+            typedef int (*init_t)(); typedef int (*count_t)(unsigned *); typedef int (*handle_t)(unsigned, void **);
+            typedef struct { unsigned gpu, mem; } util_t; typedef struct { unsigned long long total, free, used; } meminfo_t;
+            typedef int (*util_f)(void *, util_t *); typedef int (*pcie_f)(void *, int, unsigned *); typedef int (*power_f)(void *, unsigned *);
+            typedef int (*clock_f)(void *, int, unsigned *); typedef int (*mem_f)(void *, meminfo_t *);
+            auto init = (init_t) dlsym(h, "nvmlInit_v2"); auto cnt = (count_t) dlsym(h, "nvmlDeviceGetCount_v2"); auto hnd = (handle_t) dlsym(h, "nvmlDeviceGetHandleByIndex_v2");
+            auto fu = (util_f) dlsym(h, "nvmlDeviceGetUtilizationRates"); auto fp = (pcie_f) dlsym(h, "nvmlDeviceGetPcieThroughput"); auto fw = (power_f) dlsym(h, "nvmlDeviceGetPowerUsage");
+            auto fc = (clock_f) dlsym(h, "nvmlDeviceGetClockInfo"); auto fm = (mem_f) dlsym(h, "nvmlDeviceGetMemoryInfo");
+            if (!init || !cnt || !hnd || !fu || !fp || !fw || !fc || !fm || init() != 0) { return; }
+            unsigned n = 0; if (cnt(&n) != 0 || n == 0) { return; }
+            std::vector<void *> dev(n, nullptr);
+            for (unsigned i = 0; i < n; ++i) { if (hnd(i, &dev[i]) != 0) { dev[i] = nullptr; } }
+            struct samp { double t; unsigned util, mem, rx, tx, mw, mhz; unsigned long long freeb; };
+            std::vector<std::vector<samp>> buf(n);
+            double last_flush = llama_moe_span_now_fork();
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
+                const double t = llama_moe_span_now_fork();
+                for (unsigned i = 0; i < n; ++i) {
+                    if (!dev[i]) { continue; }
+                    util_t u = {}; unsigned rx = 0, tx = 0, mw = 0, mhz = 0; meminfo_t m = {};
+                    fu(dev[i], &u); fp(dev[i], 1, &rx); fp(dev[i], 0, &tx); fw(dev[i], &mw); fc(dev[i], 1, &mhz); fm(dev[i], &m);
+                    buf[i].push_back({ t, u.gpu, u.mem, rx, tx, mw, mhz, m.free });
+                }
+                if (t - last_flush >= 10.0) {
+                    last_flush = t;
+                    for (unsigned i = 0; i < n; ++i) {
+                        for (const auto & s : buf[i]) {
+                            llama_moe_stats_emit_at_fork("SMP", format("g%u util %u%% mem %u%% rx %.2f tx %.2f GB/s %u W %u MHz vram free %.1f GiB", i, s.util, s.mem, s.rx / 1e6, s.tx / 1e6, s.mw / 1000, s.mhz, (double) s.freeb / 1073741824.0).c_str(), s.t);
+                        }
+                        buf[i].clear();
+                    }
+                }
+            }
+        }).detach();
+    });
+}
+#else
+static void fast_gpu_sampler_start() {}
+#endif
+
 void llama_moe_decision_fork(const char * name, const char * value, const char * why) {
     // the server's phase changes (load, idle, prefill, decode) are events of stats.log, not decisions; through here because llama.h stays as it is
     if (strcmp(name, "phase") == 0) { llama_moe_stats_log_fork("PHA", value); return; }
@@ -660,6 +716,7 @@ void llama_moe_decision_fork(const char * name, const char * value, const char *
         const double now = llama_moe_span_now_fork();
         double t0;
         { std::lock_guard<std::mutex> lk(mu); t0 = last; last = now; }
+        fast_gpu_sampler_start();
         llama_moe_span_fork((std::string("start-up: ") + value).c_str(), t0, now, 0, "");
         return;
     }
