@@ -13,7 +13,13 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#define _GNU_SOURCE
+#include <liburing.h>
+#include <algorithm>
 #include <atomic>
+#include <csignal>
+#include <sched.h>
+#include <sys/syscall.h>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -61,6 +67,31 @@ static double pipeline(int mode, size_t chunk, int nthr, int slots, const uint8_
                 CK(cudaEventCreateWithFlags(&ev[s], cudaEventDisableTiming));
                 CK(cudaEventRecord(ev[s], st));
             }
+            if (mode == 4) {   // io_uring, O_DIRECT: `slots` reads in flight per thread, each finished read is DMA'd, its slot is read again once that DMA event is done
+                struct io_uring ring; if (io_uring_queue_init(slots, &ring, 0)) { perror("io_uring"); exit(1); }
+                std::vector<size_t> ci(slots); int inflight = 0;
+                auto submit = [&](int sx) {
+                    const size_t i = next.fetch_add(1); if (i >= nch) { return false; }
+                    const size_t o = i * chunk, n = std::min(chunk, g_len - o), rn = (n + 4095) / 4096 * 4096;
+                    CK(cudaEventSynchronize(ev[sx]));
+                    struct io_uring_sqe * q = io_uring_get_sqe(&ring); io_uring_prep_read(q, g_fdd, buf[sx], (unsigned) rn, g_off + o); q->user_data = (unsigned long) sx; ci[sx] = i; inflight++; return true;
+                };
+                for (int k = 0; k < slots; k++) { submit(k); }
+                io_uring_submit(&ring);
+                while (inflight > 0) {
+                    struct io_uring_cqe * c; if (io_uring_wait_cqe(&ring, &c)) { perror("wait_cqe"); exit(1); }
+                    const int sx = (int) c->user_data; const size_t o = ci[sx] * chunk, n = std::min(chunk, g_len - o);
+                    if (c->res < (int) n) { fprintf(stderr, "short read %d of %zu\n", c->res, n); exit(1); }
+                    io_uring_cqe_seen(&ring, c); inflight--;
+                    CK(cudaMemcpyAsync((uint8_t *) g_dev + o, buf[sx], n, cudaMemcpyHostToDevice, st)); CK(cudaEventRecord(ev[sx], st));
+                    if (submit(sx)) { io_uring_submit(&ring); }
+                }
+                io_uring_queue_exit(&ring);
+                CK(cudaStreamSynchronize(st));
+                for (int k = 0; k < slots; k++) { cudaFreeHost(buf[k]); cudaEventDestroy(ev[k]); }
+                cudaStreamDestroy(st);
+                return;
+            }
             int s = 0;
             for (size_t i; (i = next.fetch_add(1)) < nch; s = (s + 1) % slots) {
                 const size_t o = i * chunk, n = std::min(chunk, g_len - o);
@@ -85,6 +116,84 @@ static double pipeline(int mode, size_t chunk, int nthr, int slots, const uint8_
     return now() - t0;
 }
 
+
+// M6 fake pointer: userspace paging. A PROT_NONE view (the "fake base", same offsets as in the file range) is handed to cudaMemcpy; the first touch of a
+// chunk raises SIGSEGV inside the copy, the handler pread()s that chunk (file offset = range offset + fault offset) into a second RW view of the same memfd and
+// opens the first view for reading, then the copy retries. Compared with M4/M5 (the same reads into pinned buffers) this keeps the driver's own staging copy.
+static uint8_t * g_fb, * g_fw; static size_t g_fchunk; static std::atomic<int> * g_fst; static std::atomic<long> g_faults{0};
+static void segv(int, siginfo_t * si, void *) {
+    const uint8_t * a = (const uint8_t *) si->si_addr;
+    if (a < g_fb || a >= g_fb + g_len) { signal(SIGSEGV, SIG_DFL); return; }   // not ours: die the normal way
+    const size_t k = (size_t) (a - g_fb) / g_fchunk, o = k * g_fchunk, n = std::min(g_fchunk, g_len - o);
+    int z = 0;
+    if (g_fst[k].compare_exchange_strong(z, 1)) {
+        size_t got = 0;
+        while (got < n) { const ssize_t r = pread(g_fd, g_fw + o + got, n - got, (off_t) (g_off + o + got)); if (r <= 0) { _exit(3); } got += (size_t) r; }
+        mprotect(g_fb + o, n, PROT_READ);   // the chunk becomes visible to every thread only now, fully read
+        g_fst[k].store(2);
+        g_faults++;
+    } else { while (g_fst[k].load() != 2) { sched_yield(); } }
+}
+static double fake_run(size_t chunk, int nthr, bool reuse, bool * ok) {
+    static int mfd = -1;
+    if (!reuse) {   // a fresh fake range: nothing loaded
+        if (g_fb) { munmap(g_fb, g_len); munmap(g_fw, g_len); delete[] g_fst; close(mfd); }
+        mfd = (int) syscall(SYS_memfd_create, "fake", 0); if (mfd < 0 || ftruncate(mfd, (off_t) g_len)) { perror("memfd"); exit(1); }
+        if (getenv("PREALLOC")) { fallocate(mfd, 0, 0, (off_t) g_len); }   // pages allocated and zeroed here, not in the fault handler
+        g_fw = (uint8_t *) mmap(nullptr, g_len, PROT_READ | PROT_WRITE, MAP_SHARED | (getenv("PREALLOC") ? MAP_POPULATE : 0), mfd, 0);
+        g_fb = (uint8_t *) mmap(nullptr, g_len, PROT_NONE, MAP_SHARED, mfd, 0);
+        g_fchunk = chunk; g_fst = new std::atomic<int>[(g_len + chunk - 1) / chunk]; for (size_t i = 0; i < (g_len + chunk - 1) / chunk; i++) { g_fst[i] = 0; }
+        struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_sigaction = segv; sa.sa_flags = SA_SIGINFO | SA_NODEFER; sigemptyset(&sa.sa_mask); sigaction(SIGSEGV, &sa, nullptr);
+        g_faults = 0;
+    }
+    std::atomic<size_t> next{0}; const size_t nch = (g_len + chunk - 1) / chunk;
+    std::vector<std::thread> th; const double t0 = now();
+    for (int t = 0; t < nthr; t++) {
+        th.emplace_back([&]() {
+            cudaStream_t st; CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+            for (size_t i; (i = next.fetch_add(1)) < nch;) {
+                const size_t o = i * chunk, n = std::min(chunk, g_len - o);
+                CK(cudaMemcpyAsync((uint8_t *) g_dev + o, g_fb + o, n, cudaMemcpyHostToDevice, st));
+                CK(cudaStreamSynchronize(st));
+            }
+            cudaStreamDestroy(st);
+        });
+    }
+    for (auto & x : th) { x.join(); }
+    const double t = now() - t0;
+    void * base; size_t ml; const uint8_t * m = map_range(&base, &ml); *ok = verify(m); munmap(base, ml);
+    return t;
+}
+
+// SWEEP=1: M4 (mmap -> pinned chunks), M5 (pread -> pinned chunks) and M7 (io_uring O_DIRECT) over threads x chunk x slots, REPS runs each, min / median / max GB/s
+static void sweep() {
+    const int reps = getenv("REPS") ? atoi(getenv("REPS")) : 5;
+    const int ths[] = {1, 2, 3, 4, 6, 8, 12, 16, 24, 32};
+    const size_t chs[] = {64 << 10, 128 << 10, 256 << 10, 512 << 10, 1 << 20, 2 << 20, 4 << 20};
+    void * base; size_t ml;
+    { void * w; CK(cudaMalloc(&w, 1 << 20)); uint8_t * wp; CK(cudaHostAlloc((void **) &wp, 1 << 20, 0)); for (int i = 0; i < 8; i++) CK(cudaMemcpy(w, wp, 1 << 20, cudaMemcpyHostToDevice)); }
+    printf("%-4s %-5s %5s %4s %5s | %7s %7s %7s GB/s (min median max of %d)\n", "meth", "temp", "chunk", "thr", "slots", "min", "median", "max", reps);
+    for (int meth : {4, 5, 7}) {
+        for (size_t ch : chs) for (int th : ths) for (int sl : (meth == 7 ? std::vector<int>{2, 4, 8, 16} : std::vector<int>{2, 4})) {
+            for (int hot = 0; hot < 2; hot++) {
+                if (meth == 7 && hot) { continue; }   // O_DIRECT never uses the page cache
+                std::vector<double> g; bool ok = true;
+                if (hot) { drop_cache(); void * b; size_t m2; const uint8_t * mm = map_range(&b, &m2); volatile uint8_t sink = 0; for (size_t o = 0; o < g_len; o += 4096) { sink += mm[o]; } munmap(b, m2); }
+                for (int r = 0; r < reps; r++) {
+                    if (!hot) { drop_cache(); }
+                    double t;
+                    if (meth == 4) { const uint8_t * m = map_range(&base, &ml); t = pipeline(0, ch, th, sl, m); if (r == 0) { ok = verify(m); } munmap(base, ml); }
+                    else { t = pipeline(meth == 5 ? 1 : 4, ch, th, sl, nullptr); if (r == 0) { const uint8_t * m = map_range(&base, &ml); ok = verify(m); munmap(base, ml); } }
+                    g.push_back((double) g_len / t / 1e9);
+                }
+                std::sort(g.begin(), g.end());
+                printf("M%-3d %-5s %4zuK %4d %5d | %7.2f %7.2f %7.2f %s\n", meth, hot ? "hot" : "cold", ch >> 10, th, sl, g.front(), g[g.size() / 2], g.back(), ok ? "" : "DATA MISMATCH");
+                fflush(stdout);
+            }
+        }
+    }
+}
+
 static void row(const char * name, const char * cfg, const char * temp, double s, bool ok) {
     printf("%-14s %-22s %-5s %7.0f ms  %6.2f GB/s  %s\n", name, cfg, temp, s * 1e3, (double) g_len / s / 1e9, ok ? "ok" : "DATA MISMATCH");
     fflush(stdout);
@@ -99,6 +208,7 @@ int main(int argc, char ** argv) {
     CK(cudaMalloc(&g_dev, g_len));
     cudaDeviceProp p; CK(cudaGetDeviceProperties(&p, argc > 4 ? atoi(argv[4]) : 0));
     printf("%s, tensor %zu bytes at %zu of %s\n", p.name, g_len, g_off, g_file);
+    if (getenv("SWEEP")) { sweep(); return 0; }
     char cfg[64];
     void * base; size_t ml; const uint8_t * m; bool ok; double t;
 
@@ -110,7 +220,7 @@ int main(int argc, char ** argv) {
 
     for (int rep = 0; rep < 2; rep++) {   // twice: the second pass shows run-to-run spread; cold first inside each
         printf("--- repeat %d\n", rep + 1);
-        for (int hot = 0; hot < 2; hot++) {
+        if (!getenv("FAKE_ONLY")) for (int hot = 0; hot < 2; hot++) {
             const char * tmp = hot ? "hot" : "cold";
             if (!hot) { drop_cache(); }
             m = map_range(&base, &ml);
@@ -127,7 +237,7 @@ int main(int argc, char ** argv) {
             }
             cudaHostUnregister((void *) m); munmap(base, ml);
         }
-        for (size_t ch : {(size_t) 256 << 10, (size_t) 1 << 20}) {
+        if (!getenv("FAKE_ONLY")) for (size_t ch : {(size_t) 256 << 10, (size_t) 1 << 20}) {
             for (int th : {1, 2, 4, 8}) {
                 snprintf(cfg, sizeof cfg, "%zuK x%d thr x2 slots", ch >> 10, th);
                 drop_cache(); t = pipeline(2, ch, th, 2, nullptr); { m = map_range(&base, &ml); ok = verify(m); munmap(base, ml); } row("M3 direct", cfg, "cold", t, ok);
@@ -139,6 +249,17 @@ int main(int argc, char ** argv) {
                     if (!hot) { drop_cache(); }
                     t = pipeline(1, ch, th, 2, nullptr); m = map_range(&base, &ml); ok = verify(m); munmap(base, ml); row("M5 pread", cfg, tmp, t, ok);
                 }
+            }
+        }
+
+        for (size_t ch : {(size_t) 256 << 10, (size_t) 1 << 20, (size_t) 2752512}) {   // 2752512 = one MiMo up expert (704643072 / 256)
+            for (int th : {1, 4, 8}) {
+                snprintf(cfg, sizeof cfg, "%zuK x%d thr", ch >> 10, th);
+                drop_cache(); t = fake_run(ch, th, false, &ok); row("M6 fake-ptr", cfg, "cold", t, ok);
+                t = fake_run(ch, th, true, &ok); row("M6 fake-ptr", "all loaded, copy again", "-", t, ok);   // steady state: pageable copy from resident memory
+                drop_cache(); { m = map_range(&base, &ml); (void) m; munmap(base, ml); }
+                { void * b2; size_t m2; const uint8_t * mm = map_range(&b2, &m2); volatile uint8_t sink = 0; for (size_t o = 0; o < g_len; o += 4096) { sink += mm[o]; } munmap(b2, m2); }   // warm the page cache
+                t = fake_run(ch, th, false, &ok); row("M6 fake-ptr", cfg, "hot", t, ok);
             }
         }
     }
