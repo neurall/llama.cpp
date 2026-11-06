@@ -1737,6 +1737,12 @@ def sweep_row(model, config, n, runs, med_ms, min_ms, max_ms, env, args, commit,
     csv_append("run-history.csv", RUN_COLS, row)
 
 
+def cmd_experiment(a):
+    """special experiments, one python file each in fork/experiments/"""
+    import experiments
+    experiments.main(a.rest)
+
+
 def cmd_sweep_log(a):
     """Log pass-size sweep points into run-history.csv and runs.db, one row at a time, flushed per row so a crash loses nothing.
     live:   mm7.sh ... | python3 run.py sweep-log --env '{"GGML_PRED_K":"8"}' --args '--moe ...' --commit C --build B   (lines: name n median min max runs ms/token tps)
@@ -10890,6 +10896,8 @@ if __name__ == "__main__":
     sl = sp.add_parser("sweep-log", help="log pass-size sweep points (live from mm7.sh lines on stdin, or --csv FILE of experiments/pp-path-sweep) into run-history.csv and runs.db")
     sl.add_argument("--csv"); sl.add_argument("--env"); sl.add_argument("--args"); sl.add_argument("--commit"); sl.add_argument("--note"); sl.add_argument("--model")
     sl.add_argument("--build", default="predictor-upload-bw-reducer")
+    ex_ = sp.add_parser("experiment", help="run a special experiment (fork/experiments/NAME.py, options after the name; no name lists them); results in bench/experiments.csv and runs.db table experiments")
+    ex_.add_argument("rest", nargs=argparse.REMAINDER)
     cl = sp.add_parser("cells", help="markdown table of the cells of a campaign prefix, with the context and the pool the server really ran with")
     cl.add_argument("prefix")
     mf = sp.add_parser("misfires", help="automatic choices that went against what was measured: a prompt run on one card where the split of the same model and pass "
@@ -10943,5 +10951,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
