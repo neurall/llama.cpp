@@ -10,7 +10,7 @@ MODEL = "/m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf"
 
 def run(argv):
     p = argparse.ArgumentParser(prog="experiment exp1_maxreads")
-    p.add_argument("--chunks", default="128", help="chunk KB list"); p.add_argument("--orders", default="1", help="0 file, 1 random, 2 window shuffled, 3 stride 64"); p.add_argument("--qds", default="32"); p.add_argument("--threads", default="2")
+    p.add_argument("--chunks", default="128", help="chunk KB list"); p.add_argument("--orders", default="1", help="0 file, 1 random, 2 window shuffled, 3 stride 64, 4 ping-pong first/last"); p.add_argument("--qds", default="32"); p.add_argument("--threads", default="2")
     p.add_argument("--picks", default="100", help="share of experts read per layer, percent"); p.add_argument("--backends", default="uring", help="uring, aio or pread (pread: threads are the depth, use --qds 2)")
     p.add_argument("--mode", default="2", help="0 sorted merged runs, 1 one read per expert, 2 chunks"); p.add_argument("--layers", default="12"); p.add_argument("--dev", default="1"); p.add_argument("--note"); p.add_argument("--exp", default="1_maxreads")
     p.add_argument("--bin"); p.add_argument("--file", default=MODEL); p.add_argument("--list", default="/p/bw/latest/fork/iobench/mimo_experts.txt"); p.add_argument("--import", dest="imp", help="store the lines of a result file instead of running"); p.add_argument("--commit"); p.add_argument("--show", help="print the stored rows whose name matches this SQL LIKE pattern instead of running")

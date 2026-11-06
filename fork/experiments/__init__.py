@@ -6,6 +6,9 @@ ROW = re.compile(r"stream(?:\[(\w+)\])? chunk\s+(\d+)K (?:pick\s+(\d+)% mode (\d
 COLS = ["ts", "kind", "name", "backend", "chunk_kb", "pick_pct", "mode", "read_order", "threads", "qd", "layers", "gb", "secs", "gbps", "layer_first_s", "layer_mid_s", "layer_last_s", "content", "commit", "note", "raw"]
 
 
+LAST = []   # the rows (dicts) the last store() call parsed, for experiments that decide from their own runs
+
+
 def store(lines, ts, a, kind="iobench-stream"):
     """append the parsed streambench lines (skipping ones already stored) to the CSV and the database; returns the number of new rows"""
     import sqlite3
@@ -19,25 +22,34 @@ def store(lines, ts, a, kind="iobench-stream"):
         m = ROW.match(line)
         if not m or (kind, ts, line.strip()) in have: continue
         g = m.groups(); be = g[0] or "uring"
-        rows.append({"ts": ts, "kind": kind, "name": f"experiment_{a.exp}_{g[1]}k_{g[6]}qd_{'io_uring' if be == 'uring' else be}_{g[5]}t_{'file' if g[4].startswith('file') else 'rand' if g[4].startswith('random') else g[4][:6]}" + (f"_pick{g[2]}" if g[2] else ""),
+        rows.append({"ts": ts, "kind": kind, "name": f"experiment_{a.exp}_{g[1]}k_{g[6]}qd_{'io_uring' if be == 'uring' else be}_{g[5]}t_{'file' if g[4].startswith('file') else 'rand' if g[4].startswith('random') else g[4]}" + (f"_pick{g[2]}" if g[2] else ""),
                      "backend": be, "chunk_kb": g[1], "pick_pct": g[2] or "100", "mode": g[3] or "2", "read_order": g[4], "threads": g[5], "qd": g[6], "layers": g[7], "gb": g[8], "secs": g[9], "gbps": g[10],
                      "layer_first_s": g[11], "layer_mid_s": g[12], "layer_last_s": g[13], "content": g[14], "commit": commit, "note": a.note or "", "raw": line.strip()})
+    LAST[:] = rows
+    return put(rows)
+
+
+def put(rows):
+    """append row dicts (keys of COLS, missing ones empty) to bench/experiments.csv and the runs.db table experiments; returns how many"""
+    import sqlite3
     if not rows: return 0
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bench", "experiments.csv")
+    rows = [{c: r.get(c, "") for c in COLS} for r in rows]
     new = not os.path.exists(path)
     with open(path, "a", newline="") as f:
         w = csv.DictWriter(f, COLS)
         if new: w.writeheader()
         w.writerows(rows)
     if not os.environ.get("FORK_NO_RUNS_DB"):
-        con = sqlite3.connect(os.path.join(fork, "runs.db")); con.execute("CREATE TABLE IF NOT EXISTS experiments (" + ", ".join('"' + c + '"' + (" REAL" if c in ("gb", "secs", "gbps") else "") for c in COLS) + ")")
+        con = sqlite3.connect(os.path.join(os.path.dirname(path), "..", "runs.db")); con.execute("CREATE TABLE IF NOT EXISTS experiments (" + ", ".join('"' + c + '"' + (" REAL" if c in ("gb", "secs", "gbps") else "") for c in COLS) + ")")
         con.executemany("INSERT INTO experiments VALUES (" + ",".join("?" * len(COLS)) + ")", [[r[c] for c in COLS] for r in rows]); con.commit(); con.close()
     return len(rows)
 
 
-def stream_run(a, p, be, ch, o, qd, th):
+def stream_run(a, p, be, ch, o, qd, th, env=None):
     """one streambench run, stored the moment it is printed"""
     fork = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-    r = subprocess.run([a.bin or os.path.join(fork, "iobench", "streambench"), a.file, a.list, a.dev, ch, o, th, qd, a.layers, p, a.mode], env={**os.environ, "IOB": be}, capture_output=True, text=True)
+    r = subprocess.run([a.bin or os.path.join(fork, "iobench", "streambench"), a.file, a.list, a.dev, ch, o, th, qd, a.layers, p, a.mode], env={**os.environ, "IOB": be, **(env or {})}, capture_output=True, text=True)
     n = store(r.stdout.splitlines(), time.strftime("%Y-%m-%d %H:%M:%S"), a)
     print(r.stdout.strip() or r.stderr.strip(), flush=True)
     return n
