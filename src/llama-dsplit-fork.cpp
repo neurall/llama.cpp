@@ -2975,10 +2975,10 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     // 2026-11-06: one card is the fastest one-card path measured at this size, whichever ran (a prediction, the chain, the stream, the mix): the split is weighed
     // against what one card does best. Leaving the chain and the predictions out left one card at the planner's calculated time when they took every large call
     // (5x short on Qwen3.8-Flash-Next: 150.8 us per token calculated, about 650 measured), and the split was never planned ahead. A chain or prediction pass counts
-    // only next to a measured path (it may have lost to the stream); a decode-chain pass never (35.0 s against 10.1 s streamed at 15.5k).
-    const bool chain_or_k = llama_moe_cache_pp_chain_pass_fork(), dec_pass = llama_moe_cache_pp_dec_pass_fork();
+    // next to a measured path takes the faster of the two, alone it is the measurement; a decode-chain pass never (35.0 s against 10.1 s streamed at 15.5k).
+    const bool dec_pass = llama_moe_cache_pp_dec_pass_fork();
     const double best_one = g_pending == 0 && g_pend_max > 0 ? llama_moe_cache_pp_best_one_us_fork(g_pend_max) / (double) g_pend_max : 0.0;   // per token
-    if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto() && !dec_pass && (!chain_or_k || best_one > 0.0)) {
+    if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto() && !dec_pass) {   // a chain or prediction pass with no other path measured yet is itself the one measurement of one card (2026-11-06: qni4 14k pass 1 was dropped, pass 2 planned on 150 us per token and kept one card)
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
         const int c = g_pending;
         const double v = c == 0 && best_one > 0.0 ? std::min((double) us / (double) n_tokens, best_one) : (double) us / (double) n_tokens;
