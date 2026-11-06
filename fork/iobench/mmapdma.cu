@@ -278,17 +278,18 @@ static void sweep() {
     void * base; size_t ml;
     { void * w; CK(cudaMalloc(&w, 1 << 20)); uint8_t * wp; CK(cudaHostAlloc((void **) &wp, 1 << 20, 0)); for (int i = 0; i < 8; i++) CK(cudaMemcpy(w, wp, 1 << 20, cudaMemcpyHostToDevice)); }
     printf("%-4s %-5s %5s %4s %5s | %7s %7s %7s GB/s (min median max of %d)\n", "meth", "temp", "chunk", "thr", "slots", "min", "median", "max", reps);
-    for (int meth : {4, 5, 7}) {
+    std::vector<int> meths = {4, 5, 7}; if (getenv("METHS")) { meths.clear(); for (const char * c = getenv("METHS"); *c; c++) { if (*c >= '0' && *c <= '9') { meths.push_back(*c - '0'); } } }   // METHS=6: O_DIRECT pread only
+    for (int meth : meths) {
         for (size_t ch : chs) for (int th : ths) for (int sl : (meth == 7 ? std::vector<int>{2, 4, 8, 16} : std::vector<int>{2, 4})) {
             for (int hot = 0; hot < 2; hot++) {
-                if (meth == 7 && hot) { continue; }   // O_DIRECT never uses the page cache
+                if ((meth == 7 || meth == 6) && hot) { continue; }   // O_DIRECT never uses the page cache
                 std::vector<double> g; bool ok = true;
                 if (hot) { drop_cache(); void * b; size_t m2; const uint8_t * mm = map_range(&b, &m2); volatile uint8_t sink = 0; for (size_t o = 0; o < g_len; o += 4096) { sink += mm[o]; } munmap(b, m2); }
                 for (int r = 0; r < reps; r++) {
                     if (!hot) { drop_cache(); }
                     double t;
                     if (meth == 4) { const uint8_t * m = map_range(&base, &ml); t = pipeline(0, ch, th, sl, m); if (r == 0) { ok = verify(m); } munmap(base, ml); }
-                    else { t = pipeline(meth == 5 ? 1 : 4, ch, th, sl, nullptr); if (r == 0) { const uint8_t * m = map_range(&base, &ml); ok = verify(m); munmap(base, ml); } }
+                    else { t = pipeline(meth == 5 ? 1 : meth == 6 ? 2 : 4, ch, th, sl, nullptr); if (r == 0) { const uint8_t * m = map_range(&base, &ml); ok = verify(m); munmap(base, ml); } }
                     g.push_back((double) g_len / t / 1e9);
                 }
                 std::sort(g.begin(), g.end());
