@@ -688,6 +688,12 @@ struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill
 double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert);   // llama-moecache-fork.cpp: a pass's expert upload (ms)
 bool   llama_moe_cache_pp_chain_pass_fork();   // llama-moecache-fork.cpp: the graph that ran has layers on the prompt chain
 bool   llama_moe_cache_pp_chain_takes_fork(int64_t n_tokens);   // llama-moecache-fork.cpp: a pass of this size of this call goes on the prompt chain
+bool   llama_moe_cache_pp_dec_pass_fork();                      // llama-moecache-fork.cpp: the graph that ran was the decode chain
+double llama_moe_cache_pp_path_us_fork(int64_t n_tokens);      // llama-moecache-fork.cpp: the call's one-card path measured at this pass size (us), 0 = not yet
+double llama_moe_cache_pp_saving_us_fork();                     // llama-moecache-fork.cpp: what the call's path is calculated to save over the stream (us)
+double llama_moe_cache_pp_best_one_us_fork(int64_t n_tokens);  // llama-moecache-fork.cpp: the fastest one-card path measured at this pass size (us), 0 = none
+bool   llama_moe_cache_pp_no_dense_fork();                      // llama-moecache-fork.cpp: a one-card path was measured faster than the split at this size
+bool   llama_moe_cache_pp_yield_fork(const char * why);         // llama-moecache-fork.cpp: the call's one-card path gives the pass to the split (the stream runs); false: a path the user set keeps it
 static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
 static int64_t  g_dsf_next_pos0 = -1;    // the first position of the pass about to be decided (llama_context)
 // Measured fallback (user 2026-10-25: "no point to run 2 cards at that point, we should have fallen back to 1 card"): the curves decide a pass from what was measured at
@@ -1050,6 +1056,9 @@ static void dsplit_tune_load(int b);   // below: a size settled by an earlier st
 // launch and weight-read cost, which dominates at few tokens). Result: weight bytes x tokens per second per card, in g_mm_rate; about 100 MB of VRAM for a
 // few milliseconds. A card whose buffers cannot be allocated keeps the probe's rate.
 static std::map<ggml_backend_dev_t, double> g_mm_rate;   // under g_plan_mu
+// The card's weight read rate (bytes/s): the same two matmul timings through 0 tokens, the weight read alone (2026-11-06, Qwen3.8-Flash-Next on a 3090: 34 us for
+// 22 MB, 650 GB/s). What a pass pays per weight byte when its tokens are few: the decode chain's 4-token chunks read every token's experts at this rate.
+static std::map<ggml_backend_dev_t, double> g_mm_read;   // under g_plan_mu
 // The timing runs when the first context is created - at startup that is the parameter fit, which mutes the log - so its lines are kept here and printed once
 // at the first prompt decision (llama_dsplit_decide_fork), where fork/run.py reads them (the attention layer kinds go to models.ini).
 static std::string g_bench_log;   // under g_plan_mu
@@ -1318,6 +1327,13 @@ static void dsplit_mm_bench(const llama_model & model, const std::vector<ggml_ba
             BENCH_LOG("split planner: matmul latency on %s (%s %lldx%lld): %.0f us at %lld tokens, %.0f us at %lld: %.2f us per token, %.1f GB*token/s (probe %.1f)\n",
                     ggml_backend_dev_name(d), ggml_type_name(big->type), (long long) K, (long long) N, best[0], (long long) T0, best[1], (long long) T1,
                     (best[1] - best[0]) / (double) (T1 - T0), rate / 1e9, [&] { const auto * p = llama_gpu_probe_find_fork(d); return p ? (p->compute_sust > 0 ? p->compute_sust : p->compute) / 1e9 : 0.0; }());
+            // the line through both timings at 0 tokens: the weight read alone
+            const double a0 = best[0] - (best[1] - best[0]) / (double) (T1 - T0) * (double) T0;
+            if (a0 > 0.0) {
+                g_mm_read[d] = (double) ggml_nbytes(W) / (a0 / 1e6);
+                BENCH_LOG("split planner: weight read on %s: %.0f us for %.1f MB at 0 tokens (the line through both timings): %.0f GB/s\n", ggml_backend_dev_name(d), a0,
+                        ggml_nbytes(W) / 1e6, g_mm_read[d] / 1e9);
+            }
         } else {
             BENCH_LOG("split planner: matmul latency on %s not measured (no buffer): the probe's rate stands\n", ggml_backend_dev_name(d));
         }
@@ -1330,6 +1346,13 @@ static void dsplit_mm_bench(const llama_model & model, const std::vector<ggml_ba
 // The matmul and attention latencies are timed when the first context is created, before its KV cache and the expert pool take the VRAM. At the first prompt
 // (where they ran in pre7/pre8) the pool had left 96-358 MiB on each card: the timing's own backend, buffers and kernel scratch did not fit, and auto mode died
 // with "CUDA error: out of memory" in cuMemCreate (MiMo 60k, pre7; forced dense split never reached the planner, so it never timed and never failed).
+// the weight read rate of a card (bytes/s) from the matmul timing at load, 0 = not timed (one GPU: the timing runs for two or more)
+double llama_dsplit_read_rate_fork(ggml_backend_dev_t d) {
+    std::lock_guard<std::mutex> pk(g_plan_mu);
+    const auto it = g_mm_read.find(d);
+    return it != g_mm_read.end() ? it->second : 0.0;
+}
+
 void llama_dsplit_bench_fork(const llama_model & model) {
     std::vector<ggml_backend_dev_t> devs;
     for (const auto & d : model.devices) { if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { devs.push_back(d.dev); } }
@@ -2552,8 +2575,9 @@ static void dsplit_pass_end_locked() {
     const dsf_pass p = g_dsf_ps;
     g_dsf_ps = dsf_pass();
     if (p.choice < 0 || p.T < 64 || p.pos0 < 0 || p.t0 <= 0) { return; }
-    // a pass on the prompt chain says nothing about the path the split is weighed against: its uploads wait for the router (5000 forced chain tokens: 525 us per token, streamed 240)
-    if (llama_moe_cache_pp_chain_pass_fork()) { return; }
+    // a pass on the prompt chain says nothing about the path the split is weighed against: its uploads wait for the router (5000 forced chain tokens: 525 us per token, streamed 240);
+    // the decode chain neither (Qwen3.8-Flash-Next 15.5k: 35.0 s on the decode chain, 10.1 s streamed)
+    if (llama_moe_cache_pp_chain_pass_fork() || llama_moe_cache_pp_dec_pass_fork()) { return; }
     // A pass under a quarter of the card limit (the micro-batch the pools allow now) is no sample: the server's short tail calls (1024-2144 tokens at the
     // end of a long prompt) are mostly the pass's fixed part and its upload, and their pass sizes are too close together to separate the two - recorded,
     // GLM's one-card curve became 4395 us per token from them and the 4k request picked the split it lost (pre13). Small requests are predicted from the
@@ -2738,10 +2762,36 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                     why = fc ? "factors: the split is faster at this context over the tokens left" : "factors: one card is faster at this context over the tokens left";
                 }
             }
-            // the measured paths decide (llama_moe_cache_pp_decide_fork): the chain or a prediction took this pass, or one card was measured faster at this size, or has to be: one card
+            // The call's one-card path (decode chain, prompt chain, a prediction: llama_moe_cache_pp_decide_fork) against the split, both whole passes (2026-11-06).
+            // Until now any such path took the pass from the split, whatever either was expected to take: Qwen3.8-Flash-Next 15.5k, the planner had the split 2.4x
+            // ahead (one card 7752 ms, split 3251) and a first try of a prediction took the pass (1537 prompt t/s; the split ran at 1873-2008 on b14244), logged as
+            // "measured: one card at this size" with nothing measured. Now: the path measured at this size where it ran, else the planner's one-card time less what
+            // the path is calculated to save over the stream (uploads: the compute is the same on one card); the split measured at this size, else planned. A split
+            // ahead by split_min_gain takes the pass (the stream runs under it); a split measured slower than a one-card path at this size never does.
             if (choice == 1 && llama_moe_cache_pp_chain_takes_fork(n_tokens)) {
-                choice = 0;
-                why = "measured: one card at this size";
+                static char wb[320];
+                const double t_path = llama_moe_cache_pp_path_us_fork(n_tokens) / 1e3;   // ms, 0 = this path never ran at this size
+                const double save   = llama_moe_cache_pp_saving_us_fork() / 1e3;
+                const double t_one  = t_path > 0.0 ? t_path : (plan.valid ? std::max(0.0, plan.t_one_ms - save) : 0.0);
+                const double t_sp   = B.n[1] > 0 ? B.us_tok[1] * (double) n_tokens / 1e3 : (plan.valid ? plan.t_split_ms : 0.0);
+                const bool by_factors = strncmp(why, "factors", 7) == 0;   // the factors chose the split over the tokens left: no times here
+                const char * src = t_path > 0.0 ? "measured" : "planned one card less the path's saving";
+                if (llama_moe_cache_pp_no_dense_fork()) {
+                    choice = 0;
+                    why = "measured: a one-card path was faster than the split at this size";
+                } else if (t_sp > 0.0 && t_one > 0.0 ? t_sp < (1.0 - llama_moe_live_get("split_min_gain")) * t_one : by_factors && t_path <= 0.0) {
+                    snprintf(wb, sizeof wb, "the split %.0f ms against the call's one-card path %.0f ms (%s, saving %.0f ms): the split takes the pass", t_sp, t_one, src, save);
+                    if (llama_moe_cache_pp_yield_fork(wb)) {
+                        why = wb;
+                    } else {
+                        choice = 0;
+                        why = "the prompt path set by --moe pp-path / pp-k keeps the pass";
+                    }
+                } else {
+                    snprintf(wb, sizeof wb, "the call's one-card path %.0f ms (%s, saving %.0f ms) against the split %.0f ms: one card", t_one, src, save, t_sp);
+                    choice = 0;
+                    why = wb;
+                }
             }
             B.passes++;
         }
@@ -2922,10 +2972,16 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     { std::lock_guard<std::mutex> dl(g_dsf_mu); dsf_flush(); }   // and the call's new samples go to the state file, once
     // a pass on the prompt chain is no one-card sample (see dsplit_pass_end_locked): stored as one, a chain that lost to streaming made the split win at this size (Qwen3.6, 441 tokens: "one card"
     // 764 t/s against 1036 streamed, the split ran at 531). Keys dsplit_arm4 and dsplit_calib7: the older ones hold such samples.
-    if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto() && !llama_moe_cache_pp_chain_pass_fork()) {
+    // 2026-11-06: one card is the fastest one-card path measured at this size, whichever ran (a prediction, the chain, the stream, the mix): the split is weighed
+    // against what one card does best. Leaving the chain and the predictions out left one card at the planner's calculated time when they took every large call
+    // (5x short on Qwen3.8-Flash-Next: 150.8 us per token calculated, about 650 measured), and the split was never planned ahead. A chain or prediction pass counts
+    // only next to a measured path (it may have lost to the stream); a decode-chain pass never (35.0 s against 10.1 s streamed at 15.5k).
+    const bool chain_or_k = llama_moe_cache_pp_chain_pass_fork(), dec_pass = llama_moe_cache_pp_dec_pass_fork();
+    const double best_one = g_pending == 0 && g_pend_max > 0 ? llama_moe_cache_pp_best_one_us_fork(g_pend_max) / (double) g_pend_max : 0.0;   // per token
+    if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto() && !dec_pass && (!chain_or_k || best_one > 0.0)) {
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
         const int c = g_pending;
-        const double v = (double) us / (double) n_tokens;
+        const double v = c == 0 && best_one > 0.0 ? std::min((double) us / (double) n_tokens, best_one) : (double) us / (double) n_tokens;
         if (c == 1) {
             // the split planner's calibration: this measurement against the plan it ran with (both per token)
             std::lock_guard<std::mutex> pk(g_plan_mu);

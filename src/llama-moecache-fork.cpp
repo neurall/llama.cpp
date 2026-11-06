@@ -1049,6 +1049,8 @@ static bool              g_pp_graph = false;     // the graph being built (or th
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
 static std::atomic<bool> g_pp_mix_call{true};    // this prompt call may run the prompt mix (llama_moe_cache_pp_decide_fork; a forced path keeps it)
 static std::atomic<bool> g_pp_no_dense{false};   // this prompt call stays on one card: the dense split lost at this size, or nothing was measured to weigh it against
+static std::atomic<int>    g_pp_path_call{0};    // this prompt call's one-card path (PP_*, below), set by llama_moe_cache_pp_decide_fork: what the dense split is weighed against
+static std::atomic<double> g_pp_save_us{0.0};    // what that path is calculated to save over the stream (us): the dense split planner's one-card time less this
 static bool              g_pp_mix_call_built = true;   // the same when the last graph was finished
 static bool              g_pp_k_built = false;   // the last graph carries the rankings of predicted staging
 static double            g_pp_k_m = 0.0;         // and its multiplier (ggml_backend_pred_get_fork when it was built): the report comes after the prompt call ended
@@ -11114,6 +11116,13 @@ static unsigned long long  g_pp_rb0     = 0;
 // CPU makes the ratio fall and the decode chain reach further, a slower one the other way.
 static double              g_pp_de0       = 0.0;
 static double              g_pp_dec_ratio = 0.0;
+// 2026-11-06: the ratio above learned from every decode-chain call, whatever its size, and applied to every size: one 14.2k-token call that took 57x its calculation
+// (the calculation had no compute) made the next 4-token call read "decode chain to 0 tokens, 4424 ms calculated" and leave the decode chain where it is the fastest.
+// The time is now three parts, each learned from the calls it dominates (llama_moe_cache_pp_decide_fork): the misses x g_pp_dec_ratio (calls where the misses
+// dominate), the 4-token chunks' weight reads x g_pp_dec_kc (calls where the chunks dominate), and a fixed part per pass g_pp_dec_f (the least any call left over).
+static double              g_pp_dec_kc    = 1.0;    // measured over calculated chunk reads, never under 1 (the read rate is the fastest the card reads)
+static double              g_pp_dec_f     = -1.0;   // the decode chain's fixed part per pass (us), -1 = no call measured yet
+static double              g_pp_dec_chunk = 0.0;    // the call being decided: its chunks' calculated weight reads (us)
 static unsigned long long pp_self_read_bytes() {
 #ifdef __linux__
     unsigned long long v = 0;
@@ -11680,8 +11689,18 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             auto & t = g_pp_took[path][pp_bucket((double) n_tokens / P)];
             t.n = (double) n_tokens / P; t.us = (double) us / P;
             if (path == PP_DEC && g_pp_de0 > 0.0) {   // the first call of the path is not counted above (it pays the preload's uploads): neither here
-                const double q = ((double) us / P) / g_pp_de0;
-                g_pp_dec_ratio = g_pp_dec_ratio > 0.0 ? 0.7 * g_pp_dec_ratio + 0.3 * q : q;
+                // each part learns from the calls it dominates (see g_pp_dec_kc): a 15k-token call teaches the chunks, a 4-token call the misses
+                const double took = (double) us / P, d0 = g_pp_de0, ch = g_pp_dec_chunk;
+                const double r = g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0, f = std::max(0.0, g_pp_dec_f);
+                if (ch > 0.0 && ch * g_pp_dec_kc >= d0 * r) {   // the chunks dominate: only they learn (a fixed part from such a call would lock small calls out)
+                    const double q = std::max(1.0, (took - f - d0 * r) / ch);
+                    g_pp_dec_kc = std::min(64.0, 0.7 * g_pp_dec_kc + 0.3 * q);
+                } else {   // the misses dominate: they learn, and the fixed part is the least such a call left over
+                    const double q = std::max(0.25, std::min(8.0, (took - f - ch * g_pp_dec_kc) / d0));
+                    g_pp_dec_ratio = g_pp_dec_ratio > 0.0 ? 0.7 * g_pp_dec_ratio + 0.3 * q : q;
+                    const double rest = std::max(0.0, took - d0 * g_pp_dec_ratio - ch * g_pp_dec_kc);
+                    g_pp_dec_f = g_pp_dec_f < 0.0 ? rest : std::min(g_pp_dec_f, rest);
+                }
             }
         }
     }
@@ -11763,11 +11782,17 @@ double llama_moe_cache_compute_att_us_fork() {
 //   prompt chain   C(n) + sum over the experts not on the card of P(the pass touches it) x its upload over its layer's link: uploads wait for the router, so they add to the compute
 //   streaming      max(C(n), U): U is the upload of everything no card holds, over the fastest link; the staging slots hide it under the compute
 // P = 1 - (1 - p)^n, with p the expert's share of the layer's picks so far: k (count + 1) / (all counts + experts), so a model nobody ran yet counts as uniform.
+double llama_dsplit_read_rate_fork(ggml_backend_dev_t d);   // llama-dsplit-fork.cpp: the card's weight read rate from the matmul timing at load (bytes/s), 0 = not timed
+
 void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     moe_cache * mc = g_cache;
+    g_pp_path_call = PP_RING;   // until decided: the stream, nothing saved against it
+    g_pp_save_us = 0.0;
     if (!mc || !pp_chain_allowed() || !mb_is_auto() || ub_max == 0 || mc->n_links <= 0) {
         return;
     }
+    const double R_read = llama_dsplit_read_rate_fork(mc->link_dev[0]);   // before any lock: it takes the split planner's (which calls into the cache under it)
+    double A = 0.0;   // the expert bytes one token reads, all layers: what the decode chain's chunks read again for every token
     struct cost { double l1p, us, cu; };   // log(1 - its share of the picks), its upload over its layer's link, the CPU's time for one token routed to it
     std::vector<cost> v;
     double U = 0.0, Um = 0.0;   // the stream's upload, without and with the prompt mix
@@ -11787,6 +11812,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             n_expert = std::max(n_expert, (int) l.expert_slot.size());
             has_slower = has_slower || l.link > 0;
             const double S  = (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
+            A += (double) mc->n_expert_used * S;
             const double rl = mc->gbs_link[l.link] * 1e3;
             double Sm = 0.0;   // one expert of this layer, as far as its tensors are not pinned (the mapping reads them from the file)
             for (int k = 0; k < 3; ++k) {
@@ -11840,11 +11866,40 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     g_pp_rb0 = pp_self_read_bytes();
     const double de0 = up + cpu > 0.0 ? up * cpu / (up + cpu) : 0.0;
     g_pp_de0 = de0;
-    const double de = td > 0.0 ? td : de0 * (g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0), ot = to > 0.0 ? to : Ts;   // the decode chain against the fastest other path, measured or calculated
-    // shortcut: no fixed part per token in the calculated time, a cache that holds everything reads as 0 ms and the size runs the decode chain once; add it when such a first call shows up in rows
+    // 2026-11-06: both sides carry the pass's GPU work. The stream hides its upload under its compute (the staging slots): max(Ts, C). The decode chain adds its GPU
+    // work to the misses, and that work runs in 4-token chunks (llama_context::graph_max_nodes: up/gate/activation/down per chunk) that read every token's experts
+    // again: the token's expert bytes A at the card's weight read rate (llama_dsplit_read_rate_fork), x what such calls measured, never under the pass's compute.
+    // Without it the calculation saw the misses only and sent 1k-16k-token calls to the decode chain at 4-57x their calculated time (Qwen3.6 14.2k: 266 ms
+    // calculated, 15.2 s taken; Qwen3.8-Flash-Next 15.5k: 1360 ms, 35.0 s, streamed 10.1 s). Small calls keep it: next to their misses the chunks are small, so the
+    // size where the two meet comes out per model (2026-11-06 logs: about 200 tokens on Qwen3.6, 128-512 on GLM-5.3, about 256 on MiMo, past 1k on DeepSeek).
+    auto comp_at  = [&](double nn) { return nn * pp_c_at(); };   // the pass's compute on one card, measured (0 until a stream pass measured it)
+    auto chunk_at = [&](double nn) { return R_read > 0.0 ? nn * A / R_read * 1e6 : 0.0; };
+    auto de0_at   = [&](double nn) {
+        double u = 0.0, c = 0.0;
+        for (const auto & x : v) { u += (1.0 - std::exp(nn * x.l1p)) * x.us; c -= std::expm1(x.l1p) * nn * x.cu; }
+        return u + c > 0.0 ? u * c / (u + c) : 0.0;
+    };
+    const double dec_r = g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0, dec_f = std::max(0.0, g_pp_dec_f);
+    auto de_at = [&](double nn, double d0) { return dec_f + d0 * dec_r + std::max(chunk_at(nn) * g_pp_dec_kc, comp_at(nn)); };
+    auto ot_at = [&](double nn) { return std::max(Ts, comp_at(nn)); };
+    g_pp_dec_chunk = chunk_at(n);
+    const double de = td > 0.0 ? td : de_at(n, de0), ot = to > 0.0 ? to : ot_at(n);   // the decode chain against the fastest other path, measured or calculated
+    // where the two meet, for the line: the largest pass the decode chain is calculated to win, by halving between 1 and the pass limit
     // no cap beside it (user 2026-11-03, DeepSeek: a node budget of 384 refused the chain at 409 tokens where it was calculated 2.7 times faster): the crossover decides, up to the pass limit
-    const double dec_max = de > 0.0 ? n * ot / de : (double) ub_max;
-    const bool dec_ok = cpu_known && n <= dec_max;
+    double dec_max = 0.0;
+    {
+        double lo = 1.0, hi = (double) ub_max;
+        if (de_at(hi, de0_at(hi)) < ot_at(hi)) {
+            dec_max = hi;
+        } else if (de_at(lo, de0_at(lo)) < ot_at(lo)) {
+            for (int it = 0; it < 24 && hi - lo > 1.0; ++it) {
+                const double mid = std::floor(0.5 * (lo + hi));
+                (de_at(mid, de0_at(mid)) < ot_at(mid) ? lo : hi) = mid;
+            }
+            dec_max = lo;
+        }
+    }
+    const bool dec_ok = cpu_known && de < ot;
     const bool chain = force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
     const bool dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
     if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
@@ -11865,18 +11920,62 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     }
     const double d = pp_took_us(PP_DENSE, n);
     g_pp_no_dense = d > 0.0 && (o <= 0.0 || o <= d);
+    // the path this call takes and what it is expected to save over the stream (the dense split planner weighs its one-card time less this, llama_dsplit_decide_fork):
+    // measured at this size where it ran; else the decode chain's calculation, the chain's compute plus its misses' uploads; a first try of a prediction saves nothing yet
+    {
+        int pth = PP_RING;
+        if (chain) { pth = PP_CHAIN; } else if (dec) { pth = PP_DEC; } else if (m > 0.0) { pth = PP_K; for (double q = m; q > 1.0; q /= 2.0) { ++pth; } } else if (mix) { pth = PP_MIX; }
+        const double tm = pp_took_us(pth, n);
+        const double tp = tm > 0.0 ? tm : pth == PP_DEC ? de : pth == PP_CHAIN ? comp_at(n) + up : ot;
+        g_pp_path_call = pth;
+        g_pp_save_us = std::max(0.0, ot - tp);
+    }
     std::string ks;
     for (int i = 0; i < PP_PATHS - PP_K; ++i) {
         if (const double t = pp_took_us(PP_K + i, n); t > 0.0) { ks += format(", k x%d %.0f ms", 1 << i, t / 1e3); }
     }
     std::string links;
     for (int k = 0; k < mc->n_links; ++k) { links += format("%s%.1f", k ? "/" : "", mc->gbs_link[k]); }
-    const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s; stream reads %.1f GB from the SSD at %.2f GB/s; decode chain ran at %.2f x its calculated time)",
+    const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s; stream reads %.1f GB from the SSD at %.2f GB/s; decode chain: misses x%.2f, 4-token chunks %.0f ms x%.2f at %.0f GB/s weight read, fixed %.0f ms; compute %.0f ms)",
             n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, std::min(dec_max, (double) ub_max), de / 1e3, ot / 1e3, td / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
-            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, g_pp_ssd_gbs, g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0);
+            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, g_pp_ssd_gbs, dec_r, g_pp_dec_chunk / 1e3, g_pp_dec_kc, R_read / 1e9, dec_f / 1e3, comp_at(n) / 1e3);
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
     llama_moe_stats_io_fork(0);   // the reads of this call start counting here
+}
+
+// For the dense split planner (llama_dsplit_decide_fork), which weighs the split against the one-card path this call took (2026-11-06)
+bool llama_moe_cache_pp_dec_pass_fork() { return g_pp_dec_built; }
+bool llama_moe_cache_pp_no_dense_fork() { return g_pp_no_dense.load(std::memory_order_relaxed); }
+double llama_moe_cache_pp_saving_us_fork() { return g_pp_save_us.load(std::memory_order_relaxed); }
+double llama_moe_cache_pp_path_us_fork(int64_t n_tokens) {
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    return pp_took_us(g_pp_path_call.load(std::memory_order_relaxed), (double) n_tokens);
+}
+// the fastest one-card path measured at this pass size (us): what one card does best there; the decode chain is no candidate at the sizes the split runs
+double llama_moe_cache_pp_best_one_us_fork(int64_t n_tokens) {
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    double o = 0.0;
+    for (int p = 0; p < PP_PATHS; ++p) {
+        if (p == PP_DENSE || p == PP_DEC) { continue; }
+        const double t = pp_took_us(p, (double) n_tokens);
+        if (t > 0.0 && (o <= 0.0 || t < o)) { o = t; }
+    }
+    return o;
+}
+// the split is expected faster than this call's path: the call streams instead (no decode chain, no prompt chain, no predicted staging), so the split can run under it
+bool llama_moe_cache_pp_yield_fork(const char * why) {
+    static const bool k_auto = moe_opt("pp-k") == nullptr, forced = moe_opt("pp-path") != nullptr;
+    if (forced || (!k_auto && ggml_backend_pred_get_fork() > 0.0)) { return false; }   // a path the user set keeps its passes
+    g_pp_dec = false;
+    g_pp_mb = 0;
+    if (k_auto) { ggml_backend_pred_set_fork(0.0); }
+    g_pp_path_call = g_pp_mix_call.load(std::memory_order_relaxed) ? PP_MIX : PP_RING;
+    g_pp_save_us = 0.0;
+    const std::string s = format("prompt call: the dense split takes it from its one-card path (%s)", why);
+    LLAMA_LOG_WARN("moe-cache: %s\n", s.c_str());
+    llama_moe_stats_log_fork("CAL", s.c_str());
+    return true;
 }
 
 uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
