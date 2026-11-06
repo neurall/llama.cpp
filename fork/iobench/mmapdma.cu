@@ -210,7 +210,7 @@ static void bigpin() {
     { void * w; CK(cudaMalloc(&w, 1 << 20)); uint8_t * wp; CK(cudaHostAlloc((void **) &wp, 1 << 20, 0)); for (int i = 0; i < 8; i++) CK(cudaMemcpy(w, wp, 1 << 20, cudaMemcpyHostToDevice)); }
     const char * nm[] = {"", "B1 pread", "B2 direct", "B3 uring"};
     printf("%-10s %5s %4s %3s | %-22s | %-24s | pass 2 (pinned -> VRAM only)\n", "pass 1", "chunk", "thr", "qd", "cold stream+upload", "hot (page cache) stream");
-    for (int var : {1, 2, 3}) for (size_t ch : {(size_t) 256 << 10, (size_t) 1 << 20, (size_t) 4 << 20}) for (int th : {1, 2, 4, 8, 16}) for (int qd : (var == 3 ? std::vector<int>{4, 16} : std::vector<int>{0})) {
+    for (int var : {1, 2, 3}) for (size_t ch : {(size_t) 256 << 10, (size_t) 1 << 20, (size_t) 4 << 20}) for (int th : {1, 2, 4, 8, 16}) for (int qd : (var == 3 ? std::vector<int>{4, 16, 32, 64} : std::vector<int>{0})) {
         std::vector<double> c, h;
         for (int r = 0; r < 3; r++) { drop_cache(); memset(pin, 0, 0); c.push_back((double) g_len / bigpass(var, ch, th, qd, pin) / 1e9); }
         bool ok; { void * b; size_t ml; const uint8_t * m = map_range(&b, &ml); ok = verify(m) && !memcmp(pin, m, 1 << 20) && !memcmp(pin + g_len - (1 << 20), m + g_len - (1 << 20), 1 << 20); munmap(b, ml); }
@@ -280,7 +280,7 @@ static void sweep() {
     printf("%-4s %-5s %5s %4s %5s | %7s %7s %7s GB/s (min median max of %d)\n", "meth", "temp", "chunk", "thr", "slots", "min", "median", "max", reps);
     std::vector<int> meths = {4, 5, 7}; if (getenv("METHS")) { meths.clear(); for (const char * c = getenv("METHS"); *c; c++) { if (*c >= '0' && *c <= '9') { meths.push_back(*c - '0'); } } }   // METHS=6: O_DIRECT pread only
     for (int meth : meths) {
-        for (size_t ch : chs) for (int th : ths) for (int sl : (meth == 7 ? std::vector<int>{2, 4, 8, 16} : std::vector<int>{2, 4})) {
+        for (size_t ch : chs) for (int th : ths) for (int sl : (meth == 7 ? std::vector<int>{2, 4, 8, 16, 32, 64} : std::vector<int>{2, 4})) {
             for (int hot = 0; hot < 2; hot++) {
                 if ((meth == 7 || meth == 6) && hot) { continue; }   // O_DIRECT never uses the page cache
                 std::vector<double> g; bool ok = true;
