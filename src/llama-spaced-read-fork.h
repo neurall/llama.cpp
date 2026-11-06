@@ -114,8 +114,94 @@ static inline bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t tota
 }
 #endif
 
-// THE read: bytes [beg, beg + total) of fd (4096-aligned beg and total for O_DIRECT) into buf, spaced order, kernel AIO when the kernel has it, else pread. False: a read failed, nothing usable.
+// io_uring by raw syscalls (no liburing), same contract and order as the AIO engine. --moe read-engine=uring (LLAMA_MOE_RD_ENGINE=uring); the default stays kernel AIO,
+// which is what the release image allows (Docker's default seccomp blocks io_uring).
+#if defined(SR_HAVE_AIO) && defined(SYS_io_uring_setup) && __has_include(<linux/io_uring.h>)
+#include <linux/io_uring.h>
+#include <sys/mman.h>
+#define SR_HAVE_URING 1
+inline std::atomic<int> g_uring_ok{1};
+struct uring_t {
+    int fd = -1; void * sq = nullptr, * cq = nullptr, * sqe = nullptr; size_t sqsz = 0, cqsz = 0, sqesz = 0;
+    unsigned * sq_tail = nullptr, * sq_mask = nullptr, * sq_array = nullptr, * cq_head = nullptr, * cq_tail = nullptr, * cq_mask = nullptr;
+    io_uring_sqe * sqes = nullptr; io_uring_cqe * cqes = nullptr;
+    ~uring_t() {
+        if (sqes) { munmap(sqes, sqesz); }
+        if (cq) { munmap(cq, cqsz); }
+        if (sq) { munmap(sq, sqsz); }
+        if (fd >= 0) { close(fd); }
+    }
+    bool init(unsigned entries) {
+        io_uring_params p; memset(&p, 0, sizeof p);
+        fd = (int) syscall(SYS_io_uring_setup, entries, &p);
+        if (fd < 0) { return false; }
+        sqsz = p.sq_off.array + p.sq_entries * sizeof(unsigned);
+        cqsz = p.cq_off.cqes + p.cq_entries * sizeof(io_uring_cqe);
+        sqesz = p.sq_entries * sizeof(io_uring_sqe);
+        sq = mmap(nullptr, sqsz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, IORING_OFF_SQ_RING);
+        cq = mmap(nullptr, cqsz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, IORING_OFF_CQ_RING);
+        sqes = (io_uring_sqe *) mmap(nullptr, sqesz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd, IORING_OFF_SQES);
+        if (sq == MAP_FAILED || cq == MAP_FAILED || sqes == (io_uring_sqe *) MAP_FAILED) { sq = cq = nullptr; sqes = nullptr; return false; }
+        char * s = (char *) sq, * c = (char *) cq;
+        sq_tail = (unsigned *) (s + p.sq_off.tail); sq_mask = (unsigned *) (s + p.sq_off.ring_mask); sq_array = (unsigned *) (s + p.sq_off.array);
+        cq_head = (unsigned *) (c + p.cq_off.head); cq_tail = (unsigned *) (c + p.cq_off.tail); cq_mask = (unsigned *) (c + p.cq_off.ring_mask);
+        cqes = (io_uring_cqe *) (c + p.cq_off.cqes);
+        return true;
+    }
+};
+// bytes [beg, beg + total) of fd (4096-aligned) into buf, 32 reads in flight, the pieces in the spaced order. False: nothing usable, the caller falls back.
+static inline bool uring_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need) {
+    constexpr unsigned QD = 32;
+    if (!g_uring_ok.load(std::memory_order_relaxed)) { return false; }
+    thread_local uring_t r; thread_local bool made = false;
+    if (!made) { made = true; if (!r.init(QD)) { g_uring_ok.store(0); } }
+    if (!g_uring_ok.load(std::memory_order_relaxed)) { return false; }
+    const std::vector<sr_piece> pcs = sr_pieces(total);
+    size_t offs[QD]; size_t wants[QD]; unsigned free_slot[QD]; unsigned n_free = QD;
+    for (unsigned i = 0; i < QD; ++i) { free_slot[i] = i; }
+    size_t next = 0; unsigned infl = 0; bool bad = false;
+    while (next < pcs.size() || infl > 0) {
+        unsigned queued = 0; unsigned tail = *r.sq_tail;
+        while (!bad && next < pcs.size() && n_free > 0) {
+            const unsigned k = free_slot[--n_free];
+            const sr_piece & pc = pcs[next];
+            offs[k] = pc.off; wants[k] = pc.n;
+            const unsigned idx = tail & *r.sq_mask;
+            io_uring_sqe * s = &r.sqes[idx];
+            memset(s, 0, sizeof *s);
+            s->opcode = IORING_OP_READ; s->fd = fd; s->addr = (uint64_t) (uintptr_t) (buf + pc.off); s->len = (uint32_t) pc.n;
+            s->off = (uint64_t) (beg + pc.off); s->user_data = k;
+            r.sq_array[idx] = idx;
+            ++tail; ++queued; ++next; ++infl;
+        }
+        if (queued) {
+            __atomic_store_n(r.sq_tail, tail, __ATOMIC_RELEASE);
+            if (syscall(SYS_io_uring_enter, r.fd, queued, 0u, 0u, nullptr, 0) < 0 && errno != EINTR) { bad = true; g_uring_ok.store(0); break; }
+        }
+        if (infl == 0) { break; }
+        unsigned head = *r.cq_head;
+        if (__atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE) == head) {   // nothing done yet: wait for one
+            if (syscall(SYS_io_uring_enter, r.fd, 0u, 1u, IORING_ENTER_GETEVENTS, nullptr, 0) < 0 && errno != EINTR) { bad = true; g_uring_ok.store(0); break; }
+            continue;
+        }
+        while (head != __atomic_load_n(r.cq_tail, __ATOMIC_ACQUIRE)) {
+            const io_uring_cqe * c = &r.cqes[head & *r.cq_mask];
+            const unsigned k = (unsigned) c->user_data;
+            if (c->res < 0 || ((size_t) c->res < wants[k] && offs[k] + (size_t) c->res < need)) { bad = true; }
+            free_slot[n_free++] = k; --infl; ++head;
+        }
+        __atomic_store_n(r.cq_head, head, __ATOMIC_RELEASE);
+    }
+    return !bad;
+}
+#endif
+
+// THE read: bytes [beg, beg + total) of fd (4096-aligned beg and total for O_DIRECT) into buf, spaced order: io_uring or kernel AIO (LLAMA_MOE_RD_ENGINE=uring picks io_uring), else pread. False: a read failed, nothing usable.
 static inline bool sr_read(int fd, char * buf, size_t beg, size_t total, size_t need) {
+#ifdef SR_HAVE_URING
+    static const bool uring = [] { const char * e = getenv("LLAMA_MOE_RD_ENGINE"); return e && !strcmp(e, "uring"); }();
+    if (uring && total >= ((size_t) 512 << 10) && uring_read_range(fd, (uint8_t *) buf, beg, total, need)) { return true; }
+#endif
 #ifdef SR_HAVE_AIO
     if (total >= ((size_t) 512 << 10) && aio_read_range(fd, (uint8_t *) buf, beg, total, need)) { return true; }
 #endif
