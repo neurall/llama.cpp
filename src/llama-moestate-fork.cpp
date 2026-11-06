@@ -650,38 +650,24 @@ std::string llama_moe_stats_io_fork(int who) {
 // Per-token engine counters (user 2026-11-05: "for gpu you cant sample every 10 tokens but you can do prior and after the kernel run and divide by token count"): before and after a run of decode
 // calls (10 tokens) or a prompt pass the engine's byte counters (llama_moe_cache_counters_fork: CPU compute, uploads, prompt streaming, every link) and every card's NVML energy counter are read, and the
 // difference is divided by the tokens: bytes per token per link, joules and watts per card. TOK lines come every 10 decode tokens, the same numbers close each PAS line.
-#ifdef __linux__
+// Every card's NVML energy counter (mJ) is read by the fast GPU sampler's own thread (below) and only loaded here: one NVML call takes about 4 ms per card on PC1, and called on the
+// decode thread for every token it cost Qwen3.6-35B a third of its decode (b14715 99.7 against 150 t/s for b14244, 2026-11-06).
+// shortcut: the values are as fresh as the sampler's period (--moe stats-fast-ms, 100 ms): a 10-token TOK window shorter than that shows 0 or one period's step; long prompt passes are fine.
+static std::atomic<unsigned long long> g_energy_mj[8];
+static std::atomic<int> g_energy_n{0};   // cards with a published counter; 0 while the sampler is off or has none
 static std::vector<unsigned long long> nvml_energy_mj_all() {
-    static void * h = dlopen("libnvidia-ml.so.1", RTLD_NOW);
-    typedef int (*init_t)(); typedef int (*count_t)(unsigned *); typedef int (*handle_t)(unsigned, void **); typedef int (*en_f)(void *, unsigned long long *);
-    static std::vector<void *> dev;
-    static en_f fe = nullptr;
-    static std::once_flag once;
-    std::call_once(once, [] {
-        if (!h) { return; }
-        auto init = (init_t) dlsym(h, "nvmlInit_v2"); auto cnt = (count_t) dlsym(h, "nvmlDeviceGetCount_v2"); auto hnd = (handle_t) dlsym(h, "nvmlDeviceGetHandleByIndex_v2");
-        fe = (en_f) dlsym(h, "nvmlDeviceGetTotalEnergyConsumption");
-        unsigned n = 0;
-        if (!init || !cnt || !hnd || !fe || init() != 0 || cnt(&n) != 0) { fe = nullptr; return; }
-        dev.assign(n, nullptr);
-        for (unsigned i = 0; i < n; ++i) { if (hnd(i, &dev[i]) != 0) { dev[i] = nullptr; } }
-    });
-    std::vector<unsigned long long> out;
-    if (!fe) { return out; }
-    for (void * d : dev) { unsigned long long e = 0; if (d) { fe(d, &e); } out.push_back(e); }
+    std::vector<unsigned long long> out((size_t) g_energy_n.load(std::memory_order_acquire));
+    for (size_t g = 0; g < out.size(); ++g) { out[g] = g_energy_mj[g].load(std::memory_order_relaxed); }
     return out;
 }
-#else
-static std::vector<unsigned long long> nvml_energy_mj_all() { return {}; }
-#endif
 int llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
 struct tok_snap { int64_t c[8] = {}; int n = 0; std::vector<unsigned long long> e; double t = 0.0; };
 static tok_snap tok_snap_now() { tok_snap s; s.n = llama_moe_cache_counters_fork(s.c, 8); s.e = nvml_energy_mj_all(); s.t = llama_moe_span_now_fork(); return s; }
 static std::string tok_per_token(const tok_snap & a, const tok_snap & b, double tokens) {
     const double wall = b.t - a.t;
-    if (a.n == 0 || b.n != a.n || tokens <= 0 || wall <= 0) { return ""; }
+    if (b.n != a.n || tokens <= 0 || wall <= 0) { return ""; }
     auto mib = [&](int i) { return (double) (b.c[i] - a.c[i]) / 1048576.0 / tokens; };
-    std::string s = format("per token: cpu %.2f MiB, upload %.2f MiB, stream %.2f MiB", mib(0), mib(1), mib(2));
+    std::string s = a.n >= 3 ? format("per token: cpu %.2f MiB, upload %.2f MiB, stream %.2f MiB", mib(0), mib(1), mib(2)) : std::string("per token: no expert cache");
     for (int k = 3; k < a.n; ++k) { s += format(", link%d %.2f MiB (%.2f GB/s)", k - 3, mib(k), (double) (b.c[k] - a.c[k]) / wall / 1e9); }
     for (size_t g = 0; g < a.e.size() && g < b.e.size(); ++g) { s += format(", g%zu %.2f J (%.0f W)", g, (double) (b.e[g] - a.e[g]) / 1e3 / tokens, (double) (b.e[g] - a.e[g]) / 1e3 / wall); }
     return s;
@@ -693,7 +679,8 @@ static void tok_window_note(double ms) {   // one decode call of one token took 
     static double sum_ms = 0.0, last_end = 0.0;
     std::lock_guard<std::mutex> lk(mu);
     const double now = llama_moe_span_now_fork();
-    if (now - last_end > 0.5 || base.n == 0) { base = tok_snap_now(); cnt = 0; sum_ms = 0.0; last_end = now; return; }   // a new run of tokens starts counting after its first one
+    // a new run of tokens starts counting after its first one. Started = base.t set: base.n stays 0 without an expert cache, and testing it reset the window on every token
+    if (now - last_end > 0.5 || base.t == 0.0) { base = tok_snap_now(); cnt = 0; sum_ms = 0.0; last_end = now; return; }
     last_end = now; ++cnt; sum_ms += ms;
     if (cnt >= 10) {
         const tok_snap e = tok_snap_now();
@@ -719,10 +706,11 @@ static void fast_gpu_sampler_start() {
             typedef int (*init_t)(); typedef int (*count_t)(unsigned *); typedef int (*handle_t)(unsigned, void **);
             typedef struct { unsigned gpu, mem; } util_t; typedef struct { unsigned long long total, free, used; } meminfo_t;
             typedef int (*util_f)(void *, util_t *); typedef int (*pcie_f)(void *, int, unsigned *); typedef int (*power_f)(void *, unsigned *);
-            typedef int (*clock_f)(void *, int, unsigned *); typedef int (*mem_f)(void *, meminfo_t *);
+            typedef int (*clock_f)(void *, int, unsigned *); typedef int (*mem_f)(void *, meminfo_t *); typedef int (*en_f)(void *, unsigned long long *);
             auto init = (init_t) dlsym(h, "nvmlInit_v2"); auto cnt = (count_t) dlsym(h, "nvmlDeviceGetCount_v2"); auto hnd = (handle_t) dlsym(h, "nvmlDeviceGetHandleByIndex_v2");
             auto fu = (util_f) dlsym(h, "nvmlDeviceGetUtilizationRates"); auto fp = (pcie_f) dlsym(h, "nvmlDeviceGetPcieThroughput"); auto fw = (power_f) dlsym(h, "nvmlDeviceGetPowerUsage");
             auto fc = (clock_f) dlsym(h, "nvmlDeviceGetClockInfo"); auto fm = (mem_f) dlsym(h, "nvmlDeviceGetMemoryInfo");
+            auto fe = (en_f) dlsym(h, "nvmlDeviceGetTotalEnergyConsumption");   // optional: the energy counters for TOK and PAS lines (nvml_energy_mj_all)
             if (!init || !cnt || !hnd || !fu || !fp || !fw || !fc || !fm || init() != 0) { return; }
             unsigned n = 0; if (cnt(&n) != 0 || n == 0) { return; }
             std::vector<void *> dev(n, nullptr);
@@ -738,7 +726,10 @@ static void fast_gpu_sampler_start() {
                     util_t u = {}; unsigned rx = 0, tx = 0, mw = 0, mhz = 0; meminfo_t m = {};
                     fu(dev[i], &u); fp(dev[i], 1, &rx); fp(dev[i], 0, &tx); fw(dev[i], &mw); fc(dev[i], 1, &mhz); fm(dev[i], &m);
                     buf[i].push_back({ t, u.gpu, u.mem, rx, tx, mw, mhz, m.free });
+                    unsigned long long e = 0;
+                    if (fe && i < 8 && fe(dev[i], &e) == 0) { g_energy_mj[i].store(e, std::memory_order_relaxed); }
                 }
+                if (fe && g_energy_n.load(std::memory_order_relaxed) == 0) { g_energy_n.store((int) std::min(n, 8u), std::memory_order_release); }   // readers see the cards once every counter has a value
                 if (t - last_flush >= 10.0) {
                     last_flush = t;
                     for (unsigned i = 0; i < n; ++i) {
