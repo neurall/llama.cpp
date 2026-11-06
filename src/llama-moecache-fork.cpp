@@ -8179,6 +8179,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
 #ifdef MOE_HAVE_AIO
                 if (const char * ra = moe_opt("read-aio")) { g_aio_ok.store(atoi(ra) != 0 ? 1 : 0); }
+                // --moe read-blk=KB (default 256) and read-gap=KB (default 64, 0 = no gaps: plain 256K blocks in file order); set before the first read caches them
+                if (const char * rb = moe_opt("read-blk")) { setenv("LLAMA_MOE_RD_BLK_KB", rb, 1); }
+                if (const char * rg = moe_opt("read-gap")) { setenv("LLAMA_MOE_RD_GAP_KB", rg, 1); }
 #endif
                 if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
                 else if (rd_mapped > 0) { mc->rd_threads = g_early_rd_threads > 0 ? g_early_rd_threads : read_threads_probe(mc->rd_fds, mc->profile); }

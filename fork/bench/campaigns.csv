@@ -6689,3 +6689,7 @@ mmap_back_xover-qni4-i-pf14k1k,2026-11-06 09:11:20,bench /m/q/4/Qwen3.8-Flash-Ne
 mmap_back_xover-qni4-io-edit4c,2026-11-06 09:13:38,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds mmap_back_xover variants v test edit4c n=2,,
 rel_b14244-qni4-i-pf14k1k,2026-11-06 09:16:03,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds rel_b14244 variants v test pf14k n=2,,
 rel_b14244-qni4-io-edit4c,2026-11-06 09:18:16,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds rel_b14244 variants v test edit4c n=2,,
+mmap_back_x3-qni4-i-pf14k1k,2026-11-06 09:22:11,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds mmap_back_x3 variants v test pf14k n=2,,
+mmap_back_x3-qni4-io-edit4c,2026-11-06 09:24:28,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds mmap_back_x3 variants v test edit4c n=2,,
+rel_b14244-qni4-i-pf14k1k,2026-11-06 09:26:43,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds rel_b14244 variants v test pf14k n=2,,
+rel_b14244-qni4-io-edit4c,2026-11-06 09:28:55,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds rel_b14244 variants v test edit4c n=2,,

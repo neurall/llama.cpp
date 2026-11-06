@@ -15,6 +15,7 @@
 #include <unistd.h>
 #define _GNU_SOURCE
 #include <liburing.h>
+#include <random>
 #ifndef MADV_POPULATE_READ
 #define MADV_POPULATE_READ 22
 #endif
@@ -170,6 +171,7 @@ static double fake_run(size_t chunk, int nthr, bool reuse, bool * ok) {
 
 // BIGPIN=1: the "RAM pool" case. One big pinned buffer for the whole tensor. Pass 1 streams the file straight into it (each thread reads its chunks to pin+offset, no staging
 // copy) and uploads every chunk the moment it landed; pass 2 is DMA from the pinned buffer alone (the pool hit). variants: B1 buffered pread, B2 O_DIRECT pread, B3 io_uring O_DIRECT.
+static std::vector<size_t> g_perm;   // chunk visiting order for bigpass (empty = file order)
 static double bigpass(int var, size_t chunk, int nthr, int qd, uint8_t * pin) {
     const size_t nch = (g_len + chunk - 1) / chunk; std::atomic<size_t> next{0}; std::vector<std::thread> th; const double t0 = now();
     for (int t = 0; t < nthr; t++) th.emplace_back([&]() {
@@ -177,7 +179,7 @@ static double bigpass(int var, size_t chunk, int nthr, int qd, uint8_t * pin) {
         if (var == 3) {
             struct io_uring ring; if (io_uring_queue_init(qd, &ring, 0)) { perror("io_uring"); exit(1); }
             int inflight = 0;
-            auto sub = [&]() { const size_t i = next.fetch_add(1); if (i >= nch) { return false; } const size_t o = i * chunk, n = std::min(chunk, g_len - o);
+            auto sub = [&]() { size_t i = next.fetch_add(1); if (i >= nch) { return false; } if (!g_perm.empty()) { i = g_perm[i]; } const size_t o = i * chunk, n = std::min(chunk, g_len - o);
                 struct io_uring_sqe * q = io_uring_get_sqe(&ring); io_uring_prep_read(q, g_fdd, pin + o, (unsigned) ((n + 4095) / 4096 * 4096), g_off + o); q->user_data = i; inflight++; return true; };
             for (int k = 0; k < qd; k++) { sub(); } io_uring_submit(&ring);
             while (inflight > 0) {
@@ -205,6 +207,7 @@ static double dma_pass(size_t chunk, int nthr, const uint8_t * pin) {   // the p
     return pipeline(3, chunk, nthr, 1, pin);
 }
 static void bigreg();
+static void bigshuf();
 static void bigpin() {
     if (getenv("BIGREG_ONLY")) { { void * w; CK(cudaMalloc(&w, 1 << 20)); uint8_t * wp; CK(cudaHostAlloc((void **) &wp, 1 << 20, 0)); for (int i = 0; i < 8; i++) CK(cudaMemcpy(w, wp, 1 << 20, cudaMemcpyHostToDevice)); } bigreg(); return; }
     uint8_t * pin; CK(cudaHostAlloc((void **) &pin, g_len, cudaHostAllocDefault));
@@ -223,6 +226,20 @@ static void bigpin() {
         fflush(stdout);
     }
     bigreg();
+}
+
+// BIGSHUF=1: B3 (io_uring O_DIRECT straight into the pinned buffer + DMA) with the chunks visited in file order vs a random order. cold, median of 5, GB/s
+static void bigshuf() {
+    uint8_t * pin; CK(cudaHostAlloc((void **) &pin, g_len, cudaHostAllocDefault));
+    { void * w; CK(cudaMalloc(&w, 1 << 20)); uint8_t * wp; CK(cudaHostAlloc((void **) &wp, 1 << 20, 0)); for (int i = 0; i < 8; i++) CK(cudaMemcpy(w, wp, 1 << 20, cudaMemcpyHostToDevice)); }
+    printf("%-9s %-10s %3s %3s | GB/s median of 5 (min..max)\n", "chunk", "order", "thr", "qd");
+    for (size_t ch : {(size_t) 256 << 10, (size_t) 1 << 20, (size_t) 2 << 20}) for (int shuf = 0; shuf < 2; shuf++) for (int th : {1, 2, 4}) for (int qd : {16, 32}) {
+        const size_t nch = (g_len + ch - 1) / ch; g_perm.clear();
+        if (shuf) { g_perm.resize(nch); for (size_t i = 0; i < nch; i++) g_perm[i] = i; std::mt19937_64 rng(11); std::shuffle(g_perm.begin(), g_perm.end(), rng); }
+        std::vector<double> g; for (int r = 0; r < 5; r++) { if (system("sync; sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches'")) { exit(2); } g.push_back((double) g_len / bigpass(3, ch, th, qd, pin) / 1e9); }
+        bool ok; { void * b; size_t ml; const uint8_t * m = map_range(&b, &ml); ok = !memcmp(pin, m, g_len); munmap(b, ml); }
+        std::sort(g.begin(), g.end()); printf("%5zuK    %-10s %3d %3d | %.2f (%.2f..%.2f) %s\n", ch >> 10, shuf ? "random" : "file order", th, qd, g[2], g.front(), g.back(), ok ? "data ok" : "DATA MISMATCH"); fflush(stdout);
+    }
 }
 
 // B4 registered mmap: the file range is mapped and cudaHostRegister'd in slices by several threads (the register call faults the pages in and pins them), every slice is
@@ -318,6 +335,7 @@ int main(int argc, char ** argv) {
     printf("%s, tensor %zu bytes at %zu of %s\n", p.name, g_len, g_off, g_file);
     if (getenv("SWEEP")) { sweep(); return 0; }
     if (getenv("BIGPIN")) { bigpin(); return 0; }
+    if (getenv("BIGSHUF")) { bigshuf(); return 0; }
     char cfg[64];
     void * base; size_t ml; const uint8_t * m; bool ok; double t;
 
