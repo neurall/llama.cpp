@@ -15,6 +15,9 @@
 #include <unistd.h>
 #define _GNU_SOURCE
 #include <liburing.h>
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22
+#endif
 #include <algorithm>
 #include <atomic>
 #include <csignal>
@@ -165,6 +168,108 @@ static double fake_run(size_t chunk, int nthr, bool reuse, bool * ok) {
     return t;
 }
 
+// BIGPIN=1: the "RAM pool" case. One big pinned buffer for the whole tensor. Pass 1 streams the file straight into it (each thread reads its chunks to pin+offset, no staging
+// copy) and uploads every chunk the moment it landed; pass 2 is DMA from the pinned buffer alone (the pool hit). variants: B1 buffered pread, B2 O_DIRECT pread, B3 io_uring O_DIRECT.
+static double bigpass(int var, size_t chunk, int nthr, int qd, uint8_t * pin) {
+    const size_t nch = (g_len + chunk - 1) / chunk; std::atomic<size_t> next{0}; std::vector<std::thread> th; const double t0 = now();
+    for (int t = 0; t < nthr; t++) th.emplace_back([&]() {
+        cudaStream_t st; CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+        if (var == 3) {
+            struct io_uring ring; if (io_uring_queue_init(qd, &ring, 0)) { perror("io_uring"); exit(1); }
+            int inflight = 0;
+            auto sub = [&]() { const size_t i = next.fetch_add(1); if (i >= nch) { return false; } const size_t o = i * chunk, n = std::min(chunk, g_len - o);
+                struct io_uring_sqe * q = io_uring_get_sqe(&ring); io_uring_prep_read(q, g_fdd, pin + o, (unsigned) ((n + 4095) / 4096 * 4096), g_off + o); q->user_data = i; inflight++; return true; };
+            for (int k = 0; k < qd; k++) { sub(); } io_uring_submit(&ring);
+            while (inflight > 0) {
+                struct io_uring_cqe * c; if (io_uring_wait_cqe(&ring, &c)) { exit(1); }
+                const size_t o = c->user_data * chunk, n = std::min(chunk, g_len - o); if (c->res < (int) n) { fprintf(stderr, "short read\n"); exit(1); }
+                io_uring_cqe_seen(&ring, c); inflight--;
+                CK(cudaMemcpyAsync((uint8_t *) g_dev + o, pin + o, n, cudaMemcpyHostToDevice, st));
+                if (sub()) { io_uring_submit(&ring); }
+            }
+            io_uring_queue_exit(&ring);
+        } else {
+            for (size_t i; (i = next.fetch_add(1)) < nch;) {
+                const size_t o = i * chunk, n = std::min(chunk, g_len - o), rn = var == 2 ? (n + 4095) / 4096 * 4096 : n; size_t got = 0;
+                while (got < rn) { const ssize_t r = pread(var == 2 ? g_fdd : g_fd, pin + o + got, rn - got, (off_t) (g_off + o + got)); if (r <= 0) { perror("pread"); exit(1); } got += (size_t) r; }
+                CK(cudaMemcpyAsync((uint8_t *) g_dev + o, pin + o, n, cudaMemcpyHostToDevice, st));
+            }
+        }
+        CK(cudaStreamSynchronize(st)); cudaStreamDestroy(st);
+    });
+    for (auto & x : th) { x.join(); }
+    return now() - t0;
+}
+static double dma_pass(size_t chunk, int nthr, const uint8_t * pin) {   // the pool hit: pinned -> VRAM only (nthr 0: one cudaMemcpy of everything)
+    if (nthr == 0) { const double t0 = now(); CK(cudaMemcpy(g_dev, pin, g_len, cudaMemcpyHostToDevice)); return now() - t0; }
+    return pipeline(3, chunk, nthr, 1, pin);
+}
+static void bigreg();
+static void bigpin() {
+    uint8_t * pin; CK(cudaHostAlloc((void **) &pin, g_len, cudaHostAllocDefault));
+    { void * w; CK(cudaMalloc(&w, 1 << 20)); uint8_t * wp; CK(cudaHostAlloc((void **) &wp, 1 << 20, 0)); for (int i = 0; i < 8; i++) CK(cudaMemcpy(w, wp, 1 << 20, cudaMemcpyHostToDevice)); }
+    const char * nm[] = {"", "B1 pread", "B2 direct", "B3 uring"};
+    printf("%-10s %5s %4s %3s | %-22s | %-24s | pass 2 (pinned -> VRAM only)\n", "pass 1", "chunk", "thr", "qd", "cold stream+upload", "hot (page cache) stream");
+    for (int var : {1, 2, 3}) for (size_t ch : {(size_t) 256 << 10, (size_t) 1 << 20, (size_t) 4 << 20}) for (int th : {1, 2, 4, 8, 16}) for (int qd : (var == 3 ? std::vector<int>{4, 16} : std::vector<int>{0})) {
+        std::vector<double> c, h;
+        for (int r = 0; r < 3; r++) { drop_cache(); memset(pin, 0, 0); c.push_back((double) g_len / bigpass(var, ch, th, qd, pin) / 1e9); }
+        bool ok; { void * b; size_t ml; const uint8_t * m = map_range(&b, &ml); ok = verify(m) && !memcmp(pin, m, 1 << 20) && !memcmp(pin + g_len - (1 << 20), m + g_len - (1 << 20), 1 << 20); munmap(b, ml); }
+        if (var == 1) { for (int r = 0; r < 3; r++) { h.push_back((double) g_len / bigpass(var, ch, th, qd, pin) / 1e9); } }   // direct variants never use the cache
+        std::sort(c.begin(), c.end()); std::sort(h.begin(), h.end());
+        double p1 = 0, p4 = 0; { std::vector<double> a, b; for (int r = 0; r < 3; r++) { a.push_back((double) g_len / dma_pass(0, 0, pin) / 1e9); b.push_back((double) g_len / dma_pass(1 << 20, 4, pin) / 1e9); } std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end()); p1 = a.back(); p4 = b.back(); }
+        char hs[40] = "-"; if (!h.empty()) { snprintf(hs, sizeof hs, "%.2f / %.2f / %.2f", h.front(), h[1], h.back()); }
+        printf("%-10s %4zuK %4d %3d | %5.2f / %5.2f / %5.2f | %-24s | one memcpy %.1f, 4 thr 1M %.1f GB/s %s\n", nm[var], ch >> 10, th, qd, c.front(), c[1], c.back(), hs, p1, p4, ok ? "" : "DATA MISMATCH");
+        fflush(stdout);
+    }
+    bigreg();
+}
+
+// B4 registered mmap: the file range is mapped and cudaHostRegister'd in slices by several threads (the register call faults the pages in and pins them), every slice is
+// uploaded right after its register; pass 2 is DMA from the registered mapping alone. Rows: cold and hot page cache, register slice size x threads.
+static void bigreg() {
+    printf("--- B4 registered mmap by threads: 'reg' = register faults the pages in itself; 'pre+reg' = threads MADV_POPULATE_READ the slices first, then register\n%-8s %4s %-7s | %-5s | %-24s | %-8s | %-8s | pass 2 DMA only from the registered map\n", "slice", "thr", "variant", "temp", "total GB/s (min/med/max)", "pre ms", "unreg ms");
+    for (int pre = 0; pre < 2; pre++) for (size_t sl : {(size_t) 16 << 20, (size_t) 64 << 20, g_len}) for (int th : {1, 4, 8, 16}) {
+        if (sl == g_len && th > 1) { continue; }
+        for (int hot = 0; hot < 2; hot++) {
+            std::vector<double> a; double un = 0, p1 = 0, p4 = 0, pop = 0; bool ok = true;
+            for (int r = 0; r < 3; r++) {
+                if (!hot) { drop_cache(); } else if (r == 0) { void * b; size_t m2; const uint8_t * mm = map_range(&b, &m2); volatile uint8_t sink = 0; for (size_t o = 0; o < g_len; o += 4096) { sink += mm[o]; } munmap(b, m2); }
+                void * base; size_t ml; const uint8_t * m = map_range(&base, &ml);
+                const size_t ns = (g_len + sl - 1) / sl; std::atomic<size_t> next{0}; std::vector<std::thread> tv; const double t0 = now();
+                if (pre) {   // phase 1: the threads read the slices into the page cache and map them (no pinning yet)
+                    std::atomic<size_t> pn{0}; std::vector<std::thread> pv;
+                    for (int t = 0; t < th; t++) pv.emplace_back([&]() { for (size_t i; (i = pn.fetch_add(1)) < ns;) { const size_t o = i * sl, n = std::min(sl, g_len - o); if (madvise((void *) (m + o), n, MADV_POPULATE_READ)) { perror("madvise"); exit(1); } } });
+                    for (auto & x : pv) { x.join(); }
+                    pop = (now() - t0) * 1e3;
+                }
+                for (int t = 0; t < th; t++) tv.emplace_back([&]() {
+                    cudaStream_t st; CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+                    for (size_t i; (i = next.fetch_add(1)) < ns;) { const size_t o = i * sl, n = std::min(sl, g_len - o);
+                        CK(cudaHostRegister((void *) (m + o), n, cudaHostRegisterPortable)); CK(cudaMemcpyAsync((uint8_t *) g_dev + o, m + o, n, cudaMemcpyHostToDevice, st)); }
+                    CK(cudaStreamSynchronize(st)); cudaStreamDestroy(st);
+                });
+                for (auto & x : tv) { x.join(); }
+                a.push_back((double) g_len / (now() - t0) / 1e9);
+                if (r == 0) { ok = verify(m); }
+                // pass 2: DMA only, sequential per slice (one stream) and 4 threads
+                double best1 = 0, best4 = 0;
+                for (int k = 0; k < 3; k++) {
+                    double t1 = now(); for (size_t o = 0; o < g_len; o += sl) { CK(cudaMemcpy((uint8_t *) g_dev + o, m + o, std::min(sl, g_len - o), cudaMemcpyHostToDevice)); } best1 = std::max(best1, (double) g_len / (now() - t1) / 1e9);
+                    std::atomic<size_t> nx{0}; std::vector<std::thread> t4; t1 = now();
+                    for (int t = 0; t < 4; t++) t4.emplace_back([&]() { for (size_t i; (i = nx.fetch_add(1)) < ns;) { const size_t o = i * sl; CK(cudaMemcpy((uint8_t *) g_dev + o, m + o, std::min(sl, g_len - o), cudaMemcpyHostToDevice)); } });
+                    for (auto & x : t4) { x.join(); } best4 = std::max(best4, (double) g_len / (now() - t1) / 1e9);
+                }
+                p1 = std::max(p1, best1); p4 = std::max(p4, best4);
+                const double tu = now(); for (size_t o = 0; o < g_len; o += sl) { cudaHostUnregister((void *) (m + o)); } un = (now() - tu) * 1e3;
+                munmap(base, ml);
+            }
+            std::sort(a.begin(), a.end());
+            printf("%5zuM %4d %-7s | %-5s | %5.2f / %5.2f / %5.2f | %6.0f   | %6.0f   | one stream %.1f, 4 threads %.1f GB/s %s\n", sl >> 20, th, pre ? "pre+reg" : "reg", hot ? "hot" : "cold", a.front(), a[1], a.back(), pop, un, p1, p4, ok ? "" : "DATA MISMATCH");
+            fflush(stdout);
+        }
+    }
+}
+
 // SWEEP=1: M4 (mmap -> pinned chunks), M5 (pread -> pinned chunks) and M7 (io_uring O_DIRECT) over threads x chunk x slots, REPS runs each, min / median / max GB/s
 static void sweep() {
     const int reps = getenv("REPS") ? atoi(getenv("REPS")) : 5;
@@ -209,6 +314,7 @@ int main(int argc, char ** argv) {
     cudaDeviceProp p; CK(cudaGetDeviceProperties(&p, argc > 4 ? atoi(argv[4]) : 0));
     printf("%s, tensor %zu bytes at %zu of %s\n", p.name, g_len, g_off, g_file);
     if (getenv("SWEEP")) { sweep(); return 0; }
+    if (getenv("BIGPIN")) { bigpin(); return 0; }
     char cfg[64];
     void * base; size_t ml; const uint8_t * m; bool ok; double t;
 
