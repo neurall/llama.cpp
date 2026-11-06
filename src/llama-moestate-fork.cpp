@@ -652,12 +652,16 @@ std::string llama_moe_stats_io_fork(int who) {
 // difference is divided by the tokens: bytes per token per link, joules and watts per card. TOK lines come every 10 decode tokens, the same numbers close each PAS line.
 // Every card's NVML energy counter (mJ) is read by the fast GPU sampler's own thread (below) and only loaded here: one NVML call takes about 4 ms per card on PC1, and called on the
 // decode thread for every token it cost Qwen3.6-35B a third of its decode (b14715 99.7 against 150 t/s for b14244, 2026-11-06).
-// shortcut: the values are as fresh as the sampler's period (--moe stats-fast-ms, 100 ms): a 10-token TOK window shorter than that shows 0 or one period's step; long prompt passes are fine.
-static std::atomic<unsigned long long> g_energy_mj[8];
-static std::atomic<int> g_energy_n{0};   // cards with a published counter; 0 while the sampler is off or has none
+// The sampler publishes every card's counter with its time and power; a reader extends the counter to now at that power (mW x s = mJ), so a 10-token window (67 ms on the
+// 35B) shorter than the sampler's period (--moe stats-fast-ms, 100 ms) gets its share instead of 0 or a whole period's step (485 W on a 220 W card without it).
+struct gpu_energy_pub { double t = 0.0; unsigned long long e_mj = 0; unsigned mw = 0; };
+static std::mutex g_energy_mu;
+static std::vector<gpu_energy_pub> g_energy;   // per card; empty while the sampler is off or NVML has no energy counter
 static std::vector<unsigned long long> nvml_energy_mj_all() {
-    std::vector<unsigned long long> out((size_t) g_energy_n.load(std::memory_order_acquire));
-    for (size_t g = 0; g < out.size(); ++g) { out[g] = g_energy_mj[g].load(std::memory_order_relaxed); }
+    const double now = llama_moe_span_now_fork();
+    std::lock_guard<std::mutex> lk(g_energy_mu);
+    std::vector<unsigned long long> out;
+    for (const gpu_energy_pub & p : g_energy) { out.push_back(p.e_mj + (unsigned long long) ((double) p.mw * std::max(0.0, now - p.t))); }
     return out;
 }
 int llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
@@ -669,7 +673,10 @@ static std::string tok_per_token(const tok_snap & a, const tok_snap & b, double 
     auto mib = [&](int i) { return (double) (b.c[i] - a.c[i]) / 1048576.0 / tokens; };
     std::string s = a.n >= 3 ? format("per token: cpu %.2f MiB, upload %.2f MiB, stream %.2f MiB", mib(0), mib(1), mib(2)) : std::string("per token: no expert cache");
     for (int k = 3; k < a.n; ++k) { s += format(", link%d %.2f MiB (%.2f GB/s)", k - 3, mib(k), (double) (b.c[k] - a.c[k]) / wall / 1e9); }
-    for (size_t g = 0; g < a.e.size() && g < b.e.size(); ++g) { s += format(", g%zu %.2f J (%.0f W)", g, (double) (b.e[g] - a.e[g]) / 1e3 / tokens, (double) (b.e[g] - a.e[g]) / 1e3 / wall); }
+    for (size_t g = 0; g < a.e.size() && g < b.e.size(); ++g) {
+        const double mj = b.e[g] > a.e[g] ? (double) (b.e[g] - a.e[g]) : 0.0;   // an extended reading can pass the next real one when the power drops: no wrap of the unsigned difference
+        s += format(", g%zu %.2f J (%.0f W)", g, mj / 1e3 / tokens, mj / 1e3 / wall);
+    }
     return s;
 }
 static void tok_window_note(double ms) {   // one decode call of one token took ms
@@ -718,6 +725,7 @@ static void fast_gpu_sampler_start() {
             struct samp { double t; unsigned util, mem, rx, tx, mw, mhz; unsigned long long freeb; };
             std::vector<std::vector<samp>> buf(n);
             double last_flush = llama_moe_span_now_fork();
+            std::vector<gpu_energy_pub> en(n);
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
                 const double t = llama_moe_span_now_fork();
@@ -727,9 +735,9 @@ static void fast_gpu_sampler_start() {
                     fu(dev[i], &u); fp(dev[i], 1, &rx); fp(dev[i], 0, &tx); fw(dev[i], &mw); fc(dev[i], 1, &mhz); fm(dev[i], &m);
                     buf[i].push_back({ t, u.gpu, u.mem, rx, tx, mw, mhz, m.free });
                     unsigned long long e = 0;
-                    if (fe && i < 8 && fe(dev[i], &e) == 0) { g_energy_mj[i].store(e, std::memory_order_relaxed); }
+                    if (fe && fe(dev[i], &e) == 0) { en[i] = { llama_moe_span_now_fork(), e, mw }; }   // the counter's own time: the calls before it take milliseconds
                 }
-                if (fe && g_energy_n.load(std::memory_order_relaxed) == 0) { g_energy_n.store((int) std::min(n, 8u), std::memory_order_release); }   // readers see the cards once every counter has a value
+                if (fe) { std::lock_guard<std::mutex> lk(g_energy_mu); g_energy = en; }
                 if (t - last_flush >= 10.0) {
                     last_flush = t;
                     for (unsigned i = 0; i < n; ++i) {

@@ -6719,3 +6719,4 @@ rel_stable_auto-q36-i-pf12k1k,2026-11-06 18:26:02,bench /m/q/36/Qwen3.6-35B-A3B-
 catchup_upstream60-q36-i-pf12k1k,2026-11-06 18:27:36,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds catchup_upstream60 variants v test pf12k n=2,,
 spaced_read2-q36-i-pf12k1k,2026-11-06 18:43:48,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds spaced_read2 variants v test pf12k n=2,,
 bis_mulid-q36-i-pf12k1k,2026-11-06 19:11:07,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds bis_mulid variants v test pf12k n=2,,
+fix_tok_nvml-q36-i-pf12k1k,2026-11-06 19:41:22,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds fix_tok_nvml variants v test pf12k n=2,,
