@@ -1,3 +1,4 @@
+#include "llama-spaced-read-fork.h"
 #include "llama-model-loader.h"
 #include "llama-moestate-fork.h"
 
@@ -1797,12 +1798,15 @@ bool llama_model_loader::load_all_data(
                 t = pr_q.front();
                 pr_q.pop_front();
             }
-            size_t done = 0;
-            while (done < t.n && !pr_fail) {
-                const ssize_t r = pread(t.fd, (char *) t.dst + done, t.n - done, (off_t) (t.off + done));
-                if (r < 0 && errno == EINTR) { continue; }
-                if (r <= 0) { pr_fail = true; break; }
-                done += (size_t) r;
+            for (const sr_piece & p : sr_pieces(t.n)) {   // blocks with gaps, then the gaps (llama-spaced-read-fork.h): no two neighbouring reads in a row
+                size_t done = 0;
+                while (done < p.n && !pr_fail) {
+                    const ssize_t r = pread(t.fd, (char *) t.dst + p.off + done, p.n - done, (off_t) (t.off + p.off + done));
+                    if (r < 0 && errno == EINTR) { continue; }
+                    if (r <= 0) { pr_fail = true; break; }
+                    done += (size_t) r;
+                }
+                if (pr_fail) { break; }
             }
             posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED);
         }

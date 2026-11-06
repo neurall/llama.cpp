@@ -1,4 +1,5 @@
 #include <csignal>
+#include "llama-spaced-read-fork.h"
 #include "llama-moecache-fork.h"
 #include "llama-fork-hooks.h"
 #include "llama-gpu-probe-fork.h"
@@ -779,48 +780,6 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
 // fio, PC1 3700X: 8 sync threads 5.9 GB/s, libaio 1 thread qd32 4.7 GB/s and the same with 16 busy cores; PC2 3600: 3.6 against 3.46 (3.3 with 12 cores busy, 4 sync threads 3.4).
 // The async engine needs no free cores, the pool wins when cores are free: rd_pick_mode starts from the free cores and then follows what each engine measured on the real reads.
 // Ladder when the async engine is not there (old kernel, seccomp, Windows): the pread pool. Windows overlapped I/O would be the same shape (completion port), not written.
-static std::atomic<int> g_aio_ok{0};   // --moe read-aio=1 turns the async engine on; off by default until its A/B has run on a real model
-#ifdef MOE_HAVE_AIO
-struct aio_ctx_t { aio_context_t ctx = 0; ~aio_ctx_t() { if (ctx) { syscall(SYS_io_destroy, ctx); } } };
-// bytes [beg, beg + total) of fd into buf (4096-aligned); `need` = bytes that exist (a short block past it is the end of the file). False: nothing usable, the caller reads again with pread.
-static bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need) {
-    constexpr int QD = 32; constexpr size_t BLK = (size_t) 1 << 20;
-    if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
-    thread_local aio_ctx_t c;
-    if (!c.ctx && syscall(SYS_io_setup, QD, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
-    iocb cbs[QD]; iocb * ps[1]; io_event ev[QD];
-    int free_slot[QD]; int n_free = QD;
-    for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
-    size_t next = 0; int infl = 0; bool bad = false;
-    while (next < total || infl > 0) {
-        while (!bad && next < total && n_free > 0) {
-            const int k = free_slot[--n_free];
-            const size_t want = std::min(BLK, total - next);
-            memset(&cbs[k], 0, sizeof(iocb));
-            cbs[k].aio_lio_opcode = IOCB_CMD_PREAD; cbs[k].aio_fildes = (uint32_t) fd;
-            cbs[k].aio_buf = (uint64_t) (uintptr_t) (buf + next); cbs[k].aio_nbytes = want; cbs[k].aio_offset = (int64_t) (beg + next);
-            cbs[k].aio_data = (uint64_t) next;
-            ps[0] = &cbs[k];
-            if (syscall(SYS_io_submit, c.ctx, 1L, ps) != 1) {
-                ++n_free; bad = true;
-                if (infl == 0 && next == 0) { g_aio_ok.store(0); }   // the very first submit refused: not on this kernel
-                break;
-            }
-            next += want; ++infl;
-        }
-        if (infl == 0) { break; }
-        const long got = syscall(SYS_io_getevents, c.ctx, 1L, (long) QD, ev, (struct timespec *) nullptr);
-        if (got < 0) { if (errno == EINTR) { continue; } bad = true; g_aio_ok.store(0); break; }   // a lost context cannot be drained
-        for (long e = 0; e < got; ++e) {
-            const iocb * cb = (const iocb *) (uintptr_t) ev[e].obj;
-            const size_t off = (size_t) ev[e].data, want = cb->aio_nbytes;
-            if (ev[e].res < 0 || ((size_t) ev[e].res < want && off + (size_t) ev[e].res < need)) { bad = true; }
-            free_slot[n_free++] = (int) (cb - cbs); --infl;
-        }
-    }
-    return !bad;
-}
-#endif
 
 // The engine for the next big read: 0 = pread pool, 1 = kernel AIO. Starts from the cores free now (pool needs rd_threads of them), then each engine's measured GB/s (moving average
 // over its last reads) decides; every 16th big read runs the other engine so both numbers stay fresh and a changed load is seen. Switches are logged.
@@ -880,16 +839,7 @@ static const char * read_direct(int dfd, uint8_t * buf, size_t cap, size_t off, 
 #else
     const size_t a = 4096, beg = off & ~(a - 1), end = (off + n + a - 1) & ~(a - 1), need = off + n - beg;
     if (end - beg > cap) { return nullptr; }
-    size_t got = 0;
-#ifdef MOE_HAVE_AIO
-    if (end - beg >= ((size_t) 4 << 20) && g_rd_mode.load() == 1 && aio_read_range(dfd, buf, beg, end - beg, need)) { return (const char *) buf + (off - beg); }
-#endif
-    while (got < need) {
-        const ssize_t r = pread(dfd, buf + got, end - beg - got, (off_t) (beg + got));
-        if (r <= 0) { return nullptr; }
-        got += (size_t) r;
-        if (got < need && (got & (a - 1))) { return nullptr; }   // a short read off the block grid: the next one would fail
-    }
+    if (!sr_read(dfd, (char *) buf, beg, end - beg, need)) { return nullptr; }   // llama-spaced-read-fork.h: kernel AIO or pread, the spaced order
     return (const char *) buf + (off - beg);
 #endif
 }
@@ -4113,13 +4063,14 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     }
     const int64_t t_pool0 = ggml_time_us();
 #endif
+    const std::vector<sr_piece> pcs = sr_pieces(total);   // the threads take the pieces in the spaced order of llama-spaced-read-fork.h
     std::atomic<size_t> next{0};
     std::atomic<bool>   fail{false};
     auto work = [&]() {
         for (;;) {
-            const size_t o = next.fetch_add(block);
-            if (o >= total || fail.load(std::memory_order_relaxed)) { return; }
-            const size_t want = std::min(block, total - o);
+            const size_t pi = next.fetch_add(1);
+            if (pi >= pcs.size() || fail.load(std::memory_order_relaxed)) { return; }
+            const size_t o = pcs[pi].off, want = pcs[pi].n;
             const ssize_t r = pread(dfd, buf + o, want, (off_t) (beg + o));
             if (r < 0 || ((size_t) r < want && o + (size_t) r < need)) { fail.store(true); return; }   // short only past the end of the file
         }
@@ -7027,12 +6978,8 @@ static void preheat_run(moe_cache * mc) {
             char * d = pin_alloc(mc, end - beg, 4096);   // the O_DIRECT read lands in the pinned block itself: no staging buffer, no copy, no page cache
             if (!d) { ok = false; spent = true; break; }
             size_t got = 0;
-            while (got < off + sz + pb - beg) {
-                const ssize_t rr = pread(ls.src_dfd[k], d + got, end - beg - got, (off_t) (beg + got));
-                if (rr <= 0) { if (rr < 0 && !read_errno) { read_errno = errno; } break; }
-                got += (size_t) rr;
-                if (got < off + sz + pb - beg && (got & 4095)) { break; }
-            }
+            if (sr_read(ls.src_dfd[k], d, beg, end - beg, off + sz + pb - beg)) { got = off + sz + pb - beg; }
+            else if (!read_errno) { read_errno = errno; }
             if (got < off + sz + pb - beg) { ok = false; n_fail++; break; }   // a failed read: the expert stays mapped, its block stays unused
             dst[k] = d + (off - beg);
         }
