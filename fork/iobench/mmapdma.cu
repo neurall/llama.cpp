@@ -206,6 +206,7 @@ static double dma_pass(size_t chunk, int nthr, const uint8_t * pin) {   // the p
 }
 static void bigreg();
 static void bigpin() {
+    if (getenv("BIGREG_ONLY")) { { void * w; CK(cudaMalloc(&w, 1 << 20)); uint8_t * wp; CK(cudaHostAlloc((void **) &wp, 1 << 20, 0)); for (int i = 0; i < 8; i++) CK(cudaMemcpy(w, wp, 1 << 20, cudaMemcpyHostToDevice)); } bigreg(); return; }
     uint8_t * pin; CK(cudaHostAlloc((void **) &pin, g_len, cudaHostAllocDefault));
     { void * w; CK(cudaMalloc(&w, 1 << 20)); uint8_t * wp; CK(cudaHostAlloc((void **) &wp, 1 << 20, 0)); for (int i = 0; i < 8; i++) CK(cudaMemcpy(w, wp, 1 << 20, cudaMemcpyHostToDevice)); }
     const char * nm[] = {"", "B1 pread", "B2 direct", "B3 uring"};
@@ -238,7 +239,8 @@ static void bigreg() {
                 const size_t ns = (g_len + sl - 1) / sl; std::atomic<size_t> next{0}; std::vector<std::thread> tv; const double t0 = now();
                 if (pre) {   // phase 1: the threads read the slices into the page cache and map them (no pinning yet)
                     std::atomic<size_t> pn{0}; std::vector<std::thread> pv;
-                    for (int t = 0; t < th; t++) pv.emplace_back([&]() { for (size_t i; (i = pn.fetch_add(1)) < ns;) { const size_t o = i * sl, n = std::min(sl, g_len - o); if (madvise((void *) (m + o), n, MADV_POPULATE_READ)) { perror("madvise"); exit(1); } } });
+                    for (int t = 0; t < th; t++) pv.emplace_back([&]() { for (size_t i; (i = pn.fetch_add(1)) < ns;) { const size_t o = i * sl, n = std::min(sl, g_len - o); const size_t a0 = ((size_t) (m + o)) & ~(size_t) 4095, e0 = (((size_t) (m + o + n)) + 4095) & ~(size_t) 4095;   /* the tensor starts 3072 bytes into a page */
+                    if (madvise((void *) a0, e0 - a0, MADV_POPULATE_READ)) { perror("madvise"); exit(1); } } });
                     for (auto & x : pv) { x.join(); }
                     pop = (now() - t0) * 1e3;
                 }
