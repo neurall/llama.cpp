@@ -1279,7 +1279,7 @@ static double dsplit_att_us_tok(const llama_model & model, ggml_backend_dev_t d,
 }
 
 static void dsplit_mm_bench(const llama_model & model, const std::vector<ggml_backend_dev_t> & devs) {
-    if (g_mm_done || devs.size() < 2) { return; }
+    if (g_mm_done || devs.empty()) { return; }   // one card is timed too (user 2026-11-06): the decode chain's crossover needs its weight read rate
     g_mm_done = true;
     const ggml_tensor * big = nullptr;   // the largest dense weight of the model's first layers: its type and width stand for the dense part
     for (int il = 0; il < (int) model.layers.size() && il < 4; ++il) {
@@ -1346,7 +1346,7 @@ static void dsplit_mm_bench(const llama_model & model, const std::vector<ggml_ba
 // The matmul and attention latencies are timed when the first context is created, before its KV cache and the expert pool take the VRAM. At the first prompt
 // (where they ran in pre7/pre8) the pool had left 96-358 MiB on each card: the timing's own backend, buffers and kernel scratch did not fit, and auto mode died
 // with "CUDA error: out of memory" in cuMemCreate (MiMo 60k, pre7; forced dense split never reached the planner, so it never timed and never failed).
-// the weight read rate of a card (bytes/s) from the matmul timing at load, 0 = not timed (one GPU: the timing runs for two or more)
+// the weight read rate of a card (bytes/s) from the matmul timing at load, 0 = not timed
 double llama_dsplit_read_rate_fork(ggml_backend_dev_t d) {
     std::lock_guard<std::mutex> pk(g_plan_mu);
     const auto it = g_mm_read.find(d);
