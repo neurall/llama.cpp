@@ -483,35 +483,57 @@ bool llama_moe_log_profile_fork(const char * name) {
     return false;
 }
 
-static void stats_emit(const char * kind, const char * text, double at) {   // at: seconds since the start of the process this line is for, or negative for now
-    static std::mutex mu;
-    static FILE * f = nullptr;
-    static bool opened = false;
-    static const bool planner = llama_moe_log_profile_fork("planner");
-    if (!planner && strcmp(kind, "STA") != 0) { return; }
-    std::lock_guard<std::mutex> lk(mu);
-    if (!opened) {
-        opened = true;
+// stats.log lines (user 2026-11-06: "shouldnt stats be colected by nonblocking low impact thread anyway?"): a thread with a line only queues it in memory; the flusher thread (stats_flusher,
+// below) writes the queue and the spans every 100 ms and at exit, in time order, one fflush per batch. So a decode or prompt thread never waits for the file, a write syscall or the sampler's
+// burst of SMP lines every 10 s. shortcut: a crash loses the lines of its last 100 ms at most; flush from the crash handler if those turn out to matter.
+struct stats_line_rec { double rel; char kind[8]; std::string text; };
+static std::mutex g_line_mu;
+static std::vector<stats_line_rec> g_line_buf;
+static FILE * g_stats_f = nullptr;              // written by the flusher thread only (by the exit path once that thread is gone)
+static bool g_stats_opened = false;
+static std::atomic<bool> g_flusher_gone{false};  // at exit, after the flusher thread ended: lines are written at once
+static void stats_flusher_start();
+
+static void stats_write(const stats_line_rec & r) {
+    if (!g_stats_opened) {
+        g_stats_opened = true;
         const char * p = llama_moe_get_opt("stats");   // a profile without a path: stats.log in the log directory
         const std::string path = p && *p ? p : moe_log_file("stats.log");
         if (!path.empty()) {
             p = path.c_str();
-            f = fopen(p, "a");
+            FILE * f = fopen(p, "a");
+            g_stats_f = f;
             if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
             else if (ftell(f) == 0 && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0) {
                 fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, SPN one big operation with its start, stop, bytes and rate (start-up stages, prompt calls, fills), DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, SWT misses switch between CPU and uploads, KVZ KV zone, DEW decode window, STA engine status, GPU cards (once a 10 s, run.py), SMP fast GPU samples every 100 ms from NVML (load, PCIe rx and tx, power, clock, free VRAM; flushed every 10 s), HST host\n");
             }
         }
     }
-    if (!f) { return; }
-    const double rel = at >= 0.0 ? at : std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count();
-    const auto now = g_stats_wall0 + std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::duration<double>(rel));
+    if (!g_stats_f) { return; }
+    const auto now = g_stats_wall0 + std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::duration<double>(r.rel));
     const time_t t = std::chrono::system_clock::to_time_t(now);
     char ts[32];
     strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
     const int ms = (int) (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
-    fprintf(f, "%s.%03d %9.3f %-3s %s\n", ts, ms, rel, kind, text);
-    fflush(f);
+    fprintf(g_stats_f, "%s.%03d %9.3f %-3s %s\n", ts, ms, r.rel, r.kind, r.text.c_str());
+}
+
+static void stats_emit(const char * kind, const char * text, double at) {   // at: seconds since the start of the process this line is for, or negative for now
+    static const bool planner = llama_moe_log_profile_fork("planner");
+    if (!planner && strcmp(kind, "STA") != 0) { return; }
+    stats_line_rec r;
+    r.rel = at >= 0.0 ? at : std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count();
+    snprintf(r.kind, sizeof r.kind, "%s", kind);
+    r.text = text;
+    if (g_flusher_gone.load()) {   // at exit: no thread left to write it
+        std::lock_guard<std::mutex> lk(g_line_mu);
+        stats_write(r);
+        if (g_stats_f) { fflush(g_stats_f); }
+        return;
+    }
+    stats_flusher_start();
+    std::lock_guard<std::mutex> lk(g_line_mu);
+    g_line_buf.push_back(std::move(r));
 }
 
 void llama_moe_stats_log_fork(const char * kind, const char * text) { stats_emit(kind, text, -1.0); }
@@ -519,7 +541,7 @@ void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double a
 
 // Spans (user 2026-11-05: "every big load logged in mem and flushed in stats.log, one timestamp start stop events per line ... more info in the debug trace phase, we waste less on nsys,
 // we spot deviations on any run, not just on demand rare nsys"): one line per big operation with its start, its stop, its bytes and the rate. The hot path only appends a record
-// to memory; a thread writes the records out every second and at exit, sorted by start. Records exist only with the planner log profile on, as every other line of stats.log.
+// to memory; the flusher thread writes the records out with the queued lines, sorted by start. Records exist only with the planner log profile on, as every other line of stats.log.
 struct moe_span_rec { double t0, t1; uint64_t bytes; char what[72]; char where[16]; unsigned tid; };
 static std::mutex g_span_mu;
 static std::vector<moe_span_rec> g_span_buf;
@@ -530,10 +552,11 @@ double llama_moe_span_now_fork() { return std::chrono::duration<double>(std::chr
 static std::atomic<double> g_ssd_max_gbs{0.0};
 void llama_moe_ssd_max_fork(double gbs) { g_ssd_max_gbs.store(gbs); }
 
-static void span_flush() {
+static void stats_flush() {   // the queued lines and the spans since the last flush, in time order: the flusher thread only
     std::vector<moe_span_rec> v;
+    std::vector<stats_line_rec> lines;
     { std::lock_guard<std::mutex> lk(g_span_mu); v.swap(g_span_buf); }
-    std::sort(v.begin(), v.end(), [](const moe_span_rec & a, const moe_span_rec & b) { return a.t0 < b.t0; });
+    { std::lock_guard<std::mutex> lk(g_line_mu); lines.swap(g_line_buf); }
     for (const auto & r : v) {
         const double dur = r.t1 - r.t0;
         std::string line = format("%s: start %.3f stop %.3f dur %.1f ms", r.what, r.t0, r.t1, dur * 1e3);
@@ -544,23 +567,32 @@ static void span_flush() {
             line += format(", %.0f%% of the measured SSD maximum %.2f GB/s", 100.0 * (double) r.bytes / dur / 1e9 / mx, mx);
         }
         line += format(", thread %u", r.tid);
-        stats_emit("SPN", line.c_str(), r.t0);
+        stats_line_rec l;
+        l.rel = r.t0;
+        snprintf(l.kind, sizeof l.kind, "SPN");
+        l.text = std::move(line);
+        lines.push_back(std::move(l));
     }
+    if (lines.empty()) { return; }
+    std::stable_sort(lines.begin(), lines.end(), [](const stats_line_rec & a, const stats_line_rec & b) { return a.rel < b.rel; });
+    for (const auto & l : lines) { stats_write(l); }
+    if (g_stats_f) { fflush(g_stats_f); }
 }
 
 namespace {
-struct span_flusher {   // defined after the buffer: at exit it is destroyed first, and writes what is left
+struct stats_flusher {   // a function-local static, so it ends before the buffers above it: at exit it writes what is left, then lines go to the file at once
     std::thread th;
     std::atomic<bool> stop { false };
-    span_flusher() { th = std::thread([this] { while (!stop.load()) { for (int i = 0; i < 50 && !stop.load(); ++i) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); } span_flush(); } span_flush(); }); }
-    ~span_flusher() { stop = true; if (th.joinable()) { th.join(); } }
+    stats_flusher() { th = std::thread([this] { while (!stop.load()) { for (int i = 0; i < 5 && !stop.load(); ++i) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); } stats_flush(); } stats_flush(); }); }
+    ~stats_flusher() { stop = true; if (th.joinable()) { th.join(); } g_flusher_gone.store(true); stats_flush(); }   // the last flush takes what came after the thread's own last one
 };
 }
+static void stats_flusher_start() { static stats_flusher fl; (void) fl; }   // the thread starts with the first line or span
 
 void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where) {
     static const bool on = llama_moe_log_profile_fork("planner");
     if (!on) { return; }
-    static span_flusher flusher;   // the thread starts with the first span
+    stats_flusher_start();
     moe_span_rec r = { t0, t1, bytes, {}, {}, (unsigned) (std::hash<std::thread::id>()(std::this_thread::get_id()) % 100000) };
     snprintf(r.what, sizeof r.what, "%s", what);
     snprintf(r.where, sizeof r.where, "%s", where ? where : "");
