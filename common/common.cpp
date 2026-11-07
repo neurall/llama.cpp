@@ -943,27 +943,7 @@ bool fs_validate_filename(const std::string & filename, bool allow_subdirs) {
     return true;
 }
 
-#include <iostream>
-
-
 #ifdef _WIN32
-std::wstring utf8_to_wstring(const std::string & str) {
-    if (str.empty()) {
-        return std::wstring();
-    }
-
-    int size = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
-
-    if (size <= 0) {
-        return std::wstring();
-    }
-
-    std::wstring wstr(size, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size);
-
-    return wstr;
-}
-
 std::string wstring_to_utf8(const std::wstring & str) {
     if (str.empty()) {
         return std::string();
@@ -1031,20 +1011,9 @@ void common_set_env(const std::string & name, const std::string & value) {
 #endif
 }
 
-std::filesystem::path common_get_path_from_env(const std::string & name) {
-#if defined(_WIN32)
-    const std::wstring wname = utf8_to_wstring(name);
-    const wchar_t * wvalue = _wgetenv(wname.c_str());
-    return wvalue ? std::filesystem::path(wvalue) : std::filesystem::path();
-#else
-    const char * value = std::getenv(name.c_str());
-    return value ? std::filesystem::path(value) : std::filesystem::path();
-#endif
-}
-
 #if !defined(_WIN32)
 static std::filesystem::path get_home_directory() {
-    std::filesystem::path home = common_get_path_from_env("HOME");
+    std::filesystem::path home = common_get_env("HOME");
     if (!home.empty()) {
         return home;
     }
@@ -1057,19 +1026,19 @@ static std::filesystem::path get_home_directory() {
 #endif
 
 std::filesystem::path fs_get_cache_directory() {
-    std::filesystem::path cache_directory = common_get_path_from_env("LLAMA_CACHE");
+    std::filesystem::path cache_directory = common_get_env("LLAMA_CACHE");
     if (!cache_directory.empty()) {
         return cache_directory;
     }
 #if defined(_WIN32)
-    cache_directory = common_get_path_from_env("LOCALAPPDATA");
+    cache_directory = common_get_env("LOCALAPPDATA");
     if (cache_directory.empty()) {
         throw std::runtime_error("Failed to find %LOCALAPPDATA% directory");
     }
 #elif defined(__APPLE__)
     cache_directory = get_home_directory() / "Library/Caches";
 #else
-    cache_directory = common_get_path_from_env("XDG_CACHE_HOME");
+    cache_directory = common_get_env("XDG_CACHE_HOME");
     if (cache_directory.empty()) {
         cache_directory = get_home_directory() / ".cache";
     }
@@ -1080,12 +1049,12 @@ std::filesystem::path fs_get_cache_directory() {
 std::filesystem::path fs_get_config_directory() {
     std::filesystem::path config_directory;
 #if defined(_WIN32)
-    config_directory = common_get_path_from_env("APPDATA");
+    config_directory = common_get_env("APPDATA");
     if (config_directory.empty()) {
         throw std::runtime_error("Failed to find %APPDATA% directory");
     }
 #else
-    config_directory = common_get_path_from_env("XDG_CONFIG_HOME");
+    config_directory = common_get_env("XDG_CONFIG_HOME");
     if (config_directory.empty()) {
         config_directory = get_home_directory() / ".config";
     }
@@ -1101,7 +1070,7 @@ std::filesystem::path fs_get_cache_file(const std::string & filename) {
     if (ec) {
         throw std::runtime_error("failed to create cache directory: " + cache_directory.string());
     }
-    return cache_directory / std::filesystem::u8path(filename);
+    return cache_directory / filename;
 }
 
 //
@@ -1781,9 +1750,9 @@ static uint32_t common_auto_ctx(common_params & params) {
         cp.n_ubatch = 2048;
         cp.n_batch  = std::max<uint32_t>(cp.n_batch, 2048);
         std::vector<ggml_backend_dev_t> devs;
-        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             trained = nctx;
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 const int64_t target = d < params.fit_params_target.size() ? (int64_t) params.fit_params_target[d] : 0;
@@ -1851,10 +1820,10 @@ static uint32_t common_auto_ubatch(common_params & params) {
         cp.n_ubatch = pu;
         cp.n_batch  = std::max(cp.n_batch, pu);
         std::vector<ggml_backend_dev_t> devs;
-        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         size_t sum = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 sum += dmd[d].compute;
                 if (i == 0) {
@@ -1905,9 +1874,9 @@ static uint32_t common_fits_ubatch(common_params & params) {
         cp.n_ubatch = ub;
         cp.n_batch  = std::max(cp.n_batch, ub);
         std::vector<ggml_backend_dev_t> devs;
-        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             int64_t left = 0, compute = 0;
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 left    += (int64_t) dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context);
@@ -2017,9 +1986,9 @@ static size_t common_pass_buffer_reserve(common_params & params) {
     cp.n_batch  = std::max(cp.n_batch, ub);
     cp.n_ctx    = params.n_ctx > 0 ? std::min<uint32_t>(params.n_ctx, 32768) : 32768;
     std::vector<ggml_backend_dev_t> devs;
-    uint32_t ngl = 0, nctx = 0, nexp = 0;
+    uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
     try {
-        const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+        const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
         if (!dmd.empty()) { return dmd.back().compute; }   // the last entry is the host
     } catch (const std::exception & e) {
         COM_DBG("pass buffer probe failed (%s)\n", e.what());
@@ -2588,6 +2557,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         cparams.n_outputs_max_per_seq = 1;
 
         LOG_INF("%s", "decision model reads the embeddings output, enabling embedding mode\n");
+    }
+
+    if (llama_model_classifier_free_guidance(model)) {
+        params.kv_unified   = true;
+        cparams.kv_unified  = true;
+        cparams.n_seq_max  *= 2;
     }
 
     // embeddings need the whole batch in one ubatch, so n_batch must not be larger than n_ubatch
