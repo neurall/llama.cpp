@@ -2206,30 +2206,18 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     // 2. transparent huge pages for what the free 2 MiB blocks cover (70%: other processes allocate meanwhile, and the kernel keeps free blocks for its own use), 3. the rest 4 KiB pages
     char * rest = ptr + (reserved ? head + reserved : 0);
     const size_t rest_n = reserved && head + reserved >= size ? 0 : size - (reserved ? head + reserved : 0);   // 0: the pool covers the whole buffer
-    // Populate first, or leave the faulting to the register? cudaHostRegister pins long term (FOLL_LONGTERM), and a long-term pin cannot keep a page in a
-    // CMA page block: a populated page there is migrated first, which needs free memory outside CMA and crawls under pressure. The kernel serves ordinary
-    // (movable) allocations from CMA blocks first once their free pages are more than half of all free pages, and that is the state at the end of a big
-    // load: GLM 3.5-bit's 5.7 GiB pass buffer pinned at 2738, 1124, 523, 392 MB/s as 0.7, 2.5, 2.6, 3.3 GiB of it landed in CMA blocks, then a stall
-    // (2026-11-07). Pages the register faults in itself are allocated outside CMA (the kernel's pin allocation context), so nothing has to move: in that state
-    // nothing is populated or locked here. Otherwise populated as before (several times faster to pin than faulting page by page).
-    const ggml_cuda_pin_mem pm = ggml_cuda_pin_mem_now();
-    const bool fault_in_register = pm.cma_b > pm.free_b / 2 && getenv("GGML_CUDA_PIN_POPULATE") == nullptr;
-    if (fault_in_register) {
-        fprintf(stderr, "%s: %.1f GiB: CMA free %.2f GiB is over half of free %.2f GiB, so populated pages would land in CMA blocks and have to move at the pin: "
-                        "the register faults them in itself (outside CMA)\n", __func__, size / 1073741824.0, pm.cma_b / 1073741824.0, pm.free_b / 1073741824.0);
-    }
     if (reserved && head > 0) {
         madvise(ptr, head, MADV_NOHUGEPAGE);
-        if (!fault_in_register) { ggml_cuda_populate(ptr, head, true); }
+        ggml_cuda_populate(ptr, head, true);
     }
     const size_t huge = rest_n == 0 ? 0 : std::min(rest_n, (size_t) ((double) ggml_cuda_free_huge_bytes() * (getenv("GGML_CUDA_THP_SHARE") ? atof(getenv("GGML_CUDA_THP_SHARE")) : 0.7)) & ~(size_t) (two_mb - 1));
     if (huge > 0) {
         madvise(rest, huge, MADV_HUGEPAGE);
-        if (!fault_in_register) { ggml_cuda_populate(rest, huge, true); }
+        ggml_cuda_populate(rest, huge, true);
     }
     if (huge < rest_n) {
         madvise(rest + huge, rest_n - huge, MADV_NOHUGEPAGE);
-        if (!fault_in_register) { ggml_cuda_populate(rest + huge, rest_n - huge, true); }
+        ggml_cuda_populate(rest + huge, rest_n - huge, true);
     }
     const int64_t t_pop = ggml_time_us();
     fprintf(stderr, "%s: %.1f GiB populated in %.1f s (%.1f reserved %zu MiB pages, %.1f THP, %.1f small)\n", __func__, size / 1073741824.0,
@@ -2237,6 +2225,20 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     auto st = std::make_unique<ggml_cuda_reg_state>();
     st->map_len = size_r;
     const size_t cma1 = ggml_cuda_pin_mem_now().cma_b, cma_landed = cma0 > cma1 ? cma0 - cma1 : 0;   // free CMA pages the populate took
+    // cudaHostRegister pins long term (FOLL_LONGTERM), and a long-term pin cannot leave a page in a CMA page block: every populated page there is migrated
+    // first, which needs free memory outside CMA and crawls under pressure. This box has 8.8 GiB of CMA page blocks (CmaTotal 0), and late in a load the kernel
+    // serves the buffer from them: GLM 3.5-bit's 5.1 GiB pass buffer pinned at 3818 then 1011 MB/s as 0.9 then 3.3 GiB of it landed there, then stalled
+    // with 3.8 GiB there (pinfix2, 2026-11-07). Pages the register faults in itself are allocated outside CMA (the kernel's pin allocation context), so
+    // nothing has to move. So when more than an eighth of the buffer landed in CMA, its pages are given back here and the register faults them in.
+    // Measured after the populate, not predicted: the kernel's choice of CMA did not follow free memory (a rule on CMA free > half of free never fired).
+    const bool fault_in_register = cma_landed > size / 8 && rest_n > 0 && getenv("GGML_CUDA_PIN_POPULATE") == nullptr;
+    if (fault_in_register) {
+        if (reserved && head > 0) { munlock(ptr, head); madvise(ptr, head, MADV_DONTNEED); }   // the 4 KiB head; reserved huge pages are never in CMA
+        munlock(rest, rest_n);
+        madvise(rest, rest_n, MADV_DONTNEED);
+        fprintf(stderr, "%s: %.1f GiB: %.2f GiB of it landed in CMA page blocks (more than 1/8), pages given back, the register faults them in outside CMA\n",
+                __func__, size / 1073741824.0, cma_landed / 1073741824.0);
+    }
     if (!ggml_cuda_register_chunked(ptr, size, st, t_pop, [ptr, size_r] { munmap(ptr, size_r); }, cma_landed, !fault_in_register)) {
         return nullptr;
     }
