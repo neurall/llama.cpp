@@ -309,6 +309,81 @@ trial with the paired stop), each pick logged with its numbers; (4) the replay g
 state, and passes when no pick loses > 5% against the measured best; (5) commit on branch plan-rules, push, report the scoreboard before and after
 with the worst loss per model. Nothing hand-tuned; a number the data does not give is a learned prior with its sd logged.
 
+## Oracle-trace procedure (one model and prompt that visits most crossovers; the best run's decisions become the rules)
+
+### 1. Which crossovers one request visits (from the logs' pass structure)
+
+A request = the server's first call (~2k tokens: 1938/2034/2089 by build) + the rest in passes cut by the pool cap (GLM 10336-10496 in one pass; MiMo
+9568-token passes, DS 13502 at `-nm 0`) + the decode. Per pass the planner meets: X2/X3 (stream / mix / chain / k) and X4 (one / split) at every pass,
+X5 at passes >= 8k, X1 only where the pass is small (the chains' band is 64-512 tokens on four models, <= 3k on DS), the ctx axis only when passes
+reach 60k+ cells, the SSD tier only on non-fitting models.
+
+| candidate (test) | passes | X1 CPU misses | X2/X3 chain, k, mix | X4 split | X5 expert | ctx axis | SSD / pool tier | decode decisions | cell min |
+|---|---|---|---|---|---|---|---|---|---|
+| GLM 3.5 pf12k4k, rp0 and rp1 | 2k + 10k | the cold 2k call only (the 43-86 s decode-chain loss lives here) | both passes | both passes (one at 2k, split at 10k: the release's 6/7) | 10k (confirm) | no | yes: non-fitting at PC1, pool rp1 | 4k tokens: cache / pool / SSD misses | 7 (rp1 10) |
+| MiMo pf60k4k | 2k + 6 x 9.5k | no | every pass | every pass, across 2k -> 60k cells (the attention term, the 245k ban's origin) | every big pass | yes | no (fits) | 4k | 20 |
+| DS pf12k4k (`-nm 0`) | 2k + 13.5k | the 2k call (the chain WINS here below 3k) | both | 2k (split won at 1k, lost from 3k) and 13.5k | 13.5k | no | yes: always SSD | 4k, 328 s decode-chain class | 14 |
+| qni4 pf16k4k | 2k + 14k | no | both | both (split from 10k) | 14k (+7-10% measured) | no | no at PC1 (78 GiB fits) | 4k | 8 |
+| qwen36 pf4k1k `-sim 4.5g` | 2k + 2k | no | both | 2k | no | no | no | 1k | 4 |
+| any model pf512 (64 out) | 1 x 512 | yes: the band itself | yes | no | no | no | per model | - | 3 |
+
+Recommendation: first GLM 3.5 pf12k4k (rp0, then rp1): it visits X1-X5 and the SSD/pool tier in two passes at 7-10 min per cell, and it is the release
+question (rows 23772/73 one card 273/386 pp against the split's measured 497). Then MiMo pf60k4k (the ctx axis), DS pf12k4k (the chain's one
+winning regime and the SSD tier), qni4 pf16k4k (X5's only measured gain), qwen36 `-sim 4.5g` (small VRAM). Every model also gets one pf512 request
+(X1's band is not reachable by a 12k request). 12k is enough for every crossover but the ctx axis.
+
+### 2. The procedure
+
+Hysteresis: a pass's time depends on the passes before it (a chain pass leaves misses, k staging evicts later layers, the copies stay in place after a
+split, the pool's set after the first request). So the oracle is over whole-request ARM SEQUENCES, never per-pass arms from different histories:
+a per-pass "best" is defined only among runs that share the same decisions up to that pass.
+
+1. Sequences. For the 2-pass request: pass 1 in {stream, mix, chain, dec, k2}, pass 2 in {one card stream, split, split + mix}: 15 sequences; forced
+   per pass through the per-request force (`/moe/plan force=` of T7; until it exists `--moe pp-path=`/`pp-k=` for pass 1 and `-ds` for pass 2 apply to
+   both passes, so the split arm is `-ds on` with pass 1's path forced and the one-card arm `-ds one`: 10 sequences). For MiMo's 7 passes: greedy by
+   position: fix the best prefix found, vary only the next pass (3 arms), 2 repeats each, then the next position (the attention term makes the later
+   passes' winner shift to one card at some cell count: that cell count is the crossover).
+2. Runs. Each sequence as one cell, `-r 2 -cs` (run 1 cold, run 2 warm: two oracle states); the sequences of one position run interleaved A B A B
+   (one queue, same power session) so drift hits all alike. The noise = the paired half-range of the 2 repeats of the same sequence (per pass and per
+   request). The oracle at a position is stable when the best sequence beats the runner-up by more than that noise in both repeats; otherwise one more
+   repeat of the top two (never more than 4 repeats: beyond that the two arms are a tie and either is the oracle, logged as such).
+3. Archive the best run: its runs.db row (`oracle=1` column via T4's decisions table: the sequence, per pass took, fill, the paired noise), its stats.log
+   (already stored zlib in `stats`), the server log, and the state file after the run (T3). The oracle for the model = the best sequence cold and the best
+   sequence warm, with per-pass times.
+4. State features at each pass boundary of the best run, from its stats.log: CAL (U link-bound, SSD GB and rate, Um, up, ch), PAS (per-card GB/s =
+   utilization against the link ceiling, cpu MiB/token), DON took, SPN fill (pins apart), split balance (wait_other, linkbusy, stall, kern per card), hit %,
+   cells, C1 = stream took - its upload wait, the pool counters (rp_hit/rp_ssd). The rule for a crossover = the quantity whose value at the oracle's switch
+   separates the sequences that lost from the one that won across the repeats (the recipe of section 5: a single threshold with the paired noise as its
+   uncertainty; else "measured means + trial"). Fitted on the first model only.
+5. Acceptance on the same model: the auto run (the rule-driven planner, `-cs` for the cold request) reproduces the oracle's sequence cold and warm and
+   its total time within the paired noise; any disagreement is reported as the pass, both arms' times and the loss in seconds. Then the NEXT model runs
+   the same auto build WITHOUT retuning against its own oracle (found by steps 1-3): the generalisation check; a rule that needs a retune per model is
+   not a rule but a prior and goes into the state file instead.
+
+Cost of the first model (GLM 3.5 pf12k4k): 10 sequences x 7 min x rp0 + the same at 10 min rp1 = 170 min, + the stability repeats (top two, both
+regimes, ~35 min) + the pf512 band (4 arms, 12 min) + the auto acceptance runs (rp0 and rp1, `-r 2`, 20 min) = about 4 h PC1. MiMo pf60k4k greedy:
+7 positions x 3 arms x 2 repeats x 20 min = 14 h (run at night); DS 10 x 14 x 2 = 4.7 h; qni4 10 x 8 = 1.3 h; qwen36 10 x 4 = 0.7 h.
+
+### 3. Briefs
+
+Sonnet (medium), oracle runs: PC1, user o, run.py only, one queue. Write fork/runs/oracle-glm35.csv with the 10 sequences of step 1 (name
+`or-glm35-<p1>-<p2>`, model glm35, n=2, test pf12k4k, tokens 4096, args `--moe pp-path=<p1>` or `pp-k=2`, extra empty), run
+`run.py jobs oracle-glm35 -b rel_b14244 -nm -pl 220/280 -r 2 -cs -ds one` and again with `-ds on`, then the same list with `-a moe:rampool=1`
+(rp1). Interleave by running the list twice (A B A B over the sequences). Read every answer in fork/outputs/<rowid>.txt before its speed (ok 0 = out).
+Stop at the first failing cell (server death, GUARD in q5h/watch-DATE.log, refused pass) and hand back the cause with rowid and log path. Return per
+regime a table `sequence | rowids | cold: pass1 s, pass2 s, fill s, total s | warm: the same | paired noise s` sorted by warm total, mark the best
+cold and the best warm sequence and whether they are stable (step 2); add the pf512 band (4 arms: stream, chain, dec, k2) as rows. Hand back when
+the list is done or at the first failure. Then the same for oracle-mimo (greedy, step 1), oracle-ds, oracle-qni4, oracle-qwen36 when asked.
+
+Opus (high), rule extraction: inputs = the oracle tables and the archived best runs' stats.logs (q5h), fork/planner_events.py, /tmp/xo_score.
+(1) Extract the step-4 features at every pass boundary of every sequence of the first model, cold and warm; (2) for each crossover the best run
+visited, find the quantity and threshold that separate the losing sequences from the winner across the repeats, with the paired noise as its
+uncertainty; where none separates, record "means + trial"; (3) encode: the thresholds as PRIORS of the learned scalars (section 0's R2 form), the
+means into the state file (R4), the chains' eligibility (R1), the VOI trial (R3); (4) replay gate from fresh and carried state on the oracle's calls:
+the auto pick must equal the oracle's sequence cold and warm within the noise; (5) build, Sonnet runs the acceptance of step 5 on the same model,
+then the next model without any change; (6) commit on branch plan-oracle, push, report per model the oracle sequence, the auto sequence, the loss in
+seconds of each disagreement and the rule each pass boundary was decided by. Nothing hand-tuned; every threshold carries its noise.
+
 ## 6. Work packages (P0 first; P1-P5 disjoint, parallel; Sonnet runs cells)
 
 | pkg | owner | effort | what | owns (disjoint) | depends | acceptance |
