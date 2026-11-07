@@ -1,5 +1,6 @@
 #include <csignal>
 #include "../ggml/src/ggml-read-fork.h"
+#include "../ggml/src/ggml-rampool-fork.h"
 #include "llama-moecache-fork.h"
 #include "llama-fork-hooks.h"
 #include "llama-gpu-probe-fork.h"
@@ -230,6 +231,8 @@ struct layer_state {
     int32_t               n_own   = 0;    // block pool: blocks of the class this layer owns now
     std::vector<uint8_t>  is_stream;      // slot -> holds streamed (predicted) experts, not the cache
     std::unique_ptr<std::atomic<const char *>[]> pin_ptr[3];   // tensor (up, gate, down) -> expert -> its pinned copy (--moe pinr), nullptr = not pinned
+    const char * const *  rp_tab[3] = { nullptr, nullptr, nullptr };   // --moe rampool: the pool's table of each tensor (expert -> its block, nullptr: out), nullptr: not in the pool
+    std::vector<uint32_t> vis;            // --moe rampool heat: per expert the last RP_VIS decode-step stamps, oldest first (0: none), saved as vis.<layer>
     std::vector<int32_t>  stream_slots;   // those slots, round robin
     std::vector<float>    stream_score;   // slot -> predictor score of the streamed expert (SLOTKEEP)
     std::vector<uint64_t> stream_step;    // slot -> step it was streamed for
@@ -403,6 +406,10 @@ struct moe_cache {
     // --moe pinr=N (default 6): a model that does not fit RAM keeps its weights mmap'd, and pinned copies of the slices of the experts that get uploaded are kept for as
     // long as N/10 of the RAM lasts: the next upload of an expert reads its pinned copy (direct DMA, 2.2x the pageable speed on the x16 link), the cold ones stay in the page cache
     ggml_backend_buffer_type_t pin_buft = nullptr;
+    bool                       rp_on = false;      // --moe rampool: the RAM pool holds the expert slices (ggml-rampool-fork.h)
+    std::vector<ggml_backend_buffer_t> rp_bufs;    // its pinned chunks
+    uint32_t                   vis_base = 0;       // the heat clock where the saved profile left it
+    std::atomic<uint32_t>      vis_now{1};         // the heat clock: vis_base + decode steps
     ggml_backend_buffer_type_t lazy_buft = nullptr;   // --moe pin-lazy: the GPU's pinned host buffer type
     size_t                     pin_budget = 0, pin_used = 0, pin_left = 0;
     char *                     pin_cur = nullptr;
@@ -1183,6 +1190,36 @@ std::string profile_path(const llama_model & model) {
     return moe_state_enabled() ? moe_state_section(model) : "";
 }
 
+// --moe rampool heat (user 2026-11-07): per expert a fixed ring of its last RP_VIS decode-step stamps. Expected next use = last stamp + mean gap between the stamps; one stamp: now + its
+// age; past due: now + how long overdue. Never seen: after every seen expert, by the lifetime count. A card holds it: HUGE_VAL (a RAM copy pays nothing).
+static constexpr int RP_VIS = 4;
+static void vis_stamp(layer_state & ls, int32_t e, uint32_t now) {
+    if (ls.vis.empty()) { return; }
+    uint32_t * v = ls.vis.data() + (size_t) e * RP_VIS;
+    if (v[RP_VIS - 1] == now) { return; }   // the same step again (another token of the call)
+    memmove(v, v + 1, (RP_VIS - 1) * sizeof(uint32_t));
+    v[RP_VIS - 1] = now;
+}
+static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) {
+    const double now = (double) mc->vis_now.load(std::memory_order_relaxed);
+    const uint32_t * v = ls.vis.empty() ? nullptr : ls.vis.data() + (size_t) e * RP_VIS;
+    int n = 0;
+    while (v && n < RP_VIS && v[RP_VIS - 1 - n] != 0) { ++n; }
+    if (n == 0) { return 1e15 + 1e12 / (1.0 + (double) ls.glob_count[e]); }
+    const double last = (double) v[RP_VIS - 1];
+    if (n == 1) { return now + (now - last); }
+    const double nxt = last + (last - (double) v[RP_VIS - n]) / (n - 1);
+    return nxt >= now ? nxt : now + (now - nxt);
+}
+static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
+    const moe_cache * mc = (const moe_cache *) ud;
+    const auto it = mc->by_src.find((const ggml_tensor *) key);
+    if (it == mc->by_src.end()) { return HUGE_VAL; }
+    const layer_state & ls = mc->layers[it->second.first];
+    if (ls.expert_slot[e] >= 0 || ls.queued[e]) { return HUGE_VAL; }
+    return vis_next(mc, ls, (int32_t) e);
+}
+
 void profile_save(const moe_cache * mc) {
     if (mc->profile.empty() || mc->n_steps < 64) { // too little use to be worth keeping
         return;
@@ -1201,7 +1238,13 @@ void profile_save(const moe_cache * mc) {
             v += (e ? " " : "") + std::to_string((uint32_t) (ls.glob_count[e] >> shift));
         }
         kv.emplace_back("hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), v);   // real layer: dense layers are not cache layers
+        if (!ls.vis.empty()) {   // the heat ring: RP_VIS stamps per expert, oldest first, on the clock saved as vis.clock
+            std::string w;
+            for (size_t i = 0; i < ls.vis.size(); ++i) { w += (i ? " " : "") + std::to_string(ls.vis[i]); }
+            kv.emplace_back("vis." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), w);
+        }
     }
+    if (mc->rp_on) { kv.emplace_back("vis.clock", std::to_string(mc->vis_now.load())); }
     // what this run did, per name the last 9 runs: run.<name> = <median> <last> | <oldest> ... <newest> (hit rate of the cache, evictions, uploads and
     // uploaded MiB per step, share of the prefill's experts found in the cache)
     {
@@ -1338,6 +1381,10 @@ struct stock_heat_t {
 } g_heat;
 std::atomic<bool> g_heat_live{false};            // counting right now (stops after observe-steps decode calls; the counts stay for the save): read without the lock once per decode call
 
+void * cpu_proc_fork(const char * name) {   // the CPU backend's fork entry points (ggml-cpu.cpp, ggml_backend_cpu_get_proc_address)
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CPU");
+    return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
+}
 void * cuda_obs_proc(const char * name) {
     ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
     return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
@@ -1923,6 +1970,12 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         auto & ls = mc->layers[il];
         ls.glob_count = counts[il];
         ls.glob_base  = counts[il];
+        if (std::string w; !ls.vis.empty() && moe_state_get(mc->profile, "vis." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), w)) {
+            std::istringstream is(w);
+            std::vector<uint32_t> v;
+            for (uint32_t x; is >> x; ) { v.push_back(x); }
+            if (v.size() == ls.vis.size()) { ls.vis = v; }   // another layout: the ring starts empty
+        }
         ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
         refresh_sticky(ls);
         std::vector<int32_t> ids;
@@ -1938,6 +1991,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             picks.push_back({ (double) ls.glob_count[ids[i]] / (double) std::max<uint64_t>(1, total), il, ids[i] });   // share of the layer's picks: comparable across layers
         }
     }
+    if (std::string c; moe_state_get(mc->profile, "vis.clock", c)) { mc->vis_base = (uint32_t) strtoul(c.c_str(), nullptr, 10); mc->vis_now.store(mc->vis_base + 1); }
     mc->profile_ready.store(true, std::memory_order_release);
     std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
     for (const auto & pk : picks) {
@@ -2550,6 +2604,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             if (!prefill || count_prompt) {   // the lifetime counts (eviction score, saved hot map): the answer's experts, not the question's, with count-prompt=0
                 ls->glob_max = std::max(ls->glob_max, ++ls->glob_count[id]);
             }
+            if (!prefill) { vis_stamp(*ls, id, mc->vis_now.load(std::memory_order_relaxed)); }   // the rampool heat: decode visits only (a prompt pass reads every expert anyway)
             const int32_t slot = ls->expert_slot[id];
             if (slot >= 0) {
                 if (!prefill && ls->is_stream[slot] &&
@@ -7083,8 +7138,86 @@ void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_prompt, bool
 
 void llama_tokheat_dump_fork(void);   // llama-context.cpp: --moe tokheat=DIR
 
+static void rp_log(const char * when);
+// --moe rampool (fork/docs/rampool.md): expert slices that stayed mapped (the loader pinned no expert tensor, see llama-model-loader.cpp) go to a pinned pool chosen by heat
+static void * rp_alloc(size_t bytes, void * ud) {
+    moe_cache * mc = (moe_cache *) ud;
+    const size_t floor = (size_t) 6 << 30;   // the floor pin_alloc keeps: never push the system into swapping
+    if (mem_available_bytes() < bytes + floor) { return nullptr; }
+    ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, bytes);
+    if (!b) { return nullptr; }
+    char * base = (char *) ggml_backend_buffer_get_base(b);
+#ifndef _WIN32
+    if (const char * ml = moe_opt("pin-mlock"); !(ml && ml[0] == '0')) { (void) mlock((void *) ((uintptr_t) base & ~(uintptr_t) 4095), bytes); }   // as the pinned weights (pin-mlock)
+#endif
+    mc->rp_bufs.push_back(b);
+    return base;
+}
+static const void * rp_cpu_ptr(const ggml_tensor * src0, int64_t e) { return ggml_rampool_get_fork(src0, e); }
+static void rp_setup(moe_cache * mc) {
+    const char * rv = moe_opt("rampool");
+    if (!rv || atoi(rv) == 0) { return; }
+    const char * pb = moe_opt("pin-budget"), * pu = moe_opt("pin-used");
+    const size_t budget = pb ? (size_t) strtoull(pb, nullptr, 10) : 0, used = pu ? (size_t) strtoull(pu, nullptr, 10) : 0;
+    ggml_backend_dev_t gpu = mc->bufs.empty() ? nullptr : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mc->bufs.back()));
+    size_t n_t = 0, bytes = 0, n_past = 0;
+    for (auto & ls : mc->layers) {
+        const ggml_tensor * ts[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+        for (int k = 0; k < 3; ++k) {
+            const char * from = nullptr;
+            if (ls.src_dfd[k] < 0 || ls.src_fd[k] < 0) { continue; }
+            if (expert_past(mc, ls, k, 0, ts[k], from) > 0) { n_past++; continue; }   // its matmul reads the next expert's bytes: they would not be behind its block
+            ggml_rampool_add_fork(ts[k], ls.src_fd[k], ls.src_offs[k], ts[k]->ne[2], ts[k]->nb[2], (int32_t) ts[k]->type);
+            n_t++; bytes += ggml_nbytes(ts[k]);
+        }
+    }
+    const size_t avail = mem_available_bytes(), want = budget > used ? budget - used : 0;
+    if (!gpu || n_t == 0 || want == 0 || mc->rd_threads <= 0) {
+        LLAMA_LOG_WARN("moe-cache: rampool: off (%s; pin budget %.1f GiB, pinned by the loader %.1f GiB, %zu expert tensors mapped for direct reads, %zu read past their slice)\n",
+                !gpu ? "no GPU" : n_t == 0 ? "no expert tensor stayed mapped: the model fits the pin budget" : want == 0 ? "no budget left" : "no direct reads", budget / 1073741824.0, used / 1073741824.0, n_t, n_past);
+        ggml_rampool_close_fork();
+        return;
+    }
+    mc->pin_buft = ggml_backend_dev_host_buffer_type(gpu);
+    const int64_t t0 = ggml_time_us();
+    if (!ggml_rampool_open_fork(want, rp_alloc, rp_heat, mc, mc->rd_threads)) {
+        LLAMA_LOG_WARN("moe-cache: rampool: off (no pinned memory for it, %.1f GiB available)\n", avail / 1073741824.0);
+        return;
+    }
+    ggml_rampool_fill_fork();
+    struct ggml_rampool_stats st;
+    ggml_rampool_stats_fork(&st, true);
+    for (auto & ls : mc->layers) {
+        const ggml_tensor * ts[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+        for (int k = 0; k < 3; ++k) { ls.rp_tab[k] = ggml_rampool_table_fork(ts[k]); }
+    }
+    if (auto set = (void (*)(const void * (*)(const ggml_tensor *, int64_t))) cpu_proc_fork("ggml_backend_cpu_set_expert_ptr_hook")) { set(rp_cpu_ptr); }
+    mc->rp_on = true;
+    size_t ringed = 0;
+    for (const auto & ls : mc->layers) { for (size_t i = RP_VIS - 1; i < ls.vis.size(); i += RP_VIS) { ringed += ls.vis[i] != 0; } }
+    LLAMA_LOG_WARN("moe-cache: rampool: %.1f of %.1f GiB expert slices in RAM (%.1f GiB filled, %d size classes, %zu tensors) = pin budget %.1f - pinned by the loader %.1f GiB, RAM available %.1f GiB, in %.1f s; "
+            "picked by heat: %zu experts with a visit ring (clock %u), the rest by lifetime count; %zu tensors read past their slice stay on the old path\n",
+            st.bytes / 1073741824.0, bytes / 1073741824.0, st.used / 1073741824.0, st.classes, n_t, budget / 1073741824.0, used / 1073741824.0, avail / 1073741824.0, (ggml_time_us() - t0) / 1e6,
+            ringed, mc->vis_now.load(), n_past);
+    llama_moe_decision_fork("stage", "rampool fill", "");
+}
+// stats.log RPL and the log: what the pool served since the last line (per request, at exit). RAM share = asked found in the pool; SSD = read into the pool now + refused (old path)
+static void rp_log(const char * when) {
+    moe_cache * mc = g_cache;
+    if (!mc || !mc->rp_on) { return; }
+    struct ggml_rampool_stats st;
+    ggml_rampool_stats_fork(&st, true);
+    const double a = (double) std::max<uint64_t>(1, st.asked), pp = (double) std::max<uint64_t>(1, st.pp_hit + st.pp_miss);
+    const std::string line = format("%s: misses %llu, from RAM %.1f%%, from SSD %.1f%% (read into the pool %llu, refused %llu, %.2f GiB read, waited %.1f ms), evicted %llu; prompt copies from RAM %.1f%% (%llu of %llu); pool %.1f of %.1f GiB used",
+            when, (unsigned long long) st.asked, 100.0 * st.hit / a, 100.0 * (st.cold + st.refused) / a, (unsigned long long) st.cold, (unsigned long long) st.refused, st.cold_bytes / 1073741824.0,
+            st.wait_us / 1e3, (unsigned long long) st.evicted, 100.0 * st.pp_hit / pp, (unsigned long long) st.pp_hit, (unsigned long long) (st.pp_hit + st.pp_miss), st.used / 1073741824.0, st.bytes / 1073741824.0);
+    llama_moe_stats_log_fork("RPL", line.c_str());
+    LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
+}
+
 void llama_moe_request_end_fork(void) {
     llama_moe_stats_log_fork("REQ", "end");
+    rp_log("request");
     g_warm.store(true);
     if (g_pjit_layers.load() > 0) {   // prompt calls of this request: what the JIT saw and did (uploads against CPU-computed misses)
         const uint64_t ms = g_pjit_miss.exchange(0), up = g_pjit_up.exchange(0), ly = g_pjit_layers.exchange(0);
@@ -8049,6 +8182,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
             ls.glob_count.assign(n_expert, 0);
+            if (const char * rv = moe_opt("rampool"); rv && atoi(rv) != 0) { ls.vis.assign((size_t) n_expert * RP_VIS, 0); }
             ls.topic_cnt.assign(n_expert, 0);
             ls.topic_dec.assign(n_expert, 0);
             ls.topic_think.assign(n_expert, 0);
@@ -8356,6 +8490,13 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                     }
                     const int64_t tr = ggml_time_us();
+                    if (ls.rp_tab[k]) {   // --moe rampool: the pool's block (read in now if the pool admits it), held until the copy is done
+                        if (const char * pc = ggml_rampool_take_fork(srcs[k], j.expert)) {
+                            ggml_backend_tensor_set(dsts[k], pc, (size_t) j.slot*dsts[k]->nb[2], sz);
+                            ggml_rampool_drop_fork(srcs[k], j.expert);
+                            continue;
+                        }
+                    }
                     if (ls.pin_ptr[k]) {   // the preheat's pinned copy of this expert (no read at all): straight to the card
                         const char * pc = ls.pin_ptr[k][j.expert].load(std::memory_order_acquire);
                         const char * pc_from = nullptr;
@@ -8537,6 +8678,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         } else {
             LLAMA_LOG_WARN("moe-cache: nothing preloaded: no usage profile of this model and layout in the state file, the cache fills from the first prompt\n");
         }
+        rp_setup(mc);
         {
             size_t n_slow = 0, n_hot = 0, n_stk = 0;
             for (auto & ls : mc->layers) {
@@ -8783,6 +8925,20 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // done: this layer's router ids came back through the same stream), never one of the layers still to come. A prompt call is several tokens with at most one
     // output (llama_context::decode).
     const bool prompt = g_prompt_call.load(std::memory_order_relaxed);
+    if (mc && mc->rp_on && !prompt) {   // --moe rampool: this layer's misses into the pool before the CPU kernel or an upload reads them (no lock of the cache held: the reads take ms)
+        for (const auto & l : mc->layers) {
+            if (&l.pub != pub || !l.rp_tab[0]) { continue; }
+            std::vector<int32_t> need;
+            for (int64_t t = 0; t < ids->ne[1]; ++t) {
+                for (int64_t i = 0; i < ids->ne[0]; ++i) {
+                    const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+                    if (e >= 0 && e < (int32_t) l.expert_slot.size() && l.expert_slot[e] < 0 && std::find(need.begin(), need.end(), e) == need.end()) { need.push_back(e); }
+                }
+            }
+            for (int k = 0; k < 3 && !need.empty(); ++k) { ggml_rampool_need_fork(k == 0 ? pub->up_src : k == 1 ? pub->gate_src : pub->down_src, need.data(), (int) need.size()); }
+            break;
+        }
+    }
     if (!mc || knobs().jit == 0 || !experts_in_file_layout(pub)) {   // repacked: the misses stay with the CPU, which runs that layout
         return;
     }
@@ -8795,7 +8951,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         return;
     }
     layer_state & ls = *lsp;
-    mc->phase_mapped = ls.src_dfd[0] >= 0;   // this layer's CPU phase reads mapped experts (moe_phase_cb keeps their rate apart)
+    mc->phase_mapped = ls.src_dfd[0] >= 0 && !ls.rp_tab[0];   // this layer's CPU phase reads mapped experts (moe_phase_cb keeps their rate apart); the pool's are in RAM after the need above
     const bool pool = ls.pub.jit_n > 0; // slower-link layer: the pool on the fastest-link GPU instead of its own cache
     const int  lk   = pool ? 0 : ls.link;
     ggml_backend_t be = mc->link_be[lk];
@@ -8839,7 +8995,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // not at the RAM rate: its bytes count as the RAM-rate equivalent (user 2026-11-07: the planner is "crippled by ... assumptions"; GLM 3.5 decode sent 2531 of 5651
     // single misses to the CPU at 0.5-0.9 GB/s while the x16 link ran at 10%).
     const double rcm = mc->cpu_gbs_mapped > 0 ? mc->cpu_gbs_mapped * 1e3 : rc;
-    auto mapped = [&](int32_t e) { return ls.src_dfd[0] >= 0 && !(ls.pin_ptr[0] && ls.pin_ptr[0][e].load(std::memory_order_acquire)); };
+    auto mapped = [&](int32_t e) { return ls.src_dfd[0] >= 0 && !(ls.pin_ptr[0] && ls.pin_ptr[0][e].load(std::memory_order_acquire)) && !(ls.rp_tab[0] && ls.rp_tab[0][e]); };
     auto cpu_eq = [&](int32_t e) { return (double) ntok[e] * S * (mapped(e) && rcm > 0 ? rc / rcm : 1.0); };   // bytes at the RAM rate that cost the same CPU time
     int n_mapped = 0;
     for (int32_t e : miss) { n_mapped += mapped(e); }
@@ -10342,6 +10498,10 @@ void llama_moe_cache_step_fork() {
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
+    if (mc->rp_on) {   // the graph that ran is over (synchronised): the pool may evict what the one before it asked for
+        mc->vis_now.store(mc->vis_base + 1 + (uint32_t) mc->n_steps, std::memory_order_relaxed);
+        ggml_rampool_graph_fork();
+    }
     if (!mc->ctl.empty() && mc->n_steps % 16 == 0) {
         ctl_poll(mc);
     }
@@ -12168,6 +12328,14 @@ void llama_moe_cache_free_fork() {
     }
     mc->stats_stop.store(true);
     if (mc->stats_thr.joinable()) { mc->stats_thr.join(); }
+    if (mc->rp_on) {   // the readers stop before their chunks go; the CPU kernels go back to the weights' own pointers
+        rp_log("exit");
+        if (auto set = (void (*)(const void * (*)(const ggml_tensor *, int64_t))) cpu_proc_fork("ggml_backend_cpu_set_expert_ptr_hook")) { set(nullptr); }
+        ggml_rampool_close_fork();
+        for (auto * b : mc->rp_bufs) { ggml_backend_buffer_free(b); }
+        mc->rp_bufs.clear();
+        mc->rp_on = false;
+    }
     if (mc->preheat_thr.joinable()) { mc->preheat_thr.join(); }
     if (mc->fast_thr.joinable()) { mc->fast_thr.join(); }
     { std::lock_guard<std::mutex> lk(g_vram_mtx); g_vram.clear(); }   // the watch entries of this cache: a re-init adds its own (stale ones were sampled and stored on)
