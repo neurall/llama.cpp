@@ -33,12 +33,14 @@ static inline size_t sr_env_kb(const char * name, size_t dflt) {
     const char * v = getenv(name);
     return v && *v ? (size_t) atol(v) << 10 : dflt << 10;
 }
-static inline size_t sr_blk() { static const size_t v = std::max<size_t>(sr_env_kb("LLAMA_MOE_RD_BLK_KB", 256), 65536); return v; }
-static inline size_t sr_gap() { static const size_t v = sr_env_kb("LLAMA_MOE_RD_GAP_KB", 64); return v; }
+// The machine benchmark's picks for this drive (bytes, reads in flight; 0 = not measured, state file [machine] rd_blk_kb / rd_gap_kb / rd_qd). LLAMA_MOE_RD_* (--moe read-blk, read-gap, read-qd) override them.
+inline size_t g_sr_blk = 0, g_sr_gap = (size_t) -1; inline int g_sr_qd = 0;
+static inline size_t sr_blk() { static const size_t e = sr_env_kb("LLAMA_MOE_RD_BLK_KB", 0); return std::max<size_t>(e ? e : g_sr_blk ? g_sr_blk : (size_t) 256 << 10, 65536); }
+static inline size_t sr_gap() { static const size_t e = sr_env_kb("LLAMA_MOE_RD_GAP_KB", (size_t) -1 >> 10); return e != ((size_t) -1 >> 10) << 10 ? e : g_sr_gap != (size_t) -1 ? g_sr_gap : (size_t) 64 << 10; }
+static inline int    sr_qd()  { static const int e = getenv("LLAMA_MOE_RD_QD") ? atoi(getenv("LLAMA_MOE_RD_QD")) : 0; return e > 0 ? e : g_sr_qd > 0 ? g_sr_qd : 32; }
 
 // the pieces of [0, total) in read order
-static inline std::vector<sr_piece> sr_pieces(size_t total) {
-    const size_t blk = sr_blk(), gap = sr_gap();
+static inline std::vector<sr_piece> sr_pieces(size_t total, size_t blk = sr_blk(), size_t gap = sr_gap()) {
     std::vector<sr_piece> p;
     if (gap == 0 || total <= blk) {
         for (size_t o = 0; o < total; o += blk) { p.push_back({ o, total - o < blk ? total - o : blk }); }
@@ -74,15 +76,16 @@ inline std::atomic<int> g_aio_ok{1};   // --moe read-aio=0 turns the async engin
 #ifdef SR_HAVE_AIO
 struct aio_ctx_t { aio_context_t ctx = 0; ~aio_ctx_t() { if (ctx) { syscall(SYS_io_destroy, ctx); } } };
 // bytes [beg, beg + total) of fd into buf (4096-aligned); `need` = bytes that exist (a short block past it is the end of the file). False: nothing usable, the caller reads again with pread.
-static inline bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need) {
-    constexpr int QD = 32;
+static inline bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need, int qd = sr_qd(), size_t blk = sr_blk(), size_t gap = sr_gap()) {
+    constexpr int QDMAX = 32;
+    const int QD = std::min(std::max(qd, 1), QDMAX);
     if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
     thread_local aio_ctx_t c;
-    if (!c.ctx && syscall(SYS_io_setup, QD, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
-    iocb cbs[QD]; iocb * ps[1]; io_event ev[QD];
-    int free_slot[QD]; int n_free = QD;
+    if (!c.ctx && syscall(SYS_io_setup, QDMAX, &c.ctx) != 0) { c.ctx = 0; g_aio_ok.store(0); return false; }
+    iocb cbs[QDMAX]; iocb * ps[1]; io_event ev[QDMAX];
+    int free_slot[QDMAX]; int n_free = QD;
     for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
-    const std::vector<sr_piece> pcs = sr_pieces(total);   // blocks with gaps, then the gaps: no two neighbours in flight together
+    const std::vector<sr_piece> pcs = sr_pieces(total, blk, gap);   // blocks with gaps, then the gaps: no two neighbours in flight together
     size_t next = 0; int infl = 0; bool bad = false;
     while (next < pcs.size() || infl > 0) {
         while (!bad && next < pcs.size() && n_free > 0) {
@@ -150,14 +153,15 @@ struct uring_t {
     }
 };
 // bytes [beg, beg + total) of fd (4096-aligned) into buf, 32 reads in flight, the pieces in the spaced order. False: nothing usable, the caller falls back.
-static inline bool uring_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need) {
-    constexpr unsigned QD = 32;
+static inline bool uring_read_range(int fd, uint8_t * buf, size_t beg, size_t total, size_t need, int qd = sr_qd(), size_t blk = sr_blk(), size_t gap = sr_gap()) {
+    constexpr unsigned QDMAX = 32;
+    const unsigned QD = (unsigned) std::min(std::max(qd, 1), (int) QDMAX);
     if (!g_uring_ok.load(std::memory_order_relaxed)) { return false; }
     thread_local uring_t r; thread_local bool made = false;
-    if (!made) { made = true; if (!r.init(QD)) { g_uring_ok.store(0); } }
+    if (!made) { made = true; if (!r.init(QDMAX)) { g_uring_ok.store(0); } }
     if (!g_uring_ok.load(std::memory_order_relaxed)) { return false; }
-    const std::vector<sr_piece> pcs = sr_pieces(total);
-    size_t offs[QD]; size_t wants[QD]; unsigned free_slot[QD]; unsigned n_free = QD;
+    const std::vector<sr_piece> pcs = sr_pieces(total, blk, gap);
+    size_t offs[QDMAX]; size_t wants[QDMAX]; unsigned free_slot[QDMAX]; unsigned n_free = QD;
     for (unsigned i = 0; i < QD; ++i) { free_slot[i] = i; }
     size_t next = 0; unsigned infl = 0; bool bad = false;
     while (next < pcs.size() || infl > 0) {

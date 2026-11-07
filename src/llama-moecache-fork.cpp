@@ -8183,6 +8183,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 if (const char * rb = moe_opt("read-blk")) { setenv("LLAMA_MOE_RD_BLK_KB", rb, 1); }
                 // --moe read-engine=uring: io_uring instead of kernel AIO for the spaced reads (default aio; the release image's seccomp blocks io_uring)
                 if (const char * re = moe_opt("read-engine")) { setenv("LLAMA_MOE_RD_ENGINE", re, 1); }
+            if (const char * rq = moe_opt("read-qd"))     { setenv("LLAMA_MOE_RD_QD", rq, 1); }
                 if (const char * rg = moe_opt("read-gap")) { setenv("LLAMA_MOE_RD_GAP_KB", rg, 1); }
 #endif
                 if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
@@ -9475,12 +9476,64 @@ static double early_link_gbs(ggml_backend_dev_t d) {
     return gbs;
 }
 
+#ifdef SR_HAVE_AIO
+// The async engine's best shape on the model's drive: block size, gap and reads in flight (O_DIRECT, about 0.15 s per combination), measured once per drive and kept in [machine] as
+// rd_blk_kb.<dev>, rd_gap_kb.<dev>, rd_qd.<dev>; every reader starts from them (sr_blk, sr_gap, sr_qd in llama-spaced-read-fork.h). The smallest block within 7% of the best wins, as in
+// read_threads_probe, and ssd_max_gbs.<dev> is lifted when the engine beats the pread probe (user 2026-11-07: "find these vals if not present", "all our uploads as fast as optimal").
+static void rd_shape_bench(const char * path, unsigned long long dev, const std::string & sec) {
+    const std::string kb = format("rd_blk_kb.%llu", dev), kg = format("rd_gap_kb.%llu", dev), kq = format("rd_qd.%llu", dev);
+    std::string b, g, q;
+    if (moe_state_get(sec, kb, b) && moe_state_get(sec, kg, g) && moe_state_get(sec, kq, q) && atoi(b.c_str()) > 0 && atoi(q.c_str()) > 0) {
+        g_sr_blk = (size_t) atol(b.c_str()) << 10; g_sr_gap = (size_t) atol(g.c_str()) << 10; g_sr_qd = atoi(q.c_str());
+        LLAMA_LOG_WARN("moe-cache: machine: SSD reads %s KiB blocks, %s KiB gaps, %s in flight (stored)\n", b.c_str(), g.c_str(), q.c_str());
+        return;
+    }
+    const int dfd = open(path, O_RDONLY | O_DIRECT);
+    if (dfd < 0) { return; }
+    struct stat st;
+    if (fstat(dfd, &st) != 0 || st.st_size < ((off_t) 1 << 30)) { close(dfd); return; }
+    const double s0 = llama_moe_span_now_fork();
+    const size_t range = (size_t) 32 << 20, file_end = (size_t) st.st_size / 4096 * 4096;
+    void * buf = nullptr;
+    if (posix_memalign(&buf, 4096, range) != 0) { close(dfd); return; }
+    struct combo { size_t blk, gap; int qd; double gbs; };
+    std::vector<combo> cs;
+    for (int qd : { 32, 8 }) { for (size_t blk : { (size_t) 256 << 10, (size_t) 1 << 20 }) { for (size_t gap : { (size_t) 64 << 10, (size_t) 0 }) { cs.push_back({ blk, gap, qd, 0.0 }); } } }
+    size_t off = (size_t) st.st_size / 2 / 4096 * 4096;   // the middle of the file: read_threads_probe read the heads of its regions (O_DIRECT: the page cache is out, the drive's own cache is not)
+    for (combo & c : cs) {
+        const int64_t t0 = ggml_time_us(); size_t bytes = 0;
+        while (ggml_time_us() - t0 < 150000) {
+            if (off + range > file_end) { off = 4096; }
+            if (!aio_read_range(dfd, (uint8_t *) buf, off, range, range, c.qd, c.blk, c.gap)) { bytes = 0; break; }
+            bytes += range; off += range;
+        }
+        c.gbs = bytes ? (double) bytes / ((double) (ggml_time_us() - t0) / 1e6) / 1e9 : 0.0;
+    }
+    free(buf); close(dfd);
+    double best = 0.0;
+    for (const combo & c : cs) { best = std::max(best, c.gbs); }
+    if (best <= 0.0) { LLAMA_LOG_WARN("moe-cache: machine: SSD read shape: the async engine failed, the readers keep their defaults\n"); return; }
+    std::sort(cs.begin(), cs.end(), [](const combo & x, const combo & y) { return x.blk != y.blk ? x.blk < y.blk : x.qd != y.qd ? x.qd < y.qd : x.gap > y.gap; });   // preference at a tie: small block, few in flight, gaps on
+    const combo * pick = nullptr; std::string row;
+    for (const combo & c : cs) { if (!pick && c.gbs >= 0.93 * best) { pick = &c; } row += format(" %zuK/%zuK/%d:%.2f", c.blk >> 10, c.gap >> 10, c.qd, c.gbs); }
+    g_sr_blk = pick->blk; g_sr_gap = pick->gap; g_sr_qd = pick->qd;
+    LLAMA_LOG_WARN("moe-cache: machine: SSD read shape GB/s by block/gap/in flight%s -> %zuK/%zuK/%d (the smallest within 7%% of the best %.2f GB/s)\n", row.c_str(), pick->blk >> 10, pick->gap >> 10, pick->qd, best);
+    std::vector<std::pair<std::string, std::string>> kv = {{ kb, std::to_string(pick->blk >> 10) }, { kg, std::to_string(pick->gap >> 10) }, { kq, std::to_string(pick->qd) }};
+    const std::string km = format("ssd_max_gbs.%llu", dev);
+    std::string mx;
+    if (!moe_state_get(sec, km, mx) || atof(mx.c_str()) < best) { kv.push_back({ km, format("%.3f", best) }); llama_moe_ssd_max_fork(best); }
+    moe_state_set(sec, kv);
+    llama_moe_span_fork("machine benchmark: SSD read shape (block, gap, reads in flight)", s0, llama_moe_span_now_fork(), 0, "SSD probe");
+}
+#endif
+
 // The machine's three bandwidths, measured as early as possible (right after the model file size is read, before the layers are placed) and kept in the state file section [machine]
 // (user 2026-11-05: "measure maxssd speed as early as possible, the same for big vram uploads, measure and store achieved ram read bw and pcie achieved bw"). Every later span of stats.log
 // that reads the SSD logs its rate as a share of the SSD maximum, so an inefficient big read stands out.
 //   ssd_max_gbs.<dev>          O_DIRECT 1 MiB reads, best of 1..hardware threads/2 (read_threads_probe), per block device of the model file; measured once, then stored
 //   ram_read_gbs.<threads>     sequential read of 1 GiB by hardware threads/2 threads, best of three passes; measured once, then stored
 //   h2d_gbs.<gpu index>.<name> pinned host to device, 64 MiB copies, the fastest of four (early_link_gbs); measured at every start (0.1 s), stored with the value before
+//   rd_blk_kb/rd_gap_kb/rd_qd.<dev>  the async engine's read shape on the drive (rd_shape_bench); measured once, then stored
 LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
     if (!moe_state_enabled() || !model_path || !*model_path) { return; }
     const double t0 = llama_moe_span_now_fork();
@@ -9507,6 +9560,9 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
                 llama_moe_span_fork("machine benchmark: SSD maximum (O_DIRECT, best thread count)", s0, llama_moe_span_now_fork(), 0, "SSD probe");
             }
         }
+#ifdef SR_HAVE_AIO
+        rd_shape_bench(model_path, (unsigned long long) st.st_dev, sec);
+#endif
     }
 #endif
     {   // RAM read: the pinned weights and the stream ring are read by the CPU and the DMA engines at this rate at most
