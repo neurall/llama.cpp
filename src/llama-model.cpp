@@ -11,6 +11,7 @@
 #include "llama-mmap.h"
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
+extern "C" void ggml_backend_set_alloc_phase_fn_fork(size_t (*fn)(const struct ggml_tensor *, void *), void * user_data);   // fork: ggml-backend.cpp, phase layout for O_DIRECT loads (no shared header)
 #include "llama-moecache-fork.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-dsplit-fork.h"
@@ -2266,13 +2267,24 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                             const auto * w = ml.get_weight(ggml_get_name(t));
                             if (w) { mix(&w->idx, sizeof(w->idx)); mix(&w->offs, sizeof(w->offs)); }
                         }
+                        mix("phase4096", 9);   // fork: the phase layout below places the tensors differently from before; a cached buffer of the old layout must not match
                         char hex[24]; snprintf(hex, sizeof(hex), "%016llx", (unsigned long long) h);
                         cache_key = hex;
                     }
                 }
                 if (host_cache && !cache_key.empty()) { host_cache(0, (void *) cache_key.c_str()); }
 #endif
+                // fork: phase layout: a host tensor sits at (page boundary + file offset mod 4096), so the loader can O_DIRECT it straight into place (llama-model-loader.cpp, pr_worker)
+                struct phase_ud_t { llama_model_loader * ml; };
+                phase_ud_t phase_ud{ &ml };
+                auto phase_fn = [](const ggml_tensor * t, void * ud) -> size_t {
+                    const auto * w = ((phase_ud_t *) ud)->ml->get_weight(ggml_get_name(t));
+                    return w ? (size_t) (w->offs % 4096) : SIZE_MAX;
+                };
+                const bool phase = ggml_backend_buft_is_host(buft) && !ml.no_alloc;
+                if (phase) { ggml_backend_set_alloc_phase_fn_fork(phase_fn, &phase_ud); }
                 buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft); // real buffer
+                if (phase) { ggml_backend_set_alloc_phase_fn_fork(nullptr, nullptr); ml.phase_layout = true; }
 #if defined(__linux__)
                 if (host_cache) { host_cache(0, nullptr); }
 #endif

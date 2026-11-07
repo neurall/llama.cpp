@@ -4,6 +4,8 @@
 
 #if defined(__linux__)
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <map>
 #include <sched.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -1766,7 +1768,26 @@ bool llama_model_loader::load_all_data(
     // Weights that land in host memory (with a GPU: the pinned buffer) are read by a pool of threads in 64 MB chunks with pread: one thread reading tensor after tensor
     // reached ~1.5 GB/s of a 3+ GB/s NVMe. The pages just read are given back to the page cache right away (as the single-threaded path does), so the file copy never
     // competes with the weights for RAM. LLAMA_LOAD_THREADS=1 (or direct IO, mmap, tensor validation) keeps the sequential path.
-    struct par_read { int fd; size_t off; void * dst; size_t n; };
+    struct par_read { int fd; size_t off; void * dst; size_t n; int dfd; size_t fsize; };   // dfd: the same file opened O_DIRECT (-1: buffered), fsize its size
+    // fork: with the phase layout (llama-model.cpp) a host tensor's address and file offset share the 4096 grid, so its chunks are read with O_DIRECT (kernel AIO, the drive's probed
+    // shape) straight into pinned memory: one DMA from the SSD, no page cache copy and no DONTNEED. The chunk edges are 4096 multiples of the FILE offset, so the head block of a
+    // chunk is only the first chunk's (it lands in the gap in front of the tensor) and the tail block only the last one's (the next tensor starts past the next 4096 boundary).
+    std::map<int, int>    pr_dfd;      // buffered fd -> O_DIRECT fd
+    std::map<int, size_t> pr_fsize;
+    auto pr_direct = [&](int fd) -> int {
+        if (!phase_layout) { return -1; }
+        auto it = pr_dfd.find(fd);
+        if (it != pr_dfd.end()) { return it->second; }
+        struct stat st;
+        int d = -1;
+        if (fstat(fd, &st) == 0) {
+            d = open(("/proc/self/fd/" + std::to_string(fd)).c_str(), O_RDONLY | O_DIRECT);
+            if (d >= 0) { pr_fsize[fd] = (size_t) st.st_size; }
+        }
+        pr_dfd[fd] = d;
+        return d;
+    };
+    std::atomic<size_t> pr_direct_bytes{0}, pr_buffered_bytes{0};
     std::mutex              pr_mtx;
     std::condition_variable pr_cv;
     std::deque<par_read>    pr_q;
@@ -1798,6 +1819,14 @@ bool llama_model_loader::load_all_data(
                 t = pr_q.front();
                 pr_q.pop_front();
             }
+#ifdef SR_HAVE_AIO
+            if (t.dfd >= 0 && (((uintptr_t) t.dst - t.off) & 4095) == 0) {
+                const size_t beg = t.off & ~(size_t) 4095, end = (t.off + t.n + 4095) & ~(size_t) 4095;
+                const size_t total = end - beg, need = std::min(total, t.fsize - beg);
+                if (aio_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) { pr_direct_bytes += t.n; continue; }
+            }
+#endif
+            pr_buffered_bytes += t.n;
             for (const sr_piece & p : sr_pieces(t.n)) {   // blocks with gaps, then the gaps (llama-spaced-read-fork.h): no two neighbouring reads in a row
                 size_t done = 0;
                 while (done < p.n && !pr_fail) {
@@ -1819,6 +1848,11 @@ bool llama_model_loader::load_all_data(
         pr_cv.notify_all();
         for (auto & t : pr_threads) { t.join(); }
         pr_threads.clear();
+        for (auto & kv : pr_dfd) { if (kv.second >= 0) { close(kv.second); } }
+        pr_dfd.clear();
+        if (pr_direct_bytes.load() || pr_buffered_bytes.load()) {
+            LLAMA_LOG_WARN("%s: host weights read with O_DIRECT straight into place: %.1f GiB, buffered: %.1f GiB\n", __func__, pr_direct_bytes.load() / 1073741824.0, pr_buffered_bytes.load() / 1073741824.0);
+        }
     };
     // the threads end on every way out of this function (cancelled loading, an exception)
     struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{pr_finish};
@@ -1895,8 +1929,12 @@ bool llama_model_loader::load_all_data(
                     constexpr size_t chunk = 64u << 20;
                     {
                         std::lock_guard<std::mutex> lk(pr_mtx);
-                        for (size_t o = 0; o < n_size; o += chunk) {
-                            pr_q.push_back({ file->file_id(), (size_t) weight->offs + o, (char *) cur->data + o, std::min(chunk, n_size - o) });
+                        const int dfd = pr_direct(file->file_id());
+                        const size_t fsize = dfd >= 0 ? pr_fsize[file->file_id()] : 0;
+                        for (size_t o = 0; o < n_size; ) {   // chunk edges on the file's 64 MiB grid (see par_read)
+                            const size_t pos = (size_t) weight->offs + o, len = std::min((pos / chunk + 1) * chunk - pos, n_size - o);
+                            pr_q.push_back({ file->file_id(), pos, (char *) cur->data + o, len, dfd, fsize });
+                            o += len;
                         }
                     }
                     while (pr_threads.size() < n_load_threads) { pr_threads.emplace_back(pr_worker); }

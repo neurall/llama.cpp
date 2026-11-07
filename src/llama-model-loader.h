@@ -77,6 +77,7 @@ struct llama_model_loader {
     size_t   n_bytes    = 0;
 
     bool use_mmap = false;
+    bool   phase_layout = false;   // fork: the host buffers were laid out so that every tensor's address and file offset share the 4096-byte grid (O_DIRECT loads, see llama-model.cpp)
     size_t pin_budget = 0;   // fork: with mmap on, the bytes of tensors that keep the pinned host buffer (--moe pin-budget, set by common when the model does not fit pinned RAM); the rest is mapped
     size_t pin_used   = 0;
     static bool pin_lazy();   // (fork) the pin budget is served by the MoE cache's prefetch thread, not by the loader
