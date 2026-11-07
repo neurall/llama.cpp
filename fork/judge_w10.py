@@ -110,6 +110,9 @@ def judge_answer(url, text, ask="", start=False):
     v = judge_text(url, text, ask)
     if v["verdict"] != "nonsense" or not v["parts"]:   # no parts: one repeated token, no opinion needed
         return v
+    if not os.path.exists(SECOND_CMD[2]):   # no model file: no 3 minute wait for a server that cannot come up
+        v["second"] = "none"; v["why"] += " (no second opinion: model missing)"
+        return v
     second = url.rsplit(":", 1)[0] + f":{SECOND_PORT}"
     if not server_up(second) and not (start and second_start(second)):
         v["second"] = "none"
@@ -156,9 +159,13 @@ def key_rows(con, readme):
     return ids
 
 
+SINCE_HOURS = 48   # rows older than this are not read; 0 = all history. Set by argv[2]
+
+
 def queue(con, done, readme):
     """rows to read in order: those of the last 3 days newest first, then the key rows, then the rest newest first"""
     rows = [r for r in con.execute("select rowid, ts, build, test, model from runs where coalesce(ok, '1') != '0' and cast(out_chars as int) >= ? order by rowid desc", (MIN_CHARS,)) if r[0] not in done]
+    if SINCE_HOURS: rows = [r for r in rows if r[1] >= time.strftime("%F %T", time.localtime(time.time() - SINCE_HOURS * 3600))]
     recent = time.strftime("%F", time.localtime(time.time() - 3 * 86400))
     key = key_rows(con, readme)
     return sorted(rows, key=lambda r: 0 if r[1] >= recent else 1 if r[0] in key else 2)   # stable: newest first inside each group
@@ -225,4 +232,5 @@ def main(d):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 2: SINCE_HOURS = float(sys.argv[2])
     main(sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__)))
