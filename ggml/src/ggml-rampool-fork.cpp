@@ -1,23 +1,20 @@
-// The RAM pool: expert weights in pinned host memory, read straight from the SSD, no mmap and no page cache.
+// The RAM pool (--moe rampool=1): expert slices in pinned host memory chosen by heat, read straight from the SSD, no mmap read and no page cache.
 //
-// Why. A model that does not fit pinned RAM used to be split by tensor order: the first tensors pinned, the rest mapped. DeepSeek V4.1 Flash on 125 GiB of RAM: 123 GiB of experts,
-// 101 GiB pinned, so 7 of 40 layers came through the mapping, through 9 GiB of page cache that the next pass evicted again. Those layers took about 7 of the 12 s of a pass: the link
-// moves 26 GB/s from pinned memory and about half of that from pageable memory, the page cache read the SSD at 2.3 GB/s, and each pageable copy waits for the stream first.
-// Here every byte of an expert goes one of two ways: it is in the pool (direct DMA, full link) or it is read into the pool first (32 threads, about 5.2 GB/s on PC1). Nothing is held
-// twice, and no page fault is ever taken on the way.
+// Why. A model that does not fit pinned RAM used to be pinned in tensor order: the first tensors pinned, the rest mapped. So cold experts of the first layers held RAM while hot
+// experts of the last layers came from the SSD. Here the pool holds the experts expected back soonest (the caller's heat callback: the revisit ring of each expert), the GPU
+// cache holds the hottest, and the rest stays on the SSD (fork/docs/rampool.md).
 //
-// What it is. A store of small equal fragments, one per expert slice (up, gate, down each their own). Unlike the GPU pool nothing here grows, moves or is lent, so it shares no code
-// with it: a class per (slice bytes, type), blocks of a class in pinned chunks, a table element -> block, and "free" is a change of owner. The record of an element is its tensor's file
-// handle and offset plus its index, which is all a rehydration needs: the block can always be dropped, the bytes are on the SSD.
+// What it is. A store of small equal fragments, one per expert slice (up, gate, down each their own): a class per (slice bytes, type), blocks of a class in pinned chunks, a table
+// element -> block, and "free" is a change of owner. An element's record is its tensor's file handle and offset plus its index: a block can always be dropped, the bytes are on the SSD.
 //
 // Rules.
-//   - One writer function, rp_read, and it writes only inside the block it owns: [slot, slot + class size). Everything else here changes tables.
-//   - Check and load BEFORE the kernel (ggml_rampool_need_fork, GPU ring and CPU op alike), never on a memory access. The readers fetch ahead (ggml_rampool_ahead_fork) so the check finds
-//     the bytes there; what it waits for is what the prediction missed.
-//   - A block is taken from an element only when nobody can still read it: not asked by this graph or the one before it (a ring copy of the previous graph can still run), no holds.
-//     Coldest first: elements a card already holds, then the least often asked. An element that finds no block stays out and its caller reads it the old way (the stats count them).
-//   - Elements of a class lie directly behind each other as the file has them, so one DMA serves a run. Read past the end of a run (a quantized matmul reads whole tiles) lands in the
-//     next block, always the same type and whole blocks of it, or zeros in the slack at the end of a chunk: any finite bytes will do there, the rule is only "no NaN" (fork: MMQ padding).
+//   - One writer function, rp_read, and it writes only inside the block it owns.
+//   - Check and load BEFORE the kernel (ggml_rampool_need_fork), never on a memory access.
+//   - A block is taken from an element only when nobody can still read it: not asked by this graph or the one before it (a copy of the previous graph can still run), no holds.
+//   - Eviction: of 64 sampled evictable blocks of the class the one expected back last; a newcomer gets it only when it is expected back sooner (else it stays out, "refused",
+//     and its caller reads it the old way): a cold expert read once does not push a warm one out.
+//   - Elements of a class lie behind each other as the file has them after the fill, so one DMA serves a run. A matmul that reads past a slice needs the real next expert's
+//     bytes there (llama-moecache-fork.cpp, expert_past): such tensors are not given to the pool.
 #include "ggml-rampool-fork.h"
 #include "ggml-impl.h"
 #include "ggml-read-fork.h"
@@ -27,6 +24,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cerrno>
+#include <cmath>
+#include <functional>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -56,11 +55,10 @@ enum : uint8_t { RP_OUT = 0, RP_READING = 1, RP_IN = 2 };
 
 struct rp_rec {
     int32_t  slot    = -1;      // block of its class, -1: out
-    uint32_t uses    = 0;       // how often it was asked for, over all runs: the coldest goes first
     uint32_t graph   = 0;       // the graph that last asked for it
     uint16_t holds   = 0;       // readers outside a graph (ggml_rampool_take_fork)
     uint8_t  state   = RP_OUT;
-    bool     claimed = false;   // a reader has it (the queues can hold a second job for it: a wait moves an element up to the demand queue)
+    bool     claimed = false;   // a reader has it (the queue can hold a second job for it)
 };
 
 struct rp_tensor {
@@ -84,8 +82,7 @@ struct rp_class {
     std::vector<char *>   chunks;
     std::vector<rp_owner> owner;        // block -> element
     std::vector<uint32_t> free;         // blocks without an owner (a stack)
-    std::vector<uint32_t> victims;      // blocks in eviction order, as of the last look; stale entries are checked at the pop
-    size_t   vpos = 0;
+    uint32_t sample = 0;                // where the next eviction sample starts
     char * at(uint32_t s) const { return chunks[s / per_chunk] + (size_t) (s % per_chunk) * size; }
 };
 
@@ -95,21 +92,21 @@ struct rp_pool {
     std::vector<std::unique_ptr<rp_tensor>>      tensors;
     std::unordered_map<const void *, rp_tensor *> by_key;
     std::vector<rp_class> cls;
-    ggml_rampool_low_t low = nullptr;
+    ggml_rampool_heat_t heat = nullptr;
     void * ud = nullptr;
     std::map<int, int> dfd_of;          // file handle -> its O_DIRECT handle
     int    n_threads = 0;
 
-    std::mutex              mu;         // tables, queues and records; held for microseconds (a rebuild of the eviction order: a few ms, only when a class ran out)
+    std::mutex              mu;         // tables, queue and records; held for microseconds
     std::condition_variable work_cv, done_cv;
-    std::deque<rp_job>      demand, ahead;   // a caller waits for what is in demand; ahead is what the readers fetch while nobody waits, in the order it was asked
+    std::deque<rp_job>      demand;     // what callers wait for
     std::vector<std::thread> readers;
     bool                    stop = false;
     std::atomic<uint32_t>   graph{ 2 };
     std::atomic<size_t>     memal{ 4 };  // memory alignment O_DIRECT takes here: 4 bytes on NVMe (queue/dma_alignment); an EINVAL raises it, the reader then goes through its bounce buffer
     size_t                  rq = 0;      // bytes of one read request (the device's own limit, see rp_request_bytes)
 
-    std::atomic<uint64_t> st_asked{0}, st_cold{0}, st_ahead{0}, st_evicted{0}, st_lost{0}, st_cold_b{0}, st_wait_us{0};
+    std::atomic<uint64_t> st_asked{0}, st_hit{0}, st_cold{0}, st_refused{0}, st_evicted{0}, st_cold_b{0}, st_wait_us{0}, st_pp_hit{0}, st_pp_miss{0};
     uint64_t pool_bytes = 0;
 };
 
@@ -221,63 +218,54 @@ bool rp_evictable(const rp_pool * p, const rp_rec & r) {
     return r.state == RP_IN && r.holds == 0 && r.graph + 1 < p->graph.load(std::memory_order_relaxed);
 }
 
-// A block for an element of class c, -1: none. The caller holds the lock. only_low: only from an element a card holds (a background fetch never evicts what the compute reads).
-int32_t rp_take_block(rp_pool * p, rp_class & c, bool only_low) {
+// A block for an element of class c expected back at `want` (the heat clock), -1: none. The caller holds the lock. A free block first; else of 64 sampled evictable blocks the
+// one expected back last, taken only when the newcomer is expected back sooner.
+int32_t rp_take_block(rp_pool * p, rp_class & c, double want) {
     if (!c.free.empty()) {
         const uint32_t s = c.free.back();
         c.free.pop_back();
         return (int32_t) s;
     }
-    for (int round = 0; round < 2; ++round) {
-        while (c.vpos < c.victims.size()) {
-            const uint32_t s = c.victims[c.vpos];
-            const rp_owner o = c.owner[s];
-            if (o.t < 0) { c.vpos++; continue; }
-            rp_tensor & t = *p->tensors[o.t];
-            rp_rec & r = t.rec[o.e];
-            if (!rp_evictable(p, r)) { c.vpos++; continue; }
-            if (only_low && !(p->low && p->low(t.key, o.e, p->ud))) { return -1; }   // the order puts the low ones first: none left
-            c.vpos++;
-            t.ptr[o.e].store(nullptr, std::memory_order_release);
-            r.slot  = -1;
-            r.state = RP_OUT;
-            c.owner[s] = rp_owner();
-            p->st_evicted++;
-            return (int32_t) s;
-        }
-        if (round == 1) { break; }
-        // the order as of now: what a card holds first, then the least asked; among equals the highest tensor, the one a scan of the layers needs last
-        struct cand { uint64_t rank; uint32_t s; };
-        std::vector<cand> v;
-        v.reserve(c.owner.size());
-        for (uint32_t s = 0; s < (uint32_t) c.owner.size(); ++s) {
-            const rp_owner o = c.owner[s];
-            if (o.t < 0) { continue; }
-            const rp_tensor & t = *p->tensors[o.t];
-            const rp_rec & r = t.rec[o.e];
-            if (!rp_evictable(p, r)) { continue; }
-            const bool lo = p->low && p->low(t.key, o.e, p->ud);
-            v.push_back({ ((uint64_t) (lo ? 0 : 1) << 63) | ((uint64_t) r.uses << 31) | (uint64_t) (0x7fffffffu - (uint32_t) o.t), s });
-        }
-        std::sort(v.begin(), v.end(), [](const cand & a, const cand & b) { return a.rank < b.rank; });
-        c.victims.resize(v.size());
-        for (size_t i = 0; i < v.size(); ++i) { c.victims[i] = v[i].s; }
-        c.vpos = 0;
+    const uint32_t n = (uint32_t) c.owner.size();
+    if (n == 0) { return -1; }
+    int32_t best = -1;
+    double  bh   = -1.0;
+    int     seen = 0;
+    for (uint32_t i = 0; i < n && seen < 64; ++i) {   // shortcut: a stride walk, not random; enough while the classes are big
+        const uint32_t s = (c.sample + i * 7919u) % n;
+        const rp_owner o = c.owner[s];
+        if (o.t < 0) { continue; }
+        rp_tensor & t = *p->tensors[o.t];
+        if (!rp_evictable(p, t.rec[o.e])) { continue; }
+        seen++;
+        const double h = p->heat(t.key, o.e, p->ud);
+        if (h > bh) { bh = h; best = (int32_t) s; }
     }
-    return -1;
+    c.sample = (c.sample + 1) % n;
+    if (best < 0 || !(want < bh)) { return -1; }
+    const rp_owner o = c.owner[best];
+    rp_tensor & t = *p->tensors[o.t];
+    t.ptr[o.e].store(nullptr, std::memory_order_release);
+    t.rec[o.e].slot  = -1;
+    t.rec[o.e].state = RP_OUT;
+    c.owner[best] = rp_owner();
+    p->st_evicted++;
+    return best;
 }
 
-// element e leaves for a block and a reader. The caller holds the lock. false: no block.
-bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool front, bool only_low) {
+// element e leaves for a block and a reader. The caller holds the lock. false: no block (refused).
+bool rp_start(rp_pool * p, rp_tensor & t, int64_t e) {
+    const double want = p->heat(t.key, e, p->ud);
+    if (want == HUGE_VAL) { return false; }   // a card holds it: a RAM copy pays nothing
     rp_class & c = p->cls[t.cls];
     rp_rec & r = t.rec[e];
-    const int32_t s = rp_take_block(p, c, only_low);
+    const int32_t s = rp_take_block(p, c, want);
     if (s < 0) { return false; }
     r.slot    = s;
     r.state   = RP_READING;
     r.claimed = false;
     c.owner[s] = { t.idx, (int32_t) e };
-    (front ? p->demand : p->ahead).push_back({ &t, e });
+    p->demand.push_back({ &t, e });
     return true;
 }
 
@@ -289,13 +277,12 @@ void rp_reader(rp_pool * p) {
         rp_job j;
         {
             std::unique_lock<std::mutex> lk(p->mu);
-            p->work_cv.wait(lk, [p]() { return p->stop || !p->demand.empty() || !p->ahead.empty(); });
+            p->work_cv.wait(lk, [p]() { return p->stop || !p->demand.empty(); });
             if (p->stop) { break; }
-            auto & q = !p->demand.empty() ? p->demand : p->ahead;
-            j = q.front();
-            q.pop_front();
+            j = p->demand.front();
+            p->demand.pop_front();
             rp_rec & r = j.t->rec[j.e];
-            if (r.state != RP_READING || r.claimed) { continue; }   // the other job of an element that moved up
+            if (r.state != RP_READING || r.claimed) { continue; }
             r.claimed = true;
         }
         rp_tensor & t = *j.t;
@@ -320,50 +307,6 @@ void rp_reader(rp_pool * p) {
         p->done_cv.notify_all();
     }
     free(bounce);
-}
-
-// elements `ids` are asked for. The lock is taken once per call (one call per tensor): a graph makes a few hundred of these. After it, what is in stays in until the graph after next.
-void rp_ask(rp_pool * p, rp_tensor & t, const int32_t * ids, int n, bool count, bool wait, bool only_low) {
-    const uint32_t g = p->graph.load(std::memory_order_relaxed);
-    int reading = 0, started = 0, lost = 0;
-    {
-        std::lock_guard<std::mutex> lk(p->mu);
-        for (int i = 0; i < n; ++i) {
-            const int64_t e = ids[i];
-            rp_rec & r = t.rec[e];
-            if (count) { r.uses++; }
-            r.graph = g;
-            if (r.state == RP_IN) { continue; }
-            if (r.state == RP_READING) {
-                if (wait && !r.claimed) { p->demand.push_back({ &t, e }); started++; }   // still in the ahead queue: a caller waits for it now
-                reading++;
-                continue;
-            }
-            if (rp_start(p, t, e, wait, only_low)) { started++; reading++; } else { lost += wait; }
-        }
-    }
-    if (count) { p->st_asked += (uint64_t) n; }
-    if (lost > 0) { p->st_lost += (uint64_t) lost; }
-    if (started > 0) {
-        (wait ? p->st_cold : p->st_ahead) += (uint64_t) started;
-        if (started > 1) { p->work_cv.notify_all(); } else { p->work_cv.notify_one(); }
-    }
-    if (wait && reading > 0) {
-        const int64_t t0 = rp_now_us();
-        std::unique_lock<std::mutex> lk(p->mu);
-        int i = 0;
-        p->done_cv.wait(lk, [&]() {
-            while (i < n && t.rec[ids[i]].state != RP_READING) { ++i; }
-            return i == n;
-        });
-        p->st_wait_us += (uint64_t) (rp_now_us() - t0);
-    }
-}
-
-// a thread's list of element ids (the call that asks for a whole tensor or by counts)
-std::vector<int32_t> & rp_ids() {
-    static thread_local std::vector<int32_t> v;
-    return v;
 }
 
 } // namespace
@@ -396,20 +339,21 @@ void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n,
     p->tensors.push_back(std::move(t));
 }
 
-bool ggml_rampool_open_fork(size_t bytes, size_t chunk_bytes, ggml_rampool_alloc_t alloc, ggml_rampool_low_t low, void * ud, int n_threads) {
+bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampool_heat_t heat, void * ud, int n_threads) {
     rp_pool * p = g_rp;
     if (p == nullptr) { return false; }
-    p->low = low; p->ud = ud; p->n_threads = n_threads;
+    p->heat = heat; p->ud = ud; p->n_threads = std::max(1, n_threads);
     uint64_t total = 0;
     for (const auto & c : p->cls) { total += c.elems * c.size; }
     const double share = total > bytes ? (double) bytes / (double) total : 1.0;   // every class the same share of its elements
     bool any = false;
     for (auto & c : p->cls) {
-        const uint64_t want = (uint64_t) ((double) c.elems * share);
-        c.per_chunk = (uint32_t) std::max<size_t>(1, chunk_bytes / c.size);
+        const uint64_t want = std::min<uint64_t>(c.elems, (uint64_t) ((double) c.elems * share));
+        // chunks of at most 512 MiB: an allocation unit, not a limit (a big register stalled at 25.9 GiB, project_ssd_reader_pinned_slots)
+        c.per_chunk = (uint32_t) std::max<uint64_t>(1, std::min<uint64_t>(want, ((size_t) 512 << 20) / c.size));
         uint64_t got = 0;
         while (got < want) {
-            // one block more than it hands out: what is read past the last block (see the rules) stays inside the registered range
+            // one block more than it hands out: what is read past the last block stays inside the registered range
             char * m = (char *) alloc((size_t) c.per_chunk * c.size + c.size, ud);
             if (m == nullptr) { GGML_LOG_WARN("rampool: no more pinned memory at class %zu bytes, %llu of %llu blocks\n", c.size, (unsigned long long) got, (unsigned long long) want); break; }
             memset(m + (size_t) c.per_chunk * c.size, 0, c.size);
@@ -430,26 +374,30 @@ bool ggml_rampool_open_fork(size_t bytes, size_t chunk_bytes, ggml_rampool_alloc
     return true;
 }
 
-void ggml_rampool_seed_fork(const void * key, int64_t e, uint32_t uses) {
-    if (rp_tensor * t = rp_find(key)) { t->rec[e].uses = uses; }
-}
-
-// The first fill, before anything else reads the pool: the most used elements of each class, laid out in file order, read by the same writer in requests of p->rq bytes on n_threads threads.
+// The first fill: the elements expected back soonest of each class (none a card holds), laid out in file order, read in requests of p->rq bytes on n_threads threads, the requests
+// in spaced order (the even ones, then the odd ones: neighbours in the file are never in flight together, ggml-read-fork.h).
 void ggml_rampool_fill_fork(void) {
     rp_pool * p = g_rp;
     if (p == nullptr) { return; }
     const int64_t t0 = rp_now_us();
+    uint64_t n_card = 0;
     for (auto & c : p->cls) {
-        struct el { uint32_t uses; int32_t t, e; };
+        struct el { double h; int32_t t, e; };
         std::vector<el> v;
         v.reserve((size_t) c.elems);
         for (auto & t : p->tensors) {
             if (&p->cls[t->cls] != &c) { continue; }
-            for (int64_t e = 0; e < t->n; ++e) { v.push_back({ t->rec[e].uses, t->idx, (int32_t) e }); }
+            for (int64_t e = 0; e < t->n; ++e) {
+                const double h = p->heat(t->key, e, p->ud);
+                if (h == HUGE_VAL) { n_card++; continue; }
+                v.push_back({ h, t->idx, (int32_t) e });
+            }
         }
-        std::stable_sort(v.begin(), v.end(), [](const el & a, const el & b) { return a.uses > b.uses; });
-        if (v.size() > c.n_slots) { v.resize(c.n_slots); }
+        std::stable_sort(v.begin(), v.end(), [](const el & a, const el & b) { return a.h < b.h; });
+        if (v.size() > c.free.size()) { v.resize(c.free.size()); }
         std::sort(v.begin(), v.end(), [](const el & a, const el & b) { return a.t != b.t ? a.t < b.t : a.e < b.e; });
+        // blocks in ascending order: file neighbours become pool neighbours
+        std::sort(c.free.begin(), c.free.end(), std::greater<uint32_t>());
         for (const el & x : v) {
             const uint32_t s = c.free.back();
             c.free.pop_back();
@@ -460,7 +408,6 @@ void ggml_rampool_fill_fork(void) {
             c.owner[s] = { x.t, x.e };
         }
     }
-    // runs of elements that are neighbours in the file and in a chunk are one range, cut into requests here so the threads share them evenly
     struct range { rp_tensor * t; char * dst; size_t n; uint64_t off; };
     std::vector<range> jobs;
     uint64_t bytes = 0;
@@ -475,7 +422,7 @@ void ggml_rampool_fill_fork(void) {
             uint64_t off = t.off + (uint64_t) e * t.esz, end = t.off + (uint64_t) b * t.esz;
             char * dst = c.at((uint32_t) t.rec[e].slot);
             while (off < end) {
-                const uint64_t cut = std::min(end, (off / piece + 1) * piece);   // on request edges, so all but the first and last are whole sectors
+                const uint64_t cut = std::min(end, (off / piece + 1) * piece);
                 jobs.push_back({ &t, dst, (size_t) (cut - off), off });
                 dst += (size_t) (cut - off);
                 off = cut;
@@ -484,6 +431,9 @@ void ggml_rampool_fill_fork(void) {
             e = b;
         }
     }
+    std::vector<range> spaced;
+    spaced.reserve(jobs.size());
+    for (int pass = 0; pass < 2; ++pass) { for (size_t i = pass; i < jobs.size(); i += 2) { spaced.push_back(jobs[i]); } }
     std::atomic<size_t> next{ 0 };
     std::atomic<uint64_t> bad{ 0 };
     auto work = [&]() {
@@ -492,8 +442,8 @@ void ggml_rampool_fill_fork(void) {
         char * bounce = rp_bounce_new(bn);
         for (;;) {
             const size_t i = next.fetch_add(1);
-            if (i >= jobs.size()) { break; }
-            const range & r = jobs[i];
+            if (i >= spaced.size()) { break; }
+            const range & r = spaced[i];
             if (bounce == nullptr || !rp_read(p, r.t->dfd, r.t->fd, r.dst, r.n, r.off, bounce, bn)) { bad++; }
         }
         free(bounce);
@@ -501,7 +451,7 @@ void ggml_rampool_fill_fork(void) {
     std::vector<std::thread> th;
     for (int i = 0; i < p->n_threads; ++i) { th.emplace_back(work); }
     for (auto & x : th) { x.join(); }
-    if (bad.load() > 0) { GGML_LOG_ERROR("rampool: %llu reads of the fill failed\n", (unsigned long long) bad.load()); }
+    if (bad.load() > 0) { GGML_LOG_ERROR("rampool: %llu reads of the fill failed, those blocks are dropped\n", (unsigned long long) bad.load()); }
     for (auto & tp : p->tensors) {
         rp_tensor & t = *tp;
         rp_class & c = p->cls[t.cls];
@@ -509,13 +459,19 @@ void ggml_rampool_fill_fork(void) {
             rp_rec & r = t.rec[e];
             if (r.slot < 0) { continue; }
             r.claimed = false;
-            r.state   = RP_IN;
+            if (bad.load() > 0) {   // shortcut: which range failed is not kept, so a failed fill drops every block (the pool then fills by demand)
+                c.owner[r.slot] = rp_owner();
+                c.free.push_back((uint32_t) r.slot);
+                r.slot = -1; r.state = RP_OUT;
+                continue;
+            }
+            r.state = RP_IN;
             t.ptr[e].store(c.at((uint32_t) r.slot), std::memory_order_release);
         }
     }
     const double s = std::max(1e-3, (rp_now_us() - t0) / 1e6);
-    GGML_LOG_WARN("rampool: %.1f GiB read in %.1f s (%.2f GB/s, %d threads, requests of %zu KiB%s)\n", bytes / 1073741824.0, s, bytes / 1e9 / s, p->n_threads, p->rq >> 10,
-            p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here");
+    GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, requests of %zu KiB%s), %llu slices left out (a card holds them)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
+            p->n_threads, p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card);
     for (int i = 0; i < p->n_threads; ++i) { p->readers.emplace_back(rp_reader, p); }
 }
 
@@ -537,7 +493,7 @@ void ggml_rampool_close_fork(void) {
 
 const char * const * ggml_rampool_table_fork(const void * key) {
     rp_tensor * t = rp_find(key);
-    return t ? reinterpret_cast<const char * const *>(t->ptr.get()) : nullptr;   // std::atomic<T *> is a plain pointer here (static_assert below): a reader's load after a need is a plain load
+    return t ? reinterpret_cast<const char * const *>(t->ptr.get()) : nullptr;
 }
 static_assert(sizeof(std::atomic<const char *>) == sizeof(const char *), "the table is read as plain pointers");
 
@@ -545,74 +501,74 @@ void ggml_rampool_graph_fork(void) {
     if (g_rp) { g_rp->graph.fetch_add(1, std::memory_order_relaxed); }
 }
 
-void ggml_rampool_need_fork(const void * key, const int32_t * ids, int n, bool count) {
+void ggml_rampool_need_fork(const void * key, const int32_t * ids, int n) {
     rp_tensor * t = rp_find(key);
-    if (t == nullptr) { return; }
-    if (ids == nullptr) {
-        auto & v = rp_ids();
-        v.resize((size_t) t->n);
-        for (int64_t e = 0; e < t->n; ++e) { v[e] = (int32_t) e; }
-        ids = v.data();
-        n = (int) t->n;
+    if (t == nullptr || n <= 0) { return; }
+    rp_pool * p = g_rp;
+    const uint32_t g = p->graph.load(std::memory_order_relaxed);
+    int reading = 0, started = 0, hit = 0, refused = 0;
+    std::unique_lock<std::mutex> lk(p->mu);
+    for (int i = 0; i < n; ++i) {
+        const int64_t e = ids[i];
+        if (e < 0 || e >= t->n) { continue; }
+        rp_rec & r = t->rec[e];
+        r.graph = g;
+        if (r.state == RP_IN) { hit++; continue; }
+        if (r.state == RP_READING) { reading++; continue; }
+        if (rp_start(p, *t, e)) { started++; reading++; } else { refused++; }
     }
-    rp_ask(g_rp, *t, ids, n, count, true, false);
-}
-
-void ggml_rampool_need_counts_fork(const void * key, const int64_t * counts, int n) {
-    rp_tensor * t = rp_find(key);
-    if (t == nullptr) { return; }
-    auto & v = rp_ids();
-    v.clear();
-    for (int e = 0; e < n && e < t->n; ++e) { if (counts[e] > 0) { v.push_back(e); } }
-    rp_ask(g_rp, *t, v.data(), (int) v.size(), true, true, false);
-}
-
-void ggml_rampool_ahead_fork(const void * key, const int32_t * ids, int n, bool only_low) {
-    rp_tensor * t = rp_find(key);
-    if (t == nullptr) { return; }
-    if (ids == nullptr) {
-        auto & v = rp_ids();
-        v.clear();
-        for (int64_t e = 0; e < t->n; ++e) { if (t->rec[e].state == RP_OUT) { v.push_back((int32_t) e); } }
-        ids = v.data();
-        n = (int) v.size();
+    p->st_asked += (uint64_t) n; p->st_hit += (uint64_t) hit; p->st_cold += (uint64_t) started; p->st_refused += (uint64_t) refused;
+    if (started > 0) { if (started > 1) { p->work_cv.notify_all(); } else { p->work_cv.notify_one(); } }
+    if (reading > 0) {
+        const int64_t t0 = rp_now_us();
+        int i = 0;
+        p->done_cv.wait(lk, [&]() {
+            while (i < n && (ids[i] < 0 || ids[i] >= t->n || t->rec[ids[i]].state != RP_READING)) { ++i; }
+            return i == n;
+        });
+        p->st_wait_us += (uint64_t) (rp_now_us() - t0);
     }
-    rp_ask(g_rp, *t, ids, n, false, false, only_low);
 }
 
-int64_t ggml_rampool_run_fork(const void * key, int64_t e, int64_t end) {
+const char * ggml_rampool_get_fork(const void * key, int64_t e) {
     rp_tensor * t = rp_find(key);
-    if (t == nullptr) { return 1; }
-    const rp_class & c = g_rp->cls[t->cls];
-    const char * p0 = t->ptr[e].load(std::memory_order_acquire);
-    const int32_t s0 = t->rec[e].slot;
-    int64_t b = e + 1;
-    while (b < end && t->ptr[b].load(std::memory_order_acquire) == p0 + (size_t) (b - e) * t->esz && t->rec[b].slot == s0 + (b - e) && (uint32_t) t->rec[b].slot / c.per_chunk == (uint32_t) s0 / c.per_chunk) { ++b; }
-    return b - e;
+    if (t == nullptr || e < 0 || e >= t->n) { return nullptr; }
+    const rp_rec & r = t->rec[e];
+    // asked by this graph or the one before it: no eviction before the graph after next (the graph counter moves only between graphs)
+    if (r.graph + 1 < g_rp->graph.load(std::memory_order_relaxed)) { return nullptr; }
+    return t->ptr[e].load(std::memory_order_acquire);
+}
+
+const char * ggml_rampool_use_fork(const void * key, int64_t e) {
+    rp_tensor * t = rp_find(key);
+    if (t == nullptr || e < 0 || e >= t->n) { return nullptr; }
+    rp_pool * p = g_rp;
+    std::lock_guard<std::mutex> lk(p->mu);
+    rp_rec & r = t->rec[e];
+    if (r.state != RP_IN) { p->st_pp_miss++; return nullptr; }
+    r.graph = p->graph.load(std::memory_order_relaxed);
+    p->st_pp_hit++;
+    return t->ptr[e].load(std::memory_order_relaxed);
 }
 
 const char * ggml_rampool_take_fork(const void * key, int64_t e) {
     rp_tensor * t = rp_find(key);
-    if (t == nullptr) { return nullptr; }
+    if (t == nullptr || e < 0 || e >= t->n) { return nullptr; }
     rp_pool * p = g_rp;
     rp_rec & r = t->rec[e];
     std::unique_lock<std::mutex> lk(p->mu);
     r.holds++;
-    r.uses++;
     p->st_asked++;
-    if (r.state == RP_IN) { return t->ptr[e].load(std::memory_order_relaxed); }
+    if (r.state == RP_IN) { p->st_hit++; return t->ptr[e].load(std::memory_order_relaxed); }
     if (r.state == RP_OUT) {
-        if (!rp_start(p, *t, e, true, false)) {
+        if (!rp_start(p, *t, e)) {
             r.holds--;
-            p->st_lost++;
+            p->st_refused++;
             return nullptr;
         }
         p->st_cold++;
-    } else if (!r.claimed) {
-        p->demand.push_back({ t, e });
-        p->st_cold++;
+        p->work_cv.notify_one();
     }
-    p->work_cv.notify_one();
     const int64_t t0 = rp_now_us();
     p->done_cv.wait(lk, [&]() { return r.state != RP_READING; });
     p->st_wait_us += (uint64_t) (rp_now_us() - t0);
@@ -623,7 +579,7 @@ const char * ggml_rampool_take_fork(const void * key, int64_t e) {
 
 void ggml_rampool_drop_fork(const void * key, int64_t e) {
     rp_tensor * t = rp_find(key);
-    if (t == nullptr) { return; }
+    if (t == nullptr || e < 0 || e >= t->n) { return; }
     std::lock_guard<std::mutex> lk(g_rp->mu);
     t->rec[e].holds--;
 }
@@ -632,14 +588,15 @@ void ggml_rampool_stats_fork(struct ggml_rampool_stats * s, bool reset) {
     memset(s, 0, sizeof(*s));
     rp_pool * p = g_rp;
     if (p == nullptr) { return; }
-    s->asked = p->st_asked; s->cold = p->st_cold; s->ahead = p->st_ahead; s->evicted = p->st_evicted; s->lost = p->st_lost;
-    s->cold_bytes = p->st_cold_b; s->wait_us = p->st_wait_us; s->bytes = p->pool_bytes;
+    s->asked = p->st_asked; s->hit = p->st_hit; s->cold = p->st_cold; s->refused = p->st_refused; s->evicted = p->st_evicted;
+    s->cold_bytes = p->st_cold_b; s->wait_us = p->st_wait_us; s->pp_hit = p->st_pp_hit; s->pp_miss = p->st_pp_miss;
+    s->bytes = p->pool_bytes; s->classes = (int) p->cls.size();
     {
         std::lock_guard<std::mutex> lk(p->mu);
         for (const auto & c : p->cls) { s->used += (uint64_t) (c.owner.size() - c.free.size()) * c.size; }
     }
     if (reset) {
-        p->st_asked = 0; p->st_cold = 0; p->st_ahead = 0; p->st_evicted = 0; p->st_lost = 0; p->st_cold_b = 0; p->st_wait_us = 0;
+        p->st_asked = 0; p->st_hit = 0; p->st_cold = 0; p->st_refused = 0; p->st_evicted = 0; p->st_cold_b = 0; p->st_wait_us = 0; p->st_pp_hit = 0; p->st_pp_miss = 0;
     }
 }
 
