@@ -2689,6 +2689,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _pf_text = open(config.prompt_path(f"src{_pfn.group(1)}k")).read()
             elif _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
                 _need = int(54092 * int(_pfn.group(1)) * 1000 / 12294); _pf_text = (_pf_text * (_need // max(len(_pf_text), 1) + 1))[:_need]   # beyond the source (256k contexts): the source again, the speeds do not depend on the text
+            if OVR.get("snippet"): _pf_text = open(OVR["snippet"]).read()   # [alias] snippet = another source file for the same prefill test (pf12k4kb: a different 12k cut)
             _pf_text = OVR.get("prefix", "") + _pf_text
             _canary = int(OVR.get("canary") or 0)
             if _canary:
