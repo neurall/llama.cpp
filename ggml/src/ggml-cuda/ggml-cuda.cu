@@ -4319,6 +4319,14 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         GGML_LOG_ERROR("%s: %s failed\n", __func__, ggml_op_desc(dst));
+        // fork: the shapes behind the failure (DeepSeek 64k, 2026-11-08: "CONCAT failed: invalid argument" with nothing to tell which concat of the graph it was)
+        for (int s = -1; s < GGML_MAX_SRC; ++s) {
+            const ggml_tensor * t = s < 0 ? dst : dst->src[s];
+            if (!t) { continue; }
+            GGML_LOG_ERROR("  %s %s %s ne [%lld,%lld,%lld,%lld] nb [%zu,%zu,%zu,%zu] data %p buffer %s\n", s < 0 ? "dst" : "src", t->name, ggml_type_name(t->type),
+                    (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3], t->nb[0], t->nb[1], t->nb[2], t->nb[3], t->data,
+                    t->buffer ? ggml_backend_buffer_name(t->buffer) : "none");
+        }
         CUDA_CHECK(err);
     }
 
