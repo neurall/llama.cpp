@@ -288,6 +288,27 @@ of the learned scalar (R2's r), never a constant; (4) a pair with no qualifying 
 become the state-file prior per `@hw#build`; (5) the scoreboard of section 1 is rerun with the new events (rules a-g) and the rule set of section 0
 is amended only where a rule's net falls below the measured-means rule.
 
+### Briefs for the sweep
+
+Sonnet (medium), run the forced-pure sweep: PC1, user o, run.py only. Write fork/runs/xo-<model>.csv from section 5's table (columns
+`name,model,n,test,tokens,args,extra`; one row per strategy x size, n=2, tokens 64; args = the strategy switches of section 5; ds rows extra `-lm mmap`;
+qwen36 miss-path rows extra `--hog-gpu 4.5`; glm35 rp1 rows args `--moe rampool=1,<strategy>`; MiMo context variants via `-ps`). Start from
+/tmp/xo_inv/missing_5models.csv and keep only the rows named in section 5. Run `run.py jobs xo-ds -b rel_b14244 -nm -pl 220/280 -r 2 -cs`, then
+xo-glm35, xo-glm30, xo-mimo, xo-qni4, xo-qwen36 (that order). Check runs.db first (feedback_check_runs_db_before_queue): skip a cell that has a cold and
+a warm ok row of that strategy at that size on a build from 2026-11-02 on. One queue instance. Read every answer in fork/outputs/<rowid>.txt before its
+speed (nonsense = ok 0). Stop at the first failing cell (server death, GUARD in q5h/watch-DATE.log, refused pass): hand back the cause, rowid and log
+path; do not continue past it. Return per model a table `strategy | size | rowids | judge | cold took s | warm took s | cold pp | warm pp | stats.log
+stem` and the list of cells skipped as already measured. Hand back when all lists are done or at the first failure.
+
+Opus (high), turn the tables into rules: inputs = /tmp/xo_score (events.csv, truth.txt, score.py, matrix.py), /tmp/xo_inv, the new sweep's stats.logs
+in /p/bw/data/q5h, fork/planner_events.py, tests/test-planner-replay-fork.cpp. (1) Extend planner_events.py to every model and the fields of the
+analysis recipe (section 5) and rerun score.py's rules a-g and matrix.py on old + new events; (2) per adjacent pair apply the recipe's steps 1-5
+and report the qualifying ratio or "means + trial" per pair, cold and warm apart, with the fit; (3) encode the result as section 0's R1-R7 in the
+planner (the chains' measured crossover as eligibility, R2's learned r with the sweep's prior, the state-file persistence of every arm's RLS, the VOI
+trial with the paired stop), each pick logged with its numbers; (4) the replay gate runs twice, from a fresh state and from the previous process's
+state, and passes when no pick loses > 5% against the measured best; (5) commit on branch plan-rules, push, report the scoreboard before and after
+with the worst loss per model. Nothing hand-tuned; a number the data does not give is a learned prior with its sd logged.
+
 ## 6. Work packages (P0 first; P1-P5 disjoint, parallel; Sonnet runs cells)
 
 | pkg | owner | effort | what | owns (disjoint) | depends | acceptance |
