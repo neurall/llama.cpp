@@ -9318,7 +9318,14 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
 
 // A stream pass (no prompt chain) of a prompt call, for a layer cached behind a slower link: the fastest link's card takes what the home card does not hold. 0 fastest = no mix.
 static bool pp_mix_opt() {
-    static const bool on = [] { const char * e = moe_opt("pp-mix"); return !e || atoi(e) != 0; }();   // --moe pp-mix=0: such a layer streams every expert, as before
+    // Off by default (2026-11-07, task P8): a call that ran the prompt mix died with a CUDA illegal memory access on GLM 3.5 12k (rows 23770, 23786,
+    // 23788; intermittent, with and without the split's copies in place). A feasibility rule, not a preference: --moe pp-mix=1 forces it back on.
+    static const bool on = [] {
+        const char * e = moe_opt("pp-mix");
+        const bool v = e && atoi(e) != 0;
+        if (!v) { LLAMA_LOG_WARN("moe-cache: feas: mix: crash P8 open (--moe pp-mix=1 to run it)\n"); }
+        return v;
+    }();
     return on;
 }
 static bool pp_mix_allowed() {
