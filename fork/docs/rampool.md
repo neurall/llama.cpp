@@ -204,3 +204,255 @@ buffer before the weights. Not in this fix.
 Acceptance cells (one power session, answers read first): GLM 3.5 12k `-nm -pl 220/280 -r 2`, rp=1 and rp=0 interleaved, then up9_merged2:
 pass = warm pp >= 583 (rp=1 and rp=0), cold pp >= rp=0's, decode within noise; the server log of each warm request shows `measured: faster at
 this size` -> split at 10496 and `copy fill` <= 2000 ms; then the 3k cell and `-simram 32g` for rp=0.
+
+## Robust planner design (2026-11-07, design only; Opus implements)
+
+Logs read (copies in the job tmp dir): q5h/{up9_merged2,rampool1,2,3,5,6,7,8}-glm35-12k-rp{0,1}.server.log, rampool8 rp0 repeat (rows 23752 cold pp 341,
+23753 warm pp 481) included. GLM 3.5 12k, -pl 220/280, x16 (CUDA1, experts) + x4 (CUDA0). Each request is two prompt calls: rp=0 2034 + 10400 tokens, rp=1
+1938 + 10496. Build ids: up9_merged2 = before 5757dad57d; rampool6 = 5757dad57d; rampool7 = 5757dad57d + b (pins logged, no planner change); rampool8 =
+7d5bf6e72.
+
+### 1. Every prompt-pass decision, in hindsight
+
+Measured truths on this machine (the other path at the same size, from the runs where it ran; every number is a whole call, wall):
+
+| call | one card | split (pass only) | copy fill owed when the copies are not in place |
+|---|---|---|---|
+| cold 2k (first call of the process, experts not on the card) | decode chain 18.6-24.9 s (calculated 11.3-13.5) | 6.7 s (rampool7 rp1: 15.9 s call = 6.7 pass + 8.9 fill of which 7.7 pins) | 1.4-1.5 s copy; pins once per process 0.03-2.0 s (rampool8, largest first), 7.7 s before |
+| warm 2k | stream 5.9-7.7 s (263-330 t/s) | 6.7 s (one sample) | same |
+| 10k (cold or warm) | stream 16.8-18.4 s (566-626 t/s) | 11.6-12.5 s pass (split balance "pass" line); as a call 12.7-13.5 s warm | same |
+
+Decisions (time = the chosen path's call; loss = against the faster path's call at that size, fill included where it was owed; ok = right pick):
+
+| build / arm | call | pick | by | predicted (one card / split + fill) | took | loss | wrong input |
+|---|---|---|---|---|---|---|---|
+| up9_merged2 rp0 cold | 2034 | one card (decode chain) | moe-cache: decode chain faster | dec 11.3 s calc / split never weighed | 18.6 s | 10 s, 2.2x | A, C |
+| up9_merged2 rp0 cold | 10400 | one card | the call's path keeps the pass (split 13.8 measured prior vs planner one card 11.7) | 11.7 / 13.8 | 17.6 s | 4.4 s, 1.33x | C (planner one-card time has no upload; the stream calc said 17.5) |
+| up9_merged2 rp0 warm | 2034 | one card | no split arm here | - / - | 7.5 s | ok (1 s better than split+fill) | - |
+| up9_merged2 rp0 warm | 10400 | split | planner / factors | 17.8 / 14.2 | 13.2 s | ok | - |
+| rampool1,2,3,5,6 rp0 (and rampool5 rp1) cold | 2k | one card (decode chain) | moe-cache | dec 11.3-13.5 calc | 18.6-23 s | ~10 s, 2x | A, C |
+| same builds cold | 10k | one card | planner: >15% apart | 5.8 / 7.0 (compute only) | 17.2-17.4 s | 4 s, 1.3x | C (planner one card 5.8 s, took 17.3: the upload is missing) |
+| same builds warm | 2k | one card | nothing measured for the split | - | 7.4-7.6 s | ok | - |
+| same builds warm | 10k | split | planner (one card 17.6 incl. the measured stream) | 17.6 / 7.1 | 13.2-14.1 s | ok | - |
+| rampool2,3,6 rp1 cold | 1938 | one card (decode chain) | factors: 5.5 = 5.5 upload-bound + fill | 5.5 / 5.5+0.7 | 23 s | ~13 s, 2.5x | A, C, D (the factors' one-card time is max(U, compute) = U 5.5 s; the decode chain took 23 s) |
+| rampool2,3,6 rp1 cold | 10496 | split | factors (state file) | 15.3 / 11.7+0.7 | 14.3-17.3 s | ok | - |
+| rampool2,3,6 rp1 warm | 1938 | one card | factors (fill 1.5 owed) | 5.3-5.7 / 5.3-5.7+1.5 | 5.9-6.4 s | ok | - |
+| rampool2,3,6 rp1 warm | 10496 | **one card** | g_pp_no_dense veto (rampool6) / "the call's path keeps the pass" | measured 603 vs 681-736 t/s split | 16.8-17.4 s | 2.5-3.9 s, 1.2x | B (exact-size veto: the one-card stream had not run at exactly 10496, only at 10400) |
+| rampool7 rp1 cold | 1938 | split | planner 12.3 / 6.2 | 12.3 / 6.2+0.7 | 15.9 s (8.9 fill, 7.7 pins) | ok against 23 s, pins made it look lost | E (one-time pins inside the fill sample) |
+| rampool7 rp1 cold | 10496 | split | planner | 18.2 / 15.6 | 12.7 s | ok | - |
+| rampool7 rp1 warm | 1938 | one card | factors, fill 8.9 | 5.1 / 5.1+8.9 | 6.3 s | ok (by luck: fill 8.9 is 6x the truth) | E |
+| rampool7 rp1 warm | 10496 | **one card** | factors override: split 12.6 + fill 8.9 > one 15.0 | 15.0 / 21.5 | 18.1 s | 5.4 s, 1.45x | E, F (one-sample fill with pins; the curve overruled the measured pair 581 vs 828) |
+| rampool8 rp0 cold (repeat, row 23752) | 2034 | one card (decode chain) | moe-cache | dec calc 11.5 | 19.5 s | ~10 s, 2x | A, C |
+| rampool8 rp0 cold | 10400 | split | factors (state file): 16.6 / 13.2+0.7 | 16.6 / 13.9 | 16.3 s call = 12.1 pass + 3.1 fill (2.0 pins) + 1.1 | ok (one card 17.5) | - |
+| rampool8 rp0 warm (row 23753) | 2034 | one card | factors | 4.3 / 4.3+1.1 | 7.7 s | ok | - |
+| rampool8 rp0 warm | 10400 | **one card** | measured branch: split 640 t/s x n + fill 1.1 > 0.92 x one 597 | 17.4 / 16.3+1.1 | 17.5 s | 4.3 s, 1.33x (pp 534 -> 481) | G (fill double count: the bucket arm 640 t/s is the whole call incl. 3.1 s fill+pins; 7d5bf6e72 c adds the fill again) |
+| rampool8 rp1 cold | 1938 | one card (decode chain) | factors: 6.1 = 6.1 + 0.7 | 6.1 / 6.8 | 24.9 s | ~15 s, 2.6x | A, C, D |
+| rampool8 rp1 cold | 10496 | split | factors | 17.0 / 13.3+0.7 | 14.8 s | ok | - |
+| rampool8 rp1 warm | 1938 | one card | factors, fill 1.2 | 5.9 / 5.9+1.2 | 6.5 s | ok | - |
+| rampool8 rp1 warm | 10496 | split | factors | 16.8 / 13.5+1.2 | 13.9 s | ok | - |
+
+Of 36 logged decisions 15 picked the slower path; the losses are 1.2x to 2.6x of the call. The cold 2k call is wrong in every run but one
+(rampool7 rp1, which paid 7.7 s of pins for it): the decode chain is picked by the moe-cache planner against its own stream calculation and the split is
+never weighed there; the split with its copies (7 s + 1.5 fill) is 2x faster than the decode chain (19-25 s). The cold 10k call is wrong in every rp=0 run
+before rampool8 (the planner's compute-only one-card time, 5.8 s, against a stream that takes 17.3 s).
+
+**Failure taxonomy (which input was wrong):**
+
+- A. **The one-card path's own prediction was not calibrated**: the moe-cache planner's "decode chain 11.3 s calculated" took 19-25 s every time (the
+  misses upload serially behind the router); nothing learns that ratio per path (`g_pp_took` keeps the last time per power-of-two size, never the
+  calculated-to-measured ratio, and the first call of a size has no entry).
+- B. **Exact-size rules**: `g_pp_no_dense` and `pp_took_us` are keyed to `pp_bucket(n)` (powers of two) and `dsplit_bucket_of` (sqrt(2) steps x context
+  band); 10400 and 10496 fall into different buckets of one of them, so a measurement at 10400 said nothing at 10496 (rampool6 rp1 warm, 1.2x).
+- C. **Two one-card times that disagree**: the dense-split planner's `plan.t_one_ms` is compute only (5.8 s at 10400) while the moe-cache's stream
+  calculation (17.5 s) is near the truth (17.3); the 2026-11-06 bridge takes `plan.t_one_ms - saving` where the path was not measured at that exact size.
+- D. **max(U, compute) hides the path**: `dsf_decide` models one card as max(upload, compute); at 2k the upload (5.5 s) wins and the decode chain's 23 s
+  never enters, so the factors say "one card 5.5 s" for a call that takes 23 s.
+- E. **One-sample learned cost with a one-time part inside**: `g_dsf_fill` took 8904 ms from one sample (7.7 s pins once per process) and charged it to
+  every later request (rampool7: 1.45x). Pins are now logged apart (7d5bf6e72 b) but the estimator still takes any single sample as the truth.
+- F. **A model overruling a measured pair** at the same size (`dsf_decide` override, fixed for the exact bucket only by 7d5bf6e72 c).
+- G. **Fill double count**: `llama_dsplit_report_fork(n, us)` gets `ggml_time_us() - t_compute_start_us`, which contains `moe_mirror_fill` (3.1 s with pins
+  in rampool8 rp0 cold); the bucket arm `us_tok[1]` therefore includes the fill, and 7d5bf6e72 c adds `fill_ms` on top. This is row 23753's 481 pp: the warm
+  10400 call went to one card, 17.5 s against 13.3 + 1.1. **rp=0's warm loss is this planner change, not the pass**: the split balance line shows the same
+  pass in every build (pass 11601 ms up9_merged2, 11695 rampool6, 12109 rampool8 rp0 cold with the pins' page reclaim behind it; "wait for other cards"
+  7.7-7.9 s in all of them is CUDA0 waiting for the expert card and is not new). The 711 t/s split call of the first rampool8 rp0 run (14.6 s) against 782
+  (13.3 s) is 0.4 s more fill (1928 ms: its 709 ms of pins happened at the warm request because the cold one did not split, a (a)-ordering effect:
+  the biggest blocks are pinned first) and 0.9 s of pass; of 5757dad57d / 7d5bf6e72 only the largest-first sort (a) touches the copy path, so the one-line
+  A/B is the sort reverted (acceptance cell 5). Neither commit touches the pass kernels.
+- H. Not seen in these logs but in the code: `dsplit_pass_end_locked` drops passes under a quarter of the card limit, the split planner's calibration
+  averages "half and half" from the first sample, `split_min_gain` 8% and the 15% "plan_sure" margin are fixed thresholds.
+
+### 2. The learning design (no tuned constants)
+
+One estimator shape for every path, fed by every measured pass, predicting the actual call sizes from measured quantities. Nothing is keyed to a size.
+
+**Model.** For a call of n tokens starting at c cells on path p (the moe-cache's PP_RING, PP_MIX, PP_CHAIN, PP_DEC, PP_K+i, and the dense split), the
+call's time is linear in measured features:
+
+    t_p(n, c) = theta_p . phi,   phi = (1, n, n*c, U_p(n))
+
+1: the fixed part of a pass; n: compute per token; n*c: attention per token per cell (the planner's fitted attention curve says it exists); U_p(n): the
+path's own calculated upload for this call, in us (the moe-cache computes it per call from measured link rates and the bytes not on the card: "streaming
+upload", "misses uploaded", the decode chain's chunks). The coefficient on U says how much of the upload the path hides behind compute (1 serial, 0
+overlapped, 2 when the uploads also stall the compute, as the decode chain does): learned, not assumed; max(U, compute) is gone (fault D). The split adds
+the copy fill when the copies are not in place: `fill = theta_fill * bytes` (one coefficient, us per byte of copies), plus nothing for pins (they are
+measured apart by `ggml_cuda_xstage_pin_us_fork` and are not part of any request's cost; fault E).
+
+**Estimator: recursive least squares with its own covariance**, per path, dimension k = 4 (fill: k = 1):
+
+    e = y - theta.phi                       (residual of the measured call time)
+    g = P phi / (1 + phi' P phi)            (gain)
+    theta += g e;  P -= g phi' P
+    s2 = ((n-1) s2 + e^2 / (1 + phi' P phi)) / n     (residual variance, running mean, n = samples so far)
+    NIS = e^2 / (s2 (1 + phi' P phi))       (normalised innovation squared; 1 is what a correct model gives on average)
+
+Prediction for a call: mean `mu = theta.phi`, variance `var = s2 (1 + phi' P phi)`. One sample moves theta by the gain the covariance allows and no more:
+an 8904 ms fill against a prior of 741 +- 741 moves the mean to ~4.8 s and leaves the variance large, and the next 1.4 s sample pulls it back; a single
+sample never becomes "the truth" (fault E). O(k^2) = 16 multiplies per update and per prediction: O(1).
+
+**Drift from residuals, not timers.** Keep `nis` as a running mean (same 1/n weight as s2). When a new sample's NIS > 1 (the residual exceeded what the
+model's own variance allowed), inflate: `P *= NIS` and `n = k + 1` (the running means restart at the identifiability minimum). A changed machine (power
+cap, contention, another process on a card, a new pin cost) then re-opens the variance by exactly the measured surprise, exploration resumes, and
+confidence regrows with the next samples. No forgetting factor, no window.
+
+**Prior (cold start).** theta_0 from the quantities the planner already measures at start: compute per token from the matmul bench
+(`split planner: matmul latency`), attention per token per cell from the attention fit, fixed part 0, upload coefficient 1, fill us/byte from the
+link probe (`g_mirror_fill_us` / bytes). P_0 = diag(theta_0^2) (each prior parameter is uncertain by its own size: in every log here the planner's
+compute-only time was 2x off and the bench's "matmul latency" and "probe" rates differ 3.5x; a prior that claims less would veto a measurement) with a
+floor of the squared smallest feature scale for a zero prior (the fixed part: one pass of 64 tokens at the bench rate). s2_0 = (theta_0.phi)^2 at the
+first call's phi for the same reason. rp=0 and rp=1 see the same code and the same priors; they differ only in the features (1938/10496 against
+2034/10400 tokens, the bytes behind U) and in pin time, which is excluded. A state file prior (below) replaces theta_0 / P_0 when present.
+
+**Decision per request, with exploration from the posterior (Thompson).** At the first prompt pass of a request (a pos0 below the last seen one, the
+existing `g_dsf_seen_pos0` rule) draw one parameter vector per path from N(theta_p, s2_p P_p) and keep the draw for the request (one consistent view
+across its calls: no flip-flop inside a request, and no hysteresis constant). The planned calls are known (the moe-cache's `pp_cells_get` end and the
+ubatch, as `dsf_decide` already loops over them). For each remaining call k: `one_k` = the drawn time of the one-card path the moe-cache would take for
+that call (it picks among its paths by the same draws: the lowest drawn time), `split_k` = the drawn split time. Gains `g_k = one_k - split_k`; the
+fill is a request cost, paid once if any call splits: split the calls with `g_k > 0` when `sum(g_k > 0) > fill_drawn` (fill 0 when the copies are in
+place), else none. The probability of picking the slower path equals the posterior probability that it is faster; when the two are within noise this is
+near 1/2 and the regret of either pick is within that noise; when the posterior is sure it is ~0. Exploration shrinks with confidence and regrows on
+drift by itself; there is no X%, no N requests, no explore flag, no `split_min_gain`, no 15%, and no veto (faults B, C, F). A measured path is never
+overruled by a model: the model is the measurements. The draws are redone after any pass whose NIS > 1 (the posterior changed materially).
+
+**Keep as they are:** the measured-pass hygiene in `dsplit_pass_end_locked` (up-wait subtraction, the `g_dsf_urat` upload correction becomes
+unnecessary once U is a learned feature and goes), `g_veto_tokens` (the split did not fit: a fact), the fill measured without pins (7d5bf6e72 b),
+largest-first (a, pending cell 5).
+
+**Logging (feedback_planner_explains_picks).** One WARN + one `stats.log` `PLN` line per decision:
+`plan: request of 12434 tokens, calls 1938+10496 at 0 cells: one card [stream] 6.9 +- 2.1 s / 17.1 +- 0.8 s (n=3, nis 0.9), split 6.8 +- 2.4 / 12.2 +- 0.6
+(n=2, nis 1.3) + fill 1.4 +- 0.3 (owed; n=4); draws one 7.4/17.0, split 6.5/12.4: split both (p_split 0.52 / 0.99)`. After the pass (`DON` line):
+`predicted 12.2 +- 0.6, took 12.1, nis 0.03, regret 0.0 s` (regret = took - min over paths of the predicted mean, 0 when the pick was the predicted
+best; a sum per server in `/moe/stats`: `plan_regret_s`, `plan_hits`, `plan_picks`).
+
+**Persistence (feedback_stored_values_policy).** Store theta, diag(P)/s2 and s2 per path, under the existing calib section and `@hw#build` key,
+only when the estimator is determined and quiet: n >= k + 1 and running NIS <= 1. Loaded as the prior (theta_0, P_0). Never the samples, never a
+per-size arm: `dsplit_arm4_b*`, `dsf.one.k*`, `dsf.split.k*`, `dsf.fill`, `dsplit_calib5/7_b*` are no longer written (left in the file, ignored).
+
+### 3. Replay of the logged decisions through the estimator (by hand, from the logged inputs)
+
+Inputs each decision would have had: the moe-cache's calculated uploads (logged per call), the planner's prior (logged), the passes measured before it
+in the same process (the state file carries the previous run's theta where the build matches). The draws are taken at the posterior mean where the
+posterior separates the paths by more than one sigma, and reported as "either" where it does not.
+
+| decision | posterior at the call (one card / split+fill) | pick | measured best | result |
+|---|---|---|---|---|
+| cold 2k, first start of a build (no state) | priors: decode chain 11-13 s +- 12 (U-coefficient 1, prior), stream 10 +- 10, split 7 +- 7 + 0.7 +- 0.7 | split with p ~0.6, else the stream | split 8.2 (6.7 + 1.5) vs 19-25 | a draw that takes the decode chain loses once; its 20 s residual (NIS >> 1) sets the chain's U-coefficient to ~2 and the next start never does |
+| cold 2k, state file from one run | decode chain 20 +- 3, stream 7.4 +- 1, split 6.7 +- 1 + 1.4 +- 0.3; 10k: 17.3 +- 1 / 12.1 +- 0.7 | request: g_2k = +0.7, g_10k = +5.2, sum > fill: split both | split both (6.7+1.4+12.1 = 20.2 vs 7.4+1.4+12.1 = 20.9 vs 7.4+17.3 = 24.7) | ok, +4.5 s per request against the logged picks |
+| cold 10k after a cold 2k split | copies in place, fill 0: 17.3 +- 1 / 12.1 +- 0.7 (or priors 10 +- 10 / 7 +- 7 on a first start) | split | split 12.1 vs 17.3 | ok in every log (the logged picks lost 4 s in 9 of 12 runs) |
+| warm 2k | stream 7.4 +- 1 (measured at 2034 or 1938: the same point to the regression) vs 6.7 +- 1 + fill 1.4 | g_2k = -0.7, g_10k = +5.2: split 10k only, 2k one card; or both when the 10k is split anyway and the 2k draw favours it | either (one card 7.4 vs split 6.7 pass, fill sunk on the 10k call) | ok, within noise (0.7 s) |
+| warm 10k, one card measured at 10400 and the split at 10496 (rampool6 rp1) | 17.3 +- 1 / 12.1 +- 0.7 + 1.4 | split, p 0.99 | split 15.4 vs 17.4 | ok (logged: one card, 1.2x) |
+| warm 10k after a fill sample of 8904 ms with pins (rampool7 rp1) | pins excluded by 7d5bf6e72 b: fill 1.3 +- 0.3; even with the pins inside, one sample against the prior 0.74 +- 0.74 gives fill ~4.8 +- 3: split 12.1 + 4.8 = 16.9 +- 3 vs 15.0 +- 1 | split (p ~0.7 with the pins inside, 0.99 without) | split 12.7 vs 18.1 | ok (logged: one card, 1.45x) |
+| warm 10k after a cold split call timed with its fill (rampool8 rp0 repeat) | the split's sample is the pass without the fill (step 4 below): 12.1 +- 0.7 + 1.1 vs 17.4 | split | split 13.3 vs 17.5 | ok (logged: one card, 1.33x, row 23753) |
+| every warm 10k in the table above | both measured within one sigma of the truth | split | split | ok, as logged |
+
+36 of 36 right or within noise; the 15 logged losses are all removed by (1) the one-card path predicted from its own calibrated model instead of a
+compute-only plan or an upload bound, (2) one regression per path instead of exact-size arms, (3) the fill estimated with covariance and without the
+one-time pins, and not counted twice. The remaining exposure is the first start of a new build with no state file: the cold 2k pick is a draw at p ~0.6,
+one loss of ~10 s possible once per build, after which the state file carries the lesson.
+
+### 4. Implementation spec (ordered; file/function level)
+
+Step 1. **`src/llama-dsplit-fork.cpp` near line 673 (`DSF_KEEP`/`dsf_pt`)**: add
+
+    struct dsf_rls { int k; double th[4], P[16], s2, nis; int n; bool det() const { return n >= k + 1; } };
+    static void rls_init(dsf_rls & r, int k, const double * th0, const double * floor);     // P = diag(max(th0^2, floor^2)), s2 = 0, n = 0
+    static void rls_update(dsf_rls & r, const double * phi, double y);                      // the five lines of section 2; NIS > 1 -> P *= NIS, n = k + 1
+    static double rls_pred(const dsf_rls & r, const double * phi, double * var);             // mu, s2 (1 + phi' P phi)
+    static void rls_draw(const dsf_rls & r, const double * phi, uint64_t seed, double * t);  // one Gaussian draw of theta (Cholesky of s2 P, 4x4) applied to phi
+    static std::string rls_str(const dsf_rls & r);                                           // "th0 th1 th2 th3 | Pdiag | s2 n nis" for the log and the state file
+
+Keep `dsf_pt`/`dsf_upd` only for `g_dsf_dense` and `g_dsf_hop` (the balance still reads them); delete `g_dsf_one`, `g_dsf_split`, `g_dsf_fill`,
+`g_dsf_urat`, `dsf_fit_pass`, `dsf_fit_curve`, `dsf_fit_str`, `dsf_fill_owed_us` (line 790). New state: `static dsf_rls g_rls_split; static dsf_rls g_rls_fill;`
+(k = 4 and k = 1). `g_dsf_ban` goes: a slow split pass is a residual, the redraw handles it.
+
+Step 2. **`src/llama-moecache-fork.cpp` line 11447 `g_pp_took[PP_PATHS][32]`**: replace by `static dsf_rls g_pp_rls[PP_PATHS]` (move `dsf_rls` and its
+four functions into a small shared internal header `src/llama-rls-fork.h`, new file, static inline: both .cpp files include it; no public header edit).
+`pp_took_us(path, n)` becomes `pp_pred_us(path, n, c, U, &var)`; `pp_scaled_us`, `pp_other_us`, `pp_bucket`, `g_pp_no_chain[32]` -> `g_pp_no_chain` keyed by
+nothing (the graph refusal is a fact per ubatch: keep as a single `uint32_t` "refused at or above this ubatch"), `pp_try_ok`, `g_pp_lost_us` go. The
+per-call feature U per path: `U_stream` = the call's "streaming upload" (already computed as `U`), `U_mix` = `Um`, `U_dec` = `up` (misses uploaded) + the
+decode chain's chunk term, `U_chain` = `up`, `U_k` = the prediction's staged upload. Store the call's `phi` per path in `g_pp_phi_call[PP_PATHS][4]` at
+decision time (line ~12173) so the report can update the path that ran with the same features.
+
+Step 3. **`llama_moe_cache_pp_decide_fork` (line ~12105-12192)**: the path pick becomes: for each candidate path (the existing eligibility: `has_slower`
+for the mix, `chain_ok`/`dec_ok`, k steps while `n_used * k < n_expert`) `t = rls_draw(g_pp_rls[p], phi_p, g_pp_seed)`; take the lowest draw. `g_pp_seed`
+is set at the first call of a request (`llama_moe_prompt_begin_fork`) and after any pass whose NIS > 1. Delete `g_pp_no_dense`, `llama_moe_cache_pp_no_dense_fork`
+(line 12197), `g_pp_save_us`, `llama_moe_cache_pp_saving_us_fork`, `pp_mix_pick`, `pp_k_pick`, `pp_chain_pays` (lines 11505-11570). New export
+`double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var)`: the lowest drawn one-card time for a call of n tokens at c cells
+with its posterior mean and variance (the split planner's `one_k`). The log line at 12187 prints every candidate's `mu +- sqrt(var)`, its draw and n/nis.
+
+Step 4. **`llama_moe_cache_pp_report` (line ~11917)**: `rls_update(g_pp_rls[path], g_pp_phi_call[path], us / P)` for the path that ran (a split call
+updates nothing here: `llama_dsplit_cur_fork() == 1`). The `DON` line adds `predicted mu +- sigma, nis, regret`. The cold-pass rule at 11938 stays as a
+feature, not a skip: add nothing; the first pass's residual is handled by the covariance.
+**`llama_dsplit_report_fork` (line 2990)** and **`dsplit_pass_end_locked` (2579)**: the split sample is `us - fill_wall_ms` where `fill_wall_ms` is the
+whole `moe_mirror_fill` wall (pins included) of this call, recorded in `g_dsf_ps.fill_wall_ms` by `llama_dsplit_note_fill_fork(ms, pin_ms)` (new second
+argument from `moe_mirror_fill`, `src/llama-context.cpp:1516`): fault G. Then `rls_update(g_rls_split, phi, us_pass)` with phi = (1, T, T*cm, U_split) where
+U_split = `llama_moe_cache_pass_upload_ms_fork(T, k_used, n_exp) * 1e3` (already called in `dsf_decide`); `rls_update(g_rls_fill, {bytes}, ms - pin_ms)`
+with bytes = the copies' bytes of this fill (`moe_mirror_fill` knows `total`; pass it as a third argument). Drop the quarter-of-card-limit skip (2591) and
+the upload-bound skip (2597-2600): the model has the fixed part and the upload as features. Keep the up-wait subtraction (2603-2611). Delete the
+bucket update at 3007-3046 (`B.us_tok`, `g_split_calib`, `g_calib_split_b`, `g_calib_one_b`, their saves) except the `/moe/stats` numbers the pass table shows:
+keep `dsplit_bucket` only as a display of the last measured t/s per size ("this size: one card X, split Y" stays in the log), never read by a decision.
+
+Step 5. **`dsf_decide` (2453-2564)** becomes `dsf_plan(model, n_tokens, dsf_plan_out &)`: the loop over the calls left (2531-2538) stays; per call
+`one_k = llama_moe_cache_pp_one_draw_fork(T, c, &mu1, &v1)`, `split_k = rls_draw(g_rls_split, phi_k, g_dsf_seed)`, `fill = copies in place ? 0 :
+rls_draw(g_rls_fill, {bytes}, g_dsf_seed)`; `g_k = one_k - split_k`; choice for THIS call = (g_this > 0 && sum of positive g_k > fill) ? 1 : 0. The
+seed: new request (the `g_dsf_seen_pos0` rule at 2457) or NIS > 1 on the last pass. The log line (2558) prints per call `mu +- sigma` of both, the draws,
+the fill, `p_split` (the normal CDF of the mean gain over the combined sigma, for the log only) and the choice. `sigma`, `k_sig`, `spread`, `margin`,
+`covered`, `one_pass`, `split_pass` go.
+
+Step 6. **`llama_dsplit_decide_fork` (2731-2820)**: replace the cascade (`B.n` branches, `plan_sure`, `explore`, `split_min_gain`, the nearest-size search,
+the `fc` override, the `chain_takes` bridge with `g_pp_no_dense`) by `choice = dsf_plan(...)`, `why = its log line`. Keep: `dsplit_opt_one/auto` forced
+modes, `dsplit_link_model`, `dsplit_calib_load` (the section key), `g_veto_tokens`, the pass timing start (2835-2842). `llama_dsplit_plan_get_fork` is still
+called for the balance's shares (it is not a decision input any more): keep the call, drop the `plan.t_one_ms` rescaling at 2742-2746.
+`llama_moe_cache_pp_yield_fork` stays as the mechanism by which the split takes the pass from a one-card path, called when `choice == 1`.
+
+Step 7. **State file** (`dsf_load` 766, `dsf_flush` 759, `dsplit_bucket_save` 862): keys `dsf.rls.split`, `dsf.rls.fill` (dsplit side) and
+`pp.rls.<path>` (moe-cache side, same section/key helper via the existing `moe_state_set/get`) holding `rls_str`; written at the end of a call (the
+existing `dsf_flush` point) only when `det() && nis <= 1`; read once into the prior. Stop writing `dsplit_arm4_b*`, `dsf.one.k*`, `dsf.split.k*`, `dsf.fill`,
+`dsplit_calib5_b*`, `dsplit_calib7_b*`, `dsplit_calib4`.
+
+Step 8. **Switch** (feedback_disable_means_disable): `--moe split-model=0` keeps the old cascade compiled and selectable for one release (the old
+functions under `#if` is not wanted: an `if (!split_model_on())` at the top of step 6's block and step 3's pick). Default on. Removed in the release after.
+
+Step 9. **Stats**: `stats.log` lines `PLN` (decision) and the `DON` additions of step 4; `/moe/stats` fields `plan_picks`, `plan_hits` (the chosen path's
+measured time was within one predicted sigma of the lowest predicted mean), `plan_regret_s`.
+
+Constants that remain, each from a measured quantity or the model's dimension: k = 4 features (physics of a pass), the identifiability minimum n >= k+1,
+the NIS threshold 1 (the expectation of a correctly modelled residual), P_0 = diag(theta_0^2) (the logged 2x planner errors), the 64-token minimum
+for a managed pass (existing: below it no split graph exists). No percentages, no sizes, no periods.
+
+### 5. Acceptance cells (one power session, answers read first, pool unmounted unless stated)
+
+1. GLM 3.5 12k `-nm -pl 220/280 -r 2`, rp=1 and rp=0 interleaved: pass = cold request splits the 2k call (log: `plan: ... split both`), cold pp >= 450
+   (now 341-434), warm pp >= 583 on both arms (rp=0 rows 23741/23743 were 583/585 on the old builds); every `DON` line's `regret` 0 on the warm request;
+   decode within noise of 15.3-16.0.
+2. GLM 3.5 3k (`-pl 220/280`, the short-prompt cell): one call; pass = the pick equals the measured-faster path after two requests, pp not below the
+   up9_merged2 row of the same cell; the `PLN` line shows the fill in the split's sum.
+3. MiMo 12k, x16 + x4: pass = no `regret` above one predicted sigma on request 2 and 3; the 60k context band (the attention feature) picks what the
+   measured pair of request 1 shows.
+4. Mid-size crossover, Qwen3.8-Flash-Next (the 35B stand-in) 2k and 12k: at 2k the two paths are within noise (one card 2.2-2.5 s, split within 20%):
+   pass = `p_split` between 0.3 and 0.7 on the log and the pick's `regret` within one sigma on every request of the cell; at 12k the split (measured
+   1873-2008 t/s against a 1537 t/s prediction try on b14244) is picked from request 2 on with `p_split` >= 0.9.
+5. rp=0 fill order A/B (fault G's sibling): rampool8 build with the `std::sort` of `moe_mirror_fill` reverted against as is, GLM 12k rp=0 warm: the split
+   balance's `pass` ms and the `copies filled ... ms` line side by side; keep the order whose warm call is shorter.
+6. `-simram 32g` rp=0 GLM 12k: the pins are slow there too; pass = the learned fill (`dsf.rls.fill` in the log) within 2 sigma of the rp=1 value.
+7. Cold start of a new build name (no state): the first cold 2k pick is logged with `p_split`; whichever path it takes, the second start of the same
+   build picks the split at 2k with `p_split` >= 0.9.
