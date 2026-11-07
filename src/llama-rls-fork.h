@@ -93,7 +93,7 @@ static inline double rls_update(dsf_rls & r, const double * phi, double y) {
     // running means with the prior as sample 0: a single lucky first sample cannot make the model sure of itself
     r.s2  += (e * e / d - r.s2) / (double) (r.n + 1);
     r.nis += (nis - r.nis) / (double) (r.n + 1);
-    if (nis > 1.0) {
+    if (nis > 1.0 && r.n > 1) {   // a path's first sample is not drift: the prior is its uncertainty (planner-rules.md C6)
         // the residual exceeded what the model's own variance allowed: re-open the covariance by the surprise, restart the means at the
         // identifiability minimum (n is never raised by a restart: a model with fewer samples keeps their weight)
         for (int i = 0; i < r.k * 4; ++i) { r.P[i] *= nis; }
