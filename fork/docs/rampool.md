@@ -78,3 +78,42 @@ Hypotheses, ranked:
 Next: per-token breakdown first (stats.log PAS/STA, -lv 3) of rp=0 vs rp=1 on the same pass, then 1 (revert one line), then 3 (counter), then 2.
 The first-pass slowness (46.8 s vs 16.7 s for 1938 tokens) shows in every rp=1 build: read that pass's breakdown beside rp=0's first.
 Until this passes, rampool stays off by default (it is: rampool=0) and leaves v1.
+
+## Root cause found (2026-11-07, rampool3 logs, q5h/rampool3-glm35-12k-rp{0,1}.{server,stats}.log)
+
+Not DMA from pageable memory: every pool piece is anonymous THP memory registered with `cudaHostRegister(Portable|Mapped)`
+(server log: 101 x "pinned 1.0 GiB in 0.10 s (10.7 GB/s) ... populated first", no PIN_FAIL, mlock = budget), and decode uploads
+from pool blocks run at the x16 link's usual 17-21 GB/s (SWT lines). Not the eviction policy either (rampool4 keeps the fill's set).
+
+The cause is the **decode thread tuner** (`llama_context::thread_tune_feed`, src/llama-context.cpp): it alternates the best thread
+count with a lower one token by token and adopts the lower one when it wins every pair. With rampool the token time holds the
+pool's demand reads (`ggml_rampool_need_fork` waits on the SSD before the kernel, cold tokens 10-50 ms), which the thread count
+does not change but which spinning compute threads lengthen (they starve the 8 reader threads on an 8-core box). So every lower
+count won:
+
+| arm | DEC threads_decode (stats.log) | CPU expert rate (SWT "all on the CPU") | host cpu busy (STA) | decode |
+|---|---|---|---|---|
+| rampool3 rp=0 | 16 vs 8, 8 vs 4, 8 vs 6, 8 vs 7 -> 7 or 8, every request | 26-31 GB/s | 45-55% | 15.8/15.8 t/s |
+| rampool3 rp=1 | cold 16 -> 8 -> 4 -> 3 -> settled 4; warm 16 -> 8 -> 4 -> 2 -> 1 | 10.6 GB/s | 7-8% | 10.3/6.5 t/s |
+
+At 0.84-0.97 GB of CPU-computed expert bytes per token, 10.6 instead of 27.7 GB/s is 45 ms per token, plus the 16 ms of real
+SSD waits and the starved readers: the whole 87 ms warm gap. rp=0 shows no bias because its stalls (page faults of the mapped
+tail) happen inside the kernel on every thread alike.
+
+Fix (commit 380889d64f, build rampool5): the pool keeps a never-reset wait total (`ggml_rampool_wait_us_fork`), and
+`thread_tune_feed` subtracts the wait that accrued during the token before judging the thread count. ~10 lines, harmless with
+rampool off (returns 0).
+
+Still open after it (next for Opus, in this order; each one measured on GLM 3.5 12k cold/warm before the next):
+1. Demand reads on the decode thread: `need_fork` blocks the graph while 15 threads spin. Ask for the NEXT layer's misses right
+   after this layer's router (the early router / predictor hook) so the reads overlap the GPU layer; measure `waited` in the RPL line.
+2. First prompt pass 46.8 s vs 16.7 s (1938 tokens): the pass's CPU op read the mapping because `get_fork` needed a stamp and a
+   pass makes no need; rampool4 drops the stamp (no eviction by default). Check PAS line of pass 1 on rampool5; if still slow,
+   `ggml_compute_forward_mul_mat_id_tiled` (ggml-cpu.c, before the hook) reads `src0->data` (the mapping) and needs the hook too.
+3. SSD bytes per request (45-50 GiB with eviction, rampool3): with rampool=1 (no eviction) the pool set is fixed, so a slice out of
+   it comes from the SSD every time; v2's heat ranking should move it in between runs (globalhot.ini). Measure `read into the pool`
+   per request cold vs warm on rampool5.
+
+Acceptance cells (all `-nm -pl 220/280 -r 2`, one power session, interleaved rp=1 / rp=0 / up9_merged2, answers read first):
+GLM 3.5 12k and 3k (fork/runs/rp2.csv glm35-*), then MiMo 12k, DS 12k, then `-simram 32g` small-RAM. Pass = rp=1 >= rp=0 and
+>= up9_merged2 within noise on pp and decode, cold and warm.
