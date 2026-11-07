@@ -16,6 +16,7 @@
 //   NIS = e^2 / (s2 (1 + q))                 (1 on average when the model is right)
 //   NIS > 1: P *= NIS and the running means restart at n = k + 1: a changed machine re-opens the variance by exactly the surprise, no timers, no windows.
 // The parameter covariance is s2 P; a prediction's variance is s2 (mu^2 + phi' P phi).
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -41,6 +42,10 @@ struct dsf_rls {
     double e2 = 0.0;        // sum of e^2 / (1 + q) over the samples since the last restart (s2 from the samples alone once two exist)
     int    n = 0;           // samples (restarts at k + 1 on drift)
     bool det() const { return n >= k + 1; }   // identifiable: at least k + 1 samples since the last restart
+    // R4: stored for the next process whenever it has a sample - not only once determined and quiet. A request gives a path 1-3 samples, so no
+    // one-card path ever reached n >= k + 1 (moe-state.ini 2026-11-07 held dsf.rls.split/fill only), and dropping a posterior after a surprise left
+    // the other side's carried posterior unopposed (replay, carried state: 80 of 1700 picks lost up to 31%). The stored diag(P) carries the doubt.
+    bool storable() const { return n >= 1; }
 };
 
 // P0 = diag(max(th0^2, floor^2)) / s2_0: every prior coefficient is uncertain by its own size (the logged planner errors were 2x).
@@ -163,7 +168,7 @@ static inline std::string rls_str(const dsf_rls & r) {
     snprintf(b, sizeof b, " | %.6g %d %.3g", r.s2, r.n, r.nis);
     return o + b;
 }
-// back from rls_str (k must match); the loaded state is a prior: n restarts at 0 so the means and NIS keep their weight for this start's samples
+// back from rls_str (k must match)
 static inline bool rls_parse(dsf_rls & r, int k, const std::string & v) {
     dsf_rls o; o.k = k;
     const char * c = v.c_str(); char * e = nullptr;
@@ -172,7 +177,11 @@ static inline bool rls_parse(dsf_rls & r, int k, const std::string & v) {
     for (int i = 0; i < k; ++i) { o.P[i * 4 + i] = strtod(c, &e); if (e == c || !(o.P[i * 4 + i] >= 0.0)) { return false; } c = e; }
     while (*c == ' ') { ++c; } if (*c++ != '|') { return false; }
     o.s2 = strtod(c, &e); if (e == c || !(o.s2 > 0.0)) { return false; }
-    o.n = 0; o.nis = 1.0;
+    // the samples behind the stored posterior count (capped at k + 1, so this start's samples still weigh): a loaded path with n = 0 was never
+    // 'known here' and never a candidate against a trial, and a loaded split read as 'never ran' got the 0.96 x one-card prior back (R4 replay)
+    c = e;
+    { char * e2 = nullptr; const long nn = strtol(c, &e2, 10); o.n = e2 != c && nn > 0 ? (int) std::min<long>(nn, k + 1) : 0; }
+    o.nis = 1.0; o.e2 = o.s2 * (double) o.n;
     r = o;
     return true;
 }

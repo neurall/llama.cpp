@@ -48,8 +48,8 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
         if (e.log != cur) {   // a new start: copies not in place; fresh state, or (carry) what the previous start of this arm stored (R4)
             const std::string arm = e.log.substr(e.log.rfind('-') + 1), prev_arm = cur.empty() ? "" : cur.substr(cur.rfind('-') + 1);
             cur = e.log; copies = false; last_req = -1; seen.clear();
-            if (g_carry && arm == prev_arm) {   // the state file round trip: posteriors with a sample and running NIS <= 1 (R4 proposal), as rls_str / rls_parse (diag P), the rest fresh
-                auto keep = [](dsf_rls & r, int k) { dsf_rls q; if (r.k > 0 && r.n >= 1 && r.nis <= 1.0 && rls_parse(q, k, rls_str(r))) { r = q; } else { r = dsf_rls(); } };
+            if (g_carry && arm == prev_arm) {   // the state file round trip: every posterior with a sample (R4: its P carries any surprise), as rls_str / rls_parse (diag P), the rest fresh
+                auto keep = [](dsf_rls & r, int k) { dsf_rls q; if (r.k > 0 && r.n >= 1 && rls_parse(q, k, rls_str(r))) { r = q; } else { r = dsf_rls(); } };
                 for (auto & r : one) { keep(r, 4); }
                 keep(split, 4); keep(fill, 1);
             } else {
@@ -96,7 +96,7 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
         if (fill.k == 0) { const double o = 1; rls_init(fill, 1, &o, nullptr); }
         double vs, ds, fd = 0, fv, dd1 = mode == 0 ? std::max(0.0, dr[pick1]) : mode == 1 ? mu[pick1] : lcb[pick1];
         double ms = rls_pred(split, sphi, &vs); rls_draw(split, sphi, rls_mix(rseed + 0x51), &ds);
-        if (mode == 3 && split.n == 0) { ms = mu[pick1] * RLS_SPLIT_ONE_RATIO; vs = ms * ms * RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG + var[pick1] * RLS_SPLIT_ONE_RATIO * RLS_SPLIT_ONE_RATIO; }   // the data prior (dsf_plan)
+        if (mode == 3 && split.n == 0) { ms = mu[pick1] * RLS_SPLIT_ONE_RATIO; vs = ms * ms * RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG + var[pick1] * RLS_SPLIT_ONE_RATIO * RLS_SPLIT_ONE_RATIO; }   // the data prior (dsf_plan)   // never ran (a loaded posterior keeps its n)
         if (est > 0) { const double fm = rls_pred(fill, &est, &fv); if (mode == 0) { rls_draw(fill, &est, rls_mix(rseed + 0xf1), &fd); fd = std::max(0.0, fd); } else { fd = fm; } }
         const double d2 = mode == 0 ? ds : mode == 1 ? ms : ms - std::sqrt(std::max(0.0, vs));
         int sp = rls_split_choice(dd1 - d2, std::max(0.0, dd1 - d2), fd);

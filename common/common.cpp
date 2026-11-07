@@ -2073,6 +2073,18 @@ static void common_moe_cache_auto(common_params & params) {
     // small cards) set margin_mb, which no engine setting read until 2026-10-22: every pool was sized with the 384 MiB default. The build is part of the
     // stored need's key (a new build measures again).
     params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("build-id=") + std::to_string(llama_build_number()) + "-" + llama_commit();
+    // The planner's stored posteriors are valid only where the same features give the same time: the RAM pool, the load mode and a simulated VRAM/RAM
+    // size change what an upload costs (the pool's SSD wait, the pin ring, the bytes held), so they key the posteriors too (regime=...; the planner
+    // reads it next to build-id).
+    {
+        auto opt = [&](const char * k) -> std::string {
+            const std::string o = "," + params.moe_opts + ",", key = std::string(",") + k + "=";
+            const size_t i = o.find(key);
+            return i == std::string::npos ? "" : o.substr(i + key.size(), o.find(',', i + key.size()) - i - key.size());
+        };
+        const std::string rp = opt("rampool"), sv = opt("sim-vram"), sr = opt("sim-ram");
+        params.moe_opts += std::string(",regime=rp") + (rp.empty() ? "0" : rp) + ".lm-" + llama_load_mode_name(params.load_mode) + (sv.empty() ? "" : ".sv" + sv) + (sr.empty() ? "" : ".sr" + sr);
+    }
     COM_DBG("moe_cache_slots=%d ctx=%d batch=%d ubatch=%d threads=%d threads_batch=%d repack=%s ngl=%d tensor_overrides=%zu fit=%s\n",
         params.n_moe_cache_slots, params.n_ctx, params.n_batch, params.n_ubatch, params.cpuparams.n_threads,
         params.cpuparams_batch.n_threads, params.no_extra_bufts ? "off" : "on", params.n_gpu_layers,

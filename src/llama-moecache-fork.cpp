@@ -11486,6 +11486,7 @@ static void pp_inv(const char * name, const std::string & text) {
 }
 // a path's estimator, initialised at its first use: th0 = (0, compute per token measured, attention per token and cell measured, upload coefficient 1)
 // (both 0 until a stream pass measured them: a zero prior gets its uncertainty from the first call, rls_prime); a stored posterior of this build replaces it
+static std::string pp_path_name(int p);
 static dsf_rls & pp_rls(int p) {
     dsf_rls & r = g_pp_rls[p];
     if (r.k == 0) {
@@ -11502,7 +11503,10 @@ static dsf_rls & pp_rls(int p) {
         if (llama_dsplit_state_get_fork(("pp.rls." + std::to_string(p)).c_str(), v)) {
             g_pp_rls_loaded[p] = true;
             dsf_rls s;
-            if (rls_parse(s, 4, v)) { r = s; g_pp_rls_own[p] = true; }
+            if (rls_parse(s, 4, v)) {
+                r = s; g_pp_rls_own[p] = true;
+                LLAMA_LOG_WARN("moe-cache: stored posterior of %s loaded (n=%d, this build and regime): %s\n", pp_path_name(p).c_str(), r.n, v.c_str());
+            }
         }
     }
     // the mix and the predictions are the stream with something added: until one ran (or a stored posterior exists) the stream's posterior is their prior,
@@ -11991,7 +11995,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 const double nis = rls_update(rp, g_pp_phi[path], took);
                 if (nis > 1.0) { g_pp_redraw = true; }   // the posterior moved more than it expected: the next call draws again
                 // stored only when determined and quiet (feedback_stored_values_policy): a next start begins from it as its prior
-                if (rp.det() && rp.nis <= 1.0) { llama_dsplit_state_set_fork(("pp.rls." + std::to_string(path)).c_str(), rls_str(rp)); }
+                if (rp.storable()) { llama_dsplit_state_set_fork(("pp.rls." + std::to_string(path)).c_str(), rls_str(rp)); }
                 double lo = -1.0;   // the lowest predicted mean among this call's candidates AND the split's (C17: a one-card loss to the split is regret too)
                 for (int p = 0; p < PP_PATHS; ++p) { if (g_pp_phi[p][1] > 0.0 && (lo < 0.0 || g_pp_pmu[p] < lo)) { lo = g_pp_pmu[p]; } }
                 if (const double ms = llama_dsplit_split_mu_fork(g_pp_seen_c0); ms > 0.0 && (lo < 0.0 || ms < lo)) { lo = ms; }

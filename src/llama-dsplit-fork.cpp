@@ -655,6 +655,12 @@ static std::string dsplit_state_key(const std::string & what) {
     const char * bid = llama_moe_get_opt("build-id");
     return what + "@" + g_hw_key + "#" + (bid ? bid : "");
 }
+// The planner's posteriors (dsf.rls.*, pp.rls.*) also carry the run's regime (common.cpp: rampool on/off, load mode, simulated VRAM/RAM): the same
+// features give a different time across them (the pool's SSD wait, the pin ring, the bytes held), so a posterior of one regime is no prior for another.
+static std::string rls_key(const char * what) {
+    const char * r = llama_moe_get_opt("regime");
+    return std::string(what) + "%" + (r ? r : "-");
+}
 static bool dsplit_state_on() { return !g_calib_section.empty() && !g_hw_key.empty() && llama_moe_get_opt("build-id"); }   // no build id (a tool without common's setup): session only
 // ---- dense-split factors learned from every request (user 2026-10-25: "any request measures and stores ... per GPU per token times"; "decide dense on or off
 // from them for a given prompt length") ------------------------------------------------------------------------------------------------------------------------
@@ -803,9 +809,9 @@ static void dsf_flush() {   // under g_dsf_mu
     if (g_rls_dirty) {
         g_rls_dirty = false;
         std::vector<std::pair<std::string, std::string>> kv;
-        if (g_rls_split.det() && g_rls_split.nis <= 1.0) { kv.push_back({ "dsf.rls.split", rls_str(g_rls_split) }); }
-        if (g_rls_fill.det()  && g_rls_fill.nis  <= 1.0) { kv.push_back({ "dsf.rls.fill",  rls_str(g_rls_fill) }); }
-        if (g_rls_one.det()   && g_rls_one.nis   <= 1.0) { kv.push_back({ "dsf.rls.one",   rls_str(g_rls_one) }); }
+        if (g_rls_split.storable()) { kv.push_back({ rls_key("dsf.rls.split"), rls_str(g_rls_split) }); }
+        if (g_rls_fill.storable())  { kv.push_back({ rls_key("dsf.rls.fill"),  rls_str(g_rls_fill) }); }
+        if (g_rls_one.storable())   { kv.push_back({ rls_key("dsf.rls.one"),   rls_str(g_rls_one) }); }
         dsf_save(kv);
     }
     if (g_dsf_dirty.empty()) { return; }
@@ -836,10 +842,14 @@ static void dsf_load() {   // under g_dsf_mu: this build's factors from the stat
     // a stored posterior of this build is the learned planner's prior (k: 4 for the pass, 1 for the fill)
     for (const auto & e : kv) {
         const std::string & k = e.first;
-        if (k == dsplit_state_key("dsf.rls.split")) { g_rls_split_loaded = rls_parse(g_rls_split, 4, e.second); }
-        if (k == dsplit_state_key("dsf.rls.fill"))  { rls_parse(g_rls_fill, 1, e.second); }
-        if (k == dsplit_state_key("dsf.rls.one"))   { rls_parse(g_rls_one, 4, e.second); }
+        if (k == dsplit_state_key(rls_key("dsf.rls.split"))) { g_rls_split_loaded = rls_parse(g_rls_split, 4, e.second); }
+        if (k == dsplit_state_key(rls_key("dsf.rls.fill")))  { rls_parse(g_rls_fill, 1, e.second); }
+        if (k == dsplit_state_key(rls_key("dsf.rls.one")))   { rls_parse(g_rls_one, 4, e.second); }
     }
+    // the key once, with what it found (R4: the next start of this build and regime begins from these)
+    LLAMA_LOG_WARN("split planner: stored posteriors under %s: split %s, fill %s, one card %s\n", dsplit_state_key(rls_key("dsf.rls.*")).c_str(),
+            g_rls_split.k ? format("n=%d", g_rls_split.n).c_str() : "none", g_rls_fill.k ? format("n=%d", g_rls_fill.n).c_str() : "none",
+            g_rls_one.k ? format("n=%d", g_rls_one.n).c_str() : "none");
     LLAMA_LOG_WARN("split factors: %zu one-card and %zu split contexts, dense curves of %zu cards, copy fill %.0f ms (%d prompts) from the state file (this build)\n",
             g_dsf_one.size(), g_dsf_split.size(), g_dsf_dense.size(), g_dsf_fill.us, g_dsf_fill.n);
 }
@@ -848,11 +858,11 @@ static void dsf_load() {   // under g_dsf_mu: this build's factors from the stat
 // first managed prompt pass); true with v empty: known, nothing stored
 bool llama_dsplit_state_get_fork(const char * what, std::string & v) {
     if (!dsplit_state_on()) { return false; }
-    if (!moe_state_get(g_calib_section, dsplit_state_key(what), v)) { v.clear(); }
+    if (!moe_state_get(g_calib_section, dsplit_state_key(rls_key(what)), v)) { v.clear(); }   // (only the moe-cache's pp.rls.* use these two)
     return true;
 }
 void llama_dsplit_state_set_fork(const char * what, const std::string & v) {
-    if (dsplit_state_on()) { moe_state_set(g_calib_section, { { dsplit_state_key(what), v } }); }
+    if (dsplit_state_on()) { moe_state_set(g_calib_section, { { dsplit_state_key(rls_key(what)), v } }); }
 }
 
 // the copy fill this prompt still owes (us): 0 while the copies are in place, else the learned fill (the planner's estimate before the first one). Under g_dsf_mu.
@@ -2676,6 +2686,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     double m1 = 0.0, v1s = 0.0, m2 = 0.0, v2s = 0.0;
     double mu1_0 = 0.0, v1_0 = 0.0, mu2_0 = 0.0, v2_0 = 0.0;
     int path0 = -1, np = 0;
+    double u_link0 = 0.0;                  // the first pass's link-bound expert upload (us): R2's ratio, logged only
     bool known1 = false, known2 = false;   // each side ran at comparable features (rls_known): a trial is weighed against the known side
     const bool split_prior = g_rls_split.n == 0 && !g_rls_split_loaded;
     for (int64_t c = pos0; c < end; c += n_tokens, ++np) {
@@ -2693,6 +2704,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         } else {
             mu2 = rls_pred(g_rls_split, phi, &v2);
         }
+        if (c == pos0) { u_link0 = U; }
         if (c == pos0) { mu1_0 = mu1; v1_0 = v1; mu2_0 = mu2; v2_0 = v2; path0 = pth; known1 = kn1; known2 = !split_prior && rls_known(g_rls_split, mu2, v2); }
         m1 += mu1; v1s += v1; m2 += mu2; v2s += v2;
     }
@@ -2721,11 +2733,11 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     if (!trial && am[choice] > am[1 - choice] + std::sqrt(av[0]) + std::sqrt(av[1])) { dsplit_inv("overrule", format("picked %s at %.2f s against %.2f s", choice ? "split" : "one card", am[choice] / 1e6, am[1 - choice] / 1e6)); }
     const std::string pick_s = trial ? std::string("trial of the ") + (choice ? "split" : "one card") : std::string(choice ? "split" : "one card");
     why = format("plan: pass of %lld tokens at %lldk cells, %d passes left: one card [%s] %.2f +- %.2f s, split %.2f +- %.2f s (n=%d, nis %.2f) + fill %.2f +- %.2f s (%s, n=%d); "
-                 "means one %.2f, split %.2f, fill %.2f, gain this pass %.2f, call %.2f%s: %s (p_split %.2f)",
+                 "means one %.2f, split %.2f, fill %.2f, gain this pass %.2f, call %.2f%s: %s (p_split %.2f; ratio %.2f vs r 1.83, logged only)",
             (long long) n_tokens, (long long) (pos0 / 1024), np, llama_moe_cache_pp_path_name_fork(path0).c_str(), mu1_0 / 1e6, std::sqrt(std::max(0.0, v1_0)) / 1e6,
             mu2_0 / 1e6, std::sqrt(std::max(0.0, v2_0)) / 1e6, g_rls_split.n, g_rls_split.nis, f_mu / 1e6, std::sqrt(std::max(0.0, f_v)) / 1e6,
             fill_est > 0.0 ? "owed" : "copies in place", g_rls_fill.n, d1_0 / 1e6, d2_0 / 1e6, f_d / 1e6, (mu1_0 - mu2_0) / 1e6, g_pos / 1e6,
-            split_prior ? ", split prior = one x 0.96 (never ran)" : "", pick_s.c_str(), p_split);
+            split_prior ? ", split prior = one x 0.96 (never ran)" : "", pick_s.c_str(), p_split, u_link0 > 0.0 ? std::max(u_link0, mu1_0) / u_link0 : 0.0);
     return choice;
 }
 // every prompt pass is timed: the pass decided last ends at the synchronize before the next prompt pass and at the end of its call (llama_context)
