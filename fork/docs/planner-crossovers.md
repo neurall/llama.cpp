@@ -311,6 +311,13 @@ with the worst loss per model. Nothing hand-tuned; a number the data does not gi
 
 ## Oracle-trace procedure (one model and prompt that visits most crossovers; the best run's decisions become the rules)
 
+FALLBACK, not started (user 2026-11-07): the current plan is rampool13's rules R1-R7 under the release gate on pf12k4k. Start the oracle trace only
+when: (a) the release gate has a failing model or cell after two fix rounds (feedback_stop_fix_repeat), or (b) on any gated cell the auto run's total
+prompt time is slower than the best forced arm of the same cell by more than X, where X = the paired noise of that cell = the relative half-range of
+the cell's repeated warm runs (runs.db, same build and arm), with a floor of the measured run-to-run spread of the model's pf12k rows (GLM 3.5 rp0:
+481-600 pp across rampool8-10 warm runs, about 10%; the 5% yardstick is below that spread, so it cannot be the trigger). Until then no oracle cell
+runs and PC1 is not occupied by this section.
+
 ### 1. Which crossovers one request visits (from the logs' pass structure)
 
 A request = the server's first call (~2k tokens: 1938/2034/2089 by build) + the rest in passes cut by the pool cap (GLM 10336-10496 in one pass; MiMo
