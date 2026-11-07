@@ -290,7 +290,8 @@ void rp_reader(rp_pool * p) {
         rp_rec & r = t.rec[j.e];
         rp_class & c = p->cls[t.cls];
         char * dst = c.at((uint32_t) r.slot);   // the block is ours: its owner changes only under RP_IN
-        const bool ok = bounce != nullptr && rp_read(p, t.dfd, t.fd, dst, t.esz, t.off + (uint64_t) j.e * t.esz, bounce, bn);
+        // through the page cache, as the mapped part of a tensor-order pin is read: the free RAM beside the pool keeps what was read last (GLM 3.5 warm request with O_DIRECT: 31.7 GiB from the SSD)
+        const bool ok = bounce != nullptr && rp_read(p, -1, t.fd, dst, t.esz, t.off + (uint64_t) j.e * t.esz, bounce, bn);
         {
             std::lock_guard<std::mutex> lk(p->mu);
             if (ok) {
@@ -349,17 +350,20 @@ bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampo
     const double share = total > bytes ? (double) bytes / (double) total : 1.0;   // every class the same share of its elements
     bool any = false;
     for (auto & c : p->cls) {
-        const uint64_t want = std::min<uint64_t>(c.elems, (uint64_t) ((double) c.elems * share));
-        // chunks of at most 512 MiB: an allocation unit, not a limit (a big register stalled at 25.9 GiB, project_ssd_reader_pinned_slots)
-        c.per_chunk = (uint32_t) std::max<uint64_t>(1, std::min<uint64_t>(want, (((size_t) 512 << 20) - c.size) / c.size));   // the chunk with its extra block fits 512 MiB (the caller's prepinned pieces)
+        uint64_t want = std::min<uint64_t>(c.elems, (uint64_t) ((double) c.elems * share));
+        // chunks of at most 1 GiB: an allocation unit, not a limit (a big register stalled at 25.9 GiB, project_ssd_reader_pinned_slots); a full chunk with its extra block
+        // fits the caller's 1 GiB prepinned piece, which the CUDA host allocator pins through its fast path (>= 1 GiB: populate + register, not cudaMallocHost)
+        c.per_chunk = (uint32_t) std::max<uint64_t>(1, std::min<uint64_t>(std::max<uint64_t>(want, 1), (((size_t) 1 << 30) - c.size) / c.size));
+        if (share < 1.0) { want -= std::min(want, (want + c.per_chunk - 1) / c.per_chunk); }   // the extra block of every chunk counts against the share: the pool never pins more than `bytes`
         uint64_t got = 0;
         while (got < want) {
+            const uint64_t k = std::min<uint64_t>(c.per_chunk, want - got);   // the last chunk only as big as what is left
             // one block more than it hands out: what is read past the last block stays inside the registered range
-            char * m = (char *) alloc((size_t) c.per_chunk * c.size + c.size, ud);
+            char * m = (char *) alloc((size_t) k * c.size + c.size, ud);
             if (m == nullptr) { GGML_LOG_WARN("rampool: no more pinned memory at class %zu bytes, %llu of %llu blocks\n", c.size, (unsigned long long) got, (unsigned long long) want); break; }
-            memset(m + (size_t) c.per_chunk * c.size, 0, c.size);
+            memset(m + (size_t) k * c.size, 0, c.size);
             c.chunks.push_back(m);
-            got += c.per_chunk;
+            got += k;
         }
         c.n_slots = (uint32_t) std::min(got, c.elems);
         c.owner.assign(c.n_slots, rp_owner());
@@ -381,7 +385,7 @@ void ggml_rampool_fill_fork(void) {
     rp_pool * p = g_rp;
     if (p == nullptr) { return; }
     const int64_t t0 = rp_now_us();
-    uint64_t n_card = 0;
+    uint64_t n_card = 0, n_card_in = 0;
     for (auto & c : p->cls) {
         struct el { double h; int32_t t, e; };
         std::vector<el> v;
@@ -390,12 +394,13 @@ void ggml_rampool_fill_fork(void) {
             if (&p->cls[t->cls] != &c) { continue; }
             for (int64_t e = 0; e < t->n; ++e) {
                 const double h = p->heat(t->key, e, p->ud);
-                if (h == HUGE_VAL) { n_card++; continue; }
+                n_card += h == HUGE_VAL;   // a card holds it: after all others, so blocks left over still hold it (prompt passes churn the cards' caches; without a RAM copy it came back from the SSD)
                 v.push_back({ h, t->idx, (int32_t) e });
             }
         }
         std::stable_sort(v.begin(), v.end(), [](const el & a, const el & b) { return a.h < b.h; });
         if (v.size() > c.free.size()) { v.resize(c.free.size()); }
+        for (const el & x : v) { n_card_in += x.h == HUGE_VAL; }
         std::sort(v.begin(), v.end(), [](const el & a, const el & b) { return a.t != b.t ? a.t < b.t : a.e < b.e; });
         // blocks in ascending order: file neighbours become pool neighbours
         std::sort(c.free.begin(), c.free.end(), std::greater<uint32_t>());
@@ -471,8 +476,8 @@ void ggml_rampool_fill_fork(void) {
         }
     }
     const double s = std::max(1e-3, (rp_now_us() - t0) / 1e6);
-    GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, requests of %zu KiB%s), %llu slices left out (a card holds them)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
-            p->n_threads, p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card);
+    GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, requests of %zu KiB%s), %llu of %llu slices a card holds also in RAM (the blocks left after all others)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
+            p->n_threads, p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card_in, (unsigned long long) n_card);
     for (int i = 0; i < p->n_threads; ++i) { p->readers.emplace_back(rp_reader, p); }
 }
 

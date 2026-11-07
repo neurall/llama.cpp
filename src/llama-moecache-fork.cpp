@@ -7187,10 +7187,10 @@ void llama_tokheat_dump_fork(void);   // llama-context.cpp: --moe tokheat=DIR
 
 static void rp_log(const char * when);
 // --moe rampool (fork/docs/rampool.md): expert slices that stayed mapped (the loader pinned no expert tensor, see llama-model-loader.cpp) go to a pinned pool chosen by heat
-static constexpr size_t RP_PIECE = (size_t) 512 << 20;   // the pool's chunk ceiling (ggml_rampool_open_fork) and the prepin's piece
+static constexpr size_t RP_PIECE = (size_t) 1 << 30;   // the pool's chunk ceiling (ggml_rampool_open_fork) and the prepin's piece: 1 GiB takes the CUDA host allocator's fast pin
 static void * rp_alloc(size_t bytes, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
-    if (bytes <= RP_PIECE && !mc->rp_pre.empty()) {   // a piece pinned before the VRAM sizing (rp_prepin)
+    if (bytes <= RP_PIECE && bytes > RP_PIECE / 2 && !mc->rp_pre.empty()) {   // a full chunk: a piece pinned before the VRAM sizing (rp_prepin); a class's small last chunk is pinned on its own
         ggml_backend_buffer_t b = mc->rp_pre.back();
         mc->rp_pre.pop_back();
         mc->rp_bufs.push_back(b);
@@ -7224,8 +7224,8 @@ static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu) {
     mc->pin_buft = ggml_backend_dev_host_buffer_type(gpu);
     const int64_t t0 = ggml_time_us();
     size_t got = 0;
-    // one piece per chunk: a class's last chunk may use a piece only partly, so a few pieces more than the bytes (left over ones are freed after the fill)
-    while (got < want + 4 * RP_PIECE && mem_available_bytes() >= RP_PIECE + ((size_t) 6 << 30)) {
+    // one piece per full chunk, never more than the budget (left over ones are freed after the open)
+    while (got + RP_PIECE <= want && mem_available_bytes() >= RP_PIECE + ((size_t) 6 << 30)) {
         ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, RP_PIECE);
         if (!b) { break; }
 #ifndef _WIN32
