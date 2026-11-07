@@ -10,12 +10,23 @@
 #include <thread>
 #include <vector>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #ifdef __linux__
 #include <dlfcn.h>
 #endif
 #ifndef _WIN32
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 #include <cmath>
 #include <ctime>
@@ -126,6 +137,26 @@ bool save(const std::string & path, const file_t & f) {
     return true;
 }
 
+// Held across load -> change -> save, which two processes sharing the default file otherwise interleave: the rename keeps the file whole, but one writer's new values vanish (measured again
+// at its next start, so a lock that cannot be taken, a read-only or odd file system, just goes on without). The kernel drops it when a process dies; a <state file>.lock stays next to the file.
+struct state_file_lock {
+#ifdef _WIN32
+    HANDLE h;
+    explicit state_file_lock(const std::string & path) : h(CreateFileW(std::filesystem::u8path(path + ".lock").c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS, 0, nullptr)) {
+        if (h != INVALID_HANDLE_VALUE) { OVERLAPPED ov; memset(&ov, 0, sizeof ov); LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov); }
+    }
+    ~state_file_lock() { if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); } }
+#else
+    int fd;
+    explicit state_file_lock(const std::string & path) : fd(open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644)) {
+        if (fd >= 0) { while (flock(fd, LOCK_EX) != 0 && errno == EINTR) {} }
+    }
+    ~state_file_lock() { if (fd >= 0) { close(fd); } }
+#endif
+    state_file_lock(const state_file_lock &) = delete;
+    state_file_lock & operator=(const state_file_lock &) = delete;
+};
+
 } // namespace
 
 static std::string g_place_prefix;
@@ -224,6 +255,7 @@ bool moe_state_set(const std::string & section, const std::vector<std::pair<std:
     if (path.empty() || section.empty() || g_suppress) {
         return false;
     }
+    const state_file_lock file_lock(path);
     file_t f = load(path);
     for (const auto & p : kv) {
         f[section][p.first] = p.second;
@@ -238,6 +270,7 @@ bool moe_state_erase(const std::string & section, const std::string & prefix) {
     if (path.empty() || section.empty()) {
         return false;
     }
+    const state_file_lock file_lock(path);
     file_t f = load(path);
     auto s = f.find(section);
     if (s == f.end()) {

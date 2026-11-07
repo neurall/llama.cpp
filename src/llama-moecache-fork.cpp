@@ -408,6 +408,7 @@ struct moe_cache {
     char *                     pin_cur = nullptr;
     uint64_t                   pin_n = 0;
     std::vector<ggml_backend_buffer_t> pin_chunks;
+    std::vector<std::pair<ggml_tensor *, void *>> lazy_moved;   // pin-lazy: a weight whose data pointer moved into a pin chunk, and its mapped address (restored before the chunks are freed)
     std::mutex                 pin_mtx;
     std::thread                lazy_thr;          // --moe pin-lazy: reads expert tensors into pinned buffers in the background (pin_prefetch_run)
     std::atomic<bool>          lazy_stop{false};
@@ -560,7 +561,6 @@ struct moe_cache {
     int      lv_k = -1, lv_c = 0;
     int      lv_inc = 0;           // the incumbent candidate of the knob under test (the value in use when its slice cycle began)
     int64_t  lv_slice_len = 36, lv_warm = 4; // slice length and skipped tokens of the knob under test (state-carrying knobs need long ones)
-    std::string tuned_text;        // the self-tuner's decisions (NAME=value lines), kept in the state file: the next start begins from them
     uint64_t lv_cycle = 0;         // cycles finished: the candidate order rotates so no candidate always runs first (cold cache)
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
@@ -747,7 +747,7 @@ static void pin_prefetch_run(moe_cache * mc, size_t budget) {
 #else
             std::atomic_thread_fence(std::memory_order_release); t->data = (void *) base;
 #endif
-            {   std::lock_guard<std::mutex> lk(mc->pin_mtx); mc->pin_chunks.push_back(b); }
+            {   std::lock_guard<std::mutex> lk(mc->pin_mtx); mc->pin_chunks.push_back(b); mc->lazy_moved.push_back({ t, old }); }
 #ifndef _WIN32
             const uintptr_t pg = 4096, a0 = ((uintptr_t) old + pg - 1) & ~(pg - 1), a1 = ((uintptr_t) old + nb) & ~(pg - 1);
             if (a1 > a0) { madvise((void *) a0, a1 - a0, MADV_DONTNEED); }   // the mapping's pages of this tensor
@@ -6263,6 +6263,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 lo.slot_in_flight[j.slot] = false;
                 if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
             };
+            bool stuck = false;
             for (int spin = 0; ; ++spin) {
                 bool busy = false;
                 {
@@ -6298,9 +6299,14 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 if (!busy) {
                     break;
                 }
-                GGML_ASSERT(spin < 200000 && "compute alias: an upload into the borrowed blocks never finished");
+                if (spin >= 200000) { stuck = true; break; }   // 10 s: a worker still copies into these blocks
                 g_ac.drain_us += 50;
                 std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }
+            if (stuck) {   // refuse this pass (the caller fails the request, the server lives); the blocks stay unlent, so the late copy lands in a cache block, not under the graph
+                LLAMA_LOG_ERROR("moe-cache: compute alias %s: an upload into blocks %d-%d of class %d did not finish in 10 s, this pass is refused\n", ggml_backend_dev_name(ap.dev), (int) blocked, (int) need, (int) sg.pcls);
+                if (g_alias_err.empty()) { g_alias_err = std::string("compute alias: an upload into the borrowed blocks did not finish in 10 s on ") + ggml_backend_dev_name(ap.dev); }
+                continue;
             }
             std::lock_guard<std::mutex> lk(mc->mtx);
             if (n_tokens > llama_moe_cache_max_batch_fork()) {
@@ -8490,32 +8496,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         });
 
         mc->profile = profile_path(model);
-        {
-            // decisions of the last self-tune on this machine for this model (the profile file's footer): start from them (an explicit
-            // LLAMA_MOE_CACHE_<NAME> wins) and check again after a while instead of exploring right away
-            const char * te = moe_opt("tuned");
-            std::string txt;
-            // ini-fix (2026-10-22): the stored decisions are not read: a start whose tuner began from another build's values behaved unlike a cold one,
-            // and the knobs' defaults change between builds. Every start tunes from the defaults.
-            (void) te;
-            for (char & c : txt) { if (c == ' ') { c = '\n'; } }
-            int n = 0;
-            size_t pos = 0;
-            while (pos < txt.size()) {
-                const size_t nl = txt.find('\n', pos);
-                const std::string line = txt.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
-                pos = nl == std::string::npos ? txt.size() : nl + 1;
-                const size_t eq = line.find('=');
-                if (eq == std::string::npos) { continue; }
-                const std::string name = line.substr(0, eq);
-                if (!user_knobs().count(name) && knob_set(knobs(), name, atof(line.c_str() + eq + 1))) { n++; }
-            }
-            if (n > 0) {
-                mc->tuned_text = txt;
-                mc->lv_rest = 16384; mc->lv_rest_until = 16384;
-                LLAMA_LOG_WARN("moe-cache: self-tune: %d saved settings loaded from the state file, next check after 16384 tokens\n", n);
-            }
-        }
+        // ini-fix (2026-10-22): the self-tuner's stored decisions are not read: a start whose tuner began from another build's values behaved unlike a cold one. Every start tunes from the defaults.
         if (const char * c = moe_opt("ctl")) {
             mc->ctl = c;
         }
@@ -8789,6 +8770,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 // once the link is done) finishes at T(k); the k with the smallest T wins, 0 when nothing beats the CPU alone. All rates
 // are measured (link and CPU phase rates live, RAM budget by the startup probe). Uploaded experts become cache entries
 // (same eviction score as the step's swaps), so the upload also serves later tokens.
+// A CPU-repacked expert tensor (non-host buffer of the CPU device) holds another byte layout than the GPU's blocks: ->data must not be uploaded. Only the upload workers can serve it, from the file.
+static bool experts_in_file_layout(const llama_moe_cache_layer_fork * pub) {
+    return ggml_backend_buffer_is_host(pub->up_src->buffer) && ggml_backend_buffer_is_host(pub->gate_src->buffer) && ggml_backend_buffer_is_host(pub->down_src->buffer);
+}
 void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     static const bool jit_all_mode = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();   // --moe jit-all: every batch the cache serves as decode, for deterministic replay
@@ -8798,7 +8783,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // done: this layer's router ids came back through the same stream), never one of the layers still to come. A prompt call is several tokens with at most one
     // output (llama_context::decode).
     const bool prompt = g_prompt_call.load(std::memory_order_relaxed);
-    if (!mc || knobs().jit == 0) {
+    if (!mc || knobs().jit == 0 || !experts_in_file_layout(pub)) {   // repacked: the misses stay with the CPU, which runs that layout
         return;
     }
     std::lock_guard<std::mutex> lock(mc->mtx);
@@ -9048,7 +9033,7 @@ static void pp_settle(moe_cache * mc) {
 // 0, not a prompt pass.
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
-    if (!mc || !pp_chain_allowed() || pub->jit_n > 0) {
+    if (!mc || !pp_chain_allowed() || pub->jit_n > 0 || !experts_in_file_layout(pub)) {   // repacked: the chain has no CPU branch and its uploads copy ->data; the plain path keeps the CPU
         return 0;
     }
     if (!g_pp_graph) { pp_settle(mc); }
@@ -10093,8 +10078,6 @@ static void self_tune(moe_cache * mc) {
                 mc->lv_cycle++;
                 mc->lv_rest_until = mc->n_steps + mc->lv_rest;
                 LLAMA_LOG_WARN("moe-cache: self-tune: next check in %llu tokens\n", (unsigned long long) mc->lv_rest);
-                mc->tuned_text.clear();
-                for (const auto & tt : T) { mc->tuned_text += std::string(tt.name) + "=" + tr_fmt("%g\n", knobs().*tt.f); }
             }
             return;
         }
@@ -12195,6 +12178,7 @@ void llama_moe_cache_free_fork() {
 #ifndef _WIN32
     for (auto & f : mc->rd_fds) { if (f.second >= 0) { close(f.second); } }
 #endif
+    for (auto & mv : mc->lazy_moved) { mv.first->data = mv.second; }   // the model outlives this cache (a new context, a re-init): its weights point at the mapping again, not at freed pinned memory
     for (auto * b : mc->pin_chunks) { ggml_backend_buffer_free(b); }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->pctxs) { ggml_free(c); }

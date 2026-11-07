@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -588,6 +589,7 @@ llama_model_loader::llama_model_loader(
             LLAMA_LOG_WARN("%s: pin budget %.1f GiB is above RAM %.1f GiB - 24 GiB (more froze a 125 GiB machine): cut to %.1f GiB; --moe pin-force=1 allows it\n", __func__,
                     pin_budget / 1073741824.0, total / 1073741824.0, (total - keep) / 1073741824.0);
             pin_budget = total - keep;
+            llama_moe_set_opt("pin-budget", std::to_string(pin_budget).c_str());   // the cut for every reader of the option: pin-lazy's thread (llama-moecache-fork.cpp) pins up to it, not to the asked budget
         }
     }
 #endif
@@ -1494,7 +1496,9 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                 }
             }
 
-            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 ? -1 : 0;   // fork: a pin budget means the pinned part is pread into pinned memory; populating the whole mapping first read the file into the page cache before anything was pinned
+            const char * pb = llama_moe_get_opt("pin-budget");
+            const bool lazy_pin = pin_lazy() && pb && strtoull(pb, nullptr, 10) > 0;   // pin-lazy zeroed pin_budget above, but it too must not populate the mapping: its thread pins and drops the pages
+            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 && !lazy_pin ? -1 : 0;   // fork: a pin budget means the pinned part is pread into pinned memory; populating the whole mapping first read the file into the page cache before anything was pinned
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
                     lazy.for_file(idx));
@@ -1636,7 +1640,7 @@ bool llama_model_loader::load_all_data(
     // weights cache (GGML_CUDA_HUGEFS): a host buffer that is a complete cache file already holds the weights (skip reading), a fresh one is committed when filled
     int (*host_cache)(int, void *) = nullptr;
     std::set<ggml_backend_buffer_t> cache_warm, cache_cold;
-    if (getenv("GGML_CUDA_HUGEFS") && !use_mmap && !check_tensors) {
+    if (getenv("GGML_CUDA_HUGEFS") && (!use_mmap || pin_budget > 0) && !check_tensors) {   // the same gate as llama-model.cpp: with mmap and a pin budget the pinned part is a cache buffer too, read here (pinned_read)
         if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
             host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
         }
@@ -1788,6 +1792,7 @@ bool llama_model_loader::load_all_data(
         return d;
     };
     std::atomic<size_t> pr_direct_bytes{0}, pr_buffered_bytes{0};
+    size_t pr_queued_bytes = 0;   // handed to the pool so far: size_done counts them at once, the progress callback must not (a bar at 100% before the reads started, no cancel while they ran)
     std::mutex              pr_mtx;
     std::condition_variable pr_cv;
     std::deque<par_read>    pr_q;
@@ -1854,8 +1859,16 @@ bool llama_model_loader::load_all_data(
         }
     };
     // the threads end on every way out of this function (cancelled loading, an exception)
-    struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{pr_finish};
+    // a way out before the normal end (cancelled, an exception) drops what is still queued: the caller frees the buffers next, reading them all first only delays that
+    struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{[&]() { { std::lock_guard<std::mutex> lk(pr_mtx); pr_q.clear(); } pr_finish(); }};
 #endif
+    auto progress_now = [&]() -> float {
+#if defined(__linux__)
+        return (float) (size_done - (pr_queued_bytes - pr_direct_bytes.load() - pr_buffered_bytes.load())) / size_data;
+#else
+        return (float) size_done / size_data;
+#endif
+    };
 
     // staging buffer for non-host buffers without async uploads, reused because a fresh allocation per tensor page faults on every load
     std::vector<no_init<uint8_t>> read_buf;
@@ -1867,7 +1880,7 @@ bool llama_model_loader::load_all_data(
         }
 
         if (progress_callback) {
-            if (!progress_callback((float) size_done / size_data, progress_callback_user_data)) {
+            if (!progress_callback(progress_now(), progress_callback_user_data)) {
                 return false;
             }
         }
@@ -1939,6 +1952,7 @@ bool llama_model_loader::load_all_data(
                     while (pr_threads.size() < n_load_threads) { pr_threads.emplace_back(pr_worker); }
                     pr_cv.notify_all();
                     size_done += n_size;
+                    pr_queued_bytes += n_size;
                     continue;
                 }
 #endif
@@ -2038,6 +2052,11 @@ bool llama_model_loader::load_all_data(
     }
 
 #if defined(__linux__)
+    while (progress_callback) {   // the reads run now: the bar moves with them and a cancel is honoured, as on the sequential path
+        { std::lock_guard<std::mutex> lk(pr_mtx); if (pr_q.empty()) { break; } }
+        if (!progress_callback(progress_now(), progress_callback_user_data)) { return false; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     pr_finish();
     if (pr_fail) {
         throw std::runtime_error("failed to read tensor data from the model file");
