@@ -43,3 +43,38 @@ the pin budget covers them; a pool class for them would be a pinned buffer witho
 | richer per-expert stats | fixed-size per expert, persisted with the ring: visits per phase (prompt / decode), measured read cost per tier (the slice's O_DIRECT time differs by size and file locality), co-activation with the layer's other experts (keep or fetch groups). Each stays only if it changes a pick that measures better. | A/B of the eviction rank with and without each term on the same cells; drop what does not move the RAM share. |
 | cold path without the page cache | an expert refused by the pool is read O_DIRECT into the worker's staging slot and uploaded from there; today it falls back to the mapping (page faults, a page-cache copy). | share of refused experts per run; if it is small the mapping path can stay. |
 | ahead reads | the next layer's router (early router) asks the pool ahead of the kernel so the wait before the CPU op vanishes. | wait time per step from the `rampool:` line; worth it only if it is a visible share of the token time. |
+
+## Gate failure analysis (GLM3.5, rampool3)
+
+Written 2026-11-07. PC1, -pl 220/280, pool unmounted, GLM 3.5 (128 GiB) pf12k1k 1024 out, row 1 cold, row 2 warm, one power session.
+Baseline: up9_merged2 (90d772e026) pp 336/585, decode 15.3/14.9. Pool-fitting models (OLMoE, Qwen3.6 35B, Qwen3.8 IQ4_XS) pass: rampool is off
+there (the model fits the pin budget), rp=1 = rp=0 within noise.
+
+| build | arm | load s | pp t/s cold/warm | decode t/s cold/warm | what the logs show |
+|---|---|---|---|---|---|
+| rampool1 9badbdddb4 | rp=0 | 68 | 340/574 | 15.0/15.4 | reference |
+| rampool1 | rp=1 | - | fail | fail | cuBLAS create OOM on CUDA1 at the first prompt, both attempts: the pool pinned 101.9 GiB after the VRAM expert pool was sized; pinned host memory costs each card ~150 MiB VRAM for its mapping, the 156 MiB margin was gone |
+| rampool2 5bd93e0257 (pin before the VRAM sizing) | rp=0 | 67 | 361/584 | 13.3/15.0 | |
+| rampool2 | rp=1 | 159 | 117/455 | 11.2/13.0 | VRAM fixed (outside the pool 28 MiB again). Pool 1.8 GiB over the budget (last chunk rounded up + an extra block per chunk): mlock 103.5 vs 101.5 GiB, memory PSI 26-77% at load and first pass (rp=0 under 2); the 5.1 GiB pass host buffer pinned in 45 s (1.2 s in rp=0); prepin through cudaMallocHost (512 MiB pieces) 57 s; the fill left 20 GiB empty (skipped card-held slices); warm request read 31.7 GiB from the SSD O_DIRECT, waited 13.8 s |
+| rampool2 3k | rp=0 / rp=1 | | 152/391 vs 62/100 | 16.7/15.8 vs 12.5/13.4 | same causes |
+| rampool3 3dc06a46d4 (budget kept, 1 GiB pieces, card-held fill, demand reads buffered) | rp=0 | 84 | 350/559 | 15.8/15.8 | |
+| rampool3 | rp=1 | 85 | 199/466 | 10.3/6.5 | load fixed (prepin 25.7 s, mlock 101.3 = budget, PSI under 10 except 2 s spikes). Fill 100.7 GiB (5752 of 11082 card-held slices in RAM). First 1938-token pass still 46.8 s (rp=0 16.7). Request: misses from RAM 95.6/96.1%, 50.2/44.7 GiB read from the SSD into the pool per request, evicted 15.3k/13.5k, waited 17.9/16.0 s. Warm decode 157 s vs 68 s in rp=0 |
+
+Remaining warm-decode gap (rampool3): 89 s per 1024 tokens (~87 ms per token). The pool waits explain 16 s (~16 ms per token). PSI is low and
+mlock equals the budget, so the rest is engine time, not RAM pressure. Major faults 50-250/s (rp=0 400-1000/s), so the mapping is not the cause either.
+Open: the log says "103.4 of 118.1 GiB in RAM" while 101.0 GiB was prepinned and mlock shows 101.3: check what the 103.4 counts.
+
+Hypotheses, ranked:
+1. Demand reads through the page cache (rampool3) made decode worse: warm decode was 13.0 in rampool2 (O_DIRECT) and 6.5 in rampool3; the other
+   rampool3 changes touch load and fill only. A buffered read is one more full copy per slice (page cache -> block, single thread under the reader)
+   and it evicts the page cache that the refused (mapped) slices live on. Test first: revert only that line (rp_reader back to t.dfd).
+2. Pool churn: ~14k reads + 14k evictions (~45-50 GiB) per request, the warm request no better than the cold one. The victim rule takes card-held
+   copies first, but prompt passes churn the cards, so those copies are needed again shortly after. Evidence: SSD bytes per request do not fall from
+   cold to warm. Test: count re-reads of slices evicted in the same request; try no eviction during a prompt pass (pass churn is not decode heat).
+3. The CPU kernel does not get the block: ggml_rampool_get_fork returns null when the slice was not stamped by this or the last graph, and the
+   kernel then reads the mapping. If the graph counter moves per sub-graph or per card (2-card dense split) rather than per token, stamps go stale
+   and hits become mapping reads. Evidence for: decode slower than rampool2 even with fewer SSD bytes. Test: count get_fork nulls per token.
+
+Next: per-token breakdown first (stats.log PAS/STA, -lv 3) of rp=0 vs rp=1 on the same pass, then 1 (revert one line), then 3 (counter), then 2.
+The first-pass slowness (46.8 s vs 16.7 s for 1938 tokens) shows in every rp=1 build: read that pass's breakdown beside rp=0's first.
+Until this passes, rampool stays off by default (it is: rampool=0) and leaves v1.
