@@ -4824,8 +4824,19 @@ private:
                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
 
 
+                    // fork: equal calls. A prompt longer than n_batch is cut into ceil(R / n_batch) calls of equal size, not n_batch plus a tail: every call
+                    // pays the whole expert upload whatever its token count (GLM 3.5 12434 tokens, rampool13: 10496 + 1938, the 1938-token tail took 12.2 s,
+                    // the same as the 10496 pass, 160 tokens/s). The checkpoint's 4-token tail stays its own call.
+                    size_t batch_cap = n_batch;
+                    {
+                        const int64_t R = (int64_t) slot.task->n_tokens() - slot.prompt.n_tokens() - (do_checkpoint ? 4 : 0);
+                        if (R > (int64_t) n_batch) {
+                            const int64_t calls = (R + n_batch - 1) / n_batch;
+                            batch_cap = std::min<size_t>(n_batch, batch.size() + (size_t) ((R + calls - 1) / calls));
+                        }
+                    }
                     // add prompt tokens for processing in the current batch
-                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
+                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < batch_cap) {
                         // get next token to process
                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
                         if (cur_tok == LLAMA_TOKEN_NULL) {

@@ -1862,7 +1862,11 @@ std::vector<double> dsplit_zw_shares(const std::vector<ggml_backend_dev_t> & dev
     if (g_zw.dev != dev) {   // the first pass, or the cards changed: start from the start-of-server measurements and the stored factor
         g_zw = dsplit_zw();
         g_zw.dev = dev;
-        g_zw.f.assign(dev.size(), 0.75);
+        // f = 1: equal chains, the helper's dense work as long as the expert card's own. The expert op of a layer needs every range, so a pass is per layer
+        // max(the cards' dense chains) + the experts: the wall is lowest when the chains are equal, and a short expert-card wait is cheaper than the helper
+        // idling (GLM 3.5 10400 tokens, rampool13: f 0.75 rising 5% a pass gave the x4 card 36-46% of the tokens over four passes, idle 7.5 s of 11.9 s;
+        // equal dense time per card is 49%). The step below still lowers f where the expert card waits above its floor.
+        g_zw.f.assign(dev.size(), 1.0);
         g_zw.hist.assign(dev.size(), {});
         std::vector<double> stored_k;   // the k an earlier run of this model on these cards measured: it replaces the start-of-server estimate
         std::string v;
@@ -1980,12 +1984,15 @@ void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
         B.ref_v = B.ref_v > 0.0 && B.phase == 2 ? 0.5 * (B.ref_v + B.v) : B.v;
         B.phase = 2;
         if (--B.wait > 0) { return; }
-        // Only an expert card that waits for its expert uploads has something a helper's link or compute can take over (Qwen3.6-35B at 35% VRAM: the x16 card
-        // waited 3-7 ms of a 1100 ms pass for uploads, and every trial step came out slower per token; user 2026-11-05: it only works on big models).
-        if (B.uw.size() != n || B.uw[x] < 0.05 * B.span) {
+        // The helpers can take experts over only where they idle: a helper that waits for the expert card has link and compute to spare, whatever the expert
+        // card waits for (GLM 3.5 10400 tokens, rampool13: the x16 card was compute-bound, 3.7 s of experts with its 4.6 s upload hidden and 207 ms of
+        // upload wait, so the old gate "the expert card waits over 5% for uploads" never opened while the x4 card waited 7.5 s of an 11.9 s pass; Qwen3.6-35B
+        // at 35% VRAM, the case the old gate was written for, has the helper busy too and still fails here). Under 5% idle on every helper: nothing to try.
+        double idle_max = 0.0;
+        for (size_t i = 0; i < x; ++i) { if (B.tok[i] > 0 && i < B.xw.size()) { idle_max = std::max(idle_max, B.xw[i]); } }
+        if (idle_max < 0.05 * B.span) {
             B.wait = 8;
-            LLAMA_LOG_WARN("split experts: none on the helpers: %s waited %.0f ms of %.0f for its uploads (under 5%%), nothing for the helpers to take over\n",
-                    ggml_backend_dev_name(B.dev[x]), B.uw.size() == n ? B.uw[x] : 0.0, B.span);
+            LLAMA_LOG_WARN("split experts: none on the helpers: they waited at most %.0f ms of %.0f for the expert card (under 5%%), no idle time to take experts over\n", idle_max, B.span);
             return;
         }
         std::vector<double> fi(x, 0.0);
@@ -2653,10 +2660,12 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     // the prior's split time per token, before g_dsf_mu (the plan takes g_plan_mu, which is never taken under g_dsf_mu)
     // (planner-rules.md C4: t_raw_ms, the modelled pass alone; t_split_ms carries the fill and the refill, which g_rls_fill models apart - counted twice)
     double c_prior = -1.0, c_one = -1.0;
+    static double ratio_bench = -1.0;   // the plan's split / one-card compute ratio (matmul bench, link probe): trusted for the ratio, never for the size (rule 41b)
     if (g_rls_split.k == 0 || g_rls_one.k == 0) {
         const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
         c_prior = plan.valid && plan.t_raw_ms > 0.0 ? plan.t_raw_ms * 1e3 / (double) n_tokens : 0.0;
         c_one   = plan.valid && plan.t_one_ms > 0.0 ? plan.t_one_ms * 1e3 / (double) n_tokens : 0.0;
+        if (c_prior > 0.0 && c_one > 0.0) { ratio_bench = std::min(1.0, c_prior / c_one); }
     }
     std::lock_guard<std::mutex> dl(g_dsf_mu);
     dsf_load();
@@ -2689,6 +2698,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     double u_link0 = 0.0;                  // the first pass's link-bound expert upload (us): R2's ratio, logged only
     bool known1 = false, known2 = false;   // each side ran at comparable features (rls_known): a trial is weighed against the known side
     const bool split_prior = g_rls_split.n == 0 && !g_rls_split_loaded;
+    const double ratio = ratio_bench > 0.0 ? ratio_bench : RLS_SPLIT_ONE_RATIO;   // the split prior's compute ratio (below)
     for (int64_t c = pos0; c < end; c += n_tokens, ++np) {
         const int64_t T = std::min<int64_t>(n_tokens, end - c);
         const double cm = (double) c + 0.5 * (double) T;
@@ -2699,8 +2709,13 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         bool kn1 = false;
         if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth, &kn1) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); kn1 = rls_known(g_rls_one, mu1, v1); }   // C18
         if (split_prior) {
-            mu2 = mu1 * RLS_SPLIT_ONE_RATIO;
-            v2  = mu2 * mu2 * RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG + v1 * RLS_SPLIT_ONE_RATIO * RLS_SPLIT_ONE_RATIO;
+            // The split shortens the compute only: a pass bound by its expert upload U gains nothing from it (the release's rule, dsf_decide: max(U, compute)).
+            // So the prior is max(U, one card x the bench's split/one compute ratio), not a flat ratio: at 2k GLM 3.0 one card is its 4.5 s upload and the
+            // split's fill can only lose, at 10k one card is 14 s of compute and the split saves its share from the first pass (rel_b14244 split there,
+            // 783 against 663 tokens/s; rampool13's flat 0.96 prior sat above one card by the fill and was never tried). The crossover is where the
+            // compute passes the upload: computed per pass from measured link rate and bytes, no size constant.
+            mu2 = std::max(U, mu1 * ratio);
+            v2  = mu2 * mu2 * RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG + v1 * ratio * ratio;
         } else {
             mu2 = rls_pred(g_rls_split, phi, &v2);
         }
@@ -2737,7 +2752,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
             (long long) n_tokens, (long long) (pos0 / 1024), np, llama_moe_cache_pp_path_name_fork(path0).c_str(), mu1_0 / 1e6, std::sqrt(std::max(0.0, v1_0)) / 1e6,
             mu2_0 / 1e6, std::sqrt(std::max(0.0, v2_0)) / 1e6, g_rls_split.n, g_rls_split.nis, f_mu / 1e6, std::sqrt(std::max(0.0, f_v)) / 1e6,
             fill_est > 0.0 ? "owed" : "copies in place", g_rls_fill.n, d1_0 / 1e6, d2_0 / 1e6, f_d / 1e6, (mu1_0 - mu2_0) / 1e6, g_pos / 1e6,
-            split_prior ? ", split prior = one x 0.96 (never ran)" : "", pick_s.c_str(), p_split, u_link0 > 0.0 ? std::max(u_link0, mu1_0) / u_link0 : 0.0);
+            split_prior ? format(", split prior = max(upload %.2f s, one x %.2f) (never ran)", u_link0 / 1e6, ratio).c_str() : "", pick_s.c_str(), p_split, u_link0 > 0.0 ? std::max(u_link0, mu1_0) / u_link0 : 0.0);
     return choice;
 }
 // every prompt pass is timed: the pass decided last ends at the synchronize before the next prompt pass and at the end of its call (llama_context)
