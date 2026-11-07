@@ -91,6 +91,8 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
             // ids may be -1 (skipped experts): no helper entries for them, keep the unused compact range valid
             CUDA_CHECK(cudaMemsetAsync(ids_src_compact_dev.get(), 0, ne_get_rows*sizeof(int32_t), ctx.stream()));
             CUDA_CHECK(cudaMemsetAsync(ids_dst_compact_dev.get(), 0, ne_get_rows*sizeof(int32_t), ctx.stream()));
+            // as in mmq.cu: the tile specs below expert 0 are never written by the helper (task P8, fork/docs/mix-crash.md)
+            CUDA_CHECK(cudaMemsetAsync(tile_spec_dev.get(), 0, max_tiles*sizeof(ggml_cuda_mm_id_tile_spec), ctx.stream()));
         }
         ggml_cuda_launch_mm_ids_helper(ids_d, ids_src_compact_dev.get(), ids_dst_compact_dev.get(), tile_spec_dev.get(),
             static_cast<int>(n_experts), static_cast<int>(n_tokens), static_cast<int>(n_expert_used), static_cast<int>(ne11), 16,
