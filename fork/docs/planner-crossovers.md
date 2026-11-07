@@ -8,57 +8,157 @@ recorded there; full per-flip signatures in /tmp/xo_sig/full.txt, script /tmp/xo
 Hard rules: never slower than rel_b14244 on any cell, never slower than the previous best of our builds (runs.db, same cell); a wrong pick never costs
 more than 5% against the measured-best forced arm from request 2 on; answers read before speeds (fork/outputs/<rowid>.txt, judge); nothing hand-tuned.
 
-## 0. The decision (what is built, what was dropped and why)
+## Transition tables (five models; from = rows, to = columns; measured status from /tmp/xo_score/matrix_compact.txt, rule ids from section 0)
 
-Built: ONE cost predictor per strategy (the RLS per arm that exists at MC:12232-12270 and DS:2639-2720), the lowest predicted time wins, three additions:
-(a) every arm carries its switch cost as a learned one-time term (the fill is the model: DS:2670 `g_rls_fill`), charged only when the arm is not the
-request's current state and compared against the gain over the calls left; (b) the full-stream and mix arms' times are COMPUTED per call from live bytes
-and the measured link, SSD and compute rates (per layer max(upload, compute), summed) and that number is the arm's feature with prior coefficient 1,
-so the stream is right before any sample and ties within the uncertainty go to it (100% hit rate, no miss variance); (c) a paired ABAB trial runs
-only when the two best arms lie within each other's uncertainty and the stake pays (section 4.3), every switch is verified or sure, a loss reverts
-at once. Utilization of the binding resource (link, SSD, CPU, kernel share) is a FEATURE of the predictors (section 4.2), nothing else.
+Reading a cell: `net +X s (+Y% of the from-arm's time) over n size classes with both arms measured (c cold + w warm); wins at [sizes], losses at [sizes]; worst single
+loss`. A size tag is the pass-size class, c/w = cold/warm request. `unknown` = no class has both arms in the stats.logs (runs.db-only pairs are named).
+The lower triangle is the upper cell with the sign flipped (wins and losses swapped). Rule id = what decides the switch in the spec (section 0):
+R1 cold start = stream (+mix with a slower link, not SSD-bound), chains only below the measured CPU crossover; R2 one card -> split by the learned
+ratio r on T_one / Ts (compute-bound) and the gain over the fill; R3 = lowest measured mean at comparable features, otherwise a VOI trial; R5 = k only as a
+warm trial; R6 = expert split only as a trial from the split. The dense medians exclude the fill (lower bound for its wins). `today` = the LOGGED
+pick's loss against the class best on the same classes, per build era (rel_b14244 logs = rel_stable_auto*; up9_merged2; rampool9-10; others = the
+2026-10-31 .. 11-06 builds).
 
-Dropped: a runtime grid and a transition graph with per-edge conditions (sections 2-3 exist for the campaign and the replay tests only: edges are
-implicit in the predictors; maintaining 20 hand conditions is how the cascade of C1-C15 came to be); the pure hill climber (its bottleneck
-classifier + neighbour map IS a hand-made transition graph, and it cannot see a non-adjacent optimum: one card -> dense split when the real winner is
-mix; its two good ideas stay: verify every switch by a paired trial, remember "did not pay" per state, which the posterior does keyed by features
-instead of buckets); a separate saturation trigger mechanism (a utilization near its ceiling already moves the prediction through its coefficient;
-one mechanism, not two); per-level margins, vetoes, try budgets, the 15% rule (planner-rules res. 8). What the simple triggers of section 1 are for:
-they are the PRIORS and computed features of the predictors, so a cold start picks right; they are not a second decision path.
+### qwen36 (Qwen3.6-35B, 363 calls; fits VRAM, the miss paths only under `-sim 4.5g`)
 
-## 1. Trigger point per transition, found in the logs (the centre of the plan)
+| from \ to | mix | k | chain | dec | dense |
+|---|---|---|---|---|---|
+| stream | R1: -8.7 s (-222%) n=2c, loses 1kc,12kc, worst 6.2 s | R5: -0.2 s (-6%) n=1c (12kc) | R1/R3: -8.8 s (-97%) n=4c+1w, loses 512c..12kw, worst 4.0 s | R1: -28.5 s (-308%) n=3c+2w, loses all, worst 11.9 s | R2/R3: +0.9 s (+14%) n=2c+2w, wins 8kc,12kw, loses 1kc,1kw, worst 0.3 s |
+| mix | - | R3: +6.0 s (+63%) n=1c | R3: +4.0 s (+32%) n=2c | R3: -4.6 s (-36%) n=2c, worst 5.7 s | R3: +2.3 s (+74%) n=1c |
+| k | | - | R3: -3.8 s n=1c | R3: -11.7 s n=1c | R3: +3.1 s (+54%) n=1c |
+| chain | | | - | R3: -18.5 s (-108%) n=3c+1w, loses all, worst 8.2 s | R3: +5.1 s (+60%) n=1c+1w |
+| dec | | | | - | R3: +19.6 s (+76%) n=2c+2w, wins all |
+| dense -> expert | unknown in the stats.logs (runs.db: no forced expert row on this model) | | | | |
+| today | others n=344: loss 555 s (83%), worst 127.7 s (the decode-chain and chain calls of the predictor sweeps) | | | | |
 
-| transition | observable trigger (A > B, live quantities) | fit over the logged crossovers | verdict |
-|---|---|---|---|
-| partial path (chain, k, CPU misses) -> full stream, FITTING model (every expert in VRAM or the pinned RAM pool) | computed full-stream time T_s = sum over layers max(bytes from the pool / link, compute) <= the partial path's measured or predicted time x (1 + its own relative noise); the stream's hit rate is 100%, its time has no miss variance | stream beat 'k x1' in 10 of 11 fitting bins (GLM3.0 4/4, MiMo 4/4, Qwen3.6 3/4: 4096 lost with n = 3; Qwen3.8 3/3 counted here, it fits at PC1's RAM); beat the chain in 4 of 5 (lost Qwen3.8 16384 1670 vs 1790 = 7%, within the bin's spread); beat the decode chain 3 of 3 | CLEAN: full stream is the default above ~1k; "close" was enough everywhere a partial path lost; the partial won by 7% once (Qwen3.8 16k) |
-| the same, NON-FITTING model (experts come partly from the SSD: DS at PC1, GLM 3.5 over the pool margin, every model at the small-RAM budgets of section 1a) | T_s per source tier: VRAM-resident 0, pool bytes / link, SSD bytes / min(ssd_rate, link) + reads x per-read latency (both live-measured, contended by the pool's own reads), per layer max(sum, compute); the SSD term is the ceiling, not the link | DS: stream beat 'k x1' 3 of 4 (lost 16384 359 vs 492), lost to the chain and the decode chain at 512 (49.5 vs 67.5): the misses' SSD reads are fewer bytes than the full stream's; GLM3.5 rp1 cold 2k: decode chain 43-86 s against stream 7-11 s (the misses from the SSD serialised) | CLEAN only with the tier split: a partial path pays the SSD for its misses alone, the full stream for every non-resident expert; which is less is the computed comparison, "close" is NOT enough here (the SSD term's variance is the stream's own) |
-| stream -> stream + mix (x4 helps) | the stream's binding resource is the x16 link, not the SSD: T_s(link) > compute AND SSD bytes / ssd_rate < T_s | mix beat plain in 9 of 10 bins (GLM3.0 2/2, MiMo 1/1, Qwen3.6 3/3, Qwen3.8 3/3); lost DS 16384 (130 vs 364) where every expert comes from the SSD (`-nm 0`) | CLEAN: mix whenever a second link exists and the SSD is not the ceiling; the DS loss is the SSD rule |
-| upload misses -> CPU misses (decode chain) | tokens per missed expert x CPU us per token-expert < upload us per expert (two measured rates; project_no_cpu_experts_in_prefill: ~35 tokens on Qwen3.6 over x16, past 1k on DeepSeek) | 3 of 3: DS 512 wins (67.5 vs 49.5, predicted past 1k), Qwen3.6 6144/10240 loses (769 vs 4508), GLM3.5 2048 loses (105 vs 274) | CLEAN but only 3 bins; the campaign adds the band 64-2k |
-| one card -> dense split | the one card is upload-bound: its predicted upload U_1 > its compute C_1 (the logs show it as the one-card pass jumping superlinearly while its cache hit falls to ~0: GLM3.0 6144 -> 8192 6.3 -> 16.1 s, hit 9 -> 1%), and the split's fill is paid within the request | 4 of 6 models: GLM3.0 at 8192 (510 -> 690), GLM3.5 at 10240 (602 -> 766), Qwen3.8 from its lowest both-arm bin 10240 (1512 -> 1705), Qwen3.6 at 6144 (4260 -> 4490, hit 14% vs 23% at 4096); NOT MiMo (flips 4k/6k/8k/12k follow cells_end 8k vs 126k, a context mix, not size) and NOT DS (split wins only at 1024, 66 -> 74.5 with helper share 0.55; one card from 3072) | PARTIAL: the trigger plus the attention term `T x a x cells` (MiMo) and the x4 share's cost (DS) = the predictor; at the split's crossover wait-for-other is 0.57-0.70 of the pass on every model (the x4 card is the wall), x4 link busy 4.4-7.3 s per pass on GLM/MiMo |
-| dense split -> dense + expert split | none found: wins GLM3.0 10240 only (768 -> 864) then loses 12288/16384; Qwen3.6 from 8192 (3936 -> 4823); Qwen3.8 10240 and 16384 (+7-10%); MiMo never (907/897, 995/774) | 2 of 4 models, 5-12% gains, no quantity crosses: the x4 share's link busy and stall are the same on both sides | NO TRIGGER: predictor + one confirmation per model; off by prediction where it never paid |
-| stream plain -> stream k = 2, 4, 8 | unmeasured (only k x1 in every log) | - | UNKNOWN: campaign cells |
-| chain -> stream at small passes (< 1k) | no bins with n >= 3 on both arms below 1k except DS 512 | - | UNKNOWN: campaign cells (the pf64-pf512 tests) |
+### qni4 (Qwen3.8-Flash-Next IQ4_XS, 62 calls)
 
-### 1a. Which models fit (every expert in VRAM + the pinned RAM pool), by budget
+| from \ to | mix | k | chain | dec | dense |
+|---|---|---|---|---|---|
+| stream | R1: -0.5 s (-2%) n=2c+2w, wins 16kc,16kw, loses 6kc,6kw, worst 0.4 s | R5: -5.1 s (-14%) n=3c+3w, loses all six, worst 1.8 s | unknown (16k both in runs.db: chain 1790 vs stream 1670 t/s warm, 7%) | R1: -49.9 s (-266%) n=3c+1w, loses all, worst 26.8 s | R2/R3: +5.5 s (+21%) n=1c+2w, wins 12kc,12kw,16kw, no loss |
+| mix | - | R3: -3.7 s (-16%) n=1c+2w, worst 1.8 s | unknown | R3: -37.8 s n=2c, worst 26.8 s | R3: +2.3 s (+24%) n=1w |
+| k | | - | unknown | R3: -36.4 s n=2c+1w, worst 25.4 s | R3: +5.5 s (+27%) n=1c+1w |
+| dense -> expert | unknown (no forced expert row) | | | | |
+| today | others n=56: loss 198 s (56%), worst 26.8 s; rel_b14244 n=4: 1 s (6%), worst 1.2 s; up9_merged2 n=2: 1 s (11%), worst 1.5 s | | | | |
 
-File sizes (fork/models.ini paths, GiB): olmoe 3.9, qwen36 11.4, qwen38 77.9, glm 109.4, glm35 127.7, mimo 107.7, ds 231.7. PC1: 2 x 24 GiB VRAM,
-125 GiB RAM (pin share computed, feedback_pin_share_computed: about 100 GiB pinnable with Engram mapped). Fitting = file + KV + copies <= VRAM + pin.
+### glm (GLM-5.3-Flash 3.0bit = /30 and 3.5bit = /35, 170 calls; 3.5 non-fitting at PC1)
 
-| budget (VRAM + pin) | fitting | non-fitting (SSD tier in T_s) |
-|---|---|---|
-| PC1: 48 + ~100 | olmoe, qwen36 (VRAM alone), qwen38, mimo, glm 3.0 (needs the pool near its max: the rampool margin) | glm35 (128 > the margin: the rp1 regime of section 5), ds (232: always SSD, `-nm 0`) |
-| 48 + 64 (`-simram 64g`) | olmoe, qwen36, qwen38 (78 < 112) | glm 3.0, glm35, mimo, ds |
-| 48 + 32 | olmoe, qwen36 | qwen38 (78 > 80 less KV), glm, glm35, mimo, ds |
-| 48 + 16, 48 + 8 | olmoe, qwen36 | all others |
-| W10 4060 8 GiB + its RAM | olmoe (VRAM), qwen36 (RAM pool) | all others |
-| `-sim 4.5g` (Qwen3.6 small-VRAM stand-in) | qwen36 still fits (RAM pool), it only stops being VRAM-resident | - |
+| from \ to | mix | k | chain | dec | dense |
+|---|---|---|---|---|---|
+| stream | R1: +1.4 s (+6%) n=1c (12kc/30) | R5: -0.1 s (0%) n=7c+5w, wins 512c/30,3kc/35,8kc/35, loses 9 classes, worst 0.7 s | R1/R3: -10.8 s (-49%) n=1c (12kc/30) | R1: -32.7 s (-107%) n=3c+2w, loses all, worst 13.4 s (2kw/35) | R2/R3: +15.0 s (+23%) n=2c+3w, wins 6kw/30,8kc/35,10kc/35,10kw/35, loses 2kw/35, worst 0.6 s |
+| mix | - | R3: -2.6 s (-6%) n=1c+1w, worst 1.7 s | R3: -61.5 s (-153%) n=1c+1w, worst 49.4 s (12kw/30) | unknown | unknown |
+| k | | - | R3: -59.0 s n=1c+1w, worst 48.5 s | R3: -44.7 s (-117%) n=4c+2w, loses all, worst 14.2 s | R3: +10.4 s (+9%) n=4c+4w, wins 2kc/35,8kc/35,10kc/35,10kw/35,16kc/30, loses 2kw/35,3kw/35,8kw/35, worst 4.2 s |
+| dec | | | | - | R3: +25.3 s (+64%) n=1c+1w (2k/35), wins both |
+| dense -> expert | unknown in the stats.logs; runs.db: 8k warm one row (3.0); planner_dataset: 10240 +12% then losses at 12k/16k | | | | |
+| today | others n=135: loss 692 s (54%), worst 79.4 s; up9_merged2 n=7: 43 s (63%), worst 13.5 s; rel_b14244 n=7: 14 s (25%), worst 5.5 s; rampool9-10 n=14: 28 s (21%), worst 6.6 s | | | | |
 
-So the non-fitting rows of section 1 are DS always, GLM 3.5 at PC1, and every big model at the simulated small-RAM budgets (user_typical_hw_small_ram):
-the campaign's `-simram 32g/64g` cells (section 5, GLM 3.0 and Qwen3.8) measure the SSD-tier stream against the chain there.
+### mimo (MiMo-V2.6-Flash 3bit, 90 calls)
 
-Signature at the one-card -> split crossover (split rows): bal_wait_other_c0 / pass 0.57-0.70, bal_upload_c1 / pass 0.33-0.59, every expert upload over
-the x16 card (bal_upload_c0 = 0), x4 link busy GLM3.0 4390 ms, GLM3.5 7280, MiMo 4680 per pass, stall 218-1330 ms. The per-card upload GB/s fields
-exist in 192 rows only (utilization not computable from the dataset: a reason for the RES line of section 4.2).
+| from \ to | mix | k | chain | dec | dense |
+|---|---|---|---|---|---|
+| stream | R1: +1.1 s (+4%) n=1c+1w (12k), wins both | R5: +13.3 s (+10%) n=5c+5w, wins 512c,8kw,12kc,12kw,16kc,16kw, loses 512w,1kc,1kw,8kc, worst 1.0 s | unknown (runs.db 12k/16k rows: chain cells exist, no stats.log pair) | R1: -8.3 s (-72%) n=1c+2w, loses 512w,1kc,1kw, worst 4.1 s | R2/R3: +35.6 s (+38%) n=1c+3w, wins 8kw,12kw,16kc,16kw, no loss |
+| mix | - | R3: +0.8 s (+3%) n=1c+1w | unknown | unknown | R3: +4.2 s (+31%) n=1w |
+| k | | - | unknown | R3: -7.6 s (-63%) n=1c+2w, worst 3.8 s | R3: +22.4 s (+28%) n=1c+3w, wins all |
+| dense -> expert | unknown in the stats.logs; runs.db warm rows at 256, 8k, 12k; planner_dataset 12k/16k: dense wins (907/897, 995/774) | | | | |
+| today | others n=84: loss 353 s (39%), worst 36.9 s; rel_b14244 n=2: 0 s | | | | |
+
+### ds (DeepSeek-V4.1-Flash IQ2_XXS, 226 calls; never fits: `-nm 0 -lm mmap`, SSD tier)
+
+| from \ to | mix | k | chain | dec | dense |
+|---|---|---|---|---|---|
+| stream | R1 (SSD-bound: no mix): -3.8 s (-6%) n=1c+1w, loses 12kc,12kw | R5: +24.6 s (+10%) n=4c+5w, wins 1kc,1kw,16kc,16kw, loses 512c,512w,3kw,12kc,12kw, worst 5.9 s | unknown in stats.logs (runs.db warm 256/16k pairs) | R1 (the one model where the chain pays): dec wins 512c,512w,1kc,1kw,3kw,16kc, loses 16kw by 283 s (one 328 s outlier call); net -237 s with it, +46 s without | R2/R3: +22.7 s (+49%) n=1c+1w (1k), wins both; split loses from 3k (dataset) |
+| mix | - | R3: -6.3 s (-9%) n=1c+1w, worst 4.0 s | unknown | unknown | unknown |
+| k | | - | unknown | R3: wins 512-3k, loses 16kc,16kw (worst 296.9 s) | R3: +10.6 s (+31%) n=1c+1w |
+| dec | | | | - | R3: +5.6 s (+20%) n=1c+1w (1k) |
+| dense -> expert | unknown (no forced expert row) | | | | |
+| today | others n=214: loss 3305 s (98%), worst 296.9 s (decode-chain calls at 16k); rel_b14244 n=9: 55 s (31%), worst 10.5 s; up9_merged2 n=2: 0 s | | | | |
+
+What the five tables say together: (1) stream is the right incumbent at every size on four models and at >= 3k on DS; (2) the chains lose on every
+class of qwen36, qni4, glm, mimo (-97% to -308% of the stream's time) and win on DS below 3k; (3) the split pays from 8-12k on glm/mimo/qni4 and at
+1k on DS (the only sub-3k split win), always compute-bound; (4) k is a coin flip except MiMo/DS at 8-16k (+10%), hence a warm trial only; (5) mix is
++4-6% where a slower link helps (glm30 12k, mimo 12k, qni4 16k) and -6% on the SSD-bound DS; (6) "today": the release loses 6-31% on these classes
+(GLM 25%, DS 31%), up9_merged2 11-63%, rampool9-10 21% on GLM; the predictor-era builds ("others") 39-98%: the decode chain at large passes is the
+single largest loss class in every model (worst 127.7 / 26.8 / 79.4 / 36.9 / 296.9 s).
+
+## 0. The final rule set (spec for Opus; scored on 917 logged prompt calls of 384 q5h stats.logs, section 1)
+
+Scoring (section 1): every candidate rule replayed in log order with a fresh memory per process; outcome of a pick = the measured median of that arm
+at (model, size class, cold/warm); gain = time saved against always-stream, loss = time lost against the measured best, cold and warm apart.
+Result in one line: cold requests lose 27-31% against the best arm under EVERY rule because a fresh process knows nothing; warm requests gain
++26% with "lowest measured mean" (rule c) and lose 15% under the release's factors (rule a). So the planner's job is (1) a safe cold start and (2)
+measured means kept across processes. The rules:
+
+R1 cold start = full stream (+ mix where a second link exists and the SSD is not the ceiling) at every call above the model's measured CPU crossover
+(the release's `max-batch` measurement, 62-128 tokens here: MC:8092-8250 at 29f224aa4, `g_mb_auto`); below it the cache path (misses on the CPU).
+Evidence: no rule gains cold on chain/dec vs stream (-399 s for all, the chains lose cold on every model but DeepSeek at <= 3k); mix +15-23 s warm,
+-12 cold, never worse than stream where a slower link exists; the "T_partial ~ T_uploadAll" hypothesis is REJECTED: the chain loses at
+T_chain / T_uploadAll 1.17-2.2 (GLM 3.0/3.5, MiMo) and wins at 1.26-3.56 (DS): no single r separates them (best r = 0 = always stream, 12/15 cold,
+8/11 warm). The chains are therefore never a computed candidate above `g_mb_auto`; they can only be measured into the memory (R3).
+
+R2 one card vs dense split, no sample at comparable features: split iff the one-card time predicted from measured rates, max(Ts, C1), exceeds
+r x Ts (the pass is compute-bound by the margin the x4 card's wall and the fill cost) AND the gain over the calls left in the request exceeds the fill
+owed; r is a learned scalar (its own 1-dim RLS on the logged T_one/Ts at the split's wins and losses), prior 1.83 from the logs (warm: 13/13 cells
+right; cold 9/10). The direction is settled: compute-bound -> split (rule e, warm +213 s) against upload-bound -> split (rule f, -276 s). The
+release's 8% margin and 15% "sure" rule (R7/R10) go: they lost GLM 3.5 warm 10k (rows 23772/73: one card 362 t/s picked against the split's measured
+497) and score -15% warm overall.
+
+R3 with samples at comparable features (`rls_known`): the lowest measured mean among the arms known here, the split's fill added when owed; an arm not
+known here is a trial only by value of information (EI x calls-of-this-size-so-far > EL, Opus's `rls_voi_pick`); the trial alternates with the
+incumbent (A B A B) and stops at the sign of the paired differences (section 4.3). Evidence: rule c +557 s warm (+26%), with the paired trial (d)
++538 s overall but +35 s more on one/split and +94 vs +13 on k (thin cells); worst single loss 14 s (68%) in both, one call.
+
+R4 the memory crosses processes: the state file stores every arm's RLS (theta, P/s2, n) under the `@hw#build` key when determined and quiet (the design's
+persistence rule, rampool.md) and loads it as the prior. This is the largest lever in the data: the cold gap (27-31%) is exactly what a process
+without the last process's means loses. The cells are run with `-cs` (empty state) only for the cold-start rows; every other row keeps its state.
+
+R5 the k arms (stream with k x picks ahead): never a cold candidate; a VOI trial on warm requests only; measured wins stand (DS 16k 31.4 vs 45.0 s,
+MiMo 16k 32.3 vs 35.0; GLM 3.5 10k lost 17.4 vs 16.9). k > 1 has never run: trials start at the lowest k.
+
+R6 dense + expert split and expert-only: no cold candidate (section 1 of the previous revision: 5-12% on two models, no trigger); VOI trial only
+when the split is already the incumbent and a slower card has free VRAM; off everywhere the trial lost.
+
+R7 every one-time cost (fill, re-plan, the uploads a chain pass drops) is a learned term charged once per request against the gain over the calls
+left; every pick logged with both sides' numbers (PLN/DON/TRY, I12); the 5% loss bound is the replay gate's and the cells' yardstick, never a run-time
+constant.
+
+Dropped from the earlier revision of this file: the computed per-tier stream anchor as a DECISION (it stays as the stream's prior U feature; as a
+tie-breaker it scored no better than the means), the saturation trigger (no utilization field separates the logged crossovers; the per-card GB/s
+exists in 192 rows), the "close is enough -> stream" tie rule (it never changed a scored pick), the compute/upload ratio for the chains (rejected
+above). Kept from Opus's planner-simple (e42a95af09, 374c6ac772, a448602c58): deterministic means, VOI trials, the stake instead of a 5% cap.
+To change there (message sent to the agent): restore the chains' eligibility above the MEASURED `g_mb_auto` crossover as "trial only, never a cold
+pick" (a448602c58 removed `dec_max` gating as a ballpark: the measurement is not a ballpark, the faulty calculated crossover was); replace the split's
+prior ratio RLS_SPLIT_ONE_RATIO 0.96 by R2's learned r on T_one/Ts (prior 1.83); make the state file carry the arms' RLS across processes (R4) and
+have the replay gate run with the previous process's state, not only fresh.
+
+## 1. Scoreboard (python replay over /p/bw/data/q5h stats.logs; files in /tmp/xo_score: events.csv, truth.txt, scoreboard_full.txt, extra_out.txt)
+
+Events: ds 226, glm30 66, glm35 104, mimo 90, qni4 (Qwen3.8-Flash-Next IQ4_XS) 62, qni3 6, qwen36 363; qwen38 (27B) and olmoe none. Cells are thin
+(n = 1-3 for most model x size x cold/warm x arm); the truth medians come from the same calls, so the numbers are indicative, not a gate.
+
+Rules: a = release b14244 factors (max(U, C), 8% margin, chains only <= mb_auto); b = computed anchor per arm, lowest; c = lowest measured mean,
+unmeasured arms priced by b; d = c + ABAB on overlap; e = one/split by "compute-bound -> split" (C1 > Ts and gain > fill), stream otherwise;
+f = e reversed (upload-bound -> split); g = always stream, never split.
+
+| rule | cold: net s (net %) / worst loss | warm: net s (net %) / worst loss | one/split warm | chain-dec vs stream warm | k vs stream warm | mix vs stream warm |
+|---|---|---|---|---|---|---|
+| a release | -949 (-27%) / 15 s | -342 (-15%) / 14 s | +193 | -195 | -191 | +20 |
+| b anchor | -882 (-27%) / 15 s | -22 (-1%) / 14 s | +246 | -22 | -84 | +17 |
+| c means | -882 (-27%) / 15 s | **+557 (+26%)** / 14 s | +337 | +240 | **+94** | +23 |
+| d means + ABAB | -882 (-27%) / 15 s | +538 (+32% of scored) / 11 s | **+372** | **+275** | +13 | +15 |
+| e compute-bound -> split | -930 (-27%) / 15 s | -258 (-12%) / 14 s | +213 | -119 | -193 | +20 |
+| f upload-bound -> split | -1070 (-30%) / 15 s | -1224 (-42%) / 14 s | -276 | -577 | -381 | +2 |
+| g always stream | -1134 (-31%) / 15 s | -1477 (-43%) / 14 s | -323 | -674 | -475 | -5 |
+
+Cold: one/split -146 s for b/c/d (empty memory), chain/dec -399 s for every rule. Per model warm net (c): ds +403, glm30 +8, glm35 +62, mimo +44,
+qni4 +19, qwen36 +21 s.
+
+Ratio tests (extra_out.txt): chain/dec vs stream: stream wins from 512 on GLM 3.0 (T_chain/Ts 1.24), MiMo (1.28), Qwen3.6 (2.12, rising to 19-21 at
+12k), 2k on GLM 3.5 (1.17), 3k on Qwen3.8 IQ4 (3.7-5.0); the chain wins only on DS at 512-16k cold and 512-3k warm (1.26-3.56), and DS's decode chain
+at 16k warm takes 328 s against 45 s streamed. One card -> split: T_one/Ts best threshold 1.83 warm (13/13), cold 0 (9/10, misses GLM 3.5 2k cold);
+the upload-bound cases (GLM 3.5 cold, Ts 17 s at 2k-10k) are exactly where the split fails: the direction is compute-bound.
+
+Release baseline with the same switches (rows 23772-23777, rel_b14244, pf12k, cold/warm pp): GLM 3.5 rp0 273/386 (one card at 10336 against its own
+measured split 497 vs 362 t/s: the C3 loss), MiMo 917/978 (one card), DS 336/373 (split, "measured: the nearest size").
 
 ## 2. The grid (campaign and replay use only; not code)
 
@@ -133,34 +233,60 @@ PLN `x= arm: mu sd n nis draw switch(owed|in place)` per arm + `gain G sd mode(s
 pair i t_A t_B mean sd n verdict budget`; RES and BAL per pass; INV `x=`. Invariants I1-I12 of planner-rules.md hold; I2 extends to every switch RLS
 (`INV switch twice`); new I13: a switch inside a request is preceded by a TRY verdict or by `G > 2 sd` (checked by run.py).
 
-## 5. The campaign: cells from the unknown and uncertain grid cells only
+## 5. The campaign: forced-pure sweep of the cells still missing (inventory of 2026-11-07, /tmp/xo_inv: tables.txt, pairs.txt, missing.csv)
 
-One cell = one ABAB burst: the two forced arms alternate on one live server (run.py T7: `POST /moe/plan force=<x>:<arm>` per request), 2 pairs (cold,
-warm); until T7: one server per arm, warm pair only (`seq`). The auto arm joins as a third rotation on the merged builds (`-r 6`). Prompts the planner
-never saw (feedback_similar_never_same). Switch forms per arm: `--moe pp-path=stream|mix|chain|dec`, `--moe pp-k=0|1|4`, `-ds one|on`, `-a moe:prefill-split=0|0.25|1`,
-regimes `-nm 0` (DS), `--moe rampool=1` (GLM3.5, MiMo), `-sim 4.5g` (Qwen3.6). Sizes below 1k need tests pf64-pf512 (T1).
+Models: exactly qwen36, qni4 (Qwen3.8 IQ4_XS, models.ini `qn_iq4xs`), glm (3.0 and 3.5), mimo, ds. Inventory of forced pure strategies in runs.db
+(ok = 1, builds from 2026-10-14 on; the `pp-path`/`pp-k` switches exist since 2026-11-02 builds and only in the "mid" era, no cur-era row has them;
+395 of the 2117 forced rows have a stats.log in q5h, all 40 cur-era ones do). Sizes where BOTH arms of a pair are measured (cold | warm):
 
-| model | cells (from the u cells of section 2) | n |
-|---|---|---|
-| GLM 3.0 | X2 chain vs stream at 256, 512, 1k; stream vs k=4 at 512, 1k, 4k; X1 dec vs chain at 128, 512; X4 one vs on at 1k, 2k; X5 dense vs prefill-split=0.25 at 10k (confirm); `-simram 64g` (non-fitting): stream vs chain at 2k, 10k | 14 |
-| GLM 3.5 | X3 stream vs chain and stream vs mix at 2k, 4k, 10k under rp0 and rp1; X4 one vs on at 4k, 12k; X1 dec vs stream at 2k cold rp1; X5 at 16k (confirm) | 10 |
-| MiMo | X4 one vs on at 6k and 8k with the context fixed (8k cells and 126k cells: `-ps` ctx variants) and at 60k; X2 chain vs stream at 256, 1k; k=4 at 4k; X1 dec at 256; X5 at 16k (confirm) | 10 |
-| DS (`-nm 0`) | X1 dec vs chain at 512, 1k, 2k; X4 one vs on at 1k, 2k, 8k; X3 stream vs k=4 at 16k and stream vs mix at 4k; X2 chain at 2k | 9 |
-| Qwen3.6 | X4 one vs on at 4k, 6k with the context fixed; stream vs k=4 at 4k; `-sim 4.5g`: chain vs stream at 256, 1k; dec at 64; k=4 at 1k; X5 at 8k (confirm the +22%) | 9 |
-| Qwen3.8 | X4 one vs on at 2k, 4k, 6k; X2 chain vs stream at 512, 1k, 16k; X5 at 10k (confirm); `-simram 32g` (non-fitting): stream vs chain at 2k, 10k | 9 |
-| OLMoE | PC1: X4 at 12k (confirm one card); W10: dec vs chain at 128, 512; chain vs stream at 1k, 4k | 1 + 4 W10 |
+| pair | glm30 | glm35 | mimo | ds | qwen36 | qni4 |
+|---|---|---|---|---|---|---|
+| one / split | 256, 2k, 4k, 8k, 12k \| 4k, 8k | 4k, 8k \| 2k, 4k, 8k | 4k, 12k, 16k \| 256, 4k, 8k, 12k | 16k \| 1k, 16k | 8k \| 256-16k | 4k, 8k, 16k \| 2k-16k |
+| stream / chain | 64, 16k \| 64, 12k | none | 12k, 16k \| 12k | - \| 256, 16k | 12k \| 1k, 16k | 16k \| 16k |
+| stream / dec | 64, 256, 512 \| 64, 256 | none | 64 \| 64, 256, 512 | 256 \| 256, 1k | 1k, 8k \| 256, 1k | none |
+| stream / k | none | none | none | none | - \| 256, 1k (k x1) | none |
+| stream / mix | 16k \| 64, 12k | none | 64, 12k, 16k \| 64 | - \| 16k | 8k \| 1k, 8k | 16k \| 16k |
+| split / expert | - \| 8k | none | - \| 256, 8k, 12k | none | none | none |
 
-PC1 62 cells x ~8 min (two arms x two runs + load; DS 14, MiMo 60k 20) = about 8 h of forced bursts (the full 7 x 5 x 3-4 matrix was 39 h). Auto rotation
-on the merged build: the same cells at 1.5x = 12 h, two rounds (after P4/P2/P1; final). Order on PC1: GLM 3.0 -> GLM 3.5 (rp1: the release question)
--> MiMo -> Qwen3.8 -> Qwen3.6 -> DS (slow, unmounted) -> OLMoE. W10: OLMoE 4 cells (40 min). PC2: CPU rates (section 6, P9) and builds.
+Regimes measured: rampool=1 only glm35 (21 rows), `-lm mmap` ds 529 / glm35 195 / qni4 36; sim-vram qwen36 4.5 GiB x3316 (the small-VRAM stand-in), mimo,
+glm30 a few; sim-ram glm30/mimo 32-124 GiB. Of a 5-model x 8-strategy x 9-size pure matrix 300 cells, 229 have no row; the sweep below runs only the
+cells a rule of section 0 needs and the existing pairs do not answer (reuse rule: a pair measured cold and warm at a size is not rerun).
 
-run.py tasks (before the cells, never while jobs run): T1 pf64/pf128/pf256/pf512 tests (first N tokens of long1k, 64 out). T2 `run.py crossover list` writes
-fork/runs/xo-<model>.csv from the table above, skipping pairs runs.db holds for the model, size band, link key and build (both arms), never the auto rotation.
-T3 `state_snap(run_rowid, when, zlib)` before and after each run (`-cs` cells). T4 `decisions` table from PLN/DON/TRY/RES/BAL/INV/`prefill decision`/
-`prompt pass`/`decided kv/ubatch` lines, and `run.py crossover report`: per model x transition x size the best forced arm, auto's pick, loss %, pass/fail at
-5%, the measured crossover (where the paired difference changes sign) against auto's switch size (its TRY verdict or `G > 2 sd`); a replay test
-`run.py crossover replay` that feeds the dataset's pass rows through the predictors (llama-rls-fork.h's self-check hook) and prints the fit of section 1's
-triggers (hit/miss %) per transition. T5 the line formats of 4.4; a PLN without DON is refused. T6 judge before report. T7 the arms rotation on one server.
+Cell = one pure strategy at one size, `n=2` (run 1 cold with `-cs`, run 2 warm), tokens 64 out, stats.log captured (`--moe log=esrgp`, PERF_LOG as
+run.py sets for fork builds). Strategy switches (args column): stream `--moe pp-path=stream,pp-k=0`; mix `pp-path=mix`; chain `pp-path=chain`; dec
+`pp-path=dec`; k2 `pp-path=stream,pp-k=2` (k4 likewise); one `dense-split=0`; split `dense-split=1` (with the one-card path left to stream); expert
+`dense-split=0,prefill-split=1`; regimes on the command line: `-nm` (never mount; ds and glm35 `-lm mmap` as their rows have), `-sim 4.5g` (qwen36),
+`--moe rampool=1` (glm35 rp1 rows). Sizes below 1k: the new tests pf64/pf256/pf512 (T1) or `pf128k` with `--clamp N --vary` in extra as the old sweeps did.
+
+| model (csv) | cells to run (strategy at sizes) | why (rule) | n |
+|---|---|---|---|
+| glm (3.0), fork/runs/xo-glm30.csv | one, split at 1k, 2k (cold+warm; 2k warm missing); dec, chain, stream at 1k, 2k (R1's crossover band: dec measured losing at 2k only on the decode chain of auto rows); k2 at 2k, 8k, 16k; mix at 4k; expert at 12k | R2 cold r at 1-2k; R1 band; R5; R6 | 16 |
+| glm35, fork/runs/xo-glm35.csv | stream, chain, dec at 512, 2k (none measured on this model); one, split at 2k, 12k cold; k2 at 10k; mix at 10k; all of stream/chain/split at 2k and 10k again under `--moe rampool=1` | R1 on the non-fitting model; R2 cold; the rp1 release question | 17 |
+| mimo, fork/runs/xo-mimo.csv | dec, chain, stream at 256, 512, 1k cold (warm exists); one, split at 2k, 8k cold and at 6k with the context fixed (8k cells and 126k cells via `-ps` ctx variants); k2 at 8k, 16k; expert at 8k cold | R1 band; R2 (the context axis); R5; R6 | 17 |
+| ds, fork/runs/xo-ds.csv (`-nm 0 -lm mmap`) | dec, chain, stream at 512, 1k, 2k, 4k cold+warm (the one model whose chain wins: the crossover sits in 3k-16k warm); one, split at 1k, 2k, 4k, 8k cold; k2 at 16k (k x1 won 31 vs 45 s), 8k; mix at 4k | R1's only exception; R2; R5 | 21 |
+| qwen36, fork/runs/xo-qwen36.csv (`-sim 4.5g` for stream/chain/dec/k; real VRAM for one/split) | dec, chain, stream at 64, 256, 512 cold (warm exists); k2, k4 at 1k, 8k; one, split at 2k, 4k, 12k cold; expert at 8k | R1 band (35-token crossover); R5; R2 cold | 16 |
+| qn_iq4xs, fork/runs/xo-qni4.csv | dec, chain, stream at 256, 1k, 4k (chain/dec unmeasured below 16k); one, split at 2k, 12k cold; k2 at 16k, 8k; expert at 8k, 12k | R1; R2 cold; R5; R6 | 16 |
+
+Total 103 cells x about 6 min (one strategy, two runs, the load; ds 10, mimo 60k-context 15) = about 11 h on PC1; W10 none (OLMoE is a smoke test
+only); PC2: the CPU us per token-expert per model (`-ng 0`, R1's measured crossover input) 1 h. Order by value: ds (the one chain exception and
+the largest losses: 328 s decode-chain calls) -> glm35 (rp1 question, non-fitting) -> glm30 -> mimo -> qni4 -> qwen36.
+
+Commands (Sonnet, one list per model): `run.py jobs xo-ds -b <build> -nm -pl 220/280 -r 2 -cs` and so on; the build is rel_b14244 for the pure
+strategies (the forced paths do not depend on the planner) and the merged planner build for the auto rows of section 6's P8.
+
+### Analysis recipe (how a rule is read off the sweep)
+
+Per cell and pass, from stats.log and server.log: CAL `prompt call of n` (streaming upload ms = Ts, mix ms = Um, misses uploaded ms = up, 4-token chunks
+ms = ch, stream reads GB / SSD GB/s), DON `took ms`, PAS (up GB per card and GB/s, cpu MiB/token), SPN `copy fill dur` (the fill, pins apart), `split
+balance` (bal_kern, bal_upwait, bal_wait_other, bal_stall, bal_linkbusy, bal_exp_gb per card), cells at the pass, cache hit %; fork/planner_events.py
+extended by T4 writes them per call (model, size class, cold/warm, arm). Then per model and adjacent pair (stream|chain, stream|dec, stream|k2,
+stream|mix, one|split, split|expert): (1) the paired difference per size, cold and warm apart, and the size where its sign changes = the measured
+crossover; (2) on both sides the candidate ratios: T_one / Ts, C1 (= stream took - its upload wait) / Ts, T_chain / Ts, wait_other / pass,
+linkbusy_x4 / pass, hit %, SSD GB / took; (3) a ratio qualifies as the rule's quantity when ONE threshold separates win from loss on every model and
+both temperatures (hit rate >= the paired noise allows: the threshold's uncertainty = the ratio's spread across the two sides); its value is the prior
+of the learned scalar (R2's r), never a constant; (4) a pair with no qualifying ratio stays "measured means + VOI trial" (R3) and the sweep's medians
+become the state-file prior per `@hw#build`; (5) the scoreboard of section 1 is rerun with the new events (rules a-g) and the rule set of section 0
+is amended only where a rule's net falls below the measured-means rule.
 
 ## 6. Work packages (P0 first; P1-P5 disjoint, parallel; Sonnet runs cells)
 
