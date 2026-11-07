@@ -59,6 +59,28 @@ struct ggml_backend_buft_alloc_buffer_n_plan_item {
 
 using ggml_backend_buft_alloc_buffer_n_plan_t = std::vector<ggml_backend_buft_alloc_buffer_n_plan_item>;
 
+// fork: phase layout. The loader reads host weights with O_DIRECT straight into their buffer (one DMA from the SSD, no page cache copy); O_DIRECT needs the
+// buffer address and the file offset on the same 4096-byte grid, so a host tensor is placed at (page boundary + its file offset mod 4096). The gap in front
+// of a tensor is at least its phase: the head block of its read lands there. Set per allocation by llama-model.cpp; SIZE_MAX from the function = no phase.
+typedef size_t (*ggml_backend_alloc_phase_fn_t)(const struct ggml_tensor * t, void * user_data);
+static ggml_backend_alloc_phase_fn_t g_alloc_phase_fn = NULL;
+static void *                        g_alloc_phase_ud = NULL;
+extern "C" {
+    GGML_API void ggml_backend_set_alloc_phase_fn_fork(ggml_backend_alloc_phase_fn_t fn, void * user_data);
+}
+void ggml_backend_set_alloc_phase_fn_fork(ggml_backend_alloc_phase_fn_t fn, void * user_data) {
+    g_alloc_phase_fn = fn;
+    g_alloc_phase_ud = user_data;
+}
+// the offset a tensor starts at when `cur` bytes of the buffer are used: cur, or the next 4096 boundary plus the tensor's phase
+static bool ggml_backend_alloc_phase_on(ggml_backend_buffer_type_t buft) { return g_alloc_phase_fn != NULL && ggml_backend_buft_is_host(buft); }
+static size_t ggml_backend_alloc_phase_start(ggml_backend_buffer_type_t buft, const struct ggml_tensor * t, size_t cur) {
+    if (!ggml_backend_alloc_phase_on(buft)) { return cur; }
+    const size_t ph = g_alloc_phase_fn(t, g_alloc_phase_ud);
+    if (ph == SIZE_MAX) { return cur; }
+    return GGML_PAD(cur, 4096) + ph;
+}
+
 static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_plan(
         ggml_backend_buffer_type_t buft, struct ggml_tensor ** tensors, int n_tensors) {
     ggml_backend_buft_alloc_buffer_n_plan_t plan;
@@ -68,17 +90,19 @@ static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_
 
     size_t cur_buf_size = 0;
     int    first        = 0;
+    const size_t tail_pad = ggml_backend_alloc_phase_on(buft) ? 4096 : 1;   // fork: the last tensor's O_DIRECT read ends on the next 4096 boundary: the buffer owns that tail
 
     for (int i = 0; i < n_tensors; i++) {
         size_t this_size = 0;
         struct ggml_tensor * t = tensors[i];
         if (t->data == NULL && t->view_src == NULL) {
             this_size = GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), alignment);
+            this_size += ggml_backend_alloc_phase_start(buft, t, cur_buf_size) - cur_buf_size;   // fork: the gap in front (phase layout)
         }
 
         // flush the current buffer if adding this tensor would exceed max_size
         if (cur_buf_size > 0 && (cur_buf_size + this_size) > max_size) {
-            plan.push_back({ cur_buf_size, first, i });
+            plan.push_back({ GGML_PAD(cur_buf_size, tail_pad), first, i });
             cur_buf_size = this_size;
             first        = i;
         } else {
@@ -87,7 +111,7 @@ static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_
     }
 
     if (cur_buf_size > 0) {
-        plan.push_back({ cur_buf_size, first, n_tensors });
+        plan.push_back({ GGML_PAD(cur_buf_size, tail_pad), first, n_tensors });
     }
 
     return plan;
@@ -119,6 +143,7 @@ static ggml_backend_buffer_t ggml_backend_buft_alloc_buffer_n_default(ggml_backe
             struct ggml_tensor * t = tensors[j];
             if (t->data == NULL) {
                 if (t->view_src == NULL) {
+                    tallocr.offset = ggml_backend_alloc_phase_start(buft, t, tallocr.offset);   // fork: phase layout (the plan counted this gap)
                     if (ggml_tallocr_alloc(&tallocr, t) != GGML_STATUS_SUCCESS) {
                         t_failed = t;
                         break;

@@ -1,9 +1,11 @@
-#include "llama-spaced-read-fork.h"
+#include "../ggml/src/ggml-read-fork.h"
 #include "llama-model-loader.h"
 #include "llama-moestate-fork.h"
 
 #if defined(__linux__)
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <map>
 #include <sched.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -22,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -586,6 +589,7 @@ llama_model_loader::llama_model_loader(
             LLAMA_LOG_WARN("%s: pin budget %.1f GiB is above RAM %.1f GiB - 24 GiB (more froze a 125 GiB machine): cut to %.1f GiB; --moe pin-force=1 allows it\n", __func__,
                     pin_budget / 1073741824.0, total / 1073741824.0, (total - keep) / 1073741824.0);
             pin_budget = total - keep;
+            llama_moe_set_opt("pin-budget", std::to_string(pin_budget).c_str());   // the cut for every reader of the option: pin-lazy's thread (llama-moecache-fork.cpp) pins up to it, not to the asked budget
         }
     }
 #endif
@@ -1492,7 +1496,9 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                 }
             }
 
-            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 ? -1 : 0;   // fork: a pin budget means the pinned part is pread into pinned memory; populating the whole mapping first read the file into the page cache before anything was pinned
+            const char * pb = llama_moe_get_opt("pin-budget");
+            const bool lazy_pin = pin_lazy() && pb && strtoull(pb, nullptr, 10) > 0;   // pin-lazy zeroed pin_budget above, but it too must not populate the mapping: its thread pins and drops the pages
+            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 && !lazy_pin ? -1 : 0;   // fork: a pin budget means the pinned part is pread into pinned memory; populating the whole mapping first read the file into the page cache before anything was pinned
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
                     lazy.for_file(idx));
@@ -1634,7 +1640,7 @@ bool llama_model_loader::load_all_data(
     // weights cache (GGML_CUDA_HUGEFS): a host buffer that is a complete cache file already holds the weights (skip reading), a fresh one is committed when filled
     int (*host_cache)(int, void *) = nullptr;
     std::set<ggml_backend_buffer_t> cache_warm, cache_cold;
-    if (getenv("GGML_CUDA_HUGEFS") && !use_mmap && !check_tensors) {
+    if (getenv("GGML_CUDA_HUGEFS") && (!use_mmap || pin_budget > 0) && !check_tensors) {   // the same gate as llama-model.cpp: with mmap and a pin budget the pinned part is a cache buffer too, read here (pinned_read)
         if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
             host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
         }
@@ -1766,7 +1772,27 @@ bool llama_model_loader::load_all_data(
     // Weights that land in host memory (with a GPU: the pinned buffer) are read by a pool of threads in 64 MB chunks with pread: one thread reading tensor after tensor
     // reached ~1.5 GB/s of a 3+ GB/s NVMe. The pages just read are given back to the page cache right away (as the single-threaded path does), so the file copy never
     // competes with the weights for RAM. LLAMA_LOAD_THREADS=1 (or direct IO, mmap, tensor validation) keeps the sequential path.
-    struct par_read { int fd; size_t off; void * dst; size_t n; };
+    struct par_read { int fd; size_t off; void * dst; size_t n; int dfd; size_t fsize; };   // dfd: the same file opened O_DIRECT (-1: buffered), fsize its size
+    // fork: with the phase layout (llama-model.cpp) a host tensor's address and file offset share the 4096 grid, so its chunks are read with O_DIRECT (kernel AIO, the drive's probed
+    // shape) straight into pinned memory: one DMA from the SSD, no page cache copy and no DONTNEED. The chunk edges are 4096 multiples of the FILE offset, so the head block of a
+    // chunk is only the first chunk's (it lands in the gap in front of the tensor) and the tail block only the last one's (the next tensor starts past the next 4096 boundary).
+    std::map<int, int>    pr_dfd;      // buffered fd -> O_DIRECT fd
+    std::map<int, size_t> pr_fsize;
+    auto pr_direct = [&](int fd) -> int {
+        if (!phase_layout) { return -1; }
+        auto it = pr_dfd.find(fd);
+        if (it != pr_dfd.end()) { return it->second; }
+        struct stat st;
+        int d = -1;
+        if (fstat(fd, &st) == 0) {
+            d = open_direct_fd(fd);
+            if (d >= 0) { pr_fsize[fd] = (size_t) st.st_size; }
+        }
+        pr_dfd[fd] = d;
+        return d;
+    };
+    std::atomic<size_t> pr_direct_bytes{0}, pr_buffered_bytes{0};
+    size_t pr_queued_bytes = 0;   // handed to the pool so far: size_done counts them at once, the progress callback must not (a bar at 100% before the reads started, no cancel while they ran)
     std::mutex              pr_mtx;
     std::condition_variable pr_cv;
     std::deque<par_read>    pr_q;
@@ -1775,6 +1801,7 @@ bool llama_model_loader::load_all_data(
     std::vector<std::thread> pr_threads;
     size_t n_load_threads = std::max<size_t>(1, std::min<size_t>(16, std::thread::hardware_concurrency() / 2));
     if (const char * e = moe_opt("load-threads")) { n_load_threads = std::max(1, atoi(e)); }
+    else if (const char * e2 = getenv("LLAMA_LOAD_THREADS")) { n_load_threads = std::max(1, atoi(e2)); }   // the documented environment form (fork-knobs.md): =1 keeps the sequential reader
     const bool par_load = !use_direct_io && !check_tensors && n_load_threads > 1;
     auto pr_worker = [&]() {
 #if defined(__linux__)
@@ -1798,6 +1825,12 @@ bool llama_model_loader::load_all_data(
                 t = pr_q.front();
                 pr_q.pop_front();
             }
+            if (t.dfd >= 0 && (((uintptr_t) t.dst - t.off) & (direct_align() - 1)) == 0) {
+                const size_t a = direct_align(), beg = t.off & ~(a - 1), end = (t.off + t.n + a - 1) & ~(a - 1);
+                const size_t total = end - beg, need = std::min(total, t.fsize - beg);
+                if (async_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) { pr_direct_bytes += t.n; continue; }
+            }
+            pr_buffered_bytes += t.n;
             for (const sr_piece & p : sr_pieces(t.n)) {   // blocks with gaps, then the gaps (llama-spaced-read-fork.h): no two neighbouring reads in a row
                 size_t done = 0;
                 while (done < p.n && !pr_fail) {
@@ -1808,7 +1841,7 @@ bool llama_model_loader::load_all_data(
                 }
                 if (pr_fail) { break; }
             }
-            posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED);
+            if (pin_budget > 0) { posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED); }   // the pinned hybrid: the file copy must not compete with the pinned part; a plain --no-mmap load keeps its page cache for the next start
         }
     };
     auto pr_finish = [&]() {
@@ -1819,10 +1852,23 @@ bool llama_model_loader::load_all_data(
         pr_cv.notify_all();
         for (auto & t : pr_threads) { t.join(); }
         pr_threads.clear();
+        for (auto & kv : pr_dfd) { if (kv.second >= 0) { close(kv.second); } }
+        pr_dfd.clear();
+        if (pr_direct_bytes.load() || pr_buffered_bytes.load()) {
+            LLAMA_LOG_WARN("%s: host weights read with O_DIRECT straight into place: %.1f GiB, buffered: %.1f GiB\n", __func__, pr_direct_bytes.load() / 1073741824.0, pr_buffered_bytes.load() / 1073741824.0);
+        }
     };
     // the threads end on every way out of this function (cancelled loading, an exception)
-    struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{pr_finish};
+    // a way out before the normal end (cancelled, an exception) drops what is still queued: the caller frees the buffers next, reading them all first only delays that
+    struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{[&]() { { std::lock_guard<std::mutex> lk(pr_mtx); pr_q.clear(); } pr_finish(); }};
 #endif
+    auto progress_now = [&]() -> float {
+#if defined(__linux__)
+        return (float) (size_done - (pr_queued_bytes - pr_direct_bytes.load() - pr_buffered_bytes.load())) / size_data;
+#else
+        return (float) size_done / size_data;
+#endif
+    };
 
     // staging buffer for non-host buffers without async uploads, reused because a fresh allocation per tensor page faults on every load
     std::vector<no_init<uint8_t>> read_buf;
@@ -1834,7 +1880,7 @@ bool llama_model_loader::load_all_data(
         }
 
         if (progress_callback) {
-            if (!progress_callback((float) size_done / size_data, progress_callback_user_data)) {
+            if (!progress_callback(progress_now(), progress_callback_user_data)) {
                 return false;
             }
         }
@@ -1895,21 +1941,26 @@ bool llama_model_loader::load_all_data(
                     constexpr size_t chunk = 64u << 20;
                     {
                         std::lock_guard<std::mutex> lk(pr_mtx);
-                        for (size_t o = 0; o < n_size; o += chunk) {
-                            pr_q.push_back({ file->file_id(), (size_t) weight->offs + o, (char *) cur->data + o, std::min(chunk, n_size - o) });
+                        const int dfd = pr_direct(file->file_id());
+                        const size_t fsize = dfd >= 0 ? pr_fsize[file->file_id()] : 0;
+                        for (size_t o = 0; o < n_size; ) {   // chunk edges on the file's 64 MiB grid (see par_read)
+                            const size_t pos = (size_t) weight->offs + o, len = std::min((pos / chunk + 1) * chunk - pos, n_size - o);
+                            pr_q.push_back({ file->file_id(), pos, (char *) cur->data + o, len, dfd, fsize });
+                            o += len;
                         }
                     }
                     while (pr_threads.size() < n_load_threads) { pr_threads.emplace_back(pr_worker); }
                     pr_cv.notify_all();
                     size_done += n_size;
+                    pr_queued_bytes += n_size;
                     continue;
                 }
 #endif
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
 #if defined(__linux__)
-                // the copy now lives in RAM: drop the file's cached pages so the two don't compete for memory
-                posix_fadvise(file->file_id(), weight->offs, n_size, POSIX_FADV_DONTNEED);
+                // the copy now lives in RAM: with a pin budget, drop the file's cached pages so the two don't compete for memory
+                if (pin_budget > 0) { posix_fadvise(file->file_id(), weight->offs, n_size, POSIX_FADV_DONTNEED); }
 #endif
                 if (check_tensors) {
                     validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
@@ -2001,6 +2052,11 @@ bool llama_model_loader::load_all_data(
     }
 
 #if defined(__linux__)
+    while (progress_callback) {   // the reads run now: the bar moves with them and a cancel is honoured, as on the sequential path
+        { std::lock_guard<std::mutex> lk(pr_mtx); if (pr_q.empty()) { break; } }
+        if (!progress_callback(progress_now(), progress_callback_user_data)) { return false; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     pr_finish();
     if (pr_fail) {
         throw std::runtime_error("failed to read tensor data from the model file");

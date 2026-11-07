@@ -10,12 +10,23 @@
 #include <thread>
 #include <vector>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #ifdef __linux__
 #include <dlfcn.h>
 #endif
 #ifndef _WIN32
+#include <fcntl.h>
+#include <sys/file.h>
 #include <unistd.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 #include <cmath>
 #include <ctime>
@@ -58,7 +69,9 @@ std::string g_geom;          // arch.experts.experts_used of the loaded model: w
 std::string g_geom_section;  // the section this run writes the geom tag into
 
 std::string state_path() {
-    if (const char * e = moe_opt("state")) {
+    const char * e = moe_opt("state");
+    if (!e) { e = getenv("LLAMA_MOE_STATE"); }   // the documented environment form (llama.h, fork/run.py's clean-state runs); --moe state= wins
+    if (e) {
         return strcmp(e, "0") == 0 ? "" : e;
     }
     const std::string dir = moe_user_dir();
@@ -95,7 +108,8 @@ file_t load(const std::string & path) {
 }
 
 bool save(const std::string & path, const file_t & f) {
-    const std::string tmp = path + ".tmp";
+    const std::string tmp = path + ".tmp." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());   // per writer: two processes share the default file
+    bool good = false;
     {
         std::ofstream out(tmp, std::ios::trunc);
         if (!out) {
@@ -111,15 +125,37 @@ bool save(const std::string & path, const file_t & f) {
                 out << kv.first << " = " << kv.second << "\n";
             }
         }
+        out.flush();
+        good = out.good();   // a short write (full disk) must not replace the whole file
     }
     std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) {
+    if (good) { std::filesystem::rename(tmp, path, ec); }
+    if (!good || ec) {
         std::filesystem::remove(tmp, ec);
         return false;
     }
     return true;
 }
+
+// Held across load -> change -> save, which two processes sharing the default file otherwise interleave: the rename keeps the file whole, but one writer's new values vanish (measured again
+// at its next start, so a lock that cannot be taken, a read-only or odd file system, just goes on without). The kernel drops it when a process dies; a <state file>.lock stays next to the file.
+struct state_file_lock {
+#ifdef _WIN32
+    HANDLE h;
+    explicit state_file_lock(const std::string & path) : h(CreateFileW(std::filesystem::u8path(path + ".lock").c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS, 0, nullptr)) {
+        if (h != INVALID_HANDLE_VALUE) { OVERLAPPED ov; memset(&ov, 0, sizeof ov); LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov); }
+    }
+    ~state_file_lock() { if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); } }
+#else
+    int fd;
+    explicit state_file_lock(const std::string & path) : fd(open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644)) {
+        if (fd >= 0) { while (flock(fd, LOCK_EX) != 0 && errno == EINTR) {} }
+    }
+    ~state_file_lock() { if (fd >= 0) { close(fd); } }
+#endif
+    state_file_lock(const state_file_lock &) = delete;
+    state_file_lock & operator=(const state_file_lock &) = delete;
+};
 
 } // namespace
 
@@ -219,6 +255,7 @@ bool moe_state_set(const std::string & section, const std::vector<std::pair<std:
     if (path.empty() || section.empty() || g_suppress) {
         return false;
     }
+    const state_file_lock file_lock(path);
     file_t f = load(path);
     for (const auto & p : kv) {
         f[section][p.first] = p.second;
@@ -233,6 +270,7 @@ bool moe_state_erase(const std::string & section, const std::string & prefix) {
     if (path.empty() || section.empty()) {
         return false;
     }
+    const state_file_lock file_lock(path);
     file_t f = load(path);
     auto s = f.find(section);
     if (s == f.end()) {
@@ -483,35 +521,57 @@ bool llama_moe_log_profile_fork(const char * name) {
     return false;
 }
 
-static void stats_emit(const char * kind, const char * text, double at) {   // at: seconds since the start of the process this line is for, or negative for now
-    static std::mutex mu;
-    static FILE * f = nullptr;
-    static bool opened = false;
-    static const bool planner = llama_moe_log_profile_fork("planner");
-    if (!planner && strcmp(kind, "STA") != 0) { return; }
-    std::lock_guard<std::mutex> lk(mu);
-    if (!opened) {
-        opened = true;
+// stats.log lines (user 2026-11-06: "shouldnt stats be colected by nonblocking low impact thread anyway?"): a thread with a line only queues it in memory; the flusher thread (stats_flusher,
+// below) writes the queue and the spans every 100 ms and at exit, in time order, one fflush per batch. So a decode or prompt thread never waits for the file, a write syscall or the sampler's
+// burst of SMP lines every 10 s. shortcut: a crash loses the lines of its last 100 ms at most; flush from the crash handler if those turn out to matter.
+struct stats_line_rec { double rel; char kind[8]; std::string text; };
+static std::mutex g_line_mu;
+static std::vector<stats_line_rec> g_line_buf;
+static FILE * g_stats_f = nullptr;              // written by the flusher thread only (by the exit path once that thread is gone)
+static bool g_stats_opened = false;
+static std::atomic<bool> g_flusher_gone{false};  // at exit, after the flusher thread ended: lines are written at once
+static void stats_flusher_start();
+
+static void stats_write(const stats_line_rec & r) {
+    if (!g_stats_opened) {
+        g_stats_opened = true;
         const char * p = llama_moe_get_opt("stats");   // a profile without a path: stats.log in the log directory
         const std::string path = p && *p ? p : moe_log_file("stats.log");
         if (!path.empty()) {
             p = path.c_str();
-            f = fopen(p, "a");
+            FILE * f = fopen(p, "a");
+            g_stats_f = f;
             if (!f) { LLAMA_LOG_WARN("%s: cannot open %s\n", __func__, p); }
             else if (ftell(f) == 0 && fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0) {
                 fprintf(f, "# wall clock, seconds since start, type, text. PHA phase change with what the phase gave, SPN one big operation with its start, stop, bytes and rate (start-up stages, prompt calls, fills), DEC decision, REQ request, CAL prompt call and its path, DON what the call took, PAS prompt pass, SPL split plan, PRE prefill result, CHN chain refused, SWT misses switch between CPU and uploads, KVZ KV zone, DEW decode window, STA engine status, GPU cards (once a 10 s, run.py), SMP fast GPU samples every 100 ms from NVML (load, PCIe rx and tx, power, clock, free VRAM; flushed every 10 s), HST host\n");
             }
         }
     }
-    if (!f) { return; }
-    const double rel = at >= 0.0 ? at : std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count();
-    const auto now = g_stats_wall0 + std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::duration<double>(rel));
+    if (!g_stats_f) { return; }
+    const auto now = g_stats_wall0 + std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::duration<double>(r.rel));
     const time_t t = std::chrono::system_clock::to_time_t(now);
     char ts[32];
     strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
     const int ms = (int) (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
-    fprintf(f, "%s.%03d %9.3f %-3s %s\n", ts, ms, rel, kind, text);
-    fflush(f);
+    fprintf(g_stats_f, "%s.%03d %9.3f %-3s %s\n", ts, ms, r.rel, r.kind, r.text.c_str());
+}
+
+static void stats_emit(const char * kind, const char * text, double at) {   // at: seconds since the start of the process this line is for, or negative for now
+    static const bool planner = llama_moe_log_profile_fork("planner");
+    if (!planner && strcmp(kind, "STA") != 0) { return; }
+    stats_line_rec r;
+    r.rel = at >= 0.0 ? at : std::chrono::duration<double>(std::chrono::steady_clock::now() - g_stats_t0).count();
+    snprintf(r.kind, sizeof r.kind, "%s", kind);
+    r.text = text;
+    if (g_flusher_gone.load()) {   // at exit: no thread left to write it
+        std::lock_guard<std::mutex> lk(g_line_mu);
+        stats_write(r);
+        if (g_stats_f) { fflush(g_stats_f); }
+        return;
+    }
+    stats_flusher_start();
+    std::lock_guard<std::mutex> lk(g_line_mu);
+    g_line_buf.push_back(std::move(r));
 }
 
 void llama_moe_stats_log_fork(const char * kind, const char * text) { stats_emit(kind, text, -1.0); }
@@ -519,7 +579,7 @@ void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double a
 
 // Spans (user 2026-11-05: "every big load logged in mem and flushed in stats.log, one timestamp start stop events per line ... more info in the debug trace phase, we waste less on nsys,
 // we spot deviations on any run, not just on demand rare nsys"): one line per big operation with its start, its stop, its bytes and the rate. The hot path only appends a record
-// to memory; a thread writes the records out every second and at exit, sorted by start. Records exist only with the planner log profile on, as every other line of stats.log.
+// to memory; the flusher thread writes the records out with the queued lines, sorted by start. Records exist only with the planner log profile on, as every other line of stats.log.
 struct moe_span_rec { double t0, t1; uint64_t bytes; char what[72]; char where[16]; unsigned tid; };
 static std::mutex g_span_mu;
 static std::vector<moe_span_rec> g_span_buf;
@@ -529,11 +589,13 @@ double llama_moe_span_now_fork() { return std::chrono::duration<double>(std::chr
 // The drive's measured maximum (the read probe, GB/s): a span whose `where` is "SSD..." or "O_DIRECT..." also logs its rate as a share of it, so an inefficient big read stands out.
 static std::atomic<double> g_ssd_max_gbs{0.0};
 void llama_moe_ssd_max_fork(double gbs) { g_ssd_max_gbs.store(gbs); }
+double llama_moe_ssd_max_get_fork() { return g_ssd_max_gbs.load(); }
 
-static void span_flush() {
+static void stats_flush() {   // the queued lines and the spans since the last flush, in time order: the flusher thread only
     std::vector<moe_span_rec> v;
+    std::vector<stats_line_rec> lines;
     { std::lock_guard<std::mutex> lk(g_span_mu); v.swap(g_span_buf); }
-    std::sort(v.begin(), v.end(), [](const moe_span_rec & a, const moe_span_rec & b) { return a.t0 < b.t0; });
+    { std::lock_guard<std::mutex> lk(g_line_mu); lines.swap(g_line_buf); }
     for (const auto & r : v) {
         const double dur = r.t1 - r.t0;
         std::string line = format("%s: start %.3f stop %.3f dur %.1f ms", r.what, r.t0, r.t1, dur * 1e3);
@@ -544,23 +606,34 @@ static void span_flush() {
             line += format(", %.0f%% of the measured SSD maximum %.2f GB/s", 100.0 * (double) r.bytes / dur / 1e9 / mx, mx);
         }
         line += format(", thread %u", r.tid);
-        stats_emit("SPN", line.c_str(), r.t0);
+        stats_line_rec l;
+        l.rel = r.t0;
+        snprintf(l.kind, sizeof l.kind, "SPN");
+        l.text = std::move(line);
+        lines.push_back(std::move(l));
     }
+    if (lines.empty()) { return; }
+    std::stable_sort(lines.begin(), lines.end(), [](const stats_line_rec & a, const stats_line_rec & b) { return a.rel < b.rel; });
+    for (const auto & l : lines) { stats_write(l); }
+    if (g_stats_f) { fflush(g_stats_f); }
 }
 
 namespace {
-struct span_flusher {   // defined after the buffer: at exit it is destroyed first, and writes what is left
+static std::atomic<bool> g_sampler_stop{false};   // the NVML fast sampler (fast_gpu_sampler_start) ends with the flusher, before the statics it writes are destroyed
+static std::thread       g_sampler_thr;
+struct stats_flusher {   // a function-local static, so it ends before the buffers above it: at exit it writes what is left, then lines go to the file at once
     std::thread th;
     std::atomic<bool> stop { false };
-    span_flusher() { th = std::thread([this] { while (!stop.load()) { for (int i = 0; i < 50 && !stop.load(); ++i) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); } span_flush(); } span_flush(); }); }
-    ~span_flusher() { stop = true; if (th.joinable()) { th.join(); } }
+    stats_flusher() { th = std::thread([this] { while (!stop.load()) { for (int i = 0; i < 5 && !stop.load(); ++i) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); } stats_flush(); } stats_flush(); }); }
+    ~stats_flusher() { stop = true; g_sampler_stop = true; if (g_sampler_thr.joinable()) { g_sampler_thr.join(); } if (th.joinable()) { th.join(); } g_flusher_gone.store(true); stats_flush(); }   // the last flush takes what came after the thread's own last one
 };
 }
+static void stats_flusher_start() { static stats_flusher fl; (void) fl; }   // the thread starts with the first line or span
 
 void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where) {
     static const bool on = llama_moe_log_profile_fork("planner");
     if (!on) { return; }
-    static span_flusher flusher;   // the thread starts with the first span
+    stats_flusher_start();
     moe_span_rec r = { t0, t1, bytes, {}, {}, (unsigned) (std::hash<std::thread::id>()(std::this_thread::get_id()) % 100000) };
     snprintf(r.what, sizeof r.what, "%s", what);
     snprintf(r.where, sizeof r.where, "%s", where ? where : "");
@@ -650,40 +723,33 @@ std::string llama_moe_stats_io_fork(int who) {
 // Per-token engine counters (user 2026-11-05: "for gpu you cant sample every 10 tokens but you can do prior and after the kernel run and divide by token count"): before and after a run of decode
 // calls (10 tokens) or a prompt pass the engine's byte counters (llama_moe_cache_counters_fork: CPU compute, uploads, prompt streaming, every link) and every card's NVML energy counter are read, and the
 // difference is divided by the tokens: bytes per token per link, joules and watts per card. TOK lines come every 10 decode tokens, the same numbers close each PAS line.
-#ifdef __linux__
+// Every card's NVML energy counter (mJ) is read by the fast GPU sampler's own thread (below) and only loaded here: one NVML call takes about 4 ms per card on PC1, and called on the
+// decode thread for every token it cost Qwen3.6-35B a third of its decode (b14715 99.7 against 150 t/s for b14244, 2026-11-06).
+// The sampler publishes every card's counter with its time and power; a reader extends the counter to now at that power (mW x s = mJ), so a 10-token window (67 ms on the
+// 35B) shorter than the sampler's period (--moe stats-fast-ms, 100 ms) gets its share instead of 0 or a whole period's step (485 W on a 220 W card without it).
+struct gpu_energy_pub { double t = 0.0; unsigned long long e_mj = 0; unsigned mw = 0; };
+static std::mutex g_energy_mu;
+static std::vector<gpu_energy_pub> g_energy;   // per card; empty while the sampler is off or NVML has no energy counter
 static std::vector<unsigned long long> nvml_energy_mj_all() {
-    static void * h = dlopen("libnvidia-ml.so.1", RTLD_NOW);
-    typedef int (*init_t)(); typedef int (*count_t)(unsigned *); typedef int (*handle_t)(unsigned, void **); typedef int (*en_f)(void *, unsigned long long *);
-    static std::vector<void *> dev;
-    static en_f fe = nullptr;
-    static std::once_flag once;
-    std::call_once(once, [] {
-        if (!h) { return; }
-        auto init = (init_t) dlsym(h, "nvmlInit_v2"); auto cnt = (count_t) dlsym(h, "nvmlDeviceGetCount_v2"); auto hnd = (handle_t) dlsym(h, "nvmlDeviceGetHandleByIndex_v2");
-        fe = (en_f) dlsym(h, "nvmlDeviceGetTotalEnergyConsumption");
-        unsigned n = 0;
-        if (!init || !cnt || !hnd || !fe || init() != 0 || cnt(&n) != 0) { fe = nullptr; return; }
-        dev.assign(n, nullptr);
-        for (unsigned i = 0; i < n; ++i) { if (hnd(i, &dev[i]) != 0) { dev[i] = nullptr; } }
-    });
+    const double now = llama_moe_span_now_fork();
+    std::lock_guard<std::mutex> lk(g_energy_mu);
     std::vector<unsigned long long> out;
-    if (!fe) { return out; }
-    for (void * d : dev) { unsigned long long e = 0; if (d) { fe(d, &e); } out.push_back(e); }
+    for (const gpu_energy_pub & p : g_energy) { out.push_back(p.e_mj + (unsigned long long) ((double) p.mw * std::max(0.0, now - p.t))); }
     return out;
 }
-#else
-static std::vector<unsigned long long> nvml_energy_mj_all() { return {}; }
-#endif
 int llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
 struct tok_snap { int64_t c[8] = {}; int n = 0; std::vector<unsigned long long> e; double t = 0.0; };
 static tok_snap tok_snap_now() { tok_snap s; s.n = llama_moe_cache_counters_fork(s.c, 8); s.e = nvml_energy_mj_all(); s.t = llama_moe_span_now_fork(); return s; }
 static std::string tok_per_token(const tok_snap & a, const tok_snap & b, double tokens) {
     const double wall = b.t - a.t;
-    if (a.n == 0 || b.n != a.n || tokens <= 0 || wall <= 0) { return ""; }
+    if (b.n != a.n || tokens <= 0 || wall <= 0) { return ""; }
     auto mib = [&](int i) { return (double) (b.c[i] - a.c[i]) / 1048576.0 / tokens; };
-    std::string s = format("per token: cpu %.2f MiB, upload %.2f MiB, stream %.2f MiB", mib(0), mib(1), mib(2));
+    std::string s = a.n >= 3 ? format("per token: cpu %.2f MiB, upload %.2f MiB, stream %.2f MiB", mib(0), mib(1), mib(2)) : std::string("per token: no expert cache");
     for (int k = 3; k < a.n; ++k) { s += format(", link%d %.2f MiB (%.2f GB/s)", k - 3, mib(k), (double) (b.c[k] - a.c[k]) / wall / 1e9); }
-    for (size_t g = 0; g < a.e.size() && g < b.e.size(); ++g) { s += format(", g%zu %.2f J (%.0f W)", g, (double) (b.e[g] - a.e[g]) / 1e3 / tokens, (double) (b.e[g] - a.e[g]) / 1e3 / wall); }
+    for (size_t g = 0; g < a.e.size() && g < b.e.size(); ++g) {
+        const double mj = b.e[g] > a.e[g] ? (double) (b.e[g] - a.e[g]) : 0.0;   // an extended reading can pass the next real one when the power drops: no wrap of the unsigned difference
+        s += format(", g%zu %.2f J (%.0f W)", g, mj / 1e3 / tokens, mj / 1e3 / wall);
+    }
     return s;
 }
 static void tok_window_note(double ms) {   // one decode call of one token took ms
@@ -693,7 +759,8 @@ static void tok_window_note(double ms) {   // one decode call of one token took 
     static double sum_ms = 0.0, last_end = 0.0;
     std::lock_guard<std::mutex> lk(mu);
     const double now = llama_moe_span_now_fork();
-    if (now - last_end > 0.5 || base.n == 0) { base = tok_snap_now(); cnt = 0; sum_ms = 0.0; last_end = now; return; }   // a new run of tokens starts counting after its first one
+    // a new run of tokens starts counting after its first one. Started = base.t set: base.n stays 0 without an expert cache, and testing it reset the window on every token
+    if (now - last_end > 0.5 || base.t == 0.0) { base = tok_snap_now(); cnt = 0; sum_ms = 0.0; last_end = now; return; }
     last_end = now; ++cnt; sum_ms += ms;
     if (cnt >= 10) {
         const tok_snap e = tok_snap_now();
@@ -713,16 +780,17 @@ static void fast_gpu_sampler_start() {
         const char * o = llama_moe_get_opt("stats-fast-ms");
         const int period_ms = o ? atoi(o) : 100;
         if (period_ms <= 0) { return; }
-        std::thread([period_ms] {
+        g_sampler_thr = std::thread([period_ms] {
             void * h = dlopen("libnvidia-ml.so.1", RTLD_NOW);
             if (!h) { return; }
             typedef int (*init_t)(); typedef int (*count_t)(unsigned *); typedef int (*handle_t)(unsigned, void **);
             typedef struct { unsigned gpu, mem; } util_t; typedef struct { unsigned long long total, free, used; } meminfo_t;
             typedef int (*util_f)(void *, util_t *); typedef int (*pcie_f)(void *, int, unsigned *); typedef int (*power_f)(void *, unsigned *);
-            typedef int (*clock_f)(void *, int, unsigned *); typedef int (*mem_f)(void *, meminfo_t *);
+            typedef int (*clock_f)(void *, int, unsigned *); typedef int (*mem_f)(void *, meminfo_t *); typedef int (*en_f)(void *, unsigned long long *);
             auto init = (init_t) dlsym(h, "nvmlInit_v2"); auto cnt = (count_t) dlsym(h, "nvmlDeviceGetCount_v2"); auto hnd = (handle_t) dlsym(h, "nvmlDeviceGetHandleByIndex_v2");
             auto fu = (util_f) dlsym(h, "nvmlDeviceGetUtilizationRates"); auto fp = (pcie_f) dlsym(h, "nvmlDeviceGetPcieThroughput"); auto fw = (power_f) dlsym(h, "nvmlDeviceGetPowerUsage");
             auto fc = (clock_f) dlsym(h, "nvmlDeviceGetClockInfo"); auto fm = (mem_f) dlsym(h, "nvmlDeviceGetMemoryInfo");
+            auto fe = (en_f) dlsym(h, "nvmlDeviceGetTotalEnergyConsumption");   // optional: the energy counters for TOK and PAS lines (nvml_energy_mj_all)
             if (!init || !cnt || !hnd || !fu || !fp || !fw || !fc || !fm || init() != 0) { return; }
             unsigned n = 0; if (cnt(&n) != 0 || n == 0) { return; }
             std::vector<void *> dev(n, nullptr);
@@ -730,7 +798,8 @@ static void fast_gpu_sampler_start() {
             struct samp { double t; unsigned util, mem, rx, tx, mw, mhz; unsigned long long freeb; };
             std::vector<std::vector<samp>> buf(n);
             double last_flush = llama_moe_span_now_fork();
-            for (;;) {
+            std::vector<gpu_energy_pub> en(n);
+            while (!g_sampler_stop.load(std::memory_order_relaxed)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
                 const double t = llama_moe_span_now_fork();
                 for (unsigned i = 0; i < n; ++i) {
@@ -738,7 +807,10 @@ static void fast_gpu_sampler_start() {
                     util_t u = {}; unsigned rx = 0, tx = 0, mw = 0, mhz = 0; meminfo_t m = {};
                     fu(dev[i], &u); fp(dev[i], 1, &rx); fp(dev[i], 0, &tx); fw(dev[i], &mw); fc(dev[i], 1, &mhz); fm(dev[i], &m);
                     buf[i].push_back({ t, u.gpu, u.mem, rx, tx, mw, mhz, m.free });
+                    unsigned long long e = 0;
+                    if (fe && fe(dev[i], &e) == 0) { en[i] = { llama_moe_span_now_fork(), e, mw }; }   // the counter's own time: the calls before it take milliseconds
                 }
+                if (fe) { std::lock_guard<std::mutex> lk(g_energy_mu); g_energy = en; }
                 if (t - last_flush >= 10.0) {
                     last_flush = t;
                     for (unsigned i = 0; i < n; ++i) {
@@ -749,7 +821,7 @@ static void fast_gpu_sampler_start() {
                     }
                 }
             }
-        }).detach();
+        });
     });
 }
 #else

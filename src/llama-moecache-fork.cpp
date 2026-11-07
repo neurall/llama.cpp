@@ -1,5 +1,5 @@
 #include <csignal>
-#include "llama-spaced-read-fork.h"
+#include "../ggml/src/ggml-read-fork.h"
 #include "llama-moecache-fork.h"
 #include "llama-fork-hooks.h"
 #include "llama-gpu-probe-fork.h"
@@ -65,6 +65,7 @@
 #endif
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // exported in llama.h; "stage" writes one span of the start-up to stats.log
 void llama_moe_ssd_max_fork(double gbs);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
+double llama_moe_ssd_max_get_fork();        // the same, read: the call planner's SSD rate until a stream pass measured its own
 void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);
 void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double at);   // llama-moestate-fork.cpp: a line of stats.log with the time of the event
 void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total);
@@ -407,6 +408,7 @@ struct moe_cache {
     char *                     pin_cur = nullptr;
     uint64_t                   pin_n = 0;
     std::vector<ggml_backend_buffer_t> pin_chunks;
+    std::vector<std::pair<ggml_tensor *, void *>> lazy_moved;   // pin-lazy: a weight whose data pointer moved into a pin chunk, and its mapped address (restored before the chunks are freed)
     std::mutex                 pin_mtx;
     std::thread                lazy_thr;          // --moe pin-lazy: reads expert tensors into pinned buffers in the background (pin_prefetch_run)
     std::atomic<bool>          lazy_stop{false};
@@ -415,6 +417,7 @@ struct moe_cache {
     std::atomic<bool>          profile_ready{false};   // profile_preload has set the lifetime counts (ls.glob_count): the preheat may rank the experts
     bool                       pin_on_upload = false;   // --moe pinr>0: pin_slice also copies an expert on its second upload; off when only the preheat fills pin_ptr
     std::atomic<bool>          stats_stop{false};
+    std::thread                fast_thr;           // the fast engine windows (fast_window_run, planner profile), joined at free
 
     // model bigger than RAM, weights mmap'd: an expert in VRAM doesn't need its RAM copy. Its pages
     // are dropped when it is cached and read back (async readahead) when it is evicted, so RAM holds
@@ -478,7 +481,9 @@ struct moe_cache {
     // and bytes read, CPU expert matmuls vs uploads
     std::atomic<int64_t> ddr_mbs{0};
     int64_t              cpu_mbs_on = 0;     // what the running CPU phase added
-    double               cpu_gbs_meas = 0;   // EMA of the CPU phases' read rate
+    double               cpu_gbs_meas = 0;   // EMA of the CPU phases' read rate (layers whose experts sit in pinned RAM)
+    double               cpu_gbs_mapped = 0; // the same for layers whose experts stayed mapped: the CPU reads them through page faults from the SSD (GLM 3.5 2026-11-07: 0.5-0.9 GB/s against 41 pinned)
+    bool                 phase_mapped = false;   // set by llama_moe_cache_jit_fork for the layer whose CPU phase comes next
     std::atomic<int64_t> cpu_bytes_phase{0};
     std::atomic<int64_t> cpu_bytes{0}, up_bytes{0};
     std::atomic<int64_t> pf_hit_bytes{0};   // prompt passes: bytes of experts found in the cache and copied from it on the card (the upload skipped), the counterpart of pf_bytes
@@ -556,7 +561,6 @@ struct moe_cache {
     int      lv_k = -1, lv_c = 0;
     int      lv_inc = 0;           // the incumbent candidate of the knob under test (the value in use when its slice cycle began)
     int64_t  lv_slice_len = 36, lv_warm = 4; // slice length and skipped tokens of the knob under test (state-carrying knobs need long ones)
-    std::string tuned_text;        // the self-tuner's decisions (NAME=value lines), kept in the state file: the next start begins from them
     uint64_t lv_cycle = 0;         // cycles finished: the candidate order rotates so no candidate always runs first (cold cache)
     int64_t  lv_slice_n = 0;
     double   lv_slice_sum = 0;
@@ -738,8 +742,12 @@ static void pin_prefetch_run(moe_cache * mc, size_t budget) {
             for (auto & x : th) { x.join(); }
             if (fail.load() || mc->lazy_stop.load()) { ggml_backend_buffer_free(b); if (fail.load()) { continue; } return; }
             void * old = t->data;
+#if defined(__GNUC__) || defined(__clang__)
             __atomic_store_n(&t->data, (void *) base, __ATOMIC_RELEASE);
-            {   std::lock_guard<std::mutex> lk(mc->pin_mtx); mc->pin_chunks.push_back(b); }
+#else
+            std::atomic_thread_fence(std::memory_order_release); t->data = (void *) base;
+#endif
+            {   std::lock_guard<std::mutex> lk(mc->pin_mtx); mc->pin_chunks.push_back(b); mc->lazy_moved.push_back({ t, old }); }
 #ifndef _WIN32
             const uintptr_t pg = 4096, a0 = ((uintptr_t) old + pg - 1) & ~(pg - 1), a1 = ((uintptr_t) old + nb) & ~(pg - 1);
             if (a1 > a0) { madvise((void *) a0, a1 - a0, MADV_DONTNEED); }   // the mapping's pages of this tensor
@@ -781,6 +789,7 @@ bool pread_full(int fd, void * dst, size_t n, size_t off) {
 // The async engine needs no free cores, the pool wins when cores are free: rd_pick_mode starts from the free cores and then follows what each engine measured on the real reads.
 // Ladder when the async engine is not there (old kernel, seccomp, Windows): the pread pool. Windows overlapped I/O would be the same shape (completion port), not written.
 
+#ifdef MOE_HAVE_AIO
 // The engine for the next big read: 0 = pread pool, 1 = kernel AIO. Starts from the cores free now (pool needs rd_threads of them), then each engine's measured GB/s (moving average
 // over its last reads) decides; every 16th big read runs the other engine so both numbers stay fresh and a changed load is seen. Switches are logged.
 static std::atomic<int>      g_rd_mode{-1};
@@ -828,20 +837,16 @@ static void rd_note(int mode, size_t bytes, int64_t us) {
     const double g = (double) bytes / ((double) us * 1e3), old = g_rd_gbs[mode].load();
     g_rd_gbs[mode].store(old > 0 ? 0.7 * old + 0.3 * g : g);
 }
+#endif
 
 // --moe read-direct: bytes of a mapped expert tensor read with O_DIRECT into a worker's pinned buffer. Through the mapping a slice is read by page faults and 128 KiB
 // readahead (DeepSeek 2 workers: 1.3 GB/s, fio on the same file: 3.3 GB/s at queue depth 2 with 1 MiB blocks, 5.5 at 8) and every byte passes the page cache, whose
 // reclaim then swaps out the process when RAM is tight (2026-11-02). Returns where the bytes start inside the buffer, nullptr when the caller must use the mapping.
 static const char * read_direct(int dfd, uint8_t * buf, size_t cap, size_t off, size_t n) {
-#ifdef _WIN32
-    GGML_UNUSED(dfd); GGML_UNUSED(buf); GGML_UNUSED(cap); GGML_UNUSED(off); GGML_UNUSED(n);
-    return nullptr;
-#else
-    const size_t a = 4096, beg = off & ~(a - 1), end = (off + n + a - 1) & ~(a - 1), need = off + n - beg;
+    const size_t a = direct_align(), beg = off & ~(a - 1), end = (off + n + a - 1) & ~(a - 1), need = off + n - beg;
     if (end - beg > cap) { return nullptr; }
-    if (!sr_read(dfd, (char *) buf, beg, end - beg, need)) { return nullptr; }   // llama-spaced-read-fork.h: kernel AIO or pread, the spaced order
+    if (!sr_read(dfd, (char *) buf, beg, end - beg, need)) { return nullptr; }   // llama-spaced-read-fork.h: the platform's async engine or one read at a time, the spaced order
     return (const char *) buf + (off - beg);
-#endif
 }
 
 // tunables, from LLAMA_MOE_CACHE_<NAME> at start; with LLAMA_MOE_CACHE_CTL=<file> also re-read from that file
@@ -1197,12 +1202,6 @@ void profile_save(const moe_cache * mc) {
         }
         kv.emplace_back("hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), v);   // real layer: dense layers are not cache layers
     }
-    if (false && !mc->tuned_text.empty()) {   // ini-fix (2026-10-22): the self-tuner's decisions are not stored (see the reader)
-        // the self-tuner's decisions of this GPU count: tuned.l<links> = NAME=value NAME=value ...
-        std::string v = mc->tuned_text;
-        for (char & c : v) { if (c == '\n') { c = ' '; } }
-        kv.emplace_back(hw_key("tuned.l" + std::to_string(mc->n_links)), v);
-    }
     // what this run did, per name the last 9 runs: run.<name> = <median> <last> | <oldest> ... <newest> (hit rate of the cache, evictions, uploads and
     // uploaded MiB per step, share of the prefill's experts found in the cache)
     {
@@ -1369,21 +1368,6 @@ void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struc
 void moe_seed_hot(const std::string & section, size_t n_expert) {
     // ini-fix (2026-10-22): no hot map is copied from another file's record (other quant, other build): a model starts from its own use counts or none
     (void) section; (void) n_expert;
-    if (true) { return; }
-    std::vector<std::pair<std::string, std::string>> own, donor, hot;
-    if (section.empty() || n_expert == 0 || !moe_state_enabled()) {
-        return;
-    }
-    moe_state_section_kv(section, own);
-    if (std::any_of(own.begin(), own.end(), [](const auto & p) { return p.first.compare(0, 4, "hot.") == 0; }) || !moe_state_section_kv(section, donor, true)) {
-        return;
-    }
-    for (const auto & p : donor) {
-        if (p.first.compare(0, 4, "hot.") == 0 && (size_t) std::count(p.second.begin(), p.second.end(), ' ') + 1 == n_expert) { hot.push_back(p); }
-    }
-    if (!hot.empty() && moe_state_set(section, hot)) {
-        LLAMA_LOG_INFO("moe-cache: no hot map for [%s]: seeded %zu layers from a same-name or same-family record\n", section.c_str(), hot.size());
-    }
 }
 
 }  // namespace
@@ -2398,7 +2382,8 @@ void moe_phase_cb(int busy, size_t bytes, void * ud) {
         const int64_t dt = t - mc->busy_t0;
         if (mc->cpu_bytes_phase > 0 && dt > 0 && g_warm.load(std::memory_order_relaxed)) {
             const double gbs = (double) mc->cpu_bytes_phase / dt / 1e3;
-            mc->cpu_gbs_meas = mc->cpu_gbs_meas > 0 ? 0.95*mc->cpu_gbs_meas + 0.05*gbs : gbs;
+            double & ema = mc->phase_mapped ? mc->cpu_gbs_mapped : mc->cpu_gbs_meas;
+            ema = ema > 0 ? 0.95*ema + 0.05*gbs : gbs;
         }
         if (tr_on()) {
             tr(TR_CPU, "cpu experts", mc->busy_t0, dt, tr_fmt("\"MB\":%.1f", mc->cpu_bytes_phase / 1e6));
@@ -2759,14 +2744,8 @@ void publish_job(moe_cache * mc, const upload_job & j) {
     ls.up_hits[j.expert] = 0;
 }
 
-// an expert leaves VRAM: did its upload pay back (decode hits x CPU eval time saved >= upload time)?
-void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
-    mc->n_evictions++;
-    if (!ls.prot.empty() && ls.prot[e]) { ls.prot[e] = 0; ls.n_prot--; }
-    if (!ls.ghost_flag.empty()) {
-        ls.ghost_flag[e] = 1; ls.ghost_q.push_back(e);
-        while ((int32_t) ls.ghost_q.size() > std::max(1, ls.n_cache)) { ls.ghost_flag[ls.ghost_q.front()] = 0; ls.ghost_q.pop_front(); }
-    }
+// an upload's pay-back is settled (decode hits x CPU eval time saved >= upload time): at its eviction, or at a segment end for an expert still cached (ctl_poll)
+static void note_payback(moe_cache * mc, layer_state & ls, int32_t e) {
     if (ls.up_t[e] == 0) {
         return;
     }
@@ -2781,6 +2760,16 @@ void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
     mc->ev_life_us[k] += (double) (ggml_time_us() - ls.up_t[e]);
     mc->ev_cost_us[k] += ls.up_cost[e];
     ls.up_t[e] = 0;
+}
+// an expert leaves VRAM: the eviction bookkeeping (count, protected bit, ghost list), then its pay-back
+void note_evict(moe_cache * mc, layer_state & ls, int32_t e) {
+    mc->n_evictions++;
+    if (!ls.prot.empty() && ls.prot[e]) { ls.prot[e] = 0; ls.n_prot--; }
+    if (!ls.ghost_flag.empty()) {
+        ls.ghost_flag[e] = 1; ls.ghost_q.push_back(e);
+        while ((int32_t) ls.ghost_q.size() > std::max(1, ls.n_cache)) { ls.ghost_flag[ls.ghost_q.front()] = 0; ls.ghost_q.pop_front(); }
+    }
+    note_payback(mc, ls, e);
 }
 
 // LLAMA_MOE_CACHE_CTL: apply the file's NAME=value lines when it changed, report the segment that just ended
@@ -2811,7 +2800,7 @@ void ctl_poll(moe_cache * mc) {
     for (auto & ls : mc->layers) {
         for (int32_t e = 0; e < (int32_t) ls.up_t.size(); ++e) {
             if (ls.up_t[e] && ls.expert_slot[e] >= 0) {
-                note_evict(mc, ls, e); // settled here with its hits so far; not tracked in the next segment
+                note_payback(mc, ls, e); // settled here with its hits so far; not tracked in the next segment (the expert stays cached: no eviction bookkeeping)
             }
         }
     }
@@ -2922,6 +2911,7 @@ bool pred_load(const moe_cache * mc) {
         const ggml_tensor * t = ls.pub.pred_all;
         uint64_t n = 0;
         ok = ok && fread(&n, sizeof(n), 1, f) == 1 && n == (t ? (uint64_t) ggml_nbytes(t) : 0);
+        if (!ok) { break; }   // a size that failed its check never sizes an allocation
         data.emplace_back(n);
         ok = ok && fread(data.back().data(), 1, n, f) == n;
     }
@@ -3514,6 +3504,11 @@ void pred_loop(moe_cache * mc) {
                 continue; // stream jobs instead go first on their link and are dropped once their layer started
             }
         }
+        std::vector<int64_t> queued_by_link(MAX_LINKS, 0);   // counted under wmtx BEFORE mtx: the file's lock order is wmtx then mtx (kv_blocks_apply, pp_settle, the alias lend); the reverse deadlocked
+        if (knobs().auto_tune >= 2) {
+            std::lock_guard<std::mutex> wlk(mc->wmtx);
+            for (const auto & q : mc->todo) { queued_by_link[mc->layers[q.layer_idx].link]++; }
+        }
         std::vector<upload_job> jobs;
         {
             std::lock_guard<std::mutex> lock(mc->mtx);
@@ -3550,13 +3545,7 @@ void pred_loop(moe_cache * mc) {
                     if (cap_mode) {
                         // AUTO=2: as many uploads as this link can finish before the layer, from measured times only (no
                         // thresholds): (time until the layer) / (one expert on this link), minus what the link has queued
-                        int64_t queued = 0;
-                        {
-                            std::lock_guard<std::mutex> wlk(mc->wmtx);
-                            for (const auto & q : mc->todo) {
-                                queued += mc->layers[q.layer_idx].link == ls.link;
-                            }
-                        }
+                        const int64_t queued = queued_by_link[ls.link];
                         link_cap = (int32_t) std::max<int64_t>(0, (int64_t) (until / mc->link_us[ls.link]) - queued);
                     }
                 }
@@ -3974,7 +3963,7 @@ extern "C" {
 // The O_DIRECT read thread count from the machine, not a constant (user 2026-11-02: "8 t is nice on epyc but hardly on 3600"): 1 MiB blocks on n threads for 0.2 s each, n = 1, 2, 4, 8 and
 // 16 up to the hardware threads / 2; the smallest n within 7% of the best bandwidth wins, so a drive that one or two threads fill leaves the other cores to compute.
 // Costs about 1 s at start. Falls back to 8 (the old default) when the file cannot be read direct.
-static int read_threads_probe(const std::map<int, int> & fds, const std::string & section) {
+static int read_threads_probe(const std::map<int, int> & fds, const std::string & section, bool measure = false) {   // measure: skip the stored answer (a new drive)
 #ifdef _WIN32
     GGML_UNUSED(fds);
     return 8;
@@ -3987,14 +3976,14 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
     const std::string key = format("read_threads.%u", std::thread::hardware_concurrency());
     const std::string mkey = format("ssd_max_gbs.%u", std::thread::hardware_concurrency());
     std::string old;
-    if (!section.empty() && moe_state_get(section, key, old) && atoi(old.c_str()) > 0) {
+    if (!measure && !section.empty() && moe_state_get(section, key, old) && atoi(old.c_str()) > 0) {
         std::string mx;
         if (moe_state_get(section, mkey, mx) && atof(mx.c_str()) > 0.0) { llama_moe_ssd_max_fork(atof(mx.c_str())); }
         LLAMA_LOG_WARN("moe-cache: read-direct: %d threads (stored probe)\n", atoi(old.c_str()));
         return atoi(old.c_str());
     }
     const size_t block = (size_t) 1 << 20, span = (size_t) st.st_size / 32 / block * block;   // each thread its own region, 32 regions in the file
-    const int hw = std::max(2u, std::thread::hardware_concurrency()), cap = std::max(1, hw / 2);
+    const int hw = std::max(2u, std::thread::hardware_concurrency()), cap = std::min(32, std::max(1, hw / 2));   // 32 regions in the file: no thread past the last
     std::vector<int> cands;
     for (int n = 1; n < cap; n *= 2) { cands.push_back(n); }
     cands.push_back(cap);
@@ -4049,7 +4038,7 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     const auto it = mc->rd_src.find(weight);
     if (it == mc->rd_src.end() || it->second.first < 0) { return nullptr; }
     if (!dst) { return mc; }   // only asked
-    const size_t a = 4096, file_off = it->second.second + off, beg = file_off & ~(a - 1), end = (file_off + n + a - 1) & ~(a - 1), need = file_off + n - beg;
+    const size_t a = direct_align(), file_off = it->second.second + off, beg = file_off & ~(a - 1), end = (file_off + n + a - 1) & ~(a - 1), need = file_off + n - beg;
     uint8_t * buf = (uint8_t *) (((uintptr_t) dst + a - 1) & ~(uintptr_t) (a - 1));
     if ((size_t) (buf - (uint8_t *) dst) + (end - beg) > cap) { return nullptr; }
     const int dfd = it->second.first;
@@ -4059,7 +4048,7 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     const int mode = total >= ((size_t) 4 << 20) ? rd_pick_mode(mc->rd_threads, explore) : 0;
     if (mode == 1) {
         const int64_t t0 = ggml_time_us();
-        if (aio_read_range(dfd, buf, beg, total, need)) { rd_note(1, total, ggml_time_us() - t0); return (const void *) (buf + (file_off - beg)); }
+        if (async_read_range(dfd, buf, beg, total, need)) { rd_note(1, total, ggml_time_us() - t0); return (const void *) (buf + (file_off - beg)); }
     }
     const int64_t t_pool0 = ggml_time_us();
 #endif
@@ -6274,6 +6263,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 lo.slot_in_flight[j.slot] = false;
                 if (j.expert >= 0 && j.expert < (int32_t) lo.queued.size()) { lo.queued[j.expert] = 0; }
             };
+            bool stuck = false;
             for (int spin = 0; ; ++spin) {
                 bool busy = false;
                 {
@@ -6309,9 +6299,14 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 if (!busy) {
                     break;
                 }
-                GGML_ASSERT(spin < 200000 && "compute alias: an upload into the borrowed blocks never finished");
+                if (spin >= 200000) { stuck = true; break; }   // 10 s: a worker still copies into these blocks
                 g_ac.drain_us += 50;
                 std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }
+            if (stuck) {   // refuse this pass (the caller fails the request, the server lives); the blocks stay unlent, so the late copy lands in a cache block, not under the graph
+                LLAMA_LOG_ERROR("moe-cache: compute alias %s: an upload into blocks %d-%d of class %d did not finish in 10 s, this pass is refused\n", ggml_backend_dev_name(ap.dev), (int) blocked, (int) need, (int) sg.pcls);
+                if (g_alias_err.empty()) { g_alias_err = std::string("compute alias: an upload into the borrowed blocks did not finish in 10 s on ") + ggml_backend_dev_name(ap.dev); }
+                continue;
             }
             std::lock_guard<std::mutex> lk(mc->mtx);
             if (n_tokens > llama_moe_cache_max_batch_fork()) {
@@ -6541,6 +6536,7 @@ static void replay_begin(moe_cache * mc) {
     std::vector<int32_t> rows(ok ? n : 0);
     ok = ok && fread(rows.data(), sizeof(int32_t), rows.size(), f) == rows.size();
     for (int il = 0; ok && il < nl; ++il) {
+        if (rows[il] < 0 || rows[il] > (1 << 24)) { ok = false; break; }   // a count from a file is bounded before it sizes anything
         r.play[il].resize((size_t) rows[il] * 16);
         ok = fread(r.play[il].data(), sizeof(int16_t), r.play[il].size(), f) == r.play[il].size();
     }
@@ -6842,7 +6838,9 @@ static void exptok_save() {
            && fwrite(g_exptok.ring.data(), sizeof(int32_t), g_exptok.ring.size(), f) == g_exptok.ring.size();
     ok = fclose(f) == 0 && ok;
     if (ok) {
-        std::filesystem::rename(tmp, g_exptok.path);
+        std::error_code ec;
+        std::filesystem::rename(tmp, g_exptok.path, ec);
+        if (ec) { std::remove(tmp.c_str()); }
     } else {
         std::remove(tmp.c_str());
     }
@@ -6865,7 +6863,7 @@ static void exptok_call(const llama_model & model, const int32_t * ids, int32_t 
             const char * how = "a new file";
             if (FILE * f = g_exptok.path.empty() ? nullptr : fopen(g_exptok.path.c_str(), "rb")) {
                 char m[8]; uint32_t h[4];
-                if (fread(m, 1, 8, f) == 8 && memcmp(m, "MOEXPID1", 8) == 0 && fread(h, sizeof(uint32_t), 4, f) == 4 && h[0] == L && h[1] == X && h[2] > 0) {
+                if (fread(m, 1, 8, f) == 8 && memcmp(m, "MOEXPID1", 8) == 0 && fread(h, sizeof(uint32_t), 4, f) == 4 && h[0] == L && h[1] == X && h[2] > 0 && h[2] <= 65536) {
                     std::vector<uint32_t> seen((size_t) L * X);
                     std::vector<int32_t>  ring((size_t) L * X * h[2]);
                     if (fread(seen.data(), sizeof(uint32_t), seen.size(), f) == seen.size() && fread(ring.data(), sizeof(int32_t), ring.size(), f) == ring.size()) {
@@ -7006,7 +7004,7 @@ static void fast_window_run(moe_cache * mc) {
     for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
     uint64_t n0 = mc->n_steps;
     double last_flush = llama_moe_span_now_fork();
-    for (;;) {
+    while (!mc->stats_stop.load(std::memory_order_relaxed)) {   // ends with the cache: llama_moe_cache_free_fork joins this thread before it deletes mc
         std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
         const int64_t t = ggml_time_us();
         win w = {};
@@ -8169,7 +8167,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         if (ls2.src_fd[k2] < 0 || !ps[k2]->buffer || ggml_backend_buffer_get_type(ps[k2]->buffer) == pinned_buft) { continue; }
                         auto it = mc->rd_fds.find(ls2.src_fd[k2]);
                         if (it == mc->rd_fds.end()) {
-                            it = mc->rd_fds.emplace(ls2.src_fd[k2], open(("/proc/self/fd/" + std::to_string(ls2.src_fd[k2])).c_str(), O_RDONLY | O_DIRECT)).first;
+                            it = mc->rd_fds.emplace(ls2.src_fd[k2], open_direct_fd(ls2.src_fd[k2])).first;
                             if (it->second < 0) { LLAMA_LOG_WARN("moe-cache: read-direct: no O_DIRECT on this file (%s), it stays mapped\n", strerror(errno)); }
                         }
                         ls2.src_dfd[k2] = it->second;
@@ -8181,6 +8179,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 if (const char * ra = moe_opt("read-aio")) { g_aio_ok.store(atoi(ra) != 0 ? 1 : 0); }
                 // --moe read-blk=KB (default 256) and read-gap=KB (default 64, 0 = no gaps: plain 256K blocks in file order); set before the first read caches them
                 if (const char * rb = moe_opt("read-blk")) { setenv("LLAMA_MOE_RD_BLK_KB", rb, 1); }
+                // --moe read-engine=uring: io_uring instead of kernel AIO for the spaced reads (default aio; the release image's seccomp blocks io_uring)
+                if (const char * re = moe_opt("read-engine")) { setenv("LLAMA_MOE_RD_ENGINE", re, 1); }
+            if (const char * rq = moe_opt("read-qd"))     { setenv("LLAMA_MOE_RD_QD", rq, 1); }
                 if (const char * rg = moe_opt("read-gap")) { setenv("LLAMA_MOE_RD_GAP_KB", rg, 1); }
 #endif
                 if (const char * rt = moe_opt("read-threads")) { mc->rd_threads = std::max(1, atoi(rt)); }
@@ -8219,7 +8220,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
             if (llama_moe_log_profile_fork("stats")) { mc->stats_thr = std::thread(stats_status_run, mc); }
-            if (llama_moe_log_profile_fork("planner")) { std::thread(fast_window_run, mc).detach(); }
+            if (llama_moe_log_profile_fork("planner")) { mc->fast_thr = std::thread(fast_window_run, mc); }
             if (const char * ph = moe_opt("preheat"); ph && ph[0] == '1' && gpu && !mc->rd_staging.empty()) { mc->preheat_thr = std::thread(preheat_run, mc); }   // default off; =1 on; rd_staging: some experts stayed mapped
             if (!mc->rd_staging.empty()) {
                 LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT: prompt uploads on %d threads, %d cache workers\n", rd_mapped / 1073741824.0, mc->rd_threads, n_workers);
@@ -8495,32 +8496,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         });
 
         mc->profile = profile_path(model);
-        {
-            // decisions of the last self-tune on this machine for this model (the profile file's footer): start from them (an explicit
-            // LLAMA_MOE_CACHE_<NAME> wins) and check again after a while instead of exploring right away
-            const char * te = moe_opt("tuned");
-            std::string txt;
-            // ini-fix (2026-10-22): the stored decisions are not read: a start whose tuner began from another build's values behaved unlike a cold one,
-            // and the knobs' defaults change between builds. Every start tunes from the defaults.
-            (void) te;
-            for (char & c : txt) { if (c == ' ') { c = '\n'; } }
-            int n = 0;
-            size_t pos = 0;
-            while (pos < txt.size()) {
-                const size_t nl = txt.find('\n', pos);
-                const std::string line = txt.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
-                pos = nl == std::string::npos ? txt.size() : nl + 1;
-                const size_t eq = line.find('=');
-                if (eq == std::string::npos) { continue; }
-                const std::string name = line.substr(0, eq);
-                if (!user_knobs().count(name) && knob_set(knobs(), name, atof(line.c_str() + eq + 1))) { n++; }
-            }
-            if (n > 0) {
-                mc->tuned_text = txt;
-                mc->lv_rest = 16384; mc->lv_rest_until = 16384;
-                LLAMA_LOG_WARN("moe-cache: self-tune: %d saved settings loaded from the state file, next check after 16384 tokens\n", n);
-            }
-        }
+        // ini-fix (2026-10-22): the self-tuner's stored decisions are not read: a start whose tuner began from another build's values behaved unlike a cold one. Every start tunes from the defaults.
         if (const char * c = moe_opt("ctl")) {
             mc->ctl = c;
         }
@@ -8794,6 +8770,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 // once the link is done) finishes at T(k); the k with the smallest T wins, 0 when nothing beats the CPU alone. All rates
 // are measured (link and CPU phase rates live, RAM budget by the startup probe). Uploaded experts become cache entries
 // (same eviction score as the step's swaps), so the upload also serves later tokens.
+// A CPU-repacked expert tensor (non-host buffer of the CPU device) holds another byte layout than the GPU's blocks: ->data must not be uploaded. Only the upload workers can serve it, from the file.
+static bool experts_in_file_layout(const llama_moe_cache_layer_fork * pub) {
+    return ggml_backend_buffer_is_host(pub->up_src->buffer) && ggml_backend_buffer_is_host(pub->gate_src->buffer) && ggml_backend_buffer_is_host(pub->down_src->buffer);
+}
 void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     static const bool jit_all_mode = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();   // --moe jit-all: every batch the cache serves as decode, for deterministic replay
@@ -8803,7 +8783,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // done: this layer's router ids came back through the same stream), never one of the layers still to come. A prompt call is several tokens with at most one
     // output (llama_context::decode).
     const bool prompt = g_prompt_call.load(std::memory_order_relaxed);
-    if (!mc || knobs().jit == 0) {
+    if (!mc || knobs().jit == 0 || !experts_in_file_layout(pub)) {   // repacked: the misses stay with the CPU, which runs that layout
         return;
     }
     std::lock_guard<std::mutex> lock(mc->mtx);
@@ -8815,6 +8795,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         return;
     }
     layer_state & ls = *lsp;
+    mc->phase_mapped = ls.src_dfd[0] >= 0;   // this layer's CPU phase reads mapped experts (moe_phase_cb keeps their rate apart)
     const bool pool = ls.pub.jit_n > 0; // slower-link layer: the pool on the fastest-link GPU instead of its own cache
     const int  lk   = pool ? 0 : ls.link;
     ggml_backend_t be = mc->link_be[lk];
@@ -8854,10 +8835,18 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     const double rcc = knobs().ddr_gbs > 0.0 ? std::min(rc, std::max(0.0, knobs().ddr_gbs * 1e3 - rl * 1e3)) : rc;   // the RAM budget, when it is known
     const double rlb = rl * 1e3;
     const int    m   = (int) miss.size();
-    // the experts with the most tokens are the dearest on the CPU (its time grows with them, an upload's does not): they are uploaded first
-    std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return ntok[a] != ntok[b] ? ntok[a] > ntok[b] : score(ls, a) > score(ls, b); });
-    std::vector<double> cpu_tail(m + 1, 0.0);   // cpu_tail[k]: bytes the CPU still reads if the first k are uploaded (each expert once per token routed to it)
-    for (int i = m - 1; i >= 0; --i) { cpu_tail[i] = cpu_tail[i + 1] + (double) ntok[miss[i]] * S; }
+    // A mapped expert (its tensor stayed mapped, no pinned copy) is read by the CPU through page faults from the SSD, at the rate measured for such layers (cpu_gbs_mapped),
+    // not at the RAM rate: its bytes count as the RAM-rate equivalent (user 2026-11-07: the planner is "crippled by ... assumptions"; GLM 3.5 decode sent 2531 of 5651
+    // single misses to the CPU at 0.5-0.9 GB/s while the x16 link ran at 10%).
+    const double rcm = mc->cpu_gbs_mapped > 0 ? mc->cpu_gbs_mapped * 1e3 : rc;
+    auto mapped = [&](int32_t e) { return ls.src_dfd[0] >= 0 && !(ls.pin_ptr[0] && ls.pin_ptr[0][e].load(std::memory_order_acquire)); };
+    auto cpu_eq = [&](int32_t e) { return (double) ntok[e] * S * (mapped(e) && rcm > 0 ? rc / rcm : 1.0); };   // bytes at the RAM rate that cost the same CPU time
+    int n_mapped = 0;
+    for (int32_t e : miss) { n_mapped += mapped(e); }
+    // the experts dearest on the CPU (most tokens, mapped ones first: their time grows with tokens and with faults, an upload's does not) are uploaded first
+    std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { const double ca = cpu_eq(a), cb = cpu_eq(b); return ca != cb ? ca > cb : score(ls, a) > score(ls, b); });
+    std::vector<double> cpu_tail(m + 1, 0.0);   // cpu_tail[k]: RAM-rate bytes the CPU still reads if the first k are uploaded (each expert once per token routed to it)
+    for (int i = m - 1; i >= 0; --i) { cpu_tail[i] = cpu_tail[i + 1] + cpu_eq(miss[i]); }
     auto T = [&](int k) {
         const double tl = k * S / rlb, bc = cpu_tail[k];
         if (k == 0) { return bc / rc; }
@@ -8876,8 +8865,8 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         const int mode = kb == 0 ? 0 : kb == m ? 2 : 1;
         if (last_mode[lk & 7].exchange(mode) != mode) {
             static const char * const nm[3] = { "CPU", "CPU and uploads", "uploads" };
-            llama_moe_stats_log_fork("SWT", format("%s call, link %d (%.1f GB/s), layer %d: misses go to %s (%d of %d uploaded, %d tokens; layer takes %.0f ms with them, %.0f ms all on the CPU, %.0f ms all uploaded)",
-                    prompt ? "prompt" : "decode", lk, rl, pub->il, nm[mode], kb, m, (int) ids->ne[1], T(kb) / 1e3, T(0) / 1e3, T(m) / 1e3).c_str());
+            llama_moe_stats_log_fork("SWT", format("%s call, link %d (%.1f GB/s), layer %d: misses go to %s (%d of %d uploaded, %d mapped, %d tokens; layer takes %.2f ms with them, %.2f ms all on the CPU (%.1f GB/s, mapped %.1f), %.2f ms all uploaded)",
+                    prompt ? "prompt" : "decode", lk, rl, pub->il, nm[mode], kb, m, n_mapped, (int) ids->ne[1], T(kb) / 1e3, T(0) / 1e3, rc / 1e3, rcm / 1e3, T(m) / 1e3).c_str());
         }
     }
     if (kb == 0) {
@@ -9044,7 +9033,7 @@ static void pp_settle(moe_cache * mc) {
 // 0, not a prompt pass.
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
-    if (!mc || !pp_chain_allowed() || pub->jit_n > 0) {
+    if (!mc || !pp_chain_allowed() || pub->jit_n > 0 || !experts_in_file_layout(pub)) {   // repacked: the chain has no CPU branch and its uploads copy ->data; the plain path keeps the CPU
         return 0;
     }
     if (!g_pp_graph) { pp_settle(mc); }
@@ -9473,12 +9462,64 @@ static double early_link_gbs(ggml_backend_dev_t d) {
     return gbs;
 }
 
+#ifdef SR_HAVE_AIO
+// The async engine's best shape on the model's drive: block size, gap and reads in flight (O_DIRECT, about 0.15 s per combination), measured once per drive and kept in [machine] as
+// rd_blk_kb.<dev>, rd_gap_kb.<dev>, rd_qd.<dev>; every reader starts from them (sr_blk, sr_gap, sr_qd in llama-spaced-read-fork.h). The smallest block within 7% of the best wins, as in
+// read_threads_probe, and ssd_max_gbs.<dev> is lifted when the engine beats the pread probe (user 2026-11-07: "find these vals if not present", "all our uploads as fast as optimal").
+static void rd_shape_bench(const char * path, unsigned long long dev, const std::string & sec) {
+    const std::string kb = format("rd_blk_kb.%llu", dev), kg = format("rd_gap_kb.%llu", dev), kq = format("rd_qd.%llu", dev);
+    std::string b, g, q;
+    if (moe_state_get(sec, kb, b) && moe_state_get(sec, kg, g) && moe_state_get(sec, kq, q) && atoi(b.c_str()) > 0 && atoi(q.c_str()) > 0) {
+        g_sr_blk = (size_t) atol(b.c_str()) << 10; g_sr_gap = (size_t) atol(g.c_str()) << 10; g_sr_qd = atoi(q.c_str());
+        LLAMA_LOG_WARN("moe-cache: machine: SSD reads %s KiB blocks, %s KiB gaps, %s in flight (stored)\n", b.c_str(), g.c_str(), q.c_str());
+        return;
+    }
+    const int dfd = open_direct(path);
+    if (dfd < 0) { return; }
+    struct stat st;
+    if (fstat(dfd, &st) != 0 || st.st_size < ((off_t) 1 << 30)) { close(dfd); return; }
+    const double s0 = llama_moe_span_now_fork();
+    const size_t range = (size_t) 32 << 20, file_end = (size_t) st.st_size / 4096 * 4096;
+    void * buf = nullptr;
+    if (posix_memalign(&buf, 4096, range) != 0) { close(dfd); return; }
+    struct combo { size_t blk, gap; int qd; double gbs; };
+    std::vector<combo> cs;
+    for (int qd : { 32, 8 }) { for (size_t blk : { (size_t) 256 << 10, (size_t) 1 << 20 }) { for (size_t gap : { (size_t) 64 << 10, (size_t) 0 }) { cs.push_back({ blk, gap, qd, 0.0 }); } } }
+    size_t off = (size_t) st.st_size / 2 / 4096 * 4096;   // the middle of the file: read_threads_probe read the heads of its regions (O_DIRECT: the page cache is out, the drive's own cache is not)
+    for (combo & c : cs) {
+        const int64_t t0 = ggml_time_us(); size_t bytes = 0;
+        while (ggml_time_us() - t0 < 150000) {
+            if (off + range > file_end) { off = 4096; }
+            if (!async_read_range(dfd, (uint8_t *) buf, off, range, range, c.qd, c.blk, c.gap)) { bytes = 0; break; }
+            bytes += range; off += range;
+        }
+        c.gbs = bytes ? (double) bytes / ((double) (ggml_time_us() - t0) / 1e6) / 1e9 : 0.0;
+    }
+    free(buf); close(dfd);
+    double best = 0.0;
+    for (const combo & c : cs) { best = std::max(best, c.gbs); }
+    if (best <= 0.0) { LLAMA_LOG_WARN("moe-cache: machine: SSD read shape: the async engine failed, the readers keep their defaults\n"); return; }
+    std::sort(cs.begin(), cs.end(), [](const combo & x, const combo & y) { return x.blk != y.blk ? x.blk < y.blk : x.qd != y.qd ? x.qd < y.qd : x.gap > y.gap; });   // preference at a tie: small block, few in flight, gaps on
+    const combo * pick = nullptr; std::string row;
+    for (const combo & c : cs) { if (!pick && c.gbs >= 0.93 * best) { pick = &c; } row += format(" %zuK/%zuK/%d:%.2f", c.blk >> 10, c.gap >> 10, c.qd, c.gbs); }
+    g_sr_blk = pick->blk; g_sr_gap = pick->gap; g_sr_qd = pick->qd;
+    LLAMA_LOG_WARN("moe-cache: machine: SSD read shape GB/s by block/gap/in flight%s -> %zuK/%zuK/%d (the smallest within 7%% of the best %.2f GB/s)\n", row.c_str(), pick->blk >> 10, pick->gap >> 10, pick->qd, best);
+    std::vector<std::pair<std::string, std::string>> kv = {{ kb, std::to_string(pick->blk >> 10) }, { kg, std::to_string(pick->gap >> 10) }, { kq, std::to_string(pick->qd) }};
+    const std::string km = format("ssd_max_gbs.%llu", dev);
+    std::string mx;
+    if (!moe_state_get(sec, km, mx) || atof(mx.c_str()) < best) { kv.push_back({ km, format("%.3f", best) }); llama_moe_ssd_max_fork(best); }
+    moe_state_set(sec, kv);
+    llama_moe_span_fork("machine benchmark: SSD read shape (block, gap, reads in flight)", s0, llama_moe_span_now_fork(), 0, "SSD probe");
+}
+#endif
+
 // The machine's three bandwidths, measured as early as possible (right after the model file size is read, before the layers are placed) and kept in the state file section [machine]
 // (user 2026-11-05: "measure maxssd speed as early as possible, the same for big vram uploads, measure and store achieved ram read bw and pcie achieved bw"). Every later span of stats.log
 // that reads the SSD logs its rate as a share of the SSD maximum, so an inefficient big read stands out.
 //   ssd_max_gbs.<dev>          O_DIRECT 1 MiB reads, best of 1..hardware threads/2 (read_threads_probe), per block device of the model file; measured once, then stored
 //   ram_read_gbs.<threads>     sequential read of 1 GiB by hardware threads/2 threads, best of three passes; measured once, then stored
 //   h2d_gbs.<gpu index>.<name> pinned host to device, 64 MiB copies, the fastest of four (early_link_gbs); measured at every start (0.1 s), stored with the value before
+//   rd_blk_kb/rd_gap_kb/rd_qd.<dev>  the async engine's read shape on the drive (rd_shape_bench); measured once, then stored
 LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
     if (!moe_state_enabled() || !model_path || !*model_path) { return; }
     const double t0 = llama_moe_span_now_fork();
@@ -9496,15 +9537,18 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
             llama_moe_ssd_max_fork(atof(v.c_str()));
             LLAMA_LOG_WARN("moe-cache: machine: SSD maximum %.2f GB/s, %d read threads (stored)\n", atof(v.c_str()), g_early_rd_threads);
         } else {
-            const int dfd = open(model_path, O_RDONLY | O_DIRECT);
+            const int dfd = open_direct(model_path);
             if (dfd >= 0) {
                 std::map<int, int> fds{{ 0, dfd }};
-                g_early_rd_threads = read_threads_probe(fds, sec);   // sets the maximum (llama_moe_ssd_max_fork) and stores read_threads.<hw> and ssd_max_gbs.<hw> in [machine]
+                g_early_rd_threads = read_threads_probe(fds, sec, /*measure =*/ true);   // this drive is new to the state: measured, not another drive's stored answer; stores read_threads.<hw> and ssd_max_gbs.<hw>
                 close(dfd);
                 if (moe_state_get(sec, format("ssd_max_gbs.%u", hw), v)) { moe_state_set(sec, {{ key, v }}); }   // read_threads_probe keys the maximum by threads; the early bench by drive
                 llama_moe_span_fork("machine benchmark: SSD maximum (O_DIRECT, best thread count)", s0, llama_moe_span_now_fork(), 0, "SSD probe");
             }
         }
+#ifdef SR_HAVE_AIO
+        rd_shape_bench(model_path, (unsigned long long) st.st_dev, sec);
+#endif
     }
 #endif
     {   // RAM read: the pinned weights and the stream ring are read by the CPU and the DMA engines at this rate at most
@@ -9598,7 +9642,7 @@ bool llama_moe_layer_heat_fork(const llama_model & model, std::vector<ggml_backe
     for (char & c : name) {
         if (c == '[' || c == ']' || c == '\n' || c == '\r') { c = '_'; }
     }
-    if (!moe_state_section_kv(name + " 0", kv, true)) {
+    if (!moe_state_section_kv(moe_state_section(model), kv, true)) {   // the section common set (file name + size), else the model's own name; the hot.* keys are written there
         LLAMA_LOG_WARN("moe-cache: layer-heat: no saved usage profile for %s, layers stay where the split put them\n", name.c_str());
         return false;
     }
@@ -10034,8 +10078,6 @@ static void self_tune(moe_cache * mc) {
                 mc->lv_cycle++;
                 mc->lv_rest_until = mc->n_steps + mc->lv_rest;
                 LLAMA_LOG_WARN("moe-cache: self-tune: next check in %llu tokens\n", (unsigned long long) mc->lv_rest);
-                mc->tuned_text.clear();
-                for (const auto & tt : T) { mc->tuned_text += std::string(tt.name) + "=" + tr_fmt("%g\n", knobs().*tt.f); }
             }
             return;
         }
@@ -10293,11 +10335,10 @@ void llama_moe_cache_step_fork() {
     const int fixed_margin = knobs().margin == -1 ? (det ? 4 : 0) : (int) knobs().margin;
     if (fixed_margin >= 0) {
         margin = (uint32_t) fixed_margin;
-        link_margin[0] = link_margin[1] = (int) margin;
+        for (int k = 0; k < mc->n_links; ++k) { link_margin[k] = (int) margin; }
     }
     mc->last_margin = (int) margin;
-    mc->link_margin[0] = link_margin[0];
-    mc->link_margin[1] = link_margin[1];
+    for (int k = 0; k < mc->n_links; ++k) { mc->link_margin[k] = link_margin[k]; }   // every link (a third card's layers read mc->link_margin[2] in the JIT admission)
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
@@ -11698,18 +11739,6 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
 static void pp_c_us_stored() {
     // ini-fix (2026-10-22): no stored value is read. The state held values from older builds (22591 us per token next to 1212 measured live) that the split
     // planner read as truth; the session measures its own (llama_moe_cache_prefill_report_fork) and nothing is written for the next start.
-    return;
-    static bool tried = false;
-    if (tried || g_pp_c_us > 0.0 || !g_cache || g_cache->profile.empty() || moe_state_place().empty()) {
-        return;
-    }
-    tried = true;
-    std::string v;
-    if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_c0_us", v) && atof(v.c_str()) > 0.0) {
-        g_pp_c_us = atof(v.c_str());
-        if (moe_state_get(g_cache->profile, moe_state_place() + ".pp_a1_us", v)) { g_pp_a_us = std::max(0.0, atof(v.c_str())); }
-        LLAMA_LOG_WARN("moe-cache: compute of one prompt token %.2f us (stored by an earlier start on these cards): the first prompt is planned from it\n", g_pp_c_us);
-    }
 }
 
 // the pass planner's measured compute of one prompt token on the offload card, all layers, us (0 = not measured yet)
@@ -11810,7 +11839,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     const double td = pp_took_us(PP_DEC, n), to = pp_other_us(n, PP_DEC);
     // The stream reads the experts no card holds: over the link, and from the SSD where their tensors are still mapped. Both run side by side (the reads fill the staging slots the link empties), so the
     // slower one is its time; the SSD's rate is what the stream passes read at so far, none before the first one.
-    const double ssd_rate = g_pp_ssd_gbs > 0.0 ? g_pp_ssd_gbs : g_load_read_gbs.load();   // a stream pass's own rate, until one ran: the loader's (user 2026-11-03: a short first prompt should not default to the stream)
+    // a stream pass's own rate, until one ran: the loader's, else the machine benchmark's drive maximum (2026-11-07: GLM 3.5 planned every call "from the SSD at 0.00 GB/s", both were 0 with the O_DIRECT loader)
+    const double ssd_rate = g_pp_ssd_gbs > 0.0 ? g_pp_ssd_gbs : g_load_read_gbs.load() > 0.0 ? g_load_read_gbs.load() : llama_moe_ssd_max_get_fork();
     const double Ts = ssd_rate > 0.0 ? std::max(U, M / (ssd_rate * 1e3)) : U;
     g_pp_ssd_m = M;
     g_pp_rb0 = pp_self_read_bytes();
@@ -11888,7 +11918,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     for (int k = 0; k < mc->n_links; ++k) { links += format("%s%.1f", k ? "/" : "", mc->gbs_link[k]); }
     const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s; stream reads %.1f GB from the SSD at %.2f GB/s; decode chain: misses x%.2f, 4-token chunks %.0f ms x%.2f at %.0f GB/s weight read, fixed %.0f ms; compute %.0f ms)",
             n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, std::min(dec_max, (double) ub_max), de / 1e3, ot / 1e3, td / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
-            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, g_pp_ssd_gbs, dec_r, g_pp_dec_chunk / 1e3, g_pp_dec_kc, R_read / 1e9, dec_f / 1e3, comp_at(n) / 1e3);
+            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, ssd_rate, dec_r, g_pp_dec_chunk / 1e3, g_pp_dec_kc, R_read / 1e9, dec_f / 1e3, comp_at(n) / 1e3);
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
     llama_moe_stats_io_fork(0);   // the reads of this call start counting here
@@ -12139,6 +12169,8 @@ void llama_moe_cache_free_fork() {
     mc->stats_stop.store(true);
     if (mc->stats_thr.joinable()) { mc->stats_thr.join(); }
     if (mc->preheat_thr.joinable()) { mc->preheat_thr.join(); }
+    if (mc->fast_thr.joinable()) { mc->fast_thr.join(); }
+    { std::lock_guard<std::mutex> lk(g_vram_mtx); g_vram.clear(); }   // the watch entries of this cache: a re-init adds its own (stale ones were sampled and stored on)
     mc->lazy_stop.store(true);
     if (mc->lazy_thr.joinable()) { mc->lazy_thr.join(); }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
@@ -12146,6 +12178,7 @@ void llama_moe_cache_free_fork() {
 #ifndef _WIN32
     for (auto & f : mc->rd_fds) { if (f.second >= 0) { close(f.second); } }
 #endif
+    for (auto & mv : mc->lazy_moved) { mv.first->data = mv.second; }   // the model outlives this cache (a new context, a re-init): its weights point at the mapping again, not at freed pinned memory
     for (auto * b : mc->pin_chunks) { ggml_backend_buffer_free(b); }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->pctxs) { ggml_free(c); }

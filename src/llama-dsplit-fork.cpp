@@ -2641,6 +2641,20 @@ static void dsplit_one_report(const dsf_pass & p) {
     static long seen = -1;
     if (gen == seen) { return; }   // the same stamps as the last report: this pass was not measured
     seen = gen;
+    // where a card's time goes (user 2026-11-01: the x16 card shall not wait on the x4, the x4 shall not slack off, is the link or the compute the limit): kernels, waiting for its uploads,
+    // waiting for the other card's result, nothing queued; link: the upload stream's busy time, it overlaps the compute
+    if (llama_moe_get_opt("log") || getenv("GGML_PF_STATS")) {
+        std::string line;
+        int64_t t0 = 0, t1 = 0;
+        for (int j = 0; j < nst; ++j) { if (st[j].backend && st[j].last_us > st[j].first_us) { t0 = t0 ? std::min(t0, st[j].first_us) : st[j].first_us; t1 = std::max(t1, st[j].last_us); } }
+        for (int j = 0; j < nst; ++j) {
+            if (!st[j].backend || st[j].last_us <= st[j].first_us) { continue; }
+            const dsplit_card_stat & q = st[j];
+            line += format(" | %s dense %.0f moe %.0f up-wait %.0f other-card %.0f idle %.0f link %.0f, span %.0f", ggml_backend_dev_name(ggml_backend_get_device(q.backend)), q.dense_us / 1e3, q.moe_us / 1e3,
+                    q.up_wait_us / 1e3, q.xwait_us / 1e3, q.host_us / 1e3, q.link_us / 1e3, (q.last_us - q.first_us) / 1e3);
+        }
+        LLAMA_LOG_WARN("pass cards: %lld tokens in %.0f ms%s\n", (long long) p.T, (t1 - t0) / 1e3, line.c_str());
+    }
     dsplit_bal B;
     const std::vector<ggml_backend_dev_t> dev = { p.xdev };
     B.dev = dev; B.s = { 1.0 }; B.f = { 1.0 }; B.s_run = B.s; B.f_run = B.f;
