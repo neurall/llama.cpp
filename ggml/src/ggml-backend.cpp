@@ -11,6 +11,7 @@
 #include "ggml-backend.h"
 #include "ggml-backend-impl.h"
 #include "ggml-alloc.h"
+#include "ggml-rampool-fork.h"
 #include "ggml-impl.h"
 
 #include <assert.h>
@@ -2638,7 +2639,33 @@ static bool ggml_backend_sched_is_host_weight(const struct ggml_tensor * t) {
 
 // fork: [off, off + n) of a host weight into its copy on the card, on this backend's stream. Weights the expert cache can read direct (--moe read-direct: they stayed mapped) go from
 // the file into pinned chunks at the SSD's queue depth; all others from their host memory, as ever. A failed read leaves the rest to the mapping.
+static void ggml_backend_sched_upload_weight_file(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n);
+// fork: an expert tensor in the RAM pool (--moe rampool=1, ggml-rampool-fork.h): the experts the pool holds go straight from their pinned blocks (runs that lie behind each other
+// in the pool as one copy), the rest and the bytes past the last whole expert the old way
 static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n) {
+    const size_t esz = input->nb[2];
+    if (esz == 0 || off % esz != 0 || n < esz || ggml_rampool_table_fork(input) == NULL) {
+        ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, off, n);
+        return;
+    }
+    const int64_t e0 = (int64_t) (off / esz), ne = (int64_t) (n / esz);
+    std::vector<const char *> ps((size_t) ne);
+    for (int64_t i = 0; i < ne; ++i) { ps[i] = ggml_rampool_use_fork(input, e0 + i); }
+    for (int64_t i = 0; i < ne; ) {
+        int64_t j = i + 1;
+        if (ps[i]) {
+            while (j < ne && ps[j] == ps[i] + (size_t) (j - i) * esz) { ++j; }
+            ggml_backend_tensor_set_async(backend, input_cpy, ps[i], (size_t) (e0 + i) * esz, (size_t) (j - i) * esz);
+        } else {
+            while (j < ne && !ps[j]) { ++j; }
+            ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, (size_t) (e0 + i) * esz, (size_t) (j - i) * esz);
+        }
+        i = j;
+    }
+    if (n > (size_t) ne * esz) { ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, off + (size_t) ne * esz, n - (size_t) ne * esz); }
+}
+
+static void ggml_backend_sched_upload_weight_file(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n) {
     size_t done = 0;
     if (g_moe_read_fn && g_moe_read_fn(input, 0, 0, NULL, 0, g_moe_read_ud) != NULL) {
         ggml_backend_dev_t dev = ggml_backend_get_device(backend);
