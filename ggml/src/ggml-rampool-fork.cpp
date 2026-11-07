@@ -20,6 +20,7 @@
 //     next block, always the same type and whole blocks of it, or zeros in the slack at the end of a chunk: any finite bytes will do there, the rule is only "no NaN" (fork: MMQ padding).
 #include "ggml-rampool-fork.h"
 #include "ggml-impl.h"
+#include "ggml-read-fork.h"
 
 #include <algorithm>
 #include <atomic>
@@ -148,34 +149,12 @@ size_t rp_request_bytes(int fd) {
     return 0;
 }
 
-int rp_open_direct(int fd) {
-#ifdef __linux__
-    const std::string p = "/proc/self/fd/" + std::to_string(fd);
-    return open(p.c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC);
-#else
-    (void) fd;
-    return -1;
-#endif
-}
-
-ssize_t rp_pread(int fd, void * dst, size_t n, uint64_t off) {
-#ifndef _WIN32
-    for (;;) {
-        const ssize_t r = pread(fd, dst, n, (off_t) off);
-        if (r >= 0 || errno != EINTR) { return r; }
-    }
-#else
-    (void) fd; (void) dst; (void) n; (void) off;
-    return -1;
-#endif
-}
-
 // THE WRITER: bytes [off, off + n) of the file into [dst, dst + n). Whole sectors go straight into dst; the sectors a slice shares with its neighbours (the slices of a tensor do not start on
 // sector edges) go through the reader's bounce buffer so nothing is written outside dst. Requests of p->rq bytes each. Without O_DIRECT a plain pread.
 bool rp_read(rp_pool * p, int dfd, int fd, char * dst, size_t n, uint64_t off, char * bounce, size_t bounce_n) {
     if (dfd < 0) {
         for (size_t d = 0; d < n; ) {
-            const ssize_t r = rp_pread(fd, dst + d, n - d, off + d);
+            const ssize_t r = sr_pread1(fd, dst + d, n - d, off + d);
             if (r <= 0) { return false; }
             d += (size_t) r;
         }
@@ -198,7 +177,7 @@ bool rp_read(rp_pool * p, int dfd, int fd, char * dst, size_t n, uint64_t off, c
         const bool whole = u0 == pos && u1 == pos + want;
         const bool direct = whole && ((uintptr_t) d & (ma - 1)) == 0;
         if (!direct) { want = std::min(want, bounce_n); }
-        ssize_t r = rp_pread(dfd, direct ? d : bounce, want, pos);
+        ssize_t r = sr_pread1(dfd, direct ? d : bounce, want, pos);
         if (r < 0 && errno == EINVAL && direct) {   // this file system or device wants more alignment than dma_alignment says: the bounce buffer from now on
             p->memal.store(RP_SECTOR, std::memory_order_relaxed);
             continue;
@@ -410,7 +389,7 @@ void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n,
     t->cls = c;
     p->cls[c].elems += (uint64_t) n;
     auto d = p->dfd_of.find(fd);
-    if (d == p->dfd_of.end()) { d = p->dfd_of.emplace(fd, rp_open_direct(fd)).first; }
+    if (d == p->dfd_of.end()) { d = p->dfd_of.emplace(fd, open_direct_fd(fd)).first; }
     t->dfd = d->second;
     if (p->rq == 0) { p->rq = rp_request_bytes(fd); }
     p->by_key[key] = t.get();

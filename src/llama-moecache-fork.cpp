@@ -1,5 +1,5 @@
 #include <csignal>
-#include "llama-spaced-read-fork.h"
+#include "../ggml/src/ggml-read-fork.h"
 #include "llama-moecache-fork.h"
 #include "llama-fork-hooks.h"
 #include "llama-gpu-probe-fork.h"
