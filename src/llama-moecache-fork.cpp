@@ -43,6 +43,7 @@
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/file.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #if defined(__linux__) && __has_include(<linux/aio_abi.h>)
@@ -232,7 +233,8 @@ struct layer_state {
     std::vector<uint8_t>  is_stream;      // slot -> holds streamed (predicted) experts, not the cache
     std::unique_ptr<std::atomic<const char *>[]> pin_ptr[3];   // tensor (up, gate, down) -> expert -> its pinned copy (--moe pinr), nullptr = not pinned
     const char * const *  rp_tab[3] = { nullptr, nullptr, nullptr };   // --moe rampool: the pool's table of each tensor (expert -> its block, nullptr: out), nullptr: not in the pool
-    std::vector<uint32_t> vis;            // --moe rampool heat: per expert the last RP_VIS decode-step stamps, oldest first (0: none), saved as vis.<layer>
+    std::vector<uint32_t> vis;            // --moe rampool heat: per expert the last RP_VIS decode-step stamps, oldest first (0: none), saved as vis.<layer> in the heat file
+    std::vector<uint64_t> heat_cnt;       // --moe rampool: per expert its decode uses over all runs (the heat file's hot.<layer>), ranks experts the ring has not seen
     std::vector<int32_t>  stream_slots;   // those slots, round robin
     std::vector<float>    stream_score;   // slot -> predictor score of the streamed expert (SLOTKEEP)
     std::vector<uint64_t> stream_step;    // slot -> step it was streamed for
@@ -408,7 +410,8 @@ struct moe_cache {
     ggml_backend_buffer_type_t pin_buft = nullptr;
     bool                       rp_on = false;      // --moe rampool: the RAM pool holds the expert slices (ggml-rampool-fork.h)
     std::vector<ggml_backend_buffer_t> rp_bufs;    // its pinned chunks
-    uint32_t                   vis_base = 0;       // the heat clock where the saved profile left it
+    uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
+    std::string                heat_file;          // <hot map dir>/<model>.hotmoes.ini: the pool's heat, apart from the state file (whose values get reset or rolled back by policy)
     std::atomic<uint32_t>      vis_now{1};         // the heat clock: vis_base + decode steps
     ggml_backend_buffer_type_t lazy_buft = nullptr;   // --moe pin-lazy: the GPU's pinned host buffer type
     size_t                     pin_budget = 0, pin_used = 0, pin_left = 0;
@@ -1205,7 +1208,7 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
     const uint32_t * v = ls.vis.empty() ? nullptr : ls.vis.data() + (size_t) e * RP_VIS;
     int n = 0;
     while (v && n < RP_VIS && v[RP_VIS - 1 - n] != 0) { ++n; }
-    if (n == 0) { return 1e15 + 1e12 / (1.0 + (double) ls.glob_count[e]); }
+    if (n == 0) { return 1e15 + 1e12 / (1.0 + (double) (ls.heat_cnt.empty() ? ls.glob_count[e] : ls.heat_cnt[e])); }
     const double last = (double) v[RP_VIS - 1];
     if (n == 1) { return now + (now - last); }
     const double nxt = last + (last - (double) v[RP_VIS - n]) / (n - 1);
@@ -1218,6 +1221,61 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     const layer_state & ls = mc->layers[it->second.first];
     if (ls.expert_slot[e] >= 0 || ls.queued[e]) { return HUGE_VAL; }
     return vis_next(mc, ls, (int32_t) e);
+}
+
+// The heat file (user 2026-11-07: expert heat in its own file, not mixed with tuning values): <hot map dir>/<model>.hotmoes.ini, lines clock=N, hot.<layer>=uses..., vis.<layer>=stamps...
+// (RP_VIS per expert, oldest first). Written beside it and renamed over it under <file>.lock, so a crash or a second server never leaves half a file.
+struct heat_lock {
+    int fd = -1;
+    explicit heat_lock(const std::string & f) {
+#ifndef _WIN32
+        fd = open((f + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+        if (fd >= 0) { while (flock(fd, LOCK_EX) != 0 && errno == EINTR) {} }
+#endif
+    }
+    ~heat_lock() { if (fd >= 0) { close(fd); } }
+};
+static void rp_heat_save(const moe_cache * mc) {
+    if (!mc->rp_on || mc->heat_file.empty()) { return; }
+    std::string o = "clock=" + std::to_string(mc->vis_now.load()) + "\n";
+    for (const auto & ls : mc->layers) {
+        const std::string l = std::to_string(parse_layer_from_name(ls.pub.up_src->name));
+        o += "hot." + l + "=";
+        for (size_t e = 0; e < ls.heat_cnt.size(); ++e) { o += (e ? " " : "") + std::to_string(ls.heat_cnt[e]); }
+        o += "\nvis." + l + "=";
+        for (size_t i = 0; i < ls.vis.size(); ++i) { o += (i ? " " : "") + std::to_string(ls.vis[i]); }
+        o += "\n";
+    }
+    heat_lock lk(mc->heat_file);
+    const std::string tmp = mc->heat_file + ".tmp";
+    FILE * f = fopen(tmp.c_str(), "wb");
+    if (!f) { return; }
+    const bool ok = fwrite(o.data(), 1, o.size(), f) == o.size();
+    if (fclose(f) == 0 && ok) { std::error_code ec; std::filesystem::rename(tmp, mc->heat_file, ec); if (!ec) { return; } }
+    std::remove(tmp.c_str());
+}
+// false: no file (the counts start from the state's lifetime counts, once); a line of another layout is skipped (that layer starts empty)
+static bool rp_heat_load(moe_cache * mc) {
+    std::map<std::string, std::string> kv;
+    {
+        heat_lock lk(mc->heat_file);
+        std::ifstream in(mc->heat_file);
+        if (!in) { return false; }
+        for (std::string line; std::getline(in, line); ) {
+            const size_t eq = line.find('=');
+            if (eq != std::string::npos) { kv[line.substr(0, eq)] = line.substr(eq + 1); }
+        }
+    }
+    if (kv.count("clock")) { mc->vis_base = (uint32_t) strtoul(kv["clock"].c_str(), nullptr, 10); mc->vis_now.store(mc->vis_base + 1); }
+    for (auto & ls : mc->layers) {
+        const std::string l = std::to_string(parse_layer_from_name(ls.pub.up_src->name));
+        std::vector<uint64_t> h; std::vector<uint32_t> v;
+        { std::istringstream is(kv["hot." + l]); for (uint64_t x; is >> x; ) { h.push_back(x); } }
+        { std::istringstream is(kv["vis." + l]); for (uint32_t x; is >> x; ) { v.push_back(x); } }
+        if (h.size() == ls.heat_cnt.size()) { ls.heat_cnt = h; }
+        if (v.size() == ls.vis.size()) { ls.vis = v; }
+    }
+    return true;
 }
 
 void profile_save(const moe_cache * mc) {
@@ -1238,13 +1296,8 @@ void profile_save(const moe_cache * mc) {
             v += (e ? " " : "") + std::to_string((uint32_t) (ls.glob_count[e] >> shift));
         }
         kv.emplace_back("hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), v);   // real layer: dense layers are not cache layers
-        if (!ls.vis.empty()) {   // the heat ring: RP_VIS stamps per expert, oldest first, on the clock saved as vis.clock
-            std::string w;
-            for (size_t i = 0; i < ls.vis.size(); ++i) { w += (i ? " " : "") + std::to_string(ls.vis[i]); }
-            kv.emplace_back("vis." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), w);
-        }
     }
-    if (mc->rp_on) { kv.emplace_back("vis.clock", std::to_string(mc->vis_now.load())); }
+    rp_heat_save(mc);
     // what this run did, per name the last 9 runs: run.<name> = <median> <last> | <oldest> ... <newest> (hit rate of the cache, evictions, uploads and
     // uploaded MiB per step, share of the prefill's experts found in the cache)
     {
@@ -1970,12 +2023,6 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         auto & ls = mc->layers[il];
         ls.glob_count = counts[il];
         ls.glob_base  = counts[il];
-        if (std::string w; !ls.vis.empty() && moe_state_get(mc->profile, "vis." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), w)) {
-            std::istringstream is(w);
-            std::vector<uint32_t> v;
-            for (uint32_t x; is >> x; ) { v.push_back(x); }
-            if (v.size() == ls.vis.size()) { ls.vis = v; }   // another layout: the ring starts empty
-        }
         ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
         refresh_sticky(ls);
         std::vector<int32_t> ids;
@@ -1991,7 +2038,6 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             picks.push_back({ (double) ls.glob_count[ids[i]] / (double) std::max<uint64_t>(1, total), il, ids[i] });   // share of the layer's picks: comparable across layers
         }
     }
-    if (std::string c; moe_state_get(mc->profile, "vis.clock", c)) { mc->vis_base = (uint32_t) strtoul(c.c_str(), nullptr, 10); mc->vis_now.store(mc->vis_base + 1); }
     mc->profile_ready.store(true, std::memory_order_release);
     std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
     for (const auto & pk : picks) {
@@ -2604,7 +2650,7 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
             if (!prefill || count_prompt) {   // the lifetime counts (eviction score, saved hot map): the answer's experts, not the question's, with count-prompt=0
                 ls->glob_max = std::max(ls->glob_max, ++ls->glob_count[id]);
             }
-            if (!prefill) { vis_stamp(*ls, id, mc->vis_now.load(std::memory_order_relaxed)); }   // the rampool heat: decode visits only (a prompt pass reads every expert anyway)
+            if (!prefill) { vis_stamp(*ls, id, mc->vis_now.load(std::memory_order_relaxed)); if (!ls->heat_cnt.empty()) { ls->heat_cnt[id]++; } }   // the rampool heat: decode visits only (a prompt pass reads every expert anyway)
             const int32_t slot = ls->expert_slot[id];
             if (slot >= 0) {
                 if (!prefill && ls->is_stream[slot] &&
@@ -7154,9 +7200,12 @@ static void * rp_alloc(size_t bytes, void * ud) {
     return base;
 }
 static const void * rp_cpu_ptr(const ggml_tensor * src0, int64_t e) { return ggml_rampool_get_fork(src0, e); }
-static void rp_setup(moe_cache * mc) {
+static void rp_setup(moe_cache * mc, const llama_model & model) {
     const char * rv = moe_opt("rampool");
     if (!rv || atoi(rv) == 0) { return; }
+    mc->heat_file = hotmap_path(model, ".hotmoes.ini");
+    for (auto & ls : mc->layers) { ls.heat_cnt = ls.glob_count; }   // no heat file yet: the state's lifetime counts, once
+    const bool heat_from_file = !mc->heat_file.empty() && rp_heat_load(mc);
     const char * pb = moe_opt("pin-budget"), * pu = moe_opt("pin-used");
     const size_t budget = pb ? (size_t) strtoull(pb, nullptr, 10) : 0, used = pu ? (size_t) strtoull(pu, nullptr, 10) : 0;
     ggml_backend_dev_t gpu = mc->bufs.empty() ? nullptr : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mc->bufs.back()));
@@ -7196,9 +7245,9 @@ static void rp_setup(moe_cache * mc) {
     size_t ringed = 0;
     for (const auto & ls : mc->layers) { for (size_t i = RP_VIS - 1; i < ls.vis.size(); i += RP_VIS) { ringed += ls.vis[i] != 0; } }
     LLAMA_LOG_WARN("moe-cache: rampool: %.1f of %.1f GiB expert slices in RAM (%.1f GiB filled, %d size classes, %zu tensors) = pin budget %.1f - pinned by the loader %.1f GiB, RAM available %.1f GiB, in %.1f s; "
-            "picked by heat: %zu experts with a visit ring (clock %u), the rest by lifetime count; %zu tensors read past their slice stay on the old path\n",
+            "picked by heat (%s): %zu experts with a visit ring (clock %u), the rest by lifetime count; %zu tensors read past their slice stay on the old path\n",
             st.bytes / 1073741824.0, bytes / 1073741824.0, st.used / 1073741824.0, st.classes, n_t, budget / 1073741824.0, used / 1073741824.0, avail / 1073741824.0, (ggml_time_us() - t0) / 1e6,
-            ringed, mc->vis_now.load(), n_past);
+            heat_from_file ? mc->heat_file.c_str() : "no heat file yet, the state's lifetime counts", ringed, mc->vis_now.load(), n_past);
     llama_moe_decision_fork("stage", "rampool fill", "");
 }
 // stats.log RPL and the log: what the pool served since the last line (per request, at exit). RAM share = asked found in the pool; SSD = read into the pool now + refused (old path)
@@ -8678,7 +8727,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         } else {
             LLAMA_LOG_WARN("moe-cache: nothing preloaded: no usage profile of this model and layout in the state file, the cache fills from the first prompt\n");
         }
-        rp_setup(mc);
+        rp_setup(mc, model);
         {
             size_t n_slow = 0, n_hot = 0, n_stk = 0;
             for (auto & ls : mc->layers) {
