@@ -1946,7 +1946,10 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
     std::string fx;
     for (size_t i = 0; i < x; ++i) {
         if (B.tok[i] <= 0) { continue; }   // no range this pass: its factor stays
-        const bool late = waited && window > 0.0 && chain[i] / window >= 0.9 * worst;
+        // late only when its chain is longer than the window: with equal chains the expert card still waits per layer for the hand-off of the helper's range
+        // (GLM 3.5 64k, 2026-11-07: 16-37% of every pass with the chain at 96-102% of the window), and that wait no share removes - charged to the tokens it
+        // took f from 1.00 to 0.15 in 14 passes while the share climb held the share at 0.46 against it
+        const bool late = waited && window > 0.0 && chain[i] / window > 1.05 && chain[i] / window >= 0.9 * worst;
         if (late) { g_zw.f[i] = std::max(0.05, g_zw.f[i] * 0.9); }
         else      { g_zw.f[i] = std::min(1.0, g_zw.f[i] * 1.05); }
         fx += format("%s %s %.2f -> %.2f%s", fx.empty() ? "" : ",", ggml_backend_dev_name(B.dev[i]), f0[i], g_zw.f[i], late ? " (waited for)" : "");
