@@ -65,6 +65,7 @@
 #endif
 void llama_moe_decision_fork(const char * name, const char * value, const char * why);   // exported in llama.h; "stage" writes one span of the start-up to stats.log
 void llama_moe_ssd_max_fork(double gbs);   // llama-moestate-fork.cpp: the drive's measured maximum, for the share logged on SSD spans
+double llama_moe_ssd_max_get_fork();        // the same, read: the call planner's SSD rate until a stream pass measured its own
 void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);
 void llama_moe_stats_emit_at_fork(const char * kind, const char * text, double at);   // llama-moestate-fork.cpp: a line of stats.log with the time of the event
 void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total);
@@ -478,7 +479,9 @@ struct moe_cache {
     // and bytes read, CPU expert matmuls vs uploads
     std::atomic<int64_t> ddr_mbs{0};
     int64_t              cpu_mbs_on = 0;     // what the running CPU phase added
-    double               cpu_gbs_meas = 0;   // EMA of the CPU phases' read rate
+    double               cpu_gbs_meas = 0;   // EMA of the CPU phases' read rate (layers whose experts sit in pinned RAM)
+    double               cpu_gbs_mapped = 0; // the same for layers whose experts stayed mapped: the CPU reads them through page faults from the SSD (GLM 3.5 2026-11-07: 0.5-0.9 GB/s against 41 pinned)
+    bool                 phase_mapped = false;   // set by llama_moe_cache_jit_fork for the layer whose CPU phase comes next
     std::atomic<int64_t> cpu_bytes_phase{0};
     std::atomic<int64_t> cpu_bytes{0}, up_bytes{0};
     std::atomic<int64_t> pf_hit_bytes{0};   // prompt passes: bytes of experts found in the cache and copied from it on the card (the upload skipped), the counterpart of pf_bytes
@@ -2398,7 +2401,8 @@ void moe_phase_cb(int busy, size_t bytes, void * ud) {
         const int64_t dt = t - mc->busy_t0;
         if (mc->cpu_bytes_phase > 0 && dt > 0 && g_warm.load(std::memory_order_relaxed)) {
             const double gbs = (double) mc->cpu_bytes_phase / dt / 1e3;
-            mc->cpu_gbs_meas = mc->cpu_gbs_meas > 0 ? 0.95*mc->cpu_gbs_meas + 0.05*gbs : gbs;
+            double & ema = mc->phase_mapped ? mc->cpu_gbs_mapped : mc->cpu_gbs_meas;
+            ema = ema > 0 ? 0.95*ema + 0.05*gbs : gbs;
         }
         if (tr_on()) {
             tr(TR_CPU, "cpu experts", mc->busy_t0, dt, tr_fmt("\"MB\":%.1f", mc->cpu_bytes_phase / 1e6));
@@ -8818,6 +8822,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         return;
     }
     layer_state & ls = *lsp;
+    mc->phase_mapped = ls.src_dfd[0] >= 0;   // this layer's CPU phase reads mapped experts (moe_phase_cb keeps their rate apart)
     const bool pool = ls.pub.jit_n > 0; // slower-link layer: the pool on the fastest-link GPU instead of its own cache
     const int  lk   = pool ? 0 : ls.link;
     ggml_backend_t be = mc->link_be[lk];
@@ -8857,10 +8862,18 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     const double rcc = knobs().ddr_gbs > 0.0 ? std::min(rc, std::max(0.0, knobs().ddr_gbs * 1e3 - rl * 1e3)) : rc;   // the RAM budget, when it is known
     const double rlb = rl * 1e3;
     const int    m   = (int) miss.size();
-    // the experts with the most tokens are the dearest on the CPU (its time grows with them, an upload's does not): they are uploaded first
-    std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return ntok[a] != ntok[b] ? ntok[a] > ntok[b] : score(ls, a) > score(ls, b); });
-    std::vector<double> cpu_tail(m + 1, 0.0);   // cpu_tail[k]: bytes the CPU still reads if the first k are uploaded (each expert once per token routed to it)
-    for (int i = m - 1; i >= 0; --i) { cpu_tail[i] = cpu_tail[i + 1] + (double) ntok[miss[i]] * S; }
+    // A mapped expert (its tensor stayed mapped, no pinned copy) is read by the CPU through page faults from the SSD, at the rate measured for such layers (cpu_gbs_mapped),
+    // not at the RAM rate: its bytes count as the RAM-rate equivalent (user 2026-11-07: the planner is "crippled by ... assumptions"; GLM 3.5 decode sent 2531 of 5651
+    // single misses to the CPU at 0.5-0.9 GB/s while the x16 link ran at 10%).
+    const double rcm = mc->cpu_gbs_mapped > 0 ? mc->cpu_gbs_mapped * 1e3 : rc;
+    auto mapped = [&](int32_t e) { return ls.src_dfd[0] >= 0 && !(ls.pin_ptr[0] && ls.pin_ptr[0][e].load(std::memory_order_acquire)); };
+    auto cpu_eq = [&](int32_t e) { return (double) ntok[e] * S * (mapped(e) && rcm > 0 ? rc / rcm : 1.0); };   // bytes at the RAM rate that cost the same CPU time
+    int n_mapped = 0;
+    for (int32_t e : miss) { n_mapped += mapped(e); }
+    // the experts dearest on the CPU (most tokens, mapped ones first: their time grows with tokens and with faults, an upload's does not) are uploaded first
+    std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { const double ca = cpu_eq(a), cb = cpu_eq(b); return ca != cb ? ca > cb : score(ls, a) > score(ls, b); });
+    std::vector<double> cpu_tail(m + 1, 0.0);   // cpu_tail[k]: RAM-rate bytes the CPU still reads if the first k are uploaded (each expert once per token routed to it)
+    for (int i = m - 1; i >= 0; --i) { cpu_tail[i] = cpu_tail[i + 1] + cpu_eq(miss[i]); }
     auto T = [&](int k) {
         const double tl = k * S / rlb, bc = cpu_tail[k];
         if (k == 0) { return bc / rc; }
@@ -8879,8 +8892,8 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         const int mode = kb == 0 ? 0 : kb == m ? 2 : 1;
         if (last_mode[lk & 7].exchange(mode) != mode) {
             static const char * const nm[3] = { "CPU", "CPU and uploads", "uploads" };
-            llama_moe_stats_log_fork("SWT", format("%s call, link %d (%.1f GB/s), layer %d: misses go to %s (%d of %d uploaded, %d tokens; layer takes %.0f ms with them, %.0f ms all on the CPU, %.0f ms all uploaded)",
-                    prompt ? "prompt" : "decode", lk, rl, pub->il, nm[mode], kb, m, (int) ids->ne[1], T(kb) / 1e3, T(0) / 1e3, T(m) / 1e3).c_str());
+            llama_moe_stats_log_fork("SWT", format("%s call, link %d (%.1f GB/s), layer %d: misses go to %s (%d of %d uploaded, %d mapped, %d tokens; layer takes %.2f ms with them, %.2f ms all on the CPU (%.1f GB/s, mapped %.1f), %.2f ms all uploaded)",
+                    prompt ? "prompt" : "decode", lk, rl, pub->il, nm[mode], kb, m, n_mapped, (int) ids->ne[1], T(kb) / 1e3, T(0) / 1e3, rc / 1e3, rcm / 1e3, T(m) / 1e3).c_str());
         }
     }
     if (kb == 0) {
@@ -11868,7 +11881,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     const double td = pp_took_us(PP_DEC, n), to = pp_other_us(n, PP_DEC);
     // The stream reads the experts no card holds: over the link, and from the SSD where their tensors are still mapped. Both run side by side (the reads fill the staging slots the link empties), so the
     // slower one is its time; the SSD's rate is what the stream passes read at so far, none before the first one.
-    const double ssd_rate = g_pp_ssd_gbs > 0.0 ? g_pp_ssd_gbs : g_load_read_gbs.load();   // a stream pass's own rate, until one ran: the loader's (user 2026-11-03: a short first prompt should not default to the stream)
+    // a stream pass's own rate, until one ran: the loader's, else the machine benchmark's drive maximum (2026-11-07: GLM 3.5 planned every call "from the SSD at 0.00 GB/s", both were 0 with the O_DIRECT loader)
+    const double ssd_rate = g_pp_ssd_gbs > 0.0 ? g_pp_ssd_gbs : g_load_read_gbs.load() > 0.0 ? g_load_read_gbs.load() : llama_moe_ssd_max_get_fork();
     const double Ts = ssd_rate > 0.0 ? std::max(U, M / (ssd_rate * 1e3)) : U;
     g_pp_ssd_m = M;
     g_pp_rb0 = pp_self_read_bytes();
@@ -11946,7 +11960,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     for (int k = 0; k < mc->n_links; ++k) { links += format("%s%.1f", k ? "/" : "", mc->gbs_link[k]); }
     const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s; stream reads %.1f GB from the SSD at %.2f GB/s; decode chain: misses x%.2f, 4-token chunks %.0f ms x%.2f at %.0f GB/s weight read, fixed %.0f ms; compute %.0f ms)",
             n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, std::min(dec_max, (double) ub_max), de / 1e3, ot / 1e3, td / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
-            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, g_pp_ssd_gbs, dec_r, g_pp_dec_chunk / 1e3, g_pp_dec_kc, R_read / 1e9, dec_f / 1e3, comp_at(n) / 1e3);
+            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, ssd_rate, dec_r, g_pp_dec_chunk / 1e3, g_pp_dec_kc, R_read / 1e9, dec_f / 1e3, comp_at(n) / 1e3);
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
     llama_moe_stats_io_fork(0);   // the reads of this call start counting here

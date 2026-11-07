@@ -6751,3 +6751,6 @@ rd_shape-glm35-i-pf8k1k,2026-11-07 05:01:34,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-
 direct_load-glm35-i-pf8k1k,2026-11-07 05:05:25,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds direct_load variants v test pf8k n=1,,
 rd_shape-glm35-i-pf8k1k,2026-11-07 05:10:46,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds rd_shape variants v test pf8k n=1,,
 direct_load2-glm35-i-pf8k1k,2026-11-07 05:14:35,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds direct_load2 variants v test pf8k n=1,,
+xover_mapped-glm35-i-pf8k1k,2026-11-07 05:24:32,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds xover_mapped variants v test pf8k n=1,,
+direct_load2-glm35-i-pf8k1k,2026-11-07 05:32:29,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds direct_load2 variants v test pf8k n=1,,
+xover_mapped-glm35-i-pf8k1k,2026-11-07 05:36:12,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds xover_mapped variants v test pf8k n=1,,

@@ -551,6 +551,7 @@ double llama_moe_span_now_fork() { return std::chrono::duration<double>(std::chr
 // The drive's measured maximum (the read probe, GB/s): a span whose `where` is "SSD..." or "O_DIRECT..." also logs its rate as a share of it, so an inefficient big read stands out.
 static std::atomic<double> g_ssd_max_gbs{0.0};
 void llama_moe_ssd_max_fork(double gbs) { g_ssd_max_gbs.store(gbs); }
+double llama_moe_ssd_max_get_fork() { return g_ssd_max_gbs.load(); }
 
 static void stats_flush() {   // the queued lines and the spans since the last flush, in time order: the flusher thread only
     std::vector<moe_span_rec> v;
