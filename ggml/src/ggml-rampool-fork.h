@@ -51,6 +51,8 @@ struct ggml_rampool_stats {
     int      classes;
 };
 GGML_API void ggml_rampool_stats_fork(struct ggml_rampool_stats * s, bool reset);
+// time callers waited for demand reads since the pool opened, never reset (the decode thread tuner takes it out of the token time); 0 without a pool
+GGML_API uint64_t ggml_rampool_wait_us_fork(void);
 
 #ifdef __cplusplus
 }

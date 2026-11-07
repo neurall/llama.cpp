@@ -109,6 +109,7 @@ struct rp_pool {
     bool                    evict = false;   // ggml_rampool_evict_fork: blocks change owner during the run; off: the fill's set stays, a slice out of it is read the old way
 
     std::atomic<uint64_t> st_asked{0}, st_hit{0}, st_cold{0}, st_refused{0}, st_evicted{0}, st_cold_b{0}, st_wait_us{0}, st_pp_hit{0}, st_pp_miss{0};
+    std::atomic<uint64_t> wait_total_us{0};   // st_wait_us without the per-request reset (ggml_rampool_wait_us_fork)
     uint64_t pool_bytes = 0;
 };
 
@@ -538,7 +539,8 @@ void ggml_rampool_need_fork(const void * key, const int32_t * ids, int n) {
             while (i < n && (ids[i] < 0 || ids[i] >= t->n || t->rec[ids[i]].state != RP_READING)) { ++i; }
             return i == n;
         });
-        p->st_wait_us += (uint64_t) (rp_now_us() - t0);
+        const uint64_t w = (uint64_t) (rp_now_us() - t0);
+        p->st_wait_us += w; p->wait_total_us += w;
     }
 }
 
@@ -584,7 +586,8 @@ const char * ggml_rampool_take_fork(const void * key, int64_t e) {
     }
     const int64_t t0 = rp_now_us();
     p->done_cv.wait(lk, [&]() { return r.state != RP_READING; });
-    p->st_wait_us += (uint64_t) (rp_now_us() - t0);
+    const uint64_t w = (uint64_t) (rp_now_us() - t0);
+    p->st_wait_us += w; p->wait_total_us += w;
     if (r.state == RP_IN) { return t->ptr[e].load(std::memory_order_relaxed); }
     r.holds--;
     return nullptr;
@@ -595,6 +598,10 @@ void ggml_rampool_drop_fork(const void * key, int64_t e) {
     if (t == nullptr || e < 0 || e >= t->n) { return; }
     std::lock_guard<std::mutex> lk(g_rp->mu);
     t->rec[e].holds--;
+}
+
+uint64_t ggml_rampool_wait_us_fork(void) {
+    return g_rp ? g_rp->wait_total_us.load(std::memory_order_relaxed) : 0;
 }
 
 void ggml_rampool_stats_fork(struct ggml_rampool_stats * s, bool reset) {

@@ -13,6 +13,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 #include "llama-moestate-fork.h"
 
 #include "ggml.h"
+#include "../ggml/src/ggml-rampool-fork.h"
 #include "llama-arch.h"
 #include "llama-graph.h"
 #include "llama-impl.h"
@@ -2640,6 +2641,14 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
 void llama_context::thread_tune_feed(int64_t dt_us) {
     if (!thr.on || cparams.n_threads < 2) {
         return;
+    }
+    // The RAM pool's demand reads (--moe rampool) stall the token on the SSD before the kernel runs; the thread count does not change that time, but spinning
+    // threads starve the readers, so with it inside the token time every lower count "won" (GLM 3.5 rampool3: 16 -> 8 -> 4 -> 2 -> 1 threads, decode 15.8 -> 6.5 t/s)
+    {
+        static uint64_t wait_seen = 0;
+        const uint64_t w = ggml_rampool_wait_us_fork();
+        dt_us -= std::min<int64_t>(dt_us, (int64_t) (w - wait_seen));
+        wait_seen = w;
     }
     // First tokens: find the decode thread count by ALTERNATING between the best count so far (b) and one lower candidate (c) on consecutive tokens (user 2026-10-26).
     // The search starts on every hardware thread (common_init_result): too many threads costs little (barriers, SMT siblings), too few costs a lot, and on a multi-die
