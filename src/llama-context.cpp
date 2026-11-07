@@ -61,6 +61,7 @@ void llama_moe_cache_prompt_call_fork(bool on);   // llama-moecache-fork.cpp
 void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the one-card pass limit of this call
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
+size_t   llama_moe_cache_vram_margin_fork(ggml_backend_dev_t dev);                     // src/llama-moecache-fork.cpp: the VRAM margin a card keeps (the first micro-batch cap below)
 bool     llama_moe_cache_pp_short_fork();
 void     llama_moe_cache_pp_freeze_fork();
 void     llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens);
@@ -1711,6 +1712,34 @@ void llama_context::sched_reserve() {
     };
     if (cparams.moe_cache && !model.no_alloc() && n_tokens > 512) {   // before the first real reserve (which allocates): the list, measure-only
         list_top(graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), true, lt.data()), n_tokens);
+    }
+    // The first micro-batch from free VRAM (fork/docs/crash-oom29g.md): common.cpp asks for min(ctx, 16384) blind to the cards, the first reserve of that graph
+    // failed on every big model (GLM: 29.7 GiB on one card) and common.cpp bisected it with a new context per step, each step pinning 4-5 GiB of host memory
+    // again (seven pins of 200-600 MB/s in one GLM 3.5 load, the memory stall of 2026-11-07). The graph's bytes are linear in tokens through the origin, so
+    // the measure-only sizes above give the largest pass each card's free VRAM holds behind its margin; the pools' own fit (fit_ub) runs after they exist.
+    static const llama_context * ub_capped = nullptr;
+    if (cparams.moe_cache && moe_alias_bufs.empty() && !model.no_alloc() && n_tokens > 512 && ub_capped != this) {
+        ub_capped = this;
+        uint32_t u = n_tokens;
+        std::string why;
+        for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+            ggml_backend_dev_t d = ggml_backend_get_device(backend_ptrs[i]);
+            if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU || lt[i] == 0) { continue; }
+            size_t free_b = 0, total_b = 0;
+            ggml_backend_dev_memory(d, &free_b, &total_b);
+            const size_t margin = llama_moe_cache_vram_margin_fork(d);
+            const uint32_t cap = free_b > margin ? (uint32_t) std::min<uint64_t>(n_tokens, (uint64_t) (free_b - margin) * n_tokens / lt[i] / 32 * 32) : 0;
+            why += format("%s%s free %.0f MiB, margin %.0f, graph %.0f MiB at %u -> %u", why.empty() ? "" : "; ", ggml_backend_dev_name(d), free_b / 1048576.0, margin / 1048576.0, lt[i] / 1048576.0, n_tokens, cap);
+            u = std::min(u, cap);
+        }
+        if (u >= 512 && u < n_tokens) {
+            LLAMA_LOG_WARN("%s: micro-batch from free VRAM: %u tokens (configured %u; %s)\n", __func__, u, n_tokens, why.c_str());
+            llama_moe_decision_fork("ubatch", std::to_string(u).c_str(), ("free VRAM at the first reserve: " + why).c_str());
+            cparams.n_ubatch = u;
+            sched_need_reserve = true;
+            sched_reserve();
+            return;
+        }
     }
     auto fit_ub = [&](uint32_t hi) -> uint32_t {
         std::vector<std::pair<size_t, ggml_backend_dev_t>> gi;   // backends whose card has a pool

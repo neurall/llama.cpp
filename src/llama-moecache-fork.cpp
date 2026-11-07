@@ -7718,6 +7718,9 @@ static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
 
 // the margin a pool leaves on a card: --moe vram-reserve-mb / margin_mb if set, else the need an earlier session measured on this card, driver and build
 // plus a safety (64 MiB or an eighth of the need), else 484 MiB. Windows never goes below 484: the display and other programs take VRAM at any time (WDDM).
+static size_t vram_margin(ggml_backend_dev_t dev, const std::string & section, bool cold, int64_t * stored_mb, bool * from_cold);
+// the context's first reserve (llama_context::sched_reserve): the VRAM margin a card keeps, so the first micro-batch is computed from free VRAM instead of failing into it
+size_t llama_moe_cache_vram_margin_fork(ggml_backend_dev_t dev) { return vram_margin(dev, "", false, nullptr, nullptr); }
 static size_t vram_margin(ggml_backend_dev_t dev, const std::string & section, bool cold, int64_t * stored_mb, bool * from_cold) {
     const size_t MiB = 1024 * 1024;
     if (user_knobs().count("VRAM_RESERVE_MB") || user_knobs().count("MARGIN_MB")) {
