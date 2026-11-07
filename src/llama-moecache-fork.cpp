@@ -885,7 +885,7 @@ struct knobs_t {
                                // 2: uploads per target layer = measured time until it / measured link time per expert
     double wait        = 1;    // the step waits for queued cache swaps (0: never; finished uploads are published at splits)
     double chunk_kb    = -1;    // GATE=3: copy in chunks of this size, re-checking the DDR budget before each (0: whole tensor)
-    double margin_mb   = 0;     // VRAM kept free per GPU after the cache is sized; 0: 384 (the engine sets it from the measured run-time growth)
+    double margin_mb   = 0;     // VRAM kept free per GPU after the cache is sized; 0: 484 (the engine sets it from the measured run-time growth)
     double ddr_gbs     = 0;    // CPU + the DMAs together at their peak, 0 = not measured yet (resource_probe sets it); GATE=3: an upload starts only while DDR demand + its link rate stays under this
     double stream    = 1e9; // predicted uploads use up to this many stream slots per layer (0: evict cache slots, old path)
     double stream_m  = 12;  // candidates per target layer in stream mode (over-predict; no confidence cut)
@@ -5237,7 +5237,7 @@ static void kv_arena_start(bool pool_records) {
         if (row == 0) { continue; }
         size_t free_b = 0, total = 0;
         ggml_backend_dev_memory(dev, &free_b, &total);
-        const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 384) * 1024 * 1024;
+        const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 484) * 1024 * 1024;
         size_t pad = 256;   // the attention reads the cells rounded up to the pad: the buffer holds at least one whole pad of rows behind the fixed part
         for (auto & r : g_kvt) { if (take(r) && r.dev == dev && r.row) { pad = std::max<size_t>(pad, r.pad); } }
         const size_t least = fixed + pad * row;
@@ -7717,13 +7717,13 @@ static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
 }
 
 // the margin a pool leaves on a card: --moe vram-reserve-mb / margin_mb if set, else the need an earlier session measured on this card, driver and build
-// plus a safety (64 MiB or an eighth of the need), else 384 MiB. Windows never goes below 384: the display and other programs take VRAM at any time (WDDM).
+// plus a safety (64 MiB or an eighth of the need), else 484 MiB. Windows never goes below 484: the display and other programs take VRAM at any time (WDDM).
 static size_t vram_margin(ggml_backend_dev_t dev, const std::string & section, bool cold, int64_t * stored_mb, bool * from_cold) {
     const size_t MiB = 1024 * 1024;
     if (user_knobs().count("VRAM_RESERVE_MB") || user_knobs().count("MARGIN_MB")) {
         return (size_t) std::max(0.0, knobs().margin_mb) * MiB;
     }
-    size_t m = 384 * MiB;
+    size_t m = 484 * MiB;
     std::string v;
     // a warm start with no warm figure yet takes the cold one (it is larger)
     bool own = !section.empty() && moe_state_get(section, vram_key(dev, cold), v);
