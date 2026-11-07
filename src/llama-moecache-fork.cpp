@@ -12277,7 +12277,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // deterministic: the lowest mean, a tie within the spread to the better known path, a trial only where it pays over the calls of this size
         // so far (rls_voi_pick; planner-simple, replacing the Thompson draws that lost rows 23768/23769)
         const double R = (double) ++g_pp_size_seen[(uint32_t) n];
-        g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial);
+        bool known[PP_PATHS];   // ran at comparable features (rls_known): the arms a trial is weighed against
+        for (int p = 0; p < PP_PATHS; ++p) { known[p] = ok[p] && rls_known(g_pp_rls[p], g_pp_pmu[p], g_pp_var[p]); }
+        g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
     }
     bool chain, dec, mix;
@@ -12355,14 +12357,16 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
 // For the learned split planner (dsf_plan): the lowest drawn one-card time of a pass of n tokens at c cells over this call's candidates, by the same draws the
 // call's pick used (one consistent view per request); its posterior mean and variance in *mu, *var. -1: no candidate (the call was not planned here).
 // shortcut: a candidate's upload is the call's pass size's (U at n of the call); passes of other sizes in one call are the tail only. Upgrade if calls mix sizes.
-double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path) {
+double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path, bool * known) {
     // planner-simple: the one-card side is the path this call picked, its posterior mean and variance at this pass (no draws); -1 when none
     std::lock_guard<std::mutex> lk(g_pp_mu);
     const int p = g_pp_pick >= 0 ? g_pp_pick : -1;
     if (p < 0 || g_pp_phi[p][1] <= 0.0) { return -1.0; }
     const double phi[4] = { 1.0, (double) n, (double) n * g_pp_a_us * (double) c, g_pp_phi[p][3] };
     double v = 0.0;
-    const double m = rls_pred(pp_rls(p), phi, &v);
+    dsf_rls & rp = pp_rls(p);
+    const double m = rls_pred(rp, phi, &v);
+    if (known) { *known = rls_known(rp, m, v); }
     if (mu) { *mu = m; }
     if (var) { *var = v; }
     if (path) { *path = p; }

@@ -702,7 +702,7 @@ bool   llama_moe_cache_pp_no_dense_fork();                      // llama-moecach
 bool   llama_moe_cache_pp_planned_fork();                       // llama-moecache-fork.cpp: this call has one-card candidates (the moe-cache planned it)
 bool   llama_moe_cache_pp_yield_fork(const char * why);         // llama-moecache-fork.cpp: the call's one-card path gives the pass to the split (the stream runs); false: a path the user set keeps it
 static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
-double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path);   // llama-moecache-fork.cpp: the call's lowest drawn one-card pass
+double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path, bool * known);   // llama-moecache-fork.cpp: the call's lowest drawn one-card pass
 std::string llama_moe_cache_pp_path_name_fork(int p);
 double llama_moe_cache_att_us_cell_fork();   // the moe-cache's measured attention per token and cell (us), 0 = not fitted yet
 // ---- the learned planner (fork/docs/rampool.md "Robust planner design"): the split pass and the copy fill are one RLS each (llama-rls-fork.h); the one-card
@@ -2676,6 +2676,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     double m1 = 0.0, v1s = 0.0, m2 = 0.0, v2s = 0.0;
     double mu1_0 = 0.0, v1_0 = 0.0, mu2_0 = 0.0, v2_0 = 0.0;
     int path0 = -1, np = 0;
+    bool known1 = false, known2 = false;   // each side ran at comparable features (rls_known): a trial is weighed against the known side
     const bool split_prior = g_rls_split.n == 0 && !g_rls_split_loaded;
     for (int64_t c = pos0; c < end; c += n_tokens, ++np) {
         const int64_t T = std::min<int64_t>(n_tokens, end - c);
@@ -2684,14 +2685,15 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         double mu1 = 0.0, v1 = 0.0, mu2, v2;
         int pth = -1;
         const double phi[4] = { 1.0, (double) T, (double) T * att * cm, U };
-        if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); }   // C18
+        bool kn1 = false;
+        if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth, &kn1) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); kn1 = rls_known(g_rls_one, mu1, v1); }   // C18
         if (split_prior) {
             mu2 = mu1 * RLS_SPLIT_ONE_RATIO;
             v2  = mu2 * mu2 * RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG + v1 * RLS_SPLIT_ONE_RATIO * RLS_SPLIT_ONE_RATIO;
         } else {
             mu2 = rls_pred(g_rls_split, phi, &v2);
         }
-        if (c == pos0) { mu1_0 = mu1; v1_0 = v1; mu2_0 = mu2; v2_0 = v2; path0 = pth; }
+        if (c == pos0) { mu1_0 = mu1; v1_0 = v1; mu2_0 = mu2; v2_0 = v2; path0 = pth; known1 = kn1; known2 = !split_prior && rls_known(g_rls_split, mu2, v2); }
         m1 += mu1; v1s += v1; m2 += mu2; v2s += v2;
     }
     double f_mu = 0.0, f_v = 0.0;
@@ -2702,7 +2704,8 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     const double am[2] = { m1, m2 + f_mu }, av[2] = { v1s, v2s + f_v };
     const bool aok[2] = { true, true };
     bool trial = false;
-    const int choice = rls_voi_pick(am, av, aok, 2, (double) seen[n_tokens], &trial);
+    const bool akn[2] = { known1, known2 };
+    const int choice = rls_voi_pick(am, av, aok, 2, (double) seen[n_tokens], &trial, akn);
     // p_split, for the log only: the posterior probability that splitting this call beats one card
     const double p_split = rls_phi_cdf((am[0] - am[1]) / std::max(1e-9, std::sqrt(av[0] + av[1])));
     const double g_this = mu1_0 - mu2_0, g_pos = m1 - m2, d1_0 = mu1_0, d2_0 = mu2_0, f_d = f_mu;

@@ -189,6 +189,7 @@ static constexpr double RLS_SPLIT_ONE_RATIO = 0.96, RLS_SPLIT_ONE_SDLOG = 0.36;
 // mean b, an arm t ~ N(mu, var) is expected to gain EI = E[max(0, b - t)] per call and to lose EL = E[max(0, t - b)] = EI + mu - b on the trial. It is
 // tried when the gain over the calls this decision recurs in (R: this call and the earlier ones like it in the process) beats the trial's loss:
 // EI x R > EL. A known slower arm (sigma = the noise) is never tried, an unknown one only where it can pay; R grows as the decision repeats. No constant.
+static constexpr double RLS_TRIAL_LOSS_MAX = 0.05;   // the user's rule (2026-11-07): a wrong pick may cost at most 5% of the call against the measured best
 static inline double rls_ncdf(double z) { return 0.5 * std::erfc(-z / std::sqrt(2.0)); }
 static inline double rls_ei(double mu, double var, double b) {
     const double sd = std::sqrt(std::fmax(0.0, var));
@@ -196,21 +197,30 @@ static inline double rls_ei(double mu, double var, double b) {
     const double z = (b - mu) / sd;
     return (b - mu) * rls_ncdf(z) + sd * std::exp(-0.5 * z * z) / std::sqrt(2.0 * 3.141592653589793);
 }
-// the pick: the lowest mean, or the arm whose trial pays most (EI R - EL > 0); *trial tells which
-static inline int rls_voi_pick(const double * mu, const double * var, const bool * ok, int n, double R, bool * trial) {
-    int b = rls_argmin(mu, ok, n);
+// Known here: the model's parameter uncertainty at this phi is no larger than the noise (phi' P phi <= mu^2, i.e. var <= 2 s2 mu^2): the arm ran at
+// comparable features. A measured arm extrapolated far from where it ran is not known here (the split measured at 10k says little at 2k).
+static inline bool rls_known(const dsf_rls & r, double mu, double var) { return r.n > 0 && var <= 2.0 * r.s2 * mu * mu; }
+
+// The pick (planner-simple). Among the arms known here: the lowest mean, a tie within the combined spread to the lower variance (the release's
+// margin). An arm not known here (a prior, or a model extrapolated) replaces the best known only as a trial; with no arm known here the lowest mean
+// stands (nothing better is known). A trial (any arm other than that pick) runs only when its expected loss EL is at most RLS_TRIAL_LOSS_MAX of the
+// call (the user's rule: a wrong pick never costs more than 5%) and its expected gain over the calls of this size so far pays for it: EI x R >= EL.
+static inline int rls_voi_pick(const double * mu, const double * var, const bool * ok, int n, double R, bool * trial, const bool * known = nullptr) {
     if (trial) { *trial = false; }
-    if (b < 0) { return b; }
-    // a tie within the two arms' combined sigma goes to the better known arm (the lower variance): a mean ahead by less than its own uncertainty is no
-    // reason to leave a measured path (the margin is the spread, the release's rule); whether the unknown one is worth a trial is the test below
-    for (int i = 0; i < n; ++i) {
-        if (ok[i] && i != b && var[i] < var[b] && mu[i] - mu[b] < std::sqrt(var[i] + var[b])) { b = i; }
+    int b = -1;
+    if (known) {
+        for (int i = 0; i < n; ++i) { if (ok[i] && known[i] && (b < 0 || mu[i] < mu[b])) { b = i; } }
+        for (int i = 0; b >= 0 && i < n; ++i) {
+            if (ok[i] && known[i] && i != b && var[i] < var[b] && mu[i] - mu[b] < std::sqrt(var[i] + var[b])) { b = i; }
+        }
     }
+    if (b < 0) { return rls_argmin(mu, ok, n); }   // nothing known here: the lowest mean
     int t = b; double best = 0.0;
     for (int i = 0; i < n; ++i) {
         if (!ok[i] || i == b) { continue; }
         const double ei = rls_ei(mu[i], var[i], mu[b]), el = ei + mu[i] - mu[b];
-        if (ei * R - el > best) { best = ei * R - el; t = i; }
+        if (el > RLS_TRIAL_LOSS_MAX * mu[b]) { continue; }
+        if (ei * R - el >= best && ei * R >= el) { best = ei * R - el; t = i; }
     }
     if (trial) { *trial = t != b; }
     return t;

@@ -5,7 +5,7 @@ import re, glob, csv, os, sys, statistics as st, collections
 out = sys.argv[1] if len(sys.argv) > 1 else '/tmp'
 w = csv.writer(open(out + '/glm_events.csv', 'w'))
 rows = []
-w.writerow(['log', 'req', 'n', 'cells', 'Ts', 'Um', 'up', 'ch', 'path', 'took_ms', 'fill_ms'])
+w.writerow(['log', 'req', 'n', 'cells', 'Ts', 'Um', 'up', 'ch', 'path', 'took_ms', 'fill_ms', 'dec_max'])
 num = lambda p, s: float(m.group(1)) if (m := re.search(p, s)) else 0.0
 for f in sorted(glob.glob('/p/bw/data/q5h/*glm35-12k-rp*.stats.log')):
     log = os.path.basename(f).replace('.stats.log', '')
@@ -18,7 +18,7 @@ for f in sorted(glob.glob('/p/bw/data/q5h/*glm35-12k-rp*.stats.log')):
             n = num(r'prompt call of (\d+)', s)
             gb, rate = num(r'stream reads ([\d.]+) GB', s), num(r'from the SSD at ([\d.]+) GB/s', s)
             U = num(r'streaming upload (\d+) ms', s)
-            cal = dict(n=n, Ts=max(U, gb / rate * 1e3 if rate > 0 else 0), Um=num(r'with the mix (\d+) ms', s), up=num(r'misses uploaded (\d+) ms', s), ch=num(r'4-token chunks (\d+) ms', s))
+            cal = dict(n=n, Ts=max(U, gb / rate * 1e3 if rate > 0 else 0), Um=num(r'with the mix (\d+) ms', s), up=num(r'misses uploaded (\d+) ms', s), ch=num(r'4-token chunks (\d+) ms', s), dm=num(r'decode chain to (\d+) tokens', s))
             fill = 0.0
         elif t == 'SPN' and 'copy fill' in s:
             fill += num(r'dur ([\d.]+) ms', s)
@@ -27,14 +27,15 @@ for f in sorted(glob.glob('/p/bw/data/q5h/*glm35-12k-rp*.stats.log')):
             if not m or float(m.group(1)) != cal['n'] or cal['n'] < 1000: cal = None; continue
             if cal['n'] < 3000: req += 1   # each request: one ~2k call, then one ~10k call
             cells = cal['n'] / 2 if cal['n'] < 3000 else (2034 if cal['n'] == 10400 else 1938) + cal['n'] / 2
-            r = [log, req, int(cal['n']), cells, cal['Ts'], cal['Um'], cal['up'], cal['ch'], m.group(2), m.group(3), round(fill)]
+            r = [log, req, int(cal['n']), cells, cal['Ts'], cal['Um'], cal['up'], cal['ch'], m.group(2), m.group(3), round(fill), cal['dm']]
             w.writerow(r); rows.append(r)
             cal = None
 
-# the measured medians per call class: the outcome a replayed pick gets (stream, mix and predictions pooled as 'stream')
+# the measured medians per call class: the outcome a replayed pick gets (stream, mix and predictions pooled as 'stream'; dense without its fill)
 T = collections.defaultdict(list)
 for r in rows:
     p = r[8]; arm = 'dense' if p == 'dense' else 'dec' if p == 'decode chain' else 'chain' if p == 'prompt chain' else 'stream'
-    T[('2k' if r[2] < 3000 else '10k', 'c' if r[1] == 0 else 'w', arm)].append(float(r[9]))
+    # the split's pass without its copy fill: whether a fill is owed is the replayed state's, not the logged start's (the replay adds it)
+    T[('2k' if r[2] < 3000 else '10k', 'c' if r[1] == 0 else 'w', arm)].append(float(r[9]) - (float(r[10]) if arm == 'dense' else 0.0))
 t = csv.writer(open(out + '/truth.csv', 'w'))
 for k, v in sorted(T.items()): t.writerow(list(k) + [st.median(v), len(v)])
