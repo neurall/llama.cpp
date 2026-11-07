@@ -58,7 +58,9 @@ std::string g_geom;          // arch.experts.experts_used of the loaded model: w
 std::string g_geom_section;  // the section this run writes the geom tag into
 
 std::string state_path() {
-    if (const char * e = moe_opt("state")) {
+    const char * e = moe_opt("state");
+    if (!e) { e = getenv("LLAMA_MOE_STATE"); }   // the documented environment form (llama.h, fork/run.py's clean-state runs); --moe state= wins
+    if (e) {
         return strcmp(e, "0") == 0 ? "" : e;
     }
     const std::string dir = moe_user_dir();
@@ -95,7 +97,8 @@ file_t load(const std::string & path) {
 }
 
 bool save(const std::string & path, const file_t & f) {
-    const std::string tmp = path + ".tmp";
+    const std::string tmp = path + ".tmp." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());   // per writer: two processes share the default file
+    bool good = false;
     {
         std::ofstream out(tmp, std::ios::trunc);
         if (!out) {
@@ -111,10 +114,12 @@ bool save(const std::string & path, const file_t & f) {
                 out << kv.first << " = " << kv.second << "\n";
             }
         }
+        out.flush();
+        good = out.good();   // a short write (full disk) must not replace the whole file
     }
     std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) {
+    if (good) { std::filesystem::rename(tmp, path, ec); }
+    if (!good || ec) {
         std::filesystem::remove(tmp, ec);
         return false;
     }
@@ -581,11 +586,13 @@ static void stats_flush() {   // the queued lines and the spans since the last f
 }
 
 namespace {
+static std::atomic<bool> g_sampler_stop{false};   // the NVML fast sampler (fast_gpu_sampler_start) ends with the flusher, before the statics it writes are destroyed
+static std::thread       g_sampler_thr;
 struct stats_flusher {   // a function-local static, so it ends before the buffers above it: at exit it writes what is left, then lines go to the file at once
     std::thread th;
     std::atomic<bool> stop { false };
     stats_flusher() { th = std::thread([this] { while (!stop.load()) { for (int i = 0; i < 5 && !stop.load(); ++i) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); } stats_flush(); } stats_flush(); }); }
-    ~stats_flusher() { stop = true; if (th.joinable()) { th.join(); } g_flusher_gone.store(true); stats_flush(); }   // the last flush takes what came after the thread's own last one
+    ~stats_flusher() { stop = true; g_sampler_stop = true; if (g_sampler_thr.joinable()) { g_sampler_thr.join(); } if (th.joinable()) { th.join(); } g_flusher_gone.store(true); stats_flush(); }   // the last flush takes what came after the thread's own last one
 };
 }
 static void stats_flusher_start() { static stats_flusher fl; (void) fl; }   // the thread starts with the first line or span
@@ -740,7 +747,7 @@ static void fast_gpu_sampler_start() {
         const char * o = llama_moe_get_opt("stats-fast-ms");
         const int period_ms = o ? atoi(o) : 100;
         if (period_ms <= 0) { return; }
-        std::thread([period_ms] {
+        g_sampler_thr = std::thread([period_ms] {
             void * h = dlopen("libnvidia-ml.so.1", RTLD_NOW);
             if (!h) { return; }
             typedef int (*init_t)(); typedef int (*count_t)(unsigned *); typedef int (*handle_t)(unsigned, void **);
@@ -759,7 +766,7 @@ static void fast_gpu_sampler_start() {
             std::vector<std::vector<samp>> buf(n);
             double last_flush = llama_moe_span_now_fork();
             std::vector<gpu_energy_pub> en(n);
-            for (;;) {
+            while (!g_sampler_stop.load(std::memory_order_relaxed)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
                 const double t = llama_moe_span_now_fork();
                 for (unsigned i = 0; i < n; ++i) {
@@ -781,7 +788,7 @@ static void fast_gpu_sampler_start() {
                     }
                 }
             }
-        }).detach();
+        });
     });
 }
 #else

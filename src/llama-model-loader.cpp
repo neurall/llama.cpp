@@ -1796,6 +1796,7 @@ bool llama_model_loader::load_all_data(
     std::vector<std::thread> pr_threads;
     size_t n_load_threads = std::max<size_t>(1, std::min<size_t>(16, std::thread::hardware_concurrency() / 2));
     if (const char * e = moe_opt("load-threads")) { n_load_threads = std::max(1, atoi(e)); }
+    else if (const char * e2 = getenv("LLAMA_LOAD_THREADS")) { n_load_threads = std::max(1, atoi(e2)); }   // the documented environment form (fork-knobs.md): =1 keeps the sequential reader
     const bool par_load = !use_direct_io && !check_tensors && n_load_threads > 1;
     auto pr_worker = [&]() {
 #if defined(__linux__)
@@ -1837,7 +1838,7 @@ bool llama_model_loader::load_all_data(
                 }
                 if (pr_fail) { break; }
             }
-            posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED);
+            if (pin_budget > 0) { posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED); }   // the pinned hybrid: the file copy must not compete with the pinned part; a plain --no-mmap load keeps its page cache for the next start
         }
     };
     auto pr_finish = [&]() {
@@ -1946,8 +1947,8 @@ bool llama_model_loader::load_all_data(
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
 #if defined(__linux__)
-                // the copy now lives in RAM: drop the file's cached pages so the two don't compete for memory
-                posix_fadvise(file->file_id(), weight->offs, n_size, POSIX_FADV_DONTNEED);
+                // the copy now lives in RAM: with a pin budget, drop the file's cached pages so the two don't compete for memory
+                if (pin_budget > 0) { posix_fadvise(file->file_id(), weight->offs, n_size, POSIX_FADV_DONTNEED); }
 #endif
                 if (check_tensors) {
                     validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {

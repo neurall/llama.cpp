@@ -73,8 +73,9 @@ void ggml_backend_set_alloc_phase_fn_fork(ggml_backend_alloc_phase_fn_t fn, void
     g_alloc_phase_ud = user_data;
 }
 // the offset a tensor starts at when `cur` bytes of the buffer are used: cur, or the next 4096 boundary plus the tensor's phase
+static bool ggml_backend_alloc_phase_on(ggml_backend_buffer_type_t buft) { return g_alloc_phase_fn != NULL && ggml_backend_buft_is_host(buft); }
 static size_t ggml_backend_alloc_phase_start(ggml_backend_buffer_type_t buft, const struct ggml_tensor * t, size_t cur) {
-    if (g_alloc_phase_fn == NULL || !ggml_backend_buft_is_host(buft)) { return cur; }
+    if (!ggml_backend_alloc_phase_on(buft)) { return cur; }
     const size_t ph = g_alloc_phase_fn(t, g_alloc_phase_ud);
     if (ph == SIZE_MAX) { return cur; }
     return GGML_PAD(cur, 4096) + ph;
@@ -89,6 +90,7 @@ static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_
 
     size_t cur_buf_size = 0;
     int    first        = 0;
+    const size_t tail_pad = ggml_backend_alloc_phase_on(buft) ? 4096 : 1;   // fork: the last tensor's O_DIRECT read ends on the next 4096 boundary: the buffer owns that tail
 
     for (int i = 0; i < n_tensors; i++) {
         size_t this_size = 0;
@@ -100,7 +102,7 @@ static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_
 
         // flush the current buffer if adding this tensor would exceed max_size
         if (cur_buf_size > 0 && (cur_buf_size + this_size) > max_size) {
-            plan.push_back({ cur_buf_size, first, i });
+            plan.push_back({ GGML_PAD(cur_buf_size, tail_pad), first, i });
             cur_buf_size = this_size;
             first        = i;
         } else {
@@ -109,7 +111,7 @@ static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_
     }
 
     if (cur_buf_size > 0) {
-        plan.push_back({ cur_buf_size, first, n_tensors });
+        plan.push_back({ GGML_PAD(cur_buf_size, tail_pad), first, n_tensors });
     }
 
     return plan;
