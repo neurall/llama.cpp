@@ -438,12 +438,6 @@ static struct vbuffer * ggml_vbuffer_alloc(ggml_backend_buffer_type_t buft, cons
 
     for (int n = 0; n < talloc->n_chunks; n++) {
         size_t chunk_size = talloc->chunks[n]->max_size;
-        // fork: a host compute buffer of 1 GiB or more gets 1/8 headroom. It is pinned (CUDA_Host), and a graph that grows by a few MiB otherwise frees it and
-        // pins a new one of the same size: GLM 3.5-bit pinned its 5.1 GiB pass buffer at the context's first reserve and again at the dense-split reserve
-        // after the expert pool, and that second pin stalled 180 s (2026-11-07). Host RAM only; device buffers stay exact.
-        if (usage == GGML_BACKEND_BUFFER_USAGE_COMPUTE && chunk_size >= ((size_t) 1 << 30) && ggml_backend_buft_is_host(buft)) {
-            chunk_size += chunk_size / 8;
-        }
         buf->chunks[n] = ggml_backend_buft_alloc_buffer(buft, chunk_size);
         if (buf->chunks[n] == NULL) {
             ggml_vbuffer_free(buf);

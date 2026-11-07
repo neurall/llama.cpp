@@ -1756,8 +1756,8 @@ static void ggml_backend_cuda_host_buffer_free_buffer(ggml_backend_buffer_t buff
     CUDA_CHECK(cudaFreeHost(buffer->context));
 }
 
-// Set once a big pin stalled in this process (ggml_cuda_register_chunked): every later pin of 1 GiB or more takes pageable memory at once instead of
-// waiting out another stall; cudaMallocHost pins the same way and has no timeout, so it is skipped too.
+// Set once a big pin was refused in this process (ggml_cuda_register_chunked): every later pin of 1 GiB or more takes pageable memory at once;
+// cudaMallocHost pins the same way, so it is skipped too.
 static std::atomic<bool> g_cuda_pin_gave_up{false};
 
 static void * ggml_cuda_host_malloc(size_t size) {
@@ -1941,10 +1941,10 @@ static ggml_cuda_pin_mem ggml_cuda_pin_mem_now() {
     return m;
 }
 
-// Registers the populated range: by default in one call here; with GGML_CUDA_REG_CHUNK_MB the first chunk here and the rest on a thread while the loader
-// reads (do not use: see below). Keeps the state for the free function and the cache hooks. release() gives the range back (munmap etc.); on a failed or
-// stalled register it is called here, or by the stalled call's thread once that returns, never while the register may still touch the pages.
-static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<ggml_cuda_reg_state> & st, int64_t t_pop, std::function<void()> release, size_t cma_landed = 0) {
+// Registers the range: by default in one call here; with GGML_CUDA_REG_CHUNK_MB the first chunk here and the rest on a thread while the loader
+// reads (do not use: see below). Keeps the state for the free function and the cache hooks. release() gives the range back (munmap etc.) when the
+// register is refused.
+static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<ggml_cuda_reg_state> & st, int64_t t_pop, std::function<void()> release, size_t cma_landed = 0, bool prelock = true) {
     const unsigned reg_flags = cudaHostRegisterPortable | cudaHostRegisterMapped;
     st->base  = ptr;
     st->size  = size;
@@ -1954,67 +1954,51 @@ static bool ggml_cuda_register_chunked(char * ptr, size_t size, std::unique_ptr<
     const size_t first = std::min(st->chunk, size);
     // The registration pins every page and can stall for minutes when the kernel must migrate the pages out of CMA page blocks or swap them back in under
     // reclaim throttling (2026-11-07: GLM 3.5-bit's 5.1 GiB pass buffer, pinned at the end of the load beside 101.5 GiB of pinned weights, stalled 180 s on
-    // two builds in a row; healthy pins of the same size took 0.2-6.5 s). Until 2026-11-07 a stall exited the server (code 75, "reboot"). Now it is waited
-    // for only as long as a slow healthy pin takes (10 s + 100 MB/s, GGML_CUDA_PIN_STALL_S overrides), then the buffer falls back to pageable memory:
-    // correct, the copies from it are staged by the driver (slower), and the server keeps running. The stuck call is not cancelable (a kernel ioctl), so
-    // its thread keeps the range and gives it back (unregister + release) when the call returns.
+    // two builds in a row; healthy pins of the same size took 0.2-15.7 s). ggml_cuda_host_malloc_registered avoids the cause (see fault_in_register). A pin
+    // that still stalls cannot be worked around in the process: the stuck call holds the process's memory map, so falling back to pageable memory after
+    // the timeout hung the server in state D for 10 minutes (pinfix1, 2026-11-07). After as long as a slow healthy pin takes (10 s + 100 MB/s,
+    // GGML_CUDA_PIN_STALL_S overrides) the process bails with exit code 75 (EX_TEMPFAIL) instead, so the harness starts it again (the exit kills the call).
     const double  limit_s = getenv("GGML_CUDA_PIN_STALL_S") ? atof(getenv("GGML_CUDA_PIN_STALL_S")) : 10.0 + first / 100e6;
-    // test switch: GGML_CUDA_PIN_SIM_STALL_MB=N makes a register of N MiB or more wait limit_s + 5 s before it starts (the fallback path without a real stall)
-    const bool    sim     = getenv("GGML_CUDA_PIN_SIM_STALL_MB") && first >= ((size_t) atoll(getenv("GGML_CUDA_PIN_SIM_STALL_MB")) << 20);
     // Locked from the populate to the end of the register: a populated page that is not pinned yet can be swapped out under memory pressure (zram takes the
     // zero pages for free), and the register then faults every such page back in under reclaim throttling, for minutes (2026-11-03: GLM's staging block
     // 4.8 GiB out at the start of a pass, then 946 pages/s back in; MiMo's last weight chunk at load hit the 180 s PIN_STALL three times). mlock only locks
     // pages already present (and faults in any that left meanwhile); refused (RLIMIT_MEMLOCK) it changes nothing. Unlocked after the register: the
     // driver's pin holds the pages from then on, and --moe pin-mlock decides alone whether the weights stay locked.
-    const bool locked = mlock(ptr, first) == 0;
-    struct reg_call { std::atomic<int> state{0}; std::atomic<bool> abandoned{false}; cudaError_t err = cudaSuccess; std::function<void()> release; };
+    const bool locked = prelock && mlock(ptr, first) == 0;   // not when the register is to fault the pages in itself (mlock would populate them)
+    struct reg_call { std::atomic<int> state{0}; cudaError_t err = cudaSuccess; };
     auto rc = std::make_shared<reg_call>();
-    rc->release = release;
     const ggml_cuda_pin_mem m0 = ggml_cuda_pin_mem_now();
-    std::thread([rc, ptr, first, reg_flags, sim, limit_s] {
-        if (sim) { std::this_thread::sleep_for(std::chrono::milliseconds((int64_t) ((limit_s + 5.0) * 1000))); }
-        rc->err = cudaHostRegister(ptr, first, reg_flags);
-        if (rc->err != cudaSuccess) { (void) cudaGetLastError(); }
-        rc->state = 1;
-        if (rc->abandoned.exchange(false)) {   // the caller gave up waiting and took pageable memory: give this range back now that the call returned
-            if (rc->err == cudaSuccess) { cudaHostUnregister(ptr); }
-            munlock(ptr, first);
-            fprintf(stderr, "ggml_cuda_host_malloc_registered: the abandoned register of %.1f GiB returned (%s), range given back\n", first / 1073741824.0, cudaGetErrorString(rc->err));
-            rc->release();
-        }
-    }).detach();
+    std::thread([rc, ptr, first, reg_flags] { rc->err = cudaHostRegister(ptr, first, reg_flags); rc->state = 1; }).detach();
     const int64_t t_reg = ggml_time_us();
     bool stalled = false;
-    while (rc->state == 0) {
-        if (ggml_time_us() - t_reg > (int64_t) (limit_s * 1e6)) {
-            rc->abandoned = true;
-            stalled = rc->state == 0 || !rc->abandoned.exchange(false);   // lost the race: the call returned just now, treat it as returned
-            if (stalled) { g_cuda_pin_gave_up = true; }
-            break;
-        }
+    while (rc->state == 0 && !stalled) {
+        stalled = ggml_time_us() - t_reg > (int64_t) (limit_s * 1e6);
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     const double took = (ggml_time_us() - t_reg) / 1e6;
     const ggml_cuda_pin_mem m1 = ggml_cuda_pin_mem_now();
-    if (stalled || rc->err != cudaSuccess) {
-        fprintf(stderr, "ggml_cuda_host_malloc_registered: [PIN_SLOW] cudaHostRegister of %.1f GiB %s after %.1f s (limit %.0f s%s); memory before/after: free %.1f/%.1f GiB, "
-                        "available %.1f/%.1f GiB, CMA free %.2f/%.2f GiB, %.2f GiB of the buffer landed in CMA blocks, free 2 MiB blocks %.1f GiB. "
-                        "Using pageable memory for this buffer and every later pin of 1 GiB or more in this process: correct, copies slower; the server keeps running.\n",
-                first / 1073741824.0, stalled ? "made no progress" : cudaGetErrorString(rc->err), took, limit_s, sim ? ", simulated stall" : "",
-                m0.free_b / 1073741824.0, m1.free_b / 1073741824.0, m0.avail_b / 1073741824.0, m1.avail_b / 1073741824.0, m0.cma_b / 1073741824.0, m1.cma_b / 1073741824.0,
-                cma_landed / 1073741824.0, ggml_cuda_free_huge_bytes() / 1073741824.0);
+    char mem[400];
+    snprintf(mem, sizeof mem, "free %.1f/%.1f GiB, available %.1f/%.1f GiB, CMA free %.2f/%.2f GiB (before/after), %.2f GiB of the buffer landed in CMA blocks, free 2 MiB blocks %.1f GiB, %s",
+             m0.free_b / 1073741824.0, m1.free_b / 1073741824.0, m0.avail_b / 1073741824.0, m1.avail_b / 1073741824.0, m0.cma_b / 1073741824.0, m1.cma_b / 1073741824.0,
+             cma_landed / 1073741824.0, ggml_cuda_free_huge_bytes() / 1073741824.0, prelock ? "populated first" : "faulted in by the register");
+    if (stalled) {
+        fprintf(stderr, "ggml_cuda_host_malloc_registered: [PIN_STALL] cudaHostRegister of %.1f GiB made no progress in %.0f s; %s. Bailing with exit code 75 so the harness starts "
+                        "the server again (a stuck pin holds the process's memory map: no fallback can run beside it).\n", first / 1073741824.0, took, mem);
         fflush(stderr);
+        _exit(75);
+    }
+    if (rc->err != cudaSuccess) {
+        // a refused pin returns at once and holds nothing: this buffer and every later pin of 1 GiB or more use pageable memory (correct, copies slower)
+        (void) cudaGetLastError();
+        fprintf(stderr, "ggml_cuda_host_malloc_registered: [PIN_FAIL_PAGEABLE] cudaHostRegister of %.1f GiB failed after %.1f s: %s; %s. Pageable memory from here on.\n",
+                first / 1073741824.0, took, cudaGetErrorString(rc->err), mem);
         g_cuda_pin_gave_up = true;
-        if (!stalled) {   // the call returned with an error: nothing holds the range
-            if (locked) { munlock(ptr, first); }
-            release();
-        }
+        if (locked) { munlock(ptr, first); }
+        release();
         return false;
     }
     if (first >= (1ull << 30)) {
-        fprintf(stderr, "ggml_cuda_host_malloc_registered: pinned %.1f GiB in %.2f s (%.0f MB/s, limit %.0f s); free %.1f GiB, available %.1f GiB, CMA free %.2f GiB, "
-                        "%.2f GiB of the buffer landed in CMA blocks\n", first / 1073741824.0, took, first / 1e6 / std::max(took, 1e-3), limit_s,
-                m1.free_b / 1073741824.0, m1.avail_b / 1073741824.0, m1.cma_b / 1073741824.0, cma_landed / 1073741824.0);
+        fprintf(stderr, "ggml_cuda_host_malloc_registered: pinned %.1f GiB in %.2f s (%.0f MB/s, limit %.0f s); %s\n", first / 1073741824.0, took, first / 1e6 / std::max(took, 1e-3), limit_s, mem);
     }
     if (locked) { munlock(ptr, first); }
     st->done = first;
@@ -2185,7 +2169,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
             }
         }
     }
-    if (g_cuda_pin_gave_up) { return nullptr; }   // a pin stalled: pageable memory (see ggml_cuda_register_chunked)
+    if (g_cuda_pin_gave_up) { return nullptr; }   // a pin was refused: pageable memory (see ggml_cuda_register_chunked)
     // the base is 1 GiB aligned so the whole buffer can sit on 1 GiB pages: map 1 GiB more, give back the slack on both sides (unused address space)
     // The address range is rounded up to whole 1 GiB pages, so the pool can cover the tail of the buffer too (below). Before 2026-10-17 the pool part was
     // rounded DOWN: a 2.5 GiB attention-mask buffer got 2 pool pages and 0.5 GiB of transparent huge pages, and pinning that half GiB stalled for 180 s
@@ -2222,18 +2206,30 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     // 2. transparent huge pages for what the free 2 MiB blocks cover (70%: other processes allocate meanwhile, and the kernel keeps free blocks for its own use), 3. the rest 4 KiB pages
     char * rest = ptr + (reserved ? head + reserved : 0);
     const size_t rest_n = reserved && head + reserved >= size ? 0 : size - (reserved ? head + reserved : 0);   // 0: the pool covers the whole buffer
+    // Populate first, or leave the faulting to the register? cudaHostRegister pins long term (FOLL_LONGTERM), and a long-term pin cannot keep a page in a
+    // CMA page block: a populated page there is migrated first, which needs free memory outside CMA and crawls under pressure. The kernel serves ordinary
+    // (movable) allocations from CMA blocks first once their free pages are more than half of all free pages, and that is the state at the end of a big
+    // load: GLM 3.5-bit's 5.7 GiB pass buffer pinned at 2738, 1124, 523, 392 MB/s as 0.7, 2.5, 2.6, 3.3 GiB of it landed in CMA blocks, then a stall
+    // (2026-11-07). Pages the register faults in itself are allocated outside CMA (the kernel's pin allocation context), so nothing has to move: in that state
+    // nothing is populated or locked here. Otherwise populated as before (several times faster to pin than faulting page by page).
+    const ggml_cuda_pin_mem pm = ggml_cuda_pin_mem_now();
+    const bool fault_in_register = pm.cma_b > pm.free_b / 2 && getenv("GGML_CUDA_PIN_POPULATE") == nullptr;
+    if (fault_in_register) {
+        fprintf(stderr, "%s: %.1f GiB: CMA free %.2f GiB is over half of free %.2f GiB, so populated pages would land in CMA blocks and have to move at the pin: "
+                        "the register faults them in itself (outside CMA)\n", __func__, size / 1073741824.0, pm.cma_b / 1073741824.0, pm.free_b / 1073741824.0);
+    }
     if (reserved && head > 0) {
         madvise(ptr, head, MADV_NOHUGEPAGE);
-        ggml_cuda_populate(ptr, head, true);
+        if (!fault_in_register) { ggml_cuda_populate(ptr, head, true); }
     }
     const size_t huge = rest_n == 0 ? 0 : std::min(rest_n, (size_t) ((double) ggml_cuda_free_huge_bytes() * (getenv("GGML_CUDA_THP_SHARE") ? atof(getenv("GGML_CUDA_THP_SHARE")) : 0.7)) & ~(size_t) (two_mb - 1));
     if (huge > 0) {
         madvise(rest, huge, MADV_HUGEPAGE);
-        ggml_cuda_populate(rest, huge, true);
+        if (!fault_in_register) { ggml_cuda_populate(rest, huge, true); }
     }
     if (huge < rest_n) {
         madvise(rest + huge, rest_n - huge, MADV_NOHUGEPAGE);
-        ggml_cuda_populate(rest + huge, rest_n - huge, true);
+        if (!fault_in_register) { ggml_cuda_populate(rest + huge, rest_n - huge, true); }
     }
     const int64_t t_pop = ggml_time_us();
     fprintf(stderr, "%s: %.1f GiB populated in %.1f s (%.1f reserved %zu MiB pages, %.1f THP, %.1f small)\n", __func__, size / 1073741824.0,
@@ -2241,7 +2237,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     auto st = std::make_unique<ggml_cuda_reg_state>();
     st->map_len = size_r;
     const size_t cma1 = ggml_cuda_pin_mem_now().cma_b, cma_landed = cma0 > cma1 ? cma0 - cma1 : 0;   // free CMA pages the populate took
-    if (!ggml_cuda_register_chunked(ptr, size, st, t_pop, [ptr, size_r] { munmap(ptr, size_r); }, cma_landed)) {
+    if (!ggml_cuda_register_chunked(ptr, size, st, t_pop, [ptr, size_r] { munmap(ptr, size_r); }, cma_landed, !fault_in_register)) {
         return nullptr;
     }
     return ptr;
