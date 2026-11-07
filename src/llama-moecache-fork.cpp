@@ -12286,7 +12286,12 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         for (const int p : { PP_CHAIN, PP_DEC }) {
             if (ok[p] && n > (double) g_mb_auto.load(std::memory_order_relaxed) && !known[p] && !any_known) { ok[p] = false; }
         }
-        g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known);
+        // the stream's variants (mix, predictions k x1 .. x32) that never ran here are trials only, never a mean pick: their prior is the stream's (or the
+        // stream's upload less a guess), so their means differ by noise and the pick flipped between them (rampool12 rows 23784-23789: k x8/16/32 in
+        // turn, nothing known, the split never tried, warm 438-576 against 586-613 on rampool11)
+        bool tonly[PP_PATHS];
+        for (int p = 0; p < PP_PATHS; ++p) { tonly[p] = (p == PP_MIX || p >= PP_K) && g_pp_rls[p].n == 0; }
+        g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
     }
     bool chain, dec, mix;

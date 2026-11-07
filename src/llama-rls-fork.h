@@ -214,13 +214,17 @@ static inline bool rls_known(const dsf_rls & r, double mu, double var) { return 
 // The pick. Among the arms known here: the lowest mean (a learned estimate is never overruled: no tie margin, no veto). Any other arm (a prior, or a
 // model extrapolated far from where it ran) is a trial, run only when its stake pays: expected gain over the calls of this size so far against its
 // expected loss, EI x R >= EL - all three learned. With no arm known here the lowest mean stands (nothing better is known).
-static inline int rls_voi_pick(const double * mu, const double * var, const bool * ok, int n, double R, bool * trial, const bool * known = nullptr) {
+static inline int rls_voi_pick(const double * mu, const double * var, const bool * ok, int n, double R, bool * trial, const bool * known = nullptr,
+                               const bool * trial_only = nullptr) {
     if (trial) { *trial = false; }
     int b = -1;
     if (known) {
         for (int i = 0; i < n; ++i) { if (ok[i] && known[i] && (b < 0 || mu[i] < mu[b])) { b = i; } }
     }
-    if (b < 0) { return rls_argmin(mu, ok, n); }   // nothing known here: the lowest mean
+    if (b < 0) {   // nothing known here: the lowest mean, never an arm that is a trial only (a stream variant that never ran: rampool12 flipped between them)
+        for (int i = 0; i < n; ++i) { if (ok[i] && !(trial_only && trial_only[i]) && (b < 0 || mu[i] < mu[b])) { b = i; } }
+        return b >= 0 ? b : rls_argmin(mu, ok, n);
+    }
     int t = b; double best = 0.0;
     for (int i = 0; i < n; ++i) {
         if (!ok[i] || i == b) { continue; }

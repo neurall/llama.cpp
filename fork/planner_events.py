@@ -35,6 +35,9 @@ for f in sorted(glob.glob('/p/bw/data/q5h/*glm35-12k-rp*.stats.log')):
 T = collections.defaultdict(list)
 for r in rows:
     p = r[8]; arm = 'dense' if p == 'dense' else 'dec' if p == 'decode chain' else 'chain' if p == 'prompt chain' else 'stream'
+    # each stream variant on its own too (stream, mix, k1 .. k32): flipping between variants costs what they measured (rampool12: k x32 at 2k)
+    var = 'mix' if p == 'stream, mix' else ('k' + p.split(' x')[1]) if ', k x' in p else 'ring' if p == 'stream' else None
+    if var: T[('2k' if r[2] < 3000 else '10k', 'c' if r[1] == 0 else 'w', var)].append(float(r[9]))
     # the split's pass without its copy fill: whether a fill is owed is the replayed state's, not the logged start's (the replay adds it)
     T[('2k' if r[2] < 3000 else '10k', 'c' if r[1] == 0 else 'w', arm)].append(float(r[9]) - (float(r[10]) if arm == 'dense' else 0.0))
 t = csv.writer(open(out + '/truth.csv', 'w'))

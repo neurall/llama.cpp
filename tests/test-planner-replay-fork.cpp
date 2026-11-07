@@ -30,6 +30,8 @@ static std::vector<std::string> csv_row(const std::string & l) {
 }
 static std::string cls_of(double n) { return n < 3000 ? "2k" : "10k"; }
 static const char * arm_class(int a) { return a == A_DEC ? "dec" : a == A_CHAIN ? "chain" : "stream"; }
+// a stream variant's own outcome name (fork/planner_events.py writes ring, mix, k1 .. k32); "" for the others
+static std::string arm_variant(int a) { return a == A_RING ? "ring" : a == A_MIX ? "mix" : a >= A_K ? "k" + std::to_string(1 << (a - A_K)) : ""; }
 
 struct result { int calls = 0, scored = 0, bad = 0; double loss_sum = 0, loss_max = 0; std::map<std::string, std::pair<int, double>> by; };
 
@@ -69,6 +71,8 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
         int Rn = 1;   // this call and the earlier ones of the same size in this start
         for (const auto & q : seen) { Rn += q == e.n; }
         seen.push_back(e.n);
+        bool tonly[A_N];   // stream variants that never ran: trials only, never a mean pick (rampool13)
+        for (int a = 0; a < A_N; ++a) { tonly[a] = (a == A_MIX || a >= A_K) && one[a].n == 0; }
         bool meas[A_N];
         for (int a = 0; a < A_N; ++a) { meas[a] = ok[a] && rls_known(one[a], mu[a], var[a]); }
         {   // R1: above the measured CPU crossover (g_mb_auto = experts / picks = 64 here) the chains are only a trial against a known arm
@@ -76,7 +80,7 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
             for (int a = 0; a < A_N; ++a) { any = any || (meas[a] && a != A_CHAIN && a != A_DEC); }
             for (const int a : { (int) A_CHAIN, (int) A_DEC }) { if (ok[a] && e.n > N_EXP / N_USED && !meas[a] && !any) { ok[a] = false; } }
         }
-        const int pick1 = mode == 3 ? rls_voi_pick(mu, var, ok, A_N, Rn, nullptr, meas) : rls_argmin(mode == 0 ? dr : mode == 1 ? mu : lcb, ok, A_N);
+        const int pick1 = mode == 3 ? rls_voi_pick(mu, var, ok, A_N, Rn, nullptr, meas, tonly) : rls_argmin(mode == 0 ? dr : mode == 1 ? mu : lcb, ok, A_N);
         // the split (dsf_plan): one pass per call here (the logged calls ran as one pass)
         const double sphi[4] = { 1, e.n, 0, e.Ts * 1e3 };
         if (split.k == 0) { const double c = 2034.2, th0[4] = { 0, c, 1, 1 }, fl[4] = { 64 * c, 0, 0, 0 }; rls_init(split, 4, th0, fl); }   // rampool10's logged split prior
@@ -97,12 +101,13 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
             if (getenv("REPLAY_DBG") && verbose) { printf("    dbg n %.0f R %d one %.0f +- %.0f split %.0f +- %.0f\n", e.n, Rn, m2[0] / 1e3, std::sqrt(v2[0]) / 1e3, m2[1] / 1e3, std::sqrt(v2[1]) / 1e3); }
         }
         // outcome and score
-        const std::string picked = sp ? "dense" : arm_class(pick1);
+        std::string picked = sp ? "dense" : arm_class(pick1);
+        if (!sp && !arm_variant(pick1).empty() && T.count(cl + "," + st + "," + arm_variant(pick1))) { picked = arm_variant(pick1); }   // the variant's own measurement where it exists
         auto tr = [&](const std::string & a) { auto it = T.find(cl + "," + st + "," + a); return it == T.end() ? -1.0 : it->second; };
         // the dense medians are the split pass without its fill (fork/planner_events.py): the fill is added where this replayed start still owes it
         auto call_t = [&](const std::string & a) { const double t = tr(a); return t > 0 && a == "dense" && !copies ? t + fill_ms : t; };
         double best = -1; std::string ba;
-        for (const char * a : { "stream", "dec", "chain", "dense" }) { const double t = call_t(a); if (t > 0 && (best < 0 || t < best)) { best = t; ba = a; } }
+        for (const char * a : { "stream", "dec", "chain", "dense", "ring", "mix", "k1", "k2", "k4", "k8", "k16", "k32" }) { const double t = call_t(a); if (t > 0 && (best < 0 || t < best)) { best = t; ba = a; } }
         double took = call_t(picked);
         R.calls++;
         const std::string key = cl + "-" + st + " " + picked;
@@ -127,7 +132,8 @@ int main(int argc, char ** argv) {
         std::ifstream f(argv[1]); std::string l; std::getline(f, l);
         while (std::getline(f, l)) { auto c = csv_row(l); if (c.size() < 11) continue; E.push_back({ c[0], atoi(c[1].c_str()), atof(c[2].c_str()), atof(c[3].c_str()), atof(c[4].c_str()), atof(c[5].c_str()), atof(c[6].c_str()), atof(c[7].c_str()), c.size() > 11 ? atof(c[11].c_str()) : 1e9 }); }
         std::ifstream g(argv[2]);
-        while (std::getline(g, l)) { auto c = csv_row(l); if (c.size() >= 4) { T[c[0] + "," + c[1] + "," + c[2]] = atof(c[3].c_str()); } }
+        // a class measured once is no outcome to score against (one cold 2k call of k x8 at 6.5 s would set "the best"): two samples or more
+        while (std::getline(g, l)) { auto c = csv_row(l); if (c.size() >= 4 && (c.size() < 5 || atoi(c[4].c_str()) >= 2)) { T[c[0] + "," + c[1] + "," + c[2]] = atof(c[3].c_str()); } }
     } else {   // built in: GLM 3.5 12k medians (truth.csv of 2026-11-07) and one start's call features (rampool10 rp0)
         T = { { "10k,c,dense", 15844 - 1478 }, { "10k,c,stream", 17329 }, { "10k,w,dense", 13280 - 1478 }, { "10k,w,stream", 17387 }, { "2k,c,dec", 19304 }, { "2k,c,dense", 15932 - 8904 },
               { "2k,c,stream", 8354 }, { "2k,w,dec", 20248 }, { "2k,w,dense", 8450 - 1397 }, { "2k,w,stream", 7338 } };
