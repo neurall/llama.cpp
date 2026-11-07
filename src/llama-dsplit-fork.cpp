@@ -724,6 +724,7 @@ static void dsplit_inv(const char * name, const std::string & text) {
 // for the moe-cache's one-card regret: the split's mean for a pass starting at pos0 (-1: the split was not weighed for it)
 double llama_dsplit_split_mu_fork(int64_t pos0) { return g_dsf_split_mu_pos0.load() == pos0 ? g_dsf_split_mu_pass.load() : -1.0; }
 static bool     g_rls_dirty = false;       // a sample since the last flush
+static bool     g_rls_split_loaded = false;   // g_rls_split came from the state file (its prior is then the stored posterior, not the ratio)
 static uint64_t g_dsf_seed = 0;            // the draws of the running request
 static double   g_dsf_call_fill_ms = 0.0;  // the fill walls of the running call (the per-size display takes them out of the call time)
 static bool     g_dsf_redraw = true;       // the last split pass surprised its model (NIS > 1)
@@ -835,7 +836,7 @@ static void dsf_load() {   // under g_dsf_mu: this build's factors from the stat
     // a stored posterior of this build is the learned planner's prior (k: 4 for the pass, 1 for the fill)
     for (const auto & e : kv) {
         const std::string & k = e.first;
-        if (k == dsplit_state_key("dsf.rls.split")) { rls_parse(g_rls_split, 4, e.second); }
+        if (k == dsplit_state_key("dsf.rls.split")) { g_rls_split_loaded = rls_parse(g_rls_split, 4, e.second); }
         if (k == dsplit_state_key("dsf.rls.fill"))  { rls_parse(g_rls_fill, 1, e.second); }
         if (k == dsplit_state_key("dsf.rls.one"))   { rls_parse(g_rls_one, 4, e.second); }
     }
@@ -2669,54 +2670,59 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     const double fill_est = g_mirror_fill_us.load();   // the planner's fill estimate (us); 0: the copies are in place
     if (g_rls_fill.k == 0) { const double one = 1.0; rls_init(g_rls_fill, 1, &one, nullptr); }   // fill = 1 x the estimate, +- itself
     const int64_t end = std::max<int64_t>((int64_t) llama_moe_cache_pp_cells_get_fork(), pos0 + n_tokens);
-    double g_this = 0.0, g_pos = 0.0, m_gain = 0.0, v_gain = 0.0;
-    double mu1_0 = 0.0, v1_0 = 0.0, d1_0 = 0.0, mu2_0 = 0.0, v2_0 = 0.0, d2_0 = 0.0;
+    // planner-simple: two arms for the passes left in this call, one card (the moe-cache's pick, or g_rls_one) and the split plus the fill owed, by their
+    // posterior means; a tie within the spread goes to the better known arm, a trial of the other only where it pays over the calls of this size so far
+    // (rls_voi_pick). The split's prior before it ever ran on this build is the one-card mean x the measured split/one ratio (RLS_SPLIT_ONE_RATIO).
+    double m1 = 0.0, v1s = 0.0, m2 = 0.0, v2s = 0.0;
+    double mu1_0 = 0.0, v1_0 = 0.0, mu2_0 = 0.0, v2_0 = 0.0;
     int path0 = -1, np = 0;
+    const bool split_prior = g_rls_split.n == 0 && !g_rls_split_loaded;
     for (int64_t c = pos0; c < end; c += n_tokens, ++np) {
         const int64_t T = std::min<int64_t>(n_tokens, end - c);
         const double cm = (double) c + 0.5 * (double) T;
         const double U = std::max(0.0, llama_moe_cache_pass_upload_ms_fork((uint32_t) T, k_used, n_exp)) * 1e3;
-        double mu1 = 0.0, v1 = 0.0, mu2, v2, d2;
+        double mu1 = 0.0, v1 = 0.0, mu2, v2;
         int pth = -1;
         const double phi[4] = { 1.0, (double) T, (double) T * att * cm, U };
-        double d1 = llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth);
-        if (d1 < 0.0) {   // no moe-cache candidate: the same planner with one one-card arm (planner-rules.md C18)
-            mu1 = rls_pred(g_rls_one, phi, &v1);
-            rls_draw(g_rls_one, phi, rls_mix(g_dsf_seed + 0x01u), &d1);
+        if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); }   // C18
+        if (split_prior) {
+            mu2 = mu1 * RLS_SPLIT_ONE_RATIO;
+            v2  = mu2 * mu2 * RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG + v1 * RLS_SPLIT_ONE_RATIO * RLS_SPLIT_ONE_RATIO;
+        } else {
+            mu2 = rls_pred(g_rls_split, phi, &v2);
         }
-        mu2 = rls_pred(g_rls_split, phi, &v2);
-        rls_draw(g_rls_split, phi, rls_mix(g_dsf_seed + 0x51u), &d2);
-        const double g = d1 - d2;
-        if (c == pos0) { g_this = g; mu1_0 = mu1; v1_0 = v1; d1_0 = d1; mu2_0 = mu2; v2_0 = v2; d2_0 = d2; path0 = pth; }
-        g_pos += std::max(0.0, g);
-        m_gain += mu1 - mu2; v_gain += v1 + v2;
+        if (c == pos0) { mu1_0 = mu1; v1_0 = v1; mu2_0 = mu2; v2_0 = v2; path0 = pth; }
+        m1 += mu1; v1s += v1; m2 += mu2; v2s += v2;
     }
-    double f_mu = 0.0, f_v = 0.0, f_d = 0.0;
-    if (fill_est > 0.0) {
-        f_mu = rls_pred(g_rls_fill, &fill_est, &f_v);
-        rls_draw(g_rls_fill, &fill_est, rls_mix(g_dsf_seed + 0xf1u), &f_d);
-        f_d = std::max(0.0, f_d);
-    }
-    const int choice = g_this > 0.0 && g_pos > f_d ? 1 : 0;
-    // p_split, for the log only: the posterior probability that splitting this call beats one card (mean gain less the fill over the combined sigma)
-    const double p_split = rls_phi_cdf((m_gain - f_mu) / std::max(1e-9, std::sqrt(v_gain + f_v)));
+    double f_mu = 0.0, f_v = 0.0;
+    if (fill_est > 0.0) { f_mu = rls_pred(g_rls_fill, &fill_est, &f_v); }
+    static std::map<int64_t, int> seen;   // passes of this size decided in this process: how often this pick recurs (the trial's R)
+    static int64_t seen_pos0 = -2;
+    if (pos0 != seen_pos0) { seen_pos0 = pos0; seen[n_tokens]++; }
+    const double am[2] = { m1, m2 + f_mu }, av[2] = { v1s, v2s + f_v };
+    const bool aok[2] = { true, true };
+    bool trial = false;
+    const int choice = rls_voi_pick(am, av, aok, 2, (double) seen[n_tokens], &trial);
+    // p_split, for the log only: the posterior probability that splitting this call beats one card
+    const double p_split = rls_phi_cdf((am[0] - am[1]) / std::max(1e-9, std::sqrt(av[0] + av[1])));
+    const double g_this = mu1_0 - mu2_0, g_pos = m1 - m2, d1_0 = mu1_0, d2_0 = mu2_0, f_d = f_mu;
+    (void) g_this;
     g_dsf_plan_last = dsf_pass();
     g_dsf_plan_last.mu = choice ? mu2_0 : mu1_0;
     g_dsf_plan_last.sd = std::sqrt(std::max(0.0, choice ? v2_0 : v1_0));
     g_dsf_plan_last.lo = std::min(mu1_0, mu2_0);
     g_dsf_split_mu_pass.store(mu2_0); g_dsf_split_mu_pos0.store(pos0);   // the split's mean for this pass: the one-card side books its regret against it (C17)
-    // INV fill twice (planner-rules.md I2): a fill drawn for a call that already paid one, or with the copies in place
-    if (fill_est > 0.0 && g_dsf_call_fill_ms > 0.0) { dsplit_inv("fill-twice", format("a fill %.2f s drawn for a call that filled %.0f ms already", f_d / 1e6, g_dsf_call_fill_ms)); }
-    // INV overrule (I1): the pick's mean is above the other side's mean by both sigmas and the picked side has samples (a worse known, not exploration)
-    {
-        const double ms = choice ? mu2_0 : mu1_0, mo = choice ? mu1_0 : mu2_0, sg = std::sqrt(std::max(0.0, v1_0)) + std::sqrt(std::max(0.0, v2_0));
-        if (ms > mo + sg && (choice ? g_rls_split.n : 1) > 0) { dsplit_inv("overrule", format("picked %s at %.2f s against %.2f s +- %.2f", choice ? "split" : "one card", ms / 1e6, mo / 1e6, sg / 1e6)); }
-    }
+    // INV fill twice (planner-rules.md I2): a fill charged to a call that already paid one
+    if (fill_est > 0.0 && g_dsf_call_fill_ms > 0.0) { dsplit_inv("fill-twice", format("a fill %.2f s charged to a call that filled %.0f ms already", f_mu / 1e6, g_dsf_call_fill_ms)); }
+    // INV overrule (I1): the pick's mean is above the other's by both sigmas and it is no trial (a worse known)
+    if (!trial && am[choice] > am[1 - choice] + std::sqrt(av[0]) + std::sqrt(av[1])) { dsplit_inv("overrule", format("picked %s at %.2f s against %.2f s", choice ? "split" : "one card", am[choice] / 1e6, am[1 - choice] / 1e6)); }
+    const std::string pick_s = trial ? std::string("trial of the ") + (choice ? "split" : "one card") : std::string(choice ? "split" : "one card");
     why = format("plan: pass of %lld tokens at %lldk cells, %d passes left: one card [%s] %.2f +- %.2f s, split %.2f +- %.2f s (n=%d, nis %.2f) + fill %.2f +- %.2f s (%s, n=%d); "
-                 "draws one %.2f, split %.2f, fill %.2f, gains this %.2f, all positive %.2f: %s (p_split %.2f)",
+                 "means one %.2f, split %.2f, fill %.2f, gain this pass %.2f, call %.2f%s: %s (p_split %.2f)",
             (long long) n_tokens, (long long) (pos0 / 1024), np, llama_moe_cache_pp_path_name_fork(path0).c_str(), mu1_0 / 1e6, std::sqrt(std::max(0.0, v1_0)) / 1e6,
             mu2_0 / 1e6, std::sqrt(std::max(0.0, v2_0)) / 1e6, g_rls_split.n, g_rls_split.nis, f_mu / 1e6, std::sqrt(std::max(0.0, f_v)) / 1e6,
-            fill_est > 0.0 ? "owed" : "copies in place", g_rls_fill.n, d1_0 / 1e6, d2_0 / 1e6, f_d / 1e6, g_this / 1e6, g_pos / 1e6, choice ? "split" : "one card", p_split);
+            fill_est > 0.0 ? "owed" : "copies in place", g_rls_fill.n, d1_0 / 1e6, d2_0 / 1e6, f_d / 1e6, (mu1_0 - mu2_0) / 1e6, g_pos / 1e6,
+            split_prior ? ", split prior = one x 0.96 (never ran)" : "", pick_s.c_str(), p_split);
     return choice;
 }
 // every prompt pass is timed: the pass decided last ends at the synchronize before the next prompt pass and at the end of its call (llama_context)

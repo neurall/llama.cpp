@@ -11458,7 +11458,9 @@ static double   g_pp_ctok_prior = 0.0;            // compute per token before an
 static double   g_pp_phi[PP_PATHS][4] = {};       // the call's features per candidate path (phi[1] == 0: not a candidate), for the report to update the path that ran
 static double   g_pp_pmu[PP_PATHS] = {}, g_pp_var[PP_PATHS] = {}, g_pp_drw[PP_PATHS] = {};   // the call's predicted mean, variance and draw per candidate
 static int      g_pp_pick = -1;                   // the path the draws picked for this call (-1: not decided by the draws)
-static uint64_t g_pp_seed = 0;                    // the draws of the running request
+static uint64_t g_pp_seed = 0;                    // the draws of the running request (logged only since planner-simple)
+static std::map<uint32_t, int> g_pp_size_seen;    // calls per pass size in this process: how often a pick recurs (the trial's R)
+static bool     g_pp_trial = false;               // the call's pick is a trial (value of information), not the lowest mean
 static int64_t  g_pp_seen_c0 = -1;                // the first cell of the last call: a lower one is a new request
 static bool     g_pp_redraw = true;               // a pass surprised its model (NIS > 1): draw again at the next call
 static uint32_t g_pp_chain_refused = UINT32_MAX;  // the chain's graph refused a pass of this size or more (a fact per pass size, not a bucket)
@@ -12247,12 +12249,16 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // upload, the misses the prompt chain uploads behind the router, the decode chain's misses plus its 4-token chunk reads, the predictions the stream's
     cand(PP_RING, Ts);
     if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, Um); }
-    if (!busy && (uint32_t) n < g_pp_chain_refused) { cand(PP_CHAIN, up); }
+    // the chains upload behind the router (and the decode chain computes misses on the CPU): candidates only up to the measured crossover where that can
+    // beat streaming (dec_max: the CPU read rate and the miss uploads against the link, the release's max-batch rule, rel MC:8168/6587). At any size
+    // they cost GLM 3.5 18.6-25 s (rp0) and 43-86 s (rp1) on cold 2k calls against 8 s streamed.
+    const bool small = n <= dec_max;
+    if (small && !busy && (uint32_t) n < g_pp_chain_refused) { cand(PP_CHAIN, up); }
     // the decode chain's misses also wait for the SSD where their tensors are still mapped (planner-rules.md C1/R3: rp=1 cold 2k took 43-86 s against
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
     double ssd_miss = 0.0;
     if (ssd_rate > 0.0) { for (const auto & x : v) { ssd_miss += (1.0 - std::exp(n * x.l1p)) * x.sm / (ssd_rate * 1e3); } }
-    if (cpu_known) { cand(PP_DEC, up + chunk_at(n) + ssd_miss); }
+    if (small && cpu_known) { cand(PP_DEC, up + chunk_at(n) + ssd_miss); }
     // a prediction of 2^i x the picks stages that share of the experts ahead: the stream's upload less what it hides (C16: the arms differ from the
     // start instead of nine copies of the stream); the coefficient learns the rest
     for (int i = 0; k_auto && PP_K + i < PP_PATHS && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) {
@@ -12264,8 +12270,15 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         dsf_rls & rp = pp_rls(p);
         g_pp_pmu[p] = rls_pred(rp, g_pp_phi[p], &g_pp_var[p]);
         rls_draw(rp, g_pp_phi[p], rls_mix(g_pp_seed + (uint64_t) p), &g_pp_drw[p]);
-        if (g_pp_pick < 0 || g_pp_drw[p] < g_pp_drw[g_pp_pick]) { g_pp_pick = p; }
-        if (best_mu < 0 || g_pp_pmu[p] < g_pp_pmu[best_mu]) { best_mu = p; }
+    }
+    {
+        bool ok[PP_PATHS];
+        for (int p = 0; p < PP_PATHS; ++p) { ok[p] = g_pp_phi[p][1] > 0.0; }
+        // deterministic: the lowest mean, a tie within the spread to the better known path, a trial only where it pays over the calls of this size
+        // so far (rls_voi_pick; planner-simple, replacing the Thompson draws that lost rows 23768/23769)
+        const double R = (double) ++g_pp_size_seen[(uint32_t) n];
+        g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial);
+        best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
     }
     bool chain, dec, mix;
     double m;
@@ -12274,7 +12287,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         dec   = g_pp_pick == PP_DEC;
         mix   = g_pp_pick == PP_MIX;
         m     = g_pp_pick >= PP_K ? (double) (1 << (g_pp_pick - PP_K)) : 0.0;
-        why   = g_pp_pick == best_mu ? "lowest draw, lowest mean" : "lowest draw (the posterior allows it to be faster)";
+        why   = g_pp_trial ? "trial: its expected gain over the calls of this size beats its expected loss" : g_pp_pick == best_mu ? "lowest mean" : "within the spread of the lowest mean: the better known path";
         g_pp_dec = dec;
         g_pp_mb = chain || dec ? ub_max : 0;
         g_pp_mix_call = mix;
@@ -12343,25 +12356,17 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
 // call's pick used (one consistent view per request); its posterior mean and variance in *mu, *var. -1: no candidate (the call was not planned here).
 // shortcut: a candidate's upload is the call's pass size's (U at n of the call); passes of other sizes in one call are the tail only. Upgrade if calls mix sizes.
 double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path) {
+    // planner-simple: the one-card side is the path this call picked, its posterior mean and variance at this pass (no draws); -1 when none
     std::lock_guard<std::mutex> lk(g_pp_mu);
-    double best = -1.0;
-    bool any = false;   // a draw can come out below 0 on a wide posterior: compared, never a marker
-    for (int p = 0; p < PP_PATHS; ++p) {
-        if (g_pp_phi[p][1] <= 0.0) { continue; }
-        const double phi[4] = { 1.0, (double) n, (double) n * g_pp_a_us * (double) c, g_pp_phi[p][3] };
-        dsf_rls & rp = pp_rls(p);
-        double t = 0.0, v = 0.0;
-        rls_draw(rp, phi, rls_mix(g_pp_seed + (uint64_t) p), &t);
-        if (!any || t < best) {
-            any = true;
-            best = t;
-            const double m = rls_pred(rp, phi, &v);
-            if (mu) { *mu = m; }
-            if (var) { *var = v; }
-            if (path) { *path = p; }
-        }
-    }
-    return any ? std::max(0.0, best) : -1.0;
+    const int p = g_pp_pick >= 0 ? g_pp_pick : -1;
+    if (p < 0 || g_pp_phi[p][1] <= 0.0) { return -1.0; }
+    const double phi[4] = { 1.0, (double) n, (double) n * g_pp_a_us * (double) c, g_pp_phi[p][3] };
+    double v = 0.0;
+    const double m = rls_pred(pp_rls(p), phi, &v);
+    if (mu) { *mu = m; }
+    if (var) { *var = v; }
+    if (path) { *path = p; }
+    return std::max(0.0, m);
 }
 // this call has one-card candidates (the split planner learns its own one-card model otherwise)
 bool llama_moe_cache_pp_planned_fork() { std::lock_guard<std::mutex> lk(g_pp_mu); for (const auto & f : g_pp_phi) { if (f[1] > 0.0) { return true; } } return false; }
