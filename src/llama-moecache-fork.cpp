@@ -6,6 +6,7 @@
 #include "llama-gpu-probe-fork.h"
 #include "llama-moestate-fork.h"
 #include "llama-dsplit-fork.h"
+#include "llama-rls-fork.h"   // the planner's estimator (one RLS per prompt path)
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -11446,6 +11447,48 @@ static double pp_pass_floor(double n) {
 enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_PATHS = PP_K + 8 };
 static struct { double n = 0.0, us = 0.0; } g_pp_took[PP_PATHS][32];
 static bool g_pp_no_chain[32] = {};   // per size: the chain's graph refused such a pass
+// ---- the learned planner (fork/docs/rampool.md "Robust planner design"; --moe split-model=0 keeps the per-size rules above for one release) ----
+// One RLS per path over phi = (1, n, n x cells, the path's calculated upload) predicts a pass of any size: nothing keyed to a size (fault B), the path's own
+// calculation is a feature whose coefficient is learned (the decode chain's "11.3 s calculated" took 19-25 s: its upload coefficient learns ~2, fault A/D).
+// The pick is a Thompson draw per path from its posterior, kept for the request: exploration shrinks with confidence and regrows on drift by itself.
+static dsf_rls  g_pp_rls[PP_PATHS];
+static bool     g_pp_rls_loaded[PP_PATHS] = {};   // the state file was consulted for this path (once the split planner's section is known)
+static bool     g_pp_rls_own[PP_PATHS] = {};      // and held a posterior for it
+static double   g_pp_phi[PP_PATHS][4] = {};       // the call's features per candidate path (phi[1] == 0: not a candidate), for the report to update the path that ran
+static double   g_pp_pmu[PP_PATHS] = {}, g_pp_var[PP_PATHS] = {}, g_pp_drw[PP_PATHS] = {};   // the call's predicted mean, variance and draw per candidate
+static int      g_pp_pick = -1;                   // the path the draws picked for this call (-1: not decided by the draws)
+static uint64_t g_pp_seed = 0;                    // the draws of the running request
+static int64_t  g_pp_seen_c0 = -1;                // the first cell of the last call: a lower one is a new request
+static bool     g_pp_redraw = true;               // a pass surprised its model (NIS > 1): draw again at the next call
+static uint32_t g_pp_chain_refused = UINT32_MAX;  // the chain's graph refused a pass of this size or more (a fact per pass size, not a bucket)
+static bool pp_split_model_on() { static const bool on = [] { const char * o = moe_opt("split-model"); return !o || atoi(o) != 0; }(); return on; }
+bool llama_dsplit_state_get_fork(const char * what, std::string & v);         // llama-dsplit-fork.cpp: this model/cards/build's state value, false: not known yet
+void llama_dsplit_state_set_fork(const char * what, const std::string & v);   // and store one
+void llama_dsplit_plan_book_fork(double regret_us, bool hit);                // /moe/stats plan_picks, plan_hits, plan_regret_s (both planners book there)
+// a path's estimator, initialised at its first use: th0 = (0, compute per token measured, attention per token and cell measured, upload coefficient 1)
+// (both 0 until a stream pass measured them: a zero prior gets its uncertainty from the first call, rls_prime); a stored posterior of this build replaces it
+static dsf_rls & pp_rls(int p) {
+    dsf_rls & r = g_pp_rls[p];
+    if (r.k == 0) {
+        const double th0[4] = { 0.0, g_pp_c_us, g_pp_a_us, 1.0 }, fl[4] = { 64.0 * g_pp_c_us, 0.0, 0.0, 0.0 };   // fixed part: one 64-token pass (the least managed pass)
+        rls_init(r, 4, th0, fl);
+    }
+    if (!g_pp_rls_loaded[p] && r.n == 0) {
+        std::string v;
+        if (llama_dsplit_state_get_fork(("pp.rls." + std::to_string(p)).c_str(), v)) {
+            g_pp_rls_loaded[p] = true;
+            dsf_rls s;
+            if (rls_parse(s, 4, v)) { r = s; g_pp_rls_own[p] = true; }
+        }
+    }
+    // the mix and the predictions are the stream with something added: until one ran (or a stored posterior exists) the stream's posterior is their prior,
+    // so a stream already known makes them a near tie to be tried, not nine wide unknowns
+    if ((p == PP_MIX || p >= PP_K) && r.n == 0 && !g_pp_rls_own[p] && g_pp_rls[PP_RING].n > 0) {
+        r = g_pp_rls[PP_RING];
+        r.n = 0; r.nis = 1.0;
+    }
+    return r;
+}
 static std::string pp_path_name(int p) {
     return p == PP_RING ? "stream" : p == PP_MIX ? "stream, mix" : p == PP_CHAIN ? "prompt chain" : p == PP_DENSE ? "dense" : p == PP_DEC ? "decode chain" : format("stream, k x%d", 1 << (p - PP_K));
 }
@@ -11916,6 +11959,22 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         // stats.log: what this call took against the best known at its size, read before its own measurement goes in. The first run of a path that loses counts against the budget of later tries (pp_try_ok)
         {
             const double n1 = (double) n_tokens / P, took = (double) us / P, was = pp_took_us(path, n1);
+            // the learned planner: the path that ran learns from this pass with the features it was decided with (a split pass learns in the split planner)
+            std::string pr;
+            if (path != PP_DENSE && g_pp_phi[path][1] > 0.0) {
+                dsf_rls & rp = pp_rls(path);
+                const double mu = g_pp_pmu[path], sd = std::sqrt(std::max(0.0, g_pp_var[path]));
+                const double nis = rls_update(rp, g_pp_phi[path], took);
+                if (nis > 1.0) { g_pp_redraw = true; }   // the posterior moved more than it expected: the next call draws again
+                // stored only when determined and quiet (feedback_stored_values_policy): a next start begins from it as its prior
+                if (rp.det() && rp.nis <= 1.0) { llama_dsplit_state_set_fork(("pp.rls." + std::to_string(path)).c_str(), rls_str(rp)); }
+                double lo = -1.0;   // the lowest predicted mean among this call's candidates
+                for (int p = 0; p < PP_PATHS; ++p) { if (g_pp_phi[p][1] > 0.0 && (lo < 0.0 || g_pp_pmu[p] < lo)) { lo = g_pp_pmu[p]; } }
+                const bool best = lo >= 0.0 && mu <= lo;
+                const double regret = best ? 0.0 : std::max(0.0, took - lo);
+                if (g_pp_pick == path) { llama_dsplit_plan_book_fork(regret * P, took <= lo + sd); }
+                pr = format("; predicted %.0f +- %.0f ms per pass, took %.0f, nis %.2f, regret %.1f s (model n=%d, nis %.2f)", mu / 1e3, sd / 1e3, took / 1e3, nis, regret * P / 1e6, rp.n, rp.nis);
+            }
             int b = -1;
             for (int p = 0; p < PP_PATHS; ++p) {
                 const double t = pp_took_us(p, n1);
@@ -11925,7 +11984,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             g_pp_total_us += (double) us;
             if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
             const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s, %.2f ms per token)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us, (double) us / 1e3 / std::max(1u, n_tokens),
-                    best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "").c_str() : "; first of this size",
+                    (best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "") : std::string("; first of this size")).append(pr).c_str(),
                     llama_moe_stats_io_fork(0).c_str());
             llama_moe_stats_log_fork("DON", done.c_str());
             { const double t1 = llama_moe_span_now_fork(); llama_moe_span_fork(format("prompt call: %s, %u tokens", pp_path_name(path).c_str(), n_tokens).c_str(), t1 - (double) us / 1e6, t1, 0, ""); }
@@ -11933,7 +11992,10 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         // the first pass of a server that fills a layer runs cold whatever its path (Qwen3.6: 348 ms on the chain, 130 warm; the stream 150 ms over its repeats) and the size would keep that
         // number until the path runs again: not a measurement
         // the chain was asked and its graph refused (a layer's blocks cannot hold the pass, pp_chain_fork): the size asks no more
-        if (path != PP_CHAIN && path != PP_DENSE && path != PP_DEC && g_pp_mb.load(std::memory_order_relaxed) > 0) { g_pp_no_chain[pp_bucket((double) n_tokens / P)] = true; }
+        if (path != PP_CHAIN && path != PP_DENSE && path != PP_DEC && g_pp_mb.load(std::memory_order_relaxed) > 0) {
+            g_pp_no_chain[pp_bucket((double) n_tokens / P)] = true;
+            g_pp_chain_refused = std::min(g_pp_chain_refused, (uint32_t) ((double) n_tokens / P));
+        }
         // the first call on the decode chain neither: 2 tokens took GLM 3065 ms next to the preload's uploads, 106 ms for 4 tokens later, and that call may be the only one of its size
         static bool cold = true, cold_dec = true;
         const bool fills = !mc->layers.empty() && (double) n_tokens / P * (double) mc->n_expert_used >= (double) mc->layers[0].expert_slot.size();
@@ -12145,19 +12207,63 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             dec_max = lo;
         }
     }
+    static const bool k_auto = moe_opt("pp-k") == nullptr;   // --moe pp-k fixes it, pp-k=0 turns it off
+    // The learned planner's candidates: each path's features for a pass of this call, its posterior and its draw. Computed in every mode (a forced path or
+    // the old rules still teach the path that ran); picked by only with split-model on. The eligibility below is facts, not rules: the mix needs a slower
+    // card and passes that fill a layer, the prompt chain no uploads under way and a pass its graph took, the decode chain a measured CPU rate, the
+    // predictions ranks short of all experts.
+    const bool learned = pp_split_model_on() && !force;
+    {
+        const int64_t c0 = (int64_t) g_pp_cells - (int64_t) n_tokens;
+        if (c0 <= g_pp_seen_c0 || g_pp_redraw || g_pp_seed == 0) { g_pp_seed = rls_mix((uint64_t) ggml_time_us()); g_pp_redraw = false; }   // a new request, or the last pass surprised its model
+        g_pp_seen_c0 = c0;
+    }
+    const double cells_mid = std::max(0.0, (double) g_pp_cells - 0.5 * (double) n_tokens);   // the cells a pass of this call attends to, about
+    for (auto & f : g_pp_phi) { f[1] = 0.0; }
+    g_pp_pick = -1;
+    auto cand = [&](int p, double Up) { g_pp_phi[p][0] = 1.0; g_pp_phi[p][1] = n; g_pp_phi[p][2] = n * cells_mid; g_pp_phi[p][3] = Up; };
+    // U per path: the stream's bound by its link and by the SSD reads (Ts; the design names U, Ts is U wherever the experts are not mapped), the mix's
+    // upload, the misses the prompt chain uploads behind the router, the decode chain's misses plus its 4-token chunk reads, the predictions the stream's
+    cand(PP_RING, Ts);
+    if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, Um); }
+    if (!busy && (uint32_t) n < g_pp_chain_refused) { cand(PP_CHAIN, up); }
+    if (cpu_known) { cand(PP_DEC, up + chunk_at(n)); }
+    for (int i = 0; k_auto && PP_K + i < PP_PATHS && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) { cand(PP_K + i, Ts); }
+    int best_mu = -1;
+    for (int p = 0; p < PP_PATHS; ++p) {
+        if (g_pp_phi[p][1] <= 0.0) { continue; }
+        dsf_rls & rp = pp_rls(p);
+        g_pp_pmu[p] = rls_pred(rp, g_pp_phi[p], &g_pp_var[p]);
+        rls_draw(rp, g_pp_phi[p], rls_mix(g_pp_seed + (uint64_t) p), &g_pp_drw[p]);
+        if (g_pp_pick < 0 || g_pp_drw[p] < g_pp_drw[g_pp_pick]) { g_pp_pick = p; }
+        if (best_mu < 0 || g_pp_pmu[p] < g_pp_pmu[best_mu]) { best_mu = p; }
+    }
+    bool chain, dec, mix;
+    double m;
+    if (learned && g_pp_pick >= 0) {
+        chain = g_pp_pick == PP_CHAIN;
+        dec   = g_pp_pick == PP_DEC;
+        mix   = g_pp_pick == PP_MIX;
+        m     = g_pp_pick >= PP_K ? (double) (1 << (g_pp_pick - PP_K)) : 0.0;
+        why   = g_pp_pick == best_mu ? "lowest draw, lowest mean" : "lowest draw (the posterior allows it to be faster)";
+        g_pp_dec = dec;
+        g_pp_mb = chain || dec ? ub_max : 0;
+        g_pp_mix_call = mix;
+    } else {
+    g_pp_pick = -1;   // the old rules decide: no regret is booked against the draws
     const bool dec_ok = cpu_known && de < ot;
-    const bool chain = force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
-    const bool dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
+    chain = force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why);
+    dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
     if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
     g_pp_dec = dec;
     g_pp_mb = chain || dec ? ub_max : 0;
     const char * why_mix = "";
-    const bool mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && !dec && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
+    mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && !dec && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
     g_pp_mix_call = mix;
     if (why_mix[0]) { why = why_mix; }
-    static const bool k_auto = moe_opt("pp-k") == nullptr;   // --moe pp-k fixes it, pp-k=0 turns it off
     const double r = pp_took_us(mix ? PP_MIX : PP_RING, n);
-    const double m = k_auto && !force && !chain && !dec && !why_mix[0] ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
+    m = k_auto && !force && !chain && !dec && !why_mix[0] ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
+    }
     if (k_auto) { ggml_backend_pred_set_fork(m); }
     double o = 0.0;   // the fastest one-card stream measured here
     for (int p = 0; p < PP_PATHS; ++p) {
@@ -12167,7 +12273,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     const double d = pp_took_us(PP_DENSE, n);
     // only a one-card path measured at this size can veto the split; with none measured the dense split planner weighs the split against the planned one-card time
     // (2026-11-07 GLM 3.5 12k rampool6 warm: the split measured 15.4 s at 10496 tokens and no stream there, so the pass was forced to one card, 17.3 s, pp 583 -> 508)
-    g_pp_no_dense = d > 0.0 && o > 0.0 && o <= d;
+    g_pp_no_dense = !learned && d > 0.0 && o > 0.0 && o <= d;   // the learned planner has no veto: the split weighs every path's posterior (fault B)
     // the path this call takes and what it is expected to save over the stream (the dense split planner weighs its one-card time less this, llama_dsplit_decide_fork):
     // measured at this size where it ran; else the decode chain's calculation, the chain's compute plus its misses' uploads; a first try of a prediction saves nothing yet
     {
@@ -12189,8 +12295,46 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, ssd_rate, dec_r, g_pp_dec_chunk / 1e3, g_pp_dec_kc, R_read / 1e9, dec_f / 1e3, comp_at(n) / 1e3);
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
+    {   // every candidate's posterior and draw (feedback_planner_explains_picks): what the pick saw
+        std::string cs;
+        for (int p = 0; p < PP_PATHS; ++p) {
+            if (g_pp_phi[p][1] <= 0.0) { continue; }
+            cs += format("%s%s %.0f +- %.0f ms, draw %.0f (n=%d, nis %.2f)", cs.empty() ? "" : "; ", pp_path_name(p).c_str(), g_pp_pmu[p] / 1e3, std::sqrt(std::max(0.0, g_pp_var[p])) / 1e3,
+                    g_pp_drw[p] / 1e3, g_pp_rls[p].n, g_pp_rls[p].nis);
+        }
+        const std::string pl = format("plan: prompt call of %.0f tokens at %.0f cells: %s; %s%s", n, cells_mid, cs.c_str(), learned ? "picked " : "old rules (split-model=0 or a forced path) picked ",
+                (chain ? std::string("prompt chain") : dec ? std::string("decode chain") : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "")).c_str());
+        LLAMA_LOG_WARN("moe-cache: %s\n", pl.c_str());
+        llama_moe_stats_log_fork("PLN", pl.c_str());
+    }
     llama_moe_stats_io_fork(0);   // the reads of this call start counting here
 }
+
+// For the learned split planner (dsf_plan): the lowest drawn one-card time of a pass of n tokens at c cells over this call's candidates, by the same draws the
+// call's pick used (one consistent view per request); its posterior mean and variance in *mu, *var. -1: no candidate (the call was not planned here).
+// shortcut: a candidate's upload is the call's pass size's (U at n of the call); passes of other sizes in one call are the tail only. Upgrade if calls mix sizes.
+double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path) {
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    double best = -1.0;
+    bool any = false;   // a draw can come out below 0 on a wide posterior: compared, never a marker
+    for (int p = 0; p < PP_PATHS; ++p) {
+        if (g_pp_phi[p][1] <= 0.0) { continue; }
+        const double phi[4] = { 1.0, (double) n, (double) n * (double) c, g_pp_phi[p][3] };
+        dsf_rls & rp = pp_rls(p);
+        double t = 0.0, v = 0.0;
+        rls_draw(rp, phi, rls_mix(g_pp_seed + (uint64_t) p), &t);
+        if (!any || t < best) {
+            any = true;
+            best = t;
+            const double m = rls_pred(rp, phi, &v);
+            if (mu) { *mu = m; }
+            if (var) { *var = v; }
+            if (path) { *path = p; }
+        }
+    }
+    return any ? std::max(0.0, best) : -1.0;
+}
+std::string llama_moe_cache_pp_path_name_fork(int p) { return p >= 0 && p < PP_PATHS ? pp_path_name(p) : std::string("-"); }
 
 // For the dense split planner (llama_dsplit_decide_fork), which weighs the split against the one-card path this call took (2026-11-06)
 bool llama_moe_cache_pp_dec_pass_fork() { return g_pp_dec_built; }
