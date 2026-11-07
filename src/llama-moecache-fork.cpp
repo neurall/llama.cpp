@@ -11454,6 +11454,7 @@ static bool g_pp_no_chain[32] = {};   // per size: the chain's graph refused suc
 static dsf_rls  g_pp_rls[PP_PATHS];
 static bool     g_pp_rls_loaded[PP_PATHS] = {};   // the state file was consulted for this path (once the split planner's section is known)
 static bool     g_pp_rls_own[PP_PATHS] = {};      // and held a posterior for it
+static double   g_pp_ctok_prior = 0.0;            // compute per token before any stream pass measured it: a token's expert bytes / the card's read rate (us)
 static double   g_pp_phi[PP_PATHS][4] = {};       // the call's features per candidate path (phi[1] == 0: not a candidate), for the report to update the path that ran
 static double   g_pp_pmu[PP_PATHS] = {}, g_pp_var[PP_PATHS] = {}, g_pp_drw[PP_PATHS] = {};   // the call's predicted mean, variance and draw per candidate
 static int      g_pp_pick = -1;                   // the path the draws picked for this call (-1: not decided by the draws)
@@ -11470,7 +11471,12 @@ void llama_dsplit_plan_book_fork(double regret_us, bool hit);                // 
 static dsf_rls & pp_rls(int p) {
     dsf_rls & r = g_pp_rls[p];
     if (r.k == 0) {
-        const double th0[4] = { 0.0, g_pp_c_us, g_pp_a_us, 1.0 }, fl[4] = { 64.0 * g_pp_c_us, 0.0, 0.0, 0.0 };   // fixed part: one 64-token pass (the least managed pass)
+        // Every prior coefficient from a measured rate, never 0: a zero prior got its uncertainty from the first call that showed its feature, and a 2-token
+        // call at 1 cell made the per-token and per-cell coefficients 10 s wide (rampool9 first run: +- 21000 s on a 2k call). Compute per token: the
+        // stream's measured, else the card's weight read rate over a token's expert bytes; attention: the feature is the measured attention time
+        // (n x a x cells, the moe-cache's fit), its coefficient 1 +- 1 like the upload's.
+        const double c = g_pp_c_us > 0.0 ? g_pp_c_us : g_pp_ctok_prior;
+        const double th0[4] = { 0.0, c, 1.0, 1.0 }, fl[4] = { 64.0 * c, 0.0, 0.0, 0.0 };   // fixed part: one 64-token pass (the least managed pass)
         rls_init(r, 4, th0, fl);
     }
     if (!g_pp_rls_loaded[p] && r.n == 0) {
@@ -12218,10 +12224,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         if (c0 <= g_pp_seen_c0 || g_pp_redraw || g_pp_seed == 0) { g_pp_seed = rls_mix((uint64_t) ggml_time_us()); g_pp_redraw = false; }   // a new request, or the last pass surprised its model
         g_pp_seen_c0 = c0;
     }
-    const double cells_mid = std::max(0.0, (double) g_pp_cells - 0.5 * (double) n_tokens);   // the cells a pass of this call attends to, about
+    const double cells_mid = std::max(0.0, (double) g_pp_cells - 0.5 * (double) n_tokens);
+    if (R_read > 0.0 && A > 0.0) { g_pp_ctok_prior = A / R_read * 1e6; }   // the cells a pass of this call attends to, about
     for (auto & f : g_pp_phi) { f[1] = 0.0; }
     g_pp_pick = -1;
-    auto cand = [&](int p, double Up) { g_pp_phi[p][0] = 1.0; g_pp_phi[p][1] = n; g_pp_phi[p][2] = n * cells_mid; g_pp_phi[p][3] = Up; };
+    auto cand = [&](int p, double Up) { g_pp_phi[p][0] = 1.0; g_pp_phi[p][1] = n; g_pp_phi[p][2] = n * g_pp_a_us * cells_mid; g_pp_phi[p][3] = Up; };
     // U per path: the stream's bound by its link and by the SSD reads (Ts; the design names U, Ts is U wherever the experts are not mapped), the mix's
     // upload, the misses the prompt chain uploads behind the router, the decode chain's misses plus its 4-token chunk reads, the predictions the stream's
     cand(PP_RING, Ts);
@@ -12319,7 +12326,7 @@ double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, doubl
     bool any = false;   // a draw can come out below 0 on a wide posterior: compared, never a marker
     for (int p = 0; p < PP_PATHS; ++p) {
         if (g_pp_phi[p][1] <= 0.0) { continue; }
-        const double phi[4] = { 1.0, (double) n, (double) n * (double) c, g_pp_phi[p][3] };
+        const double phi[4] = { 1.0, (double) n, (double) n * g_pp_a_us * (double) c, g_pp_phi[p][3] };
         dsf_rls & rp = pp_rls(p);
         double t = 0.0, v = 0.0;
         rls_draw(rp, phi, rls_mix(g_pp_seed + (uint64_t) p), &t);
@@ -12334,6 +12341,7 @@ double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, doubl
     }
     return any ? std::max(0.0, best) : -1.0;
 }
+double llama_moe_cache_att_us_cell_fork() { std::lock_guard<std::mutex> lk(g_pp_mu); return g_pp_a_us; }   // attention per token and cell (us), 0 = not fitted yet
 std::string llama_moe_cache_pp_path_name_fork(int p) { return p >= 0 && p < PP_PATHS ? pp_path_name(p) : std::string("-"); }
 
 // For the dense split planner (llama_dsplit_decide_fork), which weighs the split against the one-card path this call took (2026-11-06)
