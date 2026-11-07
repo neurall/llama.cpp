@@ -74,7 +74,7 @@ void     llama_dsplit_note_pass_fork(int64_t pos0);   // llama-dsplit-fork.cpp (
 bool     llama_dsplit_pass_open_fork();
 void     llama_dsplit_pass_end_fork();
 void     llama_dsplit_pass_abandon_fork();   // a pass that ran out of CUDA memory: no sample
-void     llama_dsplit_note_fill_fork(double ms);
+void     llama_dsplit_note_fill_fork(double ms, double pin_ms);   // the fill's whole wall and its staging pins (the planner takes each apart)
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);   // llama-dsplit-fork.cpp: the largest dense-split pass (sliding-window cells)        // src/llama-moecache-fork.cpp: the largest pass every pool can lend for
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
@@ -1516,8 +1516,9 @@ void llama_context::moe_mirror_fill() {
     const double ms = (ggml_time_us() - t0) / 1e3, pin_ms = (ggml_cuda_xstage_pin_us_fork() - pin0) / 1e3;
     LLAMA_LOG_WARN("%s: dense split: copies filled at once: %s in %.0f ms (%.0f ms of it staging-block pins, once per process; pool blocks lent to this prompt)\n",
             __func__, txt.c_str(), ms, pin_ms);
-    // the split's per-prompt cost, kept apart from the pass's time per token (dsf): the copy alone, a warm request pays no pins (rampool7: 8904 ms learned, 1.3 s real)
-    llama_dsplit_note_fill_fork(std::max(0.0, ms - pin_ms));
+    // the split's per-prompt cost, kept apart from the pass's time (dsf): the wall and the pins go as measured, the planner defines what each sample takes
+    // out (one place: llama_dsplit_note_fill_fork; rampool7: 8904 ms learned with the pins inside, 1.3 s real)
+    llama_dsplit_note_fill_fork(ms, pin_ms);
 }
 
 void llama_context::sched_new(size_t max_nodes, bool parallel) {

@@ -42,6 +42,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "llama-rls-fork.h"   // the learned planner's estimator (one RLS per path)
+
 void llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
 
 namespace {
@@ -684,7 +686,11 @@ static std::map<std::string, dsf_pt> g_dsf_hop;
 static dsf_pt g_dsf_fill;
 static bool g_dsf_loaded = false;
 static constexpr int64_t DSF_CELLS = 8192;
-struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill_ms = 0.0; ggml_backend_dev_t xdev = nullptr; double U_us = -1.0; };
+// fill_ms: the copy fill without its staging pins (the old rules' sample); fill_wall_ms: the whole moe_mirror_fill wall, pins included - the one quantity
+// a split pass sample is taken without (the pins are a one-time cost the fill model also leaves out). mu/sd/lo: the learned plan's prediction of this pass,
+// and the lowest predicted mean of any path, for the regret.
+struct dsf_pass { int choice = -1; int64_t T = 0, pos0 = -1, t0 = 0; double fill_ms = 0.0, fill_wall_ms = 0.0, fill_est_us = 0.0; ggml_backend_dev_t xdev = nullptr; double U_us = -1.0;
+                  double mu = -1.0, sd = 0.0, lo = -1.0; };
 double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert);   // llama-moecache-fork.cpp: a pass's expert upload (ms)
 bool   llama_moe_cache_pp_chain_pass_fork();   // llama-moecache-fork.cpp: the graph that ran has layers on the prompt chain
 bool   llama_moe_cache_pp_chain_takes_fork(int64_t n_tokens);   // llama-moecache-fork.cpp: a pass of this size of this call goes on the prompt chain
@@ -695,6 +701,25 @@ double llama_moe_cache_pp_best_one_us_fork(int64_t n_tokens);  // llama-moecache
 bool   llama_moe_cache_pp_no_dense_fork();                      // llama-moecache-fork.cpp: a one-card path was measured faster than the split at this size
 bool   llama_moe_cache_pp_yield_fork(const char * why);         // llama-moecache-fork.cpp: the call's one-card path gives the pass to the split (the stream runs); false: a path the user set keeps it
 static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
+double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path);   // llama-moecache-fork.cpp: the call's lowest drawn one-card pass
+std::string llama_moe_cache_pp_path_name_fork(int p);
+// ---- the learned planner (fork/docs/rampool.md "Robust planner design"): the split pass and the copy fill are one RLS each (llama-rls-fork.h); the one-card
+// paths are the moe-cache's. --moe split-model=0 keeps the old rules (the cascade in llama_dsplit_decide_fork, the factors, the buckets) for one release.
+static bool dsplit_split_model_on() { static const bool on = [] { const char * o = llama_moe_get_opt("split-model"); return !o || atoi(o) != 0; }(); return on; }
+static dsf_rls  g_rls_split, g_rls_fill;   // phi = (1, T, T x cells, the pass's calculated expert upload us); phi = (the planner's fill estimate us)
+static bool     g_rls_dirty = false;       // a sample since the last flush
+static uint64_t g_dsf_seed = 0;            // the draws of the running request
+static double   g_dsf_call_fill_ms = 0.0;  // the fill walls of the running call (the per-size display takes them out of the call time)
+static bool     g_dsf_redraw = true;       // the last split pass surprised its model (NIS > 1)
+static std::string g_plan_why;             // the learned plan's line for the pass decided last (g_why points into it)
+static dsf_pass g_dsf_plan_last;           // the learned plan's numbers for the pass it decided last (mu, sd, lo), copied into g_dsf_ps
+static std::atomic<long>   g_plan_picks{0}, g_plan_hits{0};
+static std::atomic<double> g_plan_regret_s{0.0};
+void llama_dsplit_plan_book_fork(double regret_us, bool hit) {
+    g_plan_picks++; if (hit) { g_plan_hits++; }
+    double o = g_plan_regret_s.load();
+    while (!g_plan_regret_s.compare_exchange_weak(o, o + regret_us / 1e6)) {}
+}
 static int64_t  g_dsf_next_pos0 = -1;    // the first position of the pass about to be decided (llama_context)
 // Measured fallback (user 2026-10-25: "no point to run 2 cards at that point, we should have fallen back to 1 card"): the curves decide a pass from what was measured at
 // other contexts, and extrapolate where the split has not run yet. MiMo 400k, x16 + x4: from 245k cells the split passes took 35 s for 10.9k tokens, one card 22 s,
@@ -757,6 +782,14 @@ static std::set<std::string> g_dsf_dirty;                  // keys (dsf.one.k3, 
 static std::map<std::string, const dsf_pt *> g_dsf_ref;    // the value behind each key (std::map nodes do not move)
 static void dsf_mark(const std::string & key, const dsf_pt & p) { g_dsf_dirty.insert(key); g_dsf_ref[key] = &p; }
 static void dsf_flush() {   // under g_dsf_mu
+    // the learned planner's posteriors: stored only when determined and quiet (n >= k + 1, running NIS <= 1; feedback_stored_values_policy), never samples
+    if (g_rls_dirty) {
+        g_rls_dirty = false;
+        std::vector<std::pair<std::string, std::string>> kv;
+        if (g_rls_split.det() && g_rls_split.nis <= 1.0) { kv.push_back({ "dsf.rls.split", rls_str(g_rls_split) }); }
+        if (g_rls_fill.det()  && g_rls_fill.nis  <= 1.0) { kv.push_back({ "dsf.rls.fill",  rls_str(g_rls_fill) }); }
+        dsf_save(kv);
+    }
     if (g_dsf_dirty.empty()) { return; }
     std::vector<std::pair<std::string, std::string>> kv;
     for (const auto & k : g_dsf_dirty) { auto it = g_dsf_ref.find(k); if (it != g_dsf_ref.end() && it->second) { kv.push_back({ k, dsf_val(*it->second) }); } }
@@ -782,8 +815,25 @@ static void dsf_load() {   // under g_dsf_mu: this build's factors from the stat
         else if (w.rfind("hop.", 0) == 0) { g_dsf_hop[w.substr(4)] = pt; }
         else if (w == "fill") { g_dsf_fill = pt; }
     }
+    // a stored posterior of this build is the learned planner's prior (k: 4 for the pass, 1 for the fill)
+    for (const auto & e : kv) {
+        const std::string & k = e.first;
+        if (k == dsplit_state_key("dsf.rls.split")) { rls_parse(g_rls_split, 4, e.second); }
+        if (k == dsplit_state_key("dsf.rls.fill"))  { rls_parse(g_rls_fill, 1, e.second); }
+    }
     LLAMA_LOG_WARN("split factors: %zu one-card and %zu split contexts, dense curves of %zu cards, copy fill %.0f ms (%d prompts) from the state file (this build)\n",
             g_dsf_one.size(), g_dsf_split.size(), g_dsf_dense.size(), g_dsf_fill.us, g_dsf_fill.n);
+}
+
+// the moe-cache's posteriors go to the same section and key as the split's (this model, cards and build). false: the section is not known yet (before the
+// first managed prompt pass); true with v empty: known, nothing stored
+bool llama_dsplit_state_get_fork(const char * what, std::string & v) {
+    if (!dsplit_state_on()) { return false; }
+    if (!moe_state_get(g_calib_section, dsplit_state_key(what), v)) { v.clear(); }
+    return true;
+}
+void llama_dsplit_state_set_fork(const char * what, const std::string & v) {
+    if (dsplit_state_on()) { moe_state_set(g_calib_section, { { dsplit_state_key(what), v } }); }
 }
 
 // the copy fill this prompt still owes (us): 0 while the copies are in place, else the learned fill (the planner's estimate before the first one). Under g_dsf_mu.
@@ -2281,6 +2331,7 @@ std::string llama_dsplit_state_json_fork() {
     for (int64_t t : g_rng_tok) { n_rng += t > 0; }
     std::string out = format("\"split\":{\"gpus\":%d,\"devs\":\"%s\",\"prefill\":%d,\"prefill_gpus\":%d,\"why\":\"%s\"", g_ngpus, g_dev_all.c_str(), g_pf_choice,
              g_pf_choice == 1 ? (n_rng > 0 ? n_rng : g_ngpus) : g_pf_choice == 0 ? 1 : 0, why.c_str());
+    out += format(",\"plan_picks\":%ld,\"plan_hits\":%ld,\"plan_regret_s\":%.2f", g_plan_picks.load(), g_plan_hits.load(), g_plan_regret_s.load());   // the learned planner's picks
     // the live balance of the last measured split pass: every card's shares, dense and MoE times, the phase, what the last step did
     auto bt = g_bal_last >= 0 ? g_bal.find(g_bal_last) : g_bal.end();
     const bool one_newer = !g_one_bal.dev.empty() && g_one_t_ms > g_bal_t_ms;   // the last measured pass ran on one card: its statistics, same shape as a split pass's
@@ -2562,6 +2613,74 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
     }
     return c;
 }
+// The learned plan for a prompt pass (fork/docs/rampool.md "Robust planner design", step 5): the one decision of one card against the split, by one predictor
+// per path and one pick. For every pass left in this call: one_k = the moe-cache's lowest drawn one-card time (the path it would take), split_k = the split's
+// drawn time; g_k = one_k - split_k. The copy fill is paid once if any pass splits (0 while the copies are in place): this pass splits when g_this > 0 and the
+// positive gains of the passes left beat the drawn fill. The draws are kept for the request (a seed per request, redrawn after a surprising pass), so the
+// probability of the slower pick is the posterior probability that it is faster: no margin, no veto, no exploration switch. -1: no one-card candidate
+// (the moe-cache did not plan this call), the caller falls back. Under g_mu; takes g_dsf_mu, then g_pp_mu inside one_draw (the order dsf_decide had).
+static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & why) {
+    // the prior's split time per token, before g_dsf_mu (the plan takes g_plan_mu, which is never taken under g_dsf_mu)
+    double c_prior = -1.0;
+    if (g_rls_split.k == 0) {
+        const llama_dsplit_plan_fork plan = llama_dsplit_plan_get_fork(model, n_tokens);
+        c_prior = plan.valid && plan.t_split_ms > 0.0 ? plan.t_split_ms * 1e3 / (double) n_tokens : 0.0;
+    }
+    std::lock_guard<std::mutex> dl(g_dsf_mu);
+    dsf_load();
+    if (g_cards.size() < 2 || g_dsf_next_pos0 < 0) { return -1; }
+    const int64_t pos0 = g_dsf_next_pos0;
+    if (pos0 < g_dsf_seen_pos0 || g_dsf_redraw || g_dsf_seed == 0) { g_dsf_seed = rls_mix((uint64_t) ggml_time_us() ^ 0x5d1u); g_dsf_redraw = false; }   // a new request (the dsf rule), or a surprise
+    g_dsf_seen_pos0 = pos0;
+    const uint32_t k_used = std::max<uint32_t>(1, model.hparams.n_expert_used_max()), n_exp = std::max<uint32_t>(1, model.hparams.n_expert);
+    if (g_rls_split.k == 0) {
+        // prior: the split planner's calculated split time per token (matmul bench, link probe), uncertain by its own size; fixed part one 64-token pass
+        const double c = std::max(0.0, c_prior);
+        const double th0[4] = { 0.0, c, 0.0, 1.0 }, fl[4] = { 64.0 * c, 0.0, 0.0, 0.0 };
+        rls_init(g_rls_split, 4, th0, fl);
+    }
+    const double fill_est = g_mirror_fill_us.load();   // the planner's fill estimate (us); 0: the copies are in place
+    if (g_rls_fill.k == 0) { const double one = 1.0; rls_init(g_rls_fill, 1, &one, nullptr); }   // fill = 1 x the estimate, +- itself
+    const int64_t end = std::max<int64_t>((int64_t) llama_moe_cache_pp_cells_get_fork(), pos0 + n_tokens);
+    double g_this = 0.0, g_pos = 0.0, m_gain = 0.0, v_gain = 0.0;
+    double mu1_0 = 0.0, v1_0 = 0.0, d1_0 = 0.0, mu2_0 = 0.0, v2_0 = 0.0, d2_0 = 0.0;
+    int path0 = -1, np = 0;
+    for (int64_t c = pos0; c < end; c += n_tokens, ++np) {
+        const int64_t T = std::min<int64_t>(n_tokens, end - c);
+        const double cm = (double) c + 0.5 * (double) T;
+        const double U = std::max(0.0, llama_moe_cache_pass_upload_ms_fork((uint32_t) T, k_used, n_exp)) * 1e3;
+        double mu1 = 0.0, v1 = 0.0, mu2, v2, d2;
+        int pth = -1;
+        const double d1 = llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth);
+        if (d1 < 0.0) { return -1; }
+        const double phi[4] = { 1.0, (double) T, (double) T * cm, U };
+        mu2 = rls_pred(g_rls_split, phi, &v2);
+        rls_draw(g_rls_split, phi, rls_mix(g_dsf_seed + 0x51u), &d2);
+        const double g = d1 - d2;
+        if (c == pos0) { g_this = g; mu1_0 = mu1; v1_0 = v1; d1_0 = d1; mu2_0 = mu2; v2_0 = v2; d2_0 = d2; path0 = pth; }
+        g_pos += std::max(0.0, g);
+        m_gain += mu1 - mu2; v_gain += v1 + v2;
+    }
+    double f_mu = 0.0, f_v = 0.0, f_d = 0.0;
+    if (fill_est > 0.0) {
+        f_mu = rls_pred(g_rls_fill, &fill_est, &f_v);
+        rls_draw(g_rls_fill, &fill_est, rls_mix(g_dsf_seed + 0xf1u), &f_d);
+        f_d = std::max(0.0, f_d);
+    }
+    const int choice = g_this > 0.0 && g_pos > f_d ? 1 : 0;
+    // p_split, for the log only: the posterior probability that splitting this call beats one card (mean gain less the fill over the combined sigma)
+    const double p_split = rls_phi_cdf((m_gain - f_mu) / std::max(1e-9, std::sqrt(v_gain + f_v)));
+    g_dsf_plan_last = dsf_pass();
+    g_dsf_plan_last.mu = choice ? mu2_0 : mu1_0;
+    g_dsf_plan_last.sd = std::sqrt(std::max(0.0, choice ? v2_0 : v1_0));
+    g_dsf_plan_last.lo = std::min(mu1_0, mu2_0);
+    why = format("plan: pass of %lld tokens at %lldk cells, %d passes left: one card [%s] %.2f +- %.2f s, split %.2f +- %.2f s (n=%d, nis %.2f) + fill %.2f +- %.2f s (%s, n=%d); "
+                 "draws one %.2f, split %.2f, fill %.2f, gains this %.2f, all positive %.2f: %s (p_split %.2f)",
+            (long long) n_tokens, (long long) (pos0 / 1024), np, llama_moe_cache_pp_path_name_fork(path0).c_str(), mu1_0 / 1e6, std::sqrt(std::max(0.0, v1_0)) / 1e6,
+            mu2_0 / 1e6, std::sqrt(std::max(0.0, v2_0)) / 1e6, g_rls_split.n, g_rls_split.nis, f_mu / 1e6, std::sqrt(std::max(0.0, f_v)) / 1e6,
+            fill_est > 0.0 ? "owed" : "copies in place", g_rls_fill.n, d1_0 / 1e6, d2_0 / 1e6, f_d / 1e6, g_this / 1e6, g_pos / 1e6, choice ? "split" : "one card", p_split);
+    return choice;
+}
 // every prompt pass is timed: the pass decided last ends at the synchronize before the next prompt pass and at the end of its call (llama_context)
 void llama_dsplit_note_pass_fork(int64_t pos0) { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_next_pos0 = pos0; }
 bool llama_dsplit_pass_open_fork() { std::lock_guard<std::mutex> dl(g_dsf_mu); return g_dsf_ps.choice >= 0; }
@@ -2584,17 +2703,23 @@ static void dsplit_pass_end_locked() {
     // a pass on the prompt chain says nothing about the path the split is weighed against: its uploads wait for the router (5000 forced chain tokens: 525 us per token, streamed 240);
     // the decode chain neither (Qwen3.8-Flash-Next 15.5k: 35.0 s on the decode chain, 10.1 s streamed)
     if (llama_moe_cache_pp_chain_pass_fork() || llama_moe_cache_pp_dec_pass_fork()) { return; }
+    const bool learned = dsplit_split_model_on();
+    // the learned planner: a one-card pass learns in the moe-cache's model of the path that ran (llama_moe_cache_prefill_report_fork), never here
+    if (learned && p.choice != 1) { return; }
     // A pass under a quarter of the card limit (the micro-batch the pools allow now) is no sample: the server's short tail calls (1024-2144 tokens at the
     // end of a long prompt) are mostly the pass's fixed part and its upload, and their pass sizes are too close together to separate the two - recorded,
     // GLM's one-card curve became 4395 us per token from them and the 4k request picked the split it lost (pre13). Small requests are predicted from the
     // full passes' fit (fixed part + per token) instead.
-    if (const uint32_t lim = g_card_lim.load(); lim > 0 && (uint64_t) p.T * 4 < (uint64_t) lim) { return; }
+    // (the learned model has the fixed part and the upload as features: small and upload-bound passes are samples like any other)
+    if (const uint32_t lim = g_card_lim.load(); !learned && lim > 0 && (uint64_t) p.T * 4 < (uint64_t) lim) { return; }
     dsf_load();
-    double us = (double) (ggml_time_us() - p.t0) - p.fill_ms * 1e3;   // the copy fill is the split's per-prompt cost, kept apart (dsf.fill)
+    // The pass's time without the copy fill: the learned planner takes the fill's whole wall out, pins included (fault G: the pins and the fill are a
+    // request's cost, modelled apart; a pass that kept them looked 3 s slower and lost the next warm call); the old rules took out the fill less its pins.
+    double us = (double) (ggml_time_us() - p.t0) - (learned ? p.fill_wall_ms : p.fill_ms) * 1e3;
     // Only a compute-bound pass tells its compute: one that took no longer than its expert upload is upload-bound, its time per token is the upload's, not
     // the compute's (Qwen3.8 2k: 2441 tokens in 2.2 s against a 2.8 s upload estimate; recorded as compute it made one card look 988 us per token at the
     // start of the context, where big passes measure 450-650, and the split won the 4k request it lost by 20%). The decision adds the upload as max(U, T c).
-    if (p.U_us > 0.0) {
+    if (!learned && p.U_us > 0.0) {
         g_dsf_urat = std::min(g_dsf_urat, std::max(0.2, us / p.U_us));
         if (us <= p.U_us * g_dsf_urat) { return; }
     }
@@ -2610,6 +2735,23 @@ static void dsplit_pass_end_locked() {
         last_gen = gen;
     }
     if (us <= 0.0) { return; }
+    if (learned) {
+        const double cm = (double) p.pos0 + 0.5 * (double) p.T;
+        const double phi[4] = { 1.0, (double) p.T, (double) p.T * cm, std::max(0.0, p.U_us) };
+        double v = 0.0;
+        const double mu = p.mu >= 0.0 ? p.mu : rls_pred(g_rls_split, phi, &v);
+        const double sd = p.mu >= 0.0 ? p.sd : std::sqrt(std::max(0.0, v));
+        const double nis = rls_update(g_rls_split, phi, us);
+        if (nis > 1.0) { g_dsf_redraw = true; }   // the posterior moved more than it expected: the next pass draws again
+        g_rls_dirty = true;
+        const double regret = p.lo < 0.0 || mu <= p.lo ? 0.0 : std::max(0.0, us - p.lo);
+        if (p.mu >= 0.0) { llama_dsplit_plan_book_fork(regret, us <= p.lo + sd); }
+        const std::string d = format("split pass of %lld tokens at %lldk cells: predicted %.2f +- %.2f s, took %.2f (fill wall %.2f s out), nis %.2f, regret %.2f s; model %s",
+                (long long) p.T, (long long) (p.pos0 / 1024), mu / 1e6, sd / 1e6, us / 1e6, p.fill_wall_ms / 1e3, nis, regret / 1e6, rls_str(g_rls_split).c_str());
+        LLAMA_LOG_WARN("split planner: %s\n", d.c_str());
+        llama_moe_stats_log_fork("DON", d.c_str());
+        return;
+    }
     const int k = (int) ((p.pos0 + p.T / 2) / DSF_CELLS);
     dsf_pt & d = (p.choice == 1 ? g_dsf_split : g_dsf_one)[k];
     dsf_upd(d, us / (double) p.T, (double) p.T);
@@ -2626,12 +2768,27 @@ static void dsplit_pass_end_locked() {
 }
 void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes, const char * where);   // llama-moestate-fork.cpp: one line of stats.log for one big operation
 double llama_moe_span_now_fork();   // seconds since the start of the process, the time base of the spans
-void llama_dsplit_note_fill_fork(double ms) {
+void llama_dsplit_note_fill_fork(double ms, double pin_ms) {
     { const double t1 = llama_moe_span_now_fork(); llama_moe_span_fork("dense-split copy fill (dense weights of the other card into the expert pool)", t1 - ms / 1e3, t1, 0, ""); }   // llama_context::moe_mirror_fill: the copies of this prompt were filled (part of the split pass decided last)
     std::lock_guard<std::mutex> dl(g_dsf_mu);
     dsf_load();
-    g_dsf_ps.fill_ms += ms;
-    dsf_upd(g_dsf_fill, ms);   // in memory only: before the first fill of a run the planner's estimate (copy bytes / link rate) stands
+    // one place, one definition each: ms is moe_mirror_fill's whole wall, pin_ms its staging-block pins (once per process). The split pass is timed without
+    // the wall; the fill's cost (old: dsf.fill, learned: g_rls_fill) is the wall less the pins, against the planner's estimate at the decision.
+    const double copy_ms = std::max(0.0, ms - pin_ms);
+    g_dsf_ps.fill_ms += copy_ms;
+    g_dsf_ps.fill_wall_ms += ms;
+    g_dsf_call_fill_ms += ms;
+    dsf_upd(g_dsf_fill, copy_ms);   // in memory only: before the first fill of a run the planner's estimate (copy bytes / link rate) stands
+    const double est = g_dsf_ps.fill_est_us > 0.0 ? g_dsf_ps.fill_est_us : g_mirror_fill_us.load();
+    if (dsplit_split_model_on() && est > 0.0) {
+        if (g_rls_fill.k == 0) { const double one = 1.0; rls_init(g_rls_fill, 1, &one, nullptr); }
+        double v = 0.0;
+        const double mu = rls_pred(g_rls_fill, &est, &v);
+        const double nis = rls_update(g_rls_fill, &est, copy_ms * 1e3);
+        g_rls_dirty = true;
+        LLAMA_LOG_WARN("split planner: copy fill predicted %.2f +- %.2f s, took %.2f s (%.2f s of pins left out), nis %.2f; model %s\n", mu / 1e6, std::sqrt(v) / 1e6,
+                copy_ms / 1e3, pin_ms / 1e3, nis, rls_str(g_rls_fill).c_str());
+    }
 }
 
 // A prompt pass that ran on one card, for /moe/stats and run.py's pass table (the split balance only reports split passes). The scheduler stamps every pass of
@@ -2727,7 +2884,23 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
         } else if (!dsplit_opt_auto()) {
             choice = 1;   // forced on (the graph builder still applies dense-split-min)
             why = "forced: dense-split=1";
+        } else if (dsplit_split_model_on() && (choice = dsf_plan(model, n_tokens, g_plan_why)) >= 0) {
+            // the learned plan (one predictor per path, one pick): the only preference; what follows are facts (a path the user forced, the graph did not fit)
+            (void) llama_dsplit_plan_get_fork(model, n_tokens);   // the balance's shares (not a decision input)
+            why = g_plan_why.c_str();
+            if (choice == 1 && llama_moe_cache_pp_chain_takes_fork(n_tokens) && !llama_moe_cache_pp_yield_fork(why)) {
+                choice = 0;
+                why = "the prompt path set by --moe pp-path / pp-k keeps the pass";
+            }
+            // logged once per pass (decode re-decides a pass after an out-of-memory retry with the same draws: the same pick)
+            static int64_t logged_pos0 = -2; static int logged_choice = -1;
+            if (g_dsf_seen_pos0 != logged_pos0 || choice != logged_choice) {
+                logged_pos0 = g_dsf_seen_pos0; logged_choice = choice;
+                LLAMA_LOG_WARN("split planner: %s\n", g_plan_why.c_str());
+                llama_moe_stats_log_fork("PLN", g_plan_why.c_str());
+            }
         } else {
+            choice = -1;   // the old rules (--moe split-model=0, or no one-card candidate planned for this call)
             const int b = dsplit_bucket_of(n_tokens);
             dsplit_bucket & B = g_buckets[b];
             // the split planner first (see above): sure when it puts the two more than 15% apart; then nothing is tried against it
@@ -2840,6 +3013,9 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
         g_dsf_ps.choice = choice; g_dsf_ps.T = n_tokens; g_dsf_ps.pos0 = g_dsf_next_pos0; g_dsf_ps.t0 = ggml_time_us();
         g_dsf_ps.xdev = g_cards.empty() ? nullptr : g_cards.back();
         g_dsf_ps.U_us = U_us;   // this pass's expert upload (<0: not known)
+        g_dsf_ps.fill_est_us = g_mirror_fill_us.load();   // the fill estimate this pass was planned with (the fill model's feature)
+        if (dsplit_split_model_on() && g_dsf_plan_last.mu >= 0.0) { g_dsf_ps.mu = g_dsf_plan_last.mu; g_dsf_ps.sd = g_dsf_plan_last.sd; g_dsf_ps.lo = g_dsf_plan_last.lo; }
+        g_dsf_plan_last = dsf_pass();
         g_dsf_next_pos0 = -1;
     }
     if (choice >= 0) { g_pf_choice = choice; g_pf_why = why; }
@@ -3006,8 +3182,12 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     if (g_pending >= 0 && n_tokens > 0 && us > 0 && dsplit_opt_auto() && !dec_pass) {   // a chain or prediction pass with no other path measured yet is itself the one measurement of one card (2026-11-06: qni4 14k pass 1 was dropped, pass 2 planned on 150 us per token and kept one card)
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
         const int c = g_pending;
-        const double v = c == 0 && best_one > 0.0 ? std::min((double) us / (double) n_tokens, best_one) : (double) us / (double) n_tokens;
-        if (c == 1) {
+        // fault G: the call time holds the copy fill's wall; the size's split arm is the call without it (one definition: llama_dsplit_note_fill_fork)
+        const double fw_us = c == 1 ? [] { std::lock_guard<std::mutex> dl(g_dsf_mu); return g_dsf_call_fill_ms * 1e3; }() : 0.0;
+        const double v = c == 0 && best_one > 0.0 ? std::min((double) us / (double) n_tokens, best_one) : std::max(1.0, (double) us - fw_us) / (double) n_tokens;
+        const bool learned = dsplit_split_model_on();   // the learned planner reads none of the below: the arms stay as the log's display, nothing is calibrated or stored
+        if (learned) {
+        } else if (c == 1) {
             // the split planner's calibration: this measurement against the plan it ran with (both per token)
             std::lock_guard<std::mutex> pk(g_plan_mu);
             auto pit = g_plans.find(dsplit_bucket_of(g_pend_max));
@@ -3044,7 +3224,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
         B.us_tok[c] = (B.n[c] == 0 || B.prior[c]) ? v : 0.5 * (B.us_tok[c] + v);   // the newer measurement weighs half; a stored value is only a prior and is replaced
         if (B.prior[c]) { B.prior[c] = false; B.n[c] = 0; }
         B.n[c]++;
-        dsplit_bucket_save(dsplit_bucket_of(g_pend_max));
+        if (!learned) { dsplit_bucket_save(dsplit_bucket_of(g_pend_max)); }
         static int logged = 0;
         if (logged++ < 64) {
             LLAMA_LOG_WARN("dense split: %lld prompt tokens (largest pass %lld) %s: %.1f tokens/s; this size: one card %s, split %s\n", (long long) n_tokens,
@@ -3126,6 +3306,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     g_pending  = -1;
     g_pend_max = 0;
     g_why      = "";
+    { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_call_fill_ms = 0.0; }   // the next call's fill walls
 }
 
 llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer & l, ggml_backend_dev_t dev) {
