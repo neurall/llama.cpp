@@ -1676,11 +1676,18 @@ void llama_context::sched_reserve() {
         listed = true;
         for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
             ggml_backend_dev_t dv = ggml_backend_get_device(backend_ptrs[bi]);
-            if (ggml_backend_dev_type(dv) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            // the CPU backend too: its graph inputs sit in the pinned host buffer of a pass (GLM 3.5-bit: 5.1 GiB at 10400 tokens, a pin that stalled, 2026-11-07)
+            const bool cpu = ggml_backend_dev_type(dv) == GGML_BACKEND_DEVICE_TYPE_CPU;
+            if (ggml_backend_dev_type(dv) != GGML_BACKEND_DEVICE_TYPE_GPU && !cpu) { continue; }
             std::vector<const ggml_tensor *> ts;
             for (int k = 0; k < ggml_graph_n_nodes(mg); ++k) {
                 ggml_tensor * t = ggml_graph_node(mg, k);
                 if (ggml_backend_sched_get_tensor_backend(sched.get(), t) == backend_ptrs[bi]) { ts.push_back(t); }
+            }
+            for (int k = 0; cpu && k < ggml_graph_n_nodes(mg); ++k) {   // the inputs (leafs) through the nodes that read them
+                for (const ggml_tensor * t : ggml_graph_node(mg, k)->src) {
+                    if (t && (t->flags & GGML_TENSOR_FLAG_INPUT) && std::find(ts.begin(), ts.end(), t) == ts.end()) { ts.push_back(t); }
+                }
             }
             std::sort(ts.begin(), ts.end(), [](const ggml_tensor * x, const ggml_tensor * y) { return ggml_nbytes(x) > ggml_nbytes(y); });
             std::string top;
