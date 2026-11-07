@@ -410,6 +410,7 @@ struct moe_cache {
     ggml_backend_buffer_type_t pin_buft = nullptr;
     bool                       rp_on = false;      // --moe rampool: the RAM pool holds the expert slices (ggml-rampool-fork.h)
     std::vector<ggml_backend_buffer_t> rp_bufs;    // its pinned chunks
+    std::vector<ggml_backend_buffer_t> rp_pre;     // 512 MiB pieces pinned before the VRAM pool is sized, handed out as chunks by rp_alloc (rp_prepin)
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
     std::string                heat_file;          // <state dir>/<model>/globalhot.ini: the pool's heat, apart from the state file (whose values get reset or rolled back by policy)
     std::atomic<uint32_t>      vis_now{1};         // the heat clock: vis_base + decode steps
@@ -7186,8 +7187,15 @@ void llama_tokheat_dump_fork(void);   // llama-context.cpp: --moe tokheat=DIR
 
 static void rp_log(const char * when);
 // --moe rampool (fork/docs/rampool.md): expert slices that stayed mapped (the loader pinned no expert tensor, see llama-model-loader.cpp) go to a pinned pool chosen by heat
+static constexpr size_t RP_PIECE = (size_t) 512 << 20;   // the pool's chunk ceiling (ggml_rampool_open_fork) and the prepin's piece
 static void * rp_alloc(size_t bytes, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
+    if (bytes <= RP_PIECE && !mc->rp_pre.empty()) {   // a piece pinned before the VRAM sizing (rp_prepin)
+        ggml_backend_buffer_t b = mc->rp_pre.back();
+        mc->rp_pre.pop_back();
+        mc->rp_bufs.push_back(b);
+        return ggml_backend_buffer_get_base(b);
+    }
     const size_t floor = (size_t) 6 << 30;   // the floor pin_alloc keeps: never push the system into swapping
     if (mem_available_bytes() < bytes + floor) { return nullptr; }
     ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, bytes);
@@ -7200,6 +7208,34 @@ static void * rp_alloc(size_t bytes, void * ud) {
     return base;
 }
 static const void * rp_cpu_ptr(const ggml_tensor * src0, int64_t e) { return ggml_rampool_get_fork(src0, e); }
+static void rp_pre_free(moe_cache * mc) {   // pieces the pool did not take go back
+    for (auto * b : mc->rp_pre) { ggml_backend_buffer_free(b); }
+    mc->rp_pre.clear();
+}
+// Pinned host memory costs every card VRAM for its mapping (GLM 3.5, 101.9 GiB pinned: ~150 MiB per card). Pinned after the expert pool was sized, it ate the
+// margin and cuBLAS found no memory at the first prompt (2026-11-07). So the pool's bytes are pinned here, before the sizing, whose free VRAM then includes that cost.
+static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu) {
+    const char * rv = moe_opt("rampool");
+    if (!rv || atoi(rv) == 0 || !gpu) { return; }
+    const char * pb = moe_opt("pin-budget"), * pu = moe_opt("pin-used");
+    const size_t budget = pb ? (size_t) strtoull(pb, nullptr, 10) : 0, used = pu ? (size_t) strtoull(pu, nullptr, 10) : 0;
+    const size_t want = budget > used ? budget - used : 0;
+    if (want == 0) { return; }
+    mc->pin_buft = ggml_backend_dev_host_buffer_type(gpu);
+    const int64_t t0 = ggml_time_us();
+    size_t got = 0;
+    // one piece per chunk: a class's last chunk may use a piece only partly, so a few pieces more than the bytes (left over ones are freed after the fill)
+    while (got < want + 4 * RP_PIECE && mem_available_bytes() >= RP_PIECE + ((size_t) 6 << 30)) {
+        ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, RP_PIECE);
+        if (!b) { break; }
+#ifndef _WIN32
+        if (const char * ml = moe_opt("pin-mlock"); !(ml && ml[0] == '0')) { (void) mlock(ggml_backend_buffer_get_base(b), RP_PIECE); }
+#endif
+        mc->rp_pre.push_back(b);
+        got += RP_PIECE;
+    }
+    LLAMA_LOG_WARN("moe-cache: rampool: %.1f GiB pinned before the VRAM sizing in %.1f s (budget %.1f GiB)\n", got / 1073741824.0, (ggml_time_us() - t0) / 1e6, want / 1073741824.0);
+}
 static void rp_setup(moe_cache * mc, const llama_model & model) {
     const char * rv = moe_opt("rampool");
     if (!rv || atoi(rv) == 0) { return; }
@@ -7232,14 +7268,17 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
         LLAMA_LOG_WARN("moe-cache: rampool: off (%s; pin budget %.1f GiB, pinned by the loader %.1f GiB, %zu expert tensors mapped for direct reads, %zu read past their slice)\n",
                 !gpu ? "no GPU" : n_t == 0 ? "no expert tensor stayed mapped: the model fits the pin budget" : want == 0 ? "no budget left" : "no direct reads", budget / 1073741824.0, used / 1073741824.0, n_t, n_past);
         ggml_rampool_close_fork();
+        rp_pre_free(mc);
         return;
     }
     mc->pin_buft = ggml_backend_dev_host_buffer_type(gpu);
     const int64_t t0 = ggml_time_us();
     if (!ggml_rampool_open_fork(want, rp_alloc, rp_heat, mc, mc->rd_threads)) {
         LLAMA_LOG_WARN("moe-cache: rampool: off (no pinned memory for it, %.1f GiB available)\n", avail / 1073741824.0);
+        rp_pre_free(mc);
         return;
     }
+    rp_pre_free(mc);
     ggml_rampool_fill_fork();
     struct ggml_rampool_stats st;
     ggml_rampool_stats_fork(&st, true);
@@ -7828,6 +7867,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // n_slots < 0: fill each device's free VRAM (called after KV/compute buffers
         // exist), leaving a margin for the compute graph growing by the cache chain.
         // ponytail: one slot count per device, uniform over that device's layers.
+        rp_prepin(mc, ggml_backend_buft_get_device(groups.begin()->first));
         ggml_backend_dev_t sz_dev = nullptr;   // the last sizing (slots_for): the block pool fills the rest of its last round from it
         size_t sz_free = 0, sz_margin = 0;
         int64_t sz_stored = -1;
@@ -12392,6 +12432,7 @@ void llama_moe_cache_free_fork() {
         mc->rp_bufs.clear();
         mc->rp_on = false;
     }
+    rp_pre_free(mc);
     if (mc->preheat_thr.joinable()) { mc->preheat_thr.join(); }
     if (mc->fast_thr.joinable()) { mc->fast_thr.join(); }
     { std::lock_guard<std::mutex> lk(g_vram_mtx); g_vram.clear(); }   // the watch entries of this cache: a re-init adds its own (stale ones were sampled and stored on)

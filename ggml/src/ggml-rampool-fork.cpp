@@ -351,7 +351,7 @@ bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampo
     for (auto & c : p->cls) {
         const uint64_t want = std::min<uint64_t>(c.elems, (uint64_t) ((double) c.elems * share));
         // chunks of at most 512 MiB: an allocation unit, not a limit (a big register stalled at 25.9 GiB, project_ssd_reader_pinned_slots)
-        c.per_chunk = (uint32_t) std::max<uint64_t>(1, std::min<uint64_t>(want, ((size_t) 512 << 20) / c.size));
+        c.per_chunk = (uint32_t) std::max<uint64_t>(1, std::min<uint64_t>(want, (((size_t) 512 << 20) - c.size) / c.size));   // the chunk with its extra block fits 512 MiB (the caller's prepinned pieces)
         uint64_t got = 0;
         while (got < want) {
             // one block more than it hands out: what is read past the last block stays inside the registered range
