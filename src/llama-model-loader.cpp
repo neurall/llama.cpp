@@ -1781,7 +1781,7 @@ bool llama_model_loader::load_all_data(
         struct stat st;
         int d = -1;
         if (fstat(fd, &st) == 0) {
-            d = open(("/proc/self/fd/" + std::to_string(fd)).c_str(), O_RDONLY | O_DIRECT);
+            d = open_direct_fd(fd);
             if (d >= 0) { pr_fsize[fd] = (size_t) st.st_size; }
         }
         pr_dfd[fd] = d;
@@ -1820,13 +1820,11 @@ bool llama_model_loader::load_all_data(
                 t = pr_q.front();
                 pr_q.pop_front();
             }
-#ifdef SR_HAVE_AIO
-            if (t.dfd >= 0 && (((uintptr_t) t.dst - t.off) & 4095) == 0) {
-                const size_t beg = t.off & ~(size_t) 4095, end = (t.off + t.n + 4095) & ~(size_t) 4095;
+            if (t.dfd >= 0 && (((uintptr_t) t.dst - t.off) & (direct_align() - 1)) == 0) {
+                const size_t a = direct_align(), beg = t.off & ~(a - 1), end = (t.off + t.n + a - 1) & ~(a - 1);
                 const size_t total = end - beg, need = std::min(total, t.fsize - beg);
-                if (aio_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) { pr_direct_bytes += t.n; continue; }
+                if (async_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) { pr_direct_bytes += t.n; continue; }
             }
-#endif
             pr_buffered_bytes += t.n;
             for (const sr_piece & p : sr_pieces(t.n)) {   // blocks with gaps, then the gaps (llama-spaced-read-fork.h): no two neighbouring reads in a row
                 size_t done = 0;

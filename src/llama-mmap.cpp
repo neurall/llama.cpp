@@ -1,4 +1,5 @@
 #include "llama-mmap.h"
+#include "llama-spaced-read-fork.h"
 
 #include "llama-impl.h"
 
@@ -197,7 +198,7 @@ struct llama_file::impl {
 
 #ifdef __linux__
     bool init_fd() {
-        fd = open(fname.c_str(), O_RDONLY | O_DIRECT);
+        fd = open_direct(fname.c_str());   // fork: the one place that knows how each platform opens a file past the page cache
 
         if (fd != -1) {
             struct stat file_stats{};

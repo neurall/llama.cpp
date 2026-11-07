@@ -843,15 +843,10 @@ static void rd_note(int mode, size_t bytes, int64_t us) {
 // readahead (DeepSeek 2 workers: 1.3 GB/s, fio on the same file: 3.3 GB/s at queue depth 2 with 1 MiB blocks, 5.5 at 8) and every byte passes the page cache, whose
 // reclaim then swaps out the process when RAM is tight (2026-11-02). Returns where the bytes start inside the buffer, nullptr when the caller must use the mapping.
 static const char * read_direct(int dfd, uint8_t * buf, size_t cap, size_t off, size_t n) {
-#ifdef _WIN32
-    GGML_UNUSED(dfd); GGML_UNUSED(buf); GGML_UNUSED(cap); GGML_UNUSED(off); GGML_UNUSED(n);
-    return nullptr;
-#else
-    const size_t a = 4096, beg = off & ~(a - 1), end = (off + n + a - 1) & ~(a - 1), need = off + n - beg;
+    const size_t a = direct_align(), beg = off & ~(a - 1), end = (off + n + a - 1) & ~(a - 1), need = off + n - beg;
     if (end - beg > cap) { return nullptr; }
-    if (!sr_read(dfd, (char *) buf, beg, end - beg, need)) { return nullptr; }   // llama-spaced-read-fork.h: kernel AIO or pread, the spaced order
+    if (!sr_read(dfd, (char *) buf, beg, end - beg, need)) { return nullptr; }   // llama-spaced-read-fork.h: the platform's async engine or one read at a time, the spaced order
     return (const char *) buf + (off - beg);
-#endif
 }
 
 // tunables, from LLAMA_MOE_CACHE_<NAME> at start; with LLAMA_MOE_CACHE_CTL=<file> also re-read from that file
@@ -4043,7 +4038,7 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     const auto it = mc->rd_src.find(weight);
     if (it == mc->rd_src.end() || it->second.first < 0) { return nullptr; }
     if (!dst) { return mc; }   // only asked
-    const size_t a = 4096, file_off = it->second.second + off, beg = file_off & ~(a - 1), end = (file_off + n + a - 1) & ~(a - 1), need = file_off + n - beg;
+    const size_t a = direct_align(), file_off = it->second.second + off, beg = file_off & ~(a - 1), end = (file_off + n + a - 1) & ~(a - 1), need = file_off + n - beg;
     uint8_t * buf = (uint8_t *) (((uintptr_t) dst + a - 1) & ~(uintptr_t) (a - 1));
     if ((size_t) (buf - (uint8_t *) dst) + (end - beg) > cap) { return nullptr; }
     const int dfd = it->second.first;
@@ -4053,7 +4048,7 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     const int mode = total >= ((size_t) 4 << 20) ? rd_pick_mode(mc->rd_threads, explore) : 0;
     if (mode == 1) {
         const int64_t t0 = ggml_time_us();
-        if (aio_read_range(dfd, buf, beg, total, need)) { rd_note(1, total, ggml_time_us() - t0); return (const void *) (buf + (file_off - beg)); }
+        if (async_read_range(dfd, buf, beg, total, need)) { rd_note(1, total, ggml_time_us() - t0); return (const void *) (buf + (file_off - beg)); }
     }
     const int64_t t_pool0 = ggml_time_us();
 #endif
@@ -8166,7 +8161,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         if (ls2.src_fd[k2] < 0 || !ps[k2]->buffer || ggml_backend_buffer_get_type(ps[k2]->buffer) == pinned_buft) { continue; }
                         auto it = mc->rd_fds.find(ls2.src_fd[k2]);
                         if (it == mc->rd_fds.end()) {
-                            it = mc->rd_fds.emplace(ls2.src_fd[k2], open(("/proc/self/fd/" + std::to_string(ls2.src_fd[k2])).c_str(), O_RDONLY | O_DIRECT)).first;
+                            it = mc->rd_fds.emplace(ls2.src_fd[k2], open_direct_fd(ls2.src_fd[k2])).first;
                             if (it->second < 0) { LLAMA_LOG_WARN("moe-cache: read-direct: no O_DIRECT on this file (%s), it stays mapped\n", strerror(errno)); }
                         }
                         ls2.src_dfd[k2] = it->second;
@@ -9494,7 +9489,7 @@ static void rd_shape_bench(const char * path, unsigned long long dev, const std:
         LLAMA_LOG_WARN("moe-cache: machine: SSD reads %s KiB blocks, %s KiB gaps, %s in flight (stored)\n", b.c_str(), g.c_str(), q.c_str());
         return;
     }
-    const int dfd = open(path, O_RDONLY | O_DIRECT);
+    const int dfd = open_direct(path);
     if (dfd < 0) { return; }
     struct stat st;
     if (fstat(dfd, &st) != 0 || st.st_size < ((off_t) 1 << 30)) { close(dfd); return; }
@@ -9510,7 +9505,7 @@ static void rd_shape_bench(const char * path, unsigned long long dev, const std:
         const int64_t t0 = ggml_time_us(); size_t bytes = 0;
         while (ggml_time_us() - t0 < 150000) {
             if (off + range > file_end) { off = 4096; }
-            if (!aio_read_range(dfd, (uint8_t *) buf, off, range, range, c.qd, c.blk, c.gap)) { bytes = 0; break; }
+            if (!async_read_range(dfd, (uint8_t *) buf, off, range, range, c.qd, c.blk, c.gap)) { bytes = 0; break; }
             bytes += range; off += range;
         }
         c.gbs = bytes ? (double) bytes / ((double) (ggml_time_us() - t0) / 1e6) / 1e9 : 0.0;
@@ -9557,7 +9552,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
             llama_moe_ssd_max_fork(atof(v.c_str()));
             LLAMA_LOG_WARN("moe-cache: machine: SSD maximum %.2f GB/s, %d read threads (stored)\n", atof(v.c_str()), g_early_rd_threads);
         } else {
-            const int dfd = open(model_path, O_RDONLY | O_DIRECT);
+            const int dfd = open_direct(model_path);
             if (dfd >= 0) {
                 std::map<int, int> fds{{ 0, dfd }};
                 g_early_rd_threads = read_threads_probe(fds, sec, /*measure =*/ true);   // this drive is new to the state: measured, not another drive's stored answer; stores read_threads.<hw> and ssd_max_gbs.<hw>
