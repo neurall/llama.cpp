@@ -1015,7 +1015,7 @@ static bool              g_pp_dec_built = false; // the same when the last graph
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
 static std::atomic<bool> g_pp_mix_call{true};    // this prompt call may run the prompt mix (llama_moe_cache_pp_decide_fork; a forced path keeps it)
-static std::atomic<bool> g_pp_no_dense{false};   // this prompt call stays on one card: the dense split lost at this size, or nothing was measured to weigh it against
+static std::atomic<bool> g_pp_no_dense{false};   // this prompt call stays on one card: a one-card path measured at this size beat the dense split there
 static std::atomic<int>    g_pp_path_call{0};    // this prompt call's one-card path (PP_*, below), set by llama_moe_cache_pp_decide_fork: what the dense split is weighed against
 static std::atomic<double> g_pp_save_us{0.0};    // what that path is calculated to save over the stream (us): the dense split planner's one-card time less this
 static bool              g_pp_mix_call_built = true;   // the same when the last graph was finished
@@ -12165,7 +12165,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         if (t > 0.0 && (o <= 0.0 || t < o)) { o = t; }
     }
     const double d = pp_took_us(PP_DENSE, n);
-    g_pp_no_dense = d > 0.0 && (o <= 0.0 || o <= d);
+    // only a one-card path measured at this size can veto the split; with none measured the dense split planner weighs the split against the planned one-card time
+    // (2026-11-07 GLM 3.5 12k rampool6 warm: the split measured 15.4 s at 10496 tokens and no stream there, so the pass was forced to one card, 17.3 s, pp 583 -> 508)
+    g_pp_no_dense = d > 0.0 && o > 0.0 && o <= d;
     // the path this call takes and what it is expected to save over the stream (the dense split planner weighs its one-card time less this, llama_dsplit_decide_fork):
     // measured at this size where it ran; else the decode chain's calculation, the chain's compute plus its misses' uploads; a first try of a prediction saves nothing yet
     {
