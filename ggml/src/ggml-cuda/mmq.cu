@@ -238,6 +238,10 @@ void ggml_cuda_mul_mat_q(
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
     const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
 
+    // fork: with a table (the MoE cache) ids are expert ids and src0 holds blocks: the id helper and the tiles run over the experts, as for a whole expert tensor. Over the blocks
+    // (thousands in a pool, against a few hundred experts) every empty block is walked for every tile of a pass: 3 to 4 times the compute of the same matmul on a whole tensor.
+    const int64_t n_grid = expert_table ? expert_table->ne[1] : ne02;
+
     int J_best        = 0;
     int nthreads_best = 0;
     {
@@ -246,8 +250,9 @@ void ggml_cuda_mul_mat_q(
             const int64_t n_expert_used = ids->ne[0];
             ncols_opt = ne12;
 
-            // Each expert only sees ne12*n_expert_used/ne02 tokens on average.
-            ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
+            // Each expert only sees ne12*n_expert_used/n_grid tokens on average. fork: n_grid, not ne02: a pool's block count would give a far narrower tile than the same
+            // matmul on a whole expert tensor.
+            ncols_opt = (ne12*n_expert_used + n_grid - 1) / n_grid;
         }
 
         J_best = ggml_cuda_mmq_get_J_best(src0->type, ncols_opt, fallback, cc, smpbo, prec_src1, &nthreads_best);
@@ -318,10 +323,6 @@ void ggml_cuda_mul_mat_q(
 
     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx.pool(), ne_get_rows);
     ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), ne_get_rows + J_best-1); // Needs to be padded for unconditional memory access.
-    // fork: with a table (the MoE cache) ids are expert ids and src0 holds blocks: the id helper and the tiles run over the experts, as for a whole expert tensor. Over the blocks
-    // (thousands in a pool, against a few hundred experts) every empty block is walked for every tile of a pass: 3 to 4 times the compute of the same matmul on a whole tensor.
-    const int64_t n_grid = expert_table ? expert_table->ne[1] : ne02;
-
     const int ntj = (ne_get_rows + J_best - 1) / J_best + n_grid;
     ggml_cuda_pool_alloc<ggml_cuda_mm_id_tile_spec> tile_spec(ctx.pool(), ntj);
 
@@ -580,13 +581,11 @@ size_t ggml_cuda_mmq_scratch_fork(const int id, const ggml_tensor * src0, const 
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
     const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
     const int64_t n_expert_used = ids ? ids->ne[0] : 0;
+    const int64_t n_grid = dst->src[4] ? dst->src[4]->ne[1] : ne02;   // the op's tile grid: the experts of a table, not the pool's blocks
 
     int64_t ncols_opt = ne11;
     if (ids) {
-        ncols_opt = ne12;
-        if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
-            ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
-        }
+        ncols_opt = (ne12*n_expert_used + n_grid - 1) / n_grid;   // on every vendor, as the op
     }
     int nthreads_best = 0;
     const int J_best = ggml_cuda_mmq_get_J_best(src0->type, ncols_opt, fallback, cc, smpbo, prec_src1, &nthreads_best);
@@ -595,31 +594,28 @@ size_t ggml_cuda_mmq_scratch_fork(const int id, const ggml_tensor * src0, const 
     const size_t q8_padding = ((J_best * sizeof(block_q8_1_mmq) + load_chunk - 1) / load_chunk) * load_chunk;
 
     auto take = [&top](size_t n) { if (n > 0) { top = GGML_PAD(top, 256) + n; } };   // a size-0 request never reaches the region
-    int64_t ncols_max, nchannels_y;   // launch_mul_mat_q's tile grid: columns, channels (x samples)
+    int64_t ntj, ntzw;   // launch_mul_mat_q's tile grid: column tiles, channels x samples
     if (!ids) {
         take(ne13*ne12*ne11*ne10_padded * y_block_size/y_values_per_block + q8_padding);                          // src1_q8_1
         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) { take(ne13*ne12*ne11 * sizeof(float)); }            // src1_scale
-        ncols_max   = dst->ne[1];
-        nchannels_y = ne12 * ne13;
+        ntj  = (dst->ne[1] + J_best - 1) / J_best;
+        ntzw = ne12 * ne13;
     } else {
         const int64_t ne_get_rows = ne12 * n_expert_used;
         take(ne_get_rows * sizeof(int32_t));                      // ids_src1
         take((ne_get_rows + J_best - 1) * sizeof(int32_t));       // ids_dst, padded for the unconditional reads
-        const int64_t n_grid = dst->src[4] ? dst->src[4]->ne[1] : ne02;
-        take(((ne_get_rows + J_best - 1) / J_best + n_grid) * sizeof(ggml_cuda_mm_id_tile_spec));   // tile_spec (upstream 2026-11: one per tile seam plus one per expert)
+        ntj  = (ne_get_rows + J_best - 1) / J_best + n_grid;   // one per tile seam plus one per expert (upstream 2026-11): the op flattens the tokens into one channel
+        ntzw = ne13;
+        take(ntj * sizeof(ggml_cuda_mm_id_tile_spec));         // tile_spec
         take(ne_get_rows*ne10_padded * y_block_size/y_values_per_block + q8_padding);                             // src1_q8_1
         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) { take(ne_get_rows * sizeof(float)); }               // src1_scale
-        ncols_max   = ne12;
-        nchannels_y = n_grid * ne13;
     }
 
     // launch_mul_mat_q: the stream-k kernel's fixup buffer (unfused; a fused call tiles and takes none, so this is its upper bound)
     const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(src0->type, J_best, fallback, cc, prec_src1);
     if (config.stream_k) {
         const int nty = (ne01 + config.I - 1) / config.I;
-        const int ntx = (ncols_max + config.J - 1) / config.J;
-        const int ntzw = nchannels_y;
-        const int ntiles_dst = ntx * nty * ntzw;
+        const int ntiles_dst = ntj * nty * ntzw;
         const int tiles_nwaves = (ntiles_dst + nsm - 1) / nsm;
         const int tiles_efficiency_percent = 100 * ntiles_dst / (nsm*tiles_nwaves);
         const int nwork = ntiles_dst * ((ne00 + config.K_vram - 1) / config.K_vram);

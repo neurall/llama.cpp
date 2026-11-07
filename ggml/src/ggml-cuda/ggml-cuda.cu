@@ -3805,10 +3805,10 @@ static size_t ggml_cuda_mmid_scratch_fork(int device, const ggml_tensor * dst) {
         return ggml_cuda_mmq_scratch_fork(device, src0, src1, ids, dst, top);
     }
     if (ggml_cuda_should_use_mmf(type, cc, warp_size, src0->ne, src0->nb, src1->ne[2], /*mul_mat_id=*/true)) {
-        if (dst->ne[2] > 16) {   // mmf.cu: the compact id maps and expert bounds (ncols_dst = tokens)
+        if (dst->ne[2] > 16) {   // mmf.cu: the compact id maps and the tile specs, one per seam plus one per block (ncols_dst = tokens); mmf reads ids directly, so src0's blocks even under a table
             ggml_cuda_take_fork(top, rows * sizeof(int32_t));
             ggml_cuda_take_fork(top, rows * sizeof(int32_t));
-            ggml_cuda_take_fork(top, (size_t) (src0->ne[2] + 1) * sizeof(int32_t));
+            ggml_cuda_take_fork(top, ((rows + 15) / 16 + (size_t) src0->ne[2]) * sizeof(ggml_cuda_mm_id_tile_spec));
         }
         return top;
     }
