@@ -223,8 +223,11 @@ static inline bool rls_known(const dsf_rls & r, double mu, double var) { return 
 // The pick. Among the arms known here: the lowest mean (a learned estimate is never overruled: no tie margin, no veto). Any other arm (a prior, or a
 // model extrapolated far from where it ran) is a trial, run only when its stake pays: expected gain over the calls of this size so far against its
 // expected loss, EI x R >= EL - all three learned. With no arm known here the lowest mean stands (nothing better is known).
+// explore_unknown: with nothing known here the lowest mean is still the reference and the other arms get the same stake test (GLM 3.0 12k, rampool13:
+// one card never became known, so the split's prior one x 0.96 + fill stayed a hair above it on every pass and was never tried - a deadlock, since only a
+// run makes it known; rel_b14244 ran the split there at 783 against 663 tokens/s). Off for the prompt paths, whose never-run variants flip on noise.
 static inline int rls_voi_pick(const double * mu, const double * var, const bool * ok, int n, double R, bool * trial, const bool * known = nullptr,
-                               const bool * trial_only = nullptr) {
+                               const bool * trial_only = nullptr, bool explore_unknown = false) {
     if (trial) { *trial = false; }
     int b = -1;
     if (known) {
@@ -232,7 +235,8 @@ static inline int rls_voi_pick(const double * mu, const double * var, const bool
     }
     if (b < 0) {   // nothing known here: the lowest mean, never an arm that is a trial only (a stream variant that never ran: rampool12 flipped between them)
         for (int i = 0; i < n; ++i) { if (ok[i] && !(trial_only && trial_only[i]) && (b < 0 || mu[i] < mu[b])) { b = i; } }
-        return b >= 0 ? b : rls_argmin(mu, ok, n);
+        if (b < 0) { return rls_argmin(mu, ok, n); }
+        if (!explore_unknown) { return b; }
     }
     int t = b; double best = 0.0;
     for (int i = 0; i < n; ++i) {

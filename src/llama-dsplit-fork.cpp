@@ -2717,7 +2717,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     const bool aok[2] = { true, true };
     bool trial = false;
     const bool akn[2] = { known1, known2 };
-    const int choice = rls_voi_pick(am, av, aok, 2, (double) seen[n_tokens], &trial, akn);
+    const int choice = rls_voi_pick(am, av, aok, 2, (double) seen[n_tokens], &trial, akn, nullptr, true);   // the split is tried where its stake pays even before one card is known here
     // p_split, for the log only: the posterior probability that splitting this call beats one card
     const double p_split = rls_phi_cdf((am[0] - am[1]) / std::max(1e-9, std::sqrt(av[0] + av[1])));
     const double g_this = mu1_0 - mu2_0, g_pos = m1 - m2, d1_0 = mu1_0, d2_0 = mu2_0, f_d = f_mu;
