@@ -136,3 +136,71 @@ Still open after it (in this order; each one measured on GLM 3.5 12k cold/warm b
 Acceptance cells (all `-nm -pl 220/280 -r 2`, one power session, interleaved rp=1 / rp=0 / up9_merged2, answers read first):
 GLM 3.5 12k and 3k (fork/runs/rp2.csv glm35-*), then MiMo 12k, DS 12k, then `-simram 32g` small-RAM. Pass = rp=1 >= rp=0 and
 >= up9_merged2 within noise on pp and decode, cold and warm.
+
+## Fill cost spec (2026-11-07, rampool7 rp=1 warm pp 496 against rp=0 583 / up9_merged2 585, rows 23743 / 23741)
+
+Logs: q5h/rampool7-glm35-12k-rp1.server.log lines 552-618 (cold) and 671-697 (warm), q5h/rampool6-glm35-12k-rp0.server.log lines 309-441.
+
+**What happened.** The cold rp=1 request took the dense split on both calls (1938 tokens, then 10496: 828 prompt t/s, a win). Its first split
+pass paid the copy fill, 8.5 GiB of the other card's dense weights card to card through pinned host staging: `moe_mirror_fill ... in 8904 ms`
+(rp=0 warm, the same bytes: 1492 ms). `llama_dsplit_note_fill_fork` learned 8904 ms as the split's per-prompt cost (`g_dsf_fill`, one sample).
+On the warm request both calls then went to one card: `split factors ... one card 15049 ms, split 12624 ms + copy fill 8904 ms: one card`
+(line 686), although the size bucket had both arms measured a minute earlier (`this size: one card 581, split 828`, line 696) and the measured
+branch in `llama_dsplit_decide_fork` had picked the split. The factors (`dsf_decide`) override the measured verdict unconditionally
+(src/llama-dsplit-fork.cpp:2771-2777). Warm: 6.3 s (one card, 1938) + 17.9 s (one card, 10496) = 24.5 s = 508 t/s; rp=0 warm: 7.4 + 1.5 fill
++ 13.1 split = 20.8 s = 598.
+
+**(1) Is the fill cost real on a warm request?** The copies live in expert-pool blocks lent only while a prompt splits ("expert blocks again in
+decode", `llama_dsplit_mirror_place_fork`), so a request that splits pays one fill (the copies stay across the calls of one request: nothing is
+lost between the 1938 and the 10496 pass when both split). The fill is not double-counted in the pass: `dsplit_update` subtracts `p.fill_ms`
+from the pass before it becomes a per-token sample (line 2587), and the per-size t/s (828) excludes it too. The number is the problem, not the
+charging: of the 8904 ms, about 7.7 s were `ggml_cuda_xstage_copy` pinning new staging blocks in the middle of the fill (lines 560-588: ~30
+"new N MiB staging block ... pinned in 0.45 s", the 4 big slots of each direction growing 2 -> 34 -> 52 -> 68 MiB, each growth a free + a new
+pin; rp=0 pins the same blocks in 0.01-0.03 s, rampool's 101 GiB of locked THP memory leaves 11 GiB available and every pin reclaims first).
+Those pins happen once per process (the blocks stay; the warm fill would have needed one, slot 2 of CUDA0->CUDA1 at 16 MiB). The steady cost
+of the fill is the copy alone, ~1.2-1.5 s (rp=0 measured, 8.5 GiB over x16 + x4), and that is what a warm request pays.
+
+**(2) Minimal rules.** Three changes, no header edits:
+
+a. `src/llama-context.cpp:1461` `moe_mirror_fill`: issue `todo` largest tensor first (`std::sort` by `ggml_nbytes(pr.first)` descending, one line
+   before the loop). The first four big copies of each direction grow the four ring slots to the largest size once; every later copy fits: 8 pins
+   per process instead of ~30 (`ggml_cuda_xstage_copy`'s "oldest block big enough" rule then always finds one). Rule "no CUDA free/realloc".
+
+b. The learned fill excludes staging pins. `ggml/src/ggml-cuda/ggml-cuda.cu:4469` `ggml_cuda_xstage_copy`: add a never-reset
+   `static std::atomic<uint64_t> g_xstage_pin_us` and add the big block's pin time to it (the `t0` already taken before the `mmap` at ~4515; also
+   the `cudaHostAlloc` fallback), exported as `extern "C" uint64_t ggml_cuda_xstage_pin_us_fork(void)` (defined in ggml-cuda.cu, declared locally
+   in llama-context.cpp next to the `llama_moe_cache_ledger_fork` declaration at line 1455, "no header edit"; 0 when the CUDA backend is not
+   linked: weak default or `#ifdef GGML_USE_CUDA`). In `moe_mirror_fill` read it before and after; `llama_dsplit_note_fill_fork((elapsed - pins) / 1e3)`
+   and log both: `copies filled ... in 8904 ms (7700 ms of it staging-block pins, once per process)`. Same pattern as `ggml_rampool_wait_us_fork`
+   for the thread tuner (rampool5).
+
+c. Crossover safety, `src/llama-dsplit-fork.cpp:2771-2777`: the factors (`dsf_decide`) decide only when this size bucket does NOT have both
+   arms measured. Where it does (`B.n[0] > 0 && B.n[1] > 0`, the "measured: faster at this size" branch at 2746), the measured verdict stands,
+   with the fill this request still owes added to the split side: `B.us_tok[1] * n_tokens / 1e3 + fill_ms <= (1 - split_min_gain) * B.us_tok[0] * n_tokens / 1e3`,
+   `fill_ms` = `g_dsf_fill.us` when the copies are not in place (`llama_dsplit_mirror_take_upload_fork` would return something; cheapest: a
+   `g_mirror_lost` flag set where the blocks are given back at the end of the prompt, cleared in `moe_mirror_fill`), else 0. Change: wrap the
+   `fc >= 0` override in `if (!(B.n[0] > 0 && B.n[1] > 0))`, and add `+ fill` to the measured branch's comparison. A measured pair at this size is the
+   one thing the factors are calibrated from; a curve must never overrule it (the user's "proper crossovers": a wrong pick here cost 1.45x).
+   Measured arms are per pass size; `dsf_decide` keeps the sizes not measured.
+
+Expected after a+b+c (GLM 3.5 12k, -pl 220/280, pool unmounted): fill noted ~1.3 s (the pins reported apart, ~3.6 s on the cold request only);
+warm `split factors ... one card 15049 ms, split 12624 ms + copy fill ~1300 ms` and the bucket verdict `measured: faster at this size` at 10496:
+split; warm = 6.3 (1938 one card: its own bucket says one card 306 against split 121-with-fill, a correct pick) + 1.3 + 12.7 = 20.3 s, pp ~610
+(rp=0 598, gate >= 583 within 5%: >= 554). Cold: 15.9 -> ~10 s on the 1938 call (pins 3.6 s instead of 7.7), 12.2 s on the 10496: pp ~560 (was 434).
+Decode unchanged (15.3-15.8).
+
+**(3) rp=0.** The same two faults exist there (the factors override a measured pair; the fill sample carries the one-time pins) but its pins take
+0.01-0.03 s, so the learned fill is ~1.5 s and the picks come out right; under `-simram 32g` (small-RAM acceptance cell) rp=0 pins slowly too and
+would show it. a-c are generic and fix both arms.
+
+**(4) rp=0 GUARD kill at load (14:57:53, watch-2026-11-07.log 8203-8221).** Environment, not a rampool7 change: rp=0 runs no pool code; its loader
+pinned the tensor-order copy (anon 101.8 GiB) as in up9_merged2, then the last pin, the 4 GiB pass host buffer, came at MemAvailable 16 GiB with
+10 GiB of page cache from the just-read model file (pool unmounted); 2.76 GiB of that buffer landed in CMA blocks, were given back and faulted
+in again (9.2 s, server.prev.log line 141), and the kernel swapped anonymous pages to zram at 87k pages/s (PSI 31) instead of dropping the cache,
+which is the guard's kill rule. The retry 12 s later with the same binary loaded clean (swap-out 0, PSI 12, row 23741 ran). A load-order race
+with reclaim; if it recurs: `posix_fadvise(DONTNEED)` on the file after the loader's reads when the pool is unmounted, or pin the pass host
+buffer before the weights. Not in this fix.
+
+Acceptance cells (one power session, answers read first): GLM 3.5 12k `-nm -pl 220/280 -r 2`, rp=1 and rp=0 interleaved, then up9_merged2:
+pass = warm pp >= 583 (rp=1 and rp=0), cold pp >= rp=0's, decode within noise; the server log of each warm request shows `measured: faster at
+this size` -> split at 10496 and `copy fill` <= 2000 ms; then the 3k cell and `-simram 32g` for rp=0.
