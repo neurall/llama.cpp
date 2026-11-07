@@ -106,7 +106,26 @@ criterion for the generic triggers (fit on four models, applied to the fifth).
 Per transition c+ (cold | warm, net s): one/split +452 | +471, chain/dec +265 | +569, k -3 | +16, mix -4 | +4. Caveats: carried memory picks arms
 without a truth cell (c+ scores 199 cold calls of 534), the truth medians come from the same calls, n per class 1-3.
 
-Leave-one-model-out (generic triggers fit on four models, applied to the fifth without retuning): <!-- LOMO_TABLE -->
+Leave-one-model-out (constants fit on four models, applied to the fifth unchanged; 938 calls, unmeasured picks scored as the stream; /tmp/xo_score/lomo.py,
+lomo_out.txt). Strategies: A release factors (no fit), C measured means (split prior ratio fit), H physics x scalar (same fit), E utilization/event
+triggers (cu = C1/U for the split, miss_share and n for the chains, Um/U and ssd_share for mix, u_link for k; 5 thresholds fit), HY = E cold + H warm.
+
+| held-out | A cold / warm | C cold / warm | H cold / warm | E cold / warm | HY cold / warm |
+|---|---|---|---|---|---|
+| qwen36 | 0% / +2% | 0% / +2% | -67% / 0% | -148% / +20% | -140% / 0% |
+| qni4 | -4% / -2% | -4% / -2% | -4% / -6% | -5% / +3% | -8% / -6% |
+| glm | -10% / +13% | -8% / +14% | -8% / -1% | -1% / +13% | -1% / -1% |
+| mimo | -28% / -4% | -28% / -3% | -28% / -3% | -23% / +25% | +22% / -3% |
+| ds | -45% / -40% | -45% / -24% | -45% / -38% | -17% / -35% | -17% / -38% |
+| mean / min (pooled) | -13% / -43% | **-10% / -33%** | -23% / -49% | -26% / -101% | -25% / -101% |
+
+Reading: no strategy generalises in net terms; C (measured means) loses least and A is close; the event triggers E/HY win on one model (mimo cold
++132 s, ds cold -275 vs -744 s) and lose 650 s on qwen36 cold with the same thresholds, and their fitted thresholds sit on the grid edges in every
+fold (t1 = 0.5: split almost always allowed; t2/t3: the chains never fire), so their "stability across folds" is degenerate, not evidence. What no
+strategy gets right on a held-out model: the decode chain as the best arm (mis-picked 41-166 times), k as the best arm, mix as the best arm (never
+found, only mis-picked), one card vs split on ds and mimo cold. So the generic-trigger criterion does not select a trigger set from this data; it
+confirms the rule set of section 0: measured means (R3) with persistence (R4: c+ is the only variant positive cold, +25%), stream as the cold
+start (R1), and the remaining per-model crossovers (DS's chain, the k arms, mix) found by the sweep of section 5 and the VOI trial, not by a constant.
 
 ## 0. The final rule set (spec for Opus; scored on 917 logged prompt calls of 384 q5h stats.logs, section 1)
 
