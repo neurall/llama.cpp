@@ -1594,8 +1594,10 @@ struct dsplit_bal {
     std::vector<int64_t> tok;              // tokens of each card in the measured pass
     uint32_t cap = 0;                      // the card limit that pass ran under (the limit changes from pass to pass when the pools shrink it): %limit is of this, not of a later pass's
     uint32_t plim = 0;                     // the pass limit that pass ran under (all cards): a pass with fewer tokens is its call's last, the rest of the prompt
-    int    phase = 0, n = 0, still = 0;    // phase: 0 balancing the token shares, 1 experts on trial, 2 the dense split alone (experts abandoned), 3 with experts
+    int    phase = 0, n = 0, still = 0;    // phase: 0 balancing the token shares, 1 experts on trial, 2 the dense split alone (experts abandoned), 3 with experts, 5 the reference pass of a pair
     double ref_v = 0.0;                    // us per token of the dense split alone: the trial's reference
+    double exp_v = 0.0;                    // us per token of the last pass with experts on the helpers (compared against the reference pass that follows it)
+    std::vector<double> exp_f;             // the helpers' expert shares that pass ran with
     int    wait = 2;                       // dense-alone passes to measure before the next try of experts on the helpers (2 at first, 8 after an abandoned try)
     double v = 0.0;                        // us per token of the last pass (its span on the cards)
     std::string last;                      // what the last step did (/moe/stats, the log)
@@ -1742,7 +1744,7 @@ int64_t                         g_rng_seq = 0;        // split graphs built so f
 int64_t                         g_rng_t0  = 0;
 long                            g_card_seen = 0;
 const char * dsplit_bal_phase(int p) {
-    return p == 0 ? "balancing the token shares" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone" : p == 4 ? "one card" : "dense split with experts";
+    return p == 0 ? "balancing the token shares" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone" : p == 4 ? "one card" : p == 5 ? "reference pass of the expert trial" : "dense split with experts";
 }
 dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) {
     auto it = g_bal.find(b);
@@ -1980,6 +1982,39 @@ void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
         B.f[x] = 1.0 - sum;
     };
     std::string why;
+    // The trial is paired (A B A B, fork/docs/planner-crossovers.md 4.3): a pass with experts on the helpers is judged against the dense-split-alone pass right
+    // after it, not against a reference from earlier in the prompt. A long prompt's passes get slower per token as the context grows (GLM 3.0 64k, 2026-11-07:
+    // 1173 against a 1197 reference "faster", 1205 against the same 1197 "slower", 1326 against 1415 "faster" - the reference aged, the verdict flipped every
+    // pass and the share went 20 -> 9 -> 4 -> 2 -> 23 -> 12%). The reference pass costs half the trial's passes; it ends when the shares settle (phase 3).
+    if (fh <= 0.0 && B.phase == 5) {   // the reference pass of a pair: the verdict on the experts pass before it
+        B.ref_v = B.v;
+        std::vector<double> fi = B.exp_f;
+        fi.resize(x, 0.0);
+        const bool better = B.exp_v > 0.0 && B.exp_v < B.ref_v * 0.99;
+        double tot = 0.0;
+        if (better) {
+            bool idle = false;
+            for (size_t i = 0; i < x; ++i) {
+                if (fi[i] > 0.0 && i < B.xw.size() && B.xw[i] > 0.10 * B.span) { fi[i] = std::min(1.0, fi[i] * 1.5); idle = true; }
+            }
+            B.phase = idle ? 1 : 3;
+            if (!idle) { B.wait = 8; }
+            why = format("pair: experts %.1f against the dense split alone %.1f us/token, faster%s", B.exp_v, B.ref_v, idle ? ": more" : ": settled");
+        } else {
+            for (size_t i = 0; i < x; ++i) { fi[i] *= 0.5; }
+            B.phase = 1;
+            why = format("pair: experts %.1f against the dense split alone %.1f us/token, not faster: half", B.exp_v, B.ref_v);
+        }
+        for (double v : fi) { tot += v; }
+        if (tot < 0.02) {
+            std::fill(fi.begin(), fi.end(), 0.0);
+            B.phase = 2; B.wait = 8;
+            why += ": abandoned, the dense split alone, a new try in 8 passes";
+        }
+        set_f(fi);
+        LLAMA_LOG_WARN("split experts: %s; helpers now %.0f%% of the experts\n", why.c_str(), 100.0 * tot);
+        return;
+    }
     if (fh <= 0.0) {   // measured: the dense split alone
         B.ref_v = B.ref_v > 0.0 && B.phase == 2 ? 0.5 * (B.ref_v + B.v) : B.v;
         B.phase = 2;
@@ -2016,29 +2051,13 @@ void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
         LLAMA_LOG_WARN("split experts: trial, reference %.1f us/token: %s\n", B.ref_v, calc.c_str());
         return;
     }
-    // measured with experts on the helpers
-    const bool better = B.v < B.ref_v * 0.99;
-    std::vector<double> fi(B.f_run.begin(), B.f_run.begin() + x);
-    double tot = 0.0;
-    if (better) {
-        bool idle = false;
-        for (size_t i = 0; i < x; ++i) {
-            if (fi[i] > 0.0 && B.xw[i] > 0.10 * B.span) { fi[i] = std::min(1.0, fi[i] * 1.5); idle = true; }
-        }
-        B.phase = idle ? 1 : 3;
-        why = format("faster than the dense split alone (%.1f against %.1f us/token)%s", B.v, B.ref_v, idle ? ": more" : ": settled");
-    } else {
-        for (size_t i = 0; i < x; ++i) { fi[i] *= 0.5; }
-        why = format("not faster than the dense split alone (%.1f against %.1f us/token): half", B.v, B.ref_v);
-    }
-    for (double v : fi) { tot += v; }
-    if (tot < 0.02) {
-        std::fill(fi.begin(), fi.end(), 0.0);
-        B.phase = 2; B.wait = 8;
-        why += ": abandoned, the dense split alone, a new try in 8 passes";
-    }
-    set_f(fi);
-    LLAMA_LOG_WARN("split experts: %s; helpers now %.0f%% of the experts\n", why.c_str(), 100.0 * tot);
+    // measured with experts on the helpers: settled shares (phase 3) stay; a trial pass is followed by its reference pass (phase 5), judged there
+    if (B.phase == 3 && --B.wait > 0) { return; }   // settled: a reference pass every 8th pass keeps the verdict current as the context grows
+    B.exp_v = B.v;
+    B.exp_f.assign(B.f_run.begin(), B.f_run.begin() + x);
+    set_f(std::vector<double>(x, 0.0));
+    B.phase = 5;
+    LLAMA_LOG_WARN("split experts: pass with %.0f%% of the experts on the helpers took %.1f us/token; the next pass runs the dense split alone as its reference\n", 100.0 * fh, B.v);
 }
 // one measured split pass of bucket b: the step of the balance (under g_plan_mu)
 void dsplit_bal_step(int b) {
