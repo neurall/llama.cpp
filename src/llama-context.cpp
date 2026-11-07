@@ -65,6 +65,7 @@ bool     llama_moe_cache_pp_short_fork();
 void     llama_moe_cache_pp_freeze_fork();
 void     llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 void     llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
+void     llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub);   // the pass size decided after the path: the path's features follow it
 void     llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes);   // src/llama-moecache-fork.cpp: a load-time measure-only reserve is a measured graph size for the pass planner
 size_t   llama_moe_cache_graph_scratch_fork(ggml_backend_sched_t sched, ggml_backend_dev_t dev);   // src/llama-moecache-fork.cpp: the computed CUDA scratch of the graph the scheduler split last, on dev's pool
 uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
@@ -4375,6 +4376,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     const uint32_t n_ubatch_split = g_split_sub && cparams.moe_cache ? (llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_tokens_all), n_tokens_all) : 0;
     uint32_t n_ubatch_call = n_ubatch_split > 0 ? n_ubatch_split : cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, n_ubatch_lim);
     if (g_pass_cap_fork > 0) { n_ubatch_call = std::min(n_ubatch_call, g_pass_cap_fork); }   // the rest of a call after the pool refused one of its passes (below)
+    if (cparams.moe_cache && memory) { llama_moe_cache_pp_repass_fork(n_tokens_all, n_ubatch_call); }   // fork: the planner's features follow the pass size that runs
     if (n_tokens_all > 1) { llama_moe_prompt_begin_fork((uint32_t) n_tokens_all, n_ubatch_call); }
     if (cparams.moe_cache && memory && n_tokens_all >= 64) {   // the mask math, checkable against the host pins in the same log (--moe log=m not needed: one line per call)
         const uint64_t kv_end = (uint64_t) (std::max<llama_pos>(memory->seq_pos_max(0), -1) + 1) + n_tokens_all;
@@ -4430,6 +4432,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                         if (cp.valid && need <= hold) {
                             if (n_ubatch_call > 64) {
                                 n_ubatch_call = std::max<uint32_t>(64, n_ubatch_call * 3 / 4 / 32 * 32);
+                                llama_moe_cache_pp_repass_fork(n_tokens_all, n_ubatch_call);   // fork: the KV did not fit (a fact); the features follow the smaller pass
                                 continue;
                             }
                             LLAMA_LOG_WARN("%s: failed to find a memory slot for batch of size %d\n", __func__, balloc->get_n_tokens());

@@ -11466,6 +11466,15 @@ static bool pp_split_model_on() { static const bool on = [] { const char * o = m
 bool llama_dsplit_state_get_fork(const char * what, std::string & v);         // llama-dsplit-fork.cpp: this model/cards/build's state value, false: not known yet
 void llama_dsplit_state_set_fork(const char * what, const std::string & v);   // and store one
 void llama_dsplit_plan_book_fork(double regret_us, bool hit);                // /moe/stats plan_picks, plan_hits, plan_regret_s (both planners book there)
+double llama_dsplit_split_mu_fork(int64_t pos0);                             // the split's predicted mean for the pass at pos0 (us), -1: not weighed
+// the planner's invariants (fork/docs/planner-rules.md section 3): logged once per class to stats.log as INV, never an abort
+static void pp_inv(const char * name, const std::string & text) {
+    static std::set<std::string> seen;
+    if (!seen.insert(name).second) { return; }   // under g_pp_mu
+    const std::string t = std::string(name) + ": " + text;
+    LLAMA_LOG_WARN("moe-cache: INV %s\n", t.c_str());
+    llama_moe_stats_log_fork("INV", t.c_str());
+}
 // a path's estimator, initialised at its first use: th0 = (0, compute per token measured, attention per token and cell measured, upload coefficient 1)
 // (both 0 until a stream pass measured them: a zero prior gets its uncertainty from the first call, rls_prime); a stored posterior of this build replaces it
 static dsf_rls & pp_rls(int p) {
@@ -11974,8 +11983,13 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 if (nis > 1.0) { g_pp_redraw = true; }   // the posterior moved more than it expected: the next call draws again
                 // stored only when determined and quiet (feedback_stored_values_policy): a next start begins from it as its prior
                 if (rp.det() && rp.nis <= 1.0) { llama_dsplit_state_set_fork(("pp.rls." + std::to_string(path)).c_str(), rls_str(rp)); }
-                double lo = -1.0;   // the lowest predicted mean among this call's candidates
+                double lo = -1.0;   // the lowest predicted mean among this call's candidates AND the split's (C17: a one-card loss to the split is regret too)
                 for (int p = 0; p < PP_PATHS; ++p) { if (g_pp_phi[p][1] > 0.0 && (lo < 0.0 || g_pp_pmu[p] < lo)) { lo = g_pp_pmu[p]; } }
+                if (const double ms = llama_dsplit_split_mu_fork(g_pp_seen_c0); ms > 0.0 && (lo < 0.0 || ms < lo)) { lo = ms; }
+                // INV sure (I9): a path with two samples or fewer must not claim to know its time within ~20%
+                if (rp.n <= 2 && rp.nis <= 0.1 && g_pp_var[path] < 0.05 * mu * mu) { pp_inv("sure", format("%s after %d samples: %.0f +- %.0f ms", pp_path_name(path).c_str(), rp.n, mu / 1e3, sd / 1e3)); }
+                // INV phi (I6): the sample's pass size is the one the features were built for
+                if (std::fabs(g_pp_phi[path][1] - (double) n_tokens / P) > 32.0) { pp_inv("phi", format("%s: features for %.0f tokens, the pass had %.0f", pp_path_name(path).c_str(), g_pp_phi[path][1], (double) n_tokens / P)); }
                 const bool best = lo >= 0.0 && mu <= lo;
                 const double regret = best ? 0.0 : std::max(0.0, took - lo);
                 if (g_pp_pick == path) { llama_dsplit_plan_book_fork(regret * P, took <= lo + sd); }
@@ -12106,7 +12120,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     }
     const double R_read = llama_dsplit_read_rate_fork(mc->link_dev[0]);   // before any lock: it takes the split planner's (which calls into the cache under it)
     double A = 0.0;   // the expert bytes one token reads, all layers: what the decode chain's chunks read again for every token
-    struct cost { double l1p, us, cu; };   // log(1 - its share of the picks), its upload over its layer's link, the CPU's time for one token routed to it
+    struct cost { double l1p, us, cu, sm; };   // + sm: its bytes still read from the file (mapped, not pinned), for the decode chain's SSD term   // log(1 - its share of the picks), its upload over its layer's link, the CPU's time for one token routed to it
     std::vector<cost> v;
     double U = 0.0, Um = 0.0;   // the stream's upload, without and with the prompt mix
     double M = 0.0;             // of the stream's bytes, the ones read from the SSD: tensors still on the mapping
@@ -12141,7 +12155,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
                 if (r0 > 0 && !(on_card && l.link == 0)) { U += S / r0; M += Sm; }   // the fastest link's card holds it: copied there, else it streams
                 if (r0 > 0 && !on_card) { Um += S / r0; }                    // the mix: computed on its home card if a card holds it
                 if (!on_card && rl > 0) {
-                    v.push_back({ std::log1p(-std::min(1.0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all)), S / rl, rc > 0.0 ? S / rc : 0.0 });
+                    v.push_back({ std::log1p(-std::min(1.0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all)), S / rl, rc > 0.0 ? S / rc : 0.0, Sm });
                 }
             }
         }
@@ -12234,8 +12248,16 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     cand(PP_RING, Ts);
     if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, Um); }
     if (!busy && (uint32_t) n < g_pp_chain_refused) { cand(PP_CHAIN, up); }
-    if (cpu_known) { cand(PP_DEC, up + chunk_at(n)); }
-    for (int i = 0; k_auto && PP_K + i < PP_PATHS && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) { cand(PP_K + i, Ts); }
+    // the decode chain's misses also wait for the SSD where their tensors are still mapped (planner-rules.md C1/R3: rp=1 cold 2k took 43-86 s against
+    // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
+    double ssd_miss = 0.0;
+    if (ssd_rate > 0.0) { for (const auto & x : v) { ssd_miss += (1.0 - std::exp(n * x.l1p)) * x.sm / (ssd_rate * 1e3); } }
+    if (cpu_known) { cand(PP_DEC, up + chunk_at(n) + ssd_miss); }
+    // a prediction of 2^i x the picks stages that share of the experts ahead: the stream's upload less what it hides (C16: the arms differ from the
+    // start instead of nine copies of the stream); the coefficient learns the rest
+    for (int i = 0; k_auto && PP_K + i < PP_PATHS && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) {
+        cand(PP_K + i, Ts * std::max(0.0, 1.0 - (double) (1 << i) * (double) mc->n_expert_used / (double) n_expert));
+    }
     int best_mu = -1;
     for (int p = 0; p < PP_PATHS; ++p) {
         if (g_pp_phi[p][1] <= 0.0) { continue; }
@@ -12340,6 +12362,19 @@ double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, doubl
         }
     }
     return any ? std::max(0.0, best) : -1.0;
+}
+// this call has one-card candidates (the split planner learns its own one-card model otherwise)
+bool llama_moe_cache_pp_planned_fork() { std::lock_guard<std::mutex> lk(g_pp_mu); for (const auto & f : g_pp_phi) { if (f[1] > 0.0) { return true; } } return false; }
+// the pass size the call runs with, once the context has decided it (planner-rules.md C19/C21: pp_decide runs before the pass planner and its
+// features were for min(call, limit)); the candidates keep their pick and draws, the features follow the pass that runs
+void llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub) {
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    const double n = (double) std::min(n_tokens, std::max<uint32_t>(1, ub));
+    for (auto & f : g_pp_phi) {
+        if (f[1] <= 0.0 || f[1] == n) { continue; }
+        f[2] *= n / f[1];   // n x a x cells: the cells stay, the tokens change
+        f[1] = n;
+    }
 }
 double llama_moe_cache_att_us_cell_fork() { std::lock_guard<std::mutex> lk(g_pp_mu); return g_pp_a_us; }   // attention per token and cell (us), 0 = not fitted yet
 std::string llama_moe_cache_pp_path_name_fork(int p) { return p >= 0 && p < PP_PATHS ? pp_path_name(p) : std::string("-"); }
