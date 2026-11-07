@@ -7,11 +7,15 @@
 // for the copy fill. No tuned constant: the prior is the planner's own calculation with an uncertainty as large as itself, and every later number is a
 // measurement weighted by the covariance it earned. Internal header (static inline, no public API).
 //
-//   e = y - th.phi;  q = phi' P phi;  g = P phi / (1 + q);  th += g e;  P -= g phi' P
-//   s2  running mean of e^2 / (1 + q)        (the residual variance; the prior s2_0 counts as sample 0)
+// Errors are relative: each sample is weighted by 1 / its own time (phi / y against 1), so a 4-token call and a 10k-token call teach alike. Replayed over
+// every prompt call in runs.db (975 calls, 240 runs, 2026-11-07), absolute least squares let the big calls own the fit and missed the small ones by
+// 100-2000% (decode chain median 101%); relative weighting: decode chain 21%, stream 21%, prompt chain 5%, dense 4%, predictions 7% (leave-one-out medians).
+//
+//   u = phi / y;  e = 1 - th.u;  q = u' P u;  g = P u / (1 + q);  th += g e;  P -= g u' P
+//   s2  running mean of e^2 / (1 + q)        (the relative residual variance; the prior s2_0 = 1, "uncertain by its own size", counts as sample 0)
 //   NIS = e^2 / (s2 (1 + q))                 (1 on average when the model is right)
 //   NIS > 1: P *= NIS and the running means restart at n = k + 1: a changed machine re-opens the variance by exactly the surprise, no timers, no windows.
-// The parameter covariance is s2 P (P is kept relative to the residual variance).
+// The parameter covariance is s2 P; a prediction's variance is s2 (mu^2 + phi' P phi).
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -22,14 +26,13 @@ struct dsf_rls {
     int    k = 0;           // features in use (4 for a pass, 1 for the fill)
     double th[4] = {};      // the coefficients
     double P[16] = {};      // their covariance over s2 (row-major k x k inside 4x4)
-    double s2 = 0.0;        // residual variance (us^2); 0 = not primed yet
+    double s2 = 0.0;        // relative residual variance; 0 = not primed yet
     double nis = 1.0;       // running mean of the normalised innovation squared
     int    n = 0;           // samples (restarts at k + 1 on drift)
     bool det() const { return n >= k + 1; }   // identifiable: at least k + 1 samples since the last restart
 };
 
-// P0 = diag(max(th0^2, floor^2)): every prior coefficient is uncertain by its own size (the logged planner errors were 2x). Absolute variances here; they are
-// made relative to s2 at the first prediction or sample (rls_prime), when the size of a call is known.
+// P0 = diag(max(th0^2, floor^2)) with s2_0 = 1: every prior coefficient is uncertain by its own size (the logged planner errors were 2x).
 static inline void rls_init(dsf_rls & r, int k, const double * th0, const double * floor) {
     r = dsf_rls();
     r.k = k;
@@ -51,17 +54,11 @@ static inline double rls_q(const dsf_rls & r, const double * phi) {
     return q;
 }
 
-// s2_0 = (th0 . phi)^2 at the first call (or y^2 at the first sample when the prior predicts 0): a prior that claims less would veto a measurement.
 // A coefficient whose feature was 0 so far has a zero row and column in P (no sample moved it), so a zero prior gets its uncertainty when its feature
-// first shows up: the coefficient that alone would explain the whole call, (mu / phi_i)^2. Exact, not an approximation: nothing has been learned about it.
+// first shows up: the coefficient that alone would explain the whole call, (mu / phi_i)^2 (or y's at the first sample when the prior predicts 0). Exact,
+// not an approximation: nothing has been learned about it.
 static inline void rls_prime(dsf_rls & r, const double * phi, double y_or_0) {
-    if (r.s2 <= 0.0) {
-        const double mu = std::fabs(rls_dot(r, phi));
-        const double s = mu > 0.0 ? mu : std::fabs(y_or_0);
-        if (s <= 0.0) { return; }   // nothing to scale by yet
-        r.s2 = s * s;
-        for (int i = 0; i < r.k * 4; ++i) { r.P[i] /= r.s2; }
-    }
+    if (r.s2 <= 0.0) { r.s2 = 1.0; }
     const double mu = std::fabs(rls_dot(r, phi)), s = mu > 0.0 ? mu : std::fabs(y_or_0);
     for (int i = 0; i < r.k; ++i) {
         if (r.P[i * 4 + i] <= 0.0 && phi[i] != 0.0 && s > 0.0) {
@@ -71,11 +68,11 @@ static inline void rls_prime(dsf_rls & r, const double * phi, double y_or_0) {
     }
 }
 
-// mean and predictive variance s2 (1 + phi' P phi) of the time at phi
+// mean and predictive variance s2 (mu^2 + phi' P phi) of the time at phi
 static inline double rls_pred(dsf_rls & r, const double * phi, double * var) {
     rls_prime(r, phi, 0.0);
     const double mu = rls_dot(r, phi);
-    if (var) { *var = r.s2 > 0.0 ? r.s2 * (1.0 + rls_q(r, phi)) : mu * mu; }
+    if (var) { *var = r.s2 * (mu * mu + rls_q(r, phi)); }
     return mu;
 }
 
@@ -83,15 +80,15 @@ static inline double rls_pred(dsf_rls & r, const double * phi, double * var) {
 static inline double rls_update(dsf_rls & r, const double * phi, double y) {
     if (!(y > 0.0) || !std::isfinite(y)) { return -1.0; }
     rls_prime(r, phi, y);
-    if (r.s2 <= 0.0) { return -1.0; }
-    double Pp[4] = {};
-    for (int i = 0; i < r.k; ++i) { for (int j = 0; j < r.k; ++j) { Pp[i] += r.P[i * 4 + j] * phi[j]; } }
+    double u[4] = {}, Pu[4] = {};
+    for (int i = 0; i < r.k; ++i) { u[i] = phi[i] / y; }
+    for (int i = 0; i < r.k; ++i) { for (int j = 0; j < r.k; ++j) { Pu[i] += r.P[i * 4 + j] * u[j]; } }
     double q = 0.0;
-    for (int i = 0; i < r.k; ++i) { q += phi[i] * Pp[i]; }
-    const double e = y - rls_dot(r, phi), d = 1.0 + q;
+    for (int i = 0; i < r.k; ++i) { q += u[i] * Pu[i]; }
+    const double e = 1.0 - rls_dot(r, u), d = 1.0 + q;
     const double nis = e * e / (r.s2 * d);
-    for (int i = 0; i < r.k; ++i) { r.th[i] += Pp[i] / d * e; }
-    for (int i = 0; i < r.k; ++i) { for (int j = 0; j < r.k; ++j) { r.P[i * 4 + j] -= Pp[i] * Pp[j] / d; } }
+    for (int i = 0; i < r.k; ++i) { r.th[i] += Pu[i] / d * e; }
+    for (int i = 0; i < r.k; ++i) { for (int j = 0; j < r.k; ++j) { r.P[i * 4 + j] -= Pu[i] * Pu[j] / d; } }
     r.n++;
     // running means with the prior as sample 0: a single lucky first sample cannot make the model sure of itself
     r.s2  += (e * e / d - r.s2) / (double) (r.n + 1);
@@ -115,7 +112,6 @@ static inline uint64_t rls_mix(uint64_t x) {   // splitmix64
 static inline double rls_draw(dsf_rls & r, const double * phi, uint64_t seed, double * t) {
     rls_prime(r, phi, 0.0);
     double mu = rls_dot(r, phi);
-    if (r.s2 <= 0.0) { *t = mu; return mu; }
     // Cholesky of s2 P (k <= 4); a pivot that rounding left at or below 0 contributes nothing
     double L[16] = {};
     for (int i = 0; i < r.k; ++i) {
