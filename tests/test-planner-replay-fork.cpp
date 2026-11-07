@@ -18,10 +18,11 @@
 #include <string>
 #include <vector>
 
-struct ev { std::string log; int req; double n, cells, Ts, Um, up, ch, dec_max = 1e9; };
+struct ev { std::string log; int req; double n, cells, Ts, Um, up, ch, dec_max = 1e9, U = 0; };
 enum { A_RING, A_MIX, A_CHAIN, A_DEC, A_K, A_N = A_K + 6 };
 static const int N_USED = 8, N_EXP = 512;
-static const int PICK_MODE = 3;   // the mode the planner runs (keep equal to the code)   // GLM 3.5: k steps x1..x32 (the arms rampool9/10 listed)
+static const int PICK_MODE = 3;
+static bool g_carry = false;   // replay with the previous start's stored state (R4), else every start fresh   // the mode the planner runs (keep equal to the code)   // GLM 3.5: k steps x1..x32 (the arms rampool9/10 listed)
 
 static std::vector<std::string> csv_row(const std::string & l) {
     std::vector<std::string> o; std::string c; bool q = false;
@@ -44,10 +45,17 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
     std::vector<double> seen;
     uint64_t rseed = 0; int last_req = -1;
     for (const auto & e : E) {
-        if (e.log != cur) {   // a new start: fresh state (no state file), copies not in place
+        if (e.log != cur) {   // a new start: copies not in place; fresh state, or (carry) what the previous start of this arm stored (R4)
+            const std::string arm = e.log.substr(e.log.rfind('-') + 1), prev_arm = cur.empty() ? "" : cur.substr(cur.rfind('-') + 1);
             cur = e.log; copies = false; last_req = -1; seen.clear();
-            for (auto & r : one) { r = dsf_rls(); }
-            split = dsf_rls(); fill = dsf_rls();
+            if (g_carry && arm == prev_arm) {   // the state file round trip: posteriors with a sample and running NIS <= 1 (R4 proposal), as rls_str / rls_parse (diag P), the rest fresh
+                auto keep = [](dsf_rls & r, int k) { dsf_rls q; if (r.k > 0 && r.n >= 1 && r.nis <= 1.0 && rls_parse(q, k, rls_str(r))) { r = q; } else { r = dsf_rls(); } };
+                for (auto & r : one) { keep(r, 4); }
+                keep(split, 4); keep(fill, 1);
+            } else {
+                for (auto & r : one) { r = dsf_rls(); }
+                split = dsf_rls(); fill = dsf_rls();
+            }
         }
         if (e.req != last_req) { rseed = rls_mix(seed ^ ((uint64_t) e.req * 1315423911ull) ^ std::hash<std::string>{}(e.log)); last_req = e.req; }
         const std::string st = e.req == 0 ? "c" : "w", cl = cls_of(e.n);
@@ -97,6 +105,12 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
             const bool o2[2] = { true, true };
             const bool me2[2] = { rls_known(one[pick1], m2[0], v2[0]), split.n > 0 && rls_known(split, m2[1] - (est > 0 ? rls_pred(fill, &est, &fv) : 0), vs) };
             sp = rls_voi_pick(m2, v2, o2, 2, Rn, nullptr, me2);
+            // R2 (planner-crossovers.md): neither side known here - split iff the one-card pass is compute-bound by r over the LINK-bound upload
+            // (max(U, C1) > r U; C1 = the one-card mean) and, with REPLAY_R2_FILL, its predicted gain beats the fill owed
+            if (getenv("REPLAY_R2") && !me2[0] && !me2[1] && e.U > 0) {
+                const double ratio = std::max(e.U * 1e3, m2[0]) / (e.U * 1e3);
+                sp = ratio > 1.83 && (!getenv("REPLAY_R2_FILL") || m2[0] - (m2[1] - (est > 0 ? rls_pred(fill, &est, &fv) : 0)) > (est > 0 ? rls_pred(fill, &est, &fv) : 0)) ? 1 : 0;
+            }
             if (getenv("REPLAY_DBG") && verbose) { printf("    dbg2 n %.0f R %d one %.0f +- %.0f (n %d) split %.0f +- %.0f (n %d)\n", e.n, Rn, m2[0] / 1e3, std::sqrt(v2[0]) / 1e3, one[pick1].n, m2[1] / 1e3, std::sqrt(v2[1]) / 1e3, split.n); }
             if (getenv("REPLAY_DBG") && verbose) { printf("    dbg n %.0f R %d one %.0f +- %.0f split %.0f +- %.0f\n", e.n, Rn, m2[0] / 1e3, std::sqrt(v2[0]) / 1e3, m2[1] / 1e3, std::sqrt(v2[1]) / 1e3); }
         }
@@ -130,7 +144,7 @@ int main(int argc, char ** argv) {
     double fill_ms = 1478;
     if (argc >= 3) {
         std::ifstream f(argv[1]); std::string l; std::getline(f, l);
-        while (std::getline(f, l)) { auto c = csv_row(l); if (c.size() < 11) continue; E.push_back({ c[0], atoi(c[1].c_str()), atof(c[2].c_str()), atof(c[3].c_str()), atof(c[4].c_str()), atof(c[5].c_str()), atof(c[6].c_str()), atof(c[7].c_str()), c.size() > 11 ? atof(c[11].c_str()) : 1e9 }); }
+        while (std::getline(f, l)) { auto c = csv_row(l); if (c.size() < 11) continue; E.push_back({ c[0], atoi(c[1].c_str()), atof(c[2].c_str()), atof(c[3].c_str()), atof(c[4].c_str()), atof(c[5].c_str()), atof(c[6].c_str()), atof(c[7].c_str()), c.size() > 11 ? atof(c[11].c_str()) : 1e9, c.size() > 12 ? atof(c[12].c_str()) : 0 }); }
         std::ifstream g(argv[2]);
         // a class measured once is no outcome to score against (one cold 2k call of k x8 at 6.5 s would set "the best"): two samples or more
         while (std::getline(g, l)) { auto c = csv_row(l); if (c.size() >= 4 && (c.size() < 5 || atoi(c[4].c_str()) >= 2)) { T[c[0] + "," + c[1] + "," + c[2]] = atof(c[3].c_str()); } }
@@ -143,6 +157,8 @@ int main(int argc, char ** argv) {
         }
     }
     const int seeds = argc >= 4 ? atoi(argv[3]) : 20;
+    g_carry = getenv("REPLAY_CARRY") != nullptr;
+    printf("state: %s\n", g_carry ? "carried from the previous start of the same arm (R4)" : "fresh at every start");
     int fails = 0;
     for (int mode = 0; mode < 4; ++mode) {
         result tot; int worst_bad = 0;
