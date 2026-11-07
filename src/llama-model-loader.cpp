@@ -1330,8 +1330,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
             // a table read by rows on demand is never pinned, whatever the budget: a token touches a few hundred of its bytes (DeepSeek's Engram table: 103 GiB, 144 bytes
             // a row, 48 rows a token), and it comes first in tensor order, so pinning it would eat the budget of the experts, which are read whole in every pass
-            if (!(flags & TENSOR_READ_LAZY) && pin_used + ggml_nbytes(t_meta) <= pin_budget) {
+            // --moe rampool=1 on a model over the budget: no expert tensor is pinned in tensor order, the RAM pool (llama-moecache-fork.cpp) pins expert slices by heat from what is left
+            static const bool rampool = [] { const char * v = llama_moe_get_opt("rampool"); return v && atoi(v) != 0; }();
+            const bool pool_exps = rampool && n_bytes > pin_budget && strstr(ggml_get_name(t_meta), "_exps") != nullptr;
+            if (!(flags & TENSOR_READ_LAZY) && !pool_exps && pin_used + ggml_nbytes(t_meta) <= pin_budget) {
                 pin_used += ggml_nbytes(t_meta);   // this tensor is read into pinned memory
+                if (rampool) { llama_moe_set_opt("pin-used", std::to_string(pin_used).c_str()); }   // the pool's share is the budget minus this
             } else {
                 auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
                 if (!cpu_dev) {
