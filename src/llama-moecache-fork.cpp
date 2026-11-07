@@ -12249,16 +12249,14 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // upload, the misses the prompt chain uploads behind the router, the decode chain's misses plus its 4-token chunk reads, the predictions the stream's
     cand(PP_RING, Ts);
     if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, Um); }
-    // the chains upload behind the router (and the decode chain computes misses on the CPU): candidates only up to the measured crossover where that can
-    // beat streaming (dec_max: the CPU read rate and the miss uploads against the link, the release's max-batch rule, rel MC:8168/6587). At any size
-    // they cost GLM 3.5 18.6-25 s (rp0) and 43-86 s (rp1) on cold 2k calls against 8 s streamed.
-    const bool small = n <= dec_max;
-    if (small && !busy && (uint32_t) n < g_pp_chain_refused) { cand(PP_CHAIN, up); }
+    // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
+    // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed)
+    if (!busy && (uint32_t) n < g_pp_chain_refused) { cand(PP_CHAIN, up); }
     // the decode chain's misses also wait for the SSD where their tensors are still mapped (planner-rules.md C1/R3: rp=1 cold 2k took 43-86 s against
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
     double ssd_miss = 0.0;
     if (ssd_rate > 0.0) { for (const auto & x : v) { ssd_miss += (1.0 - std::exp(n * x.l1p)) * x.sm / (ssd_rate * 1e3); } }
-    if (small && cpu_known) { cand(PP_DEC, up + chunk_at(n) + ssd_miss); }
+    if (cpu_known) { cand(PP_DEC, up + chunk_at(n) + ssd_miss); }
     // a prediction of 2^i x the picks stages that share of the experts ahead: the stream's upload less what it hides (C16: the arms differ from the
     // start instead of nine copies of the stream); the coefficient learns the rest
     for (int i = 0; k_auto && PP_K + i < PP_PATHS && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) {

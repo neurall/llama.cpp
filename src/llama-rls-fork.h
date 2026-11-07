@@ -22,6 +22,11 @@
 #include <cstdlib>
 #include <string>
 
+// Priors (weak: each is replaced by the run's own samples as they come; source given for each):
+//   RLS_S2_0             the noise, until two samples of a path exist (then its own residuals)
+//   RLS_SPLIT_ONE_RATIO  the split's mean before it ran once on this build (then its own RLS)
+//   th0 / P0             each path's coefficients from the measured rates (moe-cache, split plan), +- their own size
+//   fill coefficient 1   the planner's fill estimate, +- itself, until the first fill
 // The prior relative noise of a pass time: the repeat spread measured on the logs, not a tuning. 2026-11-07, GLM 3.5 12k x16+x4, 63 calls of 17 starts
 // (up9_merged2 .. rampool10), the same arm, call size and request state: pooled relative MAD 0.030, sd 0.045 (tests/test-planner-replay-fork.cpp). With
 // s2_0 = 1 (rampool10) one sample left a path +- 70% wide and a 25% faster split lost the warm 10400-token call to a draw (row 23769, pp 600 -> 497).
@@ -33,6 +38,7 @@ struct dsf_rls {
     double P[16] = {};      // their covariance over s2 (row-major k x k inside 4x4)
     double s2 = 0.0;        // relative residual variance; 0 = not primed yet
     double nis = 1.0;       // running mean of the normalised innovation squared
+    double e2 = 0.0;        // sum of e^2 / (1 + q) over the samples since the last restart (s2 from the samples alone once two exist)
     int    n = 0;           // samples (restarts at k + 1 on drift)
     bool det() const { return n >= k + 1; }   // identifiable: at least k + 1 samples since the last restart
 };
@@ -97,7 +103,10 @@ static inline double rls_update(dsf_rls & r, const double * phi, double y) {
     for (int i = 0; i < r.k; ++i) { for (int j = 0; j < r.k; ++j) { r.P[i * 4 + j] -= Pu[i] * Pu[j] / d; } }
     r.n++;
     // running means with the prior as sample 0: a single lucky first sample cannot make the model sure of itself
-    r.s2  += (e * e / d - r.s2) / (double) (r.n + 1);
+    // the noise: the prior RLS_S2_0 weighs as one sample until two samples exist, then the run's own residuals alone (a weak prior: the first live
+    // samples override the logged number)
+    r.e2 += e * e / d;
+    r.s2  = r.n >= 2 ? r.e2 / (double) r.n : (RLS_S2_0 + r.e2) / (double) (r.n + 1);
     r.nis += (nis - r.nis) / (double) (r.n + 1);
     // Drift: the model is surprised on average, not by one sample (a correct model's single NIS is above 1 a third of the time: chi-square, 1 degree), and
     // only once determined (before n >= k + 1 a large residual is what the samples are still teaching; inflating on it compounded, P x 1000 per early
@@ -106,6 +115,7 @@ static inline double rls_update(dsf_rls & r, const double * phi, double y) {
         for (int i = 0; i < r.k * 4; ++i) { r.P[i] *= r.nis; }
         r.n = r.k + 1;
         r.nis = 1.0;
+        r.e2 = r.s2 * (double) r.n;
     }
     return nis;
 }
@@ -189,7 +199,7 @@ static constexpr double RLS_SPLIT_ONE_RATIO = 0.96, RLS_SPLIT_ONE_SDLOG = 0.36;
 // mean b, an arm t ~ N(mu, var) is expected to gain EI = E[max(0, b - t)] per call and to lose EL = E[max(0, t - b)] = EI + mu - b on the trial. It is
 // tried when the gain over the calls this decision recurs in (R: this call and the earlier ones like it in the process) beats the trial's loss:
 // EI x R > EL. A known slower arm (sigma = the noise) is never tried, an unknown one only where it can pay; R grows as the decision repeats. No constant.
-static constexpr double RLS_TRIAL_LOSS_MAX = 0.05;   // the user's rule (2026-11-07): a wrong pick may cost at most 5% of the call against the measured best
+// (the 5% loss bound is the replay gate's and the cells' acceptance metric, tests/test-planner-replay-fork.cpp; at run time the stake decides)
 static inline double rls_ncdf(double z) { return 0.5 * std::erfc(-z / std::sqrt(2.0)); }
 static inline double rls_ei(double mu, double var, double b) {
     const double sd = std::sqrt(std::fmax(0.0, var));
@@ -201,25 +211,20 @@ static inline double rls_ei(double mu, double var, double b) {
 // comparable features. A measured arm extrapolated far from where it ran is not known here (the split measured at 10k says little at 2k).
 static inline bool rls_known(const dsf_rls & r, double mu, double var) { return r.n > 0 && var <= 2.0 * r.s2 * mu * mu; }
 
-// The pick (planner-simple). Among the arms known here: the lowest mean, a tie within the combined spread to the lower variance (the release's
-// margin). An arm not known here (a prior, or a model extrapolated) replaces the best known only as a trial; with no arm known here the lowest mean
-// stands (nothing better is known). A trial (any arm other than that pick) runs only when its expected loss EL is at most RLS_TRIAL_LOSS_MAX of the
-// call (the user's rule: a wrong pick never costs more than 5%) and its expected gain over the calls of this size so far pays for it: EI x R >= EL.
+// The pick. Among the arms known here: the lowest mean (a learned estimate is never overruled: no tie margin, no veto). Any other arm (a prior, or a
+// model extrapolated far from where it ran) is a trial, run only when its stake pays: expected gain over the calls of this size so far against its
+// expected loss, EI x R >= EL - all three learned. With no arm known here the lowest mean stands (nothing better is known).
 static inline int rls_voi_pick(const double * mu, const double * var, const bool * ok, int n, double R, bool * trial, const bool * known = nullptr) {
     if (trial) { *trial = false; }
     int b = -1;
     if (known) {
         for (int i = 0; i < n; ++i) { if (ok[i] && known[i] && (b < 0 || mu[i] < mu[b])) { b = i; } }
-        for (int i = 0; b >= 0 && i < n; ++i) {
-            if (ok[i] && known[i] && i != b && var[i] < var[b] && mu[i] - mu[b] < std::sqrt(var[i] + var[b])) { b = i; }
-        }
     }
     if (b < 0) { return rls_argmin(mu, ok, n); }   // nothing known here: the lowest mean
     int t = b; double best = 0.0;
     for (int i = 0; i < n; ++i) {
         if (!ok[i] || i == b) { continue; }
         const double ei = rls_ei(mu[i], var[i], mu[b]), el = ei + mu[i] - mu[b];
-        if (el > RLS_TRIAL_LOSS_MAX * mu[b]) { continue; }
         if (ei * R - el >= best && ei * R >= el) { best = ei * R - el; t = i; }
     }
     if (trial) { *trial = t != b; }

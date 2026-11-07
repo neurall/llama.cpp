@@ -53,7 +53,7 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
         double phi[A_N][4] = {}; bool ok[A_N] = {};
         auto cand = [&](int a, double U) { ok[a] = true; phi[a][0] = 1; phi[a][1] = e.n; phi[a][2] = 0; phi[a][3] = U * 1e3; };
         cand(A_RING, e.Ts); cand(A_MIX, e.Um);
-        if (e.n <= e.dec_max) { cand(A_CHAIN, e.up); cand(A_DEC, e.up + e.ch); }   // the chains only below the logged crossover (planner-simple)
+        cand(A_CHAIN, e.up); cand(A_DEC, e.up + e.ch);   // the chains at every size, as the planner (planner-learned)
         for (int i = 0; A_K + i < A_N && N_USED * (1 << i) < N_EXP; ++i) { cand(A_K + i, e.Ts * std::max(0.0, 1.0 - (double) (1 << i) * N_USED / N_EXP)); }
         const double ctok = e.ch > 0 ? e.ch * 1e3 / e.n : 1000.0;   // the prior compute per token: a token's expert bytes / the read rate (= the chunks' per token)
         double mu[A_N], var[A_N], dr[A_N];
