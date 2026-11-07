@@ -12,7 +12,7 @@
 // 100-2000% (decode chain median 101%); relative weighting: decode chain 21%, stream 21%, prompt chain 5%, dense 4%, predictions 7% (leave-one-out medians).
 //
 //   u = phi / y;  e = 1 - th.u;  q = u' P u;  g = P u / (1 + q);  th += g e;  P -= g u' P
-//   s2  running mean of e^2 / (1 + q)        (the relative residual variance; the prior s2_0 = 1, "uncertain by its own size", counts as sample 0)
+//   s2  running mean of e^2 / (1 + q)        (the relative residual variance; the prior s2_0 = RLS_S2_0, the measured repeat noise, counts as sample 0)
 //   NIS = e^2 / (s2 (1 + q))                 (1 on average when the model is right)
 //   NIS > 1: P *= NIS and the running means restart at n = k + 1: a changed machine re-opens the variance by exactly the surprise, no timers, no windows.
 // The parameter covariance is s2 P; a prediction's variance is s2 (mu^2 + phi' P phi).
@@ -21,6 +21,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+
+// The prior relative noise of a pass time: the repeat spread measured on the logs, not a tuning. 2026-11-07, GLM 3.5 12k x16+x4, 63 calls of 17 starts
+// (up9_merged2 .. rampool10), the same arm, call size and request state: pooled relative MAD 0.030, sd 0.045 (tests/test-planner-replay-fork.cpp). With
+// s2_0 = 1 (rampool10) one sample left a path +- 70% wide and a 25% faster split lost the warm 10400-token call to a draw (row 23769, pp 600 -> 497).
+static constexpr double RLS_S2_0 = 0.045 * 0.045;
 
 struct dsf_rls {
     int    k = 0;           // features in use (4 for a pass, 1 for the fill)
@@ -32,15 +37,16 @@ struct dsf_rls {
     bool det() const { return n >= k + 1; }   // identifiable: at least k + 1 samples since the last restart
 };
 
-// P0 = diag(max(th0^2, floor^2)) with s2_0 = 1: every prior coefficient is uncertain by its own size (the logged planner errors were 2x).
+// P0 = diag(max(th0^2, floor^2)) / s2_0: every prior coefficient is uncertain by its own size (the logged planner errors were 2x).
 static inline void rls_init(dsf_rls & r, int k, const double * th0, const double * floor) {
     r = dsf_rls();
     r.k = k;
     for (int i = 0; i < k; ++i) {
         r.th[i] = th0[i];
         const double f = floor ? floor[i] : 0.0;
-        r.P[i * 4 + i] = std::fmax(th0[i] * th0[i], f * f);
+        r.P[i * 4 + i] = std::fmax(th0[i] * th0[i], f * f) / RLS_S2_0;   // the parameter covariance is s2 P: th0^2 at the prior
     }
+    r.s2 = RLS_S2_0;
 }
 
 static inline double rls_dot(const dsf_rls & r, const double * phi) {
@@ -58,7 +64,7 @@ static inline double rls_q(const dsf_rls & r, const double * phi) {
 // first shows up: the coefficient that alone would explain the whole call, (mu / phi_i)^2 (or y's at the first sample when the prior predicts 0). Exact,
 // not an approximation: nothing has been learned about it.
 static inline void rls_prime(dsf_rls & r, const double * phi, double y_or_0) {
-    if (r.s2 <= 0.0) { r.s2 = 1.0; }
+    if (r.s2 <= 0.0) { r.s2 = RLS_S2_0; }
     const double mu = std::fabs(rls_dot(r, phi)), s = mu > 0.0 ? mu : std::fabs(y_or_0);
     for (int i = 0; i < r.k; ++i) {
         if (r.P[i * 4 + i] <= 0.0 && phi[i] != 0.0 && s > 0.0) {
@@ -93,11 +99,13 @@ static inline double rls_update(dsf_rls & r, const double * phi, double y) {
     // running means with the prior as sample 0: a single lucky first sample cannot make the model sure of itself
     r.s2  += (e * e / d - r.s2) / (double) (r.n + 1);
     r.nis += (nis - r.nis) / (double) (r.n + 1);
-    if (nis > 1.0 && r.n > 1) {   // a path's first sample is not drift: the prior is its uncertainty (planner-rules.md C6)
-        // the residual exceeded what the model's own variance allowed: re-open the covariance by the surprise, restart the means at the
-        // identifiability minimum (n is never raised by a restart: a model with fewer samples keeps their weight)
-        for (int i = 0; i < r.k * 4; ++i) { r.P[i] *= nis; }
-        if (r.n > r.k + 1) { r.n = r.k + 1; }
+    // Drift: the model is surprised on average, not by one sample (a correct model's single NIS is above 1 a third of the time: chi-square, 1 degree), and
+    // only once determined (before n >= k + 1 a large residual is what the samples are still teaching; inflating on it compounded, P x 1000 per early
+    // sample once s2_0 is the measured noise). Then P grows by the running surprise and the means restart at k + 1. Covers C6 (a first sample is no drift).
+    if (r.n > r.k + 1 && r.nis > 1.0) {
+        for (int i = 0; i < r.k * 4; ++i) { r.P[i] *= r.nis; }
+        r.n = r.k + 1;
+        r.nis = 1.0;
     }
     return nis;
 }
@@ -157,6 +165,55 @@ static inline bool rls_parse(dsf_rls & r, int k, const std::string & v) {
     o.n = 0; o.nis = 1.0;
     r = o;
     return true;
+}
+
+// The two decision kernels, shared by the planner (llama-moecache-fork.cpp, llama-dsplit-fork.cpp) and the offline replay (tests/test-planner-replay-fork.cpp),
+// so the replay gate runs the code that decides, not a copy of it.
+// One-card path: the candidate with the lowest value (a draw, or a mean); -1 when none is eligible.
+static inline int rls_argmin(const double * v, const bool * ok, int n) {
+    int b = -1;
+    for (int i = 0; i < n; ++i) { if (ok[i] && (b < 0 || v[i] < v[b])) { b = i; } }
+    return b;
+}
+// Split against one card for the pass about to run: its gain one - split > 0, and the positive gains of the call's passes beat the copy fill (0 when
+// the copies are in place), paid once.
+static inline int rls_split_choice(double g_this, double g_pos, double fill) { return g_this > 0.0 && g_pos > fill ? 1 : 0; }
+
+// The split's prior before it ever ran on this build: the one-card mean of the same pass x the split/one time ratio measured across models
+// (fork/bench planner dataset 2026-11-07, x16+x4, 32 sizes of DeepSeek, GLM 3.0/3.5, MiMo, Qwen3.6/3.8 with both arms measured: median 0.96, robust
+// sd(log) 0.36). The plan's own split time (t_raw_ms) was 1.8x high on GLM 3.5 (2034 us per token against 1135 measured) and kept the split from ever
+// being tried; the release's working rule was the same idea (the plan trusted for the ratio, the size from one card measured: rule 41b).
+static constexpr double RLS_SPLIT_ONE_RATIO = 0.96, RLS_SPLIT_ONE_SDLOG = 0.36;
+
+// Exploration by value of information (replaces the Thompson draws: rows 23768/23769, a 25% faster split lost the warm call to a draw). Against the best
+// mean b, an arm t ~ N(mu, var) is expected to gain EI = E[max(0, b - t)] per call and to lose EL = E[max(0, t - b)] = EI + mu - b on the trial. It is
+// tried when the gain over the calls this decision recurs in (R: this call and the earlier ones like it in the process) beats the trial's loss:
+// EI x R > EL. A known slower arm (sigma = the noise) is never tried, an unknown one only where it can pay; R grows as the decision repeats. No constant.
+static inline double rls_ncdf(double z) { return 0.5 * std::erfc(-z / std::sqrt(2.0)); }
+static inline double rls_ei(double mu, double var, double b) {
+    const double sd = std::sqrt(std::fmax(0.0, var));
+    if (sd <= 0.0) { return std::fmax(0.0, b - mu); }
+    const double z = (b - mu) / sd;
+    return (b - mu) * rls_ncdf(z) + sd * std::exp(-0.5 * z * z) / std::sqrt(2.0 * 3.141592653589793);
+}
+// the pick: the lowest mean, or the arm whose trial pays most (EI R - EL > 0); *trial tells which
+static inline int rls_voi_pick(const double * mu, const double * var, const bool * ok, int n, double R, bool * trial) {
+    int b = rls_argmin(mu, ok, n);
+    if (trial) { *trial = false; }
+    if (b < 0) { return b; }
+    // a tie within the two arms' combined sigma goes to the better known arm (the lower variance): a mean ahead by less than its own uncertainty is no
+    // reason to leave a measured path (the margin is the spread, the release's rule); whether the unknown one is worth a trial is the test below
+    for (int i = 0; i < n; ++i) {
+        if (ok[i] && i != b && var[i] < var[b] && mu[i] - mu[b] < std::sqrt(var[i] + var[b])) { b = i; }
+    }
+    int t = b; double best = 0.0;
+    for (int i = 0; i < n; ++i) {
+        if (!ok[i] || i == b) { continue; }
+        const double ei = rls_ei(mu[i], var[i], mu[b]), el = ei + mu[i] - mu[b];
+        if (ei * R - el > best) { best = ei * R - el; t = i; }
+    }
+    if (trial) { *trial = t != b; }
+    return t;
 }
 
 // the normal CDF, for the logged p_split only (never a decision input)
