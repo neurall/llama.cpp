@@ -1016,6 +1016,17 @@ void ggml_backend_sched_link_bytes_fork(ggml_backend_dev_t dev, uint64_t * in_ho
 }
 void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n) { ggml_backend_sched_upload_add(dev, n); }
 
+// fork: time spent pinning new staging blocks for card-to-card copies (ggml_cuda_xstage_copy), never reset. It lives here, not in ggml-cuda.cu: with
+// GGML_BACKEND_DL the CUDA backend is dlopen'ed and libllama cannot link a symbol of it; both sides declare these locally (no header edit).
+// llama_context::moe_mirror_fill reads it around a fill so the learned per-prompt fill cost excludes the once-per-process pins (rampool.md, fill cost spec).
+static std::atomic<uint64_t> g_xstage_pin_us{0};
+extern "C" {
+    GGML_API void     ggml_backend_xstage_pin_add_fork(uint64_t us);
+    GGML_API uint64_t ggml_cuda_xstage_pin_us_fork(void);
+}
+void     ggml_backend_xstage_pin_add_fork(uint64_t us) { g_xstage_pin_us.fetch_add(us, std::memory_order_relaxed); }
+uint64_t ggml_cuda_xstage_pin_us_fork(void) { return g_xstage_pin_us.load(std::memory_order_relaxed); }
+
 static ggml_backend_split_cb_t g_split_cb = NULL;
 static void *                  g_split_ud = NULL;
 

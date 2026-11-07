@@ -4465,6 +4465,8 @@ static bool ggml_cuda_xstage_on() {
     return on;
 }
 
+extern "C" GGML_API void ggml_backend_xstage_pin_add_fork(uint64_t us);   // ggml-backend.cpp (no header edit): pin time, read by moe_mirror_fill
+
 // false: no pinned memory for the block (the caller falls back to the peer copy)
 static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_backend_cuda_context * ctx_dst, const void * src_data, void * dst_data, size_t n) {
     std::lock_guard<std::mutex> lk(g_xstage_mu);
@@ -4507,6 +4509,7 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
         }
         const size_t cap = small ? GGML_CUDA_XSTAGE_SMALL : GGML_PAD(n, (size_t) 2 << 20);
         ggml_cuda_set_device(ctx_src->device);
+        const int64_t t_pin = ggml_time_us();   // the whole pin (THP register or the cudaHostAlloc fallback), counted in ggml_backend_xstage_pin_add_fork
 #ifdef __linux__
         // A large block is anonymous memory on transparent huge pages, registered with the driver: cudaHostAlloc pins about 1.3 GiB/s, so the 524 MB residual
         // stream of GLM-5.3-Flash cost 0.4 s of a 14 s prompt pass the first time it crossed the cards (nsys: one layer 430 ms longer); registered huge pages
@@ -4539,7 +4542,10 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
         }
 #endif
         // portable: pinned for every CUDA context, the two cards read and write the same block
-        if (e.host == nullptr && cudaHostAlloc(&e.host, cap, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess) {
+        const bool pin_ok = e.host != nullptr || cudaHostAlloc(&e.host, cap, cudaHostAllocPortable | cudaHostAllocMapped) == cudaSuccess;
+        // a pin is a one-time cost of the process (the block stays), not of the copy that needed it: counted apart so the fill cost learns the copy alone
+        ggml_backend_xstage_pin_add_fork((uint64_t) (ggml_time_us() - t_pin));
+        if (!pin_ok) {
             (void) cudaGetLastError();
             e.host = nullptr;
             return false;

@@ -786,6 +786,12 @@ static void dsf_load() {   // under g_dsf_mu: this build's factors from the stat
             g_dsf_one.size(), g_dsf_split.size(), g_dsf_dense.size(), g_dsf_fill.us, g_dsf_fill.n);
 }
 
+// the copy fill this prompt still owes (us): 0 while the copies are in place, else the learned fill (the planner's estimate before the first one). Under g_dsf_mu.
+static double dsf_fill_owed_us() {
+    const double est = g_mirror_fill_us.load();
+    return est > 0.0 ? (g_dsf_fill.n ? g_dsf_fill.us * 1e3 : est) : 0.0;
+}
+
 static void dsplit_calib_load(const llama_model & model) {
     if (!g_calib_section.empty()) { return; }
     g_calib_section = moe_state_section(model);
@@ -2530,7 +2536,7 @@ static int dsf_decide(const llama_model & model, int64_t n_tokens) {
         t_one   += std::max(U, one_pass((double) T, cm));
         t_split += std::max(U, split_pass((double) T, cm));
     }
-    const double fill_us = g_mirror_fill_us.load() > 0.0 ? (g_dsf_fill.n ? g_dsf_fill.us * 1e3 : g_mirror_fill_us.load()) : 0.0;   // copies to fill first (0: valid)
+    const double fill_us = dsf_fill_owed_us();   // copies to fill first (0: valid)
     const double gain = t_one - t_split;
     // the margin the split has to win by: the measured noise of the samples behind the two curves (their relative half range, per bucket with two or more
     // samples, averaged; one card's and the split's combined), so a steady measurement decides on a small difference and a noisy one needs a clear one.
@@ -2744,8 +2750,11 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             // configuration once per size bucket, the slower one again every 16th pass).
             static const bool explore = [] { const char * e = llama_moe_get_opt("split-explore"); return e && atoi(e) != 0; }();
             if (B.n[0] > 0 && B.n[1] > 0) {
-                // the split must win by split_min_gain on the passes measured, a tie or a close call stays on one card (never on while slower)
-                const int best = B.us_tok[1] <= (1.0 - llama_moe_live_get("split_min_gain")) * B.us_tok[0] ? 1 : 0;
+                // the split must win by split_min_gain on the passes measured, a tie or a close call stays on one card (never on while slower); the
+                // copy fill this request still owes goes on the split's side (the per-token samples exclude it, see dsplit_update)
+                const double fill_ms = [] { std::lock_guard<std::mutex> dl(g_dsf_mu); dsf_load(); return dsf_fill_owed_us() / 1e3; }();
+                const double nt = (double) n_tokens;
+                const int best = B.us_tok[1] * nt / 1e3 + fill_ms <= (1.0 - llama_moe_live_get("split_min_gain")) * B.us_tok[0] * nt / 1e3 ? 1 : 0;
                 choice = (explore && B.passes % 16 == 15) ? 1 - best : best;
                 why = choice == best ? "measured: faster at this size" : "measured: the slower one again (every 16th pass of a size)";
             } else if (plan_sure) {
@@ -2768,10 +2777,12 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                 choice = found >= 0 ? found : 0;   // nothing measured and no plan yet: one card first (it measures the compute the planner needs)
                 why = found >= 0 ? "measured: the nearest size" : "no plan or measurement yet: one card first";
             }
-            // the factors learned from earlier requests decide whenever both configurations can be estimated at this pass's context (see dsf)
+            // the factors learned from earlier requests decide where this size bucket lacks a measured pair (see dsf). A measured pair is what the factors
+            // are calibrated from, so a curve never overrules it (rampool7 warm: the bucket said split 828 against one card 581 t/s, the factors with an
+            // inflated fill picked one card, 1.45x slower). dsf_decide still runs for its request bookkeeping (g_dsf_ban, g_dsf_seen_pos0) and its log.
             {
                 const int fc = dsf_decide(model, n_tokens);
-                if (fc >= 0) {
+                if (fc >= 0 && !(B.n[0] > 0 && B.n[1] > 0)) {
                     choice = fc;
                     why = fc ? "factors: the split is faster at this context over the tokens left" : "factors: one card is faster at this context over the tokens left";
                 }

@@ -1453,6 +1453,7 @@ void llama_context::moe_mirror_offsets() {
 }
 
 void llama_moe_cache_ledger_fork(ggml_backend_dev_t dev, const char * kind, const void * ptr, size_t bytes, const char * who);   // llama-moecache-fork.cpp (no header edit)
+extern "C" uint64_t ggml_cuda_xstage_pin_us_fork(void);   // ggml-backend.cpp (no header edit): staging-block pin time so far, never reset
 
 // --moe mirror-pool, after the pool lent this graph its blocks: copies that the region lost since they were last filled are copied in again from the cards
 // that hold the originals (card to card). The graph runs only after this on the receiving card's stream. Every card's copies are issued before anything waits
@@ -1460,6 +1461,7 @@ void llama_moe_cache_ledger_fork(ggml_backend_dev_t dev, const char * kind, cons
 // with a wait after each, GLM-5.3-Flash took 848 + 750 ms per request on x16 + x4).
 void llama_context::moe_mirror_fill() {
     const int64_t t0 = ggml_time_us();
+    const uint64_t pin0 = ggml_cuda_xstage_pin_us_fork();
     std::string txt;
     size_t total = 0;
     for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
@@ -1468,10 +1470,13 @@ void llama_context::moe_mirror_fill() {
         if (i < moe_alias_off.size() && moe_alias_off[i] == 0) {
             continue;
         }
-        const auto todo = llama_dsplit_mirror_take_upload_fork(model, ab.dev);
+        auto todo = llama_dsplit_mirror_take_upload_fork(model, ab.dev);
         if (todo.empty()) {
             continue;
         }
+        // largest first: the first big copies grow the staging ring's slots to the largest size once, every later copy fits a block already pinned
+        // (smallest-first grew each slot 2 -> 34 -> 52 -> 68 MiB, ~30 pins of 0.45 s each beside rampool's locked memory: 7.7 s of an 8.9 s fill)
+        std::sort(todo.begin(), todo.end(), [](const auto & a, const auto & b) { return ggml_nbytes(a.first) > ggml_nbytes(b.first); });
         ggml_backend_t bd = nullptr;
         for (auto & be : backends) {
             if (ggml_backend_get_device(be.get()) == ab.dev) { bd = be.get(); }
@@ -1508,8 +1513,11 @@ void llama_context::moe_mirror_fill() {
     for (auto & be : backends) {
         ggml_backend_synchronize(be.get());
     }
-    LLAMA_LOG_WARN("%s: dense split: copies filled at once: %s in %.0f ms (pool blocks lent to this prompt)\n", __func__, txt.c_str(), (ggml_time_us() - t0) / 1e3);
-    llama_dsplit_note_fill_fork((ggml_time_us() - t0) / 1e3);   // the split's per-prompt cost, kept apart from the pass's time per token (dsf)
+    const double ms = (ggml_time_us() - t0) / 1e3, pin_ms = (ggml_cuda_xstage_pin_us_fork() - pin0) / 1e3;
+    LLAMA_LOG_WARN("%s: dense split: copies filled at once: %s in %.0f ms (%.0f ms of it staging-block pins, once per process; pool blocks lent to this prompt)\n",
+            __func__, txt.c_str(), ms, pin_ms);
+    // the split's per-prompt cost, kept apart from the pass's time per token (dsf): the copy alone, a warm request pays no pins (rampool7: 8904 ms learned, 1.3 s real)
+    llama_dsplit_note_fill_fork(std::max(0.0, ms - pin_ms));
 }
 
 void llama_context::sched_new(size_t max_nodes, bool parallel) {
