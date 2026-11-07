@@ -106,6 +106,7 @@ struct rp_pool {
     std::atomic<uint32_t>   graph{ 2 };
     std::atomic<size_t>     memal{ 4 };  // memory alignment O_DIRECT takes here: 4 bytes on NVMe (queue/dma_alignment); an EINVAL raises it, the reader then goes through its bounce buffer
     size_t                  rq = 0;      // bytes of one read request (the device's own limit, see rp_request_bytes)
+    bool                    evict = false;   // ggml_rampool_evict_fork: blocks change owner during the run; off: the fill's set stays, a slice out of it is read the old way
 
     std::atomic<uint64_t> st_asked{0}, st_hit{0}, st_cold{0}, st_refused{0}, st_evicted{0}, st_cold_b{0}, st_wait_us{0}, st_pp_hit{0}, st_pp_miss{0};
     uint64_t pool_bytes = 0;
@@ -227,6 +228,7 @@ int32_t rp_take_block(rp_pool * p, rp_class & c, double want) {
         c.free.pop_back();
         return (int32_t) s;
     }
+    if (!p->evict) { return -1; }
     const uint32_t n = (uint32_t) c.owner.size();
     if (n == 0) { return -1; }
     int32_t best = -1;
@@ -290,8 +292,8 @@ void rp_reader(rp_pool * p) {
         rp_rec & r = t.rec[j.e];
         rp_class & c = p->cls[t.cls];
         char * dst = c.at((uint32_t) r.slot);   // the block is ours: its owner changes only under RP_IN
-        // through the page cache, as the mapped part of a tensor-order pin is read: the free RAM beside the pool keeps what was read last (GLM 3.5 warm request with O_DIRECT: 31.7 GiB from the SSD)
-        const bool ok = bounce != nullptr && rp_read(p, -1, t.fd, dst, t.esz, t.off + (uint64_t) j.e * t.esz, bounce, bn);
+        // O_DIRECT: a buffered read leaves a second copy in the page cache, which then pushes out the slices the pool does not hold (rampool3, GLM 3.5 warm decode 13.0 -> 6.5 t/s)
+        const bool ok = bounce != nullptr && rp_read(p, t.dfd, t.fd, dst, t.esz, t.off + (uint64_t) j.e * t.esz, bounce, bn);
         {
             std::lock_guard<std::mutex> lk(p->mu);
             if (ok) {
@@ -369,7 +371,7 @@ bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampo
         c.owner.assign(c.n_slots, rp_owner());
         c.free.clear();
         for (uint32_t s = c.n_slots; s > 0; --s) { c.free.push_back(s - 1); }
-        p->pool_bytes += (uint64_t) c.chunks.size() * c.per_chunk * c.size;
+        p->pool_bytes += (uint64_t) c.n_slots * c.size;
         any |= c.n_slots > 0;
     }
     if (!any) {
@@ -503,6 +505,10 @@ const char * const * ggml_rampool_table_fork(const void * key) {
 }
 static_assert(sizeof(std::atomic<const char *>) == sizeof(const char *), "the table is read as plain pointers");
 
+void ggml_rampool_evict_fork(bool on) {
+    if (g_rp) { g_rp->evict = on; }
+}
+
 void ggml_rampool_graph_fork(void) {
     if (g_rp) { g_rp->graph.fetch_add(1, std::memory_order_relaxed); }
 }
@@ -540,8 +546,9 @@ const char * ggml_rampool_get_fork(const void * key, int64_t e) {
     rp_tensor * t = rp_find(key);
     if (t == nullptr || e < 0 || e >= t->n) { return nullptr; }
     const rp_rec & r = t->rec[e];
-    // asked by this graph or the one before it: no eviction before the graph after next (the graph counter moves only between graphs)
-    if (r.graph + 1 < g_rp->graph.load(std::memory_order_relaxed)) { return nullptr; }
+    // asked by this graph or the one before it: no eviction before the graph after next (the graph counter moves only between graphs). Without eviction a block in stays in, so
+    // no stamp is needed: a prompt pass's CPU op (no need before it) reads the pool too, not the mapping (rampool3: first 1938-token pass 46.8 s vs 16.7 s without the pool)
+    if (g_rp->evict && r.graph + 1 < g_rp->graph.load(std::memory_order_relaxed)) { return nullptr; }
     return t->ptr[e].load(std::memory_order_acquire);
 }
 

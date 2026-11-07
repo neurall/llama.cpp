@@ -24,6 +24,8 @@ GGML_API void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, i
 GGML_API bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampool_heat_t heat, void * ud, int n_threads);
 GGML_API void ggml_rampool_fill_fork(void);    // reads as many elements as the pool holds, the soonest expected first, laid out in file order; then the readers start
 GGML_API void ggml_rampool_close_fork(void);   // the readers stop; the chunks belong to whoever allocated them
+// true: a block may change owner during the run (eviction by heat). false (the default): the fill's set stays; a slice out of it is read the old way (mapping, page cache)
+GGML_API void ggml_rampool_evict_fork(bool on);
 
 // ---- use ----
 // element -> pointer into the pool, NULL: not there. NULL table: this tensor is not in the pool. A pointer is good from a need until the graph after next (see need).
@@ -33,7 +35,7 @@ GGML_API void ggml_rampool_graph_fork(void);
 // CHECK AND LOAD BEFORE THE KERNEL: these elements are read now if they are out, returns when they are in. An element that stays out (no block: it is expected later than
 // every resident) has no table entry: the caller reads it the old way, the stats count those as refused.
 GGML_API void ggml_rampool_need_fork(const void * key, const int32_t * ids, int n);
-// a kernel's look-up (no lock, no read): the element's block when this graph or the one before it asked for it (it cannot be evicted before the graph after next), else NULL
+// a kernel's look-up (no lock, no read): the element's block when it is in (with eviction on: only when this graph or the one before it asked for it, it cannot be evicted before the graph after next), else NULL
 GGML_API const char * ggml_rampool_get_fork(const void * key, int64_t e);
 // a prompt pass's copy: the block when the element is in (it is kept until the graph after next), NULL: out, read it the old way; never reads, counted as pp_hit / pp_miss
 GGML_API const char * ggml_rampool_use_fork(const void * key, int64_t e);

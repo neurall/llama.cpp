@@ -409,6 +409,7 @@ struct moe_cache {
     // long as N/10 of the RAM lasts: the next upload of an expert reads its pinned copy (direct DMA, 2.2x the pageable speed on the x16 link), the cold ones stay in the page cache
     ggml_backend_buffer_type_t pin_buft = nullptr;
     bool                       rp_on = false;      // --moe rampool: the RAM pool holds the expert slices (ggml-rampool-fork.h)
+    bool                       rp_evict = false;   // --moe rampool=2: the pool evicts and admits during the run; 1: the fill's set stays (ggml_rampool_evict_fork)
     std::vector<ggml_backend_buffer_t> rp_bufs;    // its pinned chunks
     std::vector<ggml_backend_buffer_t> rp_pre;     // 512 MiB pieces pinned before the VRAM pool is sized, handed out as chunks by rp_alloc (rp_prepin)
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
@@ -1220,7 +1221,9 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     const auto it = mc->by_src.find((const ggml_tensor *) key);
     if (it == mc->by_src.end()) { return HUGE_VAL; }
     const layer_state & ls = mc->layers[it->second.first];
-    if (ls.expert_slot[e] >= 0 || ls.queued[e]) { return HUGE_VAL; }
+    // a card holds it: with eviction, a RAM copy pays nothing. Without, the fill ranks it by heat too: prompt passes churn the cards, and a hot expert left out of the
+    // pool then comes back from the SSD (rampool3: 17 GiB of card-held slices out of the pool)
+    if (mc->rp_evict && (ls.expert_slot[e] >= 0 || ls.queued[e])) { return HUGE_VAL; }
     return vis_next(mc, ls, (int32_t) e);
 }
 
@@ -7279,6 +7282,9 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
         return;
     }
     rp_pre_free(mc);
+    // shortcut: rampool=1 keeps the fill's set for the run (heat moves it between runs through the heat file); rampool=2 evicts by heat, slower on GLM 3.5 (pool churn, fork/docs/rampool.md)
+    mc->rp_evict = atoi(rv) >= 2;
+    ggml_rampool_evict_fork(mc->rp_evict);
     ggml_rampool_fill_fork();
     struct ggml_rampool_stats st;
     ggml_rampool_stats_fork(&st, true);
