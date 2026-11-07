@@ -24,6 +24,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cerrno>
+#include <cstddef>
 #include <cmath>
 #include <functional>
 #include <cstdio>
@@ -151,7 +152,7 @@ size_t rp_request_bytes(int fd) {
 bool rp_read(rp_pool * p, int dfd, int fd, char * dst, size_t n, uint64_t off, char * bounce, size_t bounce_n) {
     if (dfd < 0) {
         for (size_t d = 0; d < n; ) {
-            const ssize_t r = sr_pread1(fd, dst + d, n - d, off + d);
+            const ptrdiff_t r = sr_pread1(fd, dst + d, n - d, off + d);
             if (r <= 0) { return false; }
             d += (size_t) r;
         }
@@ -174,7 +175,7 @@ bool rp_read(rp_pool * p, int dfd, int fd, char * dst, size_t n, uint64_t off, c
         const bool whole = u0 == pos && u1 == pos + want;
         const bool direct = whole && ((uintptr_t) d & (ma - 1)) == 0;
         if (!direct) { want = std::min(want, bounce_n); }
-        ssize_t r = sr_pread1(dfd, direct ? d : bounce, want, pos);
+        ptrdiff_t r = sr_pread1(dfd, direct ? d : bounce, want, pos);
         if (r < 0 && errno == EINVAL && direct) {   // this file system or device wants more alignment than dma_alignment says: the bounce buffer from now on
             p->memal.store(RP_SECTOR, std::memory_order_relaxed);
             continue;
