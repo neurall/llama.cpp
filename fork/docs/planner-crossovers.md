@@ -80,6 +80,34 @@ class of qwen36, qni4, glm, mimo (-97% to -308% of the stream's time) and win on
 (GLM 25%, DS 31%), up9_merged2 11-63%, rampool9-10 21% on GLM; the predictor-era builds ("others") 39-98%: the decode chain at large passes is the
 single largest loss class in every model (worst 127.7 / 26.8 / 79.4 / 36.9 / 296.9 s).
 
+## Strategy decision (replay of the candidates on the same 917 logged calls; /tmp/xo_score/score2.py, lomo*.txt)
+
+Verdict: keep the learned means with persistence (rampool13's R1-R7 with R4), not "calibrate the physics at load + one scalar per arm". On the same
+data the scalar strategy (h) is -8% warm and -34% cold against +26% / -27% for the measured means (c), and carrying the scalars across processes
+(h+) is worse still (-34% warm: one bad decode-chain scalar carried from DS's 328 s call costs 297 s), while carrying the means (c+) is the best
+of everything scored: +48% warm, +25% cold, worst loss 11 s. The physics anchor is not useless: it is the prior of every arm (rule b, -1% warm
+by itself), and the scalar strategy fails for a stated reason: a single scalar must carry what the anchor misses (overlap, wait-for-other,
+contention) across sizes, and those are not proportional to the computed time (the chain's serial misses at 512 vs 16k, the split's x4 wall).
+A per-arm RLS with k = 4 is the smallest model that is right at two sizes at once; with the state file it needs no more samples than the scalar
+(c+ scores from the first call of a process). Hybrid where the scalar fails: none needed; the anchor already enters as the RLS prior (coefficient 1 on U).
+Beyond this and the oracle fallback no better strategy is in the data: every event/utilization trigger tested so far (section 1: T_partial/T_uploadAll,
+T_one/Ts on the SSD-bound Ts) separated the crossovers worse than the measured means; the leave-one-model-out table below is the selection
+criterion for the generic triggers (fit on four models, applied to the fifth).
+
+| rule (fresh memory per process unless +) | cold net s (%) | warm net s (%) | worst single loss | warm per model ds / glm30 / glm35 / mimo / qni4 / qwen36 |
+|---|---|---|---|---|
+| c measured means | -882 (-27%) | +557 (+26%) | 15 s (73%) mimo 16k cold stream | +403 / +8 / +62 / +44 / +19 / +21 |
+| d c + ABAB on overlap | -882 (-27%) | +538 (+32% of scored) | 11 s (136%) ds 3k warm k | +348 / +8 / +67 / +72 / +22 / +21 |
+| h physics x scalar | -988 (-34%) | -128 (-8%) | 14 s (68%) mimo 16k warm | -85 / +6 / -57 / +16 / -18 / +10 |
+| h2 h + ABAB | -1249 (-43%) | +194 (+17%) | 11 s (136%) | +97 / +6 / +15 / +44 / +4 / +28 |
+| c+ means carried across processes | **+426 (+25%)** | **+862 (+48%)** | 11 s (136%) | +596 / +8 / +95 / +99 / +13 / +50 |
+| h+ scalars carried | +201 (+11%) | -436 (-34%) | 297 s (944%) ds 16k warm dec | -373 / +8 / -17 / +26 / -25 / -55 |
+
+Per transition c+ (cold | warm, net s): one/split +452 | +471, chain/dec +265 | +569, k -3 | +16, mix -4 | +4. Caveats: carried memory picks arms
+without a truth cell (c+ scores 199 cold calls of 534), the truth medians come from the same calls, n per class 1-3.
+
+Leave-one-model-out (generic triggers fit on four models, applied to the fifth without retuning): <!-- LOMO_TABLE -->
+
 ## 0. The final rule set (spec for Opus; scored on 917 logged prompt calls of 384 q5h stats.logs, section 1)
 
 Scoring (section 1): every candidate rule replayed in log order with a fresh memory per process; outcome of a pick = the measured median of that arm
