@@ -456,3 +456,53 @@ for a managed pass (existing: below it no split graph exists). No percentages, n
 6. `-simram 32g` rp=0 GLM 12k: the pins are slow there too; pass = the learned fill (`dsf.rls.fill` in the log) within 2 sigma of the rp=1 value.
 7. Cold start of a new build name (no state): the first cold 2k pick is logged with `p_split`; whichever path it takes, the second start of the same
    build picks the split at 2k with `p_split` >= 0.9.
+
+## Planner rules inventory (2026-11-07, before and after the learned planner)
+
+Every rule that picks a prompt pass's path (stream, mix, predictions, prompt chain, decode chain, dense split), line numbers at 096d6c5229. MC =
+src/llama-moecache-fork.cpp, DS = src/llama-dsplit-fork.cpp, CTX = src/llama-context.cpp. "after" is the default (`--moe split-model=1`): **feas** = kept,
+a hard fact (memory, a device, a refused graph, a user switch), never a preference; **RLS** = replaced by the one predictor per path and the one pick (draws);
+**old** = runs only under `--moe split-model=0` (kept one release, feedback_disable_means_disable), never read by the default path; **log** = display only.
+
+| # | where | rule | decides | input | conflicts / double counts | after |
+|---|---|---|---|---|---|---|
+| 1 | MC:12036 | pp_decide early return (chain not allowed, pass size fixed, no link) | no path planning: stream | options, cache | - | feas |
+| 2-5 | MC:9258, 9426, 9298, 9328 | pp_chain_allowed, pp_short (lend leaves a layer too few blocks), chain/mix graph refusals | chain / mix possible | blocks, layout, jit | - | feas |
+| 6 | MC:9421 | pp_chain_takes_fork | whether the split must take the pass from the call's path | n, pred, #31 | 31, 44 | feas (says which path holds the call; #31 no longer feeds it) |
+| 7 | MC:12084 | busy: uploads under way | no chain | upload queue | - | feas |
+| 8, 28, 45, 46 | MC:12087, 12152, 12198; DS:2723 | --moe pp-path, pp-k, dense-split=one/1 | forced path | user | - | feas (user) |
+| 9 | MC:12043 | cpu_known | decode chain needs a measured CPU rate | rate | - | feas |
+| 10 | MC:12102 | Ts = max(U, M / ssd rate) | the stream's upload bound | U, mapped bytes, SSD rate | 56 | RLS feature U of the stream and the predictions |
+| 11-14 | MC:12104-12122 | de0, chunk_at, de_at = f + d0 r + max(chunk kc, comp), ot_at = max(Ts, comp) | calculated decode chain / stream time | misses, CPU, read rate, compute | max(U, compute) hides the path (fault D); compute-only plan elsewhere (fault C) | old; up + chunk is the decode chain's RLS feature, its coefficient learned |
+| 15, 17, 18 | MC:12124-12144 | measured at this size first; dec_ok = de < ot; chain vs dec | one-card path | pp_took per size | exact-size (fault B) | old -> RLS lowest draw |
+| 16 | MC:12127 | dec_max bisection | crossover | calc | - | log |
+| 19, 55 | MC:11542, 11936 | g_pp_no_chain[bucket] | chain refused at a size | refused graph | bucketed | feas: g_pp_chain_refused, one size limit, no bucket |
+| 20-23 | MC:11540-11562 | pp_chain_pays: measured pair, nearest-size verdict, nothing to upload, one try estimate | chain or not | pp_took buckets | o - U serial vs #14 overlapped | old -> RLS |
+| 24 | MC:11457 | pp_try_ok: 1 s or 5% of prompt time less what tries lost | budget of tries | totals | gates 23, 26, 27 | old (Thompson draws are the exploration) |
+| 25, 42 | MC:11462, DS:495 | pp_bucket (log2), dsplit_bucket_of (sqrt2 x context band) | size keys | n, cells | two bucketings: 10400 and 10496 apart (fault B) | old / log |
+| 26 | MC:11505 | pp_mix_pick: measured pair, smaller size lost, try gate | mix | buckets | - | old -> RLS (mix eligible when a slower card exists and a pass fills a layer: feas) |
+| 27 | MC:11519 | pp_k_pick: k doubles while the last won, U > pass floor | predicted staging | buckets | - | old -> RLS (k steps while n_used x k < n_expert: feas) |
+| 29 | MC:12148 | mix needs a slower link | - | links | - | feas |
+| 30 | MC:12165 | g_pp_save_us = ot - tp | saving credited to the call's path | calc | subtracted from a compute-only plan (fault C) | old |
+| 31 | MC:12163 | g_pp_no_dense: one-card measured <= dense at this size | veto of the split | PP_DENSE incl. fill | fault G, B | old (false in default) |
+| 32-35, 54 | MC:12235, 11708, 11753, 11220 | pass size: pool and KV caps, fewest passes that fit, equal passes, max batch | pass size | memory | mirror bytes counted for every pass | feas (unchanged) |
+| 36 | DS:2453 | dsf_decide: sum of max(U urat, curve) over passes left, gain - fill > margin x t_one | split from the factors | curves, U, fill | 13, 37, 43 | old -> dsf_plan |
+| 37 | DS:2459, 2620 | g_dsf_ban: a split pass slower than the one-card curve bans the split for the request | ban | sample vs curve | pins inside the sample | old (a slow pass is a residual, NIS > 1 redraws) |
+| 38-40 | DS:2495, 2554, 2523 | k_sig clamp 0.5..3, margin = noise else split_min_gain 8%, curve trusted +-1 bucket | margins | samples | 8% applied up to 3x on one path | old |
+| 41, 41b | DS:1024, 2742 | plan: split < 0.80 t_one; t_one rescaled by the bucket | model plan | dsxn_plan, calib | fill in plan and in 43; t_one compute only | old; the plan is the split RLS's prior (per token) and the balance's shares |
+| 43, 43b-e | DS:2752-2778 | measured pair + fill <= 0.92 one; plan_sure 15%; plan 8%; split-explore every 16th; nearest bucket | split vs one | buckets | fault G (us_tok[1] holds the fill wall, fill added again) | old |
+| 44 | DS:2793 | path arbitration: no_dense veto, t_sp < 0.92 t_one -> yield | split vs the call's path | 30, 31, buckets | inconsistent t_one, t_sp | old; default: dsf_plan, then yield (feas: a forced path keeps it) |
+| 47, 48 | DS:2714, 2828 | managed (2 GPUs, copies ready), g_veto_tokens (split graph did not fit) | split possible | hw, memory | - | feas |
+| 49-52 | DS:2585-2611 | samples dropped: chain/dec pass, under a quarter of the card limit, upload-bound (g_dsf_urat 0.2 floor); up-wait subtracted | split sample filter | T, U | two upload corrections on one sample | quarter, urat: old (fixed part and U are features); chain/dec skip, up-wait: kept |
+| 53, 53b | DS:3019-3045 | calibration clamps 0.3/0.5..3, half-and-half averages, bucket arms 0.5 EMA, stored | plan calib, arms | call time incl. fill | fault G | old; arms kept as log display, fill wall taken out |
+| 55b | MC:11941 | first cold pass and first decode-chain call not recorded | sample filter | - | - | old; RLS takes every pass (its residual and the covariance handle a cold pass) |
+| 56-61 | MC:11908-11992, 11899 | SSD rate EMA, decode-chain kc/ratio/fixed EMAs, compute fit c0 + a cells, chain pass floor | calculated inputs | call time | three upload definitions | kept as calculations feeding the features (SSD rate -> Ts, compute -> priors); none decides |
+
+**Measurements, one place each (after):**
+- Fill wall: `moe_mirror_fill` measures the whole wall `ms` and the staging pins `pin_ms` and passes both, unaltered, to `llama_dsplit_note_fill_fork`, the one
+  place that defines the samples: split pass = pass wall - fill wall (pins included, fault G); fill sample = wall - pins against the planner's estimate at the decision;
+  the per-size display arm = call - the call's fill walls. The old rules keep their own definition (wall - pins) only under split-model=0.
+- Pins: never in any cost; logged with the fill.
+- Pass time: split passes in `dsplit_pass_end_locked` (decision to the synchronize after it, up-wait of the expert card subtracted); one-card passes in
+  `llama_moe_cache_prefill_report_fork` (call time / passes), each learning only the path that ran. The call time is not read by any decision.
+- Upload: each path's calculated upload is a feature (Ts, Um, up, up + chunks, pass_upload_ms for the split); its coefficient is learned, no correction factor (g_dsf_urat) on top.
