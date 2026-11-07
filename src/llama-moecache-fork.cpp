@@ -9159,7 +9159,8 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             ggml_tensor *       dsts[3] = { pub->jit_up_c, pub->jit_gate_c, pub->jit_down_c };
             for (int k = 0; k < 3; ++k) {
                 const size_t sz = srcs[k]->nb[2];
-                ggml_backend_tensor_set_async(be, dsts[k], (const char *) srcs[k]->data + (size_t) id*sz, (size_t) ps*dsts[k]->nb[2], sz);
+                const char * src = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;   // the pool's pinned block, not the mapping (see the slot path below)
+                ggml_backend_tensor_set_async(be, dsts[k], src ? src : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) ps*dsts[k]->nb[2], sz);
             }
             ls.pool_expert[ps] = id;
             ls.pool_slot[id]   = ps;
@@ -9215,7 +9216,10 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         ggml_tensor *       dsts[3] = { pub->up_c,   pub->gate_c,   pub->down_c   };
         for (int k = 0; k < 3; ++k) {
             const size_t sz = srcs[k]->nb[2];
-            ggml_backend_tensor_set_async(be, dsts[k], (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
+            // the pool's pinned block when it holds the expert (stamped: it stays until the graph after next): with rampool the tensor's own pointer is the
+            // unpopulated mapping, and a DMA from it page-faults the SSD and bounces (GLM 3.5 rampool5: first 1938-token call 43.8 s against 17.6, 78 GB of faults)
+            const char * src = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;
+            ggml_backend_tensor_set_async(be, dsts[k], src ? src : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
             const char * from = nullptr;
             if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], from)) {
                 ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);

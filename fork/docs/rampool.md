@@ -104,15 +104,34 @@ Fix (commit 380889d64f, build rampool5): the pool keeps a never-reset wait total
 `thread_tune_feed` subtracts the wait that accrued during the token before judging the thread count. ~10 lines, harmless with
 rampool off (returns 0).
 
-Still open after it (next for Opus, in this order; each one measured on GLM 3.5 12k cold/warm before the next):
-1. Demand reads on the decode thread: `need_fork` blocks the graph while 15 threads spin. Ask for the NEXT layer's misses right
-   after this layer's router (the early router / predictor hook) so the reads overlap the GPU layer; measure `waited` in the RPL line.
-2. First prompt pass 46.8 s vs 16.7 s (1938 tokens): the pass's CPU op read the mapping because `get_fork` needed a stamp and a
-   pass makes no need; rampool4 drops the stamp (no eviction by default). Check PAS line of pass 1 on rampool5; if still slow,
-   `ggml_compute_forward_mul_mat_id_tiled` (ggml-cpu.c, before the hook) reads `src0->data` (the mapping) and needs the hook too.
-3. SSD bytes per request (45-50 GiB with eviction, rampool3): with rampool=1 (no eviction) the pool set is fixed, so a slice out of
-   it comes from the SSD every time; v2's heat ranking should move it in between runs (globalhot.ini). Measure `read into the pool`
-   per request cold vs warm on rampool5.
+Result, build rampool5 (q5h/rampool5-glm35-12k-rp1.*, rows 23730/23731, answers read: coherent code review): decode 15.8 cold /
+15.3 warm against rp=0 15.4-15.8 and up9_merged2 15.3/14.9: the decode gate passes. pp 196/487 against 338/559: the prompt gap stays.
+
+### Second cause: miss uploads DMA from the mapping (the user's hypothesis), fixed in the tree, NOT yet built
+
+The 1938-token first call (decode chain path) took 43.8 s against rp=0's 17.6 s with the same bytes per token (cpu 12.7 MiB, upload
+32.5 MiB). During it the SSD read 78 GB through 800-1200 major faults/s of 1.5-2.6 MB, page scan 1 M pages/s, swap in/out thousands
+of pages/s, link0 0.82 GB/s against 2.10 in rp=0 (STA/DON lines 105-130 s). 78 GB = the call's upload bytes: the JIT uploads of
+`llama_moe_cache_jit_fork` (src/llama-moecache-fork.cpp, both the `jit_n` pool path and the slot path) copy with
+`ggml_backend_tensor_set_async(be, dst, srcs[k]->data + id*sz, ...)`, the tensor's own host pointer. With rampool on that is the
+never-populated mmap (the loader pins no expert, every pool read is O_DIRECT), so each upload page-faults the SSD and then goes
+through the driver's pageable bounce; with rp=0 the same pointer is the tensor-order pinned copy. Decode's per-layer JIT uploads
+("1 of 4 uploaded") took the same path, which is also why the thread tuner saw spiky tokens.
+
+Fix in the tree (commit after 72f9a91a07): both sites take `ggml_rampool_use_fork(srcs[k], id)` first (the pinned block, stamped so it
+stays until the graph after next, counted in the RPL `prompt copies from RAM` share) and fall back to the mapping only when the
+pool does not hold the slice (rampool=1: refused slices, ~4% of asks). Expected: the first call back near 17 s (pp cold ~330), warm
+pp near 560; decode unchanged or better (fewer faults). Next for Opus: build rampool6, run the acceptance cells below.
+
+Still open after it (in this order; each one measured on GLM 3.5 12k cold/warm before the next):
+1. Refused slices (rampool=1 refuses everything out of the fill set: `read into the pool 0, refused 15605` per request) still go
+   through the mapping on the CPU op and on uploads. Cheapest: the upload fallback reads O_DIRECT into the worker's staging slot (the
+   path at `read_direct`, line ~8621) instead of the mapping; the CPU op's fallback stays (4% of asks).
+2. Demand reads on the decode thread (rampool=2 only): `need_fork` blocks the graph while 15 threads spin. Ask for the NEXT layer's
+   misses after this layer's router (early router hook) so the reads overlap the GPU layer; measure `waited` in the RPL line.
+3. `ggml_compute_forward_mul_mat_id_tiled` (ggml-cpu.c, before the hook) reads `src0->data`: check whether a prompt pass's CPU op
+   takes it (PAS line "cpu MiB" of pass 1 with faults); if so the hook goes before it.
+4. The user's tier ladder and transfer-class / hit-waste stats lines (coordinator 2026-11-07 14:30): not started; design after the gate.
 
 Acceptance cells (all `-nm -pl 220/280 -r 2`, one power session, interleaved rp=1 / rp=0 / up9_merged2, answers read first):
 GLM 3.5 12k and 3k (fork/runs/rp2.csv glm35-*), then MiMo 12k, DS 12k, then `-simram 32g` small-RAM. Pass = rp=1 >= rp=0 and
