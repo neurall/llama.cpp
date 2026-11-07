@@ -159,3 +159,16 @@ pass 9568, C19), 23709-23712 (up9_merged2 GLM, C9), 23734/23735 (rampool6 rp1, C
 prompt_passes rowids: 1847/1859/1953/2024/2048/2069/2083 (cold 2k decode chain 18.6-25 s, C1), 1986/2010/2017 (rp=1 cold 2k 43.8-86.3 s, C1/R3),
 2032 vs 2035 (C8), 2090/2093 (C6), 2099/2103 (release pass 10336). stats rowids 229-240 hold the server logs of rampool6-8 (the PLN/DON lines of the
 learned planner do not exist yet: no run of 1de0303b9e is in the db).
+
+## 6. The five prompt-pass decisions under the one pick (2026-11-07, Opus; code at the rampool9 rebuild)
+
+One machinery for all: an RLS per arm (llama-rls-fork.h, relative errors), a Thompson draw per arm with a seed per request, the lowest draw wins;
+hard rules only as eligibility (feasibility). Each decision's arms, learned features, feasibility, self-checks and log line, and whether the code does it:
+
+| # | decision | arms | learned features (phi) | feasibility (no numbers) | INV checks | stats.log | in code |
+|---|---|---|---|---|---|---|---|
+| 1 | misses on the CPU vs uploaded | call level: the decode chain (CPU and uploads side by side) against the GPU-only paths (stream, chain, predictions) | decode chain: 1, n, n a cells, U = misses' upload + 4-token chunk reads + misses' mapped bytes / SSD rate | CPU rate measured (cpu_known); a prompt pass never computes misses on the CPU on the GPU-only paths (project_no_cpu_experts_in_prefill) | sure, phi | PLN (moe-cache: plan:), DON | **call level done** (PP_DEC is one arm). **Per layer not done**: llama_moe_cache_jit_fork still splits each layer's misses by a calculation (misses x measured cost, SWT lines), no learned coefficient |
+| 2 | prompt chain vs predicted staging k = 1, 2, 4 ... x the picks | PP_CHAIN, PP_K+i | chain: U = misses uploaded behind the router; k: U = Ts x (1 - 2^i n_used / n_expert) | no uploads under way; the chain's graph took this pass size (g_pp_chain_refused); n_used 2^i < n_expert; --moe pp-k / pp-path | sure, phi | PLN, DON | **done** |
+| 3 | stream every expert (and the mix) vs 1-2 | PP_RING, PP_MIX | U = Ts (link and SSD bound), Um | mix: a slower card exists and a pass fills a layer | sure, phi | PLN, DON | **done** |
+| 4 | dense split vs one card | split (g_rls_split) + fill (g_rls_fill) vs the lowest one-card draw of 1-3 (or g_rls_one without the cache) | split: 1, T, T a cells, U = pass upload; fill: the planner's fill estimate | managed (2 GPUs, copies placed), the split graph fit (g_veto_tokens), dense-split=one/1, a user-set path keeps its pass | fill-twice, overrule, phi | PLN (split planner: plan:), DON (split pass of ...) | **done** |
+| 5 | dense + expert split vs dense split only vs expert split only | three graph modes | - | expert split reserved at load (memory) | - | PRE (mode) | **not done**: the expert split is decided once at load (llama_moe_cache_prefill_decide_fork, a transfer-speedup rule) and is no arm of the pick; making it one needs the graph builder to switch per pass, which the expert split's load-time reservation does not allow yet |
