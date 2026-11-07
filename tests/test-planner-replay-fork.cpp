@@ -71,6 +71,11 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
         seen.push_back(e.n);
         bool meas[A_N];
         for (int a = 0; a < A_N; ++a) { meas[a] = ok[a] && rls_known(one[a], mu[a], var[a]); }
+        {   // R1: above the measured CPU crossover (g_mb_auto = experts / picks = 64 here) the chains are only a trial against a known arm
+            bool any = false;
+            for (int a = 0; a < A_N; ++a) { any = any || (meas[a] && a != A_CHAIN && a != A_DEC); }
+            for (const int a : { (int) A_CHAIN, (int) A_DEC }) { if (ok[a] && e.n > N_EXP / N_USED && !meas[a] && !any) { ok[a] = false; } }
+        }
         const int pick1 = mode == 3 ? rls_voi_pick(mu, var, ok, A_N, Rn, nullptr, meas) : rls_argmin(mode == 0 ? dr : mode == 1 ? mu : lcb, ok, A_N);
         // the split (dsf_plan): one pass per call here (the logged calls ran as one pass)
         const double sphi[4] = { 1, e.n, 0, e.Ts * 1e3 };

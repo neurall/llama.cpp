@@ -12272,11 +12272,20 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     {
         bool ok[PP_PATHS];
         for (int p = 0; p < PP_PATHS; ++p) { ok[p] = g_pp_phi[p][1] > 0.0; }
-        // deterministic: the lowest mean, a tie within the spread to the better known path, a trial only where it pays over the calls of this size
-        // so far (rls_voi_pick; planner-simple, replacing the Thompson draws that lost rows 23768/23769)
+        // deterministic: the lowest mean among the paths known here, a trial only where its stake pays over the calls of this size so far
+        // (rls_voi_pick; planner-simple/learned, replacing the Thompson draws that lost rows 23768/23769)
         const double R = (double) ++g_pp_size_seen[(uint32_t) n];
         bool known[PP_PATHS];   // ran at comparable features (rls_known): the arms a trial is weighed against
         for (int p = 0; p < PP_PATHS; ++p) { known[p] = ok[p] && rls_known(g_pp_rls[p], g_pp_pmu[p], g_pp_var[p]); }
+        // R1 (fork/docs/planner-crossovers.md): above the MEASURED CPU crossover g_mb_auto (the release's max-batch, experts / picks) the chains are no
+        // cold pick - no logged class on Qwen3.6/3.8, GLM, MiMo has a chain win there (-97% to -308%), DeepSeek only below 3k. There they are a trial
+        // against an arm known here, and a chain measured here (known) competes on its mean. (a448602c58 had dropped this as a ballpark; the
+        // ballpark was the calculated dec_max, this is the measured one.)
+        bool any_known = false;
+        for (int p = 0; p < PP_PATHS; ++p) { any_known = any_known || (known[p] && p != PP_CHAIN && p != PP_DEC); }
+        for (const int p : { PP_CHAIN, PP_DEC }) {
+            if (ok[p] && n > (double) g_mb_auto.load(std::memory_order_relaxed) && !known[p] && !any_known) { ok[p] = false; }
+        }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
     }
@@ -12287,7 +12296,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         dec   = g_pp_pick == PP_DEC;
         mix   = g_pp_pick == PP_MIX;
         m     = g_pp_pick >= PP_K ? (double) (1 << (g_pp_pick - PP_K)) : 0.0;
-        why   = g_pp_trial ? "trial: its expected gain over the calls of this size beats its expected loss" : g_pp_pick == best_mu ? "lowest mean" : "within the spread of the lowest mean: the better known path";
+        why   = g_pp_trial ? "trial: its expected gain over the calls of this size beats its expected loss" : g_pp_pick == best_mu ? "lowest mean" : "lowest mean among the paths known here";
         g_pp_dec = dec;
         g_pp_mb = chain || dec ? ub_max : 0;
         g_pp_mix_call = mix;
