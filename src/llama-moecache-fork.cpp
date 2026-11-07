@@ -411,7 +411,7 @@ struct moe_cache {
     bool                       rp_on = false;      // --moe rampool: the RAM pool holds the expert slices (ggml-rampool-fork.h)
     std::vector<ggml_backend_buffer_t> rp_bufs;    // its pinned chunks
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
-    std::string                heat_file;          // <hot map dir>/<model>.hotmoes.ini: the pool's heat, apart from the state file (whose values get reset or rolled back by policy)
+    std::string                heat_file;          // <state dir>/<model>/globalhot.ini: the pool's heat, apart from the state file (whose values get reset or rolled back by policy)
     std::atomic<uint32_t>      vis_now{1};         // the heat clock: vis_base + decode steps
     ggml_backend_buffer_type_t lazy_buft = nullptr;   // --moe pin-lazy: the GPU's pinned host buffer type
     size_t                     pin_budget = 0, pin_used = 0, pin_left = 0;
@@ -1223,7 +1223,7 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     return vis_next(mc, ls, (int32_t) e);
 }
 
-// The heat file (user 2026-11-07: expert heat in its own file, not mixed with tuning values): <hot map dir>/<model>.hotmoes.ini, lines clock=N, hot.<layer>=uses..., vis.<layer>=stamps...
+// The heat file (user 2026-11-07: expert heat in its own file, not mixed with tuning values): <state dir>/<model>/globalhot.ini, lines clock=N, hot.<layer>=uses..., vis.<layer>=stamps...
 // (RP_VIS per expert, oldest first). Written beside it and renamed over it under <file>.lock, so a crash or a second server never leaves half a file.
 struct heat_lock {
     int fd = -1;
@@ -7203,7 +7203,14 @@ static const void * rp_cpu_ptr(const ggml_tensor * src0, int64_t e) { return ggm
 static void rp_setup(moe_cache * mc, const llama_model & model) {
     const char * rv = moe_opt("rampool");
     if (!rv || atoi(rv) == 0) { return; }
-    mc->heat_file = hotmap_path(model, ".hotmoes.ini");
+    if (const std::string sf = moe_state_file(); !sf.empty()) {   // <state dir>/<model>/globalhot.ini (user 2026-11-07; the model's directory beside the state file, as its config.ini will be)
+        std::string m = moe_state_section(model);
+        for (char & ch : m) { if (!isalnum((unsigned char) ch) && ch != '-' && ch != '.') { ch = '_'; } }
+        const std::string dir = std::filesystem::path(sf).parent_path().string() + "/" + m;
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        mc->heat_file = dir + "/globalhot.ini";
+    }
     for (auto & ls : mc->layers) { ls.heat_cnt = ls.glob_count; }   // no heat file yet: the state's lifetime counts, once
     const bool heat_from_file = !mc->heat_file.empty() && rp_heat_load(mc);
     const char * pb = moe_opt("pin-budget"), * pu = moe_opt("pin-used");
