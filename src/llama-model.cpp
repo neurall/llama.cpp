@@ -2287,6 +2287,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                         if (buf == nullptr) {
                             throw std::runtime_error(format("unable to import %zu MiB of mapped weights into a %s buffer (at offset %zu MiB, after %zu buffers)", (e0 - s0) >> 20, ggml_backend_buft_name(buft), s0 >> 20, bufs.size()));
                         }
+                        ml.host_origin[buf] = (const uint8_t *) addr + s0;
                         bufs.emplace_back(buf);
                     };
                     size_t c0 = 0, c1 = 0;   // current chunk [c0, c1), empty while c1 == 0

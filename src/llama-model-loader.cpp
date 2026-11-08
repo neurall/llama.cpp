@@ -1901,10 +1901,13 @@ bool llama_model_loader::load_all_data(
 
             // the tensors of a file can be spread across several buffers - find the one containing this tensor's data
             ggml_backend_buffer_t buf_mmap = nullptr;
+            uint8_t * place = data;
             for (const auto & buf : bufs) {
-                const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(buf);
+                const auto it = host_origin.find(buf);
+                const uint8_t * base = it != host_origin.end() ? it->second : (const uint8_t *) ggml_backend_buffer_get_base(buf);
                 if (base && base <= data && data + n_size <= base + ggml_backend_buffer_get_size(buf)) {
                     buf_mmap = buf;
+                    if (it != host_origin.end()) { place = (uint8_t *) ggml_backend_buffer_get_base(buf) + (data - base); }
                     break;
                 }
             }
@@ -1917,7 +1920,7 @@ bool llama_model_loader::load_all_data(
 
             GGML_ASSERT(buf_mmap || cur->data); // either we have a buffer to allocate the tensor in, or it is already allocated
             if (buf_mmap && cur->data == nullptr) {
-                ggml_backend_tensor_alloc(buf_mmap, cur, data);
+                ggml_backend_tensor_alloc(buf_mmap, cur, place);
 
                 // locking a lazy tensor would fault all of it in, which is what lazy avoids
                 if (lmlocks && !lazy.has(cur)) {
