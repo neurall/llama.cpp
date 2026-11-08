@@ -119,6 +119,20 @@
 #include <dirent.h>
 #include <functional>
 #endif
+#if defined(GGML_USE_HIP)
+#include <filesystem>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>   // GetModuleHandleA: where rocblas.dll (and its kernel library) was loaded from
+#else
+#include <dlfcn.h>
+#endif
+#endif
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -272,6 +286,36 @@ static int ggml_cuda_parse_id(const char * devName) {
 
     return GGML_CUDA_CC_OFFSET_AMD + cc;
 }
+
+// rocBLAS loads its GEMM kernels per GPU from <its dir>/rocblas/library (TensileLibrary*_gfxNNNN*); without a file for this GPU its first GEMM ends the
+// process (ROCm 6.4 on Windows, Radeon 780M: "Cannot read ...TensileLibrary.dat ... for GPU arch : gfx1103", exit code 0). An unknown layout counts as ok.
+static bool ggml_cuda_hip_blas_has_arch(const char * gcn_arch) {
+    std::string arch(gcn_arch);
+    arch = arch.substr(0, arch.find(':'));   // "gfx1103:sramecc-:xnack-"
+    std::string dir;
+    if (const char * e = getenv("ROCBLAS_TENSILE_LIBPATH")) {
+        dir = e;
+    } else {
+#ifdef _WIN32
+        char p[MAX_PATH];
+        HMODULE h = GetModuleHandleA("rocblas.dll");
+        if (h && GetModuleFileNameA(h, p, MAX_PATH)) { dir = p; dir = dir.substr(0, dir.find_last_of("\\/")) + "\\rocblas\\library"; }
+#else
+        Dl_info di;
+        if (dladdr((void *) &hipblasCreate, &di) && di.dli_fname) { dir = di.dli_fname; dir = dir.substr(0, dir.find_last_of('/')) + "/rocblas/library"; }
+#endif
+    }
+    std::error_code ec;
+    if (dir.empty() || !std::filesystem::is_directory(dir, ec)) {
+        return true;
+    }
+    for (const auto & f : std::filesystem::directory_iterator(dir, ec)) {
+        if (f.path().filename().string().find(arch) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
 #endif // defined(GGML_USE_HIP)
 
 static ggml_cuda_device_info ggml_cuda_init() {
@@ -388,6 +432,10 @@ static ggml_cuda_device_info ggml_cuda_init() {
                       id, prop.name, prop.gcnArchName, info.devices[id].cc & 0xffff,
                       device_vmm ? "yes" : "no", prop.warpSize,
                       device_vram_mib);
+        info.devices[id].blas_ok = ggml_cuda_hip_blas_has_arch(prop.gcnArchName);
+        if (!info.devices[id].blas_ok) {
+            GGML_LOG_WARN("  Device %d: rocBLAS has no kernels for %s: matrix multiplies that need BLAS run on the CPU\n", id, prop.gcnArchName);
+        }
 #elif defined(GGML_USE_MUSA)
         info.devices[id].smpbo = prop.sharedMemPerBlockOptin;
         info.devices[id].cc = GGML_CUDA_CC_OFFSET_MTHREADS + prop.major * 0x100;
@@ -8132,6 +8180,27 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 if (op->op == GGML_OP_MUL_MAT_ID && ggml_get_op_params_i32(op, 3) == GGML_PREC_F32) {
                     return false;
                 }
+#ifdef GGML_USE_HIP
+                if (!ggml_cuda_info().devices[dev_ctx->device].blas_ok) {
+                    // no rocBLAS kernels for this GPU (gfx1103): only what the dispatch sends to the fork's own kernels; the rest runs on the CPU
+                    // instead of ending the process (Qwen3.6 35B float tensors at a 2k-token batch)
+                    const int cc = ggml_cuda_info().devices[dev_ctx->device].cc;
+                    const int ws = ggml_cuda_info().devices[dev_ctx->device].warp_size;
+                    if (b->type != GGML_TYPE_F32 || op->type != GGML_TYPE_F32) {
+                        return false;
+                    }
+                    if (op->op == GGML_OP_MUL_MAT_ID) {
+                        if (!ggml_is_quantized(a->type)) {
+                            return false;
+                        }
+                    } else if (!(ggml_cuda_should_use_mmvf(a->type, cc, ws, a->ne, a->nb, b->ne[1]) ||
+                                 ggml_cuda_should_use_mmf(a->type, cc, ws, a->ne, a->nb, b->ne[1], false) ||
+                                 ggml_cuda_should_use_mmvq(a->type, cc, b->ne[1]) ||
+                                 ggml_cuda_should_use_mmq(a->type, cc, b->ne[1], 0))) {
+                        return false;
+                    }
+                }
+#endif // GGML_USE_HIP
 #ifdef GGML_USE_MUSA
                 const int cc = ggml_cuda_info().devices[dev_ctx->device].cc;
                 if (b->ne[2]*b->ne[3] > 1 && !ggml_is_transposed(a) && !ggml_is_transposed(b)) {
