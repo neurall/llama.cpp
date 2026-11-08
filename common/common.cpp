@@ -2048,10 +2048,12 @@ static void common_auto_pin(common_params & params) {
             // so pin = (avail - margin - h * model) / (1 - h). The Engram table (TENSOR_READ_LAZY) is never pinned by the loader whatever the budget says and a token touches a few hundred of its
             // bytes, so it is no part of model here (user rule: model minus Engram). DeepSeek on 125 GiB, 100 and 500 tokens: 78 GiB pinned 7 and 34 prompt t/s, 96 GiB 11 and 45, 101 GiB 12 and 46.
             // --moe pin-cache=H changes h.
-            // --moe rampool (opt-in until it beats the mapped rest on every cell, user 2026-11-08: fix the current version first, then the pool): the experts past the budget
-            // live in the pinned pool and are read O_DIRECT, so no RAM is kept for their page cache (h = 0) and the pool takes what the margin leaves.
+            // --moe rampool, on by default for a model past the budget (user 2026-11-08: the pinned pool is the only RAM tier, heat in, coldest out, no second copy in the page
+            // cache that nothing controls): the experts past the budget live in the pool and are read O_DIRECT, so no RAM is kept for their page cache (h = 0) and the pool takes
+            // what the margin leaves. rampool=0 keeps the mapped rest and its page cache share (the A/B arm).
             const char * rpv = llama_moe_get_opt("rampool");
-            const bool rampool = rpv && atoi(rpv) != 0;
+            const bool rampool = rpv ? atoi(rpv) != 0 : true;
+            if (!rpv) { llama_moe_set_opt("rampool", "2"); }
             const double h = rampool ? 0.0 : [] { const char * v = llama_moe_get_opt("pin-cache"); return v ? std::min(0.9, std::max(0.0, atof(v))) : 0.15; }();
             const size_t engram = common_model_tensor_bytes(params.model.path, [](const char * name) { return strstr(name, "engram_kv") != nullptr; });
             const double eq = ((double) mem - (double) margin - h * (double) (model_size - std::min(engram, model_size))) / (1.0 - h);

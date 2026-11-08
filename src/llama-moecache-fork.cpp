@@ -9173,7 +9173,9 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // single misses to the CPU at 0.5-0.9 GB/s while the x16 link ran at 10%).
     const double rcm = mc->cpu_gbs_mapped > 0 ? mc->cpu_gbs_mapped * 1e3 : rc;
     auto mapped = [&](int32_t e) { return ls.src_dfd[0] >= 0 && !(ls.pin_ptr[0] && ls.pin_ptr[0][e].load(std::memory_order_acquire)) && !(ls.rp_tab[0] && ls.rp_tab[0][e]); };
-    auto cpu_eq = [&](int32_t e) { return (double) ntok[e] * S * (mapped(e) && rcm > 0 ? rc / rcm : 1.0); };   // bytes at the RAM rate that cost the same CPU time
+    // bytes at the RAM rate that cost the same CPU time. With the pool on, the mapping is not a source (user 2026-11-08: no second copy in the page cache): an expert the pool does
+    // not hold is uploaded, read O_DIRECT into the pinned ring (jit_direct_src), never computed from page faults, so its CPU cost is unbounded here and the sort puts it first
+    auto cpu_eq = [&](int32_t e) { return mapped(e) && mc->rp_on ? 1e300 : (double) ntok[e] * S * (mapped(e) && rcm > 0 ? rc / rcm : 1.0); };
     int n_mapped = 0;
     for (int32_t e : miss) { n_mapped += mapped(e); }
     // the experts dearest on the CPU (most tokens, mapped ones first: their time grows with tokens and with faults, an upload's does not) are uploaded first
