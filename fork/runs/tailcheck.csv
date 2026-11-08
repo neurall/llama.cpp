@@ -1,0 +1,19 @@
+name,model,n,test,tokens,args,extra
+mimo-a100,mimo,3,pf128k,16,"--moe pp-only=1",--clamp 100 --vary --ctx 8192
+mimo-a200,mimo,3,pf128k,16,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+mimo-a500,mimo,3,pf128k,16,"--moe pp-only=1",--clamp 500 --vary --ctx 8192
+mimo-a1000,mimo,3,pf128k,16,"--moe pp-only=1",--clamp 1000 --vary --ctx 8192
+glm35-a100,glm35,3,pf128k,16,"--moe pp-only=1",--clamp 100 --vary --ctx 8192
+glm35-a200,glm35,3,pf128k,16,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+ds-a100,ds,3,pf128k,16,"--moe pp-only=1",--clamp 100 --vary --ctx 8192
+ds-a200,ds,3,pf128k,16,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+ds-a500,ds,3,pf128k,16,"--moe pp-only=1",--clamp 500 --vary --ctx 8192
+qni3-a200,qwen38,3,pf128k,16,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+qni3-a500,qwen38,3,pf128k,16,"--moe pp-only=1",--clamp 500 --vary --ctx 8192
+glm35-tail-o,glm35,2,tetrisc,1024,,
+ds-tail-o,ds,2,tetrisc,1024,,
+glm35-tail-io,glm35,2,edit4c,1024,,
+ds-tail-io,ds,2,edit4c,1024,,
+mimo-tail-io,mimo,2,edit4c,1024,,
+qni3-tail-io,qwen38,2,edit4c,1024,,
+qni3-tail-2k,qwen38,2,pf2k,1024,,

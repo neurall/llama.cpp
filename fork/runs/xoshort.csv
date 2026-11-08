@@ -1,0 +1,46 @@
+name,model,n,test,tokens,args,extra
+mimo-stream-200,mimo,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 200 --vary --ctx 8192
+mimo-k8-200,mimo,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 200 --vary --ctx 8192
+mimo-auto-200,mimo,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+mimo-stream-500,mimo,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 500 --vary --ctx 8192
+mimo-k8-500,mimo,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 500 --vary --ctx 8192
+mimo-auto-500,mimo,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 8192
+mimo-stream-1000,mimo,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 1000 --vary --ctx 8192
+mimo-k8-1000,mimo,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 1000 --vary --ctx 8192
+mimo-auto-1000,mimo,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 8192
+mimo-stream-2000,mimo,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 2000 --vary --ctx 8192
+mimo-k8-2000,mimo,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 2000 --vary --ctx 8192
+mimo-auto-2000,mimo,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 8192
+qni3-stream-200,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 200 --vary --ctx 8192
+qni3-k8-200,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 200 --vary --ctx 8192
+qni3-auto-200,qwen38,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+qni3-mix-200,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=mix,dense-split=0",--clamp 200 --vary --ctx 8192
+qni3-stream-500,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 500 --vary --ctx 8192
+qni3-k8-500,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 500 --vary --ctx 8192
+qni3-auto-500,qwen38,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 8192
+qni3-mix-500,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=mix,dense-split=0",--clamp 500 --vary --ctx 8192
+qni3-stream-1000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 1000 --vary --ctx 8192
+qni3-k8-1000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 1000 --vary --ctx 8192
+qni3-auto-1000,qwen38,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 8192
+qni3-mix-1000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=mix,dense-split=0",--clamp 1000 --vary --ctx 8192
+qni3-stream-2000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 2000 --vary --ctx 8192
+qni3-k8-2000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 2000 --vary --ctx 8192
+qni3-auto-2000,qwen38,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 8192
+qni3-mix-2000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=mix,dense-split=0",--clamp 2000 --vary --ctx 8192
+glm35-stream-200,glm35,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 200 --vary --ctx 8192
+glm35-k8-200,glm35,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 200 --vary --ctx 8192
+glm35-auto-200,glm35,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+glm35-stream-1000,glm35,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 1000 --vary --ctx 8192
+glm35-k8-1000,glm35,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 1000 --vary --ctx 8192
+glm35-auto-1000,glm35,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 8192
+ds-12k-stream,ds,2,pf12k1k,1024,"--moe pp-path=stream,pp-k=0,dense-split=0",
+ds-12k-k8,ds,2,pf12k1k,1024,"--moe pp-path=stream,pp-k=1,dense-split=0",
+ds-12k-k32,ds,2,pf12k1k,1024,"--moe pp-path=stream,pp-k=4,dense-split=0",
+ds-12k-auto,ds,2,pf12k1k,1024,,
+mimo-d500-stream,mimo,2,pf128k,256,"--moe pp-path=stream,pp-k=0,dense-split=0",--clamp 500 --vary --ctx 8192
+mimo-d500-k8,mimo,2,pf128k,256,"--moe pp-path=stream,pp-k=1,dense-split=0",--clamp 500 --vary --ctx 8192
+qni3-d500-stream,qwen38,2,pf128k,256,"--moe pp-path=stream,pp-k=0,dense-split=0",--clamp 500 --vary --ctx 8192
+qni3-d500-k8,qwen38,2,pf128k,256,"--moe pp-path=stream,pp-k=1,dense-split=0",--clamp 500 --vary --ctx 8192
+ds-12k-slots6,ds,2,pf12k1k,16,"--moe pp-path=stream,pp-k=0,dense-split=0,pf-slots=6",
+ds-12k-slots9,ds,2,pf12k1k,16,"--moe pp-path=stream,pp-k=0,dense-split=0,pf-slots=9",
+ds-12k-prof,ds,1,pf12k1k,16,"--moe pp-path=stream,pp-k=0,dense-split=0",--env GGML_PF_STATS=1 --env GGML_SCHED_PROF=1

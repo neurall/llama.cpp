@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+mimo-mix-500,mimo,3,pf128k,16,"--moe pp-only=1,pp-path=mix,pp-k=0,dense-split=0",--clamp 500 --vary --ctx 8192
+mimo-mixk-500,mimo,3,pf128k,16,"--moe pp-only=1,pp-path=mix,pp-k=1,dense-split=0",--clamp 500 --vary --ctx 8192
+mimo-mix-1000,mimo,3,pf128k,16,"--moe pp-only=1,pp-path=mix,pp-k=0,dense-split=0",--clamp 1000 --vary --ctx 8192
+mimo-mixk-1000,mimo,3,pf128k,16,"--moe pp-only=1,pp-path=mix,pp-k=1,dense-split=0",--clamp 1000 --vary --ctx 8192
