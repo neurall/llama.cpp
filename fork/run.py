@@ -2859,7 +2859,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 row["p_" + k] = v
         if t.get("draft_n"):  # speculative decoding (MTP / draft model): accepted / drafted tokens
             row["note"] = f"draft {t.get('draft_n_accepted')}/{t['draft_n']}"
-        if "from pageable host memory" in log:  # weights not pinned: uploads are slower, the run does not compare with pinned ones
+        if "from pageable host memory" in log and "reads and DMAs from the pool's" not in log:  # weights not pinned (the pool's pinned pieces serve the uploads when that line follows): uploads are slower, the run does not compare with pinned ones
             row["note"] = (row.get("note", "") + " pageable uploads").strip()
     row.update(cache_stats(log))
     row.update(ok=1 if row.get("tps") else 0, args=" ".join(args))

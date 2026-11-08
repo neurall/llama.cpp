@@ -11,8 +11,9 @@
 //   - One writer function, rp_read, and it writes only inside the block it owns.
 //   - Check and load BEFORE the kernel (ggml_rampool_need_fork), never on a memory access.
 //   - A block is taken from an element only when nobody can still read it: not asked by this graph or the one before it (a copy of the previous graph can still run), no holds.
-//   - Eviction: of 64 sampled evictable blocks of the class the one expected back last; a newcomer gets it only when it is expected back sooner (else it stays out, "refused",
-//     and its caller reads it the old way): a cold expert read once does not push a warm one out.
+//   - Eviction: of 64 sampled evictable blocks of the class the one expected back last, and every demanded element gets one. Refusing the newcomers expected back later than
+//     that block (until 2026-11-08) refused every expert never seen before, and its caller read it from the mapping: GLM 3.5 12k, 4899 of 12871 cold misses per request,
+//     16 GiB of page cache next to a 101 GiB pool, 1000 major faults per second and swapping through the decode. The read into the pool costs the same SSD bytes and leaves nothing behind.
 //   - Elements of a class lie behind each other as the file has them after the fill, so one DMA serves a run. A matmul that reads past a slice needs the real next expert's
 //     bytes there (llama-moecache-fork.cpp, expert_past): such tensors are not given to the pool.
 #include "ggml-rampool-fork.h"
@@ -223,9 +224,8 @@ bool rp_evictable(const rp_pool * p, const rp_rec & r) {
     return r.state == RP_IN && r.holds == 0 && r.graph + 1 < p->graph.load(std::memory_order_relaxed);
 }
 
-// A block for an element of class c expected back at `want` (the heat clock), -1: none. The caller holds the lock. A free block first; else of 64 sampled evictable blocks the
-// one expected back last, taken only when the newcomer is expected back sooner.
-int32_t rp_take_block(rp_pool * p, rp_class & c, double want) {
+// A block for an element of class c, -1: none. The caller holds the lock. A free block first; else of 64 sampled evictable blocks the one expected back last.
+int32_t rp_take_block(rp_pool * p, rp_class & c) {
     if (!c.free.empty()) {
         const uint32_t s = c.free.back();
         c.free.pop_back();
@@ -248,7 +248,7 @@ int32_t rp_take_block(rp_pool * p, rp_class & c, double want) {
         if (h > bh) { bh = h; best = (int32_t) s; }
     }
     c.sample = (c.sample + 1) % n;
-    if (best < 0 || !(want < bh)) { return -1; }
+    if (best < 0) { return -1; }
     const rp_owner o = c.owner[best];
     rp_tensor & t = *p->tensors[o.t];
     t.ptr[o.e].store(nullptr, std::memory_order_release);
@@ -261,11 +261,10 @@ int32_t rp_take_block(rp_pool * p, rp_class & c, double want) {
 
 // element e leaves for a block and a reader. The caller holds the lock. false: no block (refused).
 bool rp_start(rp_pool * p, rp_tensor & t, int64_t e) {
-    const double want = p->heat(t.key, e, p->ud);
-    if (want == HUGE_VAL) { return false; }   // a card holds it: a RAM copy pays nothing
+    if (p->heat(t.key, e, p->ud) == HUGE_VAL) { return false; }   // a card holds it (the fill): a RAM copy pays nothing
     rp_class & c = p->cls[t.cls];
     rp_rec & r = t.rec[e];
-    const int32_t s = rp_take_block(p, c, want);
+    const int32_t s = rp_take_block(p, c);
     if (s < 0) { return false; }
     r.slot    = s;
     r.state   = RP_READING;
