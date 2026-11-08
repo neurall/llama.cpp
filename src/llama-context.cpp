@@ -4637,7 +4637,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 if (!back) { LLAMA_LOG_WARN("%s: a refused pass of %u tokens could not give its cells back (seq_rm from pos %d): the call fails\n", __func__, ubatch.n_tokens, (int) ubatch.pos[0]); }
                 if (back) {
                     const double share = room > 0 && room < need ? (double) room / (double) need : 0.75;
-                    const uint32_t u2 = std::max<uint32_t>(64, (uint32_t) ((double) ubatch.n_tokens * std::min(share, 0.9)) / 32 * 32);
+                    uint32_t u2 = std::max<uint32_t>(64, (uint32_t) ((double) ubatch.n_tokens * std::min(share, 0.9)) / 32 * 32);
+                    // equal passes over the rest of the call: every pass pays the whole expert upload whatever its token count (DeepSeek 64k, 2026-11-08: a
+                    // refused 16384 ran as 12288 + 4096, the 4096 tail took 21 s at 192 tokens/s where two passes of 8192 cost about 30% less)
+                    {
+                        const uint32_t left = (uint32_t) (tk.size() - (size_t) n_tokens_prev), passes = (left + u2 - 1) / u2;
+                        if (passes > 1) { u2 = std::max<uint32_t>(64, ((left + passes - 1) / passes + 31) / 32 * 32); }
+                    }
                     LLAMA_LOG_WARN("%s: the pool refused a pass of %u tokens: the rest of this call, %zu tokens, in passes of at most %u\n", __func__, ubatch.n_tokens, tk.size() - (size_t) n_tokens_prev, u2);
                     call_abandon();
                     const uint32_t cap_prev = g_pass_cap_fork;
