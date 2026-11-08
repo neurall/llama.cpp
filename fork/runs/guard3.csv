@@ -1,2 +1,1 @@
 name,model,n,test,tokens,args,extra
-ds-12k-guard,ds,2,pf12k1k,1024,"--moe map-guard=1",
