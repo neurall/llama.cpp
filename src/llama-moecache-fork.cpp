@@ -529,6 +529,13 @@ struct moe_cache {
     size_t rd_size = 0;
     std::map<int, int> rd_fds;
     std::map<const ggml_tensor *, std::pair<int, size_t>> rd_src;   // a weight that stayed mapped -> (its O_DIRECT descriptor, where it starts in the file)
+    // JIT uploads of a mapped expert (no pinned copy, not in the pool) read the slice with O_DIRECT into one of these pinned slots and DMA from there, never from the mapping
+    // (jit_direct_src): 3 slots per expert a token uses, each reused once the copy that last read it is done (its event)
+    struct jit_slot { ggml_backend_buffer_t buf = nullptr; ggml_backend_event_t ev = nullptr; ggml_backend_t be = nullptr; };
+    std::vector<jit_slot> jit_ring;
+    size_t jit_ring_i = 0;
+    uint64_t jit_rd_n = 0, jit_rd_b = 0, jit_rd_us = 0, jit_map_n = 0;   // per request: slices read O_DIRECT for JIT uploads, their bytes and time; slices that had to come from the mapping
+    double   jit_rd_gbs = 0;   // the measured O_DIRECT rate of those reads (EMA): the planner's upload cost of a mapped expert when it is below the link's rate
     int rd_threads = 8;   // --moe read-threads: at 1 MiB blocks, queue depth 8 gave 5.5 GB/s, 2 gave 3.3 (fio on this file)
     size_t bounce_bytes = 0;   // --moe bounce=MB: uploads from mmap'd memory are copied to the pinned staging buffer in chunks of this size first, then DMA'd from there (0: DMA straight from the mmap pages)
     size_t staging_size = 0;
@@ -1198,7 +1205,13 @@ std::string profile_path(const llama_model & model) {
 
 // --moe rampool heat (user 2026-11-07): per expert a fixed ring of its last RP_VIS decode-step stamps. Expected next use = last stamp + mean gap between the stamps; one stamp: now + its
 // age; past due: now + how long overdue. Never seen: after every seen expert, by the lifetime count. A card holds it: HUGE_VAL (a RAM copy pays nothing).
-static constexpr int RP_VIS = 4;
+// Ten stamps (user 2026-11-08: "consider last 10 stored revisits and evict rare visitors first, not just by global hot count"): a rare visitor's mean gap is long, so it is
+// expected back last and leaves the pool first; the lifetime count only orders the never-seen. A heat file written with a narrower ring keeps its stamps (rp_heat_load).
+// Not built yet (user 2026-11-08, "keep note"): beside the step stamps, the last 10 request ids an expert served. An expert hot inside one request but absent from the
+// other recent requests is topical, not general: once its request is over its step estimate is stale, and it should be judged by how many of the recent requests it served
+// (expected next use = now + mean request length x requests seen / requests served), so the general experts outlive the topical ones across requests. Needs a test we do not
+// have: a sequence of prompts never seen (`--gen in=2000:6000,out=256,task=code|prose`, 8+ runs on one server) reading the RPL line's misses-from-RAM share per request.
+static constexpr int RP_VIS = 10;
 static void vis_stamp(layer_state & ls, int32_t e, uint32_t now) {
     if (ls.vis.empty()) { return; }
     uint32_t * v = ls.vis.data() + (size_t) e * RP_VIS;
@@ -1279,6 +1292,10 @@ static bool rp_heat_load(moe_cache * mc) {
         { std::istringstream is(kv["vis." + l]); for (uint32_t x; is >> x; ) { v.push_back(x); } }
         if (h.size() == ls.heat_cnt.size()) { ls.heat_cnt = h; }
         if (v.size() == ls.vis.size()) { ls.vis = v; }
+        else if (!ls.vis.empty() && !v.empty() && v.size() % ls.heat_cnt.size() == 0) {   // a file from a narrower (or wider) ring: the newest stamps of each expert, oldest first
+            const size_t w = v.size() / ls.heat_cnt.size(), keep = std::min<size_t>(w, RP_VIS);
+            for (size_t e = 0; e < ls.heat_cnt.size(); ++e) { for (size_t i = 0; i < keep; ++i) { ls.vis[e * RP_VIS + RP_VIS - keep + i] = v[e * w + w - keep + i]; } }
+        }
     }
     return true;
 }
@@ -7333,6 +7350,11 @@ void llama_moe_request_end_fork(void) {
         LLAMA_LOG_WARN("moe-cache: prompt calls: left to the CPU per layer (p: pool branch):%s\n", pl.c_str());
         LLAMA_LOG_WARN("moe-cache: prompt calls: %" PRIu64 " layer-steps, %" PRIu64 " missed experts, %" PRIu64 " uploaded, %" PRIu64 " left to the CPU (%.1f%%)\n", ly, ms, up, ms - std::min(ms, up), ms ? 100.0*(ms - std::min(ms, up))/ms : 0.0);
     }
+    if (moe_cache * jc = g_cache; jc && (jc->jit_rd_n || jc->jit_map_n)) {   // this request's JIT uploads of mapped experts: how they were read
+        LLAMA_LOG_WARN("moe-cache: jit: %" PRIu64 " mapped expert slices read O_DIRECT for uploads, %.2f GiB at %.1f GB/s, %" PRIu64 " DMA'd from the mapping (no O_DIRECT source)\n",
+                jc->jit_rd_n, jc->jit_rd_b / 1073741824.0, jc->jit_rd_us ? jc->jit_rd_b / (double) jc->jit_rd_us / 1e3 : 0.0, jc->jit_map_n);
+        jc->jit_rd_n = jc->jit_rd_b = jc->jit_rd_us = jc->jit_map_n = 0;
+    }
     exptok_save();
     llama_tokheat_dump_fork();
     uniq_request_end();
@@ -8469,6 +8491,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             if (const char * ph = moe_opt("preheat"); ph && ph[0] == '1' && gpu && !mc->rd_staging.empty()) { mc->preheat_thr = std::thread(preheat_run, mc); }   // default off; =1 on; rd_staging: some experts stayed mapped
             if (!mc->rd_staging.empty()) {
                 LLAMA_LOG_WARN("moe-cache: read-direct: %.1f GiB of expert weights stayed mapped, read with O_DIRECT: prompt uploads on %d threads, %d cache workers\n", rd_mapped / 1073741824.0, mc->rd_threads, n_workers);
+                // the CPU's rate on a mapped expert starts at the drive's measured maximum, not at the RAM rate: a cold mapped slice is read by page faults from the SSD, so the
+                // first tokens' misses on mapped layers go to uploads instead of the CPU (stats.log 2026-11-08: "all on the CPU (42.5 GB/s, mapped 42.5)" until a phase was measured)
+                if (rd_mapped > 0 && mc->cpu_gbs_mapped <= 0.0 && llama_moe_ssd_max_get_fork() > 0.0) {
+                    mc->cpu_gbs_mapped = llama_moe_ssd_max_get_fork();
+                    LLAMA_LOG_WARN("moe-cache: read-direct: the CPU reads a mapped expert at %.1f GB/s until measured (the drive's maximum), a pinned one at the RAM rate\n", mc->cpu_gbs_mapped);
+                }
             }
             LLAMA_LOG_WARN("moe-cache: %d upload workers%s, %s\n", n_workers, n_links > 1 ? " (per link)" : "",
                     mc->bounce_bytes ? "memcpy -> pinned staging (bounce) -> GPU" :
@@ -9027,6 +9055,44 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
 static bool experts_in_file_layout(const llama_moe_cache_layer_fork * pub) {
     return ggml_backend_buffer_is_host(pub->up_src->buffer) && ggml_backend_buffer_is_host(pub->gate_src->buffer) && ggml_backend_buffer_is_host(pub->down_src->buffer);
 }
+// A JIT upload of an expert that stayed mapped (no pinned copy, not in the pool): the slice is read with O_DIRECT into a pinned ring slot and DMA'd from there. A DMA
+// from the mapping itself page-faults the SSD through the page cache and bounces (GLM 3.5 2026-11-08, 101 GiB pinned, 17.9 GiB mapped: 257k-390k major faults per 12k
+// request, decode 10.7 t/s against 15-16 with the tail cached), and the pool design wants no second copy in the page cache at all (user 2026-11-08). The ring holds 3
+// slots per expert a token uses (every slice of one token's misses in flight at once); a slot is reused once the copy that last read it is done (its event).
+// Returns where the bytes start, or nullptr when the weight has no O_DIRECT source (the caller falls back to the mapping and the count says so).
+static const char * jit_direct_src(moe_cache * mc, ggml_backend_t be, const ggml_tensor * w, size_t off, size_t n, int n_used) {
+    if (mc->rd_size == 0 || mc->rd_src.find(w) == mc->rd_src.end()) { return nullptr; }
+    if (mc->jit_ring.empty()) {
+        ggml_backend_buffer_type_t buft = ggml_backend_dev_host_buffer_type(ggml_backend_get_device(be));
+        for (int i = 0; i < 3 * std::max(1, n_used) && buft; ++i) {
+            ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(buft, mc->rd_size);
+            if (!b) { break; }
+            mc->jit_ring.push_back({ b, nullptr, nullptr });
+        }
+        if (mc->jit_ring.empty()) { mc->rd_size = 0; return nullptr; }   // no pinned slot: the mapping, and no second try
+        LLAMA_LOG_WARN("moe-cache: jit: %zu pinned slots of %.1f MiB (%.0f MiB) for O_DIRECT reads of mapped experts, never a DMA from the mapping\n",
+                mc->jit_ring.size(), mc->rd_size / 1048576.0, mc->jit_ring.size() * mc->rd_size / 1048576.0);
+    }
+    auto & s = mc->jit_ring[mc->jit_ring_i++ % mc->jit_ring.size()];
+    if (s.ev) {   // the copy that last read this slot
+        ggml_backend_event_synchronize(s.ev);
+        if (s.be != be) { ggml_backend_event_free(s.ev); s.ev = nullptr; }   // an event belongs to its device
+    }
+    const int64_t t0 = ggml_time_us();
+    const void * p = moe_read_fn(w, off, n, ggml_backend_buffer_get_base(s.buf), ggml_backend_buffer_get_size(s.buf), mc);
+    if (!p) { mc->jit_map_n++; return nullptr; }
+    const int64_t dt = ggml_time_us() - t0;
+    mc->jit_rd_n++; mc->jit_rd_b += n; mc->jit_rd_us += (uint64_t) dt;
+    if (dt > 0) { const double g = (double) n / (double) dt / 1e3; mc->jit_rd_gbs = mc->jit_rd_gbs > 0 ? 0.9 * mc->jit_rd_gbs + 0.1 * g : g; }
+    s.be = be;
+    return (const char *) p;
+}
+static void jit_direct_done(moe_cache * mc, ggml_backend_t be) {   // the copies from the slot taken last are queued: it is free again when they are done
+    auto & s = mc->jit_ring[(mc->jit_ring_i - 1) % mc->jit_ring.size()];
+    if (!s.ev) { s.ev = ggml_backend_event_new(ggml_backend_get_device(be)); }
+    if (s.ev) { ggml_backend_event_record(s.ev, be); }
+}
+
 void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     static const bool jit_all_mode = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();   // --moe jit-all: every batch the cache serves as decode, for deterministic replay
@@ -9114,8 +9180,12 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { const double ca = cpu_eq(a), cb = cpu_eq(b); return ca != cb ? ca > cb : score(ls, a) > score(ls, b); });
     std::vector<double> cpu_tail(m + 1, 0.0);   // cpu_tail[k]: RAM-rate bytes the CPU still reads if the first k are uploaded (each expert once per token routed to it)
     for (int i = m - 1; i >= 0; --i) { cpu_tail[i] = cpu_tail[i + 1] + cpu_eq(miss[i]); }
+    // a mapped expert's upload runs at the O_DIRECT read rate when that is below the link's (jit_direct_src, measured), a pinned or pool one at the link's rate
+    const double rdm = mc->jit_rd_gbs > 0 ? std::min(rlb, mc->jit_rd_gbs * 1e3) : rlb;
+    std::vector<double> up_head(m + 1, 0.0);   // up_head[k]: the upload time of the first k
+    for (int i = 0; i < m; ++i) { up_head[i + 1] = up_head[i] + S / (mapped(miss[i]) ? rdm : rlb); }
     auto T = [&](int k) {
-        const double tl = k * S / rlb, bc = cpu_tail[k];
+        const double tl = up_head[k], bc = cpu_tail[k];
         if (k == 0) { return bc / rc; }
         return bc <= tl * rcc ? std::max(tl, rcc > 0 ? bc / rcc : 1e300) : tl + (bc - tl * rcc) / rc;
     };
@@ -9168,8 +9238,10 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             ggml_tensor *       dsts[3] = { pub->jit_up_c, pub->jit_gate_c, pub->jit_down_c };
             for (int k = 0; k < 3; ++k) {
                 const size_t sz = srcs[k]->nb[2];
-                const char * src = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;   // the pool's pinned block, not the mapping (see the slot path below)
-                ggml_backend_tensor_set_async(be, dsts[k], src ? src : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) ps*dsts[k]->nb[2], sz);
+                const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;   // the pool's pinned block, not the mapping (see the slot path below)
+                const char * dr = rp ? nullptr : jit_direct_src(mc, be, srcs[k], (size_t) id*sz, sz, (int) ids->ne[0]);   // else an O_DIRECT read into a pinned slot
+                ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : dr ? dr : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) ps*dsts[k]->nb[2], sz);
+                if (dr) { jit_direct_done(mc, be); }
             }
             ls.pool_expert[ps] = id;
             ls.pool_slot[id]   = ps;
@@ -9227,13 +9299,17 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             const size_t sz = srcs[k]->nb[2];
             // the pool's pinned block when it holds the expert (stamped: it stays until the graph after next): with rampool the tensor's own pointer is the
             // unpopulated mapping, and a DMA from it page-faults the SSD and bounces (GLM 3.5 rampool5: first 1938-token call 43.8 s against 17.6, 78 GB of faults)
-            const char * src = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;
-            ggml_backend_tensor_set_async(be, dsts[k], src ? src : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
             const char * from = nullptr;
-            if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], from)) {
+            const size_t pb = expert_past(mc, ls, k, id, srcs[k], from);
+            const bool past_next = pb > 0 && from == (const char *) srcs[k]->data + (size_t) (id + 1) * sz;   // the bytes past the slice are the next expert's: in the file right after it, read along
+            const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;
+            const char * dr = rp ? nullptr : jit_direct_src(mc, be, srcs[k], (size_t) id*sz, sz + (past_next ? pb : 0), (int) ids->ne[0]);   // else an O_DIRECT read into a pinned slot
+            ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : dr ? dr : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
+            if (pb) {
                 ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);
-                ggml_backend_tensor_set_async(be, &z, from, 0, pb);
+                ggml_backend_tensor_set_async(be, &z, dr && past_next ? dr + sz : from, 0, pb);
             }
+            if (dr) { jit_direct_done(mc, be); }
         }
         ls.slot_expert[slot]    = id;
         ls.expert_slot[id]      = slot;
@@ -12706,6 +12782,7 @@ void llama_moe_cache_free_fork() {
     if (mc->lazy_thr.joinable()) { mc->lazy_thr.join(); }
     for (auto * b : mc->staging) { if (b) { ggml_backend_buffer_free(b); } }
     for (auto * b : mc->rd_staging) { if (b) { ggml_backend_buffer_free(b); } }
+    for (auto & s : mc->jit_ring) { if (s.ev) { ggml_backend_event_synchronize(s.ev); ggml_backend_event_free(s.ev); } if (s.buf) { ggml_backend_buffer_free(s.buf); } }
 #ifndef _WIN32
     for (auto & f : mc->rd_fds) { if (f.second >= 0) { close(f.second); } }
 #endif
