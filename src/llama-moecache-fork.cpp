@@ -9373,6 +9373,17 @@ static void pp_settle(moe_cache * mc) {
 // graph build: 1, this layer of a prompt pass takes the prompt chain. The pass may use every distinct expert of the layer at once, so the blocks must hold that many (no quota: all
 // blocks of the class count, a past layer's are free to take); -1, a layer that cannot hold them stays on the prompt path, which streams its experts through the staging slots;
 // 0, not a prompt pass.
+// the links' backends, from the scheduler: before the first split callback (the first graph of a run) link_be is empty and the prompt chain was refused for that graph
+void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched) {
+    moe_cache * mc = g_cache;
+    if (!mc || !sched) { return; }
+    for (int k = 0; k < mc->n_links; ++k) {
+        for (int i = 0; !mc->link_be[k] && i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(b) == mc->link_dev[k]) { mc->link_be[k] = b; }
+        }
+    }
+}
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
     if (!mc || !pp_chain_allowed() || pub->jit_n > 0 || !experts_in_file_layout(pub)) {   // repacked: the chain has no CPU branch and its uploads copy ->data; the plain path keeps the CPU

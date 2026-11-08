@@ -36,6 +36,7 @@
 
 int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used);   // src/llama-moecache-fork.cpp: the prompt chain
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
+void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched);
 ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork * pub);
 extern "C" { GGML_API double ggml_backend_pred_get_fork(); }   // ggml-backend.cpp: predicted staging of this pass   // the prompt mix: the card whose ring takes this layer's misses, null = no mix
 #include <string>
@@ -2990,6 +2991,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         !up_exps_s && !gate_exps_s && !down_exps_s &&
         type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
         mcache = llama_moe_cache_lookup_fork(up_exps);
+        if (mcache && sched) { llama_moe_cache_link_backends_fork(sched); }
         // a prompt call: the prompt chain, or the prompt path for a layer whose blocks cannot hold the pass (a dense split keeps its own path)
         const int pp = mcache && moe_ranges.empty() ? llama_moe_cache_pp_chain_fork(mcache, n_tokens, n_expert_used) : 0;
         mc_pp  = pp > 0;
