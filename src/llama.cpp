@@ -301,7 +301,7 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
         std::vector<size_t> local;   // positions in model->devices of the local GPUs
         for (size_t i = 0; i < model->devices.size(); ++i) {
             const llama_device & d = model->devices[i];
-            if (d.is_meta || ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (d.is_meta || !ggml_backend_dev_is_gpu(d.dev)) { continue; }
             if (ggml_backend_reg_name(ggml_backend_dev_backend_reg(d.dev)) == std::string("RPC")) { continue; }
             local.push_back(i);
         }

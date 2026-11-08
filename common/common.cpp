@@ -1324,7 +1324,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         // -dev picks the devices that count; else the discrete GPUs, or the integrated ones when there is no discrete GPU (as the model loader does)
         const bool want = !sel.empty() ? std::find(sel.begin(), sel.end(), dev) != sel.end()
-                        : ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ||
+                        : ggml_backend_dev_is_gpu(dev) ||
                           (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) == nullptr);
         if (!want) {
             continue;
@@ -1911,7 +1911,7 @@ static void common_hog(void) {
         const size_t keep = (size_t) (atof(hg) * 1048576.0);
         for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!ggml_backend_dev_is_gpu(dev)) { continue; }
             size_t free = 0, tot = 0;
             ggml_backend_dev_memory(dev, &free, &tot);
             if (free <= keep) { continue; }
@@ -1930,7 +1930,7 @@ static void common_hog(void) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         std::string key = std::string("hog-") + ggml_backend_dev_name(dev);
         for (char & c : key) { c = (char) tolower((unsigned char) c); }
-        const char * h = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ? llama_moe_get_opt(key.c_str()) : nullptr;
+        const char * h = ggml_backend_dev_is_gpu(dev) ? llama_moe_get_opt(key.c_str()) : nullptr;
         if (!h || atof(h) <= 0) { continue; }
         ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) (atof(h) * 1048576.0));
         if (!buf) { LOG_WRN("hog: could not take %s MiB on %s\n", h, ggml_backend_dev_name(dev)); continue; }
@@ -2798,7 +2798,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         size_t g = 0;
         for (size_t i = 0; i < ggml_backend_dev_count() && g < retry.fit_params_target.size(); ++i) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!ggml_backend_dev_is_gpu(dev)) { continue; }
             size_t mem_free = 0, mem_total = 0;
             ggml_backend_dev_memory(dev, &mem_free, &mem_total);
             retry.fit_params_target[g++] += std::max<size_t>((size_t) 3 << 30, mem_total / 100 * 20);

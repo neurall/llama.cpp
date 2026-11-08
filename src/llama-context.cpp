@@ -369,7 +369,7 @@ llama_context::llama_context(
                 }
                 for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
                     ggml_backend_dev_t d = ggml_backend_dev_get(i);
-                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); free_b += f; }
+                    if (ggml_backend_dev_is_gpu(d)) { size_t f = 0, t = 0; ggml_backend_dev_memory(d, &f, &t); free_b += f; }
                 }
                 uint64_t fit = row > 0 && free_b > fixed_b ? (free_b - fixed_b) / row : (uint64_t) hparams.n_ctx_train;
                 fit = std::max<uint64_t>(4096, fit / 256 * 256);
@@ -826,7 +826,7 @@ llama_context::llama_context(
             std::vector<ggml_backend_dev_t> gpus;
             for (auto & backend : backends) {
                 ggml_backend_dev_t d = ggml_backend_get_device(backend.get());
-                if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d); }
+                if (ggml_backend_dev_is_gpu(d)) { gpus.push_back(d); }
             }
             llama_moe_cache_prefill_decide_fork(gpus);
         }
@@ -1503,7 +1503,7 @@ void llama_context::moe_mirror_fill() {
                 ggml_backend_tensor_zero_tail_fork(bd, pr.second);
             }
             // the card's link traffic of this prompt's first pass (the split pass report: from host memory, or from the card that holds the weight)
-            ggml_backend_sched_link_add_fork(ab.dev, ds && ggml_backend_dev_type(ds) == GGML_BACKEND_DEVICE_TYPE_GPU ? ds : nullptr, ggml_nbytes(pr.first));
+            ggml_backend_sched_link_add_fork(ab.dev, ds && ggml_backend_dev_is_gpu(ds) ? ds : nullptr, ggml_nbytes(pr.first));
             bytes += ggml_nbytes(pr.first);
         }
         txt += format("%s%.1f MiB on %s", txt.empty() ? "" : ", ", bytes / 1048576.0, ggml_backend_dev_name(ab.dev));
@@ -1691,7 +1691,7 @@ void llama_context::sched_reserve() {
             ggml_backend_dev_t dv = ggml_backend_get_device(backend_ptrs[bi]);
             // the CPU backend too: its graph inputs sit in the pinned host buffer of a pass (GLM 3.5-bit: 5.1 GiB at 10400 tokens, a pin that stalled, 2026-11-07)
             const bool cpu = ggml_backend_dev_type(dv) == GGML_BACKEND_DEVICE_TYPE_CPU;
-            if (ggml_backend_dev_type(dv) != GGML_BACKEND_DEVICE_TYPE_GPU && !cpu) { continue; }
+            if (!ggml_backend_dev_is_gpu(dv) && !cpu) { continue; }
             std::vector<const ggml_tensor *> ts;
             for (int k = 0; k < ggml_graph_n_nodes(mg); ++k) {
                 ggml_tensor * t = ggml_graph_node(mg, k);
@@ -1725,7 +1725,7 @@ void llama_context::sched_reserve() {
         std::string why;
         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
             ggml_backend_dev_t d = ggml_backend_get_device(backend_ptrs[i]);
-            if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU || lt[i] == 0) { continue; }
+            if (!ggml_backend_dev_is_gpu(d) || lt[i] == 0) { continue; }
             size_t free_b = 0, total_b = 0;
             ggml_backend_dev_memory(d, &free_b, &total_b);
             const size_t margin = llama_moe_cache_vram_margin_fork(d);
@@ -1746,7 +1746,7 @@ void llama_context::sched_reserve() {
         std::vector<std::pair<size_t, ggml_backend_dev_t>> gi;   // backends whose card has a pool
         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
             ggml_backend_dev_t d = ggml_backend_get_device(backend_ptrs[i]);
-            if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && llama_moe_cache_alias_room_fork(d, 1) > 0) { gi.push_back({ i, d }); }
+            if (ggml_backend_dev_is_gpu(d) && llama_moe_cache_alias_room_fork(d, 1) > 0) { gi.push_back({ i, d }); }
         }
         if (gi.empty()) {
             return hi;
@@ -4050,7 +4050,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             if (!all_gpu) { break; }
             if (!t || !t->buffer || kv.first == "token_embd.weight") { continue; }   // the input embedding stays in host memory in stock too
             ggml_backend_dev_t d = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
-            all_gpu = d != nullptr && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU;
+            all_gpu = d != nullptr && ggml_backend_dev_is_gpu(d);
         }
         const char * rx = moe_opt("resident-exit");   // --moe resident-exit=0 keeps the hooks for a model that sits in VRAM (A/B of this exit)
         const char * fo = moe_opt("fork-off");        // --fork off: the same exit whatever the placement is
@@ -4078,7 +4078,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         const bool   alias     = !alias_opt || atoi(alias_opt) != 0;   // default on; the pool decides whether there is anything to lend
         if (alias) {   // the compute buffers go back to the devices first: the pool is sized with that memory and lends it back to the graphs
             for (auto & be : backends) {
-                if (ggml_backend_dev_type(ggml_backend_get_device(be.get())) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                if (ggml_backend_dev_is_gpu(ggml_backend_get_device(be.get()))) {
                     ggml_backend_sched_set_external_buffer(sched.get(), be.get(), nullptr, 0, 0);
                 }
             }
@@ -5717,7 +5717,7 @@ llm_graph_cb llama_context::graph_get_cb() const {
                                                             strcmp(name, "ffn_moe_gate_up") == 0)) {
             const auto dev = model.dev_layer(il);
             for (const auto & backend : backends) {
-                if (ggml_backend_get_device(backend.get()) == dev && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU && ggml_backend_supports_op(backend.get(), cur)) {
+                if (ggml_backend_get_device(backend.get()) == dev && ggml_backend_dev_is_gpu(dev) && ggml_backend_supports_op(backend.get(), cur)) {
                     ggml_backend_sched_set_tensor_backend(sched.get(), cur, backend.get());
                 }
             }

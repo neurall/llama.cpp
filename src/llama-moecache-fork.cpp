@@ -8997,7 +8997,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 for (size_t i = 0; init && i < ggml_backend_dev_count(); ++i) {
                     ggml_backend_dev_t d = ggml_backend_dev_get(i);
                     const char * nm = ggml_backend_dev_name(d);
-                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && nm && strncmp(nm, "CUDA", 4) == 0) {
+                    if (ggml_backend_dev_is_gpu(d) && nm && strncmp(nm, "CUDA", 4) == 0) {
                         mc->pf_count_on = init(atoi(nm + 4), n_layer, n_expert) || mc->pf_count_on;
                     }
                 }
@@ -9863,7 +9863,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
         const double s0 = llama_moe_span_now_fork();
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t d = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!ggml_backend_dev_is_gpu(d)) { continue; }
             const double g = early_link_gbs(d);
             const std::string key = format("h2d_gbs.%zu.%s", i, ggml_backend_dev_name(d));
             std::string old;

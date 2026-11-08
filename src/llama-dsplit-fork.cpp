@@ -128,7 +128,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
     }
     std::vector<ggml_backend_dev_t> gpus;
     for (const auto & d : model.devices) {
-        if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d.dev); }
+        if (ggml_backend_dev_is_gpu(d.dev)) { gpus.push_back(d.dev); }
     }
     if (gpus.size() < 2) {
         if (llama_moe_get_opt("dense-split")) {   // a default-on switch is not worth a warning on a one-GPU machine
@@ -150,7 +150,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
             if (name.find("_exps") != std::string::npos) { continue; }                               // routed experts stay shared by id range
             if (t == nullptr || t->buffer == nullptr) { continue; }
             ggml_backend_dev_t td = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
-            if (td == nullptr || td == D || ggml_backend_dev_type(td) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (td == nullptr || td == D || !ggml_backend_dev_is_gpu(td)) { continue; }
             src.push_back(t);
             bytes += ggml_nbytes(t);
         }
@@ -210,7 +210,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
 namespace {
 int dsplit_n_gpus(const llama_model & model) {
     int n = 0;
-    for (const auto & d : model.devices) { n += ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU; }
+    for (const auto & d : model.devices) { n += ggml_backend_dev_is_gpu(d.dev); }
     return n;
 }
 
@@ -240,7 +240,7 @@ void dsplit_cards_update(const llama_model & model, const dsplit_set & S) {
     if (g_card_order.empty()) {
         std::vector<std::pair<double, ggml_backend_dev_t>> v;
         for (const auto & d : model.devices) {
-            if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!ggml_backend_dev_is_gpu(d.dev)) { continue; }
             bool seen = false;
             for (const auto & p : v) { seen = seen || p.second == d.dev; }
             if (!seen) { v.push_back({ dsplit_link_once(d.dev), d.dev }); }
@@ -625,7 +625,7 @@ static std::string dsplit_pci_file(const std::string & busid, const char * file)
 static std::string dsplit_hw_key(const llama_model & model, bool log = true, bool with_gen = true) {
     std::string desc;
     for (const auto & d : model.devices) {
-        if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+        if (!ggml_backend_dev_is_gpu(d.dev)) { continue; }
         ggml_backend_dev_props p; ggml_backend_dev_get_props(d.dev, &p);
         const std::string bus = p.device_id ? p.device_id : "";
         // vendor + device id and the slot say which card sits where; "generation x width" the link it has there (4x16 = PCIe 4.0 x16): short, stable, no measuring
@@ -1073,7 +1073,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     for (int il = 0; il < L; ++il) {
         const ggml_backend_dev_t ld = model.dev_layer(il);   // where the layer's KV cache or recurrent state is
         for (int i = 0; i < n; ++i) { if (cards[i] == ld) { lcard[il] = i; } }
-        if (ld && ggml_backend_dev_type(ld) == GGML_BACKEND_DEVICE_TYPE_GPU) { lB[il] = dsplit_link_once(ld); }
+        if (ld && ggml_backend_dev_is_gpu(ld)) { lB[il] = dsplit_link_once(ld); }
         if (lB[il] <= 0.0) { lB[il] = 1e9; }
         if (model.hparams.is_recr(il)) { continue; }
         att_w[il] = 1.0 / std::max(1, n_att);
@@ -1440,7 +1440,7 @@ double llama_dsplit_read_rate_fork(ggml_backend_dev_t d) {
 
 void llama_dsplit_bench_fork(const llama_model & model) {
     std::vector<ggml_backend_dev_t> devs;
-    for (const auto & d : model.devices) { if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { devs.push_back(d.dev); } }
+    for (const auto & d : model.devices) { if (ggml_backend_dev_is_gpu(d.dev)) { devs.push_back(d.dev); } }
     std::lock_guard<std::mutex> lk(g_plan_mu);
     dsplit_mm_bench(model, devs);
 }
@@ -1771,7 +1771,7 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
     return B;
 }
 double dsplit_link(ggml_backend_dev_t d) {
-    return d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU ? dsplit_link_once(d) : 0.0;
+    return d && ggml_backend_dev_is_gpu(d) ? dsplit_link_once(d) : 0.0;
 }
 // what a card's link adds, modelled from the planner's numbers (g_hop_bytes_tok, g_kv_layers) and the probed link rates: the stamps time compute, not copies
 void dsplit_bal_costs(dsplit_bal & B) {
@@ -2978,7 +2978,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     }
     if (g_dev_all.empty() && model.dev_offload < model.devices.size()) {
         for (const auto & d : model.devices) {
-            if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!ggml_backend_dev_is_gpu(d.dev)) { continue; }
             const std::string nm = ggml_backend_dev_name(d.dev);
             g_dev_all += (g_dev_all.empty() ? "" : "+") + nm;
             if (d.dev != model.devices[model.dev_offload].dev) { g_dev_rest += (g_dev_rest.empty() ? "" : "+") + nm; }
