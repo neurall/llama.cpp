@@ -8077,6 +8077,35 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 std::vector<ggml_backend_buffer_t> cbufs(pl.cls.size(), nullptr);
                 ggml_backend_buffer_t pbuf = nullptr;
                 if (split) {
+                    // a class past the limit is split into classes of fewer layers (each a buffer of its own) rather than cut: a layer belongs to one class
+                    {
+                        std::vector<pool_class> ncls;
+                        std::vector<int32_t>    nnblk;
+                        std::vector<size_t>     norder;
+                        for (size_t c : order) {
+                            const pool_class & oc = pl.cls[c];
+                            const int32_t cap   = (int32_t) ((max_b - 4096) / oc.B);
+                            const size_t  m     = oc.members.size();
+                            const size_t  parts = std::max<size_t>(1, std::min(m, cap > 0 ? ((size_t) nblk[c] + cap - 1) / cap : m));
+                            for (size_t q = 0; q < parts; ++q) {
+                                pool_class nc = oc;
+                                nc.members.assign(oc.members.begin() + q * m / parts, oc.members.begin() + (q + 1) * m / parts);
+                                nc.base = 0;
+                                for (size_t i : nc.members) { pl.lay_cls[i] = ncls.size(); }
+                                norder.push_back(ncls.size());
+                                nnblk.push_back((int32_t) ((size_t) nblk[c] * nc.members.size() / m));
+                                ncls.push_back(std::move(nc));
+                            }
+                            if (parts > 1) {
+                                LLAMA_LOG_WARN("moe-cache: size class of %.1f MiB blocks (%zu layers, %d blocks) split into %zu buffers: the %s buffer limit is %.0f MiB\n",
+                                        oc.B / 1048576.0, m, nblk[c], parts, ggml_backend_buft_name(buft), max_b / 1048576.0);
+                            }
+                        }
+                        pl.cls = std::move(ncls);
+                        nblk   = std::move(nnblk);
+                        order  = std::move(norder);
+                        cbufs.assign(pl.cls.size(), nullptr);
+                    }
                     total = 0;
                     for (size_t c : order) {
                         const int32_t cap = (int32_t) ((max_b - 4096) / pl.cls[c].B);
