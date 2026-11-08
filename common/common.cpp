@@ -2229,6 +2229,20 @@ static void common_moe_cache_auto_impl(common_params & params) {
             llama_moe_set_opt("kv-tail", "1");
             if (params.moe_opts.find("kv-token-major") == std::string::npos) { llama_moe_set_opt("kv-token-major", "1"); }
         }
+        // shortcut: the KV tail and the compute alias live in the CUDA backend's hooks (scratch, graph hook, slices); on another backend (Vulkan, HIP) they
+        // abort at the context, so they are off there until ported. Decided from the backend of the GPUs in use: the devices given with -dev, else all.
+        bool cuda_gpu = false;
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (!ggml_backend_dev_is_gpu(dev)) { continue; }
+            if (!params.devices.empty() && std::find(params.devices.begin(), params.devices.end(), dev) == params.devices.end()) { continue; }
+            cuda_gpu = cuda_gpu || strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "CUDA") == 0;
+        }
+        if (!cuda_gpu) {
+            if (params.moe_opts.find("kv-tail") == std::string::npos) { llama_moe_set_opt("kv-tail", "0"); }
+            if (params.moe_opts.find("alias")   == std::string::npos) { llama_moe_set_opt("alias",   "0"); }
+            LOG_WRN("%s: the expert cache runs without the KV tail and the compute alias (CUDA-only so far): static KV, compute buffers outside the pool\n", __func__);
+        }
     }
     // the default context is set before the micro-batch below, which takes the context as its maximum. Set after it (as until 2026-10-14), a run without -c
     // got the batch size instead: passes of 2048 tokens, Qwen3.8-Flash-Next 8k prompt in 4 passes at 798 prompt t/s where one pass gives 1201
