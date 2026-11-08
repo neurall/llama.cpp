@@ -1658,6 +1658,17 @@ bool llama_kv_cache_dsv4::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1
             return res;
         }
 
+        // fork: a pass the pool refused (llama_context::decode): its graph never ran, so no state moved on, only the positions did; the raw cells of the pass go
+        // back and so do the compressed caches' cells past what the sequence held before it, no snapshot needed (DeepSeek 64k, 2026-11-08: the rollback of
+        // 16384 tokens was above rs_max, the call failed with HTTP 500 instead of running in smaller passes)
+        extern bool llama_memory_recurrent_no_compute_get_fork();
+        if (llama_memory_recurrent_no_compute_get_fork()) {
+            bool res = kv_raw->seq_rm(seq_id, p0, -1);
+            res = res & kv_csa->seq_rm(seq_id, (p0 - 1)/csa_state->get_ratio() + 1, -1);
+            res = res & kv_hca->seq_rm(seq_id, (p0 - 1)/hca_state->get_ratio() + 1, -1);
+            res = res & kv_lid->seq_rm(seq_id, (p0 - 1)/lid_state->get_ratio() + 1, -1);
+            return res;
+        }
         const llama_pos rollback = pos_max - (p0 - 1);
         if (rollback < 1 || rollback > (llama_pos) rs_max[seq_id]) {
             return false;

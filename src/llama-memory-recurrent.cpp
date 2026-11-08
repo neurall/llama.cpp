@@ -167,6 +167,7 @@ void llama_memory_recurrent::clear(bool data) {
 
 static thread_local bool g_recr_no_compute_fork = false;
 void llama_memory_recurrent_no_compute_fork(bool on) { g_recr_no_compute_fork = on; }   // llama_context::decode, around the removal of a refused pass
+bool llama_memory_recurrent_no_compute_get_fork() { return g_recr_no_compute_fork; }   // the other caches with a state that a refused pass never advanced (llama_kv_cache_dsv4::seq_rm)
 
 bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
     uint32_t new_head = size;
