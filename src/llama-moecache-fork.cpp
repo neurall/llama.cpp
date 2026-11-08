@@ -8069,11 +8069,43 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     total         += (size_t) nblk[c] * pl.cls[c].B;
                 }
                 total += 4096;   // MMQ reads whole 512-wide tiles: the end of the last tensor may be read past
-                ggml_backend_buffer_t pbuf = ggml_backend_buft_alloc_buffer(buft, total);
-                if (!pbuf) {
-                    LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (%.1f MiB) on %s - cache disabled\n", __func__, total / 1048576.0, ggml_backend_buft_name(buft));
-                    return false;
+                // One buffer when the backend takes it (CUDA: no limit). A backend with a buffer limit (Vulkan: 1 GiB blocks, 2 GiB on the Radeon 780M) gets one
+                // buffer per size class, each class cut to the limit: a class's blocks must stay one strided run (the kernels index them from one pointer).
+                // shortcut: the compute alias and the KV tail assume one buffer; they are off on those backends (common_moe_cache_auto_impl), lift when ported
+                const size_t max_b = ggml_backend_buft_get_max_size(buft);
+                const bool   split = total > max_b;
+                std::vector<ggml_backend_buffer_t> cbufs(pl.cls.size(), nullptr);
+                ggml_backend_buffer_t pbuf = nullptr;
+                if (split) {
+                    total = 0;
+                    for (size_t c : order) {
+                        const int32_t cap = (int32_t) ((max_b - 4096) / pl.cls[c].B);
+                        if (nblk[c] > cap) {
+                            LLAMA_LOG_WARN("moe-cache: size class of %.1f MiB blocks cut from %d to %d blocks: the %s buffer limit is %.0f MiB\n",
+                                    pl.cls[c].B / 1048576.0, nblk[c], cap, ggml_backend_buft_name(buft), max_b / 1048576.0);
+                            nblk[c] = cap;
+                        }
+                        pl.cls[c].base = 0;
+                        const size_t sz = (size_t) nblk[c] * pl.cls[c].B + 4096;
+                        cbufs[c] = nblk[c] > 0 ? ggml_backend_buft_alloc_buffer(buft, sz) : nullptr;
+                        if (!cbufs[c]) {
+                            LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (class of %.1f MiB) on %s - cache disabled\n", __func__, sz / 1048576.0, ggml_backend_buft_name(buft));
+                            for (auto * b : cbufs) { if (b) { ggml_backend_buffer_free(b); } }
+                            return false;
+                        }
+                        total += sz;
+                    }
+                    pbuf = cbufs[order[0]];
+                } else {
+                    pbuf = ggml_backend_buft_alloc_buffer(buft, total);
+                    if (!pbuf) {
+                        LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (%.1f MiB) on %s - cache disabled\n", __func__, total / 1048576.0, ggml_backend_buft_name(buft));
+                        return false;
+                    }
+                    for (auto & b : cbufs) { b = pbuf; }
                 }
+                std::vector<ggml_backend_buffer_t> ubufs;   // the distinct buffers
+                for (auto * b : cbufs) { if (std::find(ubufs.begin(), ubufs.end(), b) == ubufs.end()) { ubufs.push_back(b); } }
                 if (sz_dev == ggml_backend_buft_get_device(buft)) {   // the VRAM watch: free at sizing, the pool, and what the allocation itself took
                     size_t f_after = 0, t_after = 0;
                     ggml_backend_dev_memory(sz_dev, &f_after, &t_after);
@@ -8087,8 +8119,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     d.dev = sz_dev; d.free_at_size = sz_free; d.pool = total; d.stored_mb = sz_stored; d.from_cold = sz_from_cold; d.section = vram_section; d.key = vram_key(sz_dev, vram_cold);
                     g_vram.push_back(d);
                 }
-                ggml_backend_buffer_clear(pbuf, 0);
-                if (poison_on()) {   // expert blocks are 5 until an upload lands; the read-past tail stays 0
+                for (auto * b : ubufs) { ggml_backend_buffer_clear(b, 0); }
+                if (poison_on() && !split) {   // expert blocks are 5 until an upload lands; the read-past tail stays 0
                     moe_cache::alias_pool tmp; tmp.buf = pbuf;
                     pool_fill(tmp, 0, total - 4096, 5);
                 }
@@ -8100,8 +8132,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     typedef void (*set_graph_hook_t)(graph_hook_t);
                     if (auto set = (set_graph_hook_t) cuda_obs_proc("ggml_backend_cuda_set_graph_hook_fork")) { set(led_cuda_graph_hook); }
                 }
-                ggml_backend_buffer_set_usage(pbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-                uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(pbuf);
+                for (auto * b : ubufs) { ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS); }
                 const size_t pool0 = mc->pool.size();
                 std::string cls_txt;
                 for (size_t c = 0; c < pl.cls.size(); ++c) {
@@ -8127,8 +8158,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         t3[k]->ne[2]  = n;   // the class's blocks: the tables hold 0 .. n - 1 or -1 (uncached, skipped)
                         t3[k]->nb[2]  = cl.B;
                         t3[k]->nb[3]  = cl.B * (size_t) n;
-                        t3[k]->buffer = pbuf;
-                        t3[k]->data   = base + cl.base + cl.off[k];
+                        t3[k]->buffer = cbufs[ci];
+                        t3[k]->data   = (uint8_t *) ggml_backend_buffer_get_base(cbufs[ci]) + cl.base + cl.off[k];
                     }
                     ls->pub.n_slots = n;                      // the class's blocks; n marks "uncached" in the host tables (-1 in the device tables)
                     ls->pcls        = (int32_t) (pool0 + ci);
@@ -8153,14 +8184,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         sg.n    = nblk[c];
                         ap.segs.push_back(sg);
                         ap.span = sg.base + (size_t) sg.n * sg.B;
-                        if (!alias_all) { break; }
+                        if (!alias_all || split) { break; }
                     }
-                    ap.tail_end  = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    ap.tail_end  = split ? ap.span : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
                     mc->alias.push_back(ap);
                 }
-                mc->bufs.push_back(pbuf);
+                for (auto * b : ubufs) { mc->bufs.push_back(b); }
             }
             ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
             if (!buf) {
