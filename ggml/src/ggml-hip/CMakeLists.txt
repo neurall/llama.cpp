@@ -88,7 +88,7 @@ add_compile_definitions(GGML_USE_HIP)
 # fork: Windows with a newer MSVC (14.5x): the UCRT's constexpr isgreater/isless... become __host__ __device__ and clash with clang's CUDA math wrappers
 # ("__device__ function 'isgreater' cannot overload __host__ __device__ function"); ROCm 6.4 and TheRock 7 both hit it on W10
 if (WIN32)
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX,HIP>:SHELL:-Xclang -fno-cuda-host-device-constexpr>")
+    string(APPEND CMAKE_CXX_FLAGS " -Xclang -fno-cuda-host-device-constexpr")   # this directory's targets (the .cu files build as CXX with -x hip on Windows)
 endif()
 
 if (GGML_CUDA_FORCE_MMQ)
