@@ -2761,9 +2761,12 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     }
     double f_mu = 0.0, f_v = 0.0;
     if (fill_est > 0.0) { f_mu = rls_pred(g_rls_fill, &fill_est, &f_v); }
-    static std::map<int64_t, int> seen;   // passes of this size decided in this process: how often this pick recurs (the trial's R)
+    // calls of one pass in this size class (a quarter octave of the pass size) decided in this process: how often this pick recurs (the trial's R for a one-pass call)
+    static std::map<int, int> seen;
     static int64_t seen_pos0 = -2;
-    if (pos0 != seen_pos0) { seen_pos0 = pos0; seen[n_tokens]++; }
+    const int size_class = (int) std::floor(4.0 * std::log2((double) std::max<int64_t>(1, n_tokens)));
+    int seen_before = 0;
+    if (pos0 != seen_pos0) { seen_pos0 = pos0; seen_before = seen[size_class]++; } else { seen_before = seen[size_class] - 1; }
     const double am[2] = { m1, m2 + f_mu }, av[2] = { v1s, v2s + f_v };
     const bool aok[2] = { true, true };
     bool trial = false;
@@ -2771,8 +2774,11 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     // the trial's stake: the passes left in this call. The count of passes of this size seen so far grew with every pass and forced a trial of the
     // never-known one-card arm once per request (GLM 3.5 64k, 2026-11-08: a 25.9 s one-card pass at 36k cells against 11.9 s split, 10% of the prompt);
     // what a trial learns pays over the passes still to come here, and the next request starts from the stored posterior (R4) anyway
-    (void) seen;
-    const int choice = rls_voi_pick(am, av, aok, 2, (double) std::max(1, np), &trial, akn, nullptr, true);   // the split is tried where its stake pays even before one card is known here
+    // A one-pass call is the exception (user 2026-11-08, Qwen3.8 3.5k edit prompt: the dense split ran 1127 t/s for every repeat, 3.1 s, while one card, never tried, is 2.4 s in b14244; its prior
+    // was a cold 11.4 s and one pass of stake never paid a trial): its next calls come with the same features, so the trial's two samples make the arm known and end the trials, and the
+    // calls of this size class so far are the stake. Multi-pass calls keep the passes left: their features move with every pass, the arm never becomes known (GLM 3.5 64k).
+    const double stake = np == 1 ? 1.0 + (double) seen_before : (double) std::max(1, np);
+    const int choice = rls_voi_pick(am, av, aok, 2, stake, &trial, akn, nullptr, true);   // the split is tried where its stake pays even before one card is known here
     // p_split, for the log only: the posterior probability that splitting this call beats one card
     const double p_split = rls_phi_cdf((am[0] - am[1]) / std::max(1e-9, std::sqrt(av[0] + av[1])));
     const double g_this = mu1_0 - mu2_0, g_pos = m1 - m2, d1_0 = mu1_0, d2_0 = mu2_0, f_d = f_mu;
