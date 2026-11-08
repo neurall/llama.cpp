@@ -231,7 +231,7 @@ double dsplit_link_once(ggml_backend_dev_t d) {
 
 // The cards of a split pass (2026-10-23, any number of cards, any links and compute): every GPU whose copies have memory, in range order, the slowest link
 // first and the expert card last. The expert card computes the experts of every layer while the helpers hold none (the dense split alone); it is the card
-// with the fastest link, since every pass uploads the experts it does not hold (on a tie: the card the one-card passes run on). Nothing here is about two
+// with the fastest compute, then the fastest link, since every pass uploads the experts it does not hold (on a tie: the card the one-card passes run on). Nothing here is about two
 // cards: three cards on x16, x8 and x4 links get three ranges, the x16 card computes the experts, and the live balance gives each card the tokens that make
 // them take equally long (llama-splitplan-fork.h, dsb_target). Under g_mu.
 std::vector<ggml_backend_dev_t> g_cards;
@@ -256,12 +256,18 @@ void dsplit_cards_update(const llama_model & model, const dsplit_set & S) {
         std::sort(desc.begin(), desc.end(), std::greater<double>());
         auto cls = [&](double r) { int c = 0; double head = desc[0]; for (double d : desc) { if (d < 0.9 * head) { ++c; head = d; } if (d == r) { break; } } return c; };
         std::stable_sort(v.begin(), v.end(), [&](const auto & a, const auto & b) { return cls(a.first) > cls(b.first); });
-        // the expert card: the fastest link; among the cards within 10% of it, the card the one-card passes run on
+        // the expert card: the fastest compute first (a shared-memory GPU's "link" is a memcpy, it says nothing about what the card can compute: Radeon 780M 29 GB/s
+        // against an RTX 4060's 13, at 1/11 of its compute); cards within 30% of the best count as equal, so two like cards on x16 and x4 still go by link. Among
+        // those the fastest link, and within 10% of that the card the one-card passes run on. No probe (compute 0): every card is a candidate, the link decides.
+        auto comp = [](ggml_backend_dev_t d) { const auto * r = llama_gpu_probe_find_fork(d); return r ? r->compute : 0.0; };
+        double ctop = 0.0;
+        for (const auto & p : v) { ctop = std::max(ctop, comp(p.second)); }
+        double ltop = 0.0;
+        for (const auto & p : v) { if (comp(p.second) >= 0.7 * ctop) { ltop = std::max(ltop, p.first); } }
+        const ggml_backend_dev_t off = model.dev_offload < model.devices.size() ? model.devices[model.dev_offload].dev : nullptr;
         size_t xi = v.size() - 1;
-        if (model.dev_offload < model.devices.size()) {
-            const ggml_backend_dev_t off = model.devices[model.dev_offload].dev;
-            for (size_t i = 0; i < v.size(); ++i) { if (v[i].second == off && v[i].first >= 0.9 * top) { xi = i; } }
-        }
+        for (size_t i = 0; i < v.size(); ++i) { if (comp(v[i].second) >= 0.7 * ctop && v[i].first >= 0.9 * ltop) { xi = i; } }
+        for (size_t i = 0; i < v.size(); ++i) { if (v[i].second == off && comp(off) >= 0.7 * ctop && v[i].first >= 0.9 * ltop) { xi = i; } }
         std::rotate(v.begin() + xi, v.begin() + xi + 1, v.end());   // the expert card to the end, the others keep their order
         for (const auto & p : v) { g_card_order.push_back(p.second); }
         std::string txt;

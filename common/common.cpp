@@ -1321,6 +1321,8 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
     n = 0;
     g_gpu_total_max = 0;
     std::vector<std::string> ids;
+    bool any_dgpu = sel.empty() && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr;
+    for (ggml_backend_dev_t d : sel) { any_dgpu = any_dgpu || ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU; }
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         // -dev picks the devices that count; else the discrete GPUs, or the integrated ones when there is no discrete GPU (as the model loader does)
@@ -1332,9 +1334,12 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
         }
         size_t free, tot;
         ggml_backend_dev_memory(dev, &free, &tot);
-        total += free;
-        max    = std::max(max, free);
-        g_gpu_total_max = std::max(g_gpu_total_max, tot);
+        // an integrated GPU's memory is system RAM: next to a discrete GPU it is no VRAM (780M + 4060: 22 GiB "free", a model of 11 GiB "fits" and got no expert cache)
+        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_IGPU || !any_dgpu) {
+            total += free;
+            max    = std::max(max, free);
+            g_gpu_total_max = std::max(g_gpu_total_max, tot);
+        }
         ggml_backend_dev_props props;
         ggml_backend_dev_get_props(dev, &props);
         ids.push_back(std::string(ggml_backend_dev_name(dev)) + "|" + (props.device_id ? props.device_id : "") + "|" + common_pci_slot(props.device_id) + "|" + std::to_string(tot >> 30));
