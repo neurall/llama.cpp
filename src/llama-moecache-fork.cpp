@@ -9781,10 +9781,55 @@ double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev) {
 // pinned host -> device GB/s of a GPU: 64 MB copies, measured once per process (the layer placement asks at load, the prefill split later)
 // --moe miss-dev=NAME: the experts the cache does not hold are computed on this device (a GPU sharing the host memory) instead of on the CPU: every expert tensor is imported in
 // place, one buffer per tensor (no copy, the Vulkan import needs page-aligned ends). All or nothing: a refused import leaves the CPU chain as it was.
+// one miss chain (up, gate, activation, down of one expert for one token) round trip on a device, us: the median of 16, the input written and the output read like the real hop
+static double miss_chain_us(ggml_backend_dev_t dev, ggml_tensor * up, ggml_tensor * gate, ggml_tensor * down) {
+    ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
+    if (!be) { return -1.0; }
+    if (auto set = (void (*)(ggml_backend_t, int)) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(dev), "ggml_backend_set_n_threads")) {
+        set(be, std::max(1, (int) std::thread::hardware_concurrency() / 2));   // shortcut: half the hardware threads, not the decode's count; upgrade if the verdict is ever close
+    }
+    ggml_init_params ip = { 16 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_tensor * x   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, up->ne[0], 1, 1);
+    ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 8, 1);
+    ggml_tensor * u = ggml_mul_mat_id(ctx, up, x, ids), * g = ggml_mul_mat_id(ctx, gate, x, ids);
+    ggml_tensor * out = ggml_mul_mat_id(ctx, down, ggml_swiglu_split(ctx, g, u), ids);
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf, out);
+    double res = -1.0;
+    if (ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be)) {
+        std::vector<float>   xv(up->ne[0], 0.5f), yv(ggml_nelements(out));
+        const std::vector<int32_t> idv = { 16, -1, -1, -1, -1, -1, -1, -1 };   // one miss, as at a high hit rate
+        std::vector<double> t;
+        for (int i = 0; i < 16; ++i) {
+            const int64_t t0 = ggml_time_us();
+            ggml_backend_tensor_set(x, xv.data(), 0, ggml_nbytes(x));
+            ggml_backend_tensor_set(ids, idv.data(), 0, ggml_nbytes(ids));
+            if (ggml_backend_graph_compute(be, gf) != GGML_STATUS_SUCCESS) { t.clear(); break; }
+            ggml_backend_tensor_get(out, yv.data(), 0, ggml_nbytes(out));
+            t.push_back((double) (ggml_time_us() - t0));
+        }
+        if (!t.empty()) { std::sort(t.begin(), t.end()); res = t[t.size() / 2]; }
+        ggml_backend_buffer_free(buf);
+    }
+    ggml_free(ctx);
+    ggml_backend_free(be);
+    return res;
+}
+
 static void miss_dev_setup(moe_cache * mc) {
     const char * name = moe_opt("miss-dev");
-    ggml_backend_dev_t dev = name ? ggml_backend_dev_by_name(name) : nullptr;
+    if (!name) { return; }
+    const bool autop = strcmp(name, "auto") == 0;
+    ggml_backend_dev_t dev = autop ? nullptr : ggml_backend_dev_by_name(name);
+    for (size_t i = 0; autop && !dev && i < ggml_backend_dev_count(); ++i) {   // a GPU sharing the host memory that can import it, whichever backend it is on
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        ggml_backend_dev_props pr;
+        ggml_backend_dev_get_props(d, &pr);
+        if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_IGPU && pr.caps.buffer_from_host_ptr) { dev = d; }
+    }
     if (!dev) { return; }
+    name = ggml_backend_dev_name(dev);
     ggml_backend_dev_props props;
     ggml_backend_dev_get_props(dev, &props);
     if (!props.caps.buffer_from_host_ptr) { LLAMA_LOG_WARN("moe-cache: miss-dev %s cannot import host memory: the misses stay on the CPU\n", name); return; }
@@ -9820,6 +9865,18 @@ static void miss_dev_setup(moe_cache * mc) {
         mc->miss_bufs.clear();
         LLAMA_LOG_WARN("moe-cache: miss-dev %s refused an import of the host weights: the misses stay on the CPU\n", name);
         return;
+    }
+    if (autop) {   // the faster of the device and the CPU, measured with the real weights
+        const auto & p0 = mc->layers[0].pub;
+        ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        const double us_m = miss_chain_us(dev, p0.up_m, p0.gate_m, p0.down_m), us_c = cpu ? miss_chain_us(cpu, p0.up_src, p0.gate_src, p0.down_src) : -1.0;
+        LLAMA_LOG_WARN("moe-cache: one miss: %s %.0f us, CPU %.0f us: %s\n", name, us_m, us_c, us_m > 0 && us_c > 0 && us_m < us_c ? "misses on the device" : "misses stay on the CPU");
+        if (!(us_m > 0 && us_c > 0 && us_m < us_c)) {
+            for (auto & l : mc->layers) { l.pub.up_m = l.pub.gate_m = l.pub.down_m = nullptr; }
+            for (auto * b : mc->miss_bufs) { ggml_backend_buffer_free(b); }
+            mc->miss_bufs.clear();
+            return;
+        }
     }
     LLAMA_LOG_WARN("moe-cache: misses computed on %s: %.1f GiB of expert weights imported in %zu buffers\n", name, bytes / 1073741824.0, mc->miss_bufs.size());
 }
