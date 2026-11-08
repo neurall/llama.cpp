@@ -1322,7 +1322,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
     g_gpu_total_max = 0;
     std::vector<std::string> ids;
     bool any_dgpu = sel.empty() && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr;
-    for (ggml_backend_dev_t d : sel) { any_dgpu = any_dgpu || ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU; }
+    for (ggml_backend_dev_t d : sel) { any_dgpu = any_dgpu || (d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU); }   // -dev lists end with a nullptr
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         // -dev picks the devices that count; else the discrete GPUs, or the integrated ones when there is no discrete GPU (as the model loader does)
