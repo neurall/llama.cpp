@@ -2275,7 +2275,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                         const size_t e0 = std::min(std::min(s0 + chunk, GGML_PAD(range.last, 4096)), map_end);
                         ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + s0, e0 - s0, max_size);
                         if (buf == nullptr) {
-                            throw std::runtime_error(format("unable to import %zu MiB of mapped weights into a %s buffer", (e0 - s0) >> 20, ggml_backend_buft_name(buft)));
+                            throw std::runtime_error(format("unable to import %zu MiB of mapped weights into a %s buffer (at offset %zu MiB, after %zu buffers)", (e0 - s0) >> 20, ggml_backend_buft_name(buft), s0 >> 20, bufs.size()));
                         }
                         bufs.emplace_back(buf);
                         if (e0 >= range.last) { break; }
