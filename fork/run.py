@@ -5306,6 +5306,7 @@ def _publish_db(here, push=True):
     c = sqlite3.connect(os.path.join(here, "runs.db"), timeout=60)
     sys.modules["runstats"].refresh(c)   # the statistics of records added since the last query are current in the published file
     c.execute("VACUUM INTO ?", (out,)); c.close()
+    o = sqlite3.connect(out); o.execute("DELETE FROM stats"); o.commit(); o.execute("VACUUM"); o.close()   # the kept stats logs (47 MB on 2026-11-08 alone) stay local: with them the file passed GitHub's 100 MB limit
     n = sqlite3.connect(out).execute("select count(*) from runs").fetchone()[0]
     blob = _git(R, "hash-object", "-w", out)
     mktree = lambda text: subprocess.run(["git", "-C", R, "mktree"], input=text, capture_output=True, text=True, check=True).stdout.strip()
