@@ -2749,7 +2749,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         bool kn1 = false;
         int n1 = 0;   // the one-card arm's samples: the bench cap below is for an arm never measured, not one measured once (rls_known wants more)
         if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth, &kn1, &n1) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); kn1 = rls_known(g_rls_one, mu1, v1); n1 = g_rls_one.n; }   // C18
-        else if (g_rls_one.n > 1) {
+        else if (g_rls_one.n > 0) {   // one sample at this size is already narrow (about +-6%: s2 0.045^2, q ~ 1 there); at another size it stays wide and vo < v1 keeps the cache's
             // the moe-cache's path model spans short prompts to 12k: far from most of its samples its spread exceeds the time itself (MiMo 12k b14965: one card
             // 11.84 +- 18.68 s against 12.6 s measured, a one-card trial on every server start, 990 against 1241 t/s split). The split planner's own one-card
             // model of the passes it weighed (stored, so it holds across restarts) is taken where it is the narrower one
