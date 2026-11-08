@@ -9805,7 +9805,10 @@ static void miss_dev_setup(moe_cache * mc) {
         return m;
     };
     bool ok = true;
+    const char * ml = moe_opt("miss-layers");   // --moe miss-layers=N: only the first N layers (the driver may not hold them all resident); the others stay on the CPU
+    int left = ml ? atoi(ml) : INT_MAX;
     for (auto & l : mc->layers) {
+        if (left-- <= 0) { break; }
         l.pub.up_m   = ok ? import(l.pub.up_src)   : nullptr;
         l.pub.gate_m = l.pub.up_m   ? import(l.pub.gate_src) : nullptr;
         l.pub.down_m = l.pub.gate_m ? import(l.pub.down_src) : nullptr;
