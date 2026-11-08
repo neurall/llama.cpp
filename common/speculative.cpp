@@ -29,7 +29,7 @@
 #define SPC_ERR(fmt, ...) LOG_ERR("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
 #define SPC_CNT(fmt, ...) LOG_CNT(""              fmt,               __VA_ARGS__)
 
-#define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
+#define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  1024   // fork: MiMo vs Qwen differ by 512 added tokens; the text check below is the real guard
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
 
 // Rebuild seq_id's draft sampler at the target's temperature: rejection weighs q against p, so
