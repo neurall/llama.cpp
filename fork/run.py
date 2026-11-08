@@ -5348,7 +5348,10 @@ def cmd_publish(a):
     subprocess.run(["git", "-C", tree, "tag", "-a", tag, "-m", f"b{b} {a.name}", rev], check=True)
     subprocess.run(["git", "-C", tree, "push", "neurall", f"refs/tags/{tag}:refs/tags/{tag}"], check=True)
     subprocess.run(gh + ["release", "create", tag, "--title", f"b{b} {a.name}", "--notes-file", a.notes, "--latest"] + [os.path.join(REL_OUT, f) for f in arch], check=True)
-    print(f"published {tag}: {', '.join(arch)}", flush=True)
+    # every published release is the default (user 2026-11-08: "make it default too. change publish code to do so always"): GitHub latest (above) and the
+    # repository's default branch is `release` (pushed by the caller when the tree is another branch: it must hold the tagged commit)
+    subprocess.run(gh + ["repo", "edit", "--default-branch", "release"], check=True)
+    print(f"published {tag}: {', '.join(arch)}; latest, default branch release", flush=True)
 
 
 def set_latest_link(tree, link="/p/bw/latest"):

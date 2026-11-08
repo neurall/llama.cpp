@@ -1,2 +1,1 @@
 name,model,n,test,tokens,args,extra
-qn1-pipe-cache,qn_iq1m,1,pf12k1k,128,moe:mode=cache,
