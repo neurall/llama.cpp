@@ -7282,7 +7282,8 @@ static void mg_on_segv(int sig, siginfo_t * si, void * uc) {
 #endif
 // The CPU kernel's copy of expert e. Most paths ask the pool before the kernel (llama_moe_cache_jit_fork); a layer the prompt chain could not take runs the plain path, whose small passes
 // stay on the CPU with no such step (GLM 3.5 map-guard 2026-11-08: the 2-token call read blk.3's gate tensor through the mapping in vec_dot). So a miss is asked here, the wait a page fault
-// would have been, in pinned RAM instead of the page cache. An expert the pool refuses still reads the mapping.
+// would have been, in pinned RAM instead of the page cache. The demand takes a block even from the fill's set (rampool=1 keeps it otherwise; DeepSeek 12k map-guard
+// 2026-11-08: 22 of 123 GiB out of the pool, the tail call's CPU experts read the down tensor through the mapping).
 static const void * rp_cpu_ptr(const ggml_tensor * src0, int64_t e) {
     if (const char * p = ggml_rampool_get_fork(src0, e)) { return p; }
     if (const moe_cache * mc = g_cache) {
@@ -7290,7 +7291,7 @@ static const void * rp_cpu_ptr(const ggml_tensor * src0, int64_t e) {
         for (const auto & l : mc->layers) {
             if (l.pub.up_src == src0 || l.pub.gate_src == src0 || l.pub.down_src == src0) {
                 const void * keys[3] = { l.pub.up_src, l.pub.gate_src, l.pub.down_src };
-                ggml_rampool_need_fork(keys, 3, &id, 1);
+                ggml_rampool_demand_fork(keys, 3, &id, 1);
                 return ggml_rampool_get_fork(src0, e);
             }
         }

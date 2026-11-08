@@ -36,6 +36,8 @@ GGML_API void ggml_rampool_graph_fork(void);
 // CHECK AND LOAD BEFORE THE KERNEL: these elements of each of the nk tensors are read now if they are out (all reads start first, then one wait), returns when they are
 // in. An element that stays out (no block: it is expected later than every resident) has no table entry: the caller reads it the old way, the stats count those as refused.
 GGML_API void ggml_rampool_need_fork(const void * const * keys, int nk, const int32_t * ids, int n);
+// the same for a CPU kernel's demand: a block is taken even from the fill's set with eviction off (the alternative is a read of the mapping)
+GGML_API void ggml_rampool_demand_fork(const void * const * keys, int nk, const int32_t * ids, int n);
 // a kernel's look-up (no lock, no read): the element's block when it is in (with eviction on: only when this graph or the one before it asked for it, it cannot be evicted before the graph after next), else NULL
 GGML_API const char * ggml_rampool_get_fork(const void * key, int64_t e);
 // a prompt pass's copy: the block when the element is in (it is kept until the graph after next), NULL: out, read it the old way; never reads, counted as pp_hit / pp_miss

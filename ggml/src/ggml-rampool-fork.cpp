@@ -225,13 +225,13 @@ bool rp_evictable(const rp_pool * p, const rp_rec & r) {
 }
 
 // A block for an element of class c, -1: none. The caller holds the lock. A free block first; else of 64 sampled evictable blocks the one expected back last.
-int32_t rp_take_block(rp_pool * p, rp_class & c) {
+int32_t rp_take_block(rp_pool * p, rp_class & c, bool force) {
     if (!c.free.empty()) {
         const uint32_t s = c.free.back();
         c.free.pop_back();
         return (int32_t) s;
     }
-    if (!p->evict) { return -1; }
+    if (!p->evict && !force) { return -1; }
     const uint32_t n = (uint32_t) c.owner.size();
     if (n == 0) { return -1; }
     int32_t best = -1;
@@ -259,12 +259,13 @@ int32_t rp_take_block(rp_pool * p, rp_class & c) {
     return best;
 }
 
-// element e leaves for a block and a reader. The caller holds the lock. false: no block (refused).
-bool rp_start(rp_pool * p, rp_tensor & t, int64_t e) {
-    if (p->heat(t.key, e, p->ud) == HUGE_VAL) { return false; }   // a card holds it (the fill): a RAM copy pays nothing
+// element e leaves for a block and a reader. The caller holds the lock. false: no block (refused). force: a block is taken from the fill's set even with eviction
+// off (a CPU kernel's demand: the only other source is the mapping, ggml_rampool_demand_fork)
+bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false) {
+    if (!force && p->heat(t.key, e, p->ud) == HUGE_VAL) { return false; }   // a card holds it (the fill): a RAM copy pays nothing
     rp_class & c = p->cls[t.cls];
     rp_rec & r = t.rec[e];
-    const int32_t s = rp_take_block(p, c);
+    const int32_t s = rp_take_block(p, c, force);
     if (s < 0) { return false; }
     r.slot    = s;
     r.state   = RP_READING;
@@ -532,7 +533,13 @@ void ggml_rampool_graph_fork(void) {
     if (g_rp) { g_rp->graph.fetch_add(1, std::memory_order_relaxed); }
 }
 
-void ggml_rampool_need_fork(const void * const * keys, int nk, const int32_t * ids, int n) {
+static void rp_need(const void * const * keys, int nk, const int32_t * ids, int n, bool force);
+void ggml_rampool_need_fork(const void * const * keys, int nk, const int32_t * ids, int n) { rp_need(keys, nk, ids, n, false); }
+// A CPU kernel's demand: the element is read into the pool whatever the fill's set or the eviction switch (DeepSeek 12k map-guard, build short-paths 2026-11-08:
+// the tail call's missed experts found no VRAM block, the CPU computed them, and 22 of 123 GiB of experts were out of the pool with eviction off, so
+// ggml_vec_dot_iq1_m read blk.3's down tensor through the mapping). The block comes from the sampled coldest of the class.
+void ggml_rampool_demand_fork(const void * const * keys, int nk, const int32_t * ids, int n) { rp_need(keys, nk, ids, n, true); }
+static void rp_need(const void * const * keys, int nk, const int32_t * ids, int n, bool force) {
     rp_pool * p = g_rp;
     if (p == nullptr || n <= 0) { return; }
     rp_tensor * ts[8];
@@ -556,7 +563,7 @@ void ggml_rampool_need_fork(const void * const * keys, int nk, const int32_t * i
             if (r.state == RP_IN) { hit++; continue; }
             if (r.state == RP_READING) { reading++; continue; }
             n_out++;
-            if (!fail && rp_start(p, *t, e)) { begun[nb++] = k; } else { fail = true; }
+            if (!fail && rp_start(p, *t, e, force)) { begun[nb++] = k; } else { fail = true; }
         }
         if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } refused += n_out; }
         else { started += nb; reading += nb; }
