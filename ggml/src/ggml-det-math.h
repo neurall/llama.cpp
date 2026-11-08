@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(__CUDACC__)
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #define GGML_DET_FN static __host__ __device__ __forceinline__
 #else
 #define GGML_DET_FN static inline

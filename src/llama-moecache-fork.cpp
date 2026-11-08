@@ -2,6 +2,7 @@
 #include "../ggml/src/ggml-read-fork.h"
 #include "../ggml/src/ggml-rampool-fork.h"
 #include "llama-moecache-fork.h"
+#include "llama-backend-fork.h"
 #include "llama-fork-hooks.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-moestate-fork.h"
@@ -634,6 +635,11 @@ bool file_location(const llama_model & model, const ggml_tensor * t, int * fd, s
 }
 
 static size_t mem_available_bytes() {
+#ifdef _WIN32
+    MEMORYSTATUSEX st = {};   // /proc/meminfo is Linux only: on Windows this returned 0 and every pinning path (rampool, pinr, preheat) refused
+    st.dwLength = sizeof(st);
+    return GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+#endif
     FILE * f = fopen("/proc/meminfo", "r");
     size_t kb = 0;
     char line[256];
@@ -1443,9 +1449,8 @@ void * cpu_proc_fork(const char * name) {   // the CPU backend's fork entry poin
     ggml_backend_reg_t reg = ggml_backend_reg_by_name("CPU");
     return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
 }
-void * cuda_obs_proc(const char * name) {
-    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-    return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
+void * cuda_obs_proc(const char * name) {   // a process-wide hook from whichever backend has it (llama-backend-fork.h)
+    return llama_fork_proc(name);
 }
 
 void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor *, void *) {
@@ -1508,7 +1513,7 @@ static void uniq_host_obs(int il, const ggml_tensor * ids, const ggml_tensor * o
     std::lock_guard<std::mutex> lk(u.mtx);
     if (!u.host) {   // the cache started after uniqdump did (deferred setup): its observer counts from now on, the GPU counters stop
         u.host = true;
-        if (auto off = (void (*)(void)) cuda_obs_proc("ggml_backend_cuda_obs_full_off_fork")) { off(); }
+        if (auto off = (void (*)(void)) cuda_obs_proc("ggml_backend_fork_obs_full_off_fork")) { off(); }
         if (u.trace == 0) { if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0) { u.trace = atoi(tr); } }
         if (u.acts == 0)  { if (const char * ac = moe_opt("acts"); ac && atoi(ac) > 0) { u.acts = atoi(ac); } }
     }
@@ -1623,7 +1628,7 @@ static void uniq_flush(const char * label, bool answer) {
         u.hcnt.assign(now.size(), 0);
         if (std::all_of(now.begin(), now.end(), [](uint64_t c) { return c == 0; })) { return; }
     } else {
-        auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_cuda_obs_full_read_fork");
+        auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_fork_obs_full_read_fork");
         if (!rd || !rd(u.nl, u.ne, now.data())) { return; }
     }
     uniq_report(now, label);
@@ -1660,7 +1665,7 @@ static void uniq_trace_dump() {
             u.htrace[il].clear();
         }
     } else {
-        auto rd = (bool (*)(int, int32_t *, int16_t *)) cuda_obs_proc("ggml_backend_cuda_obs_trace_read_fork");
+        auto rd = (bool (*)(int, int32_t *, int16_t *)) cuda_obs_proc("ggml_backend_fork_obs_trace_read_fork");
         if (!rd || !rd(u.nl, n_tok.data(), ids.data())) { return; }
     }
     FILE * f = fopen((u.path + ".trace").c_str(), "a");
@@ -1718,15 +1723,19 @@ void llama_moe_uniq_start(const llama_model & model) {   // called for every mod
         g_uniq.hids.assign(g_uniq.nl, {});
         if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0 && g_uniq.host) { g_uniq.trace = atoi(tr); }
         if (const char * ac = moe_opt("acts"); ac && atoi(ac) > 0 && g_uniq.host) { g_uniq.acts = atoi(ac); }
-        if (auto in = g_uniq.host ? nullptr : (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_cuda_obs_full_init_fork")) {
-            const ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-            for (int d = 0; d < (int) ggml_backend_reg_dev_count(reg); ++d) { in(d, g_uniq.nl, g_uniq.ne); }
+        if (auto in = g_uniq.host ? nullptr : (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_fork_obs_full_init_fork")) {
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {   // every GPU whose backend has the hook
+                ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                if (ggml_backend_dev_is_gpu(d) && llama_fork_proc_dev(d, "ggml_backend_fork_obs_full_init_fork")) { in(llama_fork_dev_index(d), g_uniq.nl, g_uniq.ne); }
+            }
         }
         if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0 && !g_uniq.host) {
-            if (auto ti = (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_cuda_obs_trace_init_fork")) {
+            if (auto ti = (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_fork_obs_trace_init_fork")) {
                 g_uniq.trace = atoi(tr);
-                const ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-                for (int d = 0; d < (int) ggml_backend_reg_dev_count(reg); ++d) { ti(d, g_uniq.nl, g_uniq.trace); }
+                for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                    ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                    if (ggml_backend_dev_is_gpu(d) && llama_fork_proc_dev(d, "ggml_backend_fork_obs_trace_init_fork")) { ti(llama_fork_dev_index(d), g_uniq.nl, g_uniq.trace); }
+                }
             }
         }
     }
@@ -1761,7 +1770,7 @@ void llama_moe_observe_start(const llama_model & model) {
     g_heat.on = true;
     g_heat_live = true;
     ggml_set_moe_obs_callback(stock_obs_cb, nullptr);
-    if (auto fn = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+    if (auto fn = (void (*)(bool)) cuda_obs_proc("ggml_backend_fork_obs_enable")) {
         fn(true);   // GPU-resident layers count on the device, read back once in llama_moe_observe_save
     }
 }
@@ -1779,7 +1788,7 @@ void llama_moe_observe_step() {
     }
     g_heat_live = false;
     ggml_set_moe_obs_callback(nullptr, nullptr);
-    if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+    if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_fork_obs_enable")) {
         en(false);   // the device counters keep what they have; llama_moe_observe_save reads them
     }
 }
@@ -1794,10 +1803,10 @@ void llama_moe_observe_save() {
         }
         g_heat.on = false;
         ggml_set_moe_obs_callback(nullptr, nullptr);
-        if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+        if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_fork_obs_enable")) {
             en(false);
         }
-        if (auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_cuda_obs_read")) {
+        if (auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_fork_obs_read")) {
             const int nl = (int) g_heat.counts.size(), ne = (int) g_heat.counts[0].size();
             std::vector<uint64_t> gpu((size_t) nl*ne, 0);
             if (rd(nl, ne, gpu.data())) {
@@ -3914,11 +3923,21 @@ void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, 
 // A worker that used it calls cuda_thread_sync() once before it reports the job done.
 typedef void (*cuda_set_nosync_t)(ggml_tensor *, const void *, size_t, size_t);
 cuda_set_nosync_t cuda_set_nosync() {
-    static const cuda_set_nosync_t f = (cuda_set_nosync_t) cuda_obs_proc("ggml_backend_cuda_set_tensor_nosync_fork");
+    static const cuda_set_nosync_t f = (cuda_set_nosync_t) cuda_obs_proc("ggml_backend_fork_set_tensor_nosync_fork");
     return f;
 }
+// the CUDA device index of a device, -1 when the device is not one of the CUDA backend's (Vulkan, HIP, CPU, ...): decided by the registry, not the name
+// the device's index inside its backend when that backend has the scratch hook (what the hook takes), else -1
+static int cuda_dev_index(ggml_backend_dev_t dev) {
+    return llama_fork_proc_dev(dev, "ggml_backend_fork_scratch_fork") ? llama_fork_dev_index(dev) : -1;
+}
+// the no-sync copy for a destination buffer: from the buffer's own backend (a cache layer on a backend without it uses the synchronous set)
+static cuda_set_nosync_t cuda_set_nosync_for(ggml_backend_buffer_t buf) {
+    if (!buf || ggml_backend_buffer_is_host(buf)) { return nullptr; }
+    return (cuda_set_nosync_t) llama_fork_proc_dev(ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf)), "ggml_backend_fork_set_tensor_nosync_fork");
+}
 void cuda_thread_sync() {
-    static void (* const f)() = (void (*)()) cuda_obs_proc("ggml_backend_cuda_thread_sync_fork");
+    static void (* const f)() = (void (*)()) cuda_obs_proc("ggml_backend_fork_thread_sync_fork");
     if (f) { f(); }
 }
 
@@ -4351,25 +4370,18 @@ GGML_API size_t ggml_backend_sched_node_max_dev(ggml_backend_sched_t sched, ggml
 static std::atomic<int64_t> g_scr_us{0}, g_scr_n{0}, g_scr_splits{0};
 static size_t node_scratch(void * user, struct ggml_tensor * const * nodes, int n) {
     using nodes_fn_t = size_t (*)(int, const ggml_tensor * const *, int);
-    static nodes_fn_t fn = [] {
-        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-        return reg ? (nodes_fn_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nodes_scratch_fork") : nullptr;
-    }();
+    static nodes_fn_t fn = (nodes_fn_t) llama_fork_proc("ggml_backend_fork_nodes_scratch_fork");
     g_scr_splits++;
     return fn ? fn(*(const int *) user, nodes, n) : 0;
 }
 static size_t alias_scratch(const moe_cache::alias_pool & ap, ggml_backend_sched_t sched) {
-    const char * nm = ggml_backend_dev_name(ap.dev);
-    if (ap.cuda_dev < 0 && (!nm || strncmp(nm, "CUDA", 4) != 0)) {
+    if (ap.cuda_dev < 0 && cuda_dev_index(ap.dev) < 0) {
         return 0;
     }
     using copy_fn_t = size_t (*)(ggml_backend_t, ggml_backend_t, const ggml_tensor *, const ggml_tensor *);
-    static copy_fn_t copy_fn = [] {   // the inputs other cards copy from this one: a gappy view is gathered here first (ggml_backend_cuda_copy_scratch_fork)
-        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-        return reg ? (copy_fn_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_copy_scratch_fork") : nullptr;
-    }();
+    static copy_fn_t copy_fn = (copy_fn_t) llama_fork_proc("ggml_backend_fork_copy_scratch_fork");   // the inputs other cards copy from this one: a gappy view is gathered here first
     const int64_t t0 = ggml_time_us();
-    int dev = ap.cuda_dev >= 0 ? ap.cuda_dev : atoi(nm + 4);
+    int dev = ap.cuda_dev >= 0 ? ap.cuda_dev : cuda_dev_index(ap.dev);
     const size_t need = ggml_backend_sched_node_max_dev(sched, ap.dev, node_scratch, copy_fn, &dev);
     g_scr_us += ggml_time_us() - t0;
     g_scr_n++;
@@ -4671,8 +4683,8 @@ void llama_moe_cache_kv_pool_expected_fork(bool on) {
     g_kv_pool_expected = on;
     // --moe fattn-kernel=vec|tile|mma: the kernel of decode-sized attention nodes, where it can run them (fork/docs/fork-knobs.md); values of BEST_FATTN_KERNEL_*
     static const int k = [] { const char * e = moe_opt("fattn-kernel"); return !e ? 0 : !strcmp(e, "vec") ? 100 : !strcmp(e, "tile") ? 200 : !strcmp(e, "mma") ? 400 : 0; }();
-    if (k) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_cuda_fattn_force_fork")) { fn(k); } }
-    if (const char * e = moe_opt("fattn-rows"); e && atoi(e) == 0) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_cuda_fattn_rows_fork")) { fn(0); } }   // a gather converts all of quantized K/V
+    if (k) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_fork_fattn_force_fork")) { fn(k); } }
+    if (const char * e = moe_opt("fattn-rows"); e && atoi(e) == 0) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_fork_fattn_rows_fork")) { fn(0); } }   // a gather converts all of quantized K/V
 }
 bool llama_moe_cache_kv_pool_expected_fork() { return g_kv_pool_expected.load(); }
 // The records a context registered while it expected an expert pool (the target): they belong to that pool's tail. The flag above is set by every context at its
@@ -6220,13 +6232,9 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // error with both numbers: an op whose scratch mirror is missing or wrong (GGML_CUDA_SCRATCH_CHECK=1 names it). Nothing is learned from it.
         // the region serves only the backend passed with it (ap_be): another context on the card (a DSpark draft between two target steps) takes its scratch
         // from the device pool, and its asks do not count in the high-water mark compared below
-        static size_t (*scratch_fn)(int, void *, size_t, ggml_backend_t) = [] {
-            ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-            return reg ? (size_t (*)(int, void *, size_t, ggml_backend_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_scratch_fork") : nullptr;
-        }();
+        static size_t (*scratch_fn)(int, void *, size_t, ggml_backend_t) = (size_t (*)(int, void *, size_t, ggml_backend_t)) llama_fork_proc("ggml_backend_fork_scratch_fork");
         if (ap.cuda_dev < 0 && scratch_fn) {
-            const char * nm = ggml_backend_dev_name(ap.dev);
-            if (nm && strncmp(nm, "CUDA", 4) == 0) { ap.cuda_dev = atoi(nm + 4); }
+            ap.cuda_dev = cuda_dev_index(ap.dev);
         }
         size_t scratch = 0;
         if (ap.cuda_dev >= 0) {
@@ -7688,7 +7696,7 @@ static const std::string & vram_driver() {
         }
 #endif
         if (v.empty()) {
-            if (auto fn = (int (*)(void)) cuda_obs_proc("ggml_backend_cuda_driver_version_fork")) { v = "api" + std::to_string(fn()); }
+            if (auto fn = (int (*)(void)) cuda_obs_proc("ggml_backend_fork_driver_version_fork")) { v = "api" + std::to_string(fn()); }
         }
         return v.empty() ? std::string("unknown") : v;
     }();
@@ -7786,9 +7794,8 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
 // instantiation), plus all that was still free (it was not enough). Stored right away: the retry may fail again and the next start must leave the room.
 void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes) {
     std::lock_guard<std::mutex> lk(g_vram_mtx);
-    const std::string name = "CUDA" + std::to_string(cuda_device);
-    for (auto & d : g_vram) {
-        if (name != ggml_backend_dev_name(d.dev)) { continue; }
+    for (auto & d : g_vram) {   // the device number is the backend's own (the OOM hook's), matched through the registry, not a name
+        if (llama_fork_dev_index(d.dev) != cuda_device || !llama_fork_proc_dev(d.dev, "ggml_backend_fork_last_oom_fork")) { continue; }
         size_t f = 0, t = 0;
         ggml_backend_dev_memory(d.dev, &f, &t);
         const int64_t outside = std::max<int64_t>(0, (int64_t) d.free_at_size - (int64_t) d.pool - (int64_t) f);
@@ -8159,7 +8166,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 if (led_on()) {   // CUDA graph captures and replays with their scratch range go into the ledger
                     typedef void (*graph_hook_t)(int, const void *, const char *, const void *, size_t);
                     typedef void (*set_graph_hook_t)(graph_hook_t);
-                    if (auto set = (set_graph_hook_t) cuda_obs_proc("ggml_backend_cuda_set_graph_hook_fork")) { set(led_cuda_graph_hook); }
+                    if (auto set = (set_graph_hook_t) cuda_obs_proc("ggml_backend_fork_set_graph_hook_fork")) { set(led_cuda_graph_hook); }
                 }
                 for (auto * b : ubufs) { ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS); }
                 const size_t pool0 = mc->pool.size();
@@ -8722,7 +8729,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         if (ch == 0 || ch >= sz) {
                             // the source (pinned slice copy or the model's own mapping) stays put, so the copy can be queued without waiting for it: the
                             // job syncs once after its three tensors (nosync_used) instead of after each of them
-                            const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                            const cuda_set_nosync_t ns = cuda_set_nosync_for(dsts[k]->buffer);
                             if (ns) {
                                 const size_t doff = (size_t) j.slot*dsts[k]->nb[2];
                                 ns(dsts[k], pinned ? pinned : (const char *) srcs[k]->data + (size_t) j.expert*sz, doff, sz);
@@ -8742,7 +8749,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                                 mc->gate_wait_us += ggml_time_us() - tw;
                                 // the chunk source stays put as well (pinned copy or the model's mapping): queue the chunk, the job syncs once at its end.
                                 // The budget wait above still paces the chunks, which is all the per-chunk sync was good for here.
-                                const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                                const cuda_set_nosync_t ns = cuda_set_nosync_for(dsts[k]->buffer);
                                 if (ns) { ns(dsts[k], src + off, dst + off, std::min(ch, sz - off)); nosync_used = true; }
                                 else    { ggml_backend_tensor_set(dsts[k], src + off, dst + off, std::min(ch, sz - off)); }
                             }
@@ -8757,7 +8764,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     const char * from = nullptr;
                     if (const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], from)) {
                         ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
-                        const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                        const cuda_set_nosync_t ns = cuda_set_nosync_for(dsts[k]->buffer);
                         if (ns) { ns(&z, from, 0, pb); nosync_used = true; }
                         else    { ggml_backend_tensor_set(&z, from, 0, pb); }
                     }
@@ -9048,17 +9055,16 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             // into the cache's use counts (its heat for the answer), as the host callback did when it was on (GGML_PF_COUNT), without its host cost.
             const char * pc = moe_opt("pf-count");
             if ((!pc || pc[0] != '0') && !mc->layers.empty() && mc->layers[0].pub.up_src) {
-                ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
                 typedef bool (*obs_init_t)(int, int, int);
-                obs_init_t init = reg ? (obs_init_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_obs_prompt_init_fork") : nullptr;
+                obs_init_t init = (obs_init_t) llama_fork_proc("ggml_backend_fork_obs_prompt_init_fork");
                 int n_layer = 0;
                 for (const auto & l : mc->layers) { n_layer = std::max(n_layer, l.pub.il + 1); }
                 const int n_expert = (int) mc->layers[0].pub.up_src->ne[2];
                 for (size_t i = 0; init && i < ggml_backend_dev_count(); ++i) {
                     ggml_backend_dev_t d = ggml_backend_dev_get(i);
-                    const char * nm = ggml_backend_dev_name(d);
-                    if (ggml_backend_dev_is_gpu(d) && nm && strncmp(nm, "CUDA", 4) == 0) {
-                        mc->pf_count_on = init(atoi(nm + 4), n_layer, n_expert) || mc->pf_count_on;
+                    const int cd = cuda_dev_index(d);
+                    if (cd >= 0) {
+                        mc->pf_count_on = init(cd, n_layer, n_expert) || mc->pf_count_on;
                     }
                 }
                 mc->pf_count_layers  = n_layer;
@@ -12026,10 +12032,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     if (mc && mc->pf_count_on) {
         // the prompt's expert use, counted on the cards: once per expert and prompt, as the host callback counted it (the cards are idle here: after synchronize)
         typedef bool (*obs_read_t)(int, int, uint8_t *);
-        static obs_read_t rd = [] {
-            ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-            return reg ? (obs_read_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_obs_prompt_read_fork") : (obs_read_t) nullptr;
-        }();
+        static obs_read_t rd = (obs_read_t) llama_fork_proc("ggml_backend_fork_obs_prompt_read_fork");
         std::vector<uint8_t> used((size_t) mc->pf_count_layers * mc->pf_count_experts, 0);
         std::vector<upload_job> swaps;
         const bool counted = rd && rd(mc->pf_count_layers, mc->pf_count_experts, used.data());

@@ -1,5 +1,6 @@
 #include "../ggml/src/ggml-read-fork.h"
 #include "llama-model-loader.h"
+#include "llama-backend-fork.h"
 #include "llama-moestate-fork.h"
 
 #if defined(__linux__)
@@ -1645,9 +1646,7 @@ bool llama_model_loader::load_all_data(
     int (*host_cache)(int, void *) = nullptr;
     std::set<ggml_backend_buffer_t> cache_warm, cache_cold;
     if (getenv("GGML_CUDA_HUGEFS") && (!use_mmap || pin_budget > 0) && !check_tensors) {   // the same gate as llama-model.cpp: with mmap and a pin budget the pinned part is a cache buffer too, read here (pinned_read)
-        if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
-            host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
-        }
+        host_cache = (int (*)(int, void *)) llama_fork_proc("ggml_backend_fork_host_cache");
         if (host_cache) {
             for (auto buf : bufs) {   // upstream keeps the buffers in a vector now (it was a map from the file index)
                 const int st = host_cache(1, buf);

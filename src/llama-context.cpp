@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "llama-backend-fork.h"
 #include "llama-kvtier-fork.h"
 void llama_moe_set_opt(const char * key, const char * value);
 #include <fstream>
@@ -556,10 +557,9 @@ llama_context::llama_context(
     cparams.moe_cache = params.n_moe_cache_slots != 0;
     {   // GGML_NVTX=1: the CUDA backend's nsys range functions for the scheduler (declared here, see ggml_backend_nvtx_set_fork in ggml-backend.cpp)
         const char * nv = getenv("GGML_NVTX");
-        ggml_backend_reg_t reg = nv && atoi(nv) >= 1 ? ggml_backend_reg_by_name("CUDA") : nullptr;
-        if (reg) {
-            ggml_backend_nvtx_set_fork((void (*)(const char *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_push_fork"),
-                                       (void (*)(void)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nvtx_pop_fork"));
+        if (nv && atoi(nv) >= 1) {
+            ggml_backend_nvtx_set_fork((void (*)(const char *)) llama_fork_proc("ggml_backend_fork_nvtx_push_fork"),
+                                       (void (*)(void)) llama_fork_proc("ggml_backend_fork_nvtx_pop_fork"));
         }
     }
     cparams.kv_unified = params.kv_unified;
@@ -3928,10 +3928,7 @@ static std::atomic<uint64_t> g_oom_tc    { 0 };   // the ceiling, tokens x cells
 static std::atomic<int>      g_oom_retry { 0 };   // set by decode: the call was taken back, run it again
 void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes);   // llama-moecache-fork.cpp: the failed request counts as VRAM need outside the pool (declared here, no header edit)
 static int fork_cuda_last_oom(int * device, size_t * bytes, double * fit) {   // ggml-cuda.cu: the number of out-of-memory errors it caught, the last one's device, size and the share of the pass that fits
-    static int (*fn)(int *, size_t *, double *) = [] {
-        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-        return reg ? (int (*)(int *, size_t *, double *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_last_oom_fork") : nullptr;
-    }();
+    static int (*fn)(int *, size_t *, double *) = (int (*)(int *, size_t *, double *)) llama_fork_proc("ggml_backend_fork_last_oom_fork");
     return fn ? fn(device, bytes, fit) : 0;
 }
 
@@ -5625,7 +5622,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         auto it = slices_fn.find(dev);
         if (it == slices_fn.end()) {
             ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
-            it = slices_fn.emplace(dev, reg ? (copy_slices_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_copy_slices_fork") : nullptr).first;
+            it = slices_fn.emplace(dev, reg ? (copy_slices_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_fork_copy_slices_fork") : nullptr).first;
         }
         copy_slices = it->second;
     }

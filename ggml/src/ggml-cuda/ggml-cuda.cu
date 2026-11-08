@@ -8737,7 +8737,11 @@ static void ggml_backend_cuda_thread_sync_fork() {
 }
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
-    GGML_UNUSED(reg);
+    // fork: the core asks for hooks by the neutral name ggml_backend_fork_<x> (src/llama-backend-fork.h); here they are the ggml_backend_cuda_<x> functions
+    if (strncmp(name, "ggml_backend_fork_", 18) == 0) {
+        const std::string cuda_name = std::string("ggml_backend_cuda_") + (name + 18);
+        return ggml_backend_cuda_reg_get_proc_address(reg, cuda_name.c_str());
+    }
     if (strcmp(name, "ggml_backend_cuda_last_oom_fork") == 0) {
         return (void *)ggml_backend_cuda_last_oom_fork;
     }
