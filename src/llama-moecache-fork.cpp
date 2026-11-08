@@ -440,6 +440,8 @@ struct moe_cache {
 
     std::vector<ggml_context *>         ctxs;
     std::vector<ggml_backend_buffer_t>  bufs;
+    std::vector<ggml_backend_buffer_t>  miss_bufs;   // --moe miss-dev: the imports of the host weights
+    ggml_context *                      miss_ctx = nullptr;
 
     // async upload worker: slices are copied to the device off the decode
     // thread; the new table mapping is only published at a later step() once
@@ -1860,6 +1862,7 @@ void llama_moe_observe_save() {
 }
 
 static double early_link_gbs(ggml_backend_dev_t d);   // pinned host to device GB/s, measured once per process (defined below, outside the anonymous namespace resource_probe sits in)
+static void miss_dev_setup(moe_cache * mc);   // defined below, next to it (--moe miss-dev)
 namespace {
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy);
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
@@ -9074,6 +9077,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         g_cache = mc;
         g_init_done = true;
 
+        miss_dev_setup(mc);
         LLAMA_LOG_WARN("%s: MoE expert cache enabled: %zu layers, slots/layer %d..%d, %d inserts/step, %.1f MiB device memory\n",
                 __func__, mc->layers.size(),
                 std::min_element(mc->layers.begin(), mc->layers.end(), [](auto & a, auto & b) { return a.pub.n_slots < b.pub.n_slots; })->pub.n_slots,
@@ -9775,6 +9779,48 @@ double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev) {
 // Reserved at >= 1.25x (2 x16: 2x; x16 + x4: 1.22x, where the split measured slower); alpha then starts at 1 and the
 // tuner measures. LLAMA_PREFILL_SPLIT=<alpha> overrides (0: never).
 // pinned host -> device GB/s of a GPU: 64 MB copies, measured once per process (the layer placement asks at load, the prefill split later)
+// --moe miss-dev=NAME: the experts the cache does not hold are computed on this device (a GPU sharing the host memory) instead of on the CPU: every expert tensor is imported in
+// place, one buffer per tensor (no copy, the Vulkan import needs page-aligned ends). All or nothing: a refused import leaves the CPU chain as it was.
+static void miss_dev_setup(moe_cache * mc) {
+    const char * name = moe_opt("miss-dev");
+    ggml_backend_dev_t dev = name ? ggml_backend_dev_by_name(name) : nullptr;
+    if (!dev) { return; }
+    ggml_backend_dev_props props;
+    ggml_backend_dev_get_props(dev, &props);
+    if (!props.caps.buffer_from_host_ptr) { LLAMA_LOG_WARN("moe-cache: miss-dev %s cannot import host memory: the misses stay on the CPU\n", name); return; }
+    ggml_init_params ip = { mc->layers.size() * 3 * ggml_tensor_overhead(), nullptr, true };
+    mc->miss_ctx = ggml_init(ip);
+    const size_t page = 65536;   // covers minImportedHostPointerAlignment (4 KiB) and the Windows view granularity
+    size_t bytes = 0;
+    auto import = [&](const ggml_tensor * t) -> ggml_tensor * {
+        if (!t || !t->data || !t->buffer || !ggml_backend_buffer_is_host(t->buffer)) { return nullptr; }
+        const uintptr_t s0 = (uintptr_t) t->data / page * page, e0 = GGML_PAD((uintptr_t) t->data + ggml_nbytes(t), 4096);
+        ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (void *) s0, e0 - s0, ggml_nbytes(t));
+        if (!buf) { return nullptr; }
+        mc->miss_bufs.push_back(buf);
+        ggml_tensor * m = ggml_new_tensor(mc->miss_ctx, t->type, GGML_MAX_DIMS, t->ne);
+        ggml_set_name(m, t->name);
+        if (ggml_backend_tensor_alloc(buf, m, (char *) ggml_backend_buffer_get_base(buf) + ((uintptr_t) t->data - s0)) != GGML_STATUS_SUCCESS) { return nullptr; }
+        bytes += e0 - s0;
+        return m;
+    };
+    bool ok = true;
+    for (auto & l : mc->layers) {
+        l.pub.up_m   = ok ? import(l.pub.up_src)   : nullptr;
+        l.pub.gate_m = l.pub.up_m   ? import(l.pub.gate_src) : nullptr;
+        l.pub.down_m = l.pub.gate_m ? import(l.pub.down_src) : nullptr;
+        ok = l.pub.down_m != nullptr;
+    }
+    if (!ok) {
+        for (auto & l : mc->layers) { l.pub.up_m = l.pub.gate_m = l.pub.down_m = nullptr; }
+        for (auto * b : mc->miss_bufs) { ggml_backend_buffer_free(b); }
+        mc->miss_bufs.clear();
+        LLAMA_LOG_WARN("moe-cache: miss-dev %s refused an import of the host weights: the misses stay on the CPU\n", name);
+        return;
+    }
+    LLAMA_LOG_WARN("moe-cache: misses computed on %s: %.1f GiB of expert weights imported in %zu buffers\n", name, bytes / 1073741824.0, mc->miss_bufs.size());
+}
+
 static double early_link_gbs(ggml_backend_dev_t d) {
     for (const auto & e : g_early_gbs) {
         if (e.first == d) {
@@ -12776,6 +12822,8 @@ void llama_moe_cache_free_fork() {
     for (auto * b : mc->pin_chunks) { ggml_backend_buffer_free(b); }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->pctxs) { ggml_free(c); }
+    for (auto * b : mc->miss_bufs) { ggml_backend_buffer_free(b); }
+    if (mc->miss_ctx) { ggml_free(mc->miss_ctx); }
     for (auto * b : mc->bufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->ctxs) { ggml_free(c); }
     delete mc;

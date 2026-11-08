@@ -2981,6 +2981,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * mc_defer_mask = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
+    ggml_tensor *  mc_miss_ids    = nullptr;   // --moe miss-dev: the misses' ids (the rest -1), computed on the device holding up_m
     ggml_tensor *  mc_pred        = nullptr;
     if (cparams.moe_cache && n_tokens > 0 && n_tokens <= llama_moe_cache_max_batch_fork() && !gate_up_exps && gate_exps && down_exps &&
         !up_exps_b && !gate_exps_b && !down_exps_b &&
@@ -3154,6 +3155,20 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             ggml_backend_sched_set_tensor_backend(sched, jit, cpu_backend);
             cb(jit, "ffn_moe_cache_jit", il);
             ggml_build_forward_expand(gf, jit);
+            if (mcache->up_m && !mc_pp && !mc_ids_all && n_tokens == 1) {   // decode only: the device's kernels skip a -1 id (zero row)
+                mc_miss_ids = ggml_map_custom1(ctx0, jit, [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
+                    if (ith != 0) { return; }
+                    const llama_moe_cache_layer_fork * mc = (const llama_moe_cache_layer_fork *) ud;
+                    const int32_t * tbl = (const int32_t *) mc->host_table->data;
+                    for (int64_t i = 0; i < ggml_nelements(a); ++i) {
+                        const int32_t v = ((const int32_t *) a->data)[i];
+                        ((int32_t *) dst->data)[i] = v >= 0 && tbl[v] == mc->n_slots ? v : -1;
+                    }
+                }, 1, (void *) mcache);
+                ggml_backend_sched_set_tensor_backend(sched, mc_miss_ids, cpu_backend);
+                cb(mc_miss_ids, "ffn_moe_miss_ids", il);
+                ggml_build_forward_expand(gf, mc_miss_ids);
+            }
         }
 
         // slot ids from the device table, after the CPU split above so they see the JIT's table updates;
@@ -3217,6 +3232,24 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
 
+        if (mc_miss_ids) {   // the misses on the device that imported them, behind the card's chain so the two overlap; the card's output and theirs sum to the whole
+            ggml_backend_t mb = nullptr;
+            const ggml_backend_dev_t md = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->up_m->buffer));
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                if (ggml_backend_get_device(ggml_backend_sched_get_backend(sched, i)) == md) { mb = ggml_backend_sched_get_backend(sched, i); }
+            }
+            if (mb) {
+                auto on_m = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, mb); return t; };
+                ggml_tensor * up_m   = on_m(ggml_mul_mat_id(ctx0, mcache->up_m,   mc_inp, mc_miss_ids));
+                ggml_tensor * gate_m = on_m(ggml_mul_mat_id(ctx0, mcache->gate_m, mc_inp, mc_miss_ids));
+                ggml_tensor * down_m = on_m(ggml_mul_mat_id(ctx0, mcache->down_m, on_m(mc_act(gate_m, up_m)), mc_miss_ids));
+                cb(down_m, "ffn_moe_miss_down", il);
+                down_g = ggml_add(ctx0, down_g, down_m);
+            } else {
+                mc_miss_ids = nullptr;   // the device is not in this context: the CPU chain computes them
+            }
+        }
+
         if (!mc_mix_b) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
             ggml_build_forward_expand(gf, down_g);
         }
@@ -3264,7 +3297,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
             if (mcache && !mc_mix_b) {
                 up->src[3] = mcache->host_table;
-                up->op_params[0] = mcache->n_slots;
+                up->op_params[0] = mc_miss_ids ? INT32_MIN : mcache->n_slots;   // no id equals INT32_MIN: nothing on the host, the router observation stays
                 if (mc_cpu_backend) {
                     // must run where the skip table is honored (CPU), never op-offloaded
                     ggml_backend_sched_set_tensor_backend(sched, up, mc_cpu_backend);
@@ -3292,7 +3325,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         cur->src[6] = probs;   // policy r: the router's probability of every expert for these tokens, the relevance the cache scores by
                     }
                     cur->src[3] = mcache->host_table;
-                    cur->op_params[0] = mcache->n_slots;
+                    cur->op_params[0] = mc_miss_ids ? INT32_MIN : mcache->n_slots;
                     if (mc_cpu_backend) {
                         ggml_backend_sched_set_tensor_backend(sched, cur, mc_cpu_backend);
                     }
@@ -3767,7 +3800,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     if (mcache && !mc_pp) {
         experts->src[3] = mcache->host_table;
-        experts->op_params[0] = mcache->n_slots;
+        experts->op_params[0] = mc_miss_ids ? INT32_MIN : mcache->n_slots;
         if (mc_cpu_backend) {
             ggml_backend_sched_set_tensor_backend(sched, experts, mc_cpu_backend);
         }

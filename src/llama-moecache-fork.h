@@ -47,6 +47,11 @@ struct llama_moe_cache_layer_fork {
     ggml_tensor * gate_src = nullptr;
     ggml_tensor * down_src = nullptr;
 
+    // --moe miss-dev: the same host weights imported into another device (no copy); set: the misses are computed there instead of on the CPU
+    ggml_tensor * up_m   = nullptr;
+    ggml_tensor * gate_m = nullptr;
+    ggml_tensor * down_m = nullptr;
+
     // device-resident cache slots, ne[2] == n_slots + 1 (last slot all zeros)
     ggml_tensor * up_c   = nullptr;
     ggml_tensor * gate_c = nullptr;
