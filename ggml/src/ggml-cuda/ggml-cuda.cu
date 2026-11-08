@@ -3117,6 +3117,13 @@ static bool ggml_cuda_should_fuse_mul_mat_q(const ggml_tensor * up, const ggml_t
     return ggml_cuda_mmq_fusion_is_efficient(x_up->type, ggml_prec_get_src(up, 1), x_up->ne[1], ncols, nchannels, device);
 }
 
+// a plain 2D float matmul the vector kernel can take column chunk by column chunk (the GPU without BLAS kernels)
+static bool ggml_cuda_mul_mat_vec_f_chunked_ok(const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, int cc, int warp_size) {
+    return !ggml_is_quantized(src0->type) && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
+        && src0->ne[2] == 1 && src0->ne[3] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1
+        && ggml_cuda_should_use_mmvf(src0->type, cc, warp_size, src0->ne, src0->nb, 1);
+}
+
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_TENSOR_BINARY_OP_LOCALS
 
@@ -3167,6 +3174,18 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     }
     if (ggml_cuda_should_use_mmq(src0->type, cc, ne11, /*n_experts =*/ 0)) {
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
+        return;
+    }
+    if (!ggml_cuda_info().devices[ctx.device].blas_ok && ggml_cuda_mul_mat_vec_f_chunked_ok(src0, src1, dst, cc, warp_size)) {
+        // no rocBLAS kernels for this GPU (gfx1103): the vector kernel over 8 columns at a time. The small float weights (Qwen3.6 ssm_alpha/beta, the
+        // MoE router) stay on the GPU: rejecting them sent them to CPU memory and split every decode step 141 times (8 t/s against Vulkan's 18)
+        for (int64_t c = 0; c < ne11; c += MMVF_MAX_BATCH_SIZE) {
+            ggml_tensor s1 = *src1, d = *dst;
+            s1.ne[1] = d.ne[1] = std::min<int64_t>(MMVF_MAX_BATCH_SIZE, ne11 - c);
+            s1.data = (char *) src1->data + c*src1->nb[1];
+            d.data  = (char *) dst->data  + c*dst->nb[1];
+            ggml_cuda_mul_mat_vec_f(ctx, src0, &s1, nullptr, &d);
+        }
         return;
     }
     ggml_cuda_mul_mat_cublas(ctx, src0, src1, dst);
@@ -8194,6 +8213,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                             return false;
                         }
                     } else if (!(ggml_cuda_should_use_mmvf(a->type, cc, ws, a->ne, a->nb, b->ne[1]) ||
+                                 ggml_cuda_mul_mat_vec_f_chunked_ok(a, b, op, cc, ws) ||
                                  ggml_cuda_should_use_mmf(a->type, cc, ws, a->ne, a->nb, b->ne[1], false) ||
                                  ggml_cuda_should_use_mmvq(a->type, cc, b->ne[1]) ||
                                  ggml_cuda_should_use_mmq(a->type, cc, b->ne[1], 0))) {
