@@ -1872,6 +1872,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             size_t free;
             ggml_backend_dev_memory(dev, &free, &total);
 
+            // fork: an integrated GPU next to a discrete one holds no layers by default: its memory is system RAM and it computes a fraction of the card (780M + 4060: 1/11)
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU &&
+                    std::any_of(devices.begin(), devices.end(), [](const llama_device & d) { return ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU; })) {
+                splits[i] = 0.0f;
+                continue;
+            }
+
             // devices can return 0 bytes for free and total memory if they do not
             // have any to report. in this case, we will use the host memory as a fallback
             // fixes: https://github.com/ggml-org/llama.cpp/issues/18577
