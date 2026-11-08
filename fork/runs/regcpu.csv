@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+gc-cpu,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/c.ini,prefill-cpu=1",
+gc-cpu-chain,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/d.ini,prefill-cpu=1,pp-path=chain",
+gc-chain,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/e.ini,pp-path=chain",

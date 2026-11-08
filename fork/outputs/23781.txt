@@ -1,0 +1,32 @@
+run 23781 | rampool11-planner-simple | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.04 t/s | prompt 515.2 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 17:02:21
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` when `has_max` is true means `max_items >= 1`, fine.
+   - Actually wait, there's a potential issue: if `min_items == 1 && max_items == 1` with separator, we get `item_rule (sep item){0,0}` which is just `item_rule` — fine but generates odd grammar. Actually `{0,0}` — hmm, does GBNF support `{0,0}`? It would match empty. OK.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `decimals_left` default 16, decrements.
+   - Potential infinite recursion? Let's see: `build_min_max_int(min_value, max_value, out, decimals_left, top_level)`. In the `has_min && has_max` branch with both negative: calls with `-max_value, -min_value` — strictly positive values, and the range shrinks? Actually `-max_value < -min_value` since max < min < 0... wait if both negative, min_value < max_value < 0, so -max_value > -min_value... wait no: min_value < max_value, both negative. E.g., min=-10, max=-5. Then -max=5, -min=10. So call build_min_max_int(5, 10) — positive range, smaller magnitude. That terminates.
+   - If min < 0 and max >= 0: emits `"-" (...) | ` then sets min_value = 0 and continues to the has_min/has_max code with min=0. Fine.
+   - In the `has_min` only branch (no max): `min_value < 0` case calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — has_min false, has_max true, so goes to has_max branch. OK.
+   - `min_value <= 9` case: `char c = '0' + min_value;` — fine for 1..9.
+   - The else branch: `std::stoll(min_s.substr(1))` — recursion on the suffix. Terminates since length decreases.
+   - Hmm, one thing: in the `has_min && has_max` branch, the loop `for (auto digits = min_digits; digits < max_digits; digits++)` — `min_digits` and `max_digits` are `size_t`. Fine.
+   - Potential issue: `decimals_left` is not decremented in the `has_min && has_max` path — intentional since exact range.
+   - What about `min_value == max_value`? uniform_range(from, to) with from == to: i goes to full length, outputs the literal. Fine.
+
+3. **`SPACE_RULE`**: `"| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"` — starts with `|` which is odd; in GBNF, a rule like `space ::= | " " | ...` — actually the leading `|` makes the first alternative empty, meaning space can match empty string. That's intentional (space is optional). OK, that's a known quirk of this grammar format.
+
+4. **`PRIMITIVE_RULES`**: 
+   - `"char"` rule: `[^\"\\\\\\x7F\\x00-\\x1F]` — in C++ string, that's `[^"\\\x7F\x00-\x1F]`. Hmm, `\x7F` followed by `\x00` — wait, there's a classic C++ bug potential: `"\\x7F\\x00-\\x1F"` — since these are escaped in the C++ string (`\\x` produces literal `\x` in the output string), it's fine. The actual GBN

@@ -1,0 +1,9 @@
+run 22445 | dspark_fix3 | long1kc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.85 t/s | prompt 53.1 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/ro-ds-l.ini,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-11-02 19:14:13
+
+We need answer. Need inspect code. Need find bug. We have snippet incomplete? Need infer. common/json-schema-to-grammar.cpp. Need identify bug in build_min_max_int uniform_range likely. Need analyze.
+
+We need find bug in source code above. It includes build_repetition and build_min_max_int. Need locate bug. Let's parse.
+
+build_repetition: For separator_rule nonempty:
+result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 
+---

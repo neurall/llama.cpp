@@ -1,0 +1,12 @@
+run 22469 | short_calls | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.12 t/s | prompt 133.6 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/sc-glm-s500.ini,log=wk | power 220+280 W | 2026-11-02 22:03:28
+
+The user is asking me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `json-schema-to-grammar.cpp` from llama.cpp (common library). Let me think about what functions exist and which ones are actually used.
+
+The file shown is truncated, but I need to work with what's shown. Let me analyze the visible code:
+
+1. `build_repetition` - static function that builds repetition grammar rules. This is used by array/object schema handling in the full file.
+
+2. `build_min_max_int` - static function that builds regex for min/max integer constraints. This
+---

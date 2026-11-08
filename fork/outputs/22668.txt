@@ -1,0 +1,94 @@
+run 22668 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-old.ini cpu-ram-gbs=38 ram-ceiling-gbs=44 | power 220+280 W | 2026-11-03 08:49:33
+
+The user wants the smallest HTML Tetris game. The request is explicitly "smallest" — so minimal code. I should honor that: a compact single-file Tetris. But I also want it to not feel cheap — so I can make it small yet well-played. The instruction "smallest" conflicts with rich build; I should keep it tiny but with decent visuals. Let me write a genuinely compact Tetris in HTML with inline CSS/JS, but still looking good — dark background, neon accents, monospace display font paired with a readable body face.
+
+Let me aim for something like ~40 lines, minified-ish but readable. Keep it small but functional: board, pieces, rotation, line clears, score, level, game over, restart.
+
+Let me write it:
+
+```html
+<meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0e14;color:#cdd6f4;font:12px/1.6 ui-monospace,Menlo,monospace;display:flex;gap:16px;justify-content:center;align-items:center;height:100vh;user-select:none}
+canvas{background:#11151f;border:1px solid #2a3346;box-shadow:0 0 40px #0008}
+b{color:#f5c518}
+#s{font:700 28px/1 Impact,sans-serif}
+</style>
+<canvas id=c width=180 height=360></canvas>
+<div id=ui>...</div>
+<script>
+...
+</script>
+```
+
+Tetris implementation compact:
+
+Classic trick: use piece definitions as strings or use the "one big number" trick. A compact approach:
+
+```js
+const K='IJLOSTZ', shapes...
+```
+
+A well-known golf approach: pieces defined by rotation via matrix rotation of a 4x4 or NxN grid. Use:
+
+```js
+P=[[,,],[[1,1,1,1]],[[1,1],[1,1]],...]
+```
+
+Compact version:
+
+```js
+P=[0,[1,1,1,1],[1,1],[1,1,1],[0,1,0],[1,1,1]] // messy
+```
+
+Better: define each piece as a list of cell offsets in a bounding box, rotate the box.
+
+```js
+P="1111,11 11,111 .1. 111,1. 111,1..".split(' ')
+```
+
+Let me do:
+
+```js
+const P=[
+"1111",
+"11,11",
+"111,.1.",
+"111,1. ",
+"111,.1 ",
+"11 , 11",  // S
+"11 ,11 "   // Z
+];
+```
+
+Hmm, spaces in rows are awkward but workable if I parse with charAt != '1' meaning empty.
+
+Simplify: represent each piece as a string of rows separated by '/', using '1' and '.'.
+
+```js
+P="1111/....,11/11,111/.1.,111/1..,111/.1.,.11/11.,11./.11".split(',')
+```
+
+That's 7 pieces: I, O, T, L, J, S, Z. Good.
+
+Rotation: for a piece with rows array, rotate matrix clockwise: `m[0].map((_,i)=>m.map(r=>r[i]).reverse().join(''))`.
+
+Bounding boxes: I piece 4x4, O 2x2, others 3x3. Rotation within box works fine for all these.
+
+Board: 10x20 grid of numbers (0 empty, else color index).
+
+Game loop with setInterval or requestAnimationFrame with drop timer.
+
+Let me write compact but readable:
+
+```js
+c=document.body.children[0],x=c.getContext'2d'
+```
+
+Let me write it out properly:
+
+```html
+<canvas id=c width=180 height=360></canvas>
+<script>
+B=0;C=18;W=10;H=20;g=[...Array
+---

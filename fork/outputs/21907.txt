@@ -1,0 +1,6 @@
+run 21907 | up8_ledger2_verify | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 15.83 t/s | prompt 186.5 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream,verify=1,poison=3 | power 200+200 W | 2026-11-02 01:29:27
+
+ Windows)
+// 2. user-wide:   ~/.config/llama.cpp/config.ini (%APPDATA%\llama.cpp\config.ini on Windows)
+// 3. local:       ./.llama.cpp/config.ini
+static void apply_config_files(common_params & params, arg_parser & ctx, const std::

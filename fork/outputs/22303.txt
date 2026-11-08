@@ -1,0 +1,12 @@
+run 22303 | reg_cpu_switch | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.38 t/s | prompt 142.2 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/k1-mimo-s500.ini,pp-path=stream,pp-k=1,pp-depth=1 | power 220+280 W | 2026-11-02 15:43:38
+
+Let me analyze this file to find code that is never used.
+
+Looking at the file, I can see:
+
+1. `build_repetition` - This is a static function. I need to check if it's used anywhere in the file. Since the file appears to be truncated, I can only see what's provided. But based on the visible code, `build_repetition` is defined but I don't see it being called in the visible portion.
+
+2. `build_min_max_int` - This is a static function. Similarly, I don't see it being called in the visible portion.
+
+3. The includes - `
+---

@@ -9,6 +9,8 @@
 #define GGML_COMMON_IMPL_CPP
 #include "ggml-common.h"
 
+extern "C" const void * (*ggml_cpu_expert_ptr_hook)(const struct ggml_tensor * src0, int64_t expert);   // ggml-cpu.cpp
+
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -864,6 +866,7 @@ static void ggml_compute_forward_mul_mat_id_tiled_one_expert(
     const void * wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
 
     const char * src0_cur = (const char *) src0->data + cur_a * nb02;
+    if (ggml_cpu_expert_ptr_hook) { const void * pe = ggml_cpu_expert_ptr_hook(src0, cur_a); if (pe) { src0_cur = (const char *) pe; } }   // the sparse pinned pool's copy of this expert
 
     // this thread's workspace
     tiled_ws * ws = (tiled_ws *) (scratch + (size_t) ith * ggml_tiled_ws_size());

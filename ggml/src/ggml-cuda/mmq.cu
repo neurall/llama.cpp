@@ -114,17 +114,17 @@ static ggml_prec ggml_cuda_mmq_get_prec_env() {
 
 // src1 is quantized to Q8_1 unless the FP4 types can use 4-bit activations, in which case they
 // default to the native W4A4 instructions on Blackwell.
-static ggml_prec ggml_cuda_mmq_get_prec_src1(const ggml_tensor * src0, const ggml_tensor * dst, const int cc) {
+static ggml_prec ggml_cuda_mmq_get_prec_src1(const ggml_type type, const ggml_prec prec_requested, const int cc) {
     static const ggml_prec prec_env = ggml_cuda_mmq_get_prec_env();
 
     ggml_prec prec = prec_env;
     if (prec == GGML_PREC_UNDEFINED) {
-        prec = (ggml_prec) ggml_get_op_params_i32(dst, 3);
+        prec = prec_requested;
     }
 
     // Q4 only for the FP4 types on Blackwell
     GGML_ASSERT(prec == GGML_PREC_UNDEFINED || prec == GGML_PREC_Q8 || prec == GGML_PREC_Q4);
-    const bool can_use_q4 = (src0->type == GGML_TYPE_NVFP4 || src0->type == GGML_TYPE_MXFP4) && blackwell_mma_available(cc);
+    const bool can_use_q4 = (type == GGML_TYPE_NVFP4 || type == GGML_TYPE_MXFP4) && blackwell_mma_available(cc);
     if (prec == GGML_PREC_Q8 || !can_use_q4) {
         return GGML_PREC_Q8;
     }
@@ -163,17 +163,27 @@ static int ggml_cuda_mmq_get_J_best(
 
 void ggml_cuda_mul_mat_q(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
-        const ggml_cuda_mm_fusion_args_host * fusion, const ggml_tensor * expert_table) {
+        const ggml_cuda_mm_fusion_args_host * fusion, const ggml_tensor * expert_table, const bool fuse_glu) {
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
 
     // Fused gate/up/GLU: src0 is the up weight, dst the GLU output.
     const ggml_tensor * gate = fusion ? fusion->gate : nullptr;
+    ggml_cuda_mm_fusion_args_device fusion_device = {};
     if (fusion) {
-        // TODO MoE support
-        GGML_ASSERT(gate && !ids && !fusion->x_bias && !fusion->gate_bias && !fusion->x_scale && !fusion->gate_scale);
+        GGML_ASSERT(gate && !fusion->x_bias && !fusion->gate_bias && !fusion->x_scale == !fusion->gate_scale);
         GGML_ASSERT(gate->type == src0->type && ggml_are_same_shape(gate, src0) && ggml_are_same_stride(gate, src0));
+        // NVFP4 weight scales (only applied for NVFP4): one value per tensor, or one per expert with ids.
+        for (const ggml_tensor * scale : { fusion->x_scale, fusion->gate_scale }) {
+            GGML_ASSERT(!scale || (src0->type == GGML_TYPE_NVFP4 && scale->type == GGML_TYPE_F32 && ggml_is_contiguous(scale) &&
+                ggml_nelements(scale) == (ids ? src0->ne[2] : 1)));
+        }
+        fusion_device.gate       = gate->data;
+        fusion_device.x_scale    = fusion->x_scale    ? fusion->x_scale->data    : nullptr;
+        fusion_device.gate_scale = fusion->gate_scale ? fusion->gate_scale->data : nullptr;
+        fusion_device.glu_op     = fusion->glu_op;
+        fusion_device.glu_limit  = fusion->glu_limit;
     }
 
     GGML_TENSOR_BINARY_OP_LOCALS;
@@ -221,13 +231,16 @@ void ggml_cuda_mul_mat_q(
 
     const bool fallback = ggml_cuda_mmq_needs_fallback(ne01);
 
-    // With fusion dst is the GLU output, not a MUL_MAT; the fused types always quantize src1 to Q8_1.
-    // TODO support for Q4 precision if both tensors allow it
-    const ggml_prec prec_src1 = gate ? GGML_PREC_Q8 : ggml_cuda_mmq_get_prec_src1(src0, dst, cc);
+    // With fusion dst is the GLU output, not a MUL_MAT; the src1 precision requested by both fused MUL_MATs is in the fusion args.
+    const ggml_prec prec_src1 = ggml_cuda_mmq_get_prec_src1(src0->type, gate ? fusion->prec_src1 : ggml_prec_get_src(dst, 1), cc);
 
     const bool use_native_fp4 = prec_src1 == GGML_PREC_Q4;
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
     const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
+
+    // fork: with a table (the MoE cache) ids are expert ids and src0 holds blocks: the id helper and the tiles run over the experts, as for a whole expert tensor. Over the blocks
+    // (thousands in a pool, against a few hundred experts) every empty block is walked for every tile of a pass: 3 to 4 times the compute of the same matmul on a whole tensor.
+    const int64_t n_grid = expert_table ? expert_table->ne[1] : ne02;
 
     int J_best        = 0;
     int nthreads_best = 0;
@@ -237,11 +250,9 @@ void ggml_cuda_mul_mat_q(
             const int64_t n_expert_used = ids->ne[0];
             ncols_opt = ne12;
 
-            // Each expert only sees ne12*n_expert_used/ne02 tokens on average.
-            // On RDNA3 and RDNA4 it is faster to pick the tile size against this value instead of ne12.
-            if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
-                ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
-            }
+            // Each expert only sees ne12*n_expert_used/n_grid tokens on average. fork: n_grid, not ne02: a pool's block count would give a far narrower tile than the same
+            // matmul on a whole expert tensor.
+            ncols_opt = (ne12*n_expert_used + n_grid - 1) / n_grid;
         }
 
         J_best = ggml_cuda_mmq_get_J_best(src0->type, ncols_opt, fallback, cc, smpbo, prec_src1, &nthreads_best);
@@ -255,6 +266,8 @@ void ggml_cuda_mul_mat_q(
         * src1_load_chunk_size;
 
     if (!ids) {
+        const int ntj = (ne1 + J_best - 1) / J_best;
+
         const size_t nbytes_src1_q8_1 = ne13*ne12 * ne11*ne10_padded * y_block_size/y_values_per_block + src1_q8_1_padding;
         ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), nbytes_src1_q8_1);
         ggml_cuda_pool_alloc<float> src1_scale(ctx.pool());
@@ -273,6 +286,9 @@ void ggml_cuda_mul_mat_q(
                 quantize_mmq_fp4_cuda(src1_d, nullptr, src1_q8_1.get(), src1_scale.ptr, src0->type, use_aligned_float8, ne10, s11, s12, s13, ne10_padded,
                                         ne11, ne12, ne13, stream);
 
+            } else if (fuse_glu) {
+                quantize_glu_mmq_q8_1_cuda(src1, nullptr, src1_q8_1.get(), src0->type, ne10_padded,
+                                           ne11, ne12, ne13, stream);
             } else {
                 quantize_mmq_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
                                        ne11, ne12, ne13, stream);
@@ -286,20 +302,13 @@ void ggml_cuda_mul_mat_q(
                                 ne11 * ne10_padded * sizeof(block_q8_1) / (QK8_1 * sizeof(int));
         const int64_t s13 = ne12*s12;
 
-        ggml_cuda_mm_fusion_args_device fusion_device = {};
-        if (gate) {
-            fusion_device.gate      = gate->data;
-            fusion_device.glu_op    = fusion->glu_op;
-            fusion_device.glu_limit = fusion->glu_limit;
-        }
-
         const mmq_args args = {
             src0_d, src0->type, (const int *) src1_q8_1.ptr, nullptr, nullptr, dst_d,
             src0->type == GGML_TYPE_NVFP4 && use_native_fp4 ? src1_scale.ptr : nullptr,
             ne00, ne01, ne1, s01, ne11, s1,
             ne02, ne12, s02, s12, s2,
             ne03, ne13, s03, s13, s3,
-            ne1, J_best, fusion_device};
+            ntj, J_best, fusion_device};
         ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
         return;
     }
@@ -314,10 +323,8 @@ void ggml_cuda_mul_mat_q(
 
     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx.pool(), ne_get_rows);
     ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), ne_get_rows + J_best-1); // Needs to be padded for unconditional memory access.
-    // fork: with a table (the MoE cache) ids are expert ids and src0 holds blocks: the grid and the id helper run over the experts, as for a whole expert tensor. Over the blocks
-    // (thousands in a pool, against a few hundred experts) every empty block is launched for every tile of a pass: 3 to 4 times the compute of the same matmul on a whole tensor.
-    const int64_t n_grid = expert_table ? expert_table->ne[1] : ne02;
-    ggml_cuda_pool_alloc<int32_t> expert_bounds(ctx.pool(), n_grid + 1);
+    const int ntj = (ne_get_rows + J_best - 1) / J_best + n_grid;
+    ggml_cuda_pool_alloc<ggml_cuda_mm_id_tile_spec> tile_spec(ctx.pool(), ntj);
 
     // gate/up activations are broadcast across experts (ne11 == 1): quantize each token once and
     // scatter to its slots. ids_src1 then holds the inverse map (token slot -> compact row).
@@ -333,9 +340,12 @@ void ggml_cuda_mul_mat_q(
             // in the unused compact range below expert 0, which holds the skipped slots)
             CUDA_CHECK(cudaMemsetAsync(ids_src1.get(), 0, ne_get_rows*sizeof(int32_t), stream));
             CUDA_CHECK(cudaMemsetAsync(ids_dst.get(),  0, ne_get_rows*sizeof(int32_t), stream));
+            // the seams below expert 0 (the -1 columns) are never written by the helper and mul_mat_q reads every tile_spec entry: a zeroed spec is
+            // an empty tile (task P8: the prompt mix died with an illegal memory access on stale pool bytes, fork/docs/mix-crash.md)
+            CUDA_CHECK(cudaMemsetAsync(tile_spec.get(), 0, ntj*sizeof(ggml_cuda_mm_id_tile_spec), stream));
         }
-        ggml_cuda_launch_mm_ids_helper((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(), expert_bounds.get(),
-            n_grid, ne12, n_expert_used, ne11, si1, sis1, /*write_inverse =*/ dedup_bcast, stream);
+        ggml_cuda_launch_mm_ids_helper((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(), tile_spec.get(),
+            n_grid, ne12, n_expert_used, ne11, J_best, si1, sis1, /*write_inverse =*/ dedup_bcast, stream);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -368,11 +378,20 @@ void ggml_cuda_mul_mat_q(
         } else if (dedup_bcast) {
             quantize_scatter_mmq_q8_1_cuda(src1_d, ids_src1.get(), src1_q8_1.get(), src0->type, ne10,
                                     /*stride_token=*/s12, ne10_padded, ne12, ne11_flat, n_expert_used, stream);
+        } else if (fuse_glu) {
+            quantize_glu_mmq_q8_1_cuda(src1, ids_src1.get(), src1_q8_1.get(), src0->type, ne10_padded,
+                                       ne11_flat, ne12_flat, ne13_flat, stream);
         } else {
             quantize_mmq_q8_1_cuda(src1_d, ids_src1.get(), src1_q8_1.get(), src0->type, ne10, s11, s12, s13,
                                    ne10_padded, ne11_flat, ne12_flat, ne13_flat, stream);
         }
         CUDA_CHECK(cudaGetLastError());
+    }
+
+    // fork: the zeroed output of ggml_cuda_mul_mat_id_begin for a fused GLU, not before this point: gate and up are read by the quantize above and dst can sit on their bytes
+    // (MiMo: on all 46 expert layers of a 121-token pass), zeroed first every GPU expert of the pass came out as zero and only the CPU's picks reached the answer (2026-11-02).
+    if (fuse_glu && dst->op_params[1] != 0) {
+        CUDA_CHECK(cudaMemsetAsync(dst->data, 0, ggml_nbytes(dst), stream));
     }
 
     static_assert(QK_FP4_MMQ == 8 * QK_MXFP4, "QK_FP4_MMQ needs to be 8 * QK_MXFP4");
@@ -382,12 +401,12 @@ void ggml_cuda_mul_mat_q(
 
     // Note that ne02 is used instead of ne12 because the number of y channels determines the z dimension of the CUDA grid.
     mmq_args args = {
-        src0_d, src0->type, (const int *) src1_q8_1.get(), ids_dst.get(), expert_bounds.get(), dst_d,
+        src0_d, src0->type, (const int *) src1_q8_1.get(), ids_dst.get(), tile_spec.get(), dst_d,
         src1_scale.ptr,
         ne00, ne01, ne_get_rows, s01, ne_get_rows, s1,
-        n_grid, n_grid, s02, s12, s2,
+        ne02,    1, s02, s12, s2,
         ne03, ne13, s03, s13, s3,
-        ne12, J_best};
+        ntj, J_best, fusion_device};
     args.expert_map = expert_table ? (const int32_t *) expert_table->data : nullptr;
 
     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
@@ -484,7 +503,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
     }
 
     if (amd_wmma_available(cc)) {
-        if (GGML_CUDA_CC_IS_RDNA3(cc)) {
+        if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4_M(cc)) {
             // High expert counts are almost always better on MMQ due to
             //     the synchronization overhead in the cuBLAS/hipBLAS path:
             // https://github.com/ggml-org/llama.cpp/pull/18202
@@ -501,7 +520,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
                     return ne11 <= (GGML_CUDA_CC_IS_RDNA3_0(cc) ? 128 : 256);
                 case GGML_TYPE_IQ2_XS:
                 case GGML_TYPE_IQ2_S:
-                    return GGML_CUDA_CC_IS_RDNA3_5(cc) || ne11 <= 128;
+                    return GGML_CUDA_CC_IS_RDNA3_5(cc) || GGML_CUDA_CC_IS_RDNA4_M(cc) || ne11 <= 128;
                 default:
                     return true;
             }
@@ -527,18 +546,20 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
     return (!GGML_CUDA_CC_IS_CDNA(cc)) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;
 }
 
-bool ggml_cuda_mmq_fusion_is_efficient(const ggml_type type, const int64_t nrows_x, const int64_t ncols, const int64_t nchannels, const int device) {
+bool ggml_cuda_mmq_fusion_is_efficient(
+        const ggml_type type, const ggml_prec prec_requested, const int64_t nrows_x, const int64_t ncols, const int64_t nchannels, const int device) {
     const int    cc    = ggml_cuda_info().devices[device].cc;
     const int    nsm   = ggml_cuda_info().devices[device].nsm;
     const size_t smpbo = ggml_cuda_info().devices[device].smpbo;
 
-    // Same tile width as ggml_cuda_mul_mat_q; the fused kernel has no fallback, quantizes src1 to Q8_1 and writes I/2 output rows per tile.
-    const bool fallback = false;
-    const int  J_best   = ggml_cuda_mmq_get_J_best(type, ncols, fallback, cc, smpbo, GGML_PREC_Q8);
+    // Same tile width as ggml_cuda_mul_mat_q; the fused kernel has no fallback and writes I/2 output rows per tile.
+    const bool      fallback  = false;
+    const ggml_prec prec_src1 = ggml_cuda_mmq_get_prec_src1(type, prec_requested, cc);
+    const int       J_best    = ggml_cuda_mmq_get_J_best(type, ncols, fallback, cc, smpbo, prec_src1);
     if (J_best == 0) {
         return false;
     }
-    const int64_t nrows_tile = ggml_cuda_mmq_get_config(type, J_best, fallback, cc, GGML_PREC_Q8).I / 2;
+    const int64_t nrows_tile = ggml_cuda_mmq_get_config(type, J_best, fallback, cc, prec_src1).I / 2;
     const int64_t ntiles     = (ncols + J_best - 1)/J_best * ((nrows_x + nrows_tile - 1)/nrows_tile) * nchannels;
     // Same condition as launch_mul_mat_q uses to run the stream-k kernel with one block per tile.
     const int64_t tiles_nwaves             = (ntiles + nsm - 1) / nsm;
@@ -558,18 +579,16 @@ size_t ggml_cuda_mmq_scratch_fork(const int id, const ggml_tensor * src0, const 
     const int64_t ne10 = src1->ne[0], ne11 = src1->ne[1], ne12 = src1->ne[2], ne13 = src1->ne[3];
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
     const bool fallback = ggml_cuda_mmq_needs_fallback(ne01);
-    const ggml_prec prec_src1 = ggml_cuda_mmq_get_prec_src1(src0, dst, cc);
+    const ggml_prec prec_src1 = ggml_cuda_mmq_get_prec_src1(src0->type, ggml_prec_get_src(dst, 1), cc);
     const bool use_native_fp4 = prec_src1 == GGML_PREC_Q4;
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
     const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
     const int64_t n_expert_used = ids ? ids->ne[0] : 0;
+    const int64_t n_grid = dst->src[4] ? dst->src[4]->ne[1] : ne02;   // the op's tile grid: the experts of a table, not the pool's blocks
 
     int64_t ncols_opt = ne11;
     if (ids) {
-        ncols_opt = ne12;
-        if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
-            ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
-        }
+        ncols_opt = (ne12*n_expert_used + n_grid - 1) / n_grid;   // on every vendor, as the op
     }
     int nthreads_best = 0;
     const int J_best = ggml_cuda_mmq_get_J_best(src0->type, ncols_opt, fallback, cc, smpbo, prec_src1, &nthreads_best);
@@ -578,31 +597,28 @@ size_t ggml_cuda_mmq_scratch_fork(const int id, const ggml_tensor * src0, const 
     const size_t q8_padding = ((J_best * sizeof(block_q8_1_mmq) + load_chunk - 1) / load_chunk) * load_chunk;
 
     auto take = [&top](size_t n) { if (n > 0) { top = GGML_PAD(top, 256) + n; } };   // a size-0 request never reaches the region
-    int64_t ncols_max, nchannels_y;   // launch_mul_mat_q's tile grid: columns, channels (x samples)
+    int64_t ntj, ntzw;   // launch_mul_mat_q's tile grid: column tiles, channels x samples
     if (!ids) {
         take(ne13*ne12*ne11*ne10_padded * y_block_size/y_values_per_block + q8_padding);                          // src1_q8_1
         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) { take(ne13*ne12*ne11 * sizeof(float)); }            // src1_scale
-        ncols_max   = dst->ne[1];
-        nchannels_y = ne12 * ne13;
+        ntj  = (dst->ne[1] + J_best - 1) / J_best;
+        ntzw = ne12 * ne13;
     } else {
         const int64_t ne_get_rows = ne12 * n_expert_used;
         take(ne_get_rows * sizeof(int32_t));                      // ids_src1
         take((ne_get_rows + J_best - 1) * sizeof(int32_t));       // ids_dst, padded for the unconditional reads
-        const int64_t n_grid = dst->src[4] ? dst->src[4]->ne[1] : ne02;
-        take((n_grid + 1) * sizeof(int32_t));                     // expert_bounds
+        ntj  = (ne_get_rows + J_best - 1) / J_best + n_grid;   // one per tile seam plus one per expert (upstream 2026-11): the op flattens the tokens into one channel
+        ntzw = ne13;
+        take(ntj * sizeof(ggml_cuda_mm_id_tile_spec));         // tile_spec
         take(ne_get_rows*ne10_padded * y_block_size/y_values_per_block + q8_padding);                             // src1_q8_1
         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) { take(ne_get_rows * sizeof(float)); }               // src1_scale
-        ncols_max   = ne12;
-        nchannels_y = n_grid * ne13;
     }
 
     // launch_mul_mat_q: the stream-k kernel's fixup buffer (unfused; a fused call tiles and takes none, so this is its upper bound)
     const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(src0->type, J_best, fallback, cc, prec_src1);
     if (config.stream_k) {
         const int nty = (ne01 + config.I - 1) / config.I;
-        const int ntx = (ncols_max + config.J - 1) / config.J;
-        const int ntzw = nchannels_y;
-        const int ntiles_dst = ntx * nty * ntzw;
+        const int ntiles_dst = ntj * nty * ntzw;
         const int tiles_nwaves = (ntiles_dst + nsm - 1) / nsm;
         const int tiles_efficiency_percent = 100 * ntiles_dst / (nsm*tiles_nwaves);
         const int nwork = ntiles_dst * ((ne00 + config.K_vram - 1) / config.K_vram);

@@ -1,0 +1,15 @@
+run 22235 | dspark_fix3 | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.02 t/s | prompt 147.6 t/s | 128 tokens | args: -np 1 | power 220+280 W | 2026-11-02 13:20:31
+
+Let me analyze this file to find code that is never used.
+
+Looking at the file, I can see:
+
+1. `build_repetition` - a static function
+2. `build_min_max_int` - a static function (truncated)
+
+Since these are `static` functions in a .cpp file, they're only used within this file. Let me check if they're called anywhere in the visible code.
+
+The file appears to be truncated - it only shows the beginning. But based on what's visible, I need to determine if `build_repetition` and `build_min_max_int` are used.
+
+Since the file
+---

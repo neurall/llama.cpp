@@ -1,0 +1,62 @@
+run 23767 | rampool9 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.29 t/s | prompt 559.6 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 16:17:07
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (e.g., `"[" space  space "]"` — actually it would produce `"[" space  space "]"` with double space). Actually wait, let me check how it's used. In KIND_ARRAY:
+
+```cpp
+return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+```
+
+If `max_items == 0` and `min_items > 0`, the schema is contradictory (min > max), and the generated grammar would be `"[" space  space "]"` which matches an empty array — arguably wrong but the schema itself is invalid. Minor.
+
+Also `min_items` could be negative? If `arr.min_items` is negative... In KIND_ARRAY, `min_items` is used directly. If negative, `build_repetition` with negative min_items: `min_items == 0` false, `min_items == 1` false... would produce `{min_items,...}` with negative number. Hmm, but presumably schema validation ensures min_items >= 0. Worth noting.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex generation. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `std::function` used for `uniform_range` — could be a lambda with `auto` self-reference via explicit `std::function`; fine but has overhead. Actually it needs to be `std::function` because it's recursive... Actually it could use a Y-combinator or pass itself, but `std::function` is the idiomatic way. OK.
+
+- In the `has_min && has_max` branch with both negative: `build_min_max_int(-max_value, -min_value, ...)`. OK.
+
+- `min_value < 0` (and max >= 0): emits `"-" (...) | ` then sets `min_value = 0`. OK.
+
+- The loop:
+```cpp
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+uniform_range(min_s, max_s);
+```
+This looks right.
+
+- In `has_min` only branch (no max): `decimals_left` limits digits. `less_decimals = std::max(decimals_left - 1, 1)`.
+
+- `min_value <= 9` case: `char c = '0' + min_value;` — fine for 1..9.
+
+- The `else` branch (min_value > 9): uses `std::stoll(min_s.substr(1))` — potential overflow? `min_s.substr(1)` could be up to 18 digits (since min_value is int64 max ~9.2e18, 19 digits). `std::stoll` on 18 digits is fine. But wait — if `min_value` is e.g. 1000000000000000000 (19 digits), substr(1) is "000000000000000000" = 0. Fine. What if min_value = 999999999999999999 (18 digits)? substr(1) = 99999999999999999 which fits in int64. OK. Actually the max int64 is 9223372036854775807; if min_value = 9223372036854775807, substr(1) = "223372036854775807" which fits. OK.
+
+Hmm, but there's a subtle issue: in the recursion `build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false)` — the second arg is max, so `has_max` is false, and it goes to

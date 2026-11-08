@@ -1,0 +1,8 @@
+run 21806 | up8_gather_mask_fix | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 11.99 t/s | prompt 806.2 t/s | 64 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 220+280 W | 2026-11-01 19:58:22
+
+ params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+             params.speculative.ngram_simple.size_n = 4;
+             params.speculative.ngram_simple.size_m = 4;
+             params.speculative.ngram_simple.min_hits = 4;
+        }
+    ).set_examples({LLAMA

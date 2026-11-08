@@ -1,0 +1,305 @@
+run 23794 | rel_b14244 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.99 t/s | prompt 937.3 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 17:47:25
+
+<think>Let me carefully analyze this source file for bugs. I need to go through it line by line.
+
+Let me start with the first file: `common/json-schema-to-grammar.cpp`
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?`. But when `min_items > 0`, the first item is `item_rule` followed by repetition of `(separator item)`. This seems correct.
+
+2. In `build_min_max_int`, let me check the logic carefully...
+
+Actually, let me look more carefully at specific areas.
+
+Looking at `_pattern_to_rule`:
+- The `join_seq` function returns `std::make_pair(string_join(results, " "), false)` - this returns a `literal_or_rule` where the second element is `false` (not a literal). But the joined result could be a literal if all items were literals. Actually, looking at the logic, `ret` merges consecutive literals, and then converts each to a rule string. The final result joins them with spaces. Since it could contain non-literal parts, marking it as `false` (not a literal) seems correct... but wait, if all items were literals, the result would be a literal string joined with spaces. Hmm, but the `to_rule` function wraps literals in quotes. So if all items are literals, `results` would be a list of quoted strings, and joining them with spaces would produce something like `"abc" "def"` which is not a literal. So marking as `false` is correct.
+
+Wait, actually looking more carefully at `join_seq`:
+- It iterates over `seq`, merging consecutive literals into `literal`
+- Then flushes remaining literal
+- Then converts each `ret` item via `to_rule` (which quotes literals)
+- Joins with spaces
+- Returns as non-literal
+
+This seems correct.
+
+3. In `_pattern_to_rule`, the handling of `{` (curly brackets):
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+```
+This looks correct - it wraps literals in quotes for the repetition.
+
+4. In `_not_strings`, the function builds a rule for matching strings that are NOT in the given set. Let me check the logic...
+
+The trie-based approach seems correct.
+
+5. In `_build_object_rule`, the `get_recursive_refs` function:
+```cpp
+if (first_is_optional) {
+    res = comma_ref + (k == "*" ? "*" : "?");
+} else {
+    res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+}
+```
+When `first_is_optional` is false and `k == "*"`, it should be `kv_rule_name + " " + comma_ref + "*"`. When `k != "*"`, it's just `kv_rule_name`. This seems correct.
+
+6. In `visit` for `KIND_STRING`:
+```cpp
+if (str.min_length > 0 || str.max_length >= 0) {
+```
+Wait, `str.max_length >= 0` - if `max_length` is 0, this would be true. But if `min_length` is 0 and `max_length` is 0, we'd want to match empty string. Let me think... `build_repetition` with `min_items=0, max_items=0` returns `""`. So the rule would be `"\"\" " + "" + " \"\""` which is `"\"\" \"\""` - that's two empty strings concatenated, which is just `""`. Hmm, that seems like it would work for matching empty string.
+
+Actually wait, if `max_length` is 0 and `min_length` is 0, the condition `str.min_length > 0 || str.max_length >= 0` is true (since `0 >= 0`). Then `build_repetition(char_rule, 0, 0)` returns `""`. So the rule becomes `"\"\" " + "" + " \"\""` = `"\"\" \"\""` which is two empty string literals. That's fine.
+
+But what if `max_length` is -1 (meaning no max) and `min_length` is 0? Then `str.min_length > 0` is false and `str.max_length >= 0` is false. So we'd fall through to `_visit_primitive(rule_name, "string")`. That's correct - no length constraints means just a regular string.
+
+Hmm, but what about `max_length == 0` and `min_length == 0`? The condition is `0 > 0 || 0 >= 0` = `false || true` = `true`. So we'd enter the branch. `max_len = 0 < 0 ? max : 0` = `0`. `build_repetition(char_rule, 0, 0)` returns `""`. Rule: `"\"\" " + "" + " \"\""` = `"\"\" \"\""` which matches empty string. Correct.
+
+What about `min_length == 0` and `max_length == -1`? Condition: `0 > 0 || -1 >= 0` = `false || false` = `false`. Falls through to regular string. Correct.
+
+What about `min_length == 1` and `max_length == -1`? Condition: `1 > 0 || -1 >= 0` = `true || false` = `true`. `max_len = -1 < 0 ? max : -1` = `max`. `build_repetition(char_rule, 1, max)` returns `char_rule + "+"`. Correct.
+
+OK, this seems fine.
+
+7. Let me look at the `has_max` check in `build_repetition`:
+```cpp
+auto has_max = max_items != std::numeric_limits<int>::max();
+```
+This is correct.
+
+8. In `build_min_max_int`, the `has_min` and `has_max` checks:
+```cpp
+auto has_min = min_value != std::numeric_limits<int64_t>::min();
+auto has_max = max_value != std::numeric_limits<int64_t>::max();
+```
+These are correct.
+
+9. Let me look at the `uniform_range` lambda more carefully...
+
+Actually, I think I need to look for more obvious bugs. Let me re-read the code more carefully.
+
+Looking at `_visit_pattern`:
+```cpp
+std::string _visit_pattern(const std::string & pattern, const std::string & name) {
+    auto rules_snapshot = _rules;
+    try {
+        return _pattern_to_rule(pattern, name);
+    } catch (const unsupported_pattern & err) {
+        // revert rules
+        _rules = std::move(rules_snapshot);
+        _warnings.push_back("pattern " + pattern + " is not supported (" + err.what() + "), accepting any string");
+        return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));
+    } catch (const invalid_pattern & err) {
+        _rules = std::move(rules_snapshot);
+        _errors.push_back("Invalid pattern " + pattern + ": " + err.what());
+        return "";
+    }
+}
+```
+This looks correct - it snapshots rules, tries to convert, and reverts on failure.
+
+10. In `_pattern_to_rule`, the handling of `(`:
+```cpp
+} else if (c == '(') {
+    i++;
+    if (i < length && sub_pattern[i] == '?') {
+        if (i + 1 < length && sub_pattern[i + 1] == ':') {
+            i += 2; // skip "?:" for non-capturing group, treat as regular group
+        } else {
+            // lookaround, named group, inline flags, ...
+            throw unsupported_pattern("unsupported group syntax");
+        }
+    }
+    paren_depth++;
+    if (paren_depth > MAX_PATTERN_DEPTH) {
+        throw unsupported_pattern("pattern nesting too deep");
+    }
+    seq.emplace_back("(" + to_rule(transform()) + ")", false);
+}
+```
+This looks correct.
+
+11. In `_pattern_to_rule`, the handling of `)`:
+```cpp
+} else if (c == ')') {
+    i++;
+    if (paren_depth == 0) {
+        throw invalid_pattern("unbalanced parentheses");
+    }
+    paren_depth--;
+    return join_seq();
+}
+```
+This looks correct.
+
+12. In `_pattern_to_rule`, the handling of `|`:
+```cpp
+} else if (c == '|') {
+    seq.emplace_back("|", false);
+    i++;
+}
+```
+This adds a `|` as a non-literal item. When `join_seq` processes this, it would be a non-literal item, so it would flush any pending literal and push the `|` item. Then `to_rule` would return `"|"` as-is (since it's not a literal). So the result would be something like `"abc" | "def"`. This seems correct.
+
+Wait, but `to_rule` for non-literal returns `s` as-is. So `|` would be returned as `|`. And for literals, it returns `"s"`. So joining with spaces: `"abc" | "def"`. That's correct GBNF syntax.
+
+13. In `_pattern_to_rule`, the handling of `*`, `+`, `?`:
+```cpp
+} else if (c == '*' || c == '+' || c == '?') {
+    if (seq.empty()) {
+        throw invalid_pattern("nothing to repeat");
+    }
+    seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
+    i++;
+}
+```
+This applies the quantifier to the last item. `to_rule(seq.back())` converts it to a rule string, then appends the quantifier. Marked as non-literal. This seems correct.
+
+14. In `_pattern_to_rule`, the handling of `{`:
+```cpp
+} else if (c == '{') {
+    std::string curly_brackets = std::string(1, c);
+    i++;
+    while (i < length && sub_pattern[i] != '}') {
+        curly_brackets += sub_pattern[i];
+        i++;
+    }
+    if (i >= length) {
+        throw unsupported_pattern("unterminated curly brackets");
+    }
+    curly_brackets += '}';
+    i++;
+    auto nums = string_split(curly_brackets.substr(1, curly_brackets.length() - 2), ",");
+    int min_times = 0;
+    int max_times = std::numeric_limits<int>::max();
+    if (nums.size() != 1 && nums.size() != 2) {
+        throw unsupported_pattern("wrong number of values in curly brackets");
+    }
+    try {
+        if (nums.size() == 1) {
+            min_times = max_times = std::stoi(nums[0]);
+        } else {
+            if (!nums[0].empty()) {
+                min_times = std::stoi(nums[0]);
+            }
+            if (!nums[1].empty()) {
+                max_times = std::stoi(nums[1]);
+            }
+        }
+    } catch (const std::logic_error &) {
+        throw unsupported_pattern("invalid number in curly brackets");
+    }
+    if (seq.empty()) {
+        throw invalid_pattern("nothing to repeat");
+    }
+    auto &last = seq.back();
+    auto &sub = last.first;
+    auto sub_is_literal = last.second;
+
+    if (!sub_is_literal) {
+        std::string & sub_id = sub_rule_ids[sub];
+        if (sub_id.empty()) {
+            sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+        }
+        sub = sub_id;
+    }
+    seq.back().first = build_repetition(
+        sub_is_literal ? "\"" + sub + "\"" : sub,
+        min_times,
+        max_times,
+        ""
+    );
+    seq.back().second = false;
+}
+```
+
+Wait, there's a potential issue here. When `sub_is_literal` is true, `sub` is the literal string. Then `seq.back().first = build_repetition("\"" + sub + "\"", ...)`. But `sub` is a reference to `last.first`, and we're assigning to `seq.back().first` which is the same as `last.first`. So we're reading `sub` (which is `last.first`) and writing to `last.first`. This could be a problem if `build_repetition` reads from `sub` while we're writing to it... but actually, `build_repetition` takes its arguments by value (const std::string &), so the string is copied before the assignment happens. Wait, no - `sub` is a reference to `last.first`, and we're computing `build_repetition("\"" + sub + "\"", ...)` which creates a temporary string from `sub`, then assigning the result to `last.first`. The temporary is created before the assignment, so this should be fine.
+
+Actually wait, `sub` is `auto &sub = last.first;` - it's a reference. And `seq.back().first = build_repetition(...)` assigns to `last.first`. The expression `build_repetition("\"" + sub + "\"", ...)` is evaluated first (creating a temporary), then assigned. So `sub` is read during evaluation of the argument, and then `last.first` is assigned. This should be fine because the temporary is fully constructed before assignment.
+
+Hmm, but actually there's a subtle issue: `sub` is a reference to `last.first`, and `seq.back().first` is also `last.first`. So `sub` and `seq.back().first` refer to the same object. The expression `build_repetition("\"" + sub + "\"", ...)` creates a temporary string from `sub`, then the result is assigned to `seq.back().first` (which is `sub`). Since the temporary is created before assignment, this is fine.
+
+OK, I think this is correct.
+
+15. In `_pattern_to_rule`, the handling of regular characters:
+```cpp
+} else {
+    std::string literal;
+    auto is_non_literal = [&](char c) {
+        return NON_LITERAL_SET.find(c) != NON_LITERAL_SET.end();
+    };
+    while (i < length) {
+        if (sub_pattern[i] == '\\') {
+            if (i == length - 1) {
+                throw invalid_pattern("trailing backslash");
+            }
+            char next = sub_pattern[i + 1];
+            if (ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.find(next) != ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.end()) {
+                i++;
+                literal += sub_pattern[i];
+                i++;
+            } else {
+                auto escape_length = gbnf_escape_length(sub_pattern, i);
+                if (escape_length == 0) {
+                    throw unsupported_pattern("unsupported escape: " + sub_pattern.substr(i, 2));
+                }
+                literal += sub_pattern.substr(i, escape_length);
+                i += escape_length;
+            }
+        } else if (sub_pattern[i] == '"') {
+            literal += "\\\"";
+            i++;
+        } else if (!is_non_literal(sub_pattern[i]) &&
+                (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+            literal += sub_pattern[i];
+            i++;
+        } else {
+            break;
+        }
+    }
+    if (literal.empty()) { // nothing was consumed, ex. a stray ']' or '}'
+        throw unsupported_pattern(std::string("unsupported character: ") + c);
+    }
+    seq.emplace_back(literal, true);
+}
+```
+
+Wait, there's a potential issue with the condition for consuming a regular character:
+```cpp
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+```
+
+This says: consume the character if it's not a non-literal char AND (it's the last char OR literal is empty OR next char is '.' OR next char is not a non-literal char).
+
+Hmm, the `literal.empty()` condition seems odd. If `literal` is empty (first character being consumed), we always consume it (as long as it's not a non-literal char). But if `literal` is not empty, we only consume if the next char is also not a non-literal char (or is '.').
+
+Wait, but what if `sub_pattern[i]` is a non-literal char? Then `!is_non_literal(sub_pattern[i])` is false, so we don't enter this branch. We'd break out of the loop. But then `literal` might be empty, and we'd throw "unsupported character". That's correct for stray `]` or `}`.
+
+But what about `|`? `|` is in `NON_LITERAL_SET`. So if we encounter `|` in the else branch, `!is_non_literal('|')` is false, so we break. Then if `literal` is empty, we throw "unsupported character: |". But `|` should be handled by the `c == '|'` branch earlier... wait, no. The `|` branch is checked before this else branch. So `|` would be caught by `} else if (c == '|')`. So we wouldn't reach the else branch for `|`.
+
+What about `]`? `]` is in `NON_LITERAL_SET`. The `[` branch handles character classes. But a stray `]` (not part of a character class) would fall through to the else branch. `!is_non_literal(']')` is false, so we break. `literal` is empty, so we throw "unsupported character: ]". Correct.
+
+What about `}`? `}` is in `NON_LITERAL_SET`. A stray `}` would fall through to the else branch. Same as above. Correct.
+
+What about `*`, `+`, `?`? These are handled by their own branches before the else. So they wouldn't reach the else branch.
+
+What about `(`, `)`? These are handled by their own branches. So they wouldn't reach the else branch.
+
+What about `[`? Handled by its own branch.
+
+What about `{`? Handled by its own branch.
+
+What about `^`, `$`? Handled by their own branch.
+
+What about `.`? Handled by its own branch.
+
+So the else branch handles regular characters (letters, digits, etc.) and escaped characters. The condition for consuming a regular character seems to be: it's not a non-literal char, and either it's the last char, or literal is empty, or next char is '.', or next char is not a non-literal char.
+
+Wait, the `literal.empty()` condition: if `literal` is empty (first char), we consume it regardless of what the next char is (as long as it's not a non-literal char). But if `literal` is not empty, we only consume if the next char is also not a non-literal char (or is '.').
+
+Hmm, this seems like it could cause issues. For example, if we have `abc[`, we'd consume `a` (literal empty), then `b` (literal not empty, next is `c

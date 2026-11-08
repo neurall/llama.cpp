@@ -1,0 +1,26 @@
+run 21866 | up8_kv_auto10 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 62.79 t/s | prompt 1906.3 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,dense-split=0 -ctk f16 -ctv f16 --moe sim-vram=4608 | power 200+200 W | 2026-11-01 23:52:27
+
+    return num_physical_cores;
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    cpumask.clear();
+    if (mask.empty()) {
+        return true;
+    }
+    std::string hex = mask;
+    if (hex.size() > 1 && hex[0] == '0' && hex[1] == 'x') {
+        hex = hex.substr(2);
+    }
+    for (size_t i = 0; i < hex.size(); i++) {
+        char c = hex[i];
+        if (c >= '0' && c <= '9') {
+            cpumask.push_back(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+            cpumask.push_back(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+            cpumask.push_back(c - 'A' + 10);
+        } else {
+            throw std::invalid

@@ -1,0 +1,4 @@
+run 22353 | pick_ds_router | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 32.93 t/s | prompt 15.0 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/x2-d2-s100.ini,pp-path=stream,pp-k=2,pp-depth=2,pf-slots=6,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-11-02 17:01:35
+
+We need answer user asks: "Delete the code in this file that is never used." They provided snippet beginning of file. Need infer task likely from codebase? Need identify unused code in file common/json-schema-to-grammar.cpp. We need provide modified file? They only show first lines and function signature incomplete. Need maybe they expect us to remove unused code from entire file? But only snippet. Need analyze. We need answer likely code cleanup. Need know actual file content? We have only partial. Need maybe from llama.cpp? common/json-schema-to-grammar.cpp. Need identify unused functions/includes? Let's
+---

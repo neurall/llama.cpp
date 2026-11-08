@@ -1,0 +1,17 @@
+run 22439 | prompt_counts | long1kc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.8 t/s | prompt 249.3 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/rn-mimo-l.ini,log=wk | power 220+280 W | 2026-11-02 19:06:44
+
+Let me analyze this code carefully to find the bug.
+
+The file is `json-schema-to-grammar.cpp` and contains functions for building grammar rules from JSON schemas.
+
+Let me look at the `build_repetition` function first:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1
+---

@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+dsr-base,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/s.ini",
+dsr-rd0,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/s.ini,read-direct=0",
+dsr-pin101,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/s.ini,pin-budget=108447924224",
+dsr-rd0-pin101,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/reg/s.ini,read-direct=0,pin-budget=108447924224",

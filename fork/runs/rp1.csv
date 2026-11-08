@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+olmoe-12k-rp0,olmoe,2,pf12k1k,1024,,
+olmoe-12k-rp1,olmoe,2,pf12k1k,1024,--moe rampool=1,
+q36-12k-rp0,qwen36,2,pf12k1k,1024,,
+q36-12k-rp1,qwen36,2,pf12k1k,1024,--moe rampool=1,
+qn4-12k-rp0,qn_iq4xs,2,pf12k1k,1024,,
+qn4-12k-rp1,qn_iq4xs,2,pf12k1k,1024,--moe rampool=1,

@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+glm30,glm,2,pf64k4k,4096,,
+glm35,glm35,2,pf64k4k,4096,,
+mimo,mimo,2,pf64k4k,4096,,
+qni4,qn_iq4xs,2,pf64k4k,4096,,
+q35,qwen36,2,pf64k4k,4096,,
+ds,ds,2,pf64k4k,4096,,

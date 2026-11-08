@@ -1,0 +1,10 @@
+run 22573 | live_rates | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.26 t/s | prompt 78.5 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-mimo-s200.ini,log=wk | power 200+200 W | 2026-11-03 06:40:01
+
+Let me analyze this code file to find what's never used.
+
+The file contains a `build_repetition` function. Let me check if it's used anywhere in the file or if it's referenced from other files.
+
+Looking at the code, `build_repetition` is a static function defined in this file. Since it's `static`, it can only be used within this file. The file only shows the beginning of `build_repetition` - there's no other code shown that calls it.
+
+Since `build_repetition` is `static` (file-local) and there's no other code in the file that calls it
+---

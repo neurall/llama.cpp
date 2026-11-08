@@ -1,0 +1,11 @@
+run 22321 | dspark_fix3 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.15 t/s | prompt 125.9 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/o-glm-s500.ini | power 220+280 W | 2026-11-02 16:05:57
+
+The user is asking me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `json-schema-to-grammar.cpp` from llama.cpp (this is a known file). The snippet shown is truncated - it ends mid-function at `build_min_max_int`. The user wants me to identify and delete unused code.
+
+Let me think about what's in this file (based on the known llama.cpp source):
+
+1. `build_repetition` - used by schema visitors for arrays with minItems/maxItems
+2. `build_min_max_int` - used for integer/number constraints with minimum/
+---

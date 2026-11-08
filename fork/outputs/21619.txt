@@ -1,0 +1,5 @@
+run 21619 | up8_kv_rot_row_scratch | paris | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 331.44 t/s | prompt 407.6 t/s | 8 tokens | args: -np 1 -ctk q4_0 -ctv q4_0 | power 220+280 W | 2026-11-01 11:47:54
+
+
+---
+Paris is the capital of France.

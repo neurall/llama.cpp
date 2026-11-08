@@ -1,0 +1,27 @@
+run 22073 | stats_log_pin_share | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 105.43 t/s | prompt 77.3 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini --moe sim-vram=4608 | power 220+280 W | 2026-11-02 08:01:01
+
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants the *smallest* HTML Tetris game. This means I need to minimize code size while keeping it functional as a Tetris game. It should be a single HTML file (or as close as possible) with inline CSS and JavaScript.
+
+2.  **Key Requirements for Tetris:**
+   - Grid/board (typically 10x20)
+   - Tetromino pieces (7 shapes)
+   - Movement (left, right, down, rotate)
+   - Collision detection
+   - Line clearing
+   - Game over condition
+   - Score tracking (optional but good)
+   - Controls (keyboard)
+   - Rendering (canvas or DOM)
+
+3.  **Minimization Strategies:**
+   - Use a single `<canvas>` for rendering
+   - Minimize variable names
+   - Use compact logic (bit manipulation, arrays, loops)
+   - Avoid external libraries
+   - Inline everything in one file
+   - Use modern JS features (arrow functions, template literals, etc.)
+   - Remove comments, whitespace, and unnecessary features
+   - Use a compact representation for pieces (e.g., arrays of arrays
+---

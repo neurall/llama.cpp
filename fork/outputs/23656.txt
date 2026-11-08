@@ -1,0 +1,75 @@
+run 23656 | up9_tile6 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.43 t/s | prompt 371.4 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-11-07 09:52:02
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. It's cut off at the end (the `gbnf_escape_length` function is incomplete). Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? It's typically used in `build_object_rule` or schema-to-grammar conversion functions. But in the shown portion of the file, I don't see it being called. However, the file is truncated — the actual file continues. Hmm, but the user says "Delete the code in this file that is never used." The file shown is truncated at `gbnf_escape_length`. 
+
+Wait — this is a tricky task. The user gives a partial file and asks to delete unused code. I need to determine what's unused within the shown file. But since the file is truncated, functions like `build_repetition` might be used later in the file (in the actual llama.cpp codebase, `build_repetition` is used in `build_object_rule` and in schema converters).
+
+Let me recall the actual llama.cpp file `common/json-schema-to-grammar.cpp`. The full file contains:
+
+- `build_repetition` (used by `build_object_rule`, and by schema-to-grammar visitors)
+- `build_min_max_int` (used by `_build_min_max_int` wrapper and used in number handling)
+- `SPACE_RULE`
+- `BuiltinRule` struct
+- `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- regexes: `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `GRAMMAR_LITERAL_ESCAPES`
+- `MAX_PATTERN_DEPTH`
+- `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`
+- `replacePattern`
+- `format_literal`, `gbnf_format_literal`
+- `gbnf_escape_length`
+- `gbnf_escape_regex_chars`? Actually let me recall.
+
+The actual file (from llama.cpp) has these functions:
+
+```cpp
+static std::string build_repetition(...)
+static void build_min_max_int(...)
+const std::string SPACE_RULE = ...
+struct BuiltinRule {...}
+static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_RULES = {...};
+static std::unordered_map<std::string, BuiltinRule> STRING_FORMAT_RULES = {...};
+static bool is_reserved_name(...)
+static std::regex INVALID_RULE_CHARS_RE(...)
+static std::regex GRAMMAR_LITERAL_ESCAPE_RE(...)
+static std::regex GRAMMAR_RANGE_LITERAL_ESCAPE_RE(...)
+static std::unordered_map<char, std::string> GRAMMAR_LITERAL_ESCAPES = {...};
+static const int MAX_PATTERN_DEPTH = 100;
+static std::unordered_set<char> NON_LITERAL_SET = {...};
+static std::unordered_set<char> ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS = {...};
+static std::string replacePattern(...)
+static std::string format_literal(...)
+std::string gbnf_format_literal(...)
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+    switch (pattern[pos]) {
+        case '\x0b': return 2; // "\v"
+        case '\x0c': return 2; // "\f"
+        case '\x08': return 2; // "\b"
+        case '\x09': return 2; // "\t"
+        case '\n': return 2; // "\n"
+        case '\r': return 2; // "\r"
+        default: return 1;
+    }
+}
+static std::string gbnf_escape_regex_chars(const std::string & pattern, bool escape_non_ascii = false) {
+    std::stringstream out;
+    ...
+}
+```
+
+Hmm, actually let me recall more precisely. In the current llama.cpp master, `json-schema-to-grammar.cpp` includes:
+
+```cpp
+static std::string gbnf_escape_regex_chars(const std::string & pattern, bool escape_non_ascii = false) {
+    std::stringstream ss;
+    for (size_t i = 0; i < pattern.length(); i++) {
+        char c = pattern[i];
+        if (NON_LITERAL_SET.find(c) != NON_LITERAL_SET.end()) {
+            ss << '\\' << c
+---

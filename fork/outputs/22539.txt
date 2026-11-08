@@ -1,0 +1,4 @@
+run 22539 | dec_calc | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.15 t/s | prompt 19.9 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-ds-s100.ini,log=wk | power 200+200 W | 2026-11-03 00:19:12
+
+We need answer user asks: "Delete the code in this file that is never used." They provided partial file? Need infer task likely from codebase. Need identify unused code in common/json-schema-to-grammar.cpp. We need produce modified file? They ask delete code never used. Need analyze. We only have snippet beginning. Need know full file? Maybe from llama.cpp? Need reconstruct. We need answer likely provide code changes removing unused functions/includes? Need inspect known file. Let's recall llama.cpp common/json-schema-to-grammar.cpp. It converts JSON schema to GBNF grammar. There are functions:
+---

@@ -1,0 +1,13 @@
+run 22517 | dec_calc | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.02 t/s | prompt 62.1 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-glm-s200.ini,log=wk | power 200+200 W | 2026-11-02 23:52:50
+
+The user is asking me to delete code in this file that is never used. But I only have a partial file shown — the file appears to be cut off mid-function. Let me think about what this file is.
+
+This is `json-schema-to-grammar.cpp` from llama.cpp (common directory). I know this file from the llama.cpp repository. The user gave a snippet that ends abruptly at:
+
+```cpp
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*
+```
+
+So the file content is truncated. The task: "Delete the code in this file that is never used
+---

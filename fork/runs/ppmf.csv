@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+mr-dma,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/mr-dma.ini,log=wk,pp-path=dec,ledger=1",--env PERF_LEDGER=1
+fo-glu,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/fo-glu.ini,log=wk,pp-path=dec,fuse-off=GLU",
+fo-mid,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/fo-mid.ini,log=wk,pp-path=dec,fuse-off=MUL_MAT_ID",
+fo-mul,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/fo-mul.ini,log=wk,pp-path=dec,fuse-off=MUL+ADD",
+fo-topk,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/fo-topk.ini,log=wk,pp-path=dec,fuse-off=UNARY+SOFT_MAX+ARGSORT",
+fo-rope,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/fo-rope.ini,log=wk,pp-path=dec,fuse-off=ROPE+RMS_NORM",

@@ -1,0 +1,298 @@
+run 23807 | rampool11-planner-simple | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.01 t/s | prompt 1227.5 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 18:32:58
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each part systematically.
+
+**Part 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?`. But when `min_items > 0`, the first item is `item_rule` followed by repetitions of `(separator item)`. The count for the separator repetitions should be `min_items - 1` to `max_items - 1`. Let me check: if min_items=1, max_items=3, separator=",", item="x", we want `x (, x){0,2}`. The code does `item_rule + " " + build_repetition("(" + sep + " " + item + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. For min=1, max=3: `x (, x){0,2}`. That looks correct.
+
+For min=0, max=3: `x (, x){0,2}` wrapped in `(...)?`. So `(x (, x){0,2})?`. That's correct.
+
+For min=0, max=INT_MAX: `x (, x){0,INT_MAX-1}` wrapped in `(...)?`. Hmm, `has_max ? max_items - 1 : max_items` - when max is INT_MAX, has_max is false, so it passes INT_MAX. Then in build_repetition, `has_max` would be false for INT_MAX, so it would generate `(...)*`. That seems correct.
+
+Wait, but when min_items=0 and max_items=INT_MAX with separator: `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, INT_MAX)`. The inner call has min=0, max=INT_MAX, no separator. So it returns `(...)*`. Result: `item (...)*`. Then wrapped: `(item (...)* )?`. That's correct.
+
+2. In `build_min_max_int`, let me check the `has_min` and `has_max` checks:
+```cpp
+auto has_min = min_value != std::numeric_limits<int64_t>::min();
+auto has_max = max_value != std::numeric_limits<int64_t>::max();
+```
+This looks correct.
+
+3. In the `uniform_range` lambda, there's a potential issue with `to[i] - 1` when `to[i]` is '0'. But that would only happen if the common prefix logic ensures `from[i] < to[i]`, so `to[i] - 1 >= from[i] >= '0'`, meaning `to[i] >= '1'`. Actually wait, if `from[i] == '0'` and `to[i] == '0'`, they'd be equal and the loop would continue. So `to[i] > from[i]` when we reach this point, meaning `to[i] >= '1'`, so `to[i] - 1 >= '0'`. That's fine.
+
+4. In `build_min_max_int` for `has_min && has_max` case with `min_value < 0 && max_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+out << ")";
+```
+This converts negative range to positive range. `-max_value` would be positive (since max_value < 0), and `-min_value` would be positive. Correct.
+
+5. For `min_value < 0` (but max_value >= 0):
+```cpp
+out << "\"-\" (";
+build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+out << ") | ";
+min_value = 0;
+```
+This handles the negative part, then continues with the non-negative part. Correct.
+
+6. In the `has_min` only case, when `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+Wait, this is for `has_min` only (no max). So min_value < 0 means we want all values >= min_value. The negative part: values from min_value to -1 (i.e., -|min_value| to -1). The positive part: 0, 1, 2, ... (unbounded).
+
+But `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` - this is for the negative part. The negative values are from min_value to -1. In terms of absolute values, that's from 1 to -min_value. But the function is called with `min=INT64_MIN, max=-min_value`. Since min is INT64_MIN (no min), and max is -min_value (which is positive), this would generate the positive range 0 to -min_value, prefixed with "-". So it generates `-(0 to -min_value)`, which gives -0 to -(-min_value). Wait, -0 is 0, and -(-min_value) = min_value. So it generates values from -(-min_value) = min_value to -0 = 0. But we want negative values from min_value to -1, not including 0.
+
+Hmm, actually the function generates `-(0 to -min_value)` which includes 0, giving values -0=0 through -(-min_value)=min_value. But 0 is not negative. And we also have `| [0] | [1-9] ...` for the non-negative part. So 0 would be matched twice. That's not a bug per se (it's just redundant), but it could be a correctness issue.
+
+Actually wait, let me re-read. The function is called with `min_value = INT64_MIN` (no min) and `max_value = -min_value` (positive). Since `has_min` is false and `has_max` is true, it goes to the `has_max` branch. `max_value >= 0` is true. `top_level` is false, so it doesn't add the negative part. It calls `build_min_max_int(0, max_value, out, decimals_left, true)` which generates 0 to -min_value. Then the outer code prefixes with `"-"` and `")"`. So we get `-(0 to -min_value)`.
+
+But we want negative values from min_value to -1. The absolute values are 1 to -min_value. So we should generate `-(1 to -min_value)`, not `-(0 to -min_value)`.
+
+Hmm, but actually the outer code also has `| [0] | [1-9] ...` for the non-negative part. So the overall output would be:
+`-(0 to -min_value) | [0] | [1-9] ...`
+
+This means 0 is matched by both `-(0)` and `[0]`. That's redundant but not incorrect. The issue is that `-(0)` = 0, which is fine since 0 >= min_value (min_value < 0).
+
+Actually, wait. The issue is that `-(0 to -min_value)` includes 0 (as -0), and then `[0]` also matches 0. So 0 is matched twice. That's not a bug, just redundancy.
+
+But actually, there's a subtle issue: `-(0 to -min_value)` generates strings like `-0`, `-1`, ..., `-(-min_value)`. But `-0` is not a valid JSON number representation. In JSON, 0 is just `0`, not `-0`. So generating `-0` would be wrong.
+
+Hmm, but this is a grammar for constrained generation, not strictly JSON. Let me think about whether this matters...
+
+Actually, looking at the code more carefully, the `has_min` only case with `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+
+The `build_min_max_int(INT64_MIN, -min_value, ...)` with `top_level=false`:
+- `has_min` = false (INT64_MIN)
+- `has_max` = true (-min_value > 0)
+- Goes to `has_max` branch
+- `max_value >= 0` is true
+- `top_level` is false, so no negative part
+- Calls `build_min_max_int(0, -min_value, out, decimals_left, true)` which generates 0 to -min_value
+
+So the output is `-(0 to -min_value)`. This includes `-0` which is problematic.
+
+But wait, maybe the intent is that `-0` is acceptable? In many JSON parsers, `-0` is valid. Let me not worry about this for now.
+
+Actually, I think the real issue might be different. Let me look at the `has_max` only case:
+
+```cpp
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    } else {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+        out << ")";
+    }
+    return;
+}
+```
+
+When `max_value >= 0` and `top_level` is true, it adds negative numbers (all negative numbers) and then 0 to max_value. That's correct for "all values <= max_value".
+
+When `max_value < 0`, it generates `-(abs(max_value) to INT64_MAX)`, which gives values from -INT64_MAX to -abs(max_value). But we want values from INT64_MIN to max_value (which is negative). The absolute values are from abs(max_value) to INT64_MAX. So `-(abs(max_value) to INT64_MAX)` gives -INT64_MAX to -abs(max_value). But INT64_MIN = -INT64_MAX - 1, so we're missing INT64_MIN. That's a minor issue but probably not a bug in practice.
+
+Hmm, actually `build_min_max_int(-max_value, INT64_MAX, ...)` with `top_level=false`:
+- `has_min` = true (-max_value > 0)
+- `has_max` = false (INT64_MAX)
+- Goes to `has_min` branch
+- `-max_value > 0`, so it generates the positive range from -max_value to infinity
+- Prefixed with `"-"` gives `-(abs(max_value) to infinity)` = values from -infinity to -abs(max_value)
+
+But we want values from -infinity to max_value (which is negative). Since max_value is negative, -abs(max_value) = max_value. So we get values from -infinity to max_value. That's correct!
+
+OK, let me move on and look for more obvious bugs.
+
+7. In `_pattern_to_rule`, the handling of `{` (curly brackets):
+```cpp
+} else if (c == '{') {
+    std::string curly_brackets = std::string(1, c);
+    i++;
+    while (i < length && sub_pattern[i] != '}') {
+        curly_brackets += sub_pattern[i];
+        i++;
+    }
+    if (i >= length) {
+        throw unsupported_pattern("unterminated curly brackets");
+    }
+    curly_brackets += '}';
+    i++;
+```
+
+This looks correct.
+
+8. In `_pattern_to_rule`, the handling of `*`, `+`, `?`:
+```cpp
+} else if (c == '*' || c == '+' || c == '?') {
+    if (seq.empty()) {
+        throw invalid_pattern("nothing to repeat");
+    }
+    seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
+    i++;
+}
+```
+
+This looks correct.
+
+9. In `_pattern_to_rule`, the handling of `[` (square brackets):
+```cpp
+} else if (c == '[') {
+    std::string square_brackets = std::string(1, c);
+    i++;
+    while (i < length && sub_pattern[i] != ']') {
+        if (sub_pattern[i] == '\\') {
+            auto escape_length = gbnf_escape_length(sub_pattern, i);
+            if (escape_length == 0) {
+                throw unsupported_pattern("unsupported escape in character class: " + sub_pattern.substr(i, 2));
+            }
+            square_brackets += sub_pattern.substr(i, escape_length);
+            i += escape_length;
+        } else {
+            square_brackets += sub_pattern[i];
+            i++;
+        }
+    }
+    if (i >= length) {
+        throw invalid_pattern("unterminated character class");
+    }
+    square_brackets += ']';
+    i++;
+    seq.emplace_back(square_brackets, false);
+}
+```
+
+This looks correct.
+
+10. In `_pattern_to_rule`, the handling of `|`:
+```cpp
+} else if (c == '|') {
+    seq.emplace_back("|", false);
+    i++;
+}
+```
+
+This looks correct.
+
+11. In `_pattern_to_rule`, the handling of `(`:
+```cpp
+} else if (c == '(') {
+    i++;
+    if (i < length && sub_pattern[i] == '?') {
+        if (i + 1 < length && sub_pattern[i + 1] == ':') {
+            i += 2; // skip "?:" for non-capturing group, treat as regular group
+        } else {
+            // lookaround, named group, inline flags, ...
+            throw unsupported_pattern("unsupported group syntax");
+        }
+    }
+    paren_depth++;
+    if (paren_depth > MAX_PATTERN_DEPTH) {
+        throw unsupported_pattern("pattern nesting too deep");
+    }
+    seq.emplace_back("(" + to_rule(transform()) + ")", false);
+}
+```
+
+This looks correct.
+
+12. In `_pattern_to_rule`, the handling of `)`:
+```cpp
+} else if (c == ')') {
+    i++;
+    if (paren_depth == 0) {
+        throw invalid_pattern("unbalanced parentheses");
+    }
+    paren_depth--;
+    return join_seq();
+}
+```
+
+This looks correct.
+
+13. In `_pattern_to_rule`, the handling of `^` and `$`:
+```cpp
+} else if (c == '^' || c == '$') {
+    throw unsupported_pattern("anchor inside the pattern");
+}
+```
+
+This looks correct.
+
+14. In `_pattern_to_rule`, the default case (literal characters):
+```cpp
+} else {
+    std::string literal;
+    auto is_non_literal = [&](char c) {
+        return NON_LITERAL_SET.find(c) != NON_LITERAL_SET.end();
+    };
+    while (i < length) {
+        if (sub_pattern[i] == '\\') {
+            if (i == length - 1) {
+                throw invalid_pattern("trailing backslash");
+            }
+            char next = sub_pattern[i + 1];
+            if (ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.find(next) != ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.end()) {
+                i++;
+                literal += sub_pattern[i];
+                i++;
+            } else {
+                auto escape_length = gbnf_escape_length(sub_pattern, i);
+                if (escape_length == 0) {
+                    throw unsupported_pattern("unsupported escape: " + sub_pattern.substr(i, 2));
+                }
+                literal += sub_pattern.substr(i, escape_length);
+                i += escape_length;
+            }
+        } else if (sub_pattern[i] == '"') {
+            literal += "\\\"";
+            i++;
+        } else if (!is_non_literal(sub_pattern[i]) &&
+                (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+            literal += sub_pattern[i];
+            i++;
+        } else {
+            break;
+        }
+    }
+    if (literal.empty()) { // nothing was consumed, ex. a stray ']' or '}'
+        throw unsupported_pattern(std::string("unsupported character: ") + c);
+    }
+    seq.emplace_back(literal, true);
+}
+```
+
+Wait, there's a potential issue here. The condition for adding a literal character:
+```cpp
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+```
+
+This says: add the character if it's not a non-literal char AND (it's the last char OR the literal is empty OR the next char is '.' OR the next char is not a non-literal char).
+
+Hmm, the `literal.empty()` condition seems odd. If the literal is empty, we always add the character? That means even if the next character is a non-literal char (like `*`), we'd add the current character. But then the `*` would be handled in the next iteration of the outer while loop, which would apply it to the last element in seq (which would be the literal we just added). That seems correct.
+
+Wait, but if `literal.empty()` is true and the next char is `*`, we add the current char to literal, then in the next iteration of the inner while loop, we'd see `*` which is a non-literal char, and `is_non_literal('*')` is true, so we'd break. Then the outer while loop would handle `*` by applying it to the last element in seq. But the last element in seq would be the literal we just added... wait, no. The literal hasn't been added to seq yet. The `seq.emplace_back(literal, true)` happens after the inner while loop breaks.
+
+Hmm, actually the inner while loop continues until it breaks. So if we add a char to literal, then see `*` (which is non-literal), we break. Then `seq.emplace_back(literal, true)` adds the literal. Then the outer while loop sees `*` and applies it to `seq.back()`. That's correct.
+
+But what if the first character is `*`? Then `is_non_literal('*')` is true, so the else-if condition fails, and we go to `break`. Then `literal.empty()` is true, so we throw

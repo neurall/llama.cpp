@@ -1,0 +1,52 @@
+run 22837 | lock_populate | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.69 t/s | prompt 173.5 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-base.ini --moe sim-ram=16384 | power 220+280 W | 2026-11-03 16:35:50
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact single-file Tetris. But I don't want to ship a bare terminal of code — a Tetris game is a visual, tactile thing, so I should make it feel alive: nice typography, a layered background, real feedback on line clears, sound, particles. The key is to keep the code compact while the *experience* is rich.
+
+Let me write a compact but complete Tetris in a single HTML file. Keep it small-ish but polished. Balance: "smallest" is the ask, so I should keep the code tight, but the visual result should still be crafted.
+
+Let me design:
+
+- Board 10x20, canvas rendering.
+- Pieces: 7 tetrominoes via compact string encoding.
+- SRS-ish rotation with simple wall kicks.
+- Controls: arrows, space (hard drop), Z/X rotate, P pause.
+- Ghost piece.
+- Next queue (maybe 1 next), hold.
+- Score, level, lines.
+- Line clear animation, particles.
+- WebAudio blips.
+- Layered ambient background.
+- Typography: a distinctive display face + readable body face. Use Google Fonts? That adds weight. Could use system fonts but I want a distinctive display face paired with a readable body face. I can link Google Fonts — small addition. For a Tetris game, a blocky/arcade display face fits: "Silkscreen" or "Press Start 2P" (too cliché maybe but characteristic). Let's use something more distinctive: "Chakra Petch" for display? Or "Bungee"? Hmm.
+
+Arcade cabinet feel: dark background with scanlines and CRT vibe. A near-black screen with one neon accent would be the obvious move, but it's a tired look; I'd rather do a richer palette — a deep blue-violet base with multiple accent hues (each tetromino has its own color, so the board is inherently multicolored). Let's use a palette: deep slate/indigo base but with warm accents (amber, coral) plus the 7 tetromino colors. I'll avoid a gradient-painted headline.
+
+Actually let me pick a distinctive look: an arcade cabinet with a warm dark plum/oxblood background, cream panel, chunky type. Display face: "Bungee" (blocky, arcade-ish) or "Silkscreen". Body: "Space Grotesk" or "IBM Plex Mono". Let's do display "Bungee" + body "Space Grotesk". Hmm, Bungee is all-caps chunky — good for a game title "TETRIS". Actually maybe "Silkscreen" for the score readouts (pixel) and "Space Grotesk" for body. Two faces + mono... Let's do: display = "Bungee", body = "Space Grotesk". Keep it to two families.
+
+Layout: rather than a generic centered header, I'll open with the game itself — the cabinet. Left rail: title + stats stacked vertically; center: board; right: next/hold + controls legend. Asymmetric.
+
+Let me write compact code.
+
+Compact tetromino encoding: use strings of rotation states? Smallest classic approach: define pieces as matrices and rotate by transposing.
+
+```js
+const P='1111....,010/111,11/11,11/1.1,11/.11,.1/11'.split(',')
+```
+Hmm, let me just do a clean approach:
+
+```js
+const S=[ // shapes as [x,y] cell offsets per piece, rotate by (x,y)->(-y,x)
+```
+Simplest readable-compact: define each piece as a list of strings per rotation? That's bigger. Use matrix rotate:
+
+```js
+const P=['####','....','....','....', // I
+'..#.','.##.','....','....', // J? 
+...]
+```
+Better: define base shape strings, rotate matrix in code.
+
+```js
+const K=['####','....','....','....','.#..','##..','#...','....','.#..','.#..','.#..','.#..','##..','##..','....','....','.#..','##..','#...','....','###..'.
+```
+Getting messy. Let me define 7 pieces each as array of 4 strings of
+---

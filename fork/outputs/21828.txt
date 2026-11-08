@@ -1,0 +1,33 @@
+run 21828 | up8_gather_mask_fix | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.05 t/s | prompt 518.4 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0 | power 220+280 W | 2026-11-01 21:56:10
+
+    return num_physical_cores > 0 ? num_physical_cores : default_threads;
+#endif
+    unsigned int n_threads = std::thread::hardware_concurrency();
+    return n_threads > 0 ? (n_threads <= 4 ? n_threads : n_threads/2) : 4;
+}
+
+std::string common_cpu_get_cpu_affinity_mask(int32_t n_threads) {
+    std::string mask;
+    for (int32_t i = 0; i < n_threads; ++i) {
+        mask += "1";
+    }
+    return mask;
+}
+
+std::string common_cpu_get_cpu_affinity_mask(int32_t n_threads, bool keep_all) {
+    if (keep_all) {
+        return common_cpu_get_cpu_affinity_mask(n_threads);
+    }
+    std::string mask;
+    for (int32_t i = 0; i < n_threads; ++i) {
+        mask += "1";
+    }
+    return mask;
+}
+
+std::string common_cpu_get_cpu_affinity_mask(int32_t n_threads, bool keep_all, int32_t n_threads_batch) {
+    if (keep_all) {
+        return common_cpu_get_cpu_affinity_mask(n_threads);
+    }
+    std::string mask;
+    for (int

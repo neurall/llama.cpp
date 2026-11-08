@@ -1,0 +1,6 @@
+run 21820 | up8_gather_mask_fix | pf128k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 17.7 t/s | prompt 1493.9 t/s | 40 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 220+280 W | 2026-11-01 21:10:01
+
+    return num_physical_cores > 0 ? num_physical_cores : default_threads;
+#endif
+    unsigned int n_threads = std::thread::hardware_concurrency();
+    return n_threads >

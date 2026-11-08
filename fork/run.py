@@ -5,6 +5,7 @@
   run.py report [--campaign NAME] [--last N] [--tol 0.95]      variants against stock, per model / test / machine
   run.py jobs    [-t TEST] [-n N] [-e K=V ...] [--bare] [--plain] [--args '...'] BUILD...   (MODEL=/path/model.gguf)
   run.py machine [add ID --ssh user@host --root DIR --os linux|windows]    machines reached over ssh (llama-cli runs)
+  run.py gen SPEC [-n N] [--start I] [--show]    write generated prompts ahead of a run; --gen SPEC on any run writes them on the fly (SPEC: in=16:2000,out=32:1024,task=code|prose,topic=a|b,seed=1)
   run.py prompt short|12k|128k|chatv|code [--url U]            the benchmark prompts against a running server
   run.py ctl    BUILD name:KEY=V,KEY=V ...                     one server, settings switched at runtime, rotating prompts
   run.py show [-t TEST] [-b BUILD] [--runs]
@@ -37,7 +38,7 @@ Tests:
 Compare decode t/s only between runs with the same output md5 (tetris/chat): the text
 decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat itself.
 """
-import argparse, math, csv, glob, hashlib, io, json, os, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
+import argparse, atexit, math, csv, glob, hashlib, io, json, os, random, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
 import types, collections, tempfile
 
@@ -64,7 +65,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
 
   [paths]   rels  gh_rel  devbuilds  release_out  images  best  ccache  ccache_stock  build_repo  build_tmp  work  agent  state
   [models]  olmoe  qwen36  qwen38  glm  mimo        (the regress cells and run.py baseline skip a model whose file is missing)
-  [hosts]   w10_ssh  w10_root  history_sources                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
+  [hosts]   w10_ssh  w10_root  history_sources  gen_url (helper server: generated prompts, judge)                         (the Windows laptop used by `run.py build --machine pc3`; the ssh target may be an alias from ~/.ssh/config)
   [gpu]     nvidia_smi  ld_extra  limits_env  limits_service  env_sh   (power-limit tools run.py plcal / run.py baseline: nvidia-smi to call through sudo, the files that keep the limits at boot, an
                                                               optional shell file whose exports every queue task gets; empty = not used)
 """
@@ -86,7 +87,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
             "glm": _BASE + "/models/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf",
             "mimo": _BASE + "/models/MiMo-V2.6-Flash-MOPD-MXFP4.gguf",
         },
-        "hosts": {"w10_ssh": "", "w10_root": "N:", "history_sources": ""},
+        "hosts": {"w10_ssh": "", "w10_root": "N:", "history_sources": "", "gen_url": ""},
         "gpu": {"nvidia_smi": "nvidia-smi", "ld_extra": "", "limits_env": "", "limits_service": "", "env_sh": ""},
     }
 
@@ -861,13 +862,28 @@ consistent best = the highest value that at least two runs agree on within 5% (a
             con.commit(); con.close()
         except Exception as e:
             print("runs.db:", e, file=sys.stderr)
-    def insert_output(ts, hw, build, test, model, md5, text, uniq4, chars, code):
-        """the generated text of a run (zlib) into table outputs, keyed by ts + build + hw (read: zlib.decompress(text))"""
+    def insert_output(ts, hw, build, test, model, md5, text, uniq4, chars, code, ask=None):
+        """the generated text of a run (zlib) into table outputs, keyed by ts + build + hw (read: zlib.decompress(text)); ask: what was asked, the ends of it, for the judge"""
         if not text: return
         import zlib
         con = connect()
         con.execute("CREATE TABLE IF NOT EXISTS outputs (ts TEXT, hw TEXT, build TEXT, test TEXT, model TEXT, md5 TEXT, uniq4 REAL, chars INTEGER, code INTEGER, text BLOB)")
-        con.execute("INSERT INTO outputs VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9)))
+        if "ask" not in [r[1] for r in con.execute("PRAGMA table_info(outputs)")]: con.execute("ALTER TABLE outputs ADD COLUMN ask TEXT")
+        con.execute("INSERT INTO outputs (ts, hw, build, test, model, md5, uniq4, chars, code, text, ask) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9), ask))
+        con.commit(); con.close()
+    def insert_stats(ts, hw, build, test, tag, args, text):
+        """the stats.log of a cell (zlib) into table stats: when, machine, build with its commit, branch and uncommitted-diff hash, test, cell tag and the cell's command line; the sources the build was made from
+        (the commit's uncommitted diff, bin/SOURCE.diff) go once into table sources, keyed by commit + patch hash, so every logged inefficiency can be traced to the code that ran (user 2026-11-05)"""
+        if not text: return
+        import zlib
+        bi = build_info(build)
+        con = connect()
+        con.execute("CREATE TABLE IF NOT EXISTS stats (ts TEXT, hw TEXT, build TEXT, [commit] TEXT, branch TEXT, patch TEXT, test TEXT, tag TEXT, args TEXT, log BLOB)")
+        con.execute("CREATE TABLE IF NOT EXISTS sources (commit_ TEXT, patch TEXT, diff BLOB, PRIMARY KEY (commit_, patch))")
+        con.execute("INSERT INTO stats VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, bi.get("commit", ""), bi.get("branch", ""), bi.get("patch", ""), test, tag, args, zlib.compress(text.encode(), 9)))
+        sd = os.path.join(HERE, build, "SOURCE.diff")
+        if bi.get("patch", "0") not in ("", "0") and os.path.exists(sd):
+            con.execute("INSERT OR IGNORE INTO sources VALUES (?,?,?)", (bi.get("commit", ""), bi["patch"], zlib.compress(open(sd, "rb").read(), 9)))
         con.commit(); con.close()
     EMB = os.path.join(HERE, "bench", "embhot.csv")
     def ensure_emb(con):
@@ -903,8 +919,18 @@ consistent best = the highest value that at least two runs agree on within 5% (a
                 rows.append(d)
         return cols, rows
     def load():
-        if os.path.exists(DB): os.remove(DB)
+        keep = {}   # tables the CSV does not hold (stats logs and the sources of their builds) survive the rebuild
+        if os.path.exists(DB):
+            old = sqlite3.connect(DB)
+            for t in ("stats", "sources"):
+                if old.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (t,)).fetchone():
+                    keep[t] = (old.execute(f"SELECT sql FROM sqlite_master WHERE name = '{t}'").fetchone()[0], old.execute(f"SELECT * FROM {t}").fetchall())
+            old.close()
+            os.remove(DB)
         con = connect()
+        for t, (ddl, rows) in keep.items():
+            con.execute(ddl)
+            if rows: con.executemany(f"INSERT INTO {t} VALUES (" + ",".join("?" * len(rows[0])) + ")", rows)
         cols, rows = read_csv_rows()
         ensure(con, cols)
         for r in rows:
@@ -1073,6 +1099,80 @@ CHAT_LONG = config.prompt("chat_long")
 KEEP_SERVER = False   # --keep-server (a run list does this unless -x): the server outlives the run and the next cell with the same model, build and args uses it (no reload); later runs find the cache the earlier ones filled
 QDIR = os.environ.get("RUN_QDIR") or os.path.join(WORK, "q5h"); os.makedirs(QDIR, exist_ok=True)   # server logs, queue, kept-server and load files of the machine
 KEPT = QDIR + "/kept-server.json"   # the kept server: key (model, build, args), pid, log file
+
+
+def runlog(msg):
+    """a line in q5h/watch-DATE.log, on the disk at once: what was running survives a freeze of the machine (a power cycle loses /tmp and the page cache)"""
+    try:
+        with open(os.path.join(QDIR, time.strftime("watch-%F.log")), "a") as f:
+            f.write(time.strftime("%T ") + msg + "\n"); f.flush(); os.fsync(f.fileno())
+    except OSError:
+        pass
+
+
+def cmd_memwatch(a):
+    """run.py memwatch PID LOG: a server's memory while it lives, so a frozen machine leaves its cause behind, and the guard that stops the server before the machine freezes.
+    Every 2 s a sample; every 10 s to q5h/watch-DATE.log with an fsync, every sample once memory runs short, so the last seconds are on the disk. New lines of the server's log go
+    to q5h/watch-server-DATE.log the same way (its own file lies in /tmp, which a boot empties). The guard kills the server when MemAvailable stays under --min-avail GiB, or swap-out
+    stays over 25000 pages/s with memory pressure over 30: with 101 GiB pinned the rest of a 125 GiB box thrashes for half an hour before the kernel's OOM killer acts."""
+    def meminfo():
+        m = {}
+        for l in open("/proc/meminfo"):
+            k, v = l.split(":", 1)
+            m[k] = int(v.split()[0]) / 1048576.0
+        return m
+    def vm():
+        return {l.split()[0]: int(l.split()[1]) for l in open("/proc/vmstat") if l.startswith(("pswpout", "pgmajfault"))}
+    def proc():
+        try:
+            d = {}
+            for l in open(f"/proc/{a.pid}/status"):
+                k, _, v = l.partition(":")
+                if k in ("VmRSS", "RssAnon", "RssFile", "VmSwap", "VmLck", "VmPin"): d[k] = int(v.split()[0]) / 1048576.0
+            return d
+        except (OSError, ValueError):
+            return None
+    out = lambda: os.path.join(QDIR, time.strftime("watch-%F.log"))
+    t_prev, v_prev, pos, buf, last_flush, bad = time.time(), vm(), 0, [], time.time(), 0
+    def flush():
+        nonlocal buf, last_flush, pos
+        try:
+            with open(out(), "a") as f:
+                f.write("".join(buf)); f.flush(); os.fsync(f.fileno())
+            buf, last_flush = [], time.time()
+            with open(a.log, "rb") as sl:   # the server's new lines
+                sl.seek(pos); new = sl.read(); pos += len(new)
+            if new:
+                with open(os.path.join(QDIR, time.strftime("watch-server-%F.log")), "ab") as f:
+                    f.write(new); f.flush(); os.fsync(f.fileno())
+        except OSError:
+            pass
+    while True:
+        p = proc()
+        if p is None:
+            buf.append(time.strftime("%T ") + f"server {a.pid} gone\n"); flush()
+            return
+        m, v = meminfo(), vm()
+        now = time.time(); dt = max(now - t_prev, 0.1)
+        so, mf = (v.get("pswpout", 0) - v_prev.get("pswpout", 0)) / dt, (v.get("pgmajfault", 0) - v_prev.get("pgmajfault", 0)) / dt
+        t_prev, v_prev = now, v
+        try: psi = re.findall(r"avg10=([\d.]+)", open("/proc/pressure/memory").read())
+        except OSError: psi = ["0", "0"]
+        some, full = float(psi[0]), float(psi[1]) if len(psi) > 1 else 0.0
+        avail, swap = m.get("MemAvailable", 0), m.get("SwapTotal", 0) - m.get("SwapFree", 0)
+        buf.append(time.strftime("%T ") + f"avail {avail:.1f} free {m.get('MemFree', 0):.1f} cached {m.get('Cached', 0):.1f} anon {m.get('AnonPages', 0):.1f} mlock {m.get('Mlocked', 0):.1f} "
+                   f"dirty {m.get('Dirty', 0):.2f} swap {swap:.2f} GiB, swap-out {so:.0f} major {mf:.0f} /s, psi {some:.1f} {full:.1f}; server rss {p.get('VmRSS', 0):.1f} anon {p.get('RssAnon', 0):.1f} "
+                   f"file {p.get('RssFile', 0):.1f} locked {p.get('VmLck', 0) + p.get('VmPin', 0):.1f} swapped {p.get('VmSwap', 0):.2f} GiB\n")
+        short = avail < 2 * a.min_avail or some > 5 or swap > 1 or so > 1000
+        bad = bad + 1 if avail < a.min_avail or (so > 25000 and some > 30) else 0
+        if bad >= 2:
+            buf.append(time.strftime("%T ") + f"GUARD: server {a.pid} killed, MemAvailable {avail:.1f} GiB, swap-out {so:.0f} pages/s, memory pressure {some:.1f}\n")
+            flush()
+            try: os.kill(a.pid, signal.SIGKILL)
+            except OSError: pass
+            return
+        if short or now - last_flush >= 10: flush()
+        time.sleep(2)
 DETACH = [False]      # server_run sets it while it starts a server to keep: no die-with-parent, own session
 
 
@@ -1126,6 +1226,28 @@ def ovr_prompt(default):
         p = open(p[1:]).read()
     return (p or default) + "\n" * PROMPT_TWEAK
 GREEDY = {"temperature": 0, "top_p": 1, "top_k": 1}
+
+
+def canary_text(src, n_tok, k=5):
+    """--canary N: about N tokens of the source with k record codes hidden in comment lines across it, and a question at the end that only a correct
+    prompt pass can answer (user 2026-11-03: "a complex prompt that cannot be answered correctly with corrupt memory", before any poison bug fishing).
+    Returns the text and the wanted {record: code}; deterministic per N"""
+    rnd = random.Random(n_tok)
+    body = src[:int(n_tok * 3.8)]   # ~3.8 characters per token of code on the tokenizers here: the list sets -c with room to spare
+    want = {f"R-{rnd.randrange(1000, 10000)}": str(rnd.randrange(1000, 10000)) for _ in range(k)}
+    cuts = sorted(body.rfind("\n", 0, int(len(body) * f)) + 1 for f in [(i + 0.5) / k for i in range(k)])
+    parts, last = [], 0
+    for c, (rid, code) in zip(cuts, want.items()):
+        parts += [body[last:c], f"// note for the reader: record {rid} holds code {code}.\n"]; last = c
+    parts.append(body[last:])
+    q = (f"\n\nThe source above contains {k} comment lines of the form \"record R-xxxx holds code yyyy\". Write each of them as R-xxxx=yyyy, "
+         "one per line, in the order they appear in the source. Write nothing else.")
+    return "".join(parts) + q, want
+
+
+def canary_score(out, want):
+    """record codes the answer gives right (any separator, the last 20 characters before the code)"""
+    return sum(bool(re.search(re.escape(rid) + r"\D{0,20}" + code + r"(?!\d)", out or "")) for rid, code in want.items())
 ANTILOOP = {"repeat_penalty": 1.15, "repeat_last_n": 256}   # --antiloop: the same penalty for every build of a cell; it changes the text, so a loop-prone base model (OLMoE) produces a real answer. Speed and cache hit rate are not touched by it (a sampler step on the logits)
 if sys.argv[1:2] == ["run"] and "-al" in sys.argv:   # run ... -al: the same switch on demand for a list run (a cell option of its own, so no other subcommand's -al is touched)
     sys.argv.remove("-al"); sys.argv.insert(1, "--antiloop")
@@ -1143,6 +1265,8 @@ RUN_COLS = ["ts", "commit", "bno", "tps", "pp", "hit", "model", "args", "test", 
                                           # seed: sampling seed of a v2 run; branch, patch: source branch of the build and the hash of its uncommitted diff (bin/BUILD_INFO,
                                           # written by the build script; "commit" then is that commit, +patch when dirty). A run's statslog: section of stats.ini, row of stats.csv (ts + build)
 import runexp
+import judge_w10
+from judge_w10 import is_garbage
 RUN_COLS += runexp.EXP_COLS  # columns of `run.py exp` rows, empty for the other runs
 RUN_COLS += ["pred_hit", "chipset", "cpu", "mem_gb", "mem", "mem_peak_gbs", "pcie", "pcie_peak_gbs"]  # platform of the machine (machines.csv: chipset, cpu_short, mem_gb, mem_short, mem_gbs, pcie_short, pcie_gbs); *_peak_gbs are measured GB/s peaks of the machine (ddr_gbs, pcie_gbs are what this run used), empty if not measured
 PRESSURE_COLS = ["p_met", "p_unmet", "p_pending", "p_admit_free", "p_admit_evict", "p_d_admit", "p_d_margin", "p_d_budget", "p_d_victim", "p_d_big", "p_d_dup", "p_regret", "p_ev_unpaid", "p_ev_zero"]   # cache pressure of the request (server moe_cache.pressure): met/unmet = selected experts in/not in VRAM; of the unmet that reached the swap decision: admitted into a free slot or by eviction, or declined (admit rule, margin, budget, no victim, lifetime regular, already queued); regret = misses of experts evicted within the last cache turnover; ev_unpaid / ev_zero = evicted uploads that never paid back / were never hit
@@ -1161,6 +1285,7 @@ RUN_COLS += ["pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct"]   # powe
 RUN_COLS += ["temp_med", "temp_max"]   # GPU temperature (C) of the request window, one value per GPU in index order: median and maximum
 RUN_COLS += ["vram_mib"]   # GPU memory in use at the end of the run, all GPUs together (nvidia-smi memory.used)
 RUN_COLS += ["endpoint"]
+RUN_COLS += ["judge"]   # what the judge (Qwen3.6 on W10, fork/judge_w10.py) said about the answer: "good 4: why [1 of 1 parts, 980 tokens, 12 s]", "nonsense 1: why [...]"; empty: not read yet. Filled afterwards, see cmd_judge
 RUN_COLS += ["knobs_end"]   # what the build actually ran with, from the run.knobs line of the end-of-run state snapshot: key settings (slots, workers, upload path, bounce, policy) | every cache knob incl. tuner decisions (defaults differ between builds; * = set by the user)   # completion (raw prompt), chat (template) or cli (llama-cli)
 RUN_COLS += ["load_mode"]   # how the weights were loaded, from the server log: pinned (+ upload path), mmap, mmap after a failed pin ("reloading with mmap"); load time (load_s) tells too: pinned GLM 3.0 about 85-120 s, mmap about 25 s
 RUN_COLS += ["prompt_s", "gen_s"]   # the cell as the screen shows it: prompt = end of the load to the first decoded token, gen = first token to the end (the live bar's p and g); written with wall_s by store_cell_time
@@ -1168,6 +1293,7 @@ RUN_COLS += ["start_ts", "end_ts", "load_s", "wall_s"]   # start_ts / end_ts: wh
 RUN_COLS += ["uniq4", "out_chars", "code", "loop"]   # text class of the generated output: share of unique word 4-grams (a repetition loop is ~0.1, real text ~0.9+), characters, 1 if it contains code; the text itself is in runs.db table outputs
 RUN_COLS += ["thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "gain_t", "gain_pp", "stock_id", "stock_bno"]   # the server's auto choices (threads for decode / batch, batch, ubatch, context) from its log; the machine line of the run; our decode / prompt speed over the newest stock row (best run of the cell against the stock row it was shown with, set when the cell ends) and that stock row's id and build number
 RUN_COLS += ["link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs"]   # measured maxima of the server's startup probes (per-card prefill link GB/s as the server printed them, CPU memory bandwidth it saturated at) and min/avg/max over the run of the CPU clock (MHz) and temperature (C), the GPU SM clock and temperature (one "min/avg/max" per card, joined by |), and the PCIe host->device rate per card (peak/mean GB/s): what to read to judge afterwards whether the automatic choices were right; local and remote runs fill the same fields
+RUN_COLS += ["driver"]   # the NVIDIA kernel module loaded when the row was written (/proc/driver/nvidia/version: "580.173.02", "595.104.02 (P2P build)"): the boot swap to the P2P module can fail silently (2026-11-07, 11-08: nvidia_fs held the module), and numbers move with the driver
 RUN_COLS += ["gpu_pp", "gpu_tg"]   # the same GPU samples split at the end of the prompt (server timings prompt_ms): prefill phase and generation phase separately, per GPU "util / clock / power / share of samples at the software power cap"; the whole-run gpu_log below blends both and hides that a prefill is compute bound while the decode idles
 RUN_COLS += ["gpu_log"]   # per-GPU summary of the 5 Hz nvidia-smi samples of the run (share of busy samples, mean and 5th percentile SM clock and mean power over the busy samples (GPU utilization >= 20%), max temp, throttle reason bits, min PCIe width) and the sample file
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
@@ -1321,6 +1447,27 @@ def apply_power_schedule():
             print(f"power: GPU {i} {cur[i]} -> {w} W" + ("" if r.returncode == 0 else f"  (failed: {r.stderr.strip()[:80]})"), flush=True)
 
 
+IO_LAST = {}
+
+
+def host_io_line(last_io=IO_LAST):
+    """the live line's disk part: how fast the disks read, the major faults and the kernel's reclaim scans per second since the last call (user 2026-11-02: "add monitoring and logging of our read speed")"""
+    v = {l.split()[0]: int(l.split()[1]) for l in open("/proc/vmstat") if l.startswith(("pgmajfault ", "pgscan_kswapd ", "pgscan_direct "))}
+    rd = sum(int(f[5]) * 512 for f in (l.split() for l in open("/proc/diskstats")) if re.fullmatch(r"nvme\d+n\d+|sd[a-z]", f[2]))
+    t, last = time.time(), dict(last_io)
+    last_io.update(t=t, rd=rd, v=v)
+    if not last: return ""
+    dt = max(t - last["t"], 0.1)
+    d = lambda *ks: sum(v.get(k, 0) - last["v"].get(k, 0) for k in ks) / dt
+    return f"ssd {(rd - last['rd']) / dt / 1e9:.1f}G/s flt {d('pgmajfault') / 1e3:.0f}k scan {d('pgscan_kswapd', 'pgscan_direct') / 1e6:.0f}M"
+
+
+def card_is_mine(i):
+    """does this process use card i (nvidia-smi index)? -ng N narrows CUDA_VISIBLE_DEVICES: the judge may sit on the card left over, and a row does not wait for it"""
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+    return vis is None or not vis.strip() or str(i) in [x.strip() for x in vis.split(",")]
+
+
 def wait_vram_free():
     apply_power_schedule()
     kill_leftovers()
@@ -1331,7 +1478,7 @@ def wait_vram_free():
             t0 = time.time()
         out = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
-        out = [x for x in out if x.isdigit()]   # no GPU, or an nvidia-smi that fails: nothing to wait for
+        out = [x for i, x in enumerate(out) if x.isdigit() and card_is_mine(i)]   # no GPU, or an nvidia-smi that fails: nothing to wait for
         if not out or max(int(x) for x in out) < 500:
             wait_host_free()
             return
@@ -1591,6 +1738,12 @@ def sweep_row(model, config, n, runs, med_ms, min_ms, max_ms, env, args, commit,
     csv_append("run-history.csv", RUN_COLS, row)
 
 
+def cmd_experiment(a):
+    """special experiments, one python file each in fork/experiments/"""
+    import experiments
+    experiments.main(a.rest)
+
+
 def cmd_sweep_log(a):
     """Log pass-size sweep points into run-history.csv and runs.db, one row at a time, flushed per row so a crash loses nothing.
     live:   mm7.sh ... | python3 run.py sweep-log --env '{"GGML_PRED_K":"8"}' --args '--moe ...' --commit C --build B   (lines: name n median min max runs ms/token tps)
@@ -1715,6 +1868,8 @@ def _pin_flag_needed(build, args):
     decides), `--load-mode pin` is added for every non-stock build."""
     if build.startswith("stock") or "--load-mode" in args or "-lm" in args:
         return False
+    if any("sim-ram=" in str(a) for a in args):   # -simram: the server takes its RAM after this check, so "fits the RAM available" is false by then; the engine's own rule (partial pin) is what a small machine runs
+        return False
     try:
         import glob as _g
         size = sum(os.path.getsize(f) for f in _g.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", MODEL))) if MODEL and os.path.exists(MODEL) else 0
@@ -1798,6 +1953,7 @@ DIAG_ENV = ("POOL_LIVE", "PERF_LEDGER", "GGML_CUDA_SCRATCH_CHECK")   # diagnosti
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
+                             + f",stats=/tmp/perf-{build}{LOGTAG}.stats.log"   # every event and status sample of the run, one a line, with timestamps: tail -f it during a run; the cell keeps it as TAG.stats.log
                              + f",hotmaps={HOTMAPS}"   # the hot maps per topic of every model (--moe dynhot) in the repo's fork/hotmaps, published with runs.db (branch runs-db); a cell's own hotmaps= comes after and wins
                              + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
                              + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
@@ -1809,9 +1965,11 @@ def _server_start_once(build, env, args):
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
     if os.path.exists(logf): os.replace(logf, logf + ".prev")   # the previous start's log stays readable: in a clean-state cell the cold run is the start before the warm one
     global WATCH_LOG; WATCH_LOG = logf   # post() watches this file
+    runlog(f"server start: {build} {os.path.basename(MODEL)} {' '.join(args)}")
     with open(logf, "w") as lf:
         p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
                              + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=None if DETACH[0] else _die_with_parent, start_new_session=DETACH[0])
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "memwatch", str(p.pid), logf], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     t0 = last = time.time()
     size = 0
     while True:
@@ -1837,6 +1995,7 @@ def _server_start_once(build, env, args):
         time.sleep(1)
 
 
+LAST_ASK = {"v": ""}   # the request of the last server_run: the judge reads an answer next to what was asked
 PARTIAL = {"text": ""}   # the answer text received so far by the last post(): a failed run stores it (outputs table), so a crash keeps what was generated
 ANSWER_FILE = os.environ.get("PERF_ANSWER")   # a file: post() also writes the received text here, flushed per chunk (survives a stopped run.py); the cell subcommand sets it per cell
 WATCH_LOG = None   # server log of the running server: post() takes its growth as progress, the server is asked (/slots) only while the log is silent (decode writes nothing per token)
@@ -1871,6 +2030,50 @@ def slots_progress():
 
 
 _CPU_LAST = {}
+def stall_dump():
+    """a stalled run (log silent, GPUs and CPU idle) keeps its evidence before the server is killed: every thread's state and kernel wait (/proc, no root needed), meminfo and swap, and
+    gdb's stacks when ptrace is allowed. Appended to the run's stats.log (user 2026-11-03: stalls and crashes must be diagnosable from that file). 2026-11-03: GLM repeat request hung after `DEC ubatch` with idle GPUs"""
+    out = [f"{time.strftime('%Y-%m-%d %H:%M:%S')}         STALL dump: log silent, GPUs and CPU idle"]
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            if open(d + "/comm").read().strip() != "llama-server": continue
+            out.append(f"STALL pid {d[6:]}")
+            for t in sorted(glob.glob(d + "/task/[0-9]*"), key=lambda x: int(x.rsplit("/", 1)[1])):
+                st = open(t + "/stat").read(); comm = st[st.index("(") + 1:st.rindex(")")]; state = st.rsplit(")", 1)[1].split()[0]
+                try: wch = open(t + "/wchan").read()
+                except OSError: wch = "?"
+                try: sysc = open(t + "/syscall").read().split()[0]
+                except (OSError, IndexError): sysc = "?"
+                out.append(f"STALL  tid {t.rsplit('/', 1)[1]} {comm} state {state} wchan {wch} syscall {sysc}")
+                if state == "D":   # the kernel call chain of a thread stuck in the kernel (root only: sudo -n, skipped without it)
+                    k = subprocess.run(["sudo", "-n", "cat", t + "/stack"], capture_output=True, text=True, timeout=10)
+                    out += [f"STALL   kstack {l}" for l in k.stdout.splitlines()][:40]
+            # ptrace_scope=1 keeps a plain gdb out: sudo -n when it works without a password, else plain gdb (which then says why)
+            sudo = ["sudo", "-n"] if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=10).returncode == 0 else []
+            g = subprocess.run(sudo + ["gdb", "-p", d[6:], "-batch", "-ex", "thread apply all bt 25"], capture_output=True, text=True, timeout=120)
+            out += ["STALL  gdb " + l for l in (g.stdout + g.stderr).splitlines() if l.strip()][:400]
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError): continue
+    try:   # the kernel log of the last 3 minutes: OOM kills, hung tasks, and the NVIDIA driver's "Cannot map memory" (a pinned host buffer that could not be mapped, seen with every GLM stall 2026-11-03)
+        k = subprocess.run(["journalctl", "-k", "--since", "-3min", "--no-pager"], capture_output=True, text=True, timeout=20).stdout
+        out += ["STALL  kern " + l for l in k.splitlines() if re.search(r"oom|killed|blocked for|Cannot map|NVRM|Xid", l, re.I)][:40]
+    except (OSError, subprocess.SubprocessError): pass
+    try: out += ["STALL  buddy " + l.strip() for l in open("/proc/buddyinfo")]   # free blocks per order (4 KiB x 2^order): fragmentation at the time of the stall
+    except OSError: pass
+    try: out += ["STALL  " + l.strip() for l in open("/proc/meminfo") if l.split(":")[0] in ("MemFree", "MemAvailable", "Active(anon)", "Inactive(anon)", "Active(file)", "Inactive(file)",
+                                                                                     "Unevictable", "Mlocked", "SwapFree", "Dirty", "AnonHugePages", "Shmem", "KReclaimable")]
+    except OSError: pass
+    try:   # reclaim and compaction throttle when isolated pages exceed the LRU (too_many_isolated): mlocked pinned weights leave the LRU small
+        keep = ("nr_isolated_", "nr_inactive_", "nr_active_", "nr_unevictable", "nr_mlock", "compact_", "thp_fault_", "allocstall_", "pgscan_direct", "pgsteal_direct", "pswp")
+        out.append("STALL  vmstat " + " ".join(l.strip() for l in open("/proc/vmstat") if l.startswith(keep)))
+    except OSError: pass
+    try:
+        with open(WATCH_LOG[:-4] + ".stats.log", "a") as f: f.write("\n".join(out) + "\n")
+    except (OSError, TypeError): print("\n".join(out[:30]), flush=True)
+    try:   # its own file too: the stats.log of a cell is rewritten by the next run of the same cell (the 14:43 stall's dump was lost that way, 2026-11-03)
+        with open(os.path.join(QDIR, time.strftime("stall-%Y%m%d-%H%M%S.txt")), "w") as f: f.write("\n".join(out) + "\n")
+    except OSError: pass
+
+
 def server_cpu_busy(min_ticks=20):
     """True when a llama-server process used >= min_ticks CPU ticks (1/100 s) since the last call: it is working even though the log is silent and the GPUs are idle"""
     busy = False
@@ -1942,9 +2145,14 @@ def post(path, body, timeout=3600, every=10, idle_polls=2):
                 print(f"progress {time.time() - t0:5.0f} s: ctx {pr[0]} tokens, decoded {pr[1]}, tail {pr[2][-12:]!r}", flush=True); last = pr
         idle = 0 if (gpu_busy() or server_cpu_busy()) else idle + 1   # a silent log and idle GPUs are no stall while the server burns CPU (lazy pinning of a model bigger than free RAM: 3.5-bit GLM, 2026-10-20, two false stops)
         if idle >= idle_polls:
+            stall_dump()
             raise RuntimeError(f"run stopped: server log silent and GPUs idle for {idle * every} s (after {time.time() - t0:.0f} s)")
     if "e" in box: raise box["e"]
     return box["r"]
+
+
+# unique word 4-gram share below which text is a loop: measured loops 0.01-0.26, real prose 0.83-1.0, repetitive code 0.43-0.49 (0.5 stopped good C++ answers, decode scored 0)
+LOOP_SHARE = 0.3
 
 
 def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=150):
@@ -1970,7 +2178,7 @@ def post_loopguard(path, body, timeout=3600, every=128, min_tokens=400, window=1
         if n >= min_tokens and n % every == 0:
             w = text.split()[-window:]
             g = [tuple(w[i:i + 4]) for i in range(len(w) - 3)]
-            if len(w) >= window and g and len(set(g)) / len(g) < 0.5:
+            if len(w) >= window and g and len(set(g)) / len(g) < LOOP_SHARE:
                 resp.close()
                 # the prompt ran whatever the answer did: its speed from the last progress (processed less cached tokens, ms since the prompt started)
                 pn, pms = (prog["processed"] - prog["cache"], prog["time_ms"]) if prog else (0, 0)
@@ -2149,6 +2357,38 @@ def dmon_summary(text, t0=0.0):
     return "|".join(one(v) for _, v in sorted(rx.items()))
 
 
+def stats_sampler(path, stock=False):
+    """stats.log's gpu lines, one every 10 s while a request runs: every card's load, memory load, temperature, power, clock, PCIe traffic both ways and free VRAM, from nvidia-smi dmon (user 2026-11-02: "each gpu temp util", "free vram per gpu").
+    A stock server writes no stat lines of its own, so there the disk and reclaim numbers come from here. Returns the stop function."""
+    try:
+        total = [int(x) for x in subprocess.run([NVSMI, "--query-gpu=memory.total", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.split()]
+        p = subprocess.Popen([NVSMI, "dmon", "-s", "putcm", "-d", "10", "-o", "T"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return lambda: None
+    atexit.register(p.terminate)
+    def pump():
+        names, cards, io = [], [], {}
+        with open(path, "a") as out:
+            for line in p.stdout:
+                f = line.split()
+                if line.startswith("#Time"): names = f
+                if line.startswith("#") or len(f) != len(names): continue
+                d = dict(zip(names, f))
+                num = lambda k: float(d[k]) if re.fullmatch(r"[\d.]+", d.get(k, "")) else 0.0
+                i = int(num("gpu"))
+                free = (total[i] - num("fb")) / 1024 if i < len(total) else 0.0
+                cards.append(f"g{i} util {num('sm'):.0f}% mem {num('mem'):.0f}% {num('gtemp'):.0f} C {num('pwr'):.0f} W {num('pclk'):.0f} MHz rx {num('rxpci') / 1024:.2f} tx {num('txpci') / 1024:.2f} GB/s vram free {free:.1f} GiB")
+                if i != len(total) - 1: continue
+                now = time.time(); stamp = time.strftime("%F %T", time.localtime(now)) + f".{int(now * 1000) % 1000:03d}"
+                out.write(f"{stamp} {'-':>9} GPU " + "; ".join(cards) + "\n")
+                if stock: out.write(f"{stamp} {'-':>9} HST " + host_io_line(io) + "\n")
+                out.flush(); cards = []
+    th = threading.Thread(target=pump, daemon=True); th.start()
+    def stop():
+        p.terminate(); th.join(3)
+    return stop
+
+
 def pcie_sampler():
     """host -> device and device -> host PCIe traffic of every GPU while the request runs (nvidia-smi dmon, 1 Hz, MB/s): stop() returns (total GB host->device, peak GB/s of any GPU, mean GB/s of the seconds that moved data, total GB device->host). Cheap enough to be on for every server run."""
     rows = []
@@ -2176,9 +2416,11 @@ def pcie_sampler():
 
 def server_run(build, env, args, path, body, render=None):
     PROCSTAT.clear()
+    LAST_ASK["v"] = body.get("prompt") if isinstance(body.get("prompt"), str) else str((body.get("messages") or [{}])[-1].get("content") or "")
     PROCSTAT["cache_state"] = model_residency()
     _t0 = time.time(); PROCSTAT["start_ts"] = time.strftime("%F %T", time.localtime(_t0))
     PROCSTAT["endpoint"] = "completion" if path == "/completion" else "chat"
+    runlog(f"request: {CAMPAIGN} rep {REP} {path}, {len(json.dumps(body))} bytes of body")
     key = repr((build, MODEL, tuple(args), sorted((k, v) for k, v in env.items() if os.environ.get(k) != v), os.environ.get("PERF_CELL_ENV", ""), STATE_FILE["v"], STATE_FILE.get("gen")))   # a cell that resets its state file (--clean-state) gets a server of its own
     d = kept_get() if KEEP_SERVER else None
     if d and d["key"] == key:
@@ -2216,6 +2458,7 @@ def server_run(build, env, args, path, body, render=None):
         perf = (subprocess.Popen(["perf", "record", "-F", "499", "-o", pbase + ".data", "-p", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL), pbase)
     _sys = subprocess.Popen(["bash", "-c", SYS_SH], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True); _sys_t0 = time.time()
     bwstop = pcie_sampler() if GPULOG else (lambda: None)   # the engine's own byte and time counters are the bandwidth record; the nvidia-smi view only with --gpulog
+    stats_stop = stats_sampler(f"/tmp/perf-{build}{LOGTAG}.stats.log", build.startswith("stock"))
     try:
         def clamp_text(txt, n_cl):   # --clamp N: cut to N tokens (the server counts them, so it is right for every tokenizer)
             full = txt
@@ -2323,6 +2566,7 @@ def server_run(build, env, args, path, body, render=None):
             pass
         try:
             bw = bwstop()
+            stats_stop()
             if bw:
                 PROCSTAT.update(pcie_h2d_gb=bw[0], pcie_h2d_peak_gbs=bw[1], pcie_h2d_avg_gbs=bw[2], pcie_d2h_gb=bw[3])
         except Exception:
@@ -2446,11 +2690,16 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _pf_text = open(config.prompt_path(f"src{_pfn.group(1)}k")).read()
             elif _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
                 _need = int(54092 * int(_pfn.group(1)) * 1000 / 12294); _pf_text = (_pf_text * (_need // max(len(_pf_text), 1) + 1))[:_need]   # beyond the source (256k contexts): the source again, the speeds do not depend on the text
+            if OVR.get("snippet"): _pf_text = open(OVR["snippet"]).read()   # [alias] snippet = another source file for the same prefill test (pf12k4kb: a different 12k cut)
             _pf_text = OVR.get("prefix", "") + _pf_text
-            if OVR.get("prefix"):   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
+            _canary = int(OVR.get("canary") or 0)
+            if _canary:
+                _pf_text, _canary_want = canary_text(_pf_text, _canary)
+            if OVR.get("prefix") or _canary:   # an instruction (12kin_1kout_code_review): an instruct model needs its chat template or a long answer loops, so it goes through the chat endpoint
                 res, logf = server_run(build, env, args, "/v1/chat/completions",
                                        {"messages": [{"role": "user", "content": _pf_text}], "max_tokens": int(OVR.get("tokens") or 1024), **GREEDY, "cache_prompt": False,
-                                        "reasoning_format": "none", **({"logprobs": True, "top_logprobs": 1} if os.environ.get("RUN_DBG_TOKENS") else {})})   # DeepSeek V4.1 chat answers came back with content "" (everything generated is thinking, 256 of 256 tokens, finish length, no reasoning_content): the parser dropped it; "none" leaves the raw text in content, so every answer is stored and loop-checked (2026-10-26)
+                                        "reasoning_format": "none", **({"chat_template_kwargs": {"enable_thinking": False}} if OVR.get("nothink") else {}),
+                                        **({"logprobs": True, "top_logprobs": 1} if os.environ.get("RUN_DBG_TOKENS") else {})})   # DeepSeek V4.1 chat answers came back with content "" (everything generated is thinking, 256 of 256 tokens, finish length, no reasoning_content): the parser dropped it; "none" leaves the raw text in content, so every answer is stored and loop-checked (2026-10-26)
             else:
               _np = int(OVR.get("tokens") or os.environ.get("PERF_NPRED", 64 if test == "pf128k" else 256 if test == "fix12k" else 32))
               if OVR.get("chat"):   # --chat: an instruct model gets its chat template (raw cut text: Qwen3.8 stopped after 1 token at 40k, 2026-10-18); /completion keeps the clamp and the loop guard
@@ -2467,17 +2716,32 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 # llama-perplexity's batches ask logits for many tokens and are no prompt calls, so it never reaches the prompt chain, the mix or the prediction. Per slice, so arms compare pair by pair.
                 _k, _l = map(int, os.environ["RUN_TRUE_PPL"].split(":"))
                 _ids = post("/tokenize", {"content": _pf_text})["tokens"]
-                _lp, _out = [], 0
+                _lp, _out, _nan = [], 0, 0
                 for _i in range(_k):
                     _s = (_i + 1) * (len(_ids) - _l - 1) // (_k + 1)
                     _r = post("/completion", {"prompt": _ids[_s:_s + _l], "n_predict": 1, "cache_prompt": False, "n_probs": 2048, **GREEDY})
                     _tl = _r["completion_probabilities"][0]["top_logprobs"]
                     _v = next((x["logprob"] for x in _tl if x["id"] == _ids[_s + _l]), None)
                     _out += _v is None
-                    _lp.append(round(_tl[-1]["logprob"] if _v is None else _v, 5))
-                print(f"DBG TRUE PPL: {math.exp(-sum(_lp) / len(_lp)):.5f} over {_k} prompts of {_l} tokens, {_out} outside the top 2048: {_lp}", flush=True)
+                    _nan += any(x["logprob"] is None for x in _tl)   # JSON null: the logits are NaN, the model is broken here: said aloud, never scored
+                    _low = min((x["logprob"] for x in _tl if x["logprob"] is not None), default=-30.0)
+                    _lp.append(round(_low if _v is None else _v, 5))
+                print(f"DBG TRUE PPL: {'NAN LOGITS ' + str(_nan) + ' of ' + str(_k) if _nan else format(math.exp(-sum(_lp) / len(_lp)), '.5f')} over {_k} prompts of {_l} tokens, {_out} outside the top 2048: {_lp}", flush=True)
+            if os.environ.get("RUN_MOVE_TEST"):   # S:L: the KV moves with cells in use (--moe attn-split=2): the real next token's log probability at L and at S tokens, cells fresh and cells moved (prompt_n: how many were not cached)
+                _s, _l = map(int, os.environ["RUN_MOVE_TEST"].split(":"))
+                _ids = post("/tokenize", {"content": _pf_text})["tokens"]
+                def _next_lp(_n, _cache):
+                    _r = post("/completion", {"prompt": _ids[:_n], "n_predict": 1, "cache_prompt": _cache, "n_probs": 2048, **GREEDY})
+                    _tl = _r["completion_probabilities"][0]["top_logprobs"]
+                    return round(next((x["logprob"] for x in _tl if x["id"] == _ids[_n]), _tl[-1]["logprob"]), 5), _r["timings"]["prompt_n"], {x["id"]: x["logprob"] for x in _tl}
+                def _kl(_p, _q):   # of the next-token distributions, over the tokens both list
+                    return round(sum(math.exp(_v) * (_v - _q[2][_k]) for _k, _v in _p[2].items() if _k in _q[2]), 5)
+                _a = _next_lp(_l, False); _b = _next_lp(_s, False); _c = _next_lp(_l, True)
+                _on = [_next_lp(_l + (_i + 1) * 50, True)[0] for _i in range(20)]   # the moved cells stay in use: the real next token, 50 tokens apart
+                _d = _next_lp(_s, True)
+                print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
-                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f}" + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
+                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
@@ -2492,6 +2756,14 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             row.update(PROCSTAT)   # load time, rss, GPU log and power of the request window (--gpulog)
             row.update(cache_stats(open(logf).read()))
             row.update(ok=1 if row.get("pp_tps") else 0, args=" ".join(args))
+            if _canary:   # exact answer check: a wrong code means the prompt was computed wrong (or the model cannot recall it: compare with a stock or one-card row)
+                _got = canary_score(row["output"], _canary_want)
+                row["note"] = f"canary {_got}/{len(_canary_want)} | " + str(row.get("note") or "")
+                if _got < len(_canary_want):
+                    row["ok"] = 0
+                    print(col("1;91", f"    CANARY FAILED: {_got} of {len(_canary_want)} record codes right; wanted {_canary_want}"), flush=True)
+                else:
+                    print(col("1;92", f"    canary: {_got} of {len(_canary_want)} record codes right"), flush=True)
             return row
         if test == "agent":
             args = COMMON + ["-c", "16384", "-ub", "2048", "-b", "2048"]
@@ -2527,6 +2799,12 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             TAGBOX["v"] = "edit4-%d" % ((REP or 0) % len(EDIT_INSTR)) + ("-chat" if chat else "")
             args = COMMON + _ctx_args(4096)
             res, logf, text = generate(build, env, args, snippet + "\n\n" + ins, int(OVR.get("tokens") or 128), chat, {"cache_prompt": False})
+        elif test == "gen":   # --gen SPEC: repetition k sends prompt k of the spec (generated on the fly, stored), never the same one twice
+            g = gen_prompt(OVR["gen"], REP or 0)
+            TAGBOX["v"] = "gen-%d" % (REP or 0)
+            args = COMMON + _ctx_args(gen_ctx(OVR["gen"]))
+            res, logf, text = generate(build, env, args, ovr_prompt(g["text"]), int(OVR.get("tokens") or g["out"]), True, {"cache_prompt": False})
+            PROCSTAT["note"] = f"gen {REP or 0}: {g['task'][:24]}, {g['topic'][:32]}, in {g['n_tokens']} out {g['out']}"
         elif test in config.user_tests():   # a prompt of your own from prompts.ini ([name] path = ..., test = chat|completion, tokens = ..., ctx = ...)
             ut = config.user_tests()[test]
             args = COMMON + _ctx_args(int(ut.get("ctx") or 4096))
@@ -2576,7 +2854,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 row["up_gbs_eff"] = round(float(row["up_mib"]) / row["uploads"] / 1024 / (row["up_ms_expert"] / 1000), 2)   # GiB per expert / seconds per expert
         mc = t.get("moe_cache") or {}   # the server's per-request cache churn: swaps (uploads of experts into VRAM), evictions, MiB moved
         if mc.get("active"):
-            row.update(uploads=mc.get("uploads_request"), evictions=mc.get("evictions_request"), up_mib=mc.get("upload_mib_request"))
+            row.update(uploads=mc.get("uploads_request"), evictions=mc.get("evictions_request"), up_mib=mc.get("upload_mib_request"), hit_rate=mc.get("hit_rate_request"))
             for k, v in (mc.get("pressure") or {}).items():
                 row["p_" + k] = v
         if t.get("draft_n"):  # speculative decoding (MTP / draft model): accepted / drafted tokens
@@ -2604,6 +2882,136 @@ def generate(build, env, args, prompt, n, chat, extra=None, tag=None):
         m = res["choices"][0]["message"]
         return res, logf, (m.get("reasoning_content") or "") + "\n---\n" + (m.get("content") or "")
     return res, logf, res["content"]
+
+
+# ---- generated prompts: --gen SPEC on any run, `run.py gen` alone ----
+# A cache test needs prompts it never saw: random topics, code and prose, short questions and long documents, any ratio of input to output. A server on another machine writes them
+# ([hosts] gen_url: stock llama-server with Qwen3.6 on W10), so the machine under test does nothing for it. SPEC, comma separated: in=A:B, out=A:B (tokens; a range draws log-uniform,
+# one number is fixed), task=a|b (kinds of GEN_TASKS or free text), topic=a|b (free text, default GEN_TOPICS), seed=N, first=K (the row starts at prompt K), url=U. Prompt i of a spec is stored in WORK/genprompts: every
+# arm of an A/B and every rerun sends the same text, and the arms of different specs never share one. ponytail: no shelf of documents for very long inputs: W10 writes about 8-10
+# tokens/s, so in=128000 would take hours; reuse stored documents if a long random prompt is ever needed.
+GEN_TOPICS = ("tide tables|beekeeping|medieval trade routes|the immune system|rent control|jazz harmony|volcanoes|bicycle repair|Roman law|sourdough baking|compilers|distributed databases|"
+              "network protocols|garbage collection|image compression|game physics|kernel schedulers|cryptography|web scraping|machine learning pipelines|payroll|inventory management|"
+              "chess openings|football tactics|marathon training|sailing|mountain rescue|bird migration|coral reefs|soil chemistry|organic farming|electric cars|railway signalling|"
+              "air traffic control|satellite orbits|black holes|quantum computing|protein folding|vaccines|sleep|nutrition|grief|parenting|moving abroad|job interviews|small business taxes|"
+              "stock options|mortgages|insurance claims|copyright|privacy law|elections|the French Revolution|the Silk Road|ancient Egypt|the Cold War|Viking ships|Japanese woodworking|"
+              "Renaissance painting|film editing|video game design|knitting|home plumbing|solar panels|wine making|coffee roasting|dog training|urban planning|lighthouses|deep sea mining").split("|")
+GEN_LANGS = ["Python", "C++", "Rust", "Go", "JavaScript", "TypeScript", "Java", "C#", "Bash", "Lua", "Haskell", "PHP", "Kotlin", "C"]
+GEN_FORMS = ["short story", "news article", "blog post", "novel chapter", "speech", "diary", "travel report", "contract", "product manual", "interview"]
+GEN_FMTS = ["CSV file", "JSON document", "server log", "YAML config", "SQL dump", "XML file"]
+GEN_HUMAN = ["Spanish", "German", "French", "Czech", "Japanese", "Italian"]
+GEN_TASKS = {   # kind: (what a short request is, how to write a document, what is asked of a document)
+    "code": ("concrete programming task in {lang}: what to build, its inputs, its edge cases", "Write a complete {lang} source file on {topic}: real logic, several functions, no explanation, only code.",
+             ["Find the bugs in this {lang} code and fix them.", "Explain what this code does, function by function.", "Rewrite this code in {lang2}.", "Add error handling and unit tests to this code.", "Refactor this code and list what you changed."]),
+    "prose": ("creative writing request (story, poem, letter or speech) with its mood and its reader", "Write a long {form} on {topic}. Only the text.",
+              ["Summarize this text in five sentences.", "Continue this text in the same style.", "Rewrite this text for a ten year old.", "List the main points and who would disagree with them.", "Translate this text to {human}."]),
+    "explain": ("question that asks how something works and why", "Write a long technical article on {topic}. Only the article.",
+                ["Make a study guide from this article.", "Write ten quiz questions with answers on this article.", "Explain this article to a beginner.", "What does this article get wrong or leave out?"]),
+    "data": ("task on tables, SQL, regular expressions or a file format, with a small sample of the data in it", "Write a long {fmt} with realistic made-up records on {topic}. Only the data.",
+             ["Which records look wrong, and why?", "Write a SQL schema for this data and three useful queries.", "Summarize what this data shows.", "Turn the ten most important records into a Markdown table."]),
+    "math": ("math word problem with numbers, or a short proof to write", "Write a long numbered list of math word problems on {topic}, with their numbers. Only the problems.",
+             ["Solve the first five problems step by step.", "Which of these problems is the hardest, and why? Solve it."]),
+    "chat": ("request for practical advice or a plan, with some personal detail", "Write a long email thread between several people on {topic}. Only the emails.",
+             ["Summarize who wants what.", "Write the next reply.", "What should happen next, and who should do it?"])}
+def _gen_code(lang):   # one language's code: a task, a file, what is asked of a file
+    return (f"concrete programming task in {lang}: what to build, its inputs, its edge cases", f"Write a complete {lang} source file on {{topic}}: real logic, several functions, no explanation, only code.",
+            ["Find the bugs in this code and fix them.", "Explain what this code does, function by function.", "Add error handling and unit tests to this code.", "Refactor this code and list what you changed."])
+GEN_TASKS.update({   # pure kinds: all of a prompt in one language or form, so its answer is too; routers pick very different experts for them
+    "latin": ("request written entirely in classical Latin, no other language", "Write a long text entirely in classical Latin on {topic}. No other language, no translation.",
+              ["Perge hunc textum Latine scribere.", "Scribe summarium huius textus Latine.", "Quid hic textus significat? Responde Latine."]),
+    "french": ("request written entirely in French, no other language", "Write a long text entirely in French on {topic}. No other language.",
+               ["Continue ce texte en français.", "Résume ce texte en cinq phrases.", "Réécris ce texte pour un enfant de dix ans."]),
+    "german": ("request written entirely in German, no other language", "Write a long text entirely in German on {topic}. No other language.",
+               ["Setze diesen Text auf Deutsch fort.", "Fasse diesen Text in fünf Sätzen zusammen.", "Schreibe diesen Text für ein zehnjähriges Kind um."]),
+    "medical": ("clinical question from a physician with the patient's symptoms, labs and medication, in medical terminology", "Write a long clinical case report on {topic}: history, examination, labs, differential diagnosis, plan, in medical terminology. Only the report.",
+                ["What is the most likely diagnosis, and why?", "Write the discharge summary for this patient.", "Which findings do not fit, and what would you order next?"]),
+    "legal": ("legal question from a lawyer with the facts of the case, in legal language", "Write a long legal text on {topic} with numbered clauses and defined terms, in legal language. Only the text.",
+              ["Which clauses are unenforceable, and why?", "Summarize the obligations of each party.", "Redraft the last clause to favour the other party."]),
+    "equations": ("math problem stated only in LaTeX symbols, with no words", "Write a long derivation on {topic} in pure LaTeX equations: only formulas, not one sentence.",
+                  ["Continue this derivation.", "Find the error in these equations.", "Simplify the last equation."]),
+    "scifi": ("request for a science fiction story with its setting and characters", "Write a long science fiction story on {topic}. Only the story.",
+              ["Continue this story.", "Rewrite the last scene from another character's view.", "List the plot holes in this story."]),
+    "py": _gen_code("Python"), "js": _gen_code("JavaScript"), "cpp": _gen_code("C++"), "java": _gen_code("Java"),
+    "html": ("request for a web page: its layout, its content, its behaviour", "Write a complete HTML page with CSS and JavaScript on {topic}. Only the code.",
+             ["Find the bugs in this page and fix them.", "Make this page work on a phone.", "Add a dark theme to this page."])})
+GEN_KIND_TOPICS = {   # a kind with its own subjects; the others take GEN_TOPICS
+    "medical": "heart failure|sepsis|diabetic ketoacidosis|pulmonary embolism|acute kidney injury|Crohn's disease|stroke|meningitis|lupus|multiple myeloma|preeclampsia|anaphylaxis".split("|"),
+    "legal": "a commercial lease|data protection|an employment contract|a patent licence|a share purchase|a construction dispute|inheritance|a non-disclosure agreement|insolvency|maritime salvage".split("|"),
+    "equations": "eigenvalues|Fourier series|Maxwell's equations|the Riemann zeta function|stochastic calculus|tensor calculus|the Navier-Stokes equations|Lie algebras|Bayes' rule|contour integrals".split("|"),
+    "math": "compound interest|prime numbers|probability of cards|geometry of circles|linear systems|combinatorics|rates of work|modular arithmetic".split("|"),
+    "latin": "the Gallic wars|the Roman senate|the gods of Olympus|a farmer's year|the fall of Troy|the philosophy of the Stoics|a Roman banquet|the sea voyage of Aeneas".split("|"),
+    "scifi": "a generation ship|first contact|a Dyson swarm|time dilation|a Mars rebellion|an uploaded mind|a dying star|a machine religion".split("|")}
+GEN_DOC = 120   # from this many input tokens a prompt is a task on a document, below it a request alone
+
+
+def gen_parse(spec):
+    """SPEC to its values; key: what names the prompts (not the server that writes them)"""
+    d = dict(kv.split("=", 1) for kv in filter(None, (spec or "").split(",")))
+    unknown = set(d) - {"in", "out", "task", "topic", "seed", "first", "url"}
+    if unknown: sys.exit(f"--gen: unknown {sorted(unknown)} in {spec!r}: in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,first=K,url=U")
+    rng = lambda v: tuple(int(x) for x in (v.split(":") * 2)[:2])
+    g = {"in": rng(d.get("in", "16:2000")), "out": rng(d.get("out", "32:1024")), "task": d.get("task", "|".join(GEN_TASKS)).split("|"), "seed": int(d.get("seed", 1)), "first": int(d.get("first", 0)),
+         "topic": d["topic"].split("|") if d.get("topic") else GEN_TOPICS, "own_topic": bool(d.get("topic")), "url": (d.get("url") or fcfg.get("hosts", "gen_url")).rstrip("/")}
+    g["key"] = json.dumps([g["in"], g["out"], g["task"], d.get("topic"), g["seed"]])
+    return g
+
+
+def gen_ctx(spec):
+    """the context of a whole row: the server stays the same for all its prompts; another model's tokenizer may count a prompt up to a quarter longer"""
+    g = gen_parse(spec)
+    return int(g["in"][1] * 1.25) + g["out"][1] + 1024
+
+
+def gen_prompt(spec, i):
+    """prompt i of SPEC: from the store, else written now. Keys: text, n_tokens, out, task, topic"""
+    import random
+    g = gen_parse(spec)
+    i += g["first"]   # first=K: a row starts at prompt K of the same set, so a training row and a test row never share a prompt
+    d = os.path.join(WORK, "genprompts", hashlib.sha1(g["key"].encode()).hexdigest()[:12])
+    f = os.path.join(d, f"{i}.json")
+    if os.path.exists(f): return json.load(open(f))
+    if not g["url"]: sys.exit("--gen: no server to write prompts: set [hosts] gen_url in the fork config, or url= in the spec")
+    post_ = lambda path, body: judge_w10.post(g["url"], path, body)
+    def write(text, n, seed):
+        r = post_("/v1/chat/completions", {"messages": [{"role": "user", "content": text}], "max_tokens": n, "temperature": 1.0, "top_p": 0.95, "seed": seed, "cache_prompt": False,
+                                           "chat_template_kwargs": {"enable_thinking": False}})
+        return r["choices"][0]["message"].get("content") or ""
+    toks = lambda t: post_("/tokenize", {"content": t})["tokens"]
+    def cut(t, n):
+        ids = toks(t)
+        return t if len(ids) <= n else post_("/detokenize", {"tokens": ids[:n]})["content"]
+    r = random.Random(f"{g['seed']}/{i}")
+    draw = lambda a: a[0] if a[0] == a[1] else int(round(math.exp(r.uniform(math.log(a[0]), math.log(a[1])))))
+    task = r.choice(g["task"])
+    p = {"i": i, "n_in": draw(g["in"]), "out": draw(g["out"]), "task": task, "topic": r.choice(g["topic"] if g["own_topic"] else GEN_KIND_TOPICS.get(task, g["topic"])), "lang": r.choice(GEN_LANGS), "lang2": r.choice(GEN_LANGS),
+         "form": r.choice(GEN_FORMS), "fmt": r.choice(GEN_FMTS), "human": r.choice(GEN_HUMAN), "seed": r.randrange(1 << 31)}
+    k = GEN_TASKS.get(p["task"]) or (p["task"], "Write a long text on {topic}, the input of this task: " + p["task"] + ". Only the text.", [p["task"]])
+    if p["n_in"] < GEN_DOC:
+        p["text"] = cut(write(f"Write one {k[0].format(**p)}. Subject: {p['topic']}. Write it the way a user types it to an AI assistant, about {max(8, p['n_in'] * 3 // 4)} words. Output only that text.",
+                              p["n_in"] + 32, p["seed"]), p["n_in"])
+    else:
+        p["line"] = r.choice(k[2]).format(**p)
+        need = p["n_in"] - len(toks(p["line"])) - 2
+        parts, n = [], 0
+        for j in range(16):   # a document of many parts: one answer rarely reaches 2000 tokens
+            parts.append(write(k[1].format(**p) + (f" This is part {j + 1} of it, on another side of the subject." if j else ""), min(need - n + 64, 2048), p["seed"] + j))
+            n = len(toks("\n\n".join(parts)))
+            if n >= need: break
+        p["text"] = p["line"] + "\n\n" + cut("\n\n".join(parts), need)
+    p["n_tokens"] = len(toks(p["text"]))
+    os.makedirs(d, exist_ok=True)
+    with open(f + ".tmp", "w") as o: json.dump(p, o, ensure_ascii=False)
+    os.replace(f + ".tmp", f)
+    return p
+
+
+def cmd_gen(a):
+    """prompts --start .. of SPEC to the store (a run with this spec finds them), one line each; --show prints the texts too"""
+    for i in range(a.start, a.start + a.n):
+        t0 = time.time()
+        p = gen_prompt(a.spec, i)
+        print(f"{i:4d}  {p['task'][:8]:8s}  {p['topic'][:26]:26s}  in {p['n_tokens']:5d}  out {p['out']:5d}  {time.time() - t0:5.0f} s  {p['text'][:64]!r}", flush=True)
+        if a.show: print(p["text"], flush=True)
 
 
 def prep_model():
@@ -2806,6 +3214,35 @@ CELLS = {}   # (model, test, build, args, campaign, hw) -> (t/s of its runs, pp 
 FIRST_ANSWER = {}
 
 
+# What a row's numbers depend on and a debug switch can change without saying so: the pool, its margin and the prompt paths of the last request (2026-11-02: rows that looked clean under
+# a switch had a bigger pool or no mix call at all, and a bug was blamed on the wrong PR). Goes into the row's note.
+def row_layout(logf):
+    try:
+        t = open(logf, errors="replace").read()
+    except OSError:
+        return ""
+    pools = dict(re.findall(r"block pool on (\S+): \d+ layers, ([\d.]+) MiB", t))
+    margins = dict(re.findall(r"VRAM on (\S+): \d+ MiB free at sizing, margin (\d+) MiB", t))
+    last = t[t.rfind("launch_slot_"):] if "launch_slot_" in t else t
+    paths = collections.Counter(x.strip() for x in re.findall(r"prompt call of \d+ tokens: ([^(]+?) \(", last))
+    if not pools:
+        return ""
+    try:   # stats.log beside the server log: the calls that ran 1.3 x or more behind the best known at their size
+        slow = [re.search(r"prompt call of (\d+) tokens: (.+?) took (\d+) ms.*?, ([\d.]+) x, SLOW", l) for l in open(logf[:-4] + ".stats.log", errors="replace") if ", SLOW" in l]
+    except OSError:
+        slow = []
+    worst = max((m for m in slow if m), key=lambda m: float(m.group(4)), default=None)
+    try:   # read speed of each request's largest call, as stats.log measured it
+        calls = re.findall(r"prompt call of (\d+) tokens: .*? ssd (\d+) MB/s \(([\d.]+) GB\)", open(logf[:-4] + ".stats.log", errors="replace").read())
+        top = max((int(c[0]) for c in calls), default=0)
+        rd = [c for c in calls if int(c[0]) == top]
+    except OSError:
+        rd, top = [], 0
+    return (f"pool {'+'.join(f'{float(v):.0f}' for v in pools.values())} MiB margin {'/'.join(margins.values())} paths " + (", ".join(f"{k} {n}" for k, n in paths.most_common()) or "-")
+            + (f" | {len(slow)} slow calls, worst {worst.group(1)} tokens {worst.group(2)} {float(worst.group(3)) / 1e3:.1f} s, {worst.group(4)} x" if worst else "")
+            + (f" | {top}-token calls read " + ", ".join(f"{c[2]} GB at {c[1]} MB/s" for c in rd) if rd else ""))
+
+
 def answer_checks(row, key):
     out = row.get("output") or ""
     n_gen = int(float(row.get("n_gen") or 0))
@@ -2820,9 +3257,15 @@ def answer_checks(row, key):
     # With the expert cache, upload timing decides which experts run on the GPU and which on the CPU, and that numeric drift changes the text late in a
     # long answer: a later run that parts from the first is normal. A repeat much shorter or longer than the first is not (the DSpark break: 717 against
     # 887 characters): only that is flagged.
+    k = next((i for i, (x, y) in enumerate(zip(first, out)) if x != y), min(len(first), len(out)))
+    # Nor is a repeat that parts in the first 2%: a damaged prompt, with a coherent answer and no NaN to show for it (2026-11-02: the unwritten rows of a fused GLU, parting at
+    # character 5 of 802 where the normal drift parts at 342).
+    if k * 50 < len(first) and not OVR.get("vary"):   # (--vary: another prompt each run. A short prompt's answer drifts from its first tokens: 80 of 989 is normal, so the first 2% only)
+        row["note"] = f"repeat parts at char {k} of {len(first)} | " + str(row.get("note") or "")
+        print(col("1;93", f"    REPEAT PARTS EARLY from the cell's first run: at character {k} of {len(first)}: the prompt was computed differently: ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
+        return
     if 0.85 * len(first) <= len(out) <= 1.15 * len(first):
         return
-    k = next((i for i, (x, y) in enumerate(zip(first, out)) if x != y), min(len(first), len(out)))
     print(col("1;93", f"    REPEAT DIFFERS from the cell's first run: {len(out)} against {len(first)} characters, parting at character {k}: ...{out[max(0, k - 40):k + 40]!r}"), flush=True)
 
 
@@ -2837,14 +3280,302 @@ def text_class(text):
 def is_loop(text):
     """a repetition loop: the last 30% of the words have a unique word 4-gram share below 0.5 (measured: loops 0.01-0.26, real text 0.83-1.0); needs at least 100 words"""
     t = (text or "").strip()
-    if len(t) >= 20 and len(set(t)) <= 3:   # '!!!!!!...': the logits are NaN or broken, argmax is token 0 (a GLM kv-tail run gave 33 t/s and a 99% hit rate with such an answer, 2026-10-17)
+    if is_garbage(t):
         return True
     w = t.split()
     if len(w) < 100:
         return False
     w = w[int(len(w) * 0.7):]
     g = [tuple(w[i:i + 4]) for i in range(len(w) - 3)]
-    return bool(g) and len(set(g)) / len(g) < 0.5
+    return bool(g) and len(set(g)) / len(g) < LOOP_SHARE
+
+
+# The judge: fork/judge_w10.py reads every stored answer on W10 with its own copy of runs.db, so no row waits for it and PC1 has nothing to coordinate. Column judge: "good 4: why [...]", "nonsense 1: why [...]", empty: not read yet.
+# run.py judge --sync: the copy goes over, the verdicts come back. A nonsense row of the last day becomes ok=0: neither its prompt nor its decode speed counts anywhere. An older one is listed for reading first, public numbers among them.
+# run.py judge --build B or IDS: read now, over the network, when a report needs the verdict at once.
+JUDGE_LONG = 30000   # prompt tokens of a long prompt row: past the sparse gates (GLM 10196 cells, Qwen Next 21784). Some bugs live only there
+
+
+def judge_build_line(row):
+    """what is known about this build, said at each of its rows: rows called nonsense, and no long prompt answer judged good yet (the gather mask of 2026-11-01 broke only answers above the sparse gate, short rows looked fine)"""
+    if str(row.get("build")).startswith("stock"): return
+    import sqlite3
+    con = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"), timeout=60)
+    try:
+        v = con.execute("select judge, note from runs where build=? and judge is not null", (row.get("build"),)).fetchall()
+    except sqlite3.Error:
+        return   # no judge column before the first row that has one
+    finally:
+        con.close()
+    bad = sum(1 for j, _ in v if j.startswith("nonsense"))
+    if bad: print(col("1;91", f"JUDGE: {bad} rows of {row.get('build')} are nonsense, their speeds count nowhere. run.py judge lists them"), flush=True)
+    if not any(j.startswith("good") and int(m.group(1)) >= JUDGE_LONG for j, n in v for m in [re.search(r"prompt_n=(\d+)", n or "")] if m):
+        print(col("1;93", f"LONG PROMPT NOT CHECKED on {row.get('build')}: no answer past {JUDGE_LONG} prompt tokens judged good yet. run.py jobs -c sane -b {row.get('build')} -r 0 -nm, then run.py judge --build {row.get('build')}"), flush=True)
+
+
+def judge_apply(con, rid, v, flip=True):
+    """a verdict into runs.db. Nonsense fails the row when flip is set; good on a row failed by the judge gives it back, the row counts after all. Returns the verdict text."""
+    s = judge_w10.verdict_str(v)
+    ok, note = con.execute("select ok, note from runs where rowid=?", (rid,)).fetchone()
+    if v["verdict"] == "nonsense" and flip and ok != "0":
+        con.execute("update runs set judge=?, ok='0', okf=0, stats_ok=NULL, note=? where rowid=?", (s, f"JUDGE NONSENSE: {v['why']} | " + str(note or ""), rid))
+    elif v["verdict"] == "good" and str(note or "").startswith("JUDGE NONSENSE:"):
+        con.execute("update runs set judge=?, ok='1', okf=1, stats_ok=NULL, note=? where rowid=?", (s, str(note).split(" | ", 1)[-1] if " | " in str(note) else "", rid))
+    else:
+        con.execute("update runs set judge=? where rowid=?", (s, rid))
+    con.commit()
+    return s
+
+
+def judge_sync(con):
+    """the copy of runs.db to W10 (a consistent one: rows may be going in), the verdicts back. judge_w10.py takes the copy over by itself."""
+    import sqlite3, tempfile
+    host, root = fcfg.get("hosts", "w10_ssh"), fcfg.get("hosts", "w10_root")
+    here = os.path.dirname(os.path.abspath(__file__))
+    remote = f"{host}:/{root}/judge"
+    with tempfile.TemporaryDirectory() as d:
+        snap = sqlite3.connect(os.path.join(d, "runs.db.tmp"))
+        con.backup(snap)
+        snap.close()
+        scp = lambda *a: subprocess.run(["scp", "-q", "-o", "ConnectTimeout=5", *a], capture_output=True, text=True)
+        for f in (os.path.join(d, "runs.db.tmp"), os.path.join(here, "judge_w10.py"), os.path.join(os.path.dirname(here), "README.md")):
+            r = scp(f, remote + "/")
+            if r.returncode:
+                print("judge --sync: W10 does not answer: " + r.stderr.strip()[:200], flush=True)
+                judge_local_start()
+                return
+        subprocess.run(["ssh", "-o", "ConnectTimeout=5", host, f"move /y {root}\\judge\\runs.db.tmp {root}\\judge\\runs.db.new"], capture_output=True)
+        subprocess.run(["ssh", "-o", "ConnectTimeout=5", host, "schtasks /run /tn judge"], capture_output=True)   # a reboot or an empty battery leaves the reading loop off; a running one is left alone
+        vf = os.path.join(d, "verdicts.jsonl")
+        if scp(remote + "/verdicts.jsonl", vf).returncode:
+            print("no verdicts on W10 yet")
+            return
+        day, n = time.strftime("%F %T", time.localtime(time.time() - 86400)), 0
+        for line in open(vf, encoding="utf8"):
+            try: v = json.loads(line)
+            except ValueError: continue
+            r = con.execute("select ts, build, judge from runs where rowid=?", (v["id"],)).fetchone()
+            if not r or r[0] != v["ts"] or r[1] != v["build"] or v["verdict"] == "none": continue
+            if r[2] != judge_w10.verdict_str(v):
+                judge_apply(con, v["id"], v, flip=r[0] >= day)
+                n += 1
+    print(f"{n} new verdicts from W10")
+
+
+# The judge on this machine when W10 is off (its battery ran out at night, 2026-11-02; user: "start it locally on pc1, you have 2 gpus"). Stock llama-server with Qwen3.6 on the card -ng 1 leaves free, one reading loop that writes verdicts straight into runs.db.
+# A row that wants that card comes first: the loop ends its server and reads on when the card is free again. A row with -ng 1 takes the fastest card, the judge keeps reading on the other.
+# The server runs under the name judge-server, so kill_leftovers and wait_host_free (they look for llama-*) leave it to the loop. The loop ends by itself after 10 minutes with nothing to read, and when W10 answers again (unless started by hand).
+JUDGE_LOCAL_PORT, JUDGE_LOCAL_CTX, JUDGE_LOCAL_IDLE = 8190, 16384, 600
+GPU_SUBCOMMANDS = {"jobs", "run", "cell", "cells", "bench", "regress", "quick", "baseline", "calib", "onepass", "plcal"}
+
+
+def cmd_stats(a):
+    """run.py stats [TAG] [--only DEC,STA]: follows the stats.log of the row that runs now (the newest one), line by line, until ctrl-C; with TAG the one a cell kept, printed once. See llama_moe_stats_log_fork for the types."""
+    only = {x.strip() for x in a.only.split(",") if x.strip()}
+    show = lambda l: not only or l.startswith("#") or (len(l.split()) > 3 and l.split()[3] in only)   # date, time, seconds, type
+    if a.tag:
+        for l in open(os.path.join(QDIR, a.tag + ".stats.log"), errors="replace"):
+            if show(l): print(l, end="")
+        return
+    files = sorted(glob.glob("/tmp/perf-*.stats.log"), key=os.path.getmtime)
+    if not files: sys.exit("no stats.log yet: no row has run since the last boot")
+    print("following", files[-1], flush=True)
+    with open(files[-1], errors="replace") as f:
+        while True:
+            l = f.readline()
+            if not l: time.sleep(0.2)
+            elif show(l): print(l, end="", flush=True)
+
+
+def judge_local_pidfile():
+    return os.path.join(QDIR, "judge-local.pid")
+
+
+def judge_local_pid():
+    """the reading loop's pid when it is alive"""
+    try:
+        pid = int(open(judge_local_pidfile()).read())
+        return pid if "judge" in open(f"/proc/{pid}/cmdline").read() else None
+    except (OSError, ValueError):
+        return None
+
+
+def judge_local_start(auto=True):
+    """starts the reading loop on this machine, on its own: rows and the shell that asked may end. False when one runs already"""
+    if judge_local_pid(): return False
+    log = open(os.path.join(QDIR, "judge-local.log"), "a")
+    p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "judge", "--local-loop"] + (["--auto"] if auto else []), stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    open(judge_local_pidfile(), "w").write(str(p.pid))
+    print(f"judge: reading on this machine, pid {p.pid}, log {log.name}", flush=True)
+    return True
+
+
+def judge_local_stop():
+    """ends the reading loop with its servers. True when it was running; the card is free when this returns"""
+    import signal
+    pid = judge_local_pid()
+    if not pid: return False
+    try: os.killpg(pid, signal.SIGTERM)
+    except OSError: pass
+    for _ in range(40):
+        if not judge_local_pid(): break
+        time.sleep(0.5)
+    print(f"judge: reading on this machine stopped, pid {pid}", flush=True)
+    return True
+
+
+def judge_local_kick():
+    """after a stored row: W10's server does not answer, so this machine reads it"""
+    url = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
+    if url and not judge_w10.server_up(url): judge_local_start()
+
+
+def judge_card():
+    """(the card the judge sits on, the card -ng 1 picks), nvidia-smi indices as text: one card only means the same card twice, the judge then waits for every row"""
+    smi = subprocess.run(GPU_Q_NG, shell=True, capture_output=True, text=True).stdout
+    best = pick_gpus(1, smi)
+    rest = [ln.split(",")[0].strip() for ln in smi.strip().splitlines() if ln.split(",")[0].strip() != best]
+    return (rest[-1] if rest else best), best
+
+
+def rows_want_card(card, best):
+    """True while a measured row may need this card: a llama-* process or a run.py row command, unless it is limited to other cards (its CUDA_VISIBLE_DEVICES, or -ng 1 when the judge is not on the fastest card)"""
+    me = os.getpid()
+    for d in filter(str.isdigit, os.listdir("/proc")):
+        if int(d) == me: continue
+        try:
+            argv = open(f"/proc/{d}/cmdline").read().split("\0")
+            comm = open(f"/proc/{d}/comm").read().strip()
+            if not comm.startswith("llama-") and not (any(x.endswith("run.py") for x in argv) and GPU_SUBCOMMANDS & set(argv)): continue
+            env = dict(x.split("=", 1) for x in open(f"/proc/{d}/environ").read().split("\0") if "=" in x)
+        except (OSError, ValueError):
+            continue
+        vis = env.get("CUDA_VISIBLE_DEVICES")
+        if vis is not None and vis.strip():
+            if card in [x.strip() for x in vis.split(",")]: return True
+        elif not ("-ng" in argv and argv[argv.index("-ng") + 1:argv.index("-ng") + 2] == ["1"] and card != best):
+            return True
+    return False
+
+
+def judge_local_loop(a):
+    """see the note above judge_local_pidfile"""
+    import signal, sqlite3
+    card, best = judge_card()
+    exe, model = os.path.join(DEVBUILDS, "stock-latest", "llama-server"), fcfg.get("models", "qwen36")
+    link = os.path.join(QDIR, "judge-server")   # the name in the process table: see above
+    if os.path.lexists(link): os.remove(link)
+    os.symlink(os.path.realpath(exe), link)
+    env = {**os.environ, "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": card, "LD_LIBRARY_PATH": os.path.dirname(os.path.realpath(exe))}
+    url, srv, seen, by_text, quiet, last = f"http://127.0.0.1:{JUDGE_LOCAL_PORT}", None, set(), {}, 0, time.time()
+    second = sorted(glob.glob(os.path.join(os.path.dirname(os.path.dirname(model)), "*", "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf")))
+    judge_w10.SECOND_LOG = os.path.join(QDIR, "judge-second.log")
+    judge_w10.SECOND_CMD = [link, "-m", second[0], "--host", "127.0.0.1", "--port", str(judge_w10.SECOND_PORT), "-np", "1", "-c", str(JUDGE_LOCAL_CTX), "-ngl", "0", "--no-mmap", "--no-webui"] if second else ["false"]
+    readme = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md")
+    db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
+    w10 = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
+    say = lambda *x: print(time.strftime("%F %T"), *x, flush=True)
+    os.environ.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", CUDA_VISIBLE_DEVICES="", LD_LIBRARY_PATH=env["LD_LIBRARY_PATH"])   # the second model starts from here: on the CPU
+    def second_down():   # 12 GiB of RAM and every thread: it never stays beside a row, and wait_host_free would wait for it
+        subprocess.run(["pkill", "-f", f"judge-server.*--port {judge_w10.SECOND_PORT}"])
+    def down():
+        nonlocal srv
+        second_down()
+        if srv:
+            srv.terminate()
+            try: srv.wait(30)
+            except subprocess.TimeoutExpired: srv.kill(); srv.wait()
+            srv = None
+    signal.signal(signal.SIGTERM, lambda *_: (down(), os._exit(0)))
+    say(f"judge on card {card}, rows go to card {best} with -ng 1, server {exe}")
+    try:
+        while True:
+            if a.auto and w10 and judge_w10.server_up(w10):
+                say("W10 answers again: it reads on, run.py judge --sync takes its verdicts")
+                return
+            if rows_want_card(card, best):
+                if srv: say("a row wants the card: server stopped")
+                down(); quiet = 0; time.sleep(5)
+                continue
+            quiet += 1
+            if not srv or srv.poll() is not None:
+                srv = None
+                used = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout.split()
+                if quiet < 3 or not used or int(used[int(card)]) > 600:   # a chain between two rows: its next row comes within seconds, and the card must be empty
+                    time.sleep(5)
+                    continue
+                srv = subprocess.Popen([link, "-m", model, "--host", "127.0.0.1", "--port", str(JUDGE_LOCAL_PORT), "-np", "1", "-c", str(JUDGE_LOCAL_CTX), "-ngl", "99", "--no-mmap", "--no-webui"], env=env, stdin=subprocess.DEVNULL, stdout=open(os.path.join(QDIR, "judge-server.log"), "w"), stderr=subprocess.STDOUT)
+                for _ in range(60):
+                    if judge_w10.server_up(url) or rows_want_card(card, best) or srv.poll() is not None: break
+                    time.sleep(3)
+                say("server up" if judge_w10.server_up(url) else "server did not come up")
+                continue
+            con = sqlite3.connect(db, timeout=60)
+            done = seen | {r[0] for r in con.execute("select rowid from runs where judge is not null")}
+            todo = judge_w10.queue(con, done, readme)
+            say(f"{len(todo)} rows to read")
+            for r in todo[:20]:
+                if rows_want_card(card, best): break
+                free = not rows_want_card(best, best)
+                if not free: second_down()
+                v = judge_w10.read_row(con, r, url, by_text, start=free)
+                if v.get("down"):
+                    say("server stopped answering:", v["why"])
+                    break
+                seen.add(r[0])
+                if v["verdict"] != "none":
+                    second_said = not v.get("second")
+                    day = time.strftime("%F %T", time.localtime(time.time() - 86400))
+                    judge_apply(con, r[0], v, flip=r[1] >= day and second_said)   # Qwen3.6 alone never fails a row: it needs the second model's word, as on W10
+                    con.commit()
+                say(r[0], r[2][:26], r[3][:10], judge_w10.verdict_str(v))
+                last = time.time()
+            con.close()
+            if not todo:
+                if time.time() - last > JUDGE_LOCAL_IDLE:
+                    say("nothing left to read: the card is free")
+                    return
+                time.sleep(30)
+    finally:
+        down()
+        try: os.remove(judge_local_pidfile())
+        except OSError: pass
+
+
+def cmd_judge(a):
+    """the judge's results and readings on demand: no arguments, what it has said so far; --sync, W10's copy and verdicts; IDS or --build, read now; --local, read on this machine"""
+    if a.local_loop: return judge_local_loop(a)
+    if a.local_stop:
+        if not judge_local_stop(): print("judge: not reading on this machine")
+        return
+    if a.local:
+        if not judge_local_start(auto=False): print(f"judge: already reading on this machine, pid {judge_local_pid()}")
+        return
+    url = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
+    if a.file:
+        print(judge_w10.verdict_str(judge_w10.judge_answer(url, open(a.file, errors="replace").read(), a.ask)))
+        return
+    import sqlite3
+    db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
+    con = sqlite3.connect(db, timeout=60)
+    if "judge" not in [r[1] for r in con.execute("PRAGMA table_info(runs)")]: con.execute('ALTER TABLE runs ADD COLUMN "judge" TEXT')
+    if a.sync: judge_sync(con)
+    q = "select rowid, ts, build, test, model, tps, pp from runs where "
+    line = lambda r, j, ok="": f"{r[0]:6d}  {r[2][:26]:26s}  {r[3][:9]:9s}  {os.path.basename(r[4] or '')[:24]:24s}  decode {r[5] or 0:6.1f}  prompt {r[6] or 0:7.1f}  {ok}{j}"
+    if a.ids or a.build:
+        rows = [con.execute(q + "rowid=?", (i,)).fetchone() for i in a.ids] if a.ids else con.execute(q + "build=? and coalesce(ok, '1') != '0' and judge is null order by rowid", (a.build,)).fetchall()
+        for r in filter(None, rows):
+            t, ask = judge_w10.stored_answer(con, r[2], r[3], r[4], r[1])
+            if len((t or "").strip()) < judge_w10.MIN_CHARS: continue
+            v = judge_w10.judge_answer(url, t, ask)
+            print(line(r, judge_w10.verdict_str(v)), flush=True)
+            if not a.dry and v["verdict"] != "none": judge_apply(con, r[0], v)
+        return
+    a_, g_, n_ = (con.execute(f"select count(*) from runs where cast(out_chars as int) >= ? and coalesce(ok, '1') != '0' {w}", (judge_w10.MIN_CHARS,)).fetchone()[0] for w in ("", "and judge like 'good%'", "and judge like 'nonsense%'"))
+    print(f"{a_} answers counted: {g_} good, {n_} nonsense but still counted (older than a day, read them, then run.py judge IDS fails them), {a_ - g_ - n_} not read yet")
+    cited = set(re.findall(r"outputs/(\d+)s?\.txt", open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"), errors="replace").read()))
+    for r in con.execute("select rowid, ts, build, test, model, tps, pp, judge, ok from runs where judge like 'nonsense%' order by rowid desc limit ?", (a.last,)):
+        print(line(r, r[7], ("README " if str(r[0]) in cited else "") + ("failed " if r[8] == "0" else "COUNTED ")))
 
 
 TEMPLATED = False   # --templated: chat tests (tetrisc, game4c, edit4c, long1kc, chat) render the template through /apply-template and send the text to /completion
@@ -2922,6 +3653,10 @@ def store(row, build, test, rec, note, hw, vstr):
         if os.path.exists(lg):
             for k, v in server_params(open(lg, errors="replace").read()).items(): row.setdefault(k, v)
             break
+    if not row.get("driver"):   # the loaded kernel module, read from /proc (no nvidia-smi: it can mismatch the module and costs NVML calls); a remote cell sets its own
+        try:
+            _dv = open("/proc/driver/nvidia/version").read(); row["driver"] = re.search(r"\b(\d{3}\.\d+(?:\.\d+)?)\b", _dv).group(1)
+        except Exception: pass
     if not row.get("hwline"):   # the machine line of this host (a remote cell sets its own), read once per process
         if "hw" not in _HWL: _HWL["hw"] = hw_line()
         row["hwline"] = _HWL["hw"]
@@ -2929,9 +3664,11 @@ def store(row, build, test, rec, note, hw, vstr):
     row["uniq4"], row["out_chars"], row["code"] = text_class(row.get("output"))
     row["loop"] = int(bool(row.get("loop_abort")) or is_loop(row.get("output")))
     answer_checks(row, (row["model"], test, build, rec.get("args", ""), CAMPAIGN, hw))
+    judge_build_line(row)
+    judge_local_kick()
     try:   # the generated text (zlib) into runs.db table outputs, keyed by ts + build
         import runlog
-        runlog.insert_output(row["ts"], hw, build, test, row["model"], row.get("md5"), row.get("output"), row["uniq4"], row["out_chars"], row["code"])
+        runlog.insert_output(row["ts"], hw, build, test, row["model"], row.get("md5"), row.get("output"), row["uniq4"], row["out_chars"], row["code"], judge_w10.cut_ask(LAST_ASK["v"]))
     except Exception as ex:
         print("outputs:", ex, file=sys.stderr)
     extra = {k: v for k, v in rec.items() if k != "args"}
@@ -2956,7 +3693,7 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "judge", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     save_output_file(row["ts"], build, test, row["model"])   # fork/outputs/<run id>.txt: the answer, readable on GitHub without runs.db
     global _EMB_OFF
     try:
@@ -2972,19 +3709,18 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
 def save_output_file(ts, build, test, model, rid=None):
     """the answer of a run as fork/outputs/<runs.db row id>.txt, <id>s.txt for stock builds (header: build, test, model, speeds), so anyone can read it on GitHub next to the README table
     that cites the id; returns the path or None (no stored answer). rid given: that row, else the row of ts + build + test + model."""
-    import sqlite3, zlib
+    import sqlite3
     try:
         con = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         q = "select rowid, ts, build, test, model, tps, pp, n_gen, args, pl, start_ts from runs where "
         r = con.execute(q + "rowid=?", (rid,)).fetchone() if rid else con.execute(q + "ts=? and build=? and test=? and model=? order by rowid desc limit 1", (ts, build, test, model)).fetchone()
         if not r: return None
-        o = con.execute("select text from outputs where build=? and test=? and model=? and abs(strftime('%s', ts) - strftime('%s', substr(?, 1, 19))) <= 120 order by abs(strftime('%s', ts) - strftime('%s', substr(?, 1, 19))) limit 1",
-                        (r[2], r[3], r[4], r[1], r[1])).fetchone()
-        if not o: return None
+        text = judge_w10.stored_answer(con, r[2], r[3], r[4], r[1])[0]
+        if text is None: return None
         os.makedirs(OUT_DIR, exist_ok=True)
         f = os.path.join(OUT_DIR, f"{r[0]}{'s' if (r[2] or '').startswith('stock') else ''}.txt")   # stock runs: <id>s, sorts next to the id
         hdr = f"run {r[0]} | {r[2]} | {r[3]} | {os.path.basename(r[4] or '')} | decode {r[5] and round(r[5], 2)} t/s | prompt {r[6] and round(r[6], 1)} t/s | {r[7] and int(r[7])} tokens | args: {r[8] or ''} | power {r[9] or '?'} W | {r[10] or r[1]}\n\n"
-        open(f, "w").write(hdr + zlib.decompress(o[0]).decode("utf8", "replace"))
+        open(f, "w").write(hdr + text)
         return f
     except Exception as ex:
         print("outputs file:", ex, file=sys.stderr)
@@ -3183,6 +3919,11 @@ def run_cell(build, test, extra, plain, args, bare, note, hw=None, warm=True):
     for k in range(3):   # a repetition loop is not comparable (a short generation that ended with a real answer is kept): stored as a failed run (ok=0, loop=1 for a loop; excluded from every statistic) and repeated, up to 3 times
         if not row.get("ok", 1):
             break
+        if is_garbage(row.get("output")):   # NaN logits: no speed of this run means anything, with --keep-loops too, and a repeat gives the same
+            row["ok"] = 0
+            row["note"] = "GARBAGE: NaN logits, one repeated token | " + str(row.get("note") or "")
+            print(f"GARBAGE ANSWER {str(row.get('output') or '').strip()[:24]!r}: NaN logits, row stored as failed, its speeds mean nothing", flush=True)
+            break
         loop = not KEEP_LOOPS and (row.get("loop_abort") or is_loop(row.get("output")))
         if not loop:
             break
@@ -3291,9 +4032,10 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink", "gen", "canary"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
+    if OVR.get("gen") is not None: a.test = "gen"   # --gen on any run: generated prompts in place of the test's own
     if getattr(a, "test", None) in ALIAS_TOKENS and "tokens" not in OVR:
         OVR["tokens"] = ALIAS_TOKENS[a.test]   # alias that fixes the output length (edit4c alone defaults to 128)
     if getattr(a, "test", None) in ALIAS_PREFIX:
@@ -4355,6 +5097,9 @@ def add_overrides(sub):
                      help="cut the prompt of the test to N tokens (8k = 8000, so it fits one -ub 8192 pass), measured with the server's own /tokenize, for any model; raw-prompt tests only")
     sub.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run takes the next slice of the prompt text (a repeated text finds every expert it used in the cache, no real prompt does)")
     sub.add_argument("--chat", metavar="INSTR", help="pf tests: send INSTR + the prompt through the model's chat template (instruct models stop or loop on raw cut text); --clamp cuts the text before the template")
+    sub.add_argument("--gen", help="generated prompts in place of the test's own, repetition k = prompt k: in=A:B,out=A:B,task=kinds of GEN_TASKS (latin|french|german|medical|legal|equations|scifi|py|js|cpp|java|html|code|prose|explain|data|math|chat) or free text,topic=a|b,seed=N,first=K (see gen_prompt; '' = defaults)")
+    sub.add_argument("--canary", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
+                     help="pf tests: about N tokens of the source with 5 record codes hidden in it and a question at the end; the answer is checked exactly (a wrong code fails the row)")
     sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
@@ -4725,6 +5470,7 @@ def cmd_build(a):
                        capture_output=True)
     srcs = ["src", "common", "include", "ggml", "tools/server"]
     patch = subprocess.run(["git", "-C", W, "diff", "HEAD", "--"] + srcs, capture_output=True).stdout
+    if patch: open(os.path.join(binp, "SOURCE.diff"), "wb").write(patch)   # the uncommitted sources of this build, kept with it (runs.db table sources)
     info = (f"commit={_git(W, 'rev-parse', '--short', 'HEAD')}\nbranch={_git(W, 'rev-parse', '--abbrev-ref', 'HEAD')}\npatch={hashlib.sha1(patch).hexdigest()[:8] if patch else 0}\n"
             f"image=llama-rel-el8@{iid}\n")
     if a.release:
@@ -5118,6 +5864,7 @@ def cell_status(t0, expect, label, total=None):
             if k == "RssAnon": pin += int(v.split()[0]) / 2**20
             elif k == "RssFile": mm += int(v.split()[0]) / 2**20
         st = col(37, "cpu ") + level(busy, 50, 90, f"{busy:.0f}%") + col(37, " ram ") + level(ram / (m["MemTotal"] / 2**20), 0.7, 0.9, f"{ram:.0f}G") + " " + col(33, f"pin {pin:.0f}G") + " " + col(36, f"mm {mm:.0f}G") + " " + (col(31, f"swap {swap:.0f}M") if swap > 100 else col(37, f"swap {swap:.0f}M")) + (lambda fr: " " + level(1 - min(fr / 2**30 / 50, 1), 0.6, 0.9, f"disk {fr / 2**30:.0f}G free") if fr >= 0 else "")(int(sysi[4].strip() or -1) if sysi[4].strip().isdigit() else -1) + f" | {gpu}"   # stats first, the bars below
+        if not HOST[0]: st += " " + col(35, host_io_line())
         eng = ""   # engine state line (GET /moe/stats): pass size, threads, context, cache hit rate, time per token, uploads against the probed link and RAM maximum
         try:
             es = json.loads(STATS_FINAL[0] or sysi[5]); sv = es.get("server") or {}; pr = es.get("prompt") or {}; tk = es.get("token_ms") or {}; bw = es.get("bandwidth") or {}; ht = es.get("hit") or {}
@@ -5793,7 +6540,7 @@ def prompt_passes_save(model, test, build):
         c.execute("create table if not exists prompt_passes (ts text, hw text, model text, test text, build text, call int, k int, n int, tokens int, secs real, tps int, hit_pct int, asked int, found int, other_card_pct int)")
         hw = (HWF[0].split("'")[1] if "'" in HWF[0] else "")
         ts = time.strftime("%F %T")
-        c.executemany("insert into prompt_passes values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [(ts, hw, os.path.basename(model), ALIASES.get(test, test), str(build)) + r for r in rows])
+        c.executemany("insert into prompt_passes values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [(ts, hw, os.path.basename(model), ALIASES.get(test, test), str(build)) + r for r in rows])
         c.commit()
     except sqlite3.Error as e: print("prompt passes:", e, file=sys.stderr)
 
@@ -6099,6 +6846,17 @@ def live_rows(rec):
     if not LIVE_HDR[0]: ln = hd + ln
     LIVE_HDR[0] = True
     return "\n".join(ln)
+
+
+OLD_BUILD_PIN_GIB = {"ds": 85, "glm": 101, "mimo": 85}   # best of the pin sweeps on gather_threads_madvise_phases (DS 61/73/85/97, GLM and MiMo 61/85/101); builds without the auto pin only
+AUTO_PIN_COMMIT = "d56a4a6a7e"   # the commit that computes the pin start from RAM and model size (common_auto_pin); builds before it need a forced -nm
+
+def has_auto_pin(build):
+    """True when devbuilds/BUILD contains the auto pin commit: its rows get no forced pin share (user 2026-11-02: remove forced -nm from runs, except for old builds)"""
+    try:
+        c = dict(l.split("=", 1) for l in open(os.path.join(DEVBUILDS, build, "BUILD_INFO")).read().splitlines() if "=" in l).get("commit", "")
+        return bool(c) and subprocess.run(["git", "-C", os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "merge-base", "--is-ancestor", AUTO_PIN_COMMIT, c], capture_output=True).returncode == 0
+    except Exception: return False
 
 
 def own_build_no(build):
@@ -6857,10 +7615,20 @@ def run_list(name, argv):
     if o.no_pool and o.no_pool != "0":   # -nm GB: every non-stock row pins at most GB GiB of the model, the rest is mapped (row-level -nm GB, see nomount_args)
         for r in rows:
             if not r["_b"].startswith("stock") and "-nm" not in shlex.split(r.get("args") or ""): r["args"] = ((r.get("args") or "") + f" -nm {o.no_pool}").strip()
+    auto_pin = {b: has_auto_pin(b) for b in dict.fromkeys(r["_b"] for r in rows)}
+    for r in rows:   # builds with the auto pin: no forced pin share, the build computes it from RAM and model size and logs the numbers (a -nm 0 row stays: it asks for no pinning)
+        if auto_pin.get(r["_b"]) and not r["_b"].startswith("stock"):
+            tok = shlex.split(r.get("args") or ""); keep = []
+            for i, t in enumerate(tok):
+                if t == "-nm" and i + 1 < len(tok) and re.fullmatch(r"[\d.]+%?", tok[i + 1]) and float(tok[i + 1].rstrip("%")) != 0: continue
+                if i and tok[i - 1] == "-nm" and re.fullmatch(r"[\d.]+%?", t) and float(t.rstrip("%")) != 0: continue
+                keep.append(t)
+            r["args"] = shlex.join(keep)
     ram_gib = int(open("/proc/meminfo").readline().split()[1]) >> 20
     for r in rows:   # a model that cannot fit RAM beside 16 GiB for the system must not be pinned (128 GiB GLM on 125 GiB froze PC1): -lm mmap, no pool; stock mmaps already
-        if not r["_b"].startswith("stock") and (size(r) >> 30) + 16 > ram_gib and not nomount_args(r.get("args") or "")[1]:
-            pg = max(1, ram_gib - 24)   # default pin cap: RAM - 24 GiB (125 GiB -> 101); pinning 110 GiB froze PC1; the rest is mapped
+        if not r["_b"].startswith("stock") and not auto_pin.get(r["_b"]) and (size(r) >> 30) + 16 > ram_gib and not nomount_args(r.get("args") or "")[1]:
+            pg = OLD_BUILD_PIN_GIB.get(r["model"], max(1, ram_gib - 24))   # old builds: the best share measured per model (2026-11-02, 125 GiB box), else RAM - 24 GiB
+            # default pin cap: RAM - 24 GiB (125 GiB -> 101); pinning 110 GiB froze PC1; the rest is mapped
             r["args"] = ((r.get("args") or "") + f" -nm {pg}").strip()   # (model > RAM - 16 GiB: pin at most RAM - 24 GiB, map the rest; `run ... -n` shows it as -nm in the cell's arguments)
     bad = []; last_model = shown = None
     for b in dict.fromkeys(r["_b"] for r in rows) or [o.build]:   # which binaries the list runs: name, real path, build date
@@ -7217,9 +7985,11 @@ def nomount_args(args, model=None):
         if t == "-pin": out += ["-lm", "pin"]   # force the weights into pinned RAM (the default `auto` maps them, or pins when the model fits); the pool is wanted, so this is not a no-mount cell
         elif t == "-nm":
             out += ["-lm", "mmap"]
-            try: gb = float(tok[i + 1])   # `-nm 101`: pin at most 101 GB of the model (tensor order), map the rest (--moe pin-budget, read by the loader with mmap on)
+            try:   # `-nm 101`: pin at most 101 GB of the model (tensor order), map the rest (--moe pin-budget, read by the loader with mmap on). `-nm 70%`: that share of the machine's RAM
+                v = tok[i + 1]
+                gb = float(v[:-1]) / 100 * (int(open("/proc/meminfo").readline().split()[1]) / 2**20) if v.endswith("%") else float(v)
             except (IndexError, ValueError): pass
-        elif gb and i and tok[i - 1] == "-nm": continue   # the GB value itself
+        elif i and tok[i - 1] == "-nm" and re.fullmatch(r"[\d.]+%?", t): continue   # the GB value itself, 0 too
         else: out.append(t)
     if gb:
         nb = int(gb * 2**30)
@@ -7268,8 +8038,11 @@ def cmd_cell(a):
     Q5 = QDIR; U = os.environ.get("PERF_LD_EXTRA", ""); SMI = os.environ.get("NVIDIA_SMI", "nvidia-smi")
     while not kept_get():   # nothing may still hold GPU memory (a killed script leaves its children running); the kept server is meant to
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
-        if r.stdout.split() and max(int(x) for x in r.stdout.split()) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
+        used = [int(x) for i, x in enumerate(r.stdout.split()) if card_is_mine(i)]
+        if used and max(used) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
+    try: os.remove(f"/tmp/perf-{a.builds}.stats.log")   # the planner log appends: one cell, one file
+    except OSError: pass
     keep_pool = os.environ.get("RUN_KEEP_POOL") == "1"   # run -nm: the pool stays mounted for the whole list (a remount after fragmentation gets only part of it back: 49-58 of 108 pages, 2026-10-22)
     too_big = False
     if keep_pool and os.path.ismount("/mnt/huge1g") and os.path.exists(HUGE_NR):
@@ -7294,7 +8067,7 @@ def cmd_cell(a):
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
-           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--vary"] if getattr(a, "vary", None) else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else [])
+           "-t", a.test, "-n", str(a.n), "--no-probe", "--campaign", f"{a.tag}-{a.test}"] + (["--keep-loops"] if a.keep_loops else []) + (["--warm"] if a.warm else []) + (["--keep-server"] if a.keep_server else []) + (["--clean-state"] if a.clean_state else []) + (["--wrap", a.wrap] if a.wrap else []) + (["--ctx", str(a.ctx)] if a.ctx else []) + (["--tokens", str(a.tokens)] if a.tokens else []) + (["--lead", str(a.lead)] if a.lead else []) + (["--clamp", str(a.clamp)] if a.clamp else []) + (["--vary"] if getattr(a, "vary", None) else []) + (["--prompt", a.prompt] if getattr(a, "prompt", None) else []) + (["--chat", a.chat] if getattr(a, "chat", None) else []) + (["--nothink"] if getattr(a, "nothink", None) else []) + (["--canary", str(a.canary)] if getattr(a, "canary", None) else []) + (["--gen", a.gen] if getattr(a, "gen", None) is not None else [])
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
@@ -7315,6 +8088,12 @@ def cmd_cell(a):
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
         f.write(f"== {re.sub(r'^pf(?=\d+k)', '', a.test)} {args}\n" + "".join(l + "\n" for l in lines))
     if a.builds.count(",") == 0:
+        try: shutil.copy(f"/tmp/perf-{a.builds}.stats.log", os.path.join(Q5, a.tag + ".stats.log"))
+        except OSError: pass
+        try:   # the same file into runs.db (table stats), with the build's commit and the cell's command line
+            import runlog
+            runlog.insert_stats(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t_cell0)), local_hw(), a.builds, a.test, a.tag, args, open(os.path.join(Q5, a.tag + ".stats.log"), errors="replace").read())
+        except Exception as e: print("runs.db stats:", e, file=sys.stderr)
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
         try:   # the start before the last one (the cold run of a clean-state cell), when it belongs to this cell
@@ -8159,6 +8938,7 @@ def cmd_stop(a):
     SIGTERM first, SIGKILL for what is still there after --grace seconds, then it waits until the GPUs have (almost) no memory in use, and puts the power limits
     to the schedule (power_schedule: day 220/280 W, night 200/200 W) unless --no-power. --dry lists what it would stop and changes nothing.
     A build (docker) is not a measurement and is not touched; stop it with docker."""
+    if not getattr(a, "dry", False): judge_local_stop()
     import signal
     me = os.getpid()
     def read_proc(pid):
@@ -9914,7 +10694,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="tools (each has its own --help): " + ", ".join(sorted(TOOLS)))
     sp = ap.add_subparsers(dest="cmd", required=True)
-    TESTS = ["ppl", "ppl3", "pplb", "pplc", "ppll", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc"]
+    TESTS = ["ppl", "ppl3", "pplb", "pplc", "ppll", "tetris", "t100", "chat", "chat2", "chatv", "long1k", "in1k", "agent", "pf2k", "pf3k", "pf4k", "pf5k", "pf6k", "pf7k", "pf8k", "pf9k", "pf10k", "pf11k", "pf12k", "pf12k-stock", "pf128k", "fix", "fix12k", "edit4", "game4", "tetrisc", "game4c", "edit4c", "long1kc", "gen"]
     r = sp.add_parser("run", aliases=["jobs"], help="measured runs of one test for BUILD...")
     r.add_argument("builds", nargs="+")
     r.add_argument("-t", "--test", default="ppl", type=test_name, choices=TestChoices(TESTS + list(ALIASES)))
@@ -10101,6 +10881,7 @@ if __name__ == "__main__":
     ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
     ce.add_argument("--nothink", action="store_const", const=True, help="chat tests: reasoning off (enable_thinking=false)")
+    ce.add_argument("--gen", help="bench --gen: generated prompts, repetition k = prompt k")
     ce.add_argument("--lead", type=int, help="a request of about N prompt tokens first, same server")
     ce.add_argument("--prompt", help="prompt text or @file instead of the test's own")
     ce.add_argument("--tokens", type=int, help="generated tokens instead of the test's own")
@@ -10108,6 +10889,7 @@ if __name__ == "__main__":
     ce.add_argument("--chat", metavar="INSTR", help="pf tests through the chat template with this instruction in front (instruct models)")
     ce.add_argument("--clamp", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="cut the prompt to N[k] tokens (pf128k clamped to 48k = a 48k prompt)")
     ce.add_argument("--vary", action="store_const", const=True, help="with --clamp: every run the next slice of the prompt text")
+    ce.add_argument("--canary", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), help="pf tests: N[k] tokens with 5 hidden record codes, answer checked exactly")
     br = sp.add_parser("branches", help="local branches with commits not in TARGET (counts, dates); --merge a,b,c merges them in the checkout of TARGET (refuses on another branch or a dirty tree)")
     br.add_argument("target", nargs="?", default="prerelease2")
     br.add_argument("--repo", default=os.getcwd(), help="the checkout to look at / merge in")
@@ -10120,6 +10902,8 @@ if __name__ == "__main__":
     sl = sp.add_parser("sweep-log", help="log pass-size sweep points (live from mm7.sh lines on stdin, or --csv FILE of experiments/pp-path-sweep) into run-history.csv and runs.db")
     sl.add_argument("--csv"); sl.add_argument("--env"); sl.add_argument("--args"); sl.add_argument("--commit"); sl.add_argument("--note"); sl.add_argument("--model")
     sl.add_argument("--build", default="predictor-upload-bw-reducer")
+    ex_ = sp.add_parser("experiment", help="run a special experiment (fork/experiments/NAME.py, options after the name; no name lists them); results in bench/experiments.csv and runs.db table experiments")
+    ex_.add_argument("rest", nargs=argparse.REMAINDER)
     cl = sp.add_parser("cells", help="markdown table of the cells of a campaign prefix, with the context and the pool the server really ran with")
     cl.add_argument("prefix")
     mf = sp.add_parser("misfires", help="automatic choices that went against what was measured: a prompt run on one card where the split of the same model and pass "
@@ -10137,6 +10921,30 @@ if __name__ == "__main__":
     cb.add_argument("--dry", action="store_true"); cb.add_argument("--nowrite", action="store_true"); cb.add_argument("--ceil", action="store_true", help="only read the engine's one-pass ceiling (one 2k probe) and store it as maxpp")
     cb.add_argument("-nm", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="the probes pin at most GB of the model (as run -nm): the ceiling depends on the RAM beside the pinned weights")
     cb.add_argument("-a", dest="cell_args", default="", metavar="ARGS", help="extra cell arguments for the probes (as run -a)")
+    mw = sp.add_parser("memwatch", help="a server's memory to q5h/watch-DATE.log and the guard that stops it before the machine freezes (every server start runs this)")
+    mw.add_argument("pid", type=int)
+    mw.add_argument("log", help="the server's log file")
+    mw.add_argument("--min-avail", type=float, default=float(os.environ.get("PERF_GUARD_AVAIL_GB") or 3.0), help="GiB of MemAvailable under which the server is killed")
+    gn = sp.add_parser("gen", help="write generated prompts ahead of a run (--gen SPEC on any run writes them on the fly): in=A:B,out=A:B,task=a|b,topic=a|b,seed=N,url=U")
+    gn.add_argument("spec", nargs="?", default="", help="in=16:2000,out=32:1024,task=latin|french|german|medical|legal|equations|scifi|py|js|cpp|java|html|code|prose|explain|data|math|chat (or free text),topic=a|b (free text),seed=1,first=0,url=... (default [hosts] gen_url)")
+    gn.add_argument("-n", type=int, default=1, help="how many prompts")
+    gn.add_argument("--start", type=int, default=0, help="first prompt number")
+    gn.add_argument("--show", action="store_true", help="print the texts")
+    sl = sp.add_parser("stats", help="follow the stats.log of the row that runs now (events and once-a-second status, one line each), or show the one a cell kept")
+    sl.add_argument("tag", nargs="?", default="", help="the cell's tag, e.g. BUILD-ROW: its kept stats.log, printed once")
+    sl.add_argument("--only", default="", help="comma list of line types, e.g. DEC,DON,STA")
+    jd = sp.add_parser("judge", help="Qwen3.6 on W10 reads stored answers (fork/judge_w10.py), nonsense makes a row ok=0: what it said so far; --sync its copy and verdicts; IDS or --build reads now")
+    jd.add_argument("ids", nargs="*", type=int, help="runs.db row ids to read now, read again even when judged before")
+    jd.add_argument("--build", default="", help="read now the rows of this build that have no verdict")
+    jd.add_argument("--sync", action="store_true", help="send W10 a copy of runs.db, take its verdicts back")
+    jd.add_argument("--last", type=int, default=30, help="at most this many rows called nonsense are listed")
+    jd.add_argument("--dry", action="store_true", help="show the verdicts, change no row")
+    jd.add_argument("--file", default="", help="read this text file instead of rows")
+    jd.add_argument("--ask", default="", help="with --file: the request it answered")
+    jd.add_argument("--local", action="store_true", help="read on this machine, on the card -ng 1 leaves free; rows on that card come first. Starts by itself when W10 does not answer. Ends after 10 minutes with nothing left to read")
+    jd.add_argument("--local-stop", action="store_true", help="stop reading on this machine")
+    jd.add_argument("--local-loop", action="store_true", help=argparse.SUPPRESS)
+    jd.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
     ns = sp.add_parser("nsys", help="per card: kernel time, compute-stream waits, copies and hand-offs of the prompt pass in an nsys report (cell --wrap 'nsys profile ...')")
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
@@ -10149,5 +10957,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

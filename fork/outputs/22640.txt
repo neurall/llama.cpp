@@ -1,0 +1,42 @@
+run 22640 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 51.86 t/s | prompt 160.4 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 220+280 W | 2026-11-03 08:18:58
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file with working Tetris.
+
+But I don't want to ship a bare, cheerless code block — a Tetris game is something you should feel compelled to play, so I'll wrap the tiny code in a page that's actually about the game: a playable board, live score/level/next-piece, keyboard controls, and real feedback.
+
+Let me think about what would make this distinctive rather than a generic layout. The most characteristic thing about Tetris isn't a hero — it's the well, the falling pieces, the grid. So the page should open with the playfield itself, or a tetromino motif.
+
+For the palette, the classic Game Boy Tetris is the obvious reference: that pea-green LCD (#9bbc0f / #8bac0f / #306230 / #0f380f). That's distinctive and instantly evokes the subject. But a plain retro-terminal look with a single neon accent on near-black would feel generic; the Game Boy green-on-dark is more specific and true to the subject.
+
+Let me think: a Tetris page where the background is a layered grid, tetromino shapes float subtly, the code panel is the star. The deliverable is the smallest HTML Tetris — so the page should present the code prominently, with a live playable demo.
+
+Plan:
+- Left/main: the actual playable game (the smallest version, embedded inline so it works).
+- Right: the source code with copy button, byte count.
+- Header: not a centered stack — an asymmetric masthead with huge display type "TETRIS" made of blocky letterforms, plus byte counter badge.
+
+Typography: display face — something blocky/pixel-ish. Google Fonts options: "Press Start 2P" is the classic pixel face but overused... still it's genuinely characteristic of Tetris. Pair with a readable body face. Options: display "Silkscreen" or "Press Start 2P"; body "Space Grotesk" or "IBM Plex Mono" / "Instrument Sans". Let me use display = "Silkscreen" (pixel, but cleaner) or "Press Start 2P". Body = "Space Grotesk" (readable geometric sans). And mono for code = "JetBrains Mono" or "IBM Plex Mono".
+
+Actually let me pick: Display: "Press Start 2P" for the wordmark and numbers (it's THE Tetris face). Body: "Space Grotesk". Mono: "IBM Plex Mono". Three fonts is fine.
+
+Hmm, Press Start 2P at large sizes is very wide. For a huge "TETRIS" wordmark it works well.
+
+Palette: Game Boy DMG palette:
+- bg deep: #0f380f (darkest green)
+- mid: #306230
+- light: #8bac0f
+- bright: #9bbc0f
+- LCD panel: #9bbc0f background with dark pixels.
+
+But a page that's all dark green with one green accent risks reading as just another near-black-plus-neon scheme. Let me instead do a bolder, multi-hue approach: the tetromino colors themselves are the palette (cyan I, orange L, yellow O, green S, purple T, red Z, blue J). A dark slate/graphite background with all seven tetromino colors as accents is distinctly Tetris and naturally avoids a one-accent look.
+
+Combine: background = deep graphite #14161c with a subtle grid + faint falling-tetromino ambient pattern. Accents = the 7 classic tetromino colors, used generously. Display type = Press Start 2P in white/cream.
+
+Actually, let me make it more interesting: a split layout — left column is a "spec sheet" / code, right is the machine. Or top: a marquee of tetromino blocks.
+
+Let me design:
+
+**Masthead (asymmetric, left-aligned):** 
+- Huge "TETRIS" in Press Start 2P, letter-spaced, with each letter in a different tetromino color? That's cute and characteristic. Actually the classic Tetris logo is exactly that — each letter a different color. Yes! Do that. T-E-T-R-I-S in 6 colors.
+- Next to it: a rotated badge "≈ 1 KB" / live byte
+---

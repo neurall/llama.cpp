@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+mp-bad,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/mp-bad.ini,log=wk,pp-path=dec,poison=3,ledger=2",--env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1 --env PERF_LEDGER=1
+mq-all,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/mq-all.ini,log=wk,pp-path=dec,jit-all=1",
+mq-nog,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/mq-nog.ini,log=wk,pp-path=dec",--env GGML_CUDA_DISABLE_GRAPHS=1
+mq-node,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/mq-node.ini,log=wk,pp-path=dec",--env GGML_SCHED_NAN_CHECK=2 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+mq-nofu,mimo,1,100in_128out_edit_src,16,"--moe state=/tmp/runstate/ppk/mq-nofu.ini,log=wk,pp-path=dec",--env GGML_CUDA_DISABLE_FUSION=1

@@ -1,0 +1,65 @@
+run 22801 | rc_live_rates | pf60k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 41.66 t/s | prompt 705.1 t/s | 727 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini -ctk q8_0 -ctv q8_0 | power 220+280 W | 2026-11-03 13:31:06
+
+ params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    return ctx_arg;
+}
+
+void common_params_register_preset_args(common_preset_context & ctx, std::function<void(const common_arg &)> add_opt) {
+    // note: to add new args, please add them to common_params_parser_init() above
+    // this function only needs to handle args that are not in common_params_parser_init()
+    // (e.g. server-specific args that are not part of the common params)
+    for (const auto & opt : get_common_arg_defs()) {
+        if (opt.is_preset_only) {
+            continue;
+        }
+        add_opt(opt);
+    }
+
+    // server-specific args that are not part of common_params_parser_init()
+    // these are defined in server.cpp and are not part of the common params
+    // we add them here so that they can be used in presets
+    // TODO: move these args to common/arg.cpp so they are part of common_params_parser_init()
+    //       and remove this section
+    auto add_preset_only = [&](common_arg arg) {
+        arg.set_preset_only();
+        add_opt(arg);
+    };
+
+    add_preset_only(common_arg(
+        {"-ng", "--n-group"}, "N",
+        "number of groups for split serving (default: 1)",
+        [](common_params & params, int value) {
+            params.n_group = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_preset_only(common_arg(
+        {"-ngl_d", "--n-gpu-layers-draft"}, "N",
+        "number of GPU layers for draft model (default: 0)",
+        [](common_params & params, int value) {
+            params.speculative.draft.n_gpu_layers = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_preset_only(common_arg(
+        {"-ctkd", "--cache-type-k-draft"}, "TYPE",
+        "KV cache data type for K for draft model (default: f16)",
+        [](common_params & params, const std::string & value) {
+            params.speculative.draft.cache_type_k = kv_cache_type_from_str(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_preset_only(common_arg(
+        {"-ctvd", "--cache-type-v-draft"}, "TYPE",
+        "KV cache data type for V for draft model (default: f16)",
+        [](common_params & params, const std::string & value) {
+            params.speculative.draft.cache_type_v = kv_cache_type_from_str(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_preset_only(common_arg(
+        {"-otd", "--override-tensor-draft"}, "<tensor name pattern>=<buffer type>,...",
+        "override tensor buffer type for draft model",
+        [](common_params & params, const std::string & value) {
+            parse_tensor_buffer_overrides(value, params.speculative.draft.tensor_buft_overrides);
+        }
+    ).set_examples({

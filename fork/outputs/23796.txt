@@ -1,0 +1,85 @@
+run 23796 | rel_b14244 | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 23.26 t/s | prompt 362.9 t/s | 4096 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-11-07 17:54:31
+
+<think>We need answer complete fixed version of source file. Need identify bugs. We need output every line from first to last with fixes marked comments. Source includes two files concatenated? It says file common/json-schema-to-grammar.cpp then // file: common/arg.cpp. Need return complete fixed version of following source file: every line from first to last. Likely need fix bugs in entire provided source. Need inspect for bugs. Need produce full code with comments marking changes. Need not summarize. Need include all lines. Need determine intended bugs. This is likely from llama.cpp code. Need compare to actual upstream? We need fix bugs in source. Need identify compile errors, logic errors. Let's analyze thoroughly.
+
+We have two files concatenated. Need fixed version. Need mark each change by comment. We need output complete source. Need maybe fix known bugs in json-schema-to-grammar.cpp and arg.cpp. Need infer from code.
+
+Let's inspect json-schema-to-grammar.cpp.
+
+Includes:
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+...
+using json = common_json;
+
+Potential issues:
+- build_repetition: if max_items == 0 returns ""; if min_items==0 && max_items==1 returns item_rule + "?"; separator logic. Need check for max_items - 1 when max_items=0? Already max_items==0 returns. If separator and min_items==0, max_items maybe 1? It returns earlier. If max_items=1 and min_items=0 returns item_rule+"?" before separator. Good.
+- build_min_max_int: uses std::function but no #include <functional>? common.h may include. Need include <functional>? Source uses std::function in json file. It includes algorithm, limits, map, regex, sstream, string, unordered_map, unordered_set, vector. Missing <functional>, <stdexcept>, <cstdint>, <string_view>, <cstdio>? common.h likely includes. But fixed version should add includes? Need mark. Also uses string_repeat, string_join, string_split, common_unicode_cpt_to_utf8, common_trie, common_chat_schema etc from common.h. Fine.
+
+- build_min_max_int logic: Need inspect for bugs. It builds grammar for integer range. There may be bug in uniform_range: `auto sub_len = from.length() - i - 1;` If i < from.length() && i < to.length(), and from/to same length? For uniform_range called with min_s and string_repeat("9", digits) where min_s length maybe digits? Let's analyze. It finds common prefix i. Then if i < from.length() && i < to.length(), sub_len = from.length() - i - 1. It assumes from and to same length? In calls, uniform_range(min_s, string_repeat("9", digits)): min_s length = digits? For loop digits from min_digits to max_digits-1: min_s initially min_digits length, then set to "1"+zeros(digits) length digits+1? Wait loop:
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+uniform_range(min_s, max_s);
+At first digits=min_digits, min_s length min_digits, to length digits = min_digits. Good. Then min_s = "1"+zeros(digits) length digits+1. Next digits=min_digits+1, min_s length digits? Actually digits variable increments. min_s length = previous digits+1 = current digits. Good. So same length. Final uniform_range(min_s, max_s): min_s length = max_digits? After loop, min_s = "1"+zeros(max_digits-1) length max_digits. max_s length max_digits. Good. So same length. In recursive uniform_range(from_sub, sub_nines) same length. uniform_range(sub_zeros, to_sub) same length. Good.
+
+But uniform_range logic may have bug: `auto sub_len = from.length() - i - 1;` If from and to differ at i, sub_len = length - i - 1. Then from_sub = from.substr(i+1), to_sub = to.substr(i+1). Good. If sub_len > 0. If sub_len == 0, out << "[" << from[i] << "-" << to[i] << "]"; Good.
+
+Potential bug: In uniform_range, when from_sub == sub_zeros, it does digit_range(from[i], to[i] - 1); out << " "; more_digits(sub_len, sub_len); This handles from[i] to to[i]-1 with lower suffix zeros. But if from[i] == to[i]? Then from_sub == sub_zeros and to_sub? If from[i]==to[i], then common prefix would have included i, so i would be >? Actually if from[i]==to[i], while loop would increment i. So from[i] != to[i]. Good. If to[i] - 1 < from[i]? Since from[i] < to[i], okay. If from[i] == to[i]-1, digit_range same char. Good.
+
+Else branch: out << "[" << from[i] << "] "; out << "("; uniform_range(from_sub, sub_nines); out << ")"; if (from[i] < to[i] - 1) { out << " | "; if (to_sub == sub_nines) { digit_range(from[i] + 1, to[i]); to_reached = true; } else { digit_range(from[i] + 1, to[i] - 1); } out << " "; more_digits(sub_len, sub_len); } if (!to_reached) { out << " | "; digit_range(to[i], to[i]); out << " "; uniform_range(sub_zeros, to_sub); } out << ")";
+Need check if from_sub != sub_zeros. It emits from[i] followed by uniform_range(from_sub, sub_nines). That covers numbers with prefix from[i] and suffix from_sub..nines. Then if from[i] < to[i]-1, emits range from[i]+1 to to[i]-1 with any suffix. Then if !to_reached, emits to[i] with suffix zeros..to_sub. If to_sub == sub_nines, then to_reached true and no final. But if to_sub == sub_nines, the range from[i]+1 to to[i] with any suffix covers all numbers with prefix from[i]+1..to[i] and suffix any. But what about from[i] with suffix from_sub..nines? Already covers from[i] up to from[i] nines. The gap from from[i] with suffix >? Actually from_sub..nines covers all suffixes >= from_sub for prefix from[i]. That includes from[i] with suffix from_sub..nines. The range from[i]+1..to[i] covers prefixes greater. If to_sub == nines, then to[i] with suffix zeros..nines is included in range from[i]+1..to[i] if to[i] > from[i]+1? Wait range digit_range(from[i]+1, to[i]) with more_digits(sub_len, sub_len) means any suffix for prefixes from[i]+1 to to[i]. That includes to[i] with any suffix, including zeros..nines. So yes. If to_sub != nines, final covers to[i] with suffix zeros..to_sub. Good.
+
+Potential bug: In build_min_max_int, for has_min && has_max and min_value < 0 && max_value < 0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value, out, decimals_left, true); out << ")"; return. This builds negative numbers from min to max. For min=-10, max=-5: -max=5, -min=10, builds 5..10 positive, prefixed "-". Good. But if max_value < 0 and min_value < 0, max_value could be -1, min_value -10. -max=1, -min=10. Good. If max_value = -1, min_value = -10, positive range 1..10. Good. If max_value = 0? Not in branch. If min<0 and max>=0: out << "\"-\" ("; build_min_max_int(0, -min_value, ...); out << ") | "; min_value=0; Then builds nonnegative min=0 max=max. Good. But note build_min_max_int(0, -min_value) with top_level true. For min_value=-5, builds 0..5. Negative branch covers -5..-1? Actually build_min_max_int(0,5) includes 0..5, prefixed "-" gives -0? Wait grammar `"-\" (0..5)` matches "-0", "-1", ..., "-5". But negative numbers should be -1..-5, not -0. JSON integer -0? JSON allows -0? It is a number, but integer grammar maybe allows "-0"? In JSON, -0 is valid? JSON number can be -0. But integer schema min=-5 max=5 should include -5..5. Does it include -0? It would match "-0" which is equivalent to 0. Is that acceptable? Maybe yes? But grammar for integer with min<0 and max>=0 should include negative numbers and nonnegative. It includes "-0" which is a valid JSON number? JSON grammar allows -0. But integer schema maybe should not include -0? In JSON, -0 is a number, but integer? It is integer. Could be okay. However actual llama.cpp code likely has this. Need check.
+
+Potential bug: In has_min branch, if min_value < 0: out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1); This builds negative numbers from min to -min_value? Wait min_value is negative. For min=-5, no max. It builds negative numbers <= -5? Actually schema min=-5, no max means integers >= -5. So allowed -5, -4, ..., 0, 1, ... It should build negative part from -5 to -1? Let's parse: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` with min=INT64_MIN, max=5. This builds range INT64_MIN..5 positive? Wait build_min_max_int(min_value, max_value) builds integers between min and max. Here min=INT64_MIN, max=5. That includes all integers from INT64_MIN to 5. Then prefixed "-" gives negative of those: from -INT64_MIN? Actually if build range INT64_MIN..5, prefixed "-" matches "-INT64_MIN" (overflow?) to "-5". That is wrong. Let's examine: For min_value=-5, we want negative numbers >= -5, i.e., -5, -4, -3, -2, -1. The code calls build_min_max_int(INT64_MIN, -min_value=5) and prefixes "-". That builds positive numbers from INT64_MIN to 5, prefixed "-" gives negative numbers from -INT64_MIN to -5. That includes -5, -6, ..., huge negative. That is wrong! Wait maybe because build_min_max_int with min=INT64_MIN and max=5 builds numbers between INT64_MIN and 5, but prefixed "-" gives negative of those, i.e., -5 down to -INT64_MIN. That matches negative numbers <= -5, not >= -5. But schema min=-5 means >= -5. So should build negative numbers from -5 to -1, i.e., prefix "-" with positive range 1..5. The code uses INT64_MIN to -min_value, which is wrong. Let's check actual llama.cpp code? I recall build_min_max_int in llama.cpp. Let's search memory. There is function build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true). I remember code:
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    } else if (min_value == 0) { ... }
+...
+}
+Wait maybe for min=-5, build_min_max_int(INT64_MIN, 5) with top_level false. But top_level false affects leading zeros? Let's test: build_min_max_int(INT64_MIN, 5, top_level=false). has_min true, has_max true. min<0, max>=0. It does:
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(0, -min_value, out, decimals_left, true);
+    out << ") | ";
+    min_value = 0;
+}
+Then builds 0..5. So build_min_max_int(INT64_MIN,5) outputs `"-" (0..5) | 0..5`? Wait because min_value=INT64_MIN, max=5. It first handles min<0: out `"-" (0..5) | ` then min_value=0. Then builds 0..5. So overall build_min_max_int(INT64_MIN,5) outputs `"-" (0..5) | 0..5`. Then outer prefixes `"-" (` around that: `"-" ("-" (0..5) | 0..5) | [0] | ...` That seems weird. Let's actually compute: For min=-5 no max, code:
+out << "\"-\" (";
+build_min_max_int(INT64_MIN, 5, out, decimals_left, false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+So inner build_min_max_int(INT64_MIN,5) outputs `"-" (0..5) | 0..5` (if top_level true? It calls top_level false but inside min<0 branch calls build_min_max_int(0,5, top_level true) regardless). Then outer: `"-" ("-" (0..5) | 0..5) | [0] | [1-9] ...`. This grammar matches `--0`? That seems invalid. Maybe I misread: The outer `"-\" (` is a literal minus followed by group. Inner build_min_max_int(INT64_MIN,5) includes a literal minus too. So double minus. That cannot be right. Wait maybe the code is from actual llama.cpp and I recall differently. Let's search memory: In llama.cpp json-schema-to-grammar.cpp, build_min_max_int:
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    } else if (min_value == 0) {
+...
+}
+Maybe build_min_max_int(INT64_MIN, -min_value) with top_level false: For min=INT64_MIN, max=5, it outputs `"-" (0..5) | 0..5`? Let's re-evaluate: In build_min_max_int, if has_min && has_max:
+if (min_value < 0 && max_value < 0) { ... }
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(0, -min_value, out, decimals_left, true);
+    out << ") | ";
+    min_value = 0;
+}
+auto min_s = std::to_string(min_value); // now 0
+auto max_s = std::to_string(max_value); // 5
+...
+uniform_range(min_s, max_s); // 0..5
+So output: `"-" (0..5) | 0..5`. Yes. Then outer prefix `"-" (` gives `"-" ("-" (0..5) | 0..5) | ...`. That is indeed double minus. But maybe the outer prefix is not literal minus? It is `out << "\"-\" (";` yes. So bug? Wait maybe the intended call is `build_min_max_int(-min_value, std::numeric_limits<int64_t>::max(), ...)`? Let's think. For min=-5 no max, allowed integers >= -5. Negative part should be -5..-1. That is `"-" (1..5)` (or `"-" (0..5)` if include -0). Then nonnegative part `[0] | [1-9] ...`. So code should call `build_min_max_int(1, -min_value, ...)` or `build_min_max_int(0, -min_value, ...)`? If include -0, use 0..5. The code calls INT64_MIN to -min_value, which is wrong. Maybe actual code uses `build_min_max_int(-min_value, std::numeric_limits<int64_t>::max(), ...)`? Let's derive. If min=-5, negative part -5..-1. We can build positive range 1..5 and prefix "-". So call build_min_max_int(1, -min_value). If include -0, call 0..5. The code's `std::numeric_limits<int64_t>::min()` as min and `-min_value` as max is reversed. It would build positive range INT64_MIN..5, which includes huge positive? Actually INT64_MIN is negative, so build_min_max_int handles negative min and positive max, output includes negative and positive. Then prefix "-" gives double minus. So definitely bug.
+
+But wait maybe `std::numeric_limits<int64_t>::min()` is used because they want to build negative numbers from min_value to -1? Let's see: To build negative numbers from min_value to -1, you can call build_min_max_int(min_value, -1) directly without prefix? But build_min_max_int handles negative min and negative max: if both negative, it outputs `"-" ( -max_value .. -min_value )`. For min=-5, max=-1: -max=1, -min=5, outputs `"-

@@ -1,0 +1,15 @@
+run 22436 | dspark_fix3 | long1kc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.35 t/s | prompt 218.0 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/ro-glm-l.ini | power 220+280 W | 2026-11-02 19:02:58
+
+Let me analyze this code carefully. This is from llama.cpp's `json-schema-to-grammar.cpp`, specifically the `build_min_max_int` function which generates regex for integer ranges.
+
+Let me look at the `uniform_range` lambda:
+
+```cpp
+std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+    [&](const std::string_view & from, const std::string_view & to) {
+        size_t i = 0;
+        while (i < from.length() && i < to.length() && from[i] == to[i]) {
+            i++;
+        }
+        if
+---

@@ -1,31 +1,16 @@
 name,model,n,test,tokens,args,extra
-q36-up-100,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-auto-100,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-k8-100,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=8
-q36-k16-100,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=16
-q36-k32-100,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 100 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=32
-q36-up-200,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-auto-200,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-k8-200,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=8
-q36-k16-200,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=16
-q36-k32-200,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=32
-q36-up-500,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-auto-500,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-k8-500,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=8
-q36-k16-500,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=16
-q36-k32-500,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=32
-q36-up-1000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-auto-1000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-k8-1000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=8
-q36-k16-1000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=16
-q36-k32-1000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=32
-q36-up-2000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-auto-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-k8-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=8
-q36-k16-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=16
-q36-k32-2000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 2000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=32
-q36-up-5000,qwen36,3,pf128k,1,"--moe max-batch=1,pp-only=1,pp-mix=0,dense-split=0",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-auto-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
-q36-k8-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=8
-q36-k16-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=16
-q36-k32-5000,qwen36,3,pf128k,1,"--moe pp-only=1",--clamp 5000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1 --env GGML_PRED_K=32
+k1-mimo-s100,mimo,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-mimo-s100.ini,pp-path=stream,pp-k=1,pp-depth=1",
+k1-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-ds-s100.ini,pp-path=stream,pp-k=1,pp-depth=1",
+b-mimo-s100,mimo,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/b-mimo-s100.ini",
+b-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/b-ds-s100.ini",
+k1-glm-s200,glm,2,200in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-glm-s200.ini,pp-path=stream,pp-k=1,pp-depth=1",
+k1-glm-s500,glm,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-glm-s500.ini,pp-path=stream,pp-k=1,pp-depth=1",
+b-glm-s500,glm,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/b-glm-s500.ini",
+k1-mimo-s200,mimo,2,200in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-mimo-s200.ini,pp-path=stream,pp-k=1,pp-depth=1",
+k1-mimo-s500,mimo,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-mimo-s500.ini,pp-path=stream,pp-k=1,pp-depth=1",
+b-mimo-s500,mimo,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/b-mimo-s500.ini",
+k1-qwen38-s100,qwen38,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-qwen38-s100.ini,pp-path=stream,pp-k=1,pp-depth=1",
+k1-qwen38-s500,qwen38,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-qwen38-s500.ini,pp-path=stream,pp-k=1,pp-depth=1",
+k1-ds-s200,ds,2,200in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-ds-s200.ini,pp-path=stream,pp-k=1,pp-depth=1",
+k1-ds-s500,ds,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/k1-ds-s500.ini,pp-path=stream,pp-k=1,pp-depth=1",
+b-ds-s500,ds,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/b-ds-s500.ini",

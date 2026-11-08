@@ -1,0 +1,8 @@
+run 21886 | up8_ledger2_verify | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 52.92 t/s | prompt 636.3 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=1,poison=3 --moe sim-vram=4608 | power 200+200 W | 2026-11-02 00:43:57
+
+ !plan_spec.dspark.local_path.empty();
+
+    if (spec_sidecar_found && !had_spec_url) {
+        // the user didn't provide a draft URL, so we use the sidecar
+        params.speculative.draft.mparams.url = "";
+        params.speculative.draft.mparams.path

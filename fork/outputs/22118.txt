@@ -1,0 +1,37 @@
+run 22118 | autopin_probe | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 27.19 t/s | prompt 1001.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-02 10:41:39
+
+<think>The user wants a code review of this C++ source file. Let me analyze it thoroughly.
+
+Let me go through the file systematically, looking for bugs, style issues, potential problems, and design concerns.
+
+Let me start by reading through the entire file carefully.
+
+The file appears to be truncated at the end - it cuts off mid-function in `_visit_all_of`. I should note that.
+
+Let me organize my review:
+
+1. **Truncated file** - The file ends abruptly in the middle of `_visit_all_of`.
+
+2. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` by passing 0 to the recursive call. This seems correct.
+   - When `has_max` is false and separator is present, `max_items` is passed as `std::numeric_limits<int>::max()` to the recursive call, which is correct since `has_max` is false.
+   - Wait, let me re-check: `has_max ? max_items - 1 : max_items` - when `has_max` is false, `max_items` is `std::numeric_limits<int>::max()`, so it passes `std::numeric_limits<int>::max()` which is correct.
+
+3. **`build_min_max_int` function:**
+   - This is a complex function. Let me check for edge cases.
+   - `decimals_left` parameter - the name is misleading since this is about integer digits, not decimals. Should probably be `digits_left`.
+   - When `min_value < 0 && max_value < 0`, it negates both and recurses. But what if `min_value == std::numeric_limits<int64_t>::min()`? Then `-min_value` would overflow. Actually, `has_min` checks `min_value != std::numeric_limits<int64_t>::min()`, so if `min_value` is `INT64_MIN`, `has_min` is false. But in the `min_value < 0 && max_value < 0` branch, we're in the `has_min && has_max` case, so `min_value != INT64_MIN`. But `-min_value` could still overflow if `min_value == INT64_MIN`... wait, no, `has_min` is false when `min_value == INT64_MIN`, so we wouldn't enter this branch. Actually wait - `has_min` is `min_value != std::numeric_limits<int64_t>::min()`. So if `min_value` is `INT64_MIN`, `has_min` is false, and we wouldn't be in the `has_min && has_max` branch. Good.
+   - But what about `min_value < 0` in the `has_min && has_max` case? If `min_value` is, say, `-5` and `max_value` is `3`, then we output `"- " (build_min_max_int(0, 5, ...)) | ` and set `min_value = 0`. Then we generate `0` to `3`. This seems correct.
+   - The `uniform_range` lambda is complex. Let me check for potential issues with string_view substrings.
+
+4. **`_add_rule` function:**
+   - The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. The while loop condition checks both existence and content mismatch. This seems correct but could be O(n) in the worst case.
+
+5. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a reasonable approach but copying the entire rules map could be expensive for large schemas.
+
+6. **`_pattern_to_rule` function:**
+   - The `transform` lambda is a recursive function that parses regex patterns. Let me check for issues:
+   - When handling `{` (curly brackets), the code parses min/max times. If `nums.size() == 1`, both are set to the same value. If `nums.size() == 2`, empty strings mean 0 and max respectively. This seems correct.
+   - The `sub_rule_ids` map is used to create unique rule names for repeated sub-expressions. The key is the sub-expression string, and the value is the rule name. But `sub_rule_ids.size()` is used as the index, which could collide if entries are removed (though they're not).
+   - Wait, there's a potential issue: `sub_rule_ids[sub]` - if `sub` already exists in the map, it returns the existing value. If not, it creates a new entry with empty string, then assigns `name + "-" + std::to_string(sub

@@ -1,0 +1,4 @@
+run 22395 | pick_ds_router | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.81 t/s | prompt 51.9 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/x4-d3-s500.ini,pp-path=stream,pp-k=4,pp-depth=3,pf-slots=9,pin-budget=108447924224 -lm mmap | power 220+280 W | 2026-11-02 17:56:05
+
+We need answer user asks: "Delete the code in this file that is never used." They provided partial file? Need identify unused code in common/json-schema-to-grammar.cpp. Need likely from llama.cpp source. Need inspect full file? They only pasted beginning truncated at build_min_max_int. Need determine unused functions/static helpers? We need answer likely provide code deletion? Need understand context. They ask delete code in this file that is never used. We need identify unused code in file. But only snippet incomplete. Need maybe infer from actual llama.cpp file. Need find unused code in common/json-schema-to-gram
+---

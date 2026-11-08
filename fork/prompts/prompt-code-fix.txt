@@ -1,0 +1,1 @@
+Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment. Do not summarise, do not skip unchanged parts, do not stop early.

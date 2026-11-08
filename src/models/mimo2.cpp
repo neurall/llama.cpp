@@ -86,12 +86,12 @@ void llama_model_mimo2::load_arch_tensors(llama_model_loader & ml) {
 
 std::unique_ptr<llm_graph_context> llama_model_mimo2::build_arch_graph(const llm_graph_params & params) const {
     if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
-        return std::make_unique<graph_mtp>(*this, params);
+        return std::make_unique<graph_mtp>(params);
     }
-    return std::make_unique<graph>(*this, params);
+    return std::make_unique<graph>(params);
 }
 
-llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params) {
+llama_model_mimo2::graph::graph(const llm_graph_params & params) : llm_graph_context(params) {
     ggml_tensor * cur;
     ggml_tensor * inpL;
 
@@ -111,7 +111,7 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
     // id range (build_moe_ffn in range mode). The last layer is not cropped to the output rows here: the rows are taken after the ranges are joined.
     bool ds_done = false;
     {
-        bool ds_ok = cparams.flash_attn && !inp_attn->self_k_rot && !inp_attn->self_v_rot && !inp_attn->self_k_rot_swa && !inp_attn->self_v_rot_swa &&
+        bool ds_ok = cparams.flash_attn &&
                      std::none_of(cparams.embeddings_layer_inp.begin(), cparams.embeddings_layer_inp.end(), [](bool b) { return b; });
         if (ds_ok && ds_plan(64)) {
             const size_t NR = ds_r.size();
@@ -212,8 +212,6 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
 
         uint32_t n_head_l    = hparams.n_head(il);
         uint32_t n_head_kv_l = hparams.n_head_kv(il);
-        const float freq_base_l  = model.get_rope_freq_base(cparams, il);
-        const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
 
         cur = inpL;
 
@@ -256,17 +254,8 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
                 Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head_v, n_head_kv_l, n_tokens);
             }
 
-            Qcur = ggml_rope_ext(
-                ctx0, Qcur, inp_pos, nullptr,
-                n_rot, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
-                ext_factor, attn_factor, beta_fast, beta_slow
-                );
-
-            Kcur = ggml_rope_ext(
-                ctx0, Kcur, inp_pos, nullptr,
-                n_rot, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
-                ext_factor, attn_factor, beta_fast, beta_slow
-                );
+            Qcur = build_rope(Qcur, inp_pos, il);
+            Kcur = build_rope(Kcur, inp_pos, il);
 
             cb(Qcur, "Qcur", il);
             cb(Kcur, "Kcur", il);
@@ -366,7 +355,7 @@ llama_model_mimo2::graph::graph(const llama_model & model, const llm_graph_param
 // Mirrors MiMo's appended NextN block: normalize and fuse token and hidden inputs, run the decoder block,
 // expose its pre-head-norm state to the next draft step, then apply the shared output norm and LM head.
 // Converted checkpoints may store that shared norm as layer_out_norm, so it remains in the fallback chain.
-llama_model_mimo2::graph_mtp::graph_mtp(const llama_model & model, const llm_graph_params & params)
+llama_model_mimo2::graph_mtp::graph_mtp(const llm_graph_params & params)
     : llm_graph_context(params) {
     GGML_ASSERT(hparams.n_layer_nextn > 0 && "MIMO2 MTP requires n_layer_nextn > 0");
 
@@ -384,8 +373,6 @@ llama_model_mimo2::graph_mtp::graph_mtp(const llama_model & model, const llm_gra
     const uint32_t n_head_l    = hparams.n_head(il);
     const uint32_t n_head_kv_l = hparams.n_head_kv(il);
 
-    const float freq_base_l  = model.get_rope_freq_base(cparams, il);
-    const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
     const float v_scale      = hparams.f_attn_value_scale;
 
     auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd_inp(), hparams.n_embd);
@@ -441,15 +428,8 @@ llama_model_mimo2::graph_mtp::graph_mtp(const llama_model & model, const llm_gra
     ggml_tensor * Kcur = ggml_view_3d(ctx0, qkv, n_embd_head_k, n_head_kv_l, n_tokens, row_k, row_full, k_off);
     ggml_tensor * Vcur = ggml_view_3d(ctx0, qkv, n_embd_head_v, n_head_kv_l, n_tokens, row_v, row_full, v_off);
 
-    Qcur = ggml_rope_ext(
-        ctx0, Qcur, inp_pos, nullptr,
-        n_rot, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
-        ext_factor, attn_factor, beta_fast, beta_slow);
-
-    Kcur = ggml_rope_ext(
-        ctx0, Kcur, inp_pos, nullptr,
-        n_rot, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
-        ext_factor, attn_factor, beta_fast, beta_slow);
+    Qcur = build_rope(Qcur, inp_pos, il);
+    Kcur = build_rope(Kcur, inp_pos, il);
 
     cb(Qcur, "mtp_Qcur", il);
     cb(Kcur, "mtp_Kcur", il);

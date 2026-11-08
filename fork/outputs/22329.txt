@@ -1,0 +1,4 @@
+run 22329 | reg_cpu_switch | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 31.41 t/s | prompt 9.0 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dk2.ini,pp-path=stream,pp-k=2,pp-depth=1 | power 220+280 W | 2026-11-02 16:19:01
+
+We need answer user asks: "Delete the code in this file that is never used." They provided snippet beginning of file common/json-schema-to-grammar.cpp with includes and function signature incomplete. Need infer task? They want remove unused code in this file. But only snippet? Maybe they expect identify unused includes/functions? Need parse. We need answer likely provide cleaned code? Need understand context. They gave file beginning and asks delete code never used. We need maybe analyze entire file? But only snippet. Could be from llama.cpp? Need know file common/json-schema-to-grammar.cpp. We can recall source. Need
+---

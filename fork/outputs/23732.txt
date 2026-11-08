@@ -1,0 +1,51 @@
+run 23732 | rampool6 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.06 t/s | prompt 340.2 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 14:31:45
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (e.g., `"[" space  space "]"` — actually with empty string it would produce `"[" space  space "]"` with double spaces, which might still parse but is semantically wrong — the schema says min 2 items but max 0 items, which is an unsatisfiable schema; returning empty might be acceptable, but the grammar would be malformed with double spaces). Actually wait — if max_items == 0 and min_items > 0, the schema is contradictory. Returning "" produces `"[" space  space "]"` — double space. GBNF parsers might handle that fine or not. Minor issue.
+
+Also `has_max` is computed before checking `max_items == 0`. Fine.
+
+Another subtle bug: in the separator case:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+If `max_items == 1` and `min_items == 1` with separator: build_repetition(item, 0, 0) → returns "" (max_items == 0 check). So result = item_rule + " " + "" = `item_rule ` with trailing space. Hmm, that gives `"[" space item_rule  space "]"` — trailing space before the outer space. Actually the result would be `item + " " + ""` = "item " — trailing whitespace. That's cosmetically imperfect but functionally OK? Actually wait, for min=1, max=1 with separator, the correct grammar is just `item_rule` (no separator needed). The code produces `item_rule + " " + ""` = "item " — trailing space. This is a minor formatting bug. Let me double check: `build_repetition(item, 0, 0)` — max_items == 0 → return "". So result = item + " ". Yes trailing space. Minor.
+
+Also potential integer underflow: `min_items - 1` when min_items == 0 is guarded by `min_items == 0 ? 0 : min_items - 1`. OK. `max_items - 1` when has_max — max_items >= 1 here since max_items == 0 was handled earlier. OK.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `has_min` / `has_max` sentinel-based detection: uses `std::numeric_limits<int64_t>::min()` as "no min" sentinel. This means you can't express a schema with minimum = INT64_MIN. Edge case, acceptable but worth noting.
+
+- In `uniform_range`, the lambda is declared as `std::function<void(const std::string_view &, const std::string_view &)>` and captures by reference — recursion works. OK.
+
+- `digit_range(from[i] + 1, to[i])` — char arithmetic; from[i] and to[i] are digit chars, fine.
+
+- Potential issue: `more_digits` uses `std::numeric_limits<int>::max()` check for max_digits — but max_digits is an int parameter; when called with `sub_len` etc. Fine.
+
+- In the `has_min && has_max` branch with negative handling: `build_min_max_int(-max_value, -min_value, ...)` — if min_value == INT64_MIN, negating is UB. But has_min would be false in that case... wait: if min_value == INT64_MIN, has_min is false, so we don't enter the `has_min && has_max` branch. If max_value == INT64_MAX, has_max false. So in the both-set branch, min_value > INT64_MIN and max_value < INT64_MAX, so negation is safe. OK good.
+
+- In `has_min

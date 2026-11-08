@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+gz-mimo-dec,mimo,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/gz-mimo-dec.ini,log=wk,pp-path=dec",
+gz-mimo-noup,mimo,1,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/gz-mimo-noup.ini,log=wk,pp-path=dec,upload-now=0",
+gz-mimo-mix,mimo,1,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/gz-mimo-mix.ini,log=wk,pp-path=mix",
+gz-glm-dec,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/gz-glm-dec.ini,log=wk,pp-path=dec",
+gz-ds-dec,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/gz-ds-dec.ini,log=wk,pp-path=dec",

@@ -1,0 +1,11 @@
+run 22271 | prefill_chain_fix | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.0 t/s | prompt 21.4 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/reg/s.ini | power 220+280 W | 2026-11-02 14:14:35
+
+The user wants me to delete code in `json-schema-to-grammar.cpp` that is never used. This is a real file from llama.cpp. I need to figure out what parts of this file are unused.
+
+Let me think about this file. It's from llama.cpp's common directory. The file `json-schema-to-grammar.cpp` contains functions to convert JSON schemas to grammar rules for constrained generation.
+
+Let me recall the structure of this file. It has:
+
+1. `build_repetition` - helper function
+2. `get_rule_name` / `add_rule` etc. within `SchemaToGrammar` class or functions
+---

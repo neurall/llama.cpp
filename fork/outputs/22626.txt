@@ -1,0 +1,14 @@
+run 22626 | warm_cpu | long1kc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.97 t/s | prompt 209.6 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/sc-glm-l.ini,log=wk | power 220+280 W | 2026-11-03 07:57:05
+
+Let me analyze this code carefully. This is from llama.cpp's `json-schema-to-grammar.cpp`, specifically the `build_min_max_int` function which generates regex grammar rules for integer ranges.
+
+Let me trace through the logic of `build_min_max_int`:
+
+The function builds a regex (in GBNF grammar format) that matches integers between `min_value` and `max_value`. It works digit by digit.
+
+Key parameters:
+- `min_value`, `max_value`: the range bounds
+- `out`: the output stream
+- `decimals_left`: remaining decimal digits budget
+- `top_level`: whether this is
+---

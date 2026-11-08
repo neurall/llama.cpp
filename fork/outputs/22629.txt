@@ -1,0 +1,10 @@
+run 22629 | dspark_fix3 | long1kc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.35 t/s | prompt 225.2 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/sc-glm-l.ini,log=wk | power 220+280 W | 2026-11-03 08:02:02
+
+Let me analyze this code carefully. It's from llama.cpp's `json-schema-to-grammar.cpp` — the function `build_min_max_int` generates a regex (in llama.cpp's GBNF grammar format) that matches integers between `min_value` and `max_value`.
+
+Let me reconstruct the full function since the snippet is truncated. The known upstream code (from llama.cpp) looks like this:
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min =
+---

@@ -1,0 +1,3 @@
+run 21781 | up8_gather_rows | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,attn-split=2,attn-split-cells=8000 | power 220+280 W | 2026-11-01 18:29:43
+
+ max

@@ -1,0 +1,65 @@
+run 22189 | rel_stable_auto | edit4c | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.54 t/s | prompt 726.9 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-02 12:46:18
+
+We need answer user's request: "Delete the code in this file that is never used." They provided a C++ file snippet (partial?) common/json-schema-to-grammar.cpp. Need likely produce modified file with unused code removed. Need infer what is never used? We only have partial file. Need maybe identify unused functions? The file includes build_repetition, build_min_max_int. But snippet truncated. Need maybe from llama.cpp? json-schema-to-grammar.cpp. Need know full file? User asks delete code in this file that is never used. Could be a coding task: remove dead code. We need output code? Need analyze.
+
+We have only beginning of file. Need maybe identify unused code within provided snippet? It includes includes, using json, build_repetition, build_min_max_int. But no main or other functions. "never used" could mean functions not referenced elsewhere? But we don't have full file. Maybe they expect to remove unused includes? Let's inspect.
+
+File: common/json-schema-to-grammar.cpp. It includes json-schema-to-grammar.h, common.h, trie.h, unicode.h, algorithm, limits, map, regex, sstream, string, unordered_map, unordered_set, vector. using json = common_json;
+
+static std::string build_repetition(...)
+static void build_min_max_int(...)
+
+The snippet ends mid-function. Need maybe answer cannot determine without full file? But likely need produce a cleaned version removing unused code. Need maybe use knowledge of llama.cpp source. Let's recall json-schema-to-grammar.cpp from llama.cpp. It has functions: build_repetition, build_min_max_int, build_regex, build_regex_from_schema, build_regex_from_schema? Maybe static functions. There is a public function build_grammar_from_json_schema? Let's search memory.
+
+llama.cpp common/json-schema-to-grammar.cpp maybe implements JSON schema to GBNF grammar. It includes trie.h, unicode.h. Functions:
+- static std::string build_repetition(...)
+- static void build_min_max_int(...)
+- static void build_regex(const json & schema, std::stringstream & out, int recursion_depth = 0)
+- static std::string build_regex_from_schema(const std::string & schema, const std::string & whitespace_pattern)
+- std::string build_grammar_from_json_schema(const std::string & schema, const std::string & whitespace_pattern)
+Maybe also static std::string build_regex_from_schema? There is a trie for enum? unicode? regex?
+
+User says "Delete the code in this file that is never used." Could be from a diff? Maybe they want to remove unused code in this file. Need maybe identify unused functions in the file: build_repetition? It is used by build_regex for arrays. build_min_max_int used for integer bounds. So not unused.
+
+Maybe includes unused: <regex>, <map>, <unordered_map>, <unordered_set>, <algorithm>, <limits>, <sstream>, <string>, <vector>. Some may be unused if code removed? But in full file, regex maybe used? Let's recall.
+
+Maybe there is dead code: `build_repetition` has a bug? Or `build_min_max_int` has unused parameter `decimals_left`? It has default 16, top_level true. In snippet, decimals_left not used? It might be used later for decimal bounds? Need inspect.
+
+The request likely from a code review: "Delete the code in this file that is never used." They want us to edit file. We need output final code? Could be they expect a patch removing unused code. Need decide.
+
+Let's think of actual file content. Maybe from llama.cpp PR? There is a file common/json-schema-to-grammar.cpp. It may contain unused functions: `build_regex_from_schema`? Let's search memory from training.
+
+I remember llama.cpp grammar generation from JSON schema. Code:
+
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+using json = common_json;
+
+static std::string build_repetition(...)
+
+static void build_min_max_int(...)
+
+static void build_regex(const json & schema, std::stringstream & out, int recursion_depth = 0) {
+    if (schema.is_null()) { out << "null"; return; }
+    if (schema.is_boolean()) { out << "true | false"; return; }
+    if (schema.is_number()) { ... }
+    if (schema.is_string()) { ... }
+    if (schema.is_array()) { ... }
+    if (schema.is_object()) { ... }
+}
+
+static std::string build_regex_from_schema
+---

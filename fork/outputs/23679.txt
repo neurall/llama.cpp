@@ -1,0 +1,118 @@
+run 23679 | direct_load2 | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 23.5 t/s | prompt 488.8 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini | power 220+280 W | 2026-11-07 11:24:55
+
+ends_with(".gguf")) {
+        auto meta = common_gguf_meta_get(params.speculative.draft.mparams.path);
+        if (meta.find("dspark") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
+        } else if (meta.find("dflash") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH };
+        } else if (meta.find("eagle3") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 };
+        } else if (meta.find("mtp") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+        }
+    }
+
+    // handle preset
+    if (!plan.preset.url.empty()) {
+        auto preset_path = get_default_local_path(plan.preset.url);
+        common_download_task task;
+        task.url        = plan.preset.url;
+        task.local_path = preset_path;
+        task.opts       = opts;
+        task.on_done    = [&, preset_path]() {
+            params.preset = preset_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle model
+    if (!plan.model_files.empty()) {
+        add_tasks(plan.model_files, plan.primary, params.model);
+    }
+
+    // handle mmproj
+    if (!plan.mmproj_files.empty()) {
+        add_tasks(plan.mmproj_files, plan.mmproj_primary, params.mmproj);
+    }
+
+    // handle draft
+    if (!plan_spec.model_files.empty()) {
+        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
+    }
+
+    // handle mtp
+    if (!plan_spec.mtp.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.mtp.url;
+        task.local_path = plan_spec.mtp.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.speculative.draft.mtp_path = plan_spec.mtp.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle dflash
+    if (!plan_spec.dflash.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dflash.url;
+        task.local_path = plan_spec.dflash.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.speculative.draft.dflash_path = plan_spec.dflash.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle eagle3
+    if (!plan_spec.eagle3.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.eagle3.url;
+        task.local_path = plan_spec.eagle3.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.speculative.draft.eagle3_path = plan_spec.eagle3.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle dspark
+    if (!plan_spec.dspark.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dspark.url;
+        task.local_path = plan_spec.dspark.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.speculative.draft.dspark_path = plan_spec.dspark.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    if (tasks.empty()) {
+        return;
+    }
+
+    // if the model is a preset, we need to download it first
+    if (common_models_handler_is_preset_repo(handler)) {
+        common_download_task task;
+        task.url        = plan.preset.url;
+        task.local_path = get_default_local_path(plan.preset.url);
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.preset = task.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    common_download_start(tasks);
+}
+
+//
+// common_params_parser_init
+//
+
+static void common_params_parser_init(common_params & params, llama_example ex, const std::function<void(common_params &)> & cb) {
+    params.examples.push_back(ex);
+
+    for (const auto & opt : get_common_arg

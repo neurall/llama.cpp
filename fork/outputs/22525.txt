@@ -1,0 +1,12 @@
+run 22525 | dec_calc | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.53 t/s | prompt 57.4 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/fs-glm-s200.ini,log=wk,pp-path=stream | power 200+200 W | 2026-11-03 00:03:20
+
+The user is asking me to delete code in `json-schema-to-grammar.cpp` that is never used. This is a file from llama.cpp (the common/json-schema-to-grammar.cpp file). The message got cut off mid-file, so I only see the beginning of the file.
+
+Let me think about what this file contains and what parts are unused. The file is a JSON schema to grammar converter used in llama.cpp for structured output (JSON schema constrained generation).
+
+Let me recall the structure of this file (from llama.cpp's common/json-schema-to-grammar.cpp):
+
+The file contains:
+1. `build_repetition` function
+
+---

@@ -1,0 +1,249 @@
+run 23850 | split-trial-mix-on | pf64k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 48.19 t/s | prompt 2262.8 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 23:46:45
+
+<think>
+The user wants me to fix bugs in a large source file. I need to identify the bugs and fix them, marking each change with a comment. Let me carefully analyze the code.
+
+Looking at the code, I need to find bugs. Let me go through it systematically.
+
+1. In `build_repetition`:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+When `has_max` is false, `max_items` is `std::numeric_limits<int>::max()`, so `has_max ? max_items - 1 : max_items` passes `max_items` which is `INT_MAX`. But the recursive call's `has_max` check is `max_items != std::numeric_limits<int>::max()`, so it would be false. That seems correct.
+
+Wait, actually when `has_max` is true, `max_items - 1` is passed. When `has_max` is false, `max_items` (which is INT_MAX) is passed. That's correct.
+
+2. In `build_min_max_int`, the `more_digits` lambda:
+```cpp
+auto more_digits = [&](int min_digits, int max_digits) {
+    out << "[0-9]";
+    if (min_digits == max_digits && min_digits == 1) {
+        return;
+    }
+    out << "{";
+    out << min_digits;
+    if (max_digits != min_digits) {
+        out << ",";
+        if (max_digits != std::numeric_limits<int>::max()) {
+            out << max_digits;
+        }
+    }
+    out << "}";
+};
+```
+This looks correct.
+
+3. In `uniform_range`, there's a potential issue with `from[i]` and `to[i]` when `i` could be out of bounds. Let me check:
+```cpp
+if (i < from.length() && i < to.length()) {
+    ...
+    auto sub_len = from.length() - i - 1;
+    if (sub_len > 0) {
+        ...
+        if (from_sub == sub_zeros) {
+            digit_range(from[i], to[i] - 1);
+```
+Wait, `to[i] - 1` could be less than `from[i]` if `to[i] == from[i]`. But we already checked `from[i] == to[i]` in the while loop, so if we reach here, `from[i] != to[i]`. But `to[i] - 1` could still be less than `from[i]` if `to[i] < from[i]`. But that shouldn't happen since `from <= to`.
+
+Actually wait, there's a bug: `sub_len = from.length() - i - 1`. But what if `from.length() != to.length()`? The function assumes they have the same length. Let me check the callers... In the `has_min && has_max` case:
+```cpp
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+uniform_range(min_s, max_s);
+```
+Here `min_s` and `max_s` could have different lengths when calling `uniform_range(min_s, max_s)` at the end. Actually no, after the loop, `min_s` has `max_digits` digits (since `min_s = "1" + string_repeat("0", digits)` where `digits` goes up to `max_digits - 1`, so `min_s` has `max_digits` digits). And `max_s` has `max_digits` digits. So they should be the same length.
+
+But wait, what if `min_digits == max_digits`? Then the loop doesn't execute, and `min_s` has `min_digits` digits and `max_s` has `max_digits` digits, which are equal. OK.
+
+4. In `_pattern_to_rule`, the `transform` lambda captures `i` by reference. Inside the lambda, there's a nested lambda `join_seq` that captures `seq` by reference. The `transform` function is recursive via `std::function`. Let me look for bugs...
+
+Actually, I see a potential issue with the `join_seq` lambda. It captures `seq` by reference, but `seq` is a local variable in `transform`. Each recursive call to `transform` creates a new `seq`. The `join_seq` lambda is defined inside `transform` and captures the local `seq`. This should be fine since `join_seq` is only called within the same `transform` invocation.
+
+5. Looking at the `visit` method:
+```cpp
+case common_chat_schema::KIND_ARRAY: {
+    const auto & arr = as<common_chat_schema_array>(schema);
+    if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+        return _visit_primitive(rule_name, "array");
+    }
+```
+This looks correct.
+
+6. In `_build_object_rule`, there's a potential issue with the `get_recursive_refs` lambda. When `k == "*"`, the `comma_ref` is used differently. Let me look more carefully...
+
+Actually, I think I need to look at this more carefully. The `get_recursive_refs` function:
+```cpp
+std::string comma_ref = "( \",\" space " + kv_rule_name + " )";
+if (first_is_optional) {
+    res = comma_ref + (k == "*" ? "*" : "?");
+} else {
+    res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+}
+```
+This looks correct for handling the wildcard case.
+
+7. Let me look at the `common_arg` struct in `arg.h`:
+```cpp
+bool operator<(const common_arg& other) const {
+    if (args.empty() || other.args.empty()) {
+        return false;
+    }
+    return strcmp(args[0], other.args[0]) < 0;
+}
+```
+This is a strict weak ordering issue. If `args[0] == other.args[0]`, both `a < b` and `b < a` return false, which is correct. But if `args` is empty, it returns false for both directions, which means all empty-args objects are considered equivalent. This could be a problem but might be intentional.
+
+8. Looking at `common_params_parse_ex`:
+```cpp
+auto & tmp = arg_to_options[arg];
+auto opt = *tmp.first;
+```
+`opt` is a copy of the `common_arg`. Then `opt.to_string()` is called in the catch block. This should work.
+
+9. In `common_params_print_usage`:
+```cpp
+for (auto & opt : ctx_arg.options) {
+    if (opt.is_sampling) {
+        sampling_options.push_back(&opt);
+    }
+```
+This takes the address of `opt` which is a reference to the element in `ctx_arg.options`. This should be fine since `ctx_arg.options` is not modified.
+
+10. Let me look at the `build_repetition` function more carefully:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+When `min_items == 0` and `has_max` is true, this becomes:
+`build_repetition(..., 0, max_items - 1)`
+Then in the recursive call, `min_items == 0 && max_items == 1` would return `item_rule + "?"`. But wait, the `item_rule` in the recursive call is `"(" + separator_rule + " " + item_rule + ")"`. So if `max_items == 1`, the outer call would have `max_items - 1 == 0`, and the recursive call would return `""`. Then the result would be `item_rule + " " + ""` = `item_rule + " "`. Then `min_items == 0` wraps it in `(...)?`. So the result would be `"(item_rule )?"`. Hmm, that has a trailing space. But that might be OK for grammar.
+
+Actually wait, when `max_items == 1` and `min_items == 0`, the first check `if (min_items == 0 && max_items == 1)` returns `item_rule + "?"`. So we never reach the separator code. Good.
+
+When `max_items == 1` and `min_items == 1`, `has_max` is true, and we go to the separator code. `min_items - 1 = 0`, `max_items - 1 = 0`. The recursive call has `min_items == 0, max_items == 0`, which returns `""`. So result is `item_rule + " "`. Then `min_items != 0`, so no wrapping. Result: `item_rule + " "`. That has a trailing space but should be OK.
+
+Actually wait, when `max_items == 0`, the function returns `""` at the top. So `max_items - 1` when `max_items == 1` gives `0`, and the recursive call returns `""`. That's correct.
+
+11. Let me look at the `_visit_pattern` and `_pattern_to_rule` more carefully.
+
+In `_pattern_to_rule`:
+```cpp
+auto rule = to_rule(transform());
+if (paren_depth != 0) {
+    throw invalid_pattern("unbalanced parentheses");
+}
+```
+The `transform()` function modifies `paren_depth` (which is captured by reference). When we encounter `(`, we increment `paren_depth`. When we encounter `)`, we decrement it and return. So after `transform()` returns, `paren_depth` should be 0 if balanced. But wait, `transform()` is called recursively. The outer call starts with `paren_depth = 0`. If there's a `(`, `paren_depth` becomes 1, then `transform()` is called recursively. Inside the recursive call, when `)` is found, `paren_depth` becomes 0 and it returns. Then the outer call continues. If there are unmatched `(`, `paren_depth` would be > 0 after the outer `transform()` returns. This seems correct.
+
+But wait, there's a subtle issue. The `transform` lambda captures `paren_depth` by reference. When `(` is encountered:
+```cpp
+paren_depth++;
+if (paren_depth > MAX_PATTERN_DEPTH) {
+    throw unsupported_pattern("pattern nesting too deep");
+}
+seq.emplace_back("(" + to_rule(transform()) + ")", false);
+```
+The recursive `transform()` call will process until it finds `)` which decrements `paren_depth` and returns. So after the recursive call returns, `paren_depth` is back to the value before the `(`. Wait no - the `)` handler does `paren_depth--` and then returns. So if we had `paren_depth = 1` after incrementing, and the recursive call finds `)` and decrements to 0, then returns. The outer call continues with `paren_depth = 0`. That's correct.
+
+But what if there's no `)` at all? Then the while loop in the outer `transform()` ends, and `join_seq()` is called. `paren_depth` would still be 1 (or whatever it was incremented to). Then the check `if (paren_depth != 0)` catches it. Good.
+
+12. Let me look at the `common_models_handler_apply` function. There's a lambda:
+```cpp
+auto add_tasks = [&opts, &tasks](const hf_cache::hf_files  & model_files,
+                                const hf_cache::hf_file    & primary,
+                                common_params_model        & model) {
+    for (size_t i = 0; i < model_files.size(); ++i) {
+        auto & model_file = model_files[i];
+        bool is_primary = (model_file.path == primary.path);
+        tasks.emplace_back(model_file, opts, [&, is_primary]() {
+            if (is_primary) {
+                model.path = hf_cache::finalize_file(model_file);
+            } else {
+                hf_cache::finalize_file(model_file);
+            }
+        });
+    }
+};
+```
+The inner lambda captures `model_file` by reference (`&`). But `model_file` is a reference to `model_files[i]`, which is a reference to an element in the `model_files` vector. Since `model_files` is passed by const reference and the lambda is stored in `tasks`, the reference should remain valid as long as `model_files` is alive. But `model_files` is a parameter of `add_tasks`, which is a lambda. After `add_tasks` returns, the reference `model_files` is no longer valid. The inner lambda captures `&` which means it captures `model_file` by reference. But `model_file` is a local reference variable in the loop. After the loop iteration, `model_file` still refers to the same element in `model_files`. But after `add_tasks` returns, `model_files` (the parameter) is destroyed, but it was a reference to the caller's data, so the underlying data is still alive.
+
+Wait, actually `model_file` is `auto & model_file = model_files[i]`. This is a reference to an element of the vector passed by const reference. The lambda captures `&` which captures all local variables by reference. `model_file` is a local variable (a reference), and `model` is also captured by reference. The `model` parameter is a reference to `params.model` or `params.speculative.draft.mparams`, which should outlive the lambda. And `model_file` refers to an element of `model_files`, which is a reference to the caller's data. So the underlying data should be alive.
+
+Actually, I think there might be a dangling reference issue here. The lambda `[&, is_primary]` captures `model_file` by reference. `model_file` is a local variable in the for loop. Each iteration creates a new `model_file` reference. The lambda stores a reference to this local variable. After the loop iteration ends, `model_file` is destroyed. But since it's a reference, the lambda actually stores a reference to the referenced object (the element in `model_files`). Wait, no. In C++, when you capture a reference variable by reference in a lambda, you're capturing the reference itself, which means you're capturing the referred-to object. So `model_file` in the lambda refers to `model_files[i]`. As long as `model_files` (the underlying vector) is alive, this is fine.
+
+Hmm, but `model_files` is a parameter of `add_tasks`. It's a const reference. The lambda captures `&` which captures `model_files` by reference too? No, `model_files` is not used directly in the lambda body. The lambda uses `model_file` which is a local variable. Capturing `model_file` by reference means the lambda holds a reference to the object that `model_file` refers to, which is `model_files[i]`. Since `model_files` is a reference to the caller's vector, and the caller's vector outlives the lambda execution, this should be fine.
+
+Actually, I realize I need to look at this differently. The lambda `[&, is_primary]` captures everything by reference except `is_primary`. The variables used in the lambda body are `model_file` and `model`. `model_file` is a local reference variable. When captured by reference, the lambda stores a reference to the object `model_file` refers to. Since `model_file` refers to `model_files[i]`, and `model_files` refers to the caller's data, the lambda effectively holds a reference to the caller's data. This should be fine.
+
+OK let me look for actual bugs more carefully.
+
+13. In `common_arg::to_string()`:
+```cpp
+auto all_args = get_args(); // also contains args_neg
+for (const auto & arg : all_args) {
+    if (arg == all_args.front()) {
+```
+This compares by value. If there are duplicate args (unlikely), this could match the wrong one. But this is probably fine.
+
+14. In `common_params_parse_ex`, the environment variable handling:
+```cpp
+if (opt.handler_string) {
+    opt.handler_string(params, value);
+    continue;
+}
+```
+The `continue` here skips the remaining handler checks. But what if an option has both `handler_string` and `handler_int`? That shouldn't happen based on the constructors.
+
+15. Let me look at the `common_arg` constructors more carefully. The constructor with `args_neg`:
+```cpp
+common_arg(
+    const std::initializer_list<const char *> & args,
+    const std::initializer_list<const char *> & args_neg,
+    const std::string & help,
+    void (*handler)(common_params & params, bool)
+) : args(args), args_neg(args_neg), help(help), handler_bool(handler) {}
+```
+This looks correct.
+
+16. In `common_params_to_map`:
+```cpp
+auto opt = *arg_to_options[arg];
+```
+This dereferences the pointer. `arg_to_options[arg]` returns `common_arg *`. Then `*` gives `common_arg`. This is a copy. Then `opt.args_neg` is used. This should work.
+
+17. Let me look at the `parse_csv_row` function:
+```cpp
+if (ch == '"') {
+    if (!in_quotes) {
+        if (!field.empty()) {
+            field += '"';
+        } else {
+            in_quotes = true;
+        }
+    } else {
+        if (i + 1 < input.length() && input[i + 1] == '"') {
+            field += '"';
+            ++i;
+        } else {
+            in_quotes = false;
+        }
+    }
+}
+```
+This looks correct for CSV parsing.
+
+18. Let me look at the `common_params_parser_init` function. There's a lot of code here. Let me look for issues...
+
+```cpp
+add_opt(common_arg(
+    {"--version"},
+    "show version and build info",
+    [](common_params &) {
+        llama_print_build_info(llama_version());
+        exit(0);
+    }
+));
+```
+Wait, `llama_version()` is not declared in this file. It

@@ -1,0 +1,11 @@
+run 21895 | up8_ledger2_verify | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 11.65 t/s | prompt 154.2 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream,verify=1,poison=3 | power 200+200 W | 2026-11-02 00:57:34
+
+ curr_ex) {
+    std::vector<std::string> config_files;
+    auto add_config_file = [&](const std::string & path) {
+        if (std::filesystem::exists(path)) {
+            config_files.push_back(path);
+        }
+    };
+    add_config_file(fs_get_system_config_path());
+    add

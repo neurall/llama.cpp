@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+ram-glm,glm,1,tetrisc,1024,--moe state=/p/bw/data/state_sane.ini,
+ram-mimo,mimo,1,tetrisc,1024,--moe state=/p/bw/data/state_sane.ini,

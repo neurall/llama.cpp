@@ -1,0 +1,75 @@
+run 22145 | rel_stable_auto | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 53.11 t/s | prompt 39.8 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-02 11:43:09
+
+The user wants the smallest HTML Tetris game. Let me think about this.
+
+The request is "generate smallest html tetris game." That's a direct request for minimal code. But my defaults push toward rich, crafted pages. There's tension here. The user explicitly asked for "smallest" — that's a hard constraint on size. I should respect the explicit user request over the aesthetic default.
+
+But I can still make it *nice* — a tiny Tetris that's genuinely playable, with a nice touch of styling that costs few bytes. "Smallest" is the ask though. Let me deliver a compact single-file Tetris.
+
+Let me write compact Tetris.
+
+Classic minimal Tetris in HTML:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+```
+
+Let me write a well-known minimal implementation but crafted. Let me actually write it myself carefully.
+
+Grid: 10x20, block 16px → canvas 160x320.
+
+Pieces as rotation states. A compact trick: use string-based piece definitions.
+
+Compact approach: define pieces as arrays of 4 [x,y] offsets and rotate with (x,y)->(y,-x).
+
+```js
+P='⅟▙▛■▜▟▞' // no
+```
+
+Let me use the classic compact approach:
+
+```js
+P=[0,1,2,3,4,5,6]
+S=['0100;1110','0010;1110','1111','11;11','1110;1000','1110;0010','0110;1100']
+```
+
+Hmm, string parsing costs bytes but is readable. Let's do a compact numeric approach.
+
+Actually a very compact known trick: encode each piece as a 4-digit hex per rotation... Let's just do something readable-ish and small.
+
+Let me write:
+
+```html
+<canvas id=C width=160 height=320></canvas>
+<script>
+with(C){x=getContext`2d`}
+```
+
+Hmm, `getContext` with template literal works: `C.getContext\`2d\`` — tagged template returns string. Yes that works and saves quotes.
+
+Let me design the game:
+
+```js
+B=[]; // board 10*20
+S='01001110|00101110|11110000|11001100|11100001|01111000|01101100'
+```
+
+Hmm, let me use a simpler representation: each piece is a 4x4 bitmask per rotation? Too long.
+
+Alternative compact classic: use the "P" array of numbers where each piece is defined by 4 numbers (the classic JS golfed Tetris uses `t=[0,1,2,...]`).
+
+Let me just do the offset-based rotation which is short:
+
+```js
+P=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[1,1],[2,1]],[[1,0],[2,0],[0,1],[1,1]],[[0,0],[1,0],[2,0],[1,1]],[[0,0],[1,0],[2,0],[2,1]],[[0,0],[1,0],[2,0],[0,1]],[[0,0],[1,0],[1,1],[2,1]]]
+```
+
+Wait piece 1 and 6 are same. Let me define properly:
+- I: (0,0)(1,0)(2,0)(3,0)
+- O: (0,0)(1,0)(0,1)(1,1)
+- T: (0,0)(1,0)(2,0)(1,1)
+- S: (1,0)(2,0)(0,1)(1,1)
+- Z: (0,0)(1,0)(1,1)(2,1)
+- J: (0,0)(0,1)(1,1)(2,1)
+- L: (2,0)(0,1)(1,
+---

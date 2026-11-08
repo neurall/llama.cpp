@@ -1,0 +1,27 @@
+run 21996 | rel_prompt_auto | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.33 t/s | prompt 36.0 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 200+200 W | 2026-11-02 04:48:45
+
+The user wants the smallest HTML Tetris game. Let me think about this. "Smallest" — they want minimal code. But I don't want to just dump a tiny minified blob with no explanation. There's a real tension: "smallest" is an explicit constraint, and that should drive the answer. The most honest response to "smallest" is genuinely compact code.
+
+But I can make it small AND beautiful — the craft is in the golf. Let me write a compact Tetris that's actually playable and looks decent, with minimal CSS.
+
+Let me write it carefully.
+
+Approach: canvas-based, tiny.
+
+```html
+<canvas id=c width=160 height=320 style="background:#111;image-rendering:pixelated;width:320px"></canvas>
+<script>
+// tetris
+</script>
+```
+
+Let me write compact Tetris logic.
+
+Standard approach:
+- 10x20 grid
+- pieces as rotation states via matrix rotation
+- draw with canvas
+
+```js
+B=document.body,c=B.firstChild,x=c.getContext`2d`,S=16,W=10,H=20,g=[],d=0,p
+---

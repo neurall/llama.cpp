@@ -1,0 +1,4 @@
+run 22489 | miss_real | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.28 t/s | prompt 71.2 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/mb-c64.ini,log=wk,pp-path=dec | power 220+280 W | 2026-11-02 22:41:00
+
+The user is asking about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code. The code is about common code.
+---

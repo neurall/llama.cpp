@@ -1,0 +1,56 @@
+run 21775 | up8_gather_rows | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 21.62 t/s | prompt 960.1 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 220+280 W | 2026-11-01 18:14:19
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    // otherwise, fall back to std::thread::hardware_concurrency
+    int32_t num_cores = static_cast<int32_t>(std::thread::hardware_concurrency());
+    return num_cores > 0 ? num_cores : 4;
+}
+
+bool common_cpu_supports_mmx() {
+    return false;
+}
+
+bool common_cpu_supports_sse() {
+    return false;
+}
+
+bool common_cpu_supports_sse2() {
+    return false;
+}
+
+bool common_cpu_supports_sse3() {
+    return false;
+}
+
+bool common_cpu_supports_ssse3() {
+    return false;
+}
+
+bool common_cpu_supports_sse41() {
+    return false;
+}
+
+bool common_cpu_supports_sse42() {
+    return false;
+}
+
+bool common_cpu_supports_avx() {
+    return false;
+}
+
+bool common_cpu_supports_avx2() {
+    return false;
+}
+
+bool common_cpu_supports_avx512() {
+    return false;
+}
+
+bool common_cpu_supports_avx512_vnni() {
+    return false;
+}
+
+bool common_cpu_supports_avx512_b

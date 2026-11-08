@@ -1,0 +1,63 @@
+run 22641 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 49.45 t/s | prompt 38.6 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 220+280 W | 2026-11-03 08:19:46
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, working Tetris in a single HTML file.
+
+But I don't want to just ship the bare minimum — I'd like it to feel genuinely crafted and alive: nice typography, a layered background, micro-interactions, strong type contrast. Yet the user asked for "smallest" — so size matters. I should balance: keep the code compact but make the presentation polished. A Tetris game naturally has a dark background, but I don't want the tired near-black-with-one-neon-accent look. Let me use a richer palette — maybe a deep slate/ink background with a warm off-white panel, and the classic tetromino colors as the accent system (cyan, magenta, yellow, green, red, blue, orange). That's a natural palette for Tetris and reads as characteristic of the subject.
+
+The most characteristic thing about Tetris is the playfield itself, so the board should be front and center immediately — no generic intro. Good.
+
+Design thoughts:
+- Display face: something geometric/technical. Maybe "Chakra Petch" or "Bungee" or "Silkscreen"/"Press Start 2P" (pixel). Press Start 2P is very characteristic of retro games but hard to read at body sizes. Pair a pixel display face with a readable body face. Let's do "Silkscreen" for display (small pixel face) and "Space Grotesk" or "IBM Plex Sans" for body. Actually let's use "Chakra Petch" for numbers/UI (technical, angular) and "Silkscreen" for the title. Hmm, keep it to two: Display = "Silkscreen" (pixel), Body = "Space Grotesk". Good contrast.
+
+- Background: layered ambient — subtle CRT scanlines, a faint grid, a soft radial glow, maybe slowly drifting tetromino shapes in the background at low opacity. Keep it tasteful.
+
+- Layout: an asymmetric layout — left rail with stats/score, center playfield, right rail with next piece + hold + controls legend. On mobile, stack.
+
+- Micro-interactions: line clear flash, piece lock thud animation, score counter tick, hover on buttons, key press feedback on the legend keys, level-up pulse, screen shake on hard drop.
+
+- Sound: tiny WebAudio beeps — optional, adds life. Keep small.
+
+Now the "smallest" aspect: I should keep the code tight. I'll write compact but readable JS. Use canvas for the board — that's the smallest implementation. Canvas rendering with a fixed cell size, scaled by CSS.
+
+Let me write the game logic compactly:
+
+```js
+const W=10,H=20;
+let B=[...Array(H)].map(_=>Array(W).fill(0));
+```
+
+Tetromino definitions using rotation via matrix rotation. Standard SRS-ish. Simplest: define shapes as matrices, rotate by transposing+reversing, with simple wall kick attempts (offset try -1,1,-2,2).
+
+Pieces:
+```
+I:[[0,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]] // or simpler 4x4
+```
+Compact approach: use string-based shapes.
+
+Let me define:
+```js
+const P='IJOZSTV'; // hmm
+```
+
+Simplest compact: 
+```js
+const S={I:[[0,1],[1,1],[1,0]],...}
+```
+Let me just use matrices:
+
+```js
+const T=[[[0,1,0],[1,1,1]],[[1,0],[1,1],[0,1]],...]
+```
+Too long. Use rotation function instead.
+
+Base shapes (spawn orientation):
+- I: [[1,1,1,1]]
+- O: [[1,1],[1,1]]
+- T: [[1,1,1],[0,1,0]]
+- S: [[0,1,1],[1,1,0]]
+- Z: [[1,1,0],[0,1,1]]
+- J: [[1,0,0],[1,1,1]]
+- L: [[0,0,1],[1,1,1]]
+
+Rotate CW: `m[0].map((_,i)=>m.map(r
+---

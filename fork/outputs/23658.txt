@@ -1,0 +1,23 @@
+run 23658 | direct_load2 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.39 t/s | prompt 478.3 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-07 10:01:34
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` - potential bug with negative values**: When `min_items > 0` and separator is used, it computes `min_items - 1`. If `max_items` is set and `min_items == max_items`, then `max_items - 1` could be less than `min_items - 1`... Actually let me check: `build_repetition(item_rule, min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If `min_items == 1` and `max_items == 1`, then it becomes `build_repetition(..., 0, 0)` which returns "" — wait, `max_items == 0` returns "". Hmm, but then the result would be `item_rule + " " + ""` = `item_rule + " "`. That seems wrong — trailing space. Actually wait, if max_items == 0, the function returns "" early. So `item_rule + " " + ""` gives `item_rule + " "` with a trailing space. Hmm, actually for min=1, max=1 with separator, the correct output should just be `item_rule`. Let me trace: `build_repetition("(sep item)", 0, 0)` returns "" because `max_items == 0`. So result = `item_rule + " " + ""` = `item_rule + " "`. That's a trailing space in the grammar. GBNF might tolerate trailing spaces? Actually in GBNF, whitespace in rule definitions... the grammar rules are like `root ::= ...`. Trailing space in the rule text might be harmless or might not. Actually in llama.cpp's GBNF parser, spaces in rules are generally ignored outside of literals? No wait — in GBNF, spaces are significant? Let me think. In llama.cpp grammar parsing, whitespace between elements in a rule is ignored (the parser skips whitespace except within quoted literals). Actually yes, the GBNF parser ignores whitespace outside literals. So trailing space is harmless but sloppy.
+
+   But wait, there's a deeper issue: if `min_items == max_items == 1` with separator, the correct grammar is just `item_rule` (one item, no separator). The code produces `item_rule + " "` which after whitespace-stripping equals `item_rule`. OK fine.
+
+   What about `min_items == 2, max_items == 2`? Then inner is `build_repetition("(sep item)", 1, 1)` → since separator_rule is empty here, min==1 and !has_max? No, has_max is true (max=1 != INT_MAX). So falls to `item_rule + "{1,1}"`. So result: `item (sep item){1,1}`. `{1,1}` is redundant but correct.
+
+   What about `min_items == 0, max_items == 0`? Early return "" — but then in the array case, `build_repetition(item_rule_name, 0, 0, ",\" space")` returns "" and the rule becomes `"[" space  space "]"`. Fine.
+
+   Hmm, but there's a subtle bug: when `min_items > max_items`? Not validated. E.g., min_items=3, max_items=2. The generated grammar would be weird. Probably schema validation upstream. Minor.
+
+2. **`build_min_max_int` uses `std::function` with recursion** — fine but heavy. Also `uniform_range` lambda captures by reference recursively via std::function — OK.
+
+3. **`build_min_max_int` - `decimals_left` default 16**: The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN`... wait, if both negative, has_min and has_max are true. `-max_value` — if `max_value == INT64_MIN`? Then `has_max = max_value != INT64_MAX` — wait max_value is negative here so has_max is true. `-max_value` where max_value = INT64_MIN → UB (signed overflow)! Let me check: condition `min_value < 0 && max_value < 0`. If max_value == INT64_MIN (which is < 0), then `-max_value` overflows. Hmm, but can max_value be INT64_MIN? The schema integer maximum could theoretically be set to INT64_MIN. Then `-max_value` is UB. Edge case, but real. Similarly `-min_value` when min_value == INT

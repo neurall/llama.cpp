@@ -1,0 +1,42 @@
+run 21766 | up8_attn_split_dynamic | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 20.87 t/s | prompt 905.8 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,attn-split=2 | power 220+280 W | 2026-11-01 16:48:19
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    // otherwise fall back to logical cores
+    return std::thread::hardware_concurrency();
+}
+
+int32_t common_cpu_get_num_cores() {
+    return std::thread::hardware_concurrency();
+}
+
+//
+// String utils
+//
+
+// returns the current timestamp as a string, the format of the timestamp depends on the parameter
+std::string common_timestamp_to_string(int64_t timestamp, const std::string & format) {
+    std::time_t time = static_cast<std::time_t>(timestamp);
+    std::tm     tm;
+
+#if defined(_WIN32)
+    gmtime_s(&tm, &time);
+#else
+    gmtime_r(&time, &tm);
+#endif
+
+    char buffer[80];
+    strftime(buffer, sizeof(buffer), format.c_str(), &tm);
+    return buffer;
+}
+
+// returns the current timestamp as a string, the format of the timestamp depends on the parameter
+std::string common_time_to_string(const std::string & format) {
+    return common_timestamp_to_string(std::time(nullptr), format);
+}
+
+// returns the current timestamp as an integer
+int64_t common_time_now() {
+   

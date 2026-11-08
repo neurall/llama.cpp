@@ -1,0 +1,19 @@
+name,model,n,test,tokens,args,extra
+sc-glm-t,glm,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/sc-glm-t.ini,log=wk",--ctx 4096
+sc-glm-s100,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/sc-glm-s100.ini,log=wk",
+sc-glm-s500,glm,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/sc-glm-s500.ini,log=wk",
+sc-glm-l,glm,2,long1kc,128,"--moe state=/tmp/runstate/ppk/sc-glm-l.ini,log=wk",
+ro-glm-s100,glm,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/ro-glm-s100.ini",
+ro-glm-s500,glm,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/ro-glm-s500.ini",
+sc-mimo-t,mimo,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/sc-mimo-t.ini,log=wk",--ctx 4096
+sc-mimo-s100,mimo,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/sc-mimo-s100.ini,log=wk",
+sc-mimo-s500,mimo,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/sc-mimo-s500.ini,log=wk",
+sc-mimo-l,mimo,2,long1kc,128,"--moe state=/tmp/runstate/ppk/sc-mimo-l.ini,log=wk",
+ro-mimo-s100,mimo,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/ro-mimo-s100.ini",
+ro-mimo-s500,mimo,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/ro-mimo-s500.ini",
+sc-ds-t,ds,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/sc-ds-t.ini,log=wk",--ctx 4096
+sc-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/sc-ds-s100.ini,log=wk",
+sc-ds-s500,ds,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/sc-ds-s500.ini,log=wk",
+sc-ds-l,ds,2,long1kc,128,"--moe state=/tmp/runstate/ppk/sc-ds-l.ini,log=wk",
+ro-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/ro-ds-s100.ini,pin-budget=108447924224 -lm mmap",
+ro-ds-s500,ds,2,500in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/ro-ds-s500.ini,pin-budget=108447924224 -lm mmap",

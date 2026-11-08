@@ -25,6 +25,7 @@ typedef void (* fattn_kernel_t)(
         const char * __restrict__ mask,
         const char * __restrict__ sinks,
         const int  * __restrict__ KV_max,
+        const int  * __restrict__ KV_rows,
         float      * __restrict__ dst,
         float2     * __restrict__ dst_meta,
         const float scale,
@@ -394,14 +395,23 @@ static __device__ __forceinline__ void dequantize_V_f16(const void * __restrict_
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_bf16(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    static_assert(std::is_same_v<T, float>, "BF16 V dequantization only supports float output");
     static_assert(ne % 2 == 0, "bad ne");
     __align__(16) nv_bfloat162 tmp[ne/2];
     ggml_cuda_memcpy_1<ne*sizeof(nv_bfloat16)>(tmp, (const nv_bfloat16 *) vx + i0);
-    float2 * dst_f2 = (float2 *) dst;
+    if constexpr (std::is_same_v<T, half>) {
+        half2 * dst_h2 = (half2 *) dst;
 #pragma unroll
-    for (int l = 0; l < ne/2; ++l) {
-        dst_f2[l] = ggml_cuda_cast<float2>(tmp[l]);
+        for (int l = 0; l < ne/2; ++l) {
+            dst_h2[l] = __float22half2_rn(ggml_cuda_cast<float2>(tmp[l]));
+        }
+    } else if constexpr (std::is_same_v<T, float>) {
+        float2 * dst_f2 = (float2 *) dst;
+#pragma unroll
+        for (int l = 0; l < ne/2; ++l) {
+            dst_f2[l] = ggml_cuda_cast<float2>(tmp[l]);
+        }
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
     }
 }
 
@@ -427,17 +437,18 @@ static __device__ __forceinline__ void dequantize_V_q4_0(const void * __restrict
 
     const int8_t * q8 = (const int8_t *) &q;
 
-#ifdef FP16_AVAILABLE
     if constexpr (std::is_same_v<T, half>) {
+#ifdef FP16_AVAILABLE
         const half2 d = __half2half2(x[ib].d);
 
 #pragma unroll
         for (int l0 = 0; l0 < ne; l0 += 2) {
             ((half2 *) dst)[l0/2] = d * make_half2(q8[l0 + 0], q8[l0 + 1]);
         }
-    } else
+#else
+        NO_DEVICE_CODE;
 #endif // FP16_AVAILABLE
-    if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (std::is_same_v<T, float>) {
         const float d = x[ib].d;
 
 #pragma unroll
@@ -465,8 +476,8 @@ static __device__ __forceinline__ void dequantize_V_q4_1(const void * __restrict
 
     const int8_t * q8 = (const int8_t *) &q;
 
-#ifdef FP16_AVAILABLE
     if constexpr (std::is_same_v<T, half>) {
+#ifdef FP16_AVAILABLE
         const half2 dm = x[ib].dm;
         const half2 d  = __half2half2( __low2half(dm));
         const half2 m  = __half2half2(__high2half(dm));
@@ -475,9 +486,10 @@ static __device__ __forceinline__ void dequantize_V_q4_1(const void * __restrict
         for (int l0 = 0; l0 < ne; l0 += 2) {
             ((half2 *) dst)[l0/2] = d * make_half2(q8[l0 + 0], q8[l0 + 1]) + m;
         }
-    } else
+#else
+        NO_DEVICE_CODE;
 #endif // FP16_AVAILABLE
-    if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (std::is_same_v<T, float>) {
         const float2 dm = __half22float2(x[ib].dm);
 
 #pragma unroll
@@ -517,17 +529,18 @@ static __device__ __forceinline__ void dequantize_V_q5_0(const void * __restrict
 
     const int8_t * q8 = (const int8_t *) &q;
 
-#ifdef FP16_AVAILABLE
     if constexpr (std::is_same_v<T, half>) {
+#ifdef FP16_AVAILABLE
         const half2 d = __half2half2(x[ib].d);
 
 #pragma unroll
         for (int l0 = 0; l0 < ne; l0 += 2) {
             ((half2 *) dst)[l0/2] = d * make_half2(q8[l0 + 0], q8[l0 + 1]);
         }
-    } else
+#else
+        NO_DEVICE_CODE;
 #endif // FP16_AVAILABLE
-    if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (std::is_same_v<T, float>) {
         const float d = x[ib].d;
 
 #pragma unroll
@@ -565,8 +578,8 @@ static __device__ __forceinline__ void dequantize_V_q5_1(const void * __restrict
 
     const int8_t * q8 = (const int8_t *) &q;
 
-#ifdef FP16_AVAILABLE
     if constexpr (std::is_same_v<T, half>) {
+#ifdef FP16_AVAILABLE
         const half2 dm = x[ib].dm;
         const half2 d  = __half2half2( __low2half(dm));
         const half2 m  = __half2half2(__high2half(dm));
@@ -575,9 +588,10 @@ static __device__ __forceinline__ void dequantize_V_q5_1(const void * __restrict
         for (int l0 = 0; l0 < ne; l0 += 2) {
             ((half2 *) dst)[l0/2] = d * make_half2(q8[l0 + 0], q8[l0 + 1]) + m;
         }
-    } else
+#else
+        NO_DEVICE_CODE;
 #endif // FP16_AVAILABLE
-    if constexpr (std::is_same_v<T, float>) {
+    } else if constexpr (std::is_same_v<T, float>) {
         const float2 dm = __half22float2(x[ib].dm);
 
 #pragma unroll
@@ -600,17 +614,18 @@ static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict
     int8_t qs[ne];
     ggml_cuda_memcpy_1<ne, 2>(qs, x[ib].qs + iqs);
 
-#ifdef FP16_AVAILABLE
     if constexpr (std::is_same<T, half>::value) {
+#ifdef FP16_AVAILABLE
         const half2 d = __half2half2(x[ib].d);
 
 #pragma unroll
         for (int l0 = 0; l0 < ne; l0 += 2) {
             ((half2 *) dst)[l0/2] = d * make_half2(qs[l0 + 0], qs[l0 + 1]);
         }
-    } else
+#else
+        NO_DEVICE_CODE;
 #endif // FP16_AVAILABLE
-    if constexpr (std::is_same<T, float>::value) {
+    } else if constexpr (std::is_same<T, float>::value) {
         const float d = x[ib].d;
 
 #pragma unroll
@@ -659,7 +674,7 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
     } else if constexpr (type_V == GGML_TYPE_Q8_0) {
         return dequantize_V_q8_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_BF16) {
-        return dequantize_V_bf16<float, ne>;
+        return dequantize_V_bf16<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;
@@ -669,7 +684,7 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
 template <int ncols1>
 __launch_bounds__(FATTN_KQ_STRIDE/2, 1)
 static __global__ void flash_attn_mask_to_KV_max(
-        const half2 * mask_ptr, int * KV_max_ptr, const int ne30, const int64_t s31, const int64_t s33) {
+        const half2 * mask_ptr, int * KV_max_ptr, const int ne30, const int64_t s31, const int64_t s33, const int k0_mask) {
     const half2 * GGML_CUDA_RESTRICT mask   = mask_ptr;
     int         * GGML_CUDA_RESTRICT KV_max = KV_max_ptr;
 
@@ -720,7 +735,7 @@ static __global__ void flash_attn_mask_to_KV_max(
         return;
     }
 
-    KV_max[sequence*ne31 + jt] = KV_max_sj;
+    KV_max[sequence*ne31 + jt] = k0_mask + KV_max_sj;   // fork: the cells before the mask's first are all visible (llama_kv_cache::kq_mask_k0)
 }
 
 void ggml_cuda_flash_attn_ext_compact_mask(
@@ -983,15 +998,25 @@ static __global__ void flash_attn_combine_results(
 // the call's own; tests/test-scratch-fork.cpp runs the op and checks them.
 extern thread_local size_t * ggml_cuda_fattn_plan_fork;
 
+// fork: the f16 copies of quantized K / V in a graph the pool lends scratch to: from the scratch, which all nodes share, so a graph holds ONE layer's copies. Inside each
+// attention node's tensor (upstream, f16_extra) the copies of the layers rarely reuse each other's place and the lend grew by about 37 KB per cell on Qwen3.6 at q8_0, ten
+// times what the pool plans with (kv_lend_pc_of), so a 128k prompt was refused. Set once for a device, before its first planned graph, and never cleared: a graph allocated
+// earlier has its copies in its tensors and simply does not use them.
+extern bool ggml_cuda_fattn_f16_scratch_fork[GGML_CUDA_MAX_DEVICES];
+extern bool ggml_cuda_fattn_rows_fork;   // fattn.cu: --moe fattn-rows (see launch_fattn)
+
 template <int DV, int ncols1, int ncols2>
 void launch_fattn(
     ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel, const int nwarps, const size_t nbytes_shared,
     const int nbatch_fa, const bool need_f16_K, const bool need_f16_V, const bool stream_k, const bool use_sparse,
-    const int warp_size = WARP_SIZE, const bool async_kv_preload = false
+    const int warp_size = WARP_SIZE, const bool async_kv_preload = false, const bool fold_gqa = false
 ) {
     constexpr int ncols = ncols1 * ncols2;
     size_t * const plan = ggml_cuda_fattn_plan_fork;   // fork: see above
     auto plan_take = [plan](size_t n) { if (n > 0) { *plan = GGML_PAD(*plan, 256) + n; } };
+    auto plan_take_or = [plan, &plan_take](ggml_cuda_pool_alloc<half> & mem, half * & out, int64_t n) {
+        if (plan) { plan_take(size_t(n) * sizeof(half)); } else { out = mem.alloc(n); }
+    };
 
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];
@@ -999,8 +1024,13 @@ void launch_fattn(
 
     const bool V_is_K_view = V->view_src && (V->view_src == K || (V->view_src == K->view_src && V->view_offs == K->view_offs));
 
-    const ggml_tensor * mask  = dst->src[3];
-    const ggml_tensor * sinks = dst->src[4];
+    const ggml_tensor * mask    = dst->src[3];
+    const ggml_tensor * sinks   = dst->src[4];
+    const ggml_tensor * kv_rows = dst->src[5];
+
+    // with kv_rows the kernel iterates over the mask columns and reads K/V rows through kv_rows
+    const int64_t n_kv_cols = kv_rows ? kv_rows->ne[0] : K->ne[1];
+    GGML_ASSERT(!kv_rows || !use_sparse);
 
     ggml_tensor * KQV = dst;
 
@@ -1022,6 +1052,20 @@ void launch_fattn(
     const ggml_cuda_flash_attn_ext_f16_extra_data f16_extra =
         ggml_cuda_flash_attn_ext_get_f16_extra_data(KQV, need_f16_K, need_f16_V);
 
+    // fork: see ggml_cuda_fattn_f16_scratch_fork
+    ggml_cuda_pool_alloc<half> K_f16_scratch(pool);
+    ggml_cuda_pool_alloc<half> V_f16_scratch(pool);
+    half * K_f16 = (half *) f16_extra.K;
+    half * V_f16 = (half *) f16_extra.V;
+    if (ggml_cuda_fattn_f16_scratch_fork[ctx.device]) {
+        if (need_f16_K && K->type != GGML_TYPE_F16) {
+            plan_take_or(K_f16_scratch, K_f16, ggml_nelements(K));
+        }
+        if (need_f16_V && V->type != GGML_TYPE_F16 && !V_is_K_view) {
+            plan_take_or(V_f16_scratch, V_f16, ggml_nelements(V));
+        }
+    }
+
     ggml_cuda_pool_alloc<int>    KV_max(pool);
     ggml_cuda_pool_alloc<float>  dst_tmp(pool);
     ggml_cuda_pool_alloc<float2> dst_tmp_meta(pool);
@@ -1036,13 +1080,50 @@ void launch_fattn(
     size_t nb22 = V->nb[2];
     size_t nb23 = V->nb[3];
 
+    GGML_ASSERT(!stream_k || !fold_gqa);
+    const int gqa_ratio    = Q->ne[2] / K->ne[2];
+    const int ncols1_eff   = (fold_gqa && ncols2 > gqa_ratio) ? (ncols / gqa_ratio) : ncols1;
+    const int ntiles_x     = ((Q->ne[1] + ncols1_eff - 1) / ncols1_eff);
+    const int ntiles_z_gqa = ((gqa_ratio + ncols2 - 1) / ncols2);
+    const int ntiles_dst   = ntiles_x * ntiles_z_gqa * K->ne[2] * Q->ne[3];
+
+    // sparse: a query tile of ncols1 queries shares one index list, the union of the queries' visible columns
+    int32_t n_kv_max = 0;
+    if (use_sparse) {
+        GGML_ASSERT(mask != nullptr);
+        const int32_t n_kv_max_query = ggml_get_op_params_i32(KQV, 4);
+        GGML_ASSERT(n_kv_max_query > 0);
+        n_kv_max = std::min<int64_t>(K->ne[1], int64_t(ncols1)*n_kv_max_query);
+
+        const size_t n_lists = size_t(ntiles_x) * mask->ne[3];
+
+        if (plan) {
+            plan_take((size_t(n_kv_max)*n_lists + n_lists) * sizeof(int));
+        } else {
+            KV_max.alloc(size_t(n_kv_max)*n_lists + n_lists);
+            ggml_cuda_flash_attn_ext_compact_mask(mask, KV_max.ptr, KV_max.ptr + size_t(n_kv_max)*n_lists, Q->ne[1], ncols1, n_kv_max, main_stream);
+        }
+    }
+
+    // fork: a gather reads only the rows of its index lists: with few enough of them only those rows become f16, each at its place in a whole copy, so the kernel reads it as before.
+    // A decode token at 137k cells converts 2048 rows of a layer, not 137k. A prompt pass, whose lists cover most cells, converts everything (--moe fattn-rows=0: always).
+    const int64_t n_rows_fork = use_sparse ? int64_t(n_kv_max) * int64_t(ntiles_x) * mask->ne[3] : 0;
+    const auto rows_to_f16 = [&](const ggml_tensor * T, half * y) {
+        const size_t ts = ggml_type_size(T->type);
+        return !plan && use_sparse && ggml_cuda_fattn_rows_fork && n_rows_fork*4 <= T->ne[1] &&
+            ggml_cuda_to_fp16_rows(T->type, T->data, y, KV_max.ptr, n_rows_fork, T->ne[0], T->ne[1], T->ne[2], T->ne[3], T->nb[1] / ts, T->nb[2] / ts, T->nb[3] / ts, main_stream);
+    };
+
     if (!plan && need_f16_K && K->type != GGML_TYPE_F16) {
         const size_t bs = ggml_blck_size(K->type);
         const size_t ts = ggml_type_size(K->type);
 
-        GGML_ASSERT(f16_extra.K != 0);
-        half * K_f16 = (half *) f16_extra.K;
-        if (ggml_is_contiguously_allocated(K)) {
+        GGML_ASSERT(K_f16 != nullptr);
+        if (rows_to_f16(K, K_f16)) {
+            nb11 = K->ne[0] * sizeof(half);
+            nb12 = K->ne[1] * nb11;
+            nb13 = K->ne[2] * nb12;
+        } else if (ggml_is_contiguously_allocated(K)) {
             to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(K->type);
             to_fp16(K_data, K_f16, ggml_nelements(K), main_stream);
 
@@ -1074,9 +1155,12 @@ void launch_fattn(
             const size_t bs = ggml_blck_size(V->type);
             const size_t ts = ggml_type_size(V->type);
 
-            GGML_ASSERT(f16_extra.V != 0);
-            half * V_f16 = (half *) f16_extra.V;
-            if (ggml_is_contiguously_allocated(V)) {
+            GGML_ASSERT(V_f16 != nullptr);
+            if (rows_to_f16(V, V_f16)) {
+                nb21 = V->ne[0] * sizeof(half);
+                nb22 = V->ne[1] * nb21;
+                nb23 = V->ne[2] * nb22;
+            } else if (ggml_is_contiguously_allocated(V)) {
                 to_fp16_cuda_t to_fp16 = ggml_get_to_fp16_cuda(V->type);
                 to_fp16(V_data, V_f16, ggml_nelements(V), main_stream);
                 V_data = (char *) V_f16;
@@ -1100,33 +1184,10 @@ void launch_fattn(
         }
     }
 
-    const int ntiles_x     = ((Q->ne[1] + ncols1 - 1) / ncols1);
-    const int gqa_ratio    = Q->ne[2] / K->ne[2];
-    const int ntiles_z_gqa = ((gqa_ratio + ncols2 - 1) / ncols2);
-    const int ntiles_dst   = ntiles_x * ntiles_z_gqa * K->ne[2] * Q->ne[3];
-
-    // sparse: a query tile of ncols1 queries shares one index list, the union of the queries' visible columns
-    int32_t n_kv_max = 0;
-    if (use_sparse) {
-        GGML_ASSERT(mask != nullptr);
-        const int32_t n_kv_max_query = ggml_get_op_params_i32(KQV, 4);
-        GGML_ASSERT(n_kv_max_query > 0);
-        n_kv_max = std::min<int64_t>(K->ne[1], int64_t(ncols1)*n_kv_max_query);
-
-        const size_t n_lists = size_t(ntiles_x) * mask->ne[3];
-
-        if (plan) {
-            plan_take((size_t(n_kv_max)*n_lists + n_lists) * sizeof(int));
-        } else {
-            KV_max.alloc(size_t(n_kv_max)*n_lists + n_lists);
-            ggml_cuda_flash_attn_ext_compact_mask(mask, KV_max.ptr, KV_max.ptr + size_t(n_kv_max)*n_lists, Q->ne[1], ncols1, n_kv_max, main_stream);
-        }
-    }
-
     // Optional optimization where the mask is scanned to determine whether part of the calculation can be skipped.
     // Only worth the overhead if there is at lease one FATTN_KQ_STRIDE x FATTN_KQ_STRIDE square to be skipped or
-    //     multiple sequences of possibly different lengths.
-    const bool scan_mask = !use_sparse && mask && K->ne[1] % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1);
+    //     multiple sequences of possibly different lengths, or kv_rows lists that end with padding.
+    const bool scan_mask = !use_sparse && ncols1_eff == ncols1 && mask && n_kv_cols % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1 || kv_rows);
     if (scan_mask && plan) {
         plan_take(size_t(ntiles_x) * Q->ne[3] * sizeof(int));   // KV_max below
     } else if (scan_mask) {
@@ -1137,13 +1198,19 @@ void launch_fattn(
         const dim3 block_dim_KV_max(FATTN_KQ_STRIDE/2, 1, 1);
 
         const int ne_KV_max = blocks_num_KV_max.x*blocks_num_KV_max.y;
-        const int iter_k = K->ne[1] / FATTN_KQ_STRIDE;
+        const int iter_k = mask->ne[0] / FATTN_KQ_STRIDE;   // fork: the mask's columns (from k0 on), with kv_rows n_kv_cols
 
         KV_max.alloc(ne_KV_max);
         ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num_KV_max, block_dim_KV_max, 0, main_stream);
         ggml_cuda_kernel_launch(flash_attn_mask_to_KV_max<ncols1>, launch_params,
-            (const half2 *) mask->data, KV_max.ptr, iter_k, s31, s33);
+            (const half2 *) mask->data, KV_max.ptr, iter_k, s31, s33, int(n_kv_cols - mask->ne[0]));   // fork: k0 (0 with kv_rows: the mask has a column per row)
         CUDA_CHECK(cudaGetLastError());
+    }
+
+    // K/V are shared by all slices when read through kv_rows
+    if (kv_rows) {
+        nb13 = 0;
+        nb23 = 0;
     }
 
     const dim3 block_dim(warp_size, nwarps, 1);
@@ -1152,7 +1219,7 @@ void launch_fattn(
     GGML_ASSERT(max_blocks_per_sm > 0);
     int parallel_blocks = max_blocks_per_sm;
 
-    const int64_t n_kv = use_sparse ? n_kv_max : K->ne[1];
+    const int64_t n_kv = use_sparse ? n_kv_max : n_kv_cols;
     const int ntiles_KV = (n_kv + nbatch_fa - 1) / nbatch_fa; // Max. number of parallel blocks limited by KV cache length.
 
     dim3 blocks_num;
@@ -1281,6 +1348,7 @@ void launch_fattn(
         mask ? ((const char *) mask->data) : nullptr,
         sinks ? ((const char *) sinks->data) : nullptr,
         KV_max.ptr,
+        kv_rows ? (const int *) kv_rows->data : nullptr,
         !stream_k && parallel_blocks > 1 ? dst_tmp.ptr : (float *) KQV->data, dst_tmp_meta.ptr,
         scale, max_bias, m0, m1, n_head_log2, logit_softcap,
         Q->ne[0], ne01,     Q->ne[2], Q->ne[3], Q->nb[1], Q->nb[2], Q->nb[3],

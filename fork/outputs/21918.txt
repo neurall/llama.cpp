@@ -1,0 +1,9 @@
+run 21918 | fix_jit_past_bytes | pf128k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 23.93 t/s | prompt 200.4 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=1,poison=3 | power 200+200 W | 2026-11-02 02:01:40
+
+ !plan_spec.dspark.local_path.empty();
+    if (spec_sidecar_found) {
+        plan_spec.model = {};
+    }
+
+    // when a sidecar type is requested but the draft repo has none, the draft repo is a full model
+    const bool spec_type_requested = !spec_types

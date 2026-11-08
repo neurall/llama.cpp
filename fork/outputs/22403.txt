@@ -1,0 +1,13 @@
+run 22403 | dspark_fix3 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.97 t/s | prompt 125.5 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/o2-glm-s500.ini | power 220+280 W | 2026-11-02 18:09:24
+
+The user is asking me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `json-schema-to-grammar.cpp` from llama.cpp (common library). Let me think about what functions exist and which ones are actually used.
+
+The file shown is truncated - it only shows the beginning portion. The full file in llama.cpp contains:
+
+1. `build_repetition` - used by `get_grammar_builder` for arrays
+2. `build_min_max_int` - used for integer/number schemas
+3. Various helper functions like `check_empty_root`, `add_rule`, etc.
+
+---

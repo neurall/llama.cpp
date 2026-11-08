@@ -1,0 +1,35 @@
+run 23842 | rampool13-variant-trials | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.06 t/s | prompt 2.9 t/s | 1024 tokens | args: -np 1 --moe dense-split=0,pp-path=mix,pp-mix=1 | power 595 W | 2026-11-07 21:30:32
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` - potential bug with negative min/max**: When `separator_rule` is non-empty and `min_items > 0`, it calls `build_repetition(..., min_items - 1, max_items - 1)`. If `max_items` is `std::numeric_limits<int>::max()`, then `max_items - 1` is fine. But wait, there's a subtle issue: if `min_items == 0` and `max_items == 1` with a separator... Let me trace: `min_items == 0 && max_items == 1` returns `item_rule + "?"` — but this ignores the separator! Actually wait, with max_items == 1, there's no separator needed since separator only appears between items. So that's correct. Hmm, but actually if min_items == 0 and max_items == 1, the item is optional and no separator needed. OK.
+
+   But wait — what if `min_items == 0 && max_items == 1` but there's a separator? With max 1 item, separator never appears. Correct.
+
+   What about `max_items == 0` returning ""? If min_items > 0 and max_items == 0, that's an invalid schema (min > max), and returning "" would silently produce a grammar that can't match. Edge case, probably acceptable.
+
+2. **`build_min_max_int` uses `std::function` with recursion** — fine but could be a lambda with explicit self-parameter or a helper function. Minor.
+
+3. **In `build_min_max_int`, `more_digits` uses `std::numeric_limits<int>::max()` check but `max_digits` param is int** — fine.
+
+4. **Potential infinite recursion in `build_min_max_int`?** In the `has_min && has_max` case with negative values: `build_min_max_int(-max_value, -min_value, ...)`. If min_value < 0 and max_value < 0, then -max_value > 0 and -min_value > 0, so no infinite recursion. If min_value < 0 and max_value >= 0: it emits `"-" (...)` for the negative part with `build_min_max_int(0, -min_value, ...)` then sets min_value = 0 and continues. OK.
+
+   In the `has_min` only case with `min_value < 0`: calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false)`. Here min_value is INT64_MIN (has_min false) and max_value = -min_value > 0 (has_max true). So it goes to `has_max` branch: `max_value >= 0`, so `build_min_max_int(0, max_value, out, decimals_left, true)`. OK, terminates.
+
+   In the `else` branch (min_value > 9): `build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false)`. Here min_value is the suffix of the number, which is smaller. Terminates.
+
+   Hmm, but wait: `std::stoll(min_s.substr(1))` — if min_s is like "10", substr(1) is "0", stoll gives 0. Then in that recursive call, min_value == 0, top_level false → `more_digits(1, decimals_left)`. OK.
+
+   One potential issue: `decimals_left` starts at 16 and decreases. `less_decimals = std::max(decimals_left - 1, 1)`. So it never goes below 1. The recursion depth is bounded. OK.
+
+5. **`SPACE_RULE`**: `"| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"` — starts with `|` which is an empty alternative. That's intentional in GBNF (empty match allowed). OK.
+
+6. **`is_reserved_name`** — uses a static initialized lambda. Fine.
+
+7. **`replacePattern`** — `result.append(searchStart, searchStart + match.position())` — `match.position()` is relative to the search start since we pass iterators. Actually, `match.position()` returns the position relative to the beginning of the searched range (the iterator range passed to regex_search). Since we pass `searchStart` to `searchEnd`, `match.position()` is offset from `searchStart`. So `searchStart + match.position()` is

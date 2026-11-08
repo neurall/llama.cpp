@@ -1,0 +1,29 @@
+run 22642 | dspark_fix3 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.53 t/s | prompt 134.9 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-03 08:21:37
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained HTML file that plays Tetris.
+
+But I don't want to just ship the most golfed one-liner — the most characteristic thing about Tetris is the game itself: the board, the well, the next-piece queue, the hold box, the line-clear flash. So I'll keep it genuinely small and readable, but make it feel alive: a real playfield with ghost piece, next/hold previews, score/level/lines, keyboard controls, line-clear animation, pause, game over, and a subtle CRT/arcade aesthetic with layered background.
+
+"Smallest" — I should honor that: keep it a single file, no dependencies, compact code. But I can still make it tasteful. I'll aim for something like ~120-180 lines that's dense but readable. Let me write it tight.
+
+Design: Tetris's native visual language is the block grid itself. Use a canvas for the board plus small canvases for next/hold. Palette: classic Tetris piece colors (cyan, blue, orange, yellow, green, red, magenta) on a dark well. Rather than a near-black field with one neon accent, let me use a deep desaturated blue-gray background with a subtle grid, and the seven piece colors carry the palette — that's naturally multi-color and true to the subject. Add a faint scanline/vignette, a subtle ambient gradient.
+
+Typography: a blocky display face for the title/score numerals and a plain readable face for body. Use Google Fonts? That adds a dependency and weight. "Smallest" argues against external fonts. I could use system monospace stack + a condensed display via font-family stack. Hmm. I want a distinctive display face paired with a readable body face. I can do that with system stacks: display = "Impact / Haettenschweiler / Arial Narrow Bold" — hmm, Impact is a bit cliché. Alternatively use a font-face from Google Fonts with a single weight — small enough (one link). I think adding one Google Fonts link is fine and improves it: e.g., "Press Start 2P" for display (very characteristic of arcade games) and "IBM Plex Mono" for body. Press Start 2P is heavy on screen time though. Maybe use it just for the title and small labels, and use a mono for numbers.
+
+Actually to keep it truly small and offline-capable, I'll use system stacks but with strong contrast: display via `ui-monospace` won't be distinctive. Let me include one Google Fonts link — it's one line. I'll use "Silkscreen" (small pixel display face) for the title/labels and "Space Grotesk" or "IBM Plex Mono" for body/numbers. Silkscreen is tiny to load. Good pairing: Silkscreen (display, blocky arcade) + IBM Plex Mono (readable body/numerals). Hmm, both are mono-ish. Maybe Silkscreen + "Archivo" for body? Body text is minimal (key hints). Let's do Silkscreen for display/labels and "DM Mono" or "IBM Plex Mono" for numbers/body. Fine.
+
+Layout: open with the thing that defines Tetris — the playfield itself, immediately, with the well. Left rail: title + score/lines/level stats stacked with big numerals. Right rail: NEXT queue (3 pieces) + HOLD + controls legend. Board center, prominent.
+
+Features:
+- 10x20 board, canvas rendering with block shading (bevel).
+- 7 pieces, SRS-ish rotation with simple wall kicks (basic kick table).
+- Ghost piece.
+- Hold with one swap per piece.
+- 3-piece next queue.
+- Scoring: 100/300/500/800 × level, soft drop +1, hard drop +2/cell.
+- Level up every 10 lines, gravity speeds.
+- Line clear flash animation.
+- Pause (P), restart (R).
+- Touch buttons? Maybe minimal — keep small. I'll add on-screen tap controls for mobile? That adds size. Skip, but mention keys. Actually a small mobile control row could be nice but "smallest" — skip.
+- Ambient: subtle animated background (CSS gradient drift + grid), scanlines, glow on the board, stat numbers that tick/pulse on score change, line-clear screen shake
+---

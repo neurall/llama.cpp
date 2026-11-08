@@ -1,0 +1,83 @@
+run 23907 | dsv4-rollback | pf64k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 20.75 t/s | prompt 315.5 t/s | 4096 tokens | args: -np 1 -np 1 -lm mmap --moe pin-budget=68719476736 | power 595 W | 2026-11-08 03:40:40
+
+<think>We need answer complete fixed version of source file. Need identify bugs. User provided huge source file with multiple files concatenated? They ask "Return complete fixed version of following source file: every line from first to last, with every bug fixed and each change marked by comment. Do not summarise..." The source includes multiple file sections: common/json-schema-to-grammar.cpp, common/arg.cpp, common/arg.h, common/build-info.h, common/chat-auto-parser-generator.cpp (truncated at end "auto tools_pa"). Need fix bugs. Need infer intended bugs. This is likely benchmark where source has injected bugs? Need inspect carefully. Need produce full fixed file with comments marking changes. Need not skip unchanged parts. Need include all lines. Need fix every bug. Need identify bugs in provided code. It may be from llama.cpp with deliberate bugs? Need compare to actual upstream? We need reconstruct correct code. The file is concatenated multiple files. Need fix bugs in each. Need mark changes by comments. Need output complete fixed version. Need be careful.
+
+We need analyze source for bugs. There may be many subtle bugs. Need identify all. Let's inspect.
+
+First file json-schema-to-grammar.cpp. Potential bugs:
+- build_repetition: separator logic. Let's verify. For separator_rule nonempty, result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?". This seems from upstream? Need check. For min_items=0 max_items=1 with separator? It returns? max_items==1, min_items==0: first if max_items==0 no; if min_items==0 && max_items==1 return item_rule + "?"; This ignores separator, correct for 0 or 1 item no separator. For min_items=0 max_items=2 separator: result = item_rule + " " + build_repetition("(sep item)", 0, 1) = item_rule + " " + "(sep item)?" then wrap optional => "(item (sep item)?)?"? Actually result = item_rule + " " + build_repetition(...). build_repetition with min=0 max=1 returns "(sep item)?" (since item_rule is "(sep item)"). Then result = item_rule + " " + "(sep item)?"; then if min_items==0 result = "(" + result + ")?" => "(item (sep item)?)?" This matches 0 or 1 or 2 items? For 2 items: item sep item. For 1: item. For 0: empty. Good.
+- build_min_max_int: potential bug in uniform_range. Need compare upstream. There is a known function in llama.cpp. Let's search memory. I recall code from llama.cpp common/json-schema-to-grammar.cpp. build_min_max_int. There may be bug: `auto sub_len = from.length() - i - 1;` if from and to lengths differ? uniform_range called with same length? In loop digits, min_s and string_repeat("9", digits) same length. final min_s and max_s same length? min_digits to max_digits loop ensures final min_s length = max_digits? Let's see: for digits=min_digits; digits<max_digits; digits++: uniform_range(min_s, string_repeat("9", digits)); min_s = "1" + string_repeat("0", digits); out << " | "; After loop, min_s length = digits+1 = max_digits. max_s length = max_digits. So same. In recursive calls maybe same? build_min_max_int(-max_value, -min_value) etc. uniform_range from_sub/to_sub same length? If from and to same length. Good.
+- In uniform_range, `auto sub_len = from.length() - i - 1;` if i < from.length() && i < to.length(). If from length == to length. Good.
+- `auto to_reached = false;` then if from_sub == sub_zeros: digit_range(from[i], to[i] - 1); out << " "; more_digits(sub_len, sub_len); else ... If from[i] == to[i]? Then digit_range(from[i], to[i]-1) invalid if from[i] > to[i]-1? But if from_sub == sub_zeros and from[i] < to[i]? Let's analyze. If from_sub == sub_zeros, then from = prefix + from[i] + zeros. to = prefix + to[i] + to_sub. Since from_sub zeros, to_sub maybe not zeros. If from[i] == to[i], then to_sub must be > zeros? But to_sub length same, if to_sub > zeros, then to[i] same and to_sub > zeros. Then digit_range(from[i], to[i]-1) = digit_range(c, c-1) invalid. But condition from_sub == sub_zeros and from[i] == to[i]? Example from=100, to=199. i=0? from[0]=1, to[0]=1, from_sub=00, to_sub=99. from_sub == sub_zeros (00). Then digit_range(1, 0) invalid. But upstream code likely handles? Let's check actual upstream. I recall uniform_range:
+```
+if (from_sub == sub_zeros) {
+    digit_range(from[i], to[i] - 1);
+    out << " ";
+    more_digits(sub_len, sub_len);
+} else {
+    out << "[" << from[i] << "] ";
+    out << "(";
+    uniform_range(from_sub, sub_nines);
+    out << ")";
+    if (from[i] < to[i] - 1) {
+        out << " | ";
+        if (to_sub == sub_nines) {
+            digit_range(from[i] + 1, to[i]);
+            to_reached = true;
+        } else {
+            digit_range(from[i] + 1, to[i] - 1);
+        }
+        out << " ";
+        more_digits(sub_len, sub_len);
+    }
+}
+if (!to_reached) {
+    out << " | ";
+    digit_range(to[i], to[i]);
+    out << " ";
+    uniform_range(sub_zeros, to_sub);
+}
+```
+This is actual? For from=100, to=199: i=0, from_sub=00, to_sub=99. from_sub == sub_zeros. digit_range(1, 0) invalid. But maybe uniform_range is called with from=100, to=199? That would be bug in upstream? Let's test: build_min_max_int(100,199). min_s=100 max_s=199 same length. uniform_range("100","199"). i=0: from[0]=1 to[0]=1. i=1: from[1]=0 to[1]=9. i=2: from[2]=0 to[2]=9. i stops at 1? while from[i]==to[i]: i=0 equal, i=1 0!=9 stop. i=1. from_sub = from.substr(2) = "0"; to_sub = to.substr(2) = "9"; sub_len = 3-1-1=1. sub_zeros="0", sub_nines="9". from_sub == sub_zeros true. digit_range(from[1]=0, to[1]-1=8) => [0-8]; more_digits(1,1) => [0-9]? Wait more_digits(1,1) outputs [0-9] (since min_digits==max_digits==1 returns after out << "[0-9]"; actually more_digits: out << "[0-9]"; if min_digits == max_digits && min_digits == 1 return; so outputs [0-9]). Then to_reached false, out << " | "; digit_range(to[i]=9,9) => [9]; out << " "; uniform_range(sub_zeros="0", to_sub="9") => uniform_range("0","9"): i=0, from[0]=0 to[0]=9, i=0; from_sub = from.substr(1) = ""; to_sub = to.substr(1) = ""; sub_len = 0; i < from.length() && i < to.length() true? i=0 <1 and <1. i>0 false. i < from.length() && i < to.length() true. sub_len = 1-0-1=0. if sub_len>0 false else out << "[" << from[i] << "-" << to[i] << "]"; => [0-9]. So result: [0-8] [0-9] | [9] [0-9]. This matches 100-199? Let's see: [0-8] [0-9] matches 100-189? Actually prefix "1" not output? Wait i=1, from[1]=0, to[1]=8, more_digits(1,1) => [0-9]. So [0-8] [0-9] matches 100-189? The first digit after prefix? We didn't output prefix "1"? In uniform_range, if i>0 out << "\"" << from.substr(0,i) << "\""; i=1, outputs "1". Then digit_range(0,8) [0-8], more_digits(1,1) [0-9] => "1" [0-8] [0-9] matches 100-189. Then | [9] [0-9] => "1" [9] [0-9] matches 190-199. Good. digit_range(0,8) valid. My earlier example from=100 to=199 i=0? Wait while from[i]==to[i]: i=0 equal 1, i=1 0!=9 stop. i=1. from[i]=0, to[i]=9. digit_range(0,8) valid. So no bug. If from=110 to=119: i=0 equal 1, i=1 equal 1, i=2 0!=9 stop. i=2. from_sub = from.substr(3)="" to_sub="" sub_len=0. from_sub == sub_zeros? sub_zeros = string_repeat("0",0) = ""; from_sub="" == "" true. digit_range(from[2]=0, to[2]-1=8) => [0-8]; more_digits(0,0) => out << "[0-9]"; if min_digits==max_digits && min_digits==1? 0 !=1, so out << "{0}"? Wait more_digits(0,0): out << "[0-9]"; if (min_digits == max_digits && min_digits == 1) return; out << "{"; out << min_digits (0); if max_digits != min_digits false; out << "}"; => [0-9]{0}. That matches empty? Then to_reached false, out << " | "; digit_range(9,9) [9]; out << " "; uniform_range("", "")? sub_zeros="", to_sub="". uniform_range("",""): i=0; while i<0 false; i>0 false; i<from.length() false; returns nothing. So result: "11" [0-8] [0-9]{0} | [9] [0-9]{0}? Wait prefix "11" output. Then [0-8] [0-9]{0} matches 110-118? Actually [0-8] then zero digits => 110-118. | [9] => 119. Good. But more_digits(0,0) outputs [0-9]{0}, which is empty repetition. Is that valid GBNF? `[0-9]{0}` maybe valid? It matches empty. Could be okay. But upstream more_digits likely handles min_digits==0? Let's check actual upstream. I recall more_digits:
+```
+auto more_digits = [&](int min_digits, int max_digits) {
+    out << "[0-9]";
+    if (min_digits == max_digits && min_digits == 1) {
+        return;
+    }
+    out << "{";
+    out << min_digits;
+    if (max_digits != min_digits) {
+        out << ",";
+        if (max_digits != std::numeric_limits<int>::max()) {
+            out << max_digits;
+        }
+    }
+    out << "}";
+};
+```
+Yes. For 0,0 outputs [0-9]{0}. Is that valid? GBNF repetition {0} maybe allowed? It might be. But maybe should be `[0-9]{0,0}`? Not sure. Upstream likely same.
+
+Potential bug in `_visit_pattern`: catch unsupported_pattern reverts rules and returns `_add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));` But `_add_primitive` returns rule name, and `_add_rule(name, ...)` adds rule with content equal to rule name? Wait `_add_primitive("string", ...)` returns n (rule name). Then `_add_rule(name, n)` sets rule name to content n, i.e., `name ::= string`. That is correct? Actually if name is "root", _add_rule("root", "string") => root ::= string. But if name already exists? It may add. Upstream? I think yes.
+- `_pattern_to_rule`: `auto to_rule = [&](const literal_or_rule & ls) { auto is_literal = ls.second; auto s = ls.first; return is_literal ? "\"" + s + "\"" : s; };` But literal may contain escaped characters? In transform, literals are built with escapes for regex. For literal `"` they add `\\\"`; then to_rule wraps in quotes: `"\\\""`? Wait if literal contains `\"` (backslash quote), to_rule returns `"` + literal + `"` => `"\\\""`? Let's parse: literal = `\"` (two chars backslash quote). to_rule returns `"` + `\"` + `"` = `"\"`? Actually string: quote, backslash, quote, quote. That is `"\"`? In GBNF, to represent a literal quote, rule should be `"\""`? Let's see format_literal handles. In pattern, when sub_pattern[i] == '"', literal += "\\\""; i++; Then to_rule wraps: `"` + `\\\"` + `"` = `"\\\""`? Wait C++ string literal `"\\\""` is quote, backslash, quote? Let's compute: `literal += "\\\"";` This string is `\"`? Actually C++ `"\\\""` = backslash + quote? Let's count: `\\` -> backslash, `\"` -> quote? The string literal `"\\\""` has characters: `\` (escaped backslash), `"` (escaped quote). So two chars: backslash, quote. Then to_rule: `"\"" + s + "\""`? The code `return is_literal ? "\"" + s + "\"" : s;` Here `"\""` is a string containing a double quote? C++ `"\""` = quote char. So result = `"` + `\` + `"` + `"` = `"\"`? Actually characters: quote, backslash, quote, quote. That is `"\"`? In GBNF, a literal quote is represented as `"\""` (quote, backslash, quote, quote?) Let's see GBNF literal syntax: `"\""` means a string containing a double quote? The rule `"\""` is a literal string with escaped quote. It has opening quote, backslash, quote, closing quote. So characters: `"`, `\`, `"`, `"`. Yes result is `"\"`? Wait opening quote, backslash, quote, closing quote = `"\"`? Let's write: `"` + `\` + `"` + `"` = `"\"`? Actually sequence: char1 `"`, char2 `\`, char3 `"`, char4 `"`. That is `"\"`? The string representation is `"\"`? It starts with quote, then backslash, then quote, then quote. In text: `"\"`? Let's not dwell. It likely correct.
+
+- `_pattern_to_rule` handling `{` repetition: It parses curly brackets and then if seq.back() is literal, it sets `seq.back().first = build_repetition(sub_is_literal ? "\"" + sub + "\"" : sub, min_times, max_times, "");` But if sub_is_literal, sub is literal string possibly containing escapes. It wraps in quotes. But if sub is a literal that was already escaped? It may be okay. However if sub_is_literal and sub contains `"` escaped as `\"`, wrapping in quotes yields `"\"`? Need check. Upstream likely uses `to_rule(last)`? Let's recall actual code. I think upstream:
+```
+if (!sub_is_literal) {
+    std::string & sub_id = sub_rule_ids[sub];
+    if (sub_id.empty()) {
+        sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+    }
+    sub = sub_id;
+}
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+seq.back().second = false;
+```
+Yes.
+
+- `_pattern_to_rule` handling `|`: It pushes `"|"` as a literal? Actually `seq.emplace_back("|", false);` Then join_seq joins with spaces. This creates `a | b`? But `|` is not a literal, it's an operator. In join_seq, it treats item as non-literal and pushes to results. So `a | b` becomes `a | b`? Wait join_seq joins all results with " ". If seq contains literal "a", operator "|", literal "b", join_seq merges literals? Let's trace: seq = [("a",true), ("|",false), ("b",true)]. join_seq: ret: literal "a"; item "|"

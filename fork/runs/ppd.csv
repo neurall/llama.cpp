@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+dc-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/dc.ini,prefill-cpu=1",
+dk2-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/dk2.ini,pp-path=stream,pp-k=2,pp-depth=1",
+dk4-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/dk4.ini,pp-path=stream,pp-k=4,pp-depth=1",
+dc2-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/dc2.ini,pp-path=chain",

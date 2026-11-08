@@ -206,6 +206,8 @@ add_library(ggml-base
             ggml-threading.h
             ggml-quants.c
             ggml-quants.h
+            ggml-rampool-fork.cpp
+            ggml-rampool-fork.h
             gguf.cpp)
 
 set_target_properties(ggml-base PROPERTIES

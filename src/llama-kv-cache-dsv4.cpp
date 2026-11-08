@@ -187,6 +187,7 @@ static llama_ubatch dsv4_build_raw_write_ubatch(const llama_ubatch & ubatch) {
         /*.token        =*/ data->token.empty() ? nullptr : data->token.data(),
         /*.embd         =*/ nullptr,
         /*.embd_state   =*/ nullptr,
+        /*.embd_row     =*/ nullptr,
         /*.pos          =*/ data->pos.data(),
         /*.n_seq_id     =*/ data->n_seq_id.data(),
         /*.seq_id       =*/ data->seq_id.data(),
@@ -406,7 +407,8 @@ static void dsv4_state_read_k_cache(
         llama_kv_cache   * kv,
         llama_seq_id       seq_id,
         llama_state_seq_flags flags,
-        const std::vector<int32_t> & kv_src) {
+        const std::vector<int32_t> & kv_src,
+        uint32_t         * rows_read) {   // fork: out s0, ns, rows (llama_kv_cache_dsv4::comp_mirrors_read)
     GGML_UNUSED(flags);
 
     uint32_t version;
@@ -451,37 +453,9 @@ static void dsv4_state_read_k_cache(
         dsv4_state_read_tensor_streams(io, kv->get_k_storage(il), kv_size, n_rows_ref, s0, ns);
     }
 
-    if (n_rows_ref == 0) {
-        return;
-    }
-
-    // refill the mirrors from their sources, only the rows just read: upstream copies the whole tensor, but with kv-tail a mirror is a strided view whose
-    // address range past the used cells may hold expert blocks (dsv4_for_stream_ranges), so a whole copy would write over them
-    std::vector<uint8_t> buf;
-    for (uint32_t il : kv->get_layer_ids()) {
-        const int32_t src = kv_src[il];
-        if (src == (int32_t) il) {
-            continue;
-        }
-        ggml_tensor * t_src = kv->get_k_storage(src);
-        ggml_tensor * t_dst = kv->get_k_storage(il);
-        if (t_src->type != t_dst->type || !ggml_are_same_shape(t_src, t_dst)) {
-            throw std::runtime_error("DSV4 K-cache mirror layout mismatch");
-        }
-
-        const size_t row_size      = ggml_row_size(t_src->type, t_src->ne[0]);
-        const size_t size          = (size_t) n_rows_ref*row_size;
-        if (size == 0) {
-            continue;
-        }
-        buf.resize(size);
-        for (uint32_t s = 0; s < ns; ++s) {
-            dsv4_for_stream_ranges(t_src, s0 + s, n_rows_ref, [&](size_t off, size_t len) {
-                ggml_backend_tensor_get(t_src, buf.data(), off, len);
-                ggml_backend_tensor_set(t_dst, buf.data(), off, len);
-            });
-        }
-    }
+    rows_read[0] = s0;
+    rows_read[1] = ns;
+    rows_read[2] = n_rows_ref;
 }
 
 static std::string dsv4_plan_positions(const std::vector<int32_t> & values) {
@@ -1310,7 +1284,8 @@ llama_kv_cache_dsv4::llama_kv_cache_dsv4(
     hparams_lid(model.hparams),
     n_seq_max(n_seq_max),
     n_rs_seq(n_rs_seq),
-    rs_idx(n_seq_max, 0) {
+    rs_idx(n_seq_max, 0),
+    rs_max(n_seq_max, 0) {
 
     const layer_filter_cb filter_raw = [&](int32_t il) {
         if (filter && !filter(il)) {
@@ -1601,35 +1576,8 @@ llama_memory_context_ptr llama_kv_cache_dsv4::init_batch(
                 std::move(ubatches_raw));
     };
 
-    // Match llama_kv_cache_iswa splitting when DSV4 compressed state does not
-    // require per-sequence graph layout.
-    do {
-        if (raw_per_seq || comp_per_seq) {
-            break;
-        }
-
-        balloc.split_reset();
-
-        std::vector<llama_ubatch> ubatches;
-        while (true) {
-            auto ubatch = balloc.split_simple(n_ubatch);
-            if (ubatch.n_tokens == 0) {
-                break;
-            }
-            ubatches.push_back(std::move(ubatch)); // NOLINT
-        }
-
-        if (balloc.get_n_used() < balloc.get_n_tokens()) {
-            break;
-        }
-
-        if (auto ctx = make_context(std::move(ubatches))) {
-            return ctx;
-        }
-    } while (false);
-
-    // When raw or compressed state is per-sequence, independent sequences can
-    // share an equal-length ubatch. Coupled sequence sets still serialize until
+    // Independent sequences can share an equal-length ubatch.
+    // Coupled sequence sets still serialize until
     // DSV4 has explicit shared-state handling for compressed streams.
     do {
         balloc.split_reset();
@@ -1710,12 +1658,19 @@ bool llama_kv_cache_dsv4::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1
             return res;
         }
 
-        if (n_rs_seq == 0) {
-            return false;
+        // fork: a pass the pool refused (llama_context::decode): its graph never ran, so no state moved on, only the positions did; the raw cells of the pass go
+        // back and so do the compressed caches' cells past what the sequence held before it, no snapshot needed (DeepSeek 64k, 2026-11-08: the rollback of
+        // 16384 tokens was above rs_max, the call failed with HTTP 500 instead of running in smaller passes)
+        extern bool llama_memory_recurrent_no_compute_get_fork();
+        if (llama_memory_recurrent_no_compute_get_fork()) {
+            bool res = kv_raw->seq_rm(seq_id, p0, -1);
+            res = res & kv_csa->seq_rm(seq_id, (p0 - 1)/csa_state->get_ratio() + 1, -1);
+            res = res & kv_hca->seq_rm(seq_id, (p0 - 1)/hca_state->get_ratio() + 1, -1);
+            res = res & kv_lid->seq_rm(seq_id, (p0 - 1)/lid_state->get_ratio() + 1, -1);
+            return res;
         }
-
         const llama_pos rollback = pos_max - (p0 - 1);
-        if (rollback < 1 || rollback > (llama_pos) n_rs_seq) {
+        if (rollback < 1 || rollback > (llama_pos) rs_max[seq_id]) {
             return false;
         }
 
@@ -1755,6 +1710,7 @@ void llama_kv_cache_dsv4::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_ds
 
     if (seq_id_src != seq_id_dst) {
         rs_idx[seq_id_dst] = 0;
+        rs_max[seq_id_dst] = 0;
     }
 }
 
@@ -1887,9 +1843,12 @@ void llama_kv_cache_dsv4::state_read(llama_io_read_i & io, llama_seq_id seq_id, 
     if (!partial_only) {
         clear_compressed(seq_id, true);
 
-        dsv4_state_read_k_cache(io, kv_csa.get(), seq_id, flags, comp_il_src);
-        dsv4_state_read_k_cache(io, kv_hca.get(), seq_id, flags, comp_il_src);
-        dsv4_state_read_k_cache(io, kv_lid.get(), seq_id, flags, comp_il_src);
+        dsv4_state_read_k_cache(io, kv_csa.get(), seq_id, flags, comp_il_src, comp_mirrors_read[0]);
+        dsv4_state_read_k_cache(io, kv_hca.get(), seq_id, flags, comp_il_src, comp_mirrors_read[1]);
+        dsv4_state_read_k_cache(io, kv_lid.get(), seq_id, flags, comp_il_src, comp_mirrors_read[2]);
+
+        // the io can defer the tensor reads until it is destroyed, so the mirrors are refilled before the next graph
+        comp_mirrors_stale = true;
     }
 
     csa_state->state_read(io, seq_id, flags);
@@ -1899,8 +1858,10 @@ void llama_kv_cache_dsv4::state_read(llama_io_read_i & io, llama_seq_id seq_id, 
     if (seq_id >= 0) {
         GGML_ASSERT((uint32_t) seq_id < n_seq_max);
         rs_idx[seq_id] = 0;
+        rs_max[seq_id] = 0;
     } else {
         std::fill(rs_idx.begin(), rs_idx.end(), 0);
+        std::fill(rs_max.begin(), rs_max.end(), 0);
     }
 }
 
@@ -1944,18 +1905,68 @@ const std::vector<uint32_t> & llama_kv_cache_dsv4::get_rs_idx() const {
     return rs_idx;
 }
 
-void llama_kv_cache_dsv4::reset_rs_idx_for_ubatches(const std::vector<llama_ubatch> & ubatches) {
+void llama_kv_cache_dsv4::update_rs_for_ubatches(const std::vector<llama_ubatch> & ubatches) {
     if (n_rs_seq == 0) {
         return;
     }
 
+    std::vector<uint32_t> n_seq_tokens(n_seq_max);
+
     for (const llama_ubatch & ubatch : ubatches) {
+        std::fill(n_seq_tokens.begin(), n_seq_tokens.end(), 0);
+
         for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
             for (int32_t s = 0; s < ubatch.n_seq_id[i]; ++s) {
                 const llama_seq_id seq_id = ubatch.seq_id[i][s];
                 if (seq_id >= 0 && (uint32_t) seq_id < n_seq_max) {
-                    rs_idx[seq_id] = 0;
+                    n_seq_tokens[seq_id]++;
                 }
+            }
+        }
+
+        // the ubatch consumes any pending rollback and leaves snapshots for its own tokens only
+        for (uint32_t seq_id = 0; seq_id < n_seq_max; ++seq_id) {
+            if (n_seq_tokens[seq_id] > 0) {
+                rs_idx[seq_id] = 0;
+                rs_max[seq_id] = std::min(n_seq_tokens[seq_id], n_rs_seq);
+            }
+        }
+    }
+}
+
+void llama_kv_cache_dsv4::refill_comp_mirrors() {
+    if (!comp_mirrors_stale) {
+        return;
+    }
+
+    comp_mirrors_stale = false;
+
+    // a mirror gets the same rows as its source. fork: only the rows the state read wrote, per stream, not the whole tensor: with kv-tail a mirror is
+    // a strided view whose address range past the used cells may hold expert blocks (dsv4_for_stream_ranges), so a whole copy would write over them
+    const llama_kv_cache * kvs[3] = { kv_csa.get(), kv_hca.get(), kv_lid.get() };
+    std::vector<uint8_t> buf;
+    for (int k = 0; k < 3; ++k) {
+        const llama_kv_cache * kv = kvs[k];
+        const uint32_t s0 = comp_mirrors_read[k][0], ns = comp_mirrors_read[k][1], n_rows = comp_mirrors_read[k][2];
+        if (n_rows == 0) {
+            continue;
+        }
+        for (uint32_t il : kv->get_layer_ids()) {
+            const int32_t src = comp_il_src[il];
+            if (src == (int32_t) il) {
+                continue;
+            }
+
+            ggml_tensor * t_src = kv->get_k_storage(src);
+            ggml_tensor * t_dst = kv->get_k_storage(il);
+            GGML_ASSERT(t_src->type == t_dst->type && ggml_are_same_shape(t_src, t_dst));
+
+            for (uint32_t s = 0; s < ns; ++s) {
+                dsv4_for_stream_ranges(t_src, s0 + s, n_rows, [&](size_t off, size_t len) {
+                    buf.resize(len);
+                    ggml_backend_tensor_get(t_src, buf.data(), off, len);
+                    ggml_backend_tensor_set(t_dst, buf.data(), off, len);
+                });
             }
         }
     }
@@ -1992,8 +2003,10 @@ void llama_kv_cache_dsv4::clear_compressed(llama_seq_id seq_id, bool data) {
 
     if (seq_id >= 0) {
         rs_idx[seq_id] = 0;
+        rs_max[seq_id] = 0;
     } else {
         std::fill(rs_idx.begin(), rs_idx.end(), 0);
+        std::fill(rs_max.begin(), rs_max.end(), 0);
     }
 }
 
@@ -2153,25 +2166,21 @@ ggml_tensor * llama_kv_cache_dsv4_raw_context::build_input_k_idxs(ggml_context *
     return k_idxs;
 }
 
-ggml_tensor * llama_kv_cache_dsv4_raw_context::build_input_k_rot(ggml_context * ctx) const {
-    return kv_swa->build_input_k_rot(ctx);
+std::vector<ggml_tensor *> llama_kv_cache_dsv4_raw_context::get_k_rot() const {
+    return kv_swa->get_k_rot();
 }
 
 void llama_kv_cache_dsv4_raw_context::set_input_k_idxs(ggml_tensor * dst) const {
     kv_swa->set_input_k_idxs(dst, &ubatches_write[i_next], sinfos_write[i_next]);
 }
 
-void llama_kv_cache_dsv4_raw_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
-    kv_swa->set_input_kq_mask(dst, ubatch, causal_attn);
+void llama_kv_cache_dsv4_raw_context::set_input_attn_mask(const llm_attn_mask & attn_mask, const llama_ubatch * ubatch, bool causal_attn) const {
+    kv_swa->set_input_attn_mask(attn_mask, ubatch, causal_attn);
 }
 
 void llama_kv_cache_dsv4_raw_context::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const {
     GGML_ASSERT(kv_swa != nullptr);
     kv_swa->get_prev_tokens(ubatch, n, res);
-}
-
-void llama_kv_cache_dsv4_raw_context::set_input_k_rot(ggml_tensor * dst) const {
-    kv_swa->set_input_k_rot(dst);
 }
 
 //
@@ -2228,12 +2237,8 @@ ggml_tensor * llama_kv_cache_dsv4_comp_context::cpy_k(ggml_context * ctx, ggml_t
     return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
 }
 
-ggml_tensor * llama_kv_cache_dsv4_comp_context::build_input_k_rot(ggml_context * ctx) const {
-    return kv->build_input_k_rot(ctx);
-}
-
-void llama_kv_cache_dsv4_comp_context::set_input_k_rot(ggml_tensor * dst) const {
-    kv->set_input_k_rot(dst);
+std::vector<ggml_tensor *> llama_kv_cache_dsv4_comp_context::get_k_rot() const {
+    return kv->get_k_rot();
 }
 
 //
@@ -2331,7 +2336,7 @@ llama_kv_cache_dsv4_context::llama_kv_cache_dsv4_context(
     lid_state(kv->get_lid_state()),
     status(ctx_raw->get_status()),
     kv(kv) {
-    kv->reset_rs_idx_for_ubatches(this->ubatches);
+    kv->update_rs_for_ubatches(this->ubatches);
 }
 
 llama_kv_cache_dsv4_context::~llama_kv_cache_dsv4_context() = default;
@@ -2369,6 +2374,8 @@ bool llama_kv_cache_dsv4_context::apply() {
         hca_state->apply_copies(sc_info_hca);
         lid_state->apply_copies(sc_info_lid);
     }
+
+    kv->refill_comp_mirrors();
 
     return res;
 }

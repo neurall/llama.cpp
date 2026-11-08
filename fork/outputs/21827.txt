@@ -1,0 +1,36 @@
+run 21827 | up8_gather_mask_fix | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.05 t/s | prompt 697.2 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0 | power 220+280 W | 2026-11-01 21:51:35
+
+    return num_physical_cores > 0 ? num_physical_cores : default_threads;
+#endif
+    unsigned int n_threads = std::thread::hardware_concurrency();
+    return n_threads > 0 ? (n_threads <= 4 ? n_threads : n_threads/2) : 4;
+}
+
+std::string common_cpu_get_cpu_mask(int32_t n_threads) {
+    std::string mask;
+    int32_t n_cpu = ggml_threadpool_get_n_cpu();
+    if (n_cpu > 0) {
+        for (int32_t i = 0; i < n_cpu; ++i) {
+            mask += (i < n_threads ? '1' : '0');
+        }
+    }
+    return mask;
+}
+
+int32_t common_cpu_get_n_threads() {
+    int32_t n_threads = std::thread::hardware_concurrency();
+    if (n_threads <= 0) {
+        n_threads = 4;
+    }
+    return n_threads;
+}
+
+int32_t common_cpu_get_n_threads_batch() {
+#ifdef GGML_USE_NUMA
+    return common_cpu_get_n_threads();
+#else
+    return common_cpu_get_n_threads();
+#endif
+}
+
+bool common_cpu_parse_cpu_mask(const std::string & mask, bool * mask

@@ -1,0 +1,5 @@
+run 22490 | miss_real | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 41.43 t/s | prompt 96.4 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/mb-c64.ini,log=wk,pp-path=dec | power 220+280 W | 2026-11-02 22:42:08
+
+
+---
+The user is asking for a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help" message. I should respond with a "help

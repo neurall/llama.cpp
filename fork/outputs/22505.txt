@@ -1,0 +1,15 @@
+run 22505 | glu_zero_late | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.2 t/s | prompt 68.7 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/gz-mimo-dec.ini,log=wk,pp-path=dec | power 220+280 W | 2026-11-02 23:32:47
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+Looking at the file, I need to identify which functions, variables, includes, and other code elements are never used within this file.
+
+Let me go through the code:
+
+1. **Includes:**
+   - `"json-schema-to-grammar.h"` - needed (header for this file)
+   - `"common.h"` - likely needed for `common_json`
+   - `"trie.h"` - need to check if trie is used
+   - `"unicode.h"` - need to check if unicode functions are used
+   -
+---

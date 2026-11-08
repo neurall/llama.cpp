@@ -153,19 +153,16 @@ void llama_model_qwen35moe::load_arch_tensors(llama_model_loader & ml) {
 
 std::unique_ptr<llm_graph_context> llama_model_qwen35moe::build_arch_graph(const llm_graph_params & params) const {
     if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
-        return std::make_unique<graph_mtp>(*this, params);
+        return std::make_unique<graph_mtp>(params);
     }
-    return std::make_unique<graph>(*this, params);
+    return std::make_unique<graph>(params);
 }
 
-llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_params & params) :
-    llm_build_delta_net_base(params), model(model) {
+llama_model_qwen35moe::graph::graph(const llm_graph_params & params) :
+    llm_build_delta_net_base(params) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
 
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
-
-    int sections[4];
-    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
 
     ggml_tensor * cur;
     ggml_tensor * inpL;
@@ -276,8 +273,8 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
                     Kc = build_norm(ggml_reshape_3d(ctx0, Kc, n_embd_head, n_head_kv, nr), L[r].attn_k_norm, nullptr, LLM_NORM_RMS, il);
                     v[r] = ggml_reshape_3d(ctx0, Vc, n_embd_head, n_head_kv, nr);
                     Qc = build_norm(Qc, L[r].attn_q_norm, nullptr, LLM_NORM_RMS, il);
-                    q[r] = ggml_rope_multi(ctx0, Qc, pos_r[r], nullptr, n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
-                    k[r] = ggml_rope_multi(ctx0, Kc, pos_r[r], nullptr, n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+                    q[r] = build_rope(Qc, pos_r[r], il);
+                    k[r] = build_rope(Kc, pos_r[r], il);
                     ds_pin(ds_r[r].b);
                 }
                 const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
@@ -363,7 +360,7 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
             cur = build_layer_attn_linear(inp->get_recr(), cur, il);
         } else {
             // Full attention layer
-            cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
+            cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il);
         }
 
         if (il == n_layer - 1 && crop_before_nextn(inp_out_ids)) {
@@ -451,7 +448,6 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
         llm_graph_input_attn_kv * inp,
         ggml_tensor *             cur,
         ggml_tensor *             inp_pos,
-        int *                     sections,
         int                       il) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
@@ -492,17 +488,8 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
     Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
 
     // Apply IMRoPE
-    Qcur = ggml_rope_multi(
-            ctx0, Qcur, inp_pos, nullptr,
-            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow
-            );
-
-    Kcur = ggml_rope_multi(
-            ctx0, Kcur, inp_pos, nullptr,
-            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow
-            );
+    Qcur = build_rope(Qcur, inp_pos, il);
+    Kcur = build_rope(Kcur, inp_pos, il);
 
     cb(Qcur, "Qcur", il);
     cb(Kcur, "Kcur", il);
@@ -717,7 +704,7 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, c
 }
 
 // LLM_GRAPH_TYPE_DECODER_MTP draft head for Qwen3.5/3.6 MoE
-llama_model_qwen35moe::graph_mtp::graph_mtp(const llama_model & model, const llm_graph_params & params)
+llama_model_qwen35moe::graph_mtp::graph_mtp(const llm_graph_params & params)
     : llm_graph_context(params) {
     GGML_ASSERT(hparams.n_layer_nextn > 0 && "QWEN35MOE MTP requires n_layer_nextn > 0");
     GGML_ASSERT(hparams.n_layer_nextn == 1 && "QWEN35MOE MTP currently only supports a single MTP block");
@@ -732,9 +719,6 @@ llama_model_qwen35moe::graph_mtp::graph_mtp(const llama_model & model, const llm
     GGML_ASSERT(layer.nextn.enorm      && "MTP block missing nextn.enorm");
     GGML_ASSERT(layer.nextn.hnorm      && "MTP block missing nextn.hnorm");
     GGML_ASSERT(layer.ffn_gate_inp     && "MTP block missing ffn_gate_inp");
-
-    int sections[4];
-    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
 
     // TODO: extract in a common llm_graph_context::build_inp_embd_h()
     auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd_inp(), hparams.n_embd);
@@ -818,12 +802,8 @@ llama_model_qwen35moe::graph_mtp::graph_mtp(const llama_model & model, const llm
     Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
     cb(Vcur, "mtp_Vcur", il);
 
-    Qcur = ggml_rope_multi(ctx0, Qcur, inp_pos, nullptr,
-            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
-    Kcur = ggml_rope_multi(ctx0, Kcur, inp_pos, nullptr,
-            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    Qcur = build_rope(Qcur, inp_pos, il);
+    Kcur = build_rope(Kcur, inp_pos, il);
 
     const float kq_scale = hparams.f_attention_scale == 0.0f
             ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;

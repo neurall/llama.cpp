@@ -1,0 +1,31 @@
+run 23726 | rampool3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.76 t/s | prompt 559.1 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 13:48:50
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: if `min_items > 0` and `max_items == 0`, returns "" — that's contradictory constraints (min > max), silently returns empty rule. Might be worth noting.
+- In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and `min_items == 1`, then inner call gets max_items = 0, returns "", so result = item_rule + " " + "" = item_rule + " ". Hmm, that would produce trailing space. Wait: min_items=1, max_items=1 with separator: result = item_rule + " " + build_repetition(..., 0, 0). The inner returns "" (since max_items==0). So result = item_rule + " ". Then min_items != 0 so no "?" appended. So the rule would be `item_rule ` with a trailing space — that's a bug? Actually wait, let me check: `max_items == 0` returns "". So `item_rule + " " + ""` = "item_rule ". Hmm, that trailing space in GBNF... Actually in GBNF grammar, a space in the rule text is just whitespace/separator in the grammar syntax, not a literal space. Wait no — in GBNF, whitespace in rules is ignored? Actually in llama.cpp GBNF format, spaces in rule definitions are ignored (they're separators). Hmm, actually no. Let me think. In GBNF, the rule `foo ::= bar baz` means sequence of bar then baz. The space between them is just syntax. So a trailing space is harmless. OK.
+
+But wait, what about `min_items == 0 && max_items == 1` with separator? The code checks `if (min_items == 0 && max_items == 1) return item_rule + "?";` before the separator handling — so separator is ignored for 0..1. That's fine semantically (only one item, no separator needed).
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; also `uniform_range` lambda captures by reference.
+- `decimals_left = 16` default. There's a subtle issue: `more_digits(0, decimals_left - 1)` etc.
+- Potential bug: in `has_min && has_max` case with `min_value < 0 && max_value < 0`: it negates and swaps. OK.
+- `min_value < 0` (and max >= 0): outputs `"-" (...) | ` then sets min_value = 0 and continues. OK.
+- The loop `for (auto digits = min_digits; digits < max_digits; digits++)`: `min_digits` and `max_digits` are `size_t`. If `min_value` has more digits than `max_value`... can't happen since min <= max. OK.
+- Note `std::stoll(min_s.substr(1))` — could overflow? min_s is at most 20 digits; substr(1) is 19 digits, fits in int64? 19 digits max is 9999999999999999999 which exceeds int64 max (9223372036854775807, 19 digits). Hmm, `std::stoll` would throw out_of_range for values > int64 max. Wait, but min_value <= 9-digit... Actually in the `else` branch, `min_value > 9`, so min_s has at least 2 digits. The recursion passes `std::stoll(min_s.substr(1))` — the remaining digits. For min_value = 9999999999999999999? That's > int64 max so can't be an int64. The max int64 is 9223372036854775807. substr(1) of that is 223372036854

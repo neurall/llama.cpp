@@ -1,8 +1,11 @@
+#include "../ggml/src/ggml-read-fork.h"
 #include "llama-model-loader.h"
 #include "llama-moestate-fork.h"
 
 #if defined(__linux__)
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <map>
 #include <sched.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -21,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -55,6 +59,7 @@ const char * llama_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_BF16:      name = LLAMA_FTYPE_PREFIX "BF16"; break;
         case LLAMA_FTYPE_MOSTLY_Q1_0:      name = LLAMA_FTYPE_PREFIX "Q1_0"; break;
         case LLAMA_FTYPE_MOSTLY_Q2_0:      name = LLAMA_FTYPE_PREFIX "Q2_0"; break;
+        case LLAMA_FTYPE_MOSTLY_F8_E4M3:   name = LLAMA_FTYPE_PREFIX "F8_E4M3"; break;
         case LLAMA_FTYPE_MOSTLY_Q4_0:      name = LLAMA_FTYPE_PREFIX "Q4_0"; break;
         case LLAMA_FTYPE_MOSTLY_Q4_1:      name = LLAMA_FTYPE_PREFIX "Q4_1"; break;
         case LLAMA_FTYPE_MOSTLY_Q5_0:      name = LLAMA_FTYPE_PREFIX "Q5_0"; break;
@@ -426,6 +431,7 @@ namespace GGUFMeta {
 
     template bool llama_model_loader::get_arr<std::vector<std::string>>(enum llm_kv kid, std::vector<std::string> & result, bool required);
     template bool llama_model_loader::get_arr<std::array<int32_t, 512>>(enum llm_kv kid, std::array<int32_t, 512> & result, bool required);
+    template bool llama_model_loader::get_arr<std::array<float, 3>>(enum llm_kv kid, std::array<float, 3> & result, bool required);
     template bool llama_model_loader::get_arr<std::vector<int32_t>>(enum llm_kv kid, std::vector<int32_t> & result, bool required);
     template bool llama_model_loader::get_arr<std::array<uint32_t, LLAMA_MAX_LAYERS>>(enum llm_kv kid, std::array<uint32_t, LLAMA_MAX_LAYERS> & result, bool required);
     template bool llama_model_loader::get_arr<std::vector<uint32_t>>(enum llm_kv kid, std::vector<uint32_t> & result, bool required);
@@ -574,6 +580,19 @@ llama_model_loader::llama_model_loader(
 
     tensor_buft_overrides = param_tensor_buft_overrides_p;
     if (const char * pb = llama_moe_get_opt("pin-budget")) { pin_budget = (size_t) strtoull(pb, nullptr, 10); }   // fork: bytes that may stay pinned although mmap is on
+#if defined(__linux__)
+    // Freeze guard: 109 and 110 GiB pinned froze a 125 GiB machine (2026-11-02), 101 ran. No budget above RAM - 24 GiB unless --moe pin-force=1 (a test of the boundary itself).
+    if (pin_budget > 0 && !llama_moe_get_opt("pin-force")) {
+        const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+        const size_t total = pages > 0 && page > 0 ? (size_t) pages * (size_t) page : 0, keep = (size_t) 24 << 30;
+        if (total > keep && pin_budget > total - keep) {
+            LLAMA_LOG_WARN("%s: pin budget %.1f GiB is above RAM %.1f GiB - 24 GiB (more froze a 125 GiB machine): cut to %.1f GiB; --moe pin-force=1 allows it\n", __func__,
+                    pin_budget / 1073741824.0, total / 1073741824.0, (total - keep) / 1073741824.0);
+            pin_budget = total - keep;
+            llama_moe_set_opt("pin-budget", std::to_string(pin_budget).c_str());   // the cut for every reader of the option: pin-lazy's thread (llama-moecache-fork.cpp) pins up to it, not to the asked budget
+        }
+    }
+#endif
 
     this->use_mmap      = load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK || load_mode == LLAMA_LOAD_MODE_AUTO;
     this->use_direct_io = load_mode == LLAMA_LOAD_MODE_DIRECT_IO;
@@ -810,6 +829,7 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_NVFP4:   ftype = LLAMA_FTYPE_MOSTLY_NVFP4;   break;
             case GGML_TYPE_Q1_0:    ftype = LLAMA_FTYPE_MOSTLY_Q1_0;    break;
             case GGML_TYPE_Q2_0:    ftype = LLAMA_FTYPE_MOSTLY_Q2_0;    break;
+            case GGML_TYPE_F8_E4M3: ftype = LLAMA_FTYPE_MOSTLY_F8_E4M3; break;
             default:
                 {
                     LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -1308,8 +1328,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         // the RAM and the huge-page pool reach, in tensor order, and the rest is mapped (--moe pin-budget=BYTES, set by common_init_from_params)
         auto * buft_dev = ggml_backend_buft_get_device(buft);
         if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
-            if (pin_used + ggml_nbytes(t_meta) <= pin_budget) {
+            // a table read by rows on demand is never pinned, whatever the budget: a token touches a few hundred of its bytes (DeepSeek's Engram table: 103 GiB, 144 bytes
+            // a row, 48 rows a token), and it comes first in tensor order, so pinning it would eat the budget of the experts, which are read whole in every pass
+            // --moe rampool=1 on a model over the budget: no expert tensor is pinned in tensor order, the RAM pool (llama-moecache-fork.cpp) pins expert slices by heat from what is left
+            static const bool rampool = [] { const char * v = llama_moe_get_opt("rampool"); return v && atoi(v) != 0; }();
+            const bool pool_exps = rampool && n_bytes > pin_budget && strstr(ggml_get_name(t_meta), "_exps") != nullptr;
+            if (!(flags & TENSOR_READ_LAZY) && !pool_exps && pin_used + ggml_nbytes(t_meta) <= pin_budget) {
                 pin_used += ggml_nbytes(t_meta);   // this tensor is read into pinned memory
+                if (rampool) { llama_moe_set_opt("pin-used", std::to_string(pin_used).c_str()); }   // the pool's share is the budget minus this
             } else {
                 auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
                 if (!cpu_dev) {
@@ -1474,7 +1500,9 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                 }
             }
 
-            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 ? -1 : 0;   // fork: a pin budget means the pinned part is pread into pinned memory; populating the whole mapping first read the file into the page cache before anything was pinned
+            const char * pb = llama_moe_get_opt("pin-budget");
+            const bool lazy_pin = pin_lazy() && pb && strtoull(pb, nullptr, 10) > 0;   // pin-lazy zeroed pin_budget above, but it too must not populate the mapping: its thread pins and drops the pages
+            const size_t prefetch_size = prefetch && use_mmap && pin_budget == 0 && !lazy_pin ? -1 : 0;   // fork: a pin budget means the pinned part is pread into pinned memory; populating the whole mapping first read the file into the page cache before anything was pinned
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
                     lazy.for_file(idx));
@@ -1616,7 +1644,7 @@ bool llama_model_loader::load_all_data(
     // weights cache (GGML_CUDA_HUGEFS): a host buffer that is a complete cache file already holds the weights (skip reading), a fresh one is committed when filled
     int (*host_cache)(int, void *) = nullptr;
     std::set<ggml_backend_buffer_t> cache_warm, cache_cold;
-    if (getenv("GGML_CUDA_HUGEFS") && !use_mmap && !check_tensors) {
+    if (getenv("GGML_CUDA_HUGEFS") && (!use_mmap || pin_budget > 0) && !check_tensors) {   // the same gate as llama-model.cpp: with mmap and a pin budget the pinned part is a cache buffer too, read here (pinned_read)
         if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
             host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
         }
@@ -1748,7 +1776,27 @@ bool llama_model_loader::load_all_data(
     // Weights that land in host memory (with a GPU: the pinned buffer) are read by a pool of threads in 64 MB chunks with pread: one thread reading tensor after tensor
     // reached ~1.5 GB/s of a 3+ GB/s NVMe. The pages just read are given back to the page cache right away (as the single-threaded path does), so the file copy never
     // competes with the weights for RAM. LLAMA_LOAD_THREADS=1 (or direct IO, mmap, tensor validation) keeps the sequential path.
-    struct par_read { int fd; size_t off; void * dst; size_t n; };
+    struct par_read { int fd; size_t off; void * dst; size_t n; int dfd; size_t fsize; };   // dfd: the same file opened O_DIRECT (-1: buffered), fsize its size
+    // fork: with the phase layout (llama-model.cpp) a host tensor's address and file offset share the 4096 grid, so its chunks are read with O_DIRECT (kernel AIO, the drive's probed
+    // shape) straight into pinned memory: one DMA from the SSD, no page cache copy and no DONTNEED. The chunk edges are 4096 multiples of the FILE offset, so the head block of a
+    // chunk is only the first chunk's (it lands in the gap in front of the tensor) and the tail block only the last one's (the next tensor starts past the next 4096 boundary).
+    std::map<int, int>    pr_dfd;      // buffered fd -> O_DIRECT fd
+    std::map<int, size_t> pr_fsize;
+    auto pr_direct = [&](int fd) -> int {
+        if (!phase_layout) { return -1; }
+        auto it = pr_dfd.find(fd);
+        if (it != pr_dfd.end()) { return it->second; }
+        struct stat st;
+        int d = -1;
+        if (fstat(fd, &st) == 0) {
+            d = open_direct_fd(fd);
+            if (d >= 0) { pr_fsize[fd] = (size_t) st.st_size; }
+        }
+        pr_dfd[fd] = d;
+        return d;
+    };
+    std::atomic<size_t> pr_direct_bytes{0}, pr_buffered_bytes{0};
+    size_t pr_queued_bytes = 0;   // handed to the pool so far: size_done counts them at once, the progress callback must not (a bar at 100% before the reads started, no cancel while they ran)
     std::mutex              pr_mtx;
     std::condition_variable pr_cv;
     std::deque<par_read>    pr_q;
@@ -1757,6 +1805,7 @@ bool llama_model_loader::load_all_data(
     std::vector<std::thread> pr_threads;
     size_t n_load_threads = std::max<size_t>(1, std::min<size_t>(16, std::thread::hardware_concurrency() / 2));
     if (const char * e = moe_opt("load-threads")) { n_load_threads = std::max(1, atoi(e)); }
+    else if (const char * e2 = getenv("LLAMA_LOAD_THREADS")) { n_load_threads = std::max(1, atoi(e2)); }   // the documented environment form (fork-knobs.md): =1 keeps the sequential reader
     const bool par_load = !use_direct_io && !check_tensors && n_load_threads > 1;
     auto pr_worker = [&]() {
 #if defined(__linux__)
@@ -1780,14 +1829,23 @@ bool llama_model_loader::load_all_data(
                 t = pr_q.front();
                 pr_q.pop_front();
             }
-            size_t done = 0;
-            while (done < t.n && !pr_fail) {
-                const ssize_t r = pread(t.fd, (char *) t.dst + done, t.n - done, (off_t) (t.off + done));
-                if (r < 0 && errno == EINTR) { continue; }
-                if (r <= 0) { pr_fail = true; break; }
-                done += (size_t) r;
+            if (t.dfd >= 0 && (((uintptr_t) t.dst - t.off) & (direct_align() - 1)) == 0) {
+                const size_t a = direct_align(), beg = t.off & ~(a - 1), end = (t.off + t.n + a - 1) & ~(a - 1);
+                const size_t total = end - beg, need = std::min(total, t.fsize - beg);
+                if (async_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) { pr_direct_bytes += t.n; continue; }
             }
-            posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED);
+            pr_buffered_bytes += t.n;
+            for (const sr_piece & p : sr_pieces(t.n)) {   // blocks with gaps, then the gaps (llama-spaced-read-fork.h): no two neighbouring reads in a row
+                size_t done = 0;
+                while (done < p.n && !pr_fail) {
+                    const ssize_t r = pread(t.fd, (char *) t.dst + p.off + done, p.n - done, (off_t) (t.off + p.off + done));
+                    if (r < 0 && errno == EINTR) { continue; }
+                    if (r <= 0) { pr_fail = true; break; }
+                    done += (size_t) r;
+                }
+                if (pr_fail) { break; }
+            }
+            if (pin_budget > 0) { posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED); }   // the pinned hybrid: the file copy must not compete with the pinned part; a plain --no-mmap load keeps its page cache for the next start
         }
     };
     auto pr_finish = [&]() {
@@ -1798,11 +1856,26 @@ bool llama_model_loader::load_all_data(
         pr_cv.notify_all();
         for (auto & t : pr_threads) { t.join(); }
         pr_threads.clear();
+        for (auto & kv : pr_dfd) { if (kv.second >= 0) { close(kv.second); } }
+        pr_dfd.clear();
+        if (pr_direct_bytes.load() || pr_buffered_bytes.load()) {
+            LLAMA_LOG_WARN("%s: host weights read with O_DIRECT straight into place: %.1f GiB, buffered: %.1f GiB\n", __func__, pr_direct_bytes.load() / 1073741824.0, pr_buffered_bytes.load() / 1073741824.0);
+        }
     };
     // the threads end on every way out of this function (cancelled loading, an exception)
-    struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{pr_finish};
+    // a way out before the normal end (cancelled, an exception) drops what is still queued: the caller frees the buffers next, reading them all first only delays that
+    struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{[&]() { { std::lock_guard<std::mutex> lk(pr_mtx); pr_q.clear(); } pr_finish(); }};
 #endif
+    auto progress_now = [&]() -> float {
+#if defined(__linux__)
+        return (float) (size_done - (pr_queued_bytes - pr_direct_bytes.load() - pr_buffered_bytes.load())) / size_data;
+#else
+        return (float) size_done / size_data;
+#endif
+    };
 
+    // staging buffer for non-host buffers without async uploads, reused because a fresh allocation per tensor page faults on every load
+    std::vector<no_init<uint8_t>> read_buf;
     for (struct ggml_tensor * cur : tensors) {
         const auto * weight = get_weight(ggml_get_name(cur));
         if (weight == nullptr) {
@@ -1811,7 +1884,7 @@ bool llama_model_loader::load_all_data(
         }
 
         if (progress_callback) {
-            if (!progress_callback((float) size_done / size_data, progress_callback_user_data)) {
+            if (!progress_callback(progress_now(), progress_callback_user_data)) {
                 return false;
             }
         }
@@ -1872,21 +1945,26 @@ bool llama_model_loader::load_all_data(
                     constexpr size_t chunk = 64u << 20;
                     {
                         std::lock_guard<std::mutex> lk(pr_mtx);
-                        for (size_t o = 0; o < n_size; o += chunk) {
-                            pr_q.push_back({ file->file_id(), (size_t) weight->offs + o, (char *) cur->data + o, std::min(chunk, n_size - o) });
+                        const int dfd = pr_direct(file->file_id());
+                        const size_t fsize = dfd >= 0 ? pr_fsize[file->file_id()] : 0;
+                        for (size_t o = 0; o < n_size; ) {   // chunk edges on the file's 64 MiB grid (see par_read)
+                            const size_t pos = (size_t) weight->offs + o, len = std::min((pos / chunk + 1) * chunk - pos, n_size - o);
+                            pr_q.push_back({ file->file_id(), pos, (char *) cur->data + o, len, dfd, fsize });
+                            o += len;
                         }
                     }
                     while (pr_threads.size() < n_load_threads) { pr_threads.emplace_back(pr_worker); }
                     pr_cv.notify_all();
                     size_done += n_size;
+                    pr_queued_bytes += n_size;
                     continue;
                 }
 #endif
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
 #if defined(__linux__)
-                // the copy now lives in RAM: drop the file's cached pages so the two don't compete for memory
-                posix_fadvise(file->file_id(), weight->offs, n_size, POSIX_FADV_DONTNEED);
+                // the copy now lives in RAM: with a pin budget, drop the file's cached pages so the two don't compete for memory
+                if (pin_budget > 0) { posix_fadvise(file->file_id(), weight->offs, n_size, POSIX_FADV_DONTNEED); }
 #endif
                 if (check_tensors) {
                     validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
@@ -1948,12 +2026,26 @@ bool llama_model_loader::load_all_data(
                         buffer_idx %= n_buffers;
                     }
                 } else {
-                    // scoped to one tensor so only one staging buffer is alive at a time
-                    std::vector<no_init<uint8_t>> read_buf(n_size);
-                    file->seek(weight->offs, SEEK_SET);
-                    file->read_raw(read_buf.data(), n_size);
-                    ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);
-                    if (check_tensors && !ggml_validate_row_data(cur->type, read_buf.data(), n_size)) {
+                    // with direct IO read the aligned range around the tensor and use the data inside it, so no bounce buffer is needed
+                    const size_t align          = file->read_alignment();
+                    const size_t aligned_offset = weight->offs & ~(align - 1);
+                    const size_t pad            = weight->offs - aligned_offset;
+                    const size_t read_size      = (pad + n_size + align - 1) & ~(align - 1);
+                    const size_t buf_size       = read_size + align - 1;
+
+                    // tensors come biggest-first: shrink the buffer when it gets too large, so peak memory stays close to one tensor
+                    if (read_buf.size() < buf_size || read_buf.size() > 2*buf_size) {
+                        // free the old buffer first, `read_buf = {}` would keep its capacity
+                        read_buf = std::vector<no_init<uint8_t>>();
+                        read_buf.resize(buf_size);
+                    }
+                    uint8_t * read_dst = (uint8_t *) GGML_PAD((uintptr_t) read_buf.data(), align);
+                    file->seek(aligned_offset, SEEK_SET);
+                    file->read_raw_unsafe(read_dst, read_size);
+
+                    const uint8_t * data = read_dst + pad;
+                    ggml_backend_tensor_set(cur, data, 0, n_size);
+                    if (check_tensors && !ggml_validate_row_data(cur->type, data, n_size)) {
                         throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
                     }
                 }
@@ -1964,6 +2056,11 @@ bool llama_model_loader::load_all_data(
     }
 
 #if defined(__linux__)
+    while (progress_callback) {   // the reads run now: the bar moves with them and a cancel is honoured, as on the sequential path
+        { std::lock_guard<std::mutex> lk(pr_mtx); if (pr_q.empty()) { break; } }
+        if (!progress_callback(progress_now(), progress_callback_user_data)) { return false; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     pr_finish();
     if (pr_fail) {
         throw std::runtime_error("failed to read tensor data from the model file");

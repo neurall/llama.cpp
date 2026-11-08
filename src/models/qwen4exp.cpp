@@ -331,9 +331,9 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
 
 std::unique_ptr<llm_graph_context> llama_model_qwen4exp::build_arch_graph(const llm_graph_params & params) const {
     if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
-        return std::make_unique<graph_mtp>(*this, params);
+        return std::make_unique<graph_mtp>(params);
     }
-    return std::make_unique<graph>(*this, params);
+    return std::make_unique<graph>(params);
 }
 
 // QSA k-pool inputs, shared by the QSA layers: blocks of compress_ratio cells in sequence order, see llama_memory_hybrid_idx
@@ -502,14 +502,11 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_combine(
     return cur;
 }
 
-llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_params & params) :
-    llm_build_delta_net_base(params), model(model) {
+llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
+    llm_build_delta_net_base(params) {
     const int64_t hc = hparams.dsv4_hc_mult;
 
     GGML_ASSERT(hparams.n_embd_head_v() == hparams.n_embd_head_k());
-
-    int sections[4];
-    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
 
     auto * inp = build_inp_mem_hybrid();
 
@@ -568,7 +565,9 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
     bool ds_done = false;
     {
         auto * ia = inp->get_attn();
-        bool ds_ok = cparams.flash_attn && ia->self_k_rot == nullptr && ia->self_v_rot == nullptr &&
+        // the block-sparse branch below does not rotate, build_layer_attn does: a rotated KV with block-sparse layers runs on one card
+        const bool ds_rot_qsa = inp_kpool != nullptr && std::any_of(ia->self_k_rot.begin(), ia->self_k_rot.end(), [](ggml_tensor * t) { return t != nullptr; });
+        bool ds_ok = cparams.flash_attn && !ds_rot_qsa &&
                      std::none_of(cparams.embeddings_layer_inp.begin(), cparams.embeddings_layer_inp.end(), [](bool b) { return b; });
         if (ds_ok && ds_plan(64)) {
             const size_t NR = ds_r.size();
@@ -698,7 +697,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                     ggml_tensor * all = gather(cr, 1, bl);
                     ds_skip();
                     ggml_tensor * out = hparams.is_recr(il) ? build_layer_attn_linear(inp_rs, all, il)
-                                                            : build_layer_attn(ia, mctx_hyb, inp_kpool, all, inp_pos, sections, il);
+                                                            : build_layer_attn(ia, mctx_hyb, inp_kpool, all, inp_pos, il);
                     ds_pin(bl);
                     cut(out, 1, cr);
                 } else if (hparams.is_recr(il)) {
@@ -791,8 +790,8 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         v[r] = ggml_reshape_3d(ctx0, build_lora_mm(L[r].wv, cr[r], L[r].wv_s), n_embd_head, n_head_kv, nr);
                         g[r] = ggml_cont_2d(ctx0, ggml_view_3d(ctx0, Qf, n_embd_head, n_head, nr, es * n_embd_head * 2, es * n_embd_head * 2 * n_head, es * n_embd_head),
                                 n_embd_head * n_head, nr);
-                        q[r] = ggml_rope_multi(ctx0, Qc, pos_r[r], nullptr, n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
-                        k[r] = ggml_rope_multi(ctx0, Kc, pos_r[r], nullptr, n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+                        q[r] = build_rope(Qc, pos_r[r], il);
+                        k[r] = build_rope(Kc, pos_r[r], il);
                         ggml_tensor * packed = nullptr;
                         if (qsa) {
                             // cache rows store raw key | pooled key: pooling precedes norm and rotation, so the raw key gets neither
@@ -801,7 +800,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                             packed = ggml_reshape_3d(ctx0, ggml_concat(ctx0, k_raw, pzero, 0), 2 * idx_dim, 1, nr);
                             ggml_tensor * qi = ggml_reshape_3d(ctx0, build_lora_mm(L[r].index_q_proj, cr[r]), idx_dim, n_idx_h, nr);
                             qi    = build_norm(qi, L[r].index_q_norm, nullptr, LLM_NORM_RMS, il);
-                            iq[r] = ggml_rope_multi(ctx0, qi, pos_r[r], nullptr, n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+                            iq[r] = build_rope(qi, pos_r[r], il);
                         }
                         ds_pin(ds_r[r].b);
                         if (packed) {
@@ -810,13 +809,13 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         }
                     }
                     if (!qsa) {
-                        att = ds_attn_cache(mctx_attn, ia->get_k_idxs(), ia->get_v_idxs(), ia->get_kq_mask(), q, k, v, {}, kq_scale, il);
+                        att = ds_attn_cache(mctx_attn, ia->get_k_idxs(), ia->get_v_idxs(), ia->self_attn_mask.raw, q, k, v, {}, ia->self_k_rot[il], ia->self_v_rot[il], kq_scale, il);
                     } else {
                         const int64_t kpool  = inp_kpool->kpool;
                         const int64_t n_pool = inp_kpool->pool_cells->ne[0];
                         const int64_t n_new  = inp_kpool->n_new;
                         const int64_t n_kv   = inp_kpool->n_kv;
-                        ggml_tensor * kq_mask = ia->get_kq_mask();
+                        ggml_tensor * kq_mask = ia->self_attn_mask.raw;
                         GGML_ASSERT(hparams.dsv4_compress_ratios[il] == kpool);
                         // 1. every range's K / V into the attention cache, before anything reads it
                         ds_skip();
@@ -836,8 +835,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                         pooled_new = ggml_scale(ctx0, pooled_new, 1.0f / (float) kpool);
                         pooled_new = build_norm(pooled_new, model.layers[il].index_k_norm, nullptr, LLM_NORM_RMS, il);
                         pooled_new = ggml_reshape_3d(ctx0, pooled_new, idx_dim, 1, n_new);
-                        pooled_new = ggml_rope_multi(ctx0, pooled_new, inp_kpool->new_pool_pos, nullptr, n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-                                ext_factor, attn_factor, beta_fast, beta_slow);
+                        pooled_new = build_rope(pooled_new, inp_kpool->new_pool_pos, il);
                         pooled_new = ggml_reshape_2d(ctx0, pooled_new, idx_dim, n_new);
                         ggml_build_forward_expand(gf, kpool_cache.scatter_pooled(pooled_new, inp_kpool->new_pool_rep));
                         ggml_tensor * pooled = ggml_reshape_3d(ctx0, kpool_cache.gather_pooled(inp_kpool->pool_cells), idx_dim, 1, n_pool);
@@ -876,7 +874,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
                             if (kq_mask2d[r] == nullptr) { kq_mask2d[r] = ggml_reshape_2d(ctx0, ds_rows(kq_mask, r), n_kv, nr); }
                             sel = ggml_add(ctx0, ggml_view_2d(ctx0, sel, n_kv, nr, sel->nb[2], 0), kq_mask2d[r]);
                             ggml_tensor * mask = ggml_reshape_4d(ctx0, sel, n_kv, nr, 1, 1);   // the selection mask carries the causal mask
-                            att[r] = build_attn_mha(q[r], mctx_attn->get_k(ctx0, il), mctx_attn->get_v(ctx0, il), nullptr, mask, nullptr, nullptr, n_sel, kq_scale, il);
+                            att[r] = build_attn_mha(q[r], mctx_attn->get_k(ctx0, il), mctx_attn->get_v(ctx0, il), nullptr, mask, nullptr, nullptr, nullptr, n_sel, kq_scale, il);
                             ds_pin(ds_r[r].b);
                         }
                     }
@@ -1016,7 +1014,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
         if (hparams.is_recr(il)) {
             cur = build_layer_attn_linear(inp->get_recr(), cur, il);
         } else {
-            cur = build_layer_attn(inp->get_attn(), mctx_hyb, inp_kpool, cur, inp_pos, sections, il);
+            cur = build_layer_attn(inp->get_attn(), mctx_hyb, inp_kpool, cur, inp_pos, il);
         }
 
         if (il == n_layer - 1 && crop_before_nextn(inp_out_ids)) {
@@ -1074,8 +1072,8 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
     res->t_logits = cur;
 }
 
-llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_graph_params & params) :
-    graph(model, params, no_build{}) {
+llama_model_qwen4exp::graph_mtp::graph_mtp(const llm_graph_params & params) :
+    graph(params, no_build{}) {
     GGML_ASSERT(hparams.n_layer_nextn == 1 && "qwen4exp MTP has a single block");
     ASSERT_EMBD_OR_TOKEN(ubatch);
 
@@ -1087,9 +1085,6 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
 
     GGML_ASSERT(layer.nextn.eh_proj && layer.nextn.enorm && layer.nextn.hnorm && layer.nextn.hc_head_norm &&
             "MTP block missing, load the model with MTP enabled");
-
-    int sections[4];
-    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
 
     auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd_inp(), hparams.n_embd_out());
 
@@ -1143,7 +1138,7 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
 
     hc_mix attn_mix = build_hc_mix(res_hc, layer.hc_attn_norm, layer.hc_attn_down, layer.hc_attn_up, layer.hc_attn_inject, layer.hc_attn_down_inject, il);
     ggml_tensor * cur    = attn_mix.cur;
-    cur    = build_layer_attn(inp_hyb->get_attn(), mctx_hyb, inp_kpool, cur, inp_pos, sections, il);
+    cur    = build_layer_attn(inp_hyb->get_attn(), mctx_hyb, inp_kpool, cur, inp_pos, il);
     res_hc = build_hc_combine(res_hc, cur, attn_mix.inject, il);
 
     hc_mix ffn_mix = build_hc_mix(res_hc, layer.hc_ffn_norm, layer.hc_ffn_down, layer.hc_ffn_up, layer.hc_ffn_inject, layer.hc_ffn_down_inject, il);
@@ -1265,7 +1260,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
         llm_graph_input_kpool *                 inp_kpool,
         ggml_tensor *                           cur,
         ggml_tensor *                           inp_pos,
-        int *                                   sections,
         int                                     il) {
     const llama_kv_cache_context * mctx_idx = mctx_hyb->get_idx();
 
@@ -1302,9 +1296,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
     pooled_new = build_norm(pooled_new, model.layers[il].index_k_norm, nullptr, LLM_NORM_RMS, il);
 
     pooled_new = ggml_reshape_3d(ctx0, pooled_new, idx_dim, 1, n_new);
-    pooled_new = ggml_rope_multi(ctx0, pooled_new, inp_kpool->new_pool_pos, nullptr,
-            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    pooled_new = build_rope(pooled_new, inp_kpool->new_pool_pos, il);
     pooled_new = ggml_reshape_2d(ctx0, pooled_new, idx_dim, n_new);
     cb(pooled_new, "indexer_pool_k_new", il);
 
@@ -1318,9 +1310,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_sel(
     ggml_tensor * q = build_lora_mm(model.layers[il].index_q_proj, cur);
     q = ggml_reshape_3d(ctx0, q, idx_dim, n_idx_h, n_tokens);
     q = build_norm(q, model.layers[il].index_q_norm, nullptr, LLM_NORM_RMS, il);
-    q = ggml_rope_multi(ctx0, q, inp_pos, nullptr,
-            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    q = build_rope(q, inp_pos, il);
     cb(q, "indexer_q", il);
 
     // the reference sums the rectified head scores unweighted, scaled by 1/sqrt(head_dim),
@@ -1415,13 +1405,13 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         int                       il) {
     // rotate q/k/v before they reach a quantized cache, as the dense path does. the indexer
     // has already scored with its own query in build_qsa_sel, so the selection is unaffected.
-    if (inp->self_k_rot) {
-        q_cur = llama_mul_mat_hadamard(ctx0, q_cur, inp->self_k_rot);
-        k_cur = llama_mul_mat_hadamard(ctx0, k_cur, inp->self_k_rot);
+    if (inp->self_k_rot[il]) {
+        q_cur = llama_mul_mat_hadamard(ctx0, q_cur, inp->self_k_rot[il]);
+        k_cur = llama_mul_mat_hadamard(ctx0, k_cur, inp->self_k_rot[il]);
     }
 
-    if (inp->self_v_rot) {
-        v_cur = llama_mul_mat_hadamard(ctx0, v_cur, inp->self_v_rot);
+    if (inp->self_v_rot[il]) {
+        v_cur = llama_mul_mat_hadamard(ctx0, v_cur, inp->self_v_rot[il]);
     }
 
     // these nodes are added to the graph together so that they are not reordered
@@ -1452,12 +1442,12 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
     sel = ggml_reshape_4d(ctx0, sel, sel->ne[0], sel->ne[1]/n_stream, 1, n_stream);
     cb(sel, "kq_mask_qsa", il);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, sel, nullptr, nullptr, n_sel, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, sel, nullptr, nullptr, nullptr, n_sel, kq_scale, il);
     cb(cur, "kqv_out", il);
 
     // the rotation is its own inverse, so undo it on the value side of the output
-    if (inp->self_v_rot) {
-        cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
+    if (inp->self_v_rot[il]) {
+        cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot[il]);
     }
 
     return cur;
@@ -1469,7 +1459,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
         llm_graph_input_kpool *   inp_kpool,
         ggml_tensor *             cur,
         ggml_tensor *             inp_pos,
-        int *                     sections,
         int                       il) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
@@ -1477,7 +1466,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
     // indexer reads the same block input as q/k/v; no cache or no ratio means dense
     const bool qsa = inp_kpool != nullptr && hparams.dsv4_compress_ratios[il] > 0;
 
-    ggml_tensor * sel = qsa ? build_qsa_sel(mctx_hyb, inp_kpool, cur, inp_pos, sections, il) : nullptr;
+    ggml_tensor * sel = qsa ? build_qsa_sel(mctx_hyb, inp_kpool, cur, inp_pos, il) : nullptr;
 
     // Qwen3Next uses a single Q projection that outputs query + gate
     ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
@@ -1511,17 +1500,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
     Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
 
     // Apply IMRoPE
-    Qcur = ggml_rope_multi(
-            ctx0, Qcur, inp_pos, nullptr,
-            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow
-            );
-
-    Kcur = ggml_rope_multi(
-            ctx0, Kcur, inp_pos, nullptr,
-            n_rot, sections, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow
-            );
+    Qcur = build_rope(Qcur, inp_pos, il);
+    Kcur = build_rope(Kcur, inp_pos, il);
 
     cb(Qcur, "Qcur", il);
     cb(Kcur, "Kcur", il);
@@ -1849,10 +1829,6 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
         int64_t              state_cols,
         int64_t              channels,
         int                  il) {
-    const auto * mctx_cur = inp->mctx;
-
-    const auto kv_head = mctx_cur->get_head();
-
     const int64_t n_seqs    = ubatch.n_seqs;
     const int64_t row_total = conv_states_all->ne[0];
 
@@ -1870,28 +1846,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
 
     ggml_tensor * conv_input = ggml_concat(ctx0, state, ggml_transpose(ctx0, x), 0);
 
-    // [TAG_RECURRENT_ROLLBACK_SPLITS] keep the last state_cols columns once per rollback slot,
-    // slot s ending s tokens earlier so a rollback of s tokens reads a history that never saw them
-    const size_t row_size = ggml_row_size(conv_states_all->type, row_total);
-    const uint32_t mem_size = mctx_cur->get_size();
-
-    const int64_t n_slots = (int64_t) cparams.n_rs_seq + 1;
-
-    for (int64_t slot = 0; slot < n_slots; ++slot) {
-        const int64_t s_idx = std::max<int64_t>(0, conv_input->ne[0] - state_cols - slot);
-
-        ggml_tensor * tail = ggml_view_3d(ctx0, conv_input,
-                state_cols, channels, n_seqs,
-                conv_input->nb[1], conv_input->nb[2],
-                ggml_row_size(conv_input->type, s_idx));
-
-        ggml_tensor * dst = ggml_view_2d(ctx0, conv_states_all,
-                state_cols * channels, n_seqs,
-                conv_states_all->nb[1],
-                (slot * mem_size + kv_head) * row_size);
-
-        ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_cont(ctx0, tail), dst));
-    }
+    build_conv_state_store(inp, conv_states_all, conv_input, state_cols, 0);
 
     return conv_input;
 }

@@ -1,0 +1,11 @@
+run 21900 | up8_ledger2_verify | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.9 t/s | prompt 141.5 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=1,poison=3 | power 200+200 W | 2026-11-02 01:13:03
+
+ curr_ex) {
+    std::vector<std::string> config_files;
+    if (params.system_config) {
+        config_files.push_back(fs_get_system_config_path());
+    }
+    if (params.user_config) {
+        config_files.push_back(fs_get_user_config_path());
+    }
+    for (const auto & config

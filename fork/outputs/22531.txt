@@ -1,0 +1,10 @@
+run 22531 | dec_calc | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 29.16 t/s | prompt 98.3 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-mimo-s300.ini,log=wk | power 200+200 W | 2026-11-03 00:10:06
+
+The user wants me to delete code in this file that is never used. Let me analyze the code carefully.
+
+Looking at the file, it's `common/json-schema-to-grammar.cpp`. The user has only shown a partial file (it cuts off at `static void build_min_max_int(int64_t `).
+
+Let me analyze what's shown:
+
+1. `build_repetition` - This is a static function. I need to check if it's used within the file. Since the file is cut off, I can't see the full file. But based on what's shown, `build_repetition` is likely used
+---

@@ -1,0 +1,28 @@
+run 23718 | rampool2 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.0 t/s | prompt 583.6 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 13:23:02
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: when `min_items > 0` and `max_items == 0`... returns "" which is fine.
+- When separator_rule is non-empty and `min_items == 0`, `max_items == 1`: the code goes to the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, has_max ? max_items - 1 : max_items)` — wait, actually let me re-check. For `min_items == 0 && max_items == 1` with separator: result = item_rule + " " + build_repetition(..., 0, 0) → inner returns "" → result = item_rule + " " + "" then wrapped in "(...)"? → `(item_rule )?` — hmm, that produces `(item_rule )?` with a trailing space. Actually wait: `result = item_rule + " " + build_repetition(...)` where inner returns "" gives `item_rule ` then `if (min_items == 0) result = "(" + result + ")?"` gives `(item_rule )?`. That's a bit ugly but functionally OK? Actually wait, for max_items == 1 with separator, the correct grammar should be just `item_rule?` — the separator shouldn't appear since there's only one item. Let me check: with min=0, max=1, the repetition is 0 or 1 items, no separator needed. The code produces `(item_rule )?` — hmm, actually the inner call is `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. With min=0, max=1: inner gets min=0, max=0 → returns "". So result = `item_rule ` + "" = `item_rule `. Then wrapped: `(item_rule )?`. This matches 0 or 1 item — correct but with a trailing space inside the group. Minor cosmetic issue. Actually wait — is it correct? `(item_rule )?` — the space in GBNF... in this grammar format, spaces in rules are typically ignored? No wait, in GBNF used by llama.cpp, space is significant? Actually in llama.cpp GBNF, whitespace in the grammar definition is ignored except within quotes. Hmm, actually in llama.cpp's GBNF parser, whitespace between elements is ignored. So `(item_rule )?` is fine.
+
+Hmm wait, but actually there's a subtle bug: for min_items == 0 && max_items == 1 with a separator, the check `if (min_items == 0 && max_items == 1) return item_rule + "?";` happens before the separator check, so it returns `item_rule + "?"` — good, no separator. OK.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead.
+- `decimals_left = 16` default.
+- In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == INT64_MIN` and `max_value < 0`, then `-min_value` overflows (UB). Wait: has_min = min_value != INT64_MIN. If min_value == INT64_MIN and max_value < 0, then has_min is false, so we go to... let's see: `if (has_min && has_max)` — has_min false, so skip. Then `less_decimals`... `if (has_min)` false. `if (has_max)`: max_value < 0 → `out << "\"-\" ("; build_min_max_int(-max_value, INT64_MAX, ...)`. `-max_value` where max_value could be INT64_MIN? If max_value == INT64_MIN, then has_max = false, so we wouldn't be in this branch. So max_value != INT64_MIN, and max_value < 0, so -

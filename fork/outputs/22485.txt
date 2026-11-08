@@ -1,0 +1,4 @@
+run 22485 | miss_real | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 44.89 t/s | prompt 3.1 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/mb-ver2.ini,log=wk,pp-path=dec,verify=2 | power 220+280 W | 2026-11-02 22:36:55
+
+The user is asking about a specific topic related to a specific field. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about a specific topic. The user is asking about
+---

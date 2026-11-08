@@ -1,0 +1,25 @@
+run 23725 | rampool3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.8 t/s | prompt 350.1 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 13:45:42
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: `common/json-schema-to-grammar.cpp`
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - Wait, there's a subtle bug: `if (max_items == 0) return "";` — but what if `min_items > 0` and `max_items == 0`? That's an impossible/contradictory constraint (min > max), and returning empty string silently accepts it. Actually returning "" means the rule matches empty, which would fail to satisfy min_items. This is arguably correct behavior for an impossible constraint (nothing can match), but silently might produce invalid grammars. Actually in regex terms, if min > max, the repetition can't match anything, so empty is "correct" in a sense. Hmm, but actually returning "" makes the whole rule match empty string, which is wrong — it should make the rule unmatchable. Let me think... In GBNF, an empty rule content... Actually if the rule is `item_rule` repeated 0 times when max is 0, then the repetition matches empty. But min_items > 0 means it should never match. Returning "" makes it match empty always. This is a potential bug but edge case.
+   - Also `min_items == 0 && max_items == 1` returns `item_rule + "?"` — fine.
+   - The separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and separator non-empty, then max becomes 0 for the inner repetition, and the inner call returns "" — so result is `item_rule (sep item){0}`... wait no. Let's trace: min_items=1, max_items=1, separator. Inner call: min = 0, max = 0. Inner returns "" (since max_items == 0). So result = `item_rule + " " + ""` = `item_rule `. Hmm, that leaves a trailing space. Actually wait: `auto result = item_rule + " " + build_repetition(...)`. If inner returns "", result = "item_rule " with trailing space. That's a minor formatting issue in the grammar (trailing space in rule text). Actually wait, for min_items=1, max_items=1: the correct grammar is just `item_rule` with no separator. The generated would be `item_rule ` — trailing space. GBNF parsers might tolerate trailing whitespace in rules? Probably yes since whitespace is generally insignificant outside literals... Actually in GBNF, spaces in rule definitions are generally ignored except within quotes. So it's cosmetically odd but functionally OK. Hmm, but wait — is it? Let me re-check: `build_repetition` with max_items=0 returns "" — but that's the inner repetition of `(sep item)`. With min 0 max 0... the inner call has min_items == 0 and max_items == 0. First check `max_items == 0` returns "". So yes trailing space.
+   
+   Actually wait, there's a deeper issue: when `min_items == 0` and separator is present, the code wraps result in `( ... )?`. Let's trace min=0, max=1: inner call gets min=0, max=0 → returns "". result = `item_rule ` then wrapped: `(item_rule )?`. Trailing space again. Hmm, but actually for min=0, max=1 with separator, correct output should be `item_rule?` — the separator never appears. The generated `(item_rule )?` is equivalent. OK.
+
+   But hold on — there's a real bug: when `min_items == 0 && max_items == 1` is checked BEFORE the separator check, so that case returns `item_rule + "?"` without separator — correct.
+
+   What about min=0, max=2 with separator? Inner: min=0, max=1 → `("(" + sep + " " + item + ")")?`. result = `item (sep item)?` then wrapped in `( ... )?` → `(item (sep item)?)?`. Correct.
+
+   min=1, max=2: inner min=0, max=1 → `(sep item)?`. result = `item (sep item)?`. Correct, no outer wrap since min != 0.
+
+   OK so the main issue is the trailing space when max_items == 1 && min

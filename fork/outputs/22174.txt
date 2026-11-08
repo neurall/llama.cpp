@@ -1,0 +1,57 @@
+run 22174 | rel_stable_auto | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 26.28 t/s | prompt 6.1 t/s | 987 tokens | args: -np 1 | power 220+280 W | 2026-11-02 12:26:58
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate clockwise: m[i][j] -> new[j][n-1-i]? Let's derive. For n rows, m rows. Clockwise rotation: new[r][c] = m[n-1-c][r]? Example [[0,1,0],[1,1,1]] n=2? Actually T 2x3 not square. Rotation of non-square changes dimensions. Need handle. Could use coordinate list and rotate around center. Simpler use predefined rotations? Or use matrix rotation with dimensions swapped. For rectangular matrix, rotate clockwise: new rows = old cols, new cols = old rows. new[r][c] = old[oldRows-1-c][r]? Let's test T matrix 2x3:
+old:
+row0: 0 1 0
+row1: 1 1 1
+Clockwise should become 3x2:
+row0: 1 0? Let's visualize T pointing down? Coordinates cells (0,1),(1,0),(1,1),(1,2). Rotate clockwise around center? Matrix rotation clockwise: new[r][c] = old[oldRows-1-c][r]. oldRows=2, oldCols=3. new rows=3, cols=2.
+r0 c0: old[1][0]=1
+r0 c1: old[0][0]=0
+r1 c0: old[1][1]=1
+r1 c1: old[0][1]=1
+r2 c0: old[1][2]=1
+r2 c1: old[0][2]=0
+new:
+1 0
+1 1
+1 0
+That's T rotated clockwise? Original T: top center, bottom row all. Rotated clockwise should be vertical bar left? Let's draw original:
+ . T .
+ T T T
+Rotate clockwise:
+ T . 
+ T T
+ T .
+Yes new rows: [1,0],[1,1],[1,0] matches. Good.
+
+Need collision. Board array 20 rows x 10 cols. Use 0/1. Current piece has matrix and position x,y. Need spawn at top. Need check collision for each cell. Need allow rotation if fits. Need drop. Need line clear. Need score. Need game over if spawn collision.
+
+Need draw. Use canvas. Need maybe draw board and current piece. Need use requestAnimationFrame or setInterval. Minimal.
+
+Need controls: left/right arrows, down soft drop, up rotate, space hard drop. Maybe restart on game over? Could include.
+
+Need "smallest html" maybe code compact. Need ensure no external dependencies. Could use CSS minimal.
+
+Let's craft code.
+
+Potential issue: canvas dimensions and cell size. Use const W=10,H=20,S=30. Canvas width=300 height=600. Board array H rows of W zeros. Piece object {m,x,y}. Need spawn random shape. Need maybe use colors? Minimal can use black/white. But Tetris should be colored? Could use one color. Smallest
+---

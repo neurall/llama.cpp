@@ -1,0 +1,28 @@
+run 21616 | up8_quant_kv | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 15.14 t/s | prompt 620.7 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q4_0 -ctv q4_0 | power 220+280 W | 2026-11-01 11:28:46
+
+ params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+             params.speculative.ngram_simple.size_n = 4;
+             params.speculative.ngram_simple.size_m = 4;
+             params.speculative.ngram_simple.min_hits = 4;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-default"},
+        string_format("enable default ngram speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
+            params.speculative.ngram_mod.n_match = 24;
+            params.speculative.ngram_mod.n_min = 48;
+            params.speculative.ngram_mod.n_max = 64;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-simple-default"},
+        string_format("enable default ngram-simple speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+            params.speculative.ngram_simple.size_n = 4;
+            params.speculative.ngram_simple.size_m = 4;
+            params.speculative.ngram

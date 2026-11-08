@@ -1,0 +1,14 @@
+run 22593 | no_cap | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.85 t/s | prompt 102.6 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-mimo-s500.ini,log=wk | power 220+280 W | 2026-11-03 07:07:50
+
+Let me analyze this file to find code that is never used.
+
+Looking at the file, I can see:
+
+1. `build_repetition` - This is a static function. I need to check if it's used elsewhere in the file (the file appears to be truncated).
+
+2. `build_min_max_int` - This is a static function. I need to check if it's used elsewhere in the file.
+
+The file appears to be truncated (it ends mid-line with `out << "`). Since I only have this partial file, I need to determine what's unused based on what's visible.
+
+Wait, the user says
+---

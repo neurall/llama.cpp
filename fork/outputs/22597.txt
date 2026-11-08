@@ -1,0 +1,27 @@
+run 22597 | no_cap | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.09 t/s | prompt 36.3 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/ab-mimo-t-new.ini,log=wk | power 220+280 W | 2026-11-03 07:13:13
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+// Tetris game
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game. I need:
+- 7 tet
+---

@@ -25,6 +25,7 @@
 #include "base64.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <set>
@@ -549,9 +550,12 @@ struct server_slot {
             return false;
         }
 
-        llama_state_seq_get_data_ext(ctx_tgt, cur->data.main.data(), cur_size_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        if (ctx_dft) {
-            llama_state_seq_get_data_ext(ctx_dft, cur->data.drft.data(), cur_size_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        const size_t n_tgt = llama_state_seq_get_data_ext(ctx_tgt, cur->data.main.data(), cur_size_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        const size_t n_dft = ctx_dft ? llama_state_seq_get_data_ext(ctx_dft, cur->data.drft.data(), cur_size_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+        if (n_tgt != cur_size_tgt || n_dft != cur_size_dft) {
+            SLT_ERR(*this, "%s", "failed to save complete prompt state\n");
+            prompt_cache.states.pop_back();
+            return false;
         }
 
         return true;
@@ -944,6 +948,10 @@ struct server_slot {
     }
 
     void print_timings() const {
+        llama_moe_decision_fork("phase", string_format("decode -> idle: %d tokens %.1f s %.1f t/s %.1f ms per token", (int) stats.n_gen, stats.t_gen_ms() / 1e3, stats.n_gen_tps(), stats.t_gen_per_token_ms()).c_str(), "");
+        // fork: the request's totals in the decisions, so stats.log (--moe stats) tells requests apart and a drop reads against the picks around it
+        llama_moe_decision_fork("request", string_format("prompt %d tokens %.1f s %.1f t/s, decode %d tokens %.1f s %.1f t/s", (int) stats.n_prompt_processed, stats.t_prompt_ms() / 1e3, stats.n_prompt_tps(),
+                (int) stats.n_gen, stats.t_gen_ms() / 1e3, stats.n_gen_tps()).c_str(), "the request's totals");
         const double t_prompt_total = stats.t_prompt_ms();
         const double t_gen_total    = stats.t_gen_ms();
 
@@ -2998,21 +3006,22 @@ private:
         for (auto it = slot.prompt.checkpoints.begin();
                 slot.prompt.checkpoints.size() + 1 >= (size_t) params_base.n_ctx_checkpoints &&
                 it != slot.prompt.checkpoints.end(); ) {
-            if (it->id_task != id_task && last >= 0 && it->n_tokens <= last + params_base.checkpoint_min_step) {
+            const auto & cur = **it;
+            if (cur.id_task != id_task && last >= 0 && cur.n_tokens <= last + params_base.checkpoint_min_step) {
                 SLT_TRC(slot, "erasing context checkpoint too close to an earlier one (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
-                        it->pos_min, it->pos_max, it->n_tokens, (float) it->size() / 1024 / 1024);
+                        cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
 
                 it = slot.prompt.checkpoints.erase(it);
                 continue;
             }
 
-            last = it->n_tokens;
+            last = cur.n_tokens;
             ++it;
         }
 
         while (slot.prompt.checkpoints.size() >= (size_t) params_base.n_ctx_checkpoints) {
             // make room for the new checkpoint, if needed
-            const auto & cur = slot.prompt.checkpoints.front();
+            const auto & cur = *slot.prompt.checkpoints.front();
 
             SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
                     cur.pos_min, cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
@@ -3024,8 +3033,8 @@ private:
         {
             const int64_t n_tokens_new = slot.prompt.n_tokens() - n_tokens_cur;
             for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end(); ) {
-                if (it->n_tokens == n_tokens_new) {
-                    SLT_TRC(slot, "superseding context checkpoint at n_tokens = %" PRId64 "\n", it->n_tokens);
+                if ((*it)->n_tokens == n_tokens_new) {
+                    SLT_TRC(slot, "superseding context checkpoint at n_tokens = %" PRId64 "\n", (*it)->n_tokens);
                     it = slot.prompt.checkpoints.erase(it);
                 } else {
                     ++it;
@@ -3033,7 +3042,8 @@ private:
             }
         }
 
-        auto & cur = slot.prompt.checkpoints.emplace_back();
+        auto ckpt = std::make_shared<common_prompt_checkpoint>();
+        auto & cur = *ckpt;
 
         cur.id_task = id_task;
 
@@ -3046,6 +3056,8 @@ private:
         cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
         // stash the draft's speculative state with the checkpoint
         common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
+
+        slot.prompt.checkpoints.push_back(std::move(ckpt));
 
         SLT_TRC(slot,
                 "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
@@ -3066,7 +3078,8 @@ private:
         return true;
     }
 
-    static bool ckpt_read_buf(std::ifstream & ifs, std::vector<uint8_t> & buf, size_t n_avail, size_t & n_read) {
+    template <typename Buf>
+    static bool ckpt_read_buf(std::ifstream & ifs, Buf & buf, size_t n_avail, size_t & n_read) {
         uint64_t n = 0;
         // check the size against the bytes left in the file before allocating, the size field may be corrupted
         if (!ckpt_read(ifs, &n, sizeof(n), n_read) || n > n_avail - n_read) {
@@ -3081,7 +3094,8 @@ private:
         n_written += size;
     }
 
-    static void ckpt_write_buf(std::ofstream & ofs, const std::vector<uint8_t> & buf, size_t & n_written) {
+    template <typename Buf>
+    static void ckpt_write_buf(std::ofstream & ofs, const Buf & buf, size_t & n_written) {
         const uint64_t n = buf.size();
         ckpt_write(ofs, &n, sizeof(n), n_written);
         if (n > 0) {
@@ -3095,7 +3109,7 @@ private:
         if (slot.prompt.checkpoints.empty()) {
             return true;
         }
-        std::ofstream ofs(std::filesystem::u8path(filepath), std::ios::binary | std::ios::app);
+        std::ofstream ofs(filepath, std::ios::binary | std::ios::app);
         if (!ofs) {
             SLT_WRN(slot, "failed to append context checkpoints to '%s'\n", filepath.c_str());
             return false;
@@ -3106,7 +3120,8 @@ private:
         ckpt_write(ofs, &magic,   sizeof(magic),   n_written);
         ckpt_write(ofs, &version, sizeof(version), n_written);
         ckpt_write(ofs, &count,   sizeof(count),   n_written);
-        for (const auto & cur : slot.prompt.checkpoints) {
+        for (const auto & ckpt : slot.prompt.checkpoints) {
+            const auto & cur = *ckpt;
             ckpt_write(ofs, &cur.n_tokens, sizeof(cur.n_tokens), n_written);
             ckpt_write(ofs, &cur.pos_min,  sizeof(cur.pos_min),  n_written);
             ckpt_write(ofs, &cur.pos_max,  sizeof(cur.pos_max),  n_written);
@@ -3126,7 +3141,7 @@ private:
 
     // returns the number of bytes consumed, 0 if there is no usable appendix
     size_t load_slot_checkpoints(const std::string & filepath, size_t offset, server_slot & slot) const {
-        std::ifstream ifs(std::filesystem::u8path(filepath), std::ios::binary | std::ios::ate);
+        std::ifstream ifs(filepath, std::ios::binary | std::ios::ate);
         const size_t file_size = ifs ? (size_t) ifs.tellg() : 0;
         if (!ifs || file_size < offset || !ifs.seekg(offset)) {
             return 0;
@@ -3144,9 +3159,10 @@ private:
             SLT_WRN(slot, "invalid context checkpoint appendix in '%s' - ignored\n", filepath.c_str());
             return 0;
         }
-        std::list<common_prompt_checkpoint> checkpoints;
+        std::list<std::shared_ptr<common_prompt_checkpoint>> checkpoints;
         for (uint32_t i = 0; i < count; ++i) {
-            common_prompt_checkpoint cur;
+            auto ckpt = std::make_shared<common_prompt_checkpoint>();
+            auto & cur = *ckpt;
             cur.id_task = -1; // not created by a task - marks a checkpoint restored from a slot file
             if (!ckpt_read(ifs, &cur.n_tokens, sizeof(cur.n_tokens), n_read) ||
                 !ckpt_read(ifs, &cur.pos_min,  sizeof(cur.pos_min),  n_read) ||
@@ -3162,23 +3178,23 @@ private:
                 SLT_WRN(slot, "invalid context checkpoint appendix in '%s' - ignored\n", filepath.c_str());
                 return 0;
             }
-            checkpoints.push_back(std::move(cur));
+            checkpoints.push_back(std::move(ckpt));
             if (checkpoints.size() > (size_t) params_base.n_ctx_checkpoints) {
                 checkpoints.pop_front();
             }
         }
         // the slot file does not check the draft context - test-load one draft checkpoint, drop the draft data if it does not fit
-        if (ctx_dft != nullptr && !checkpoints.empty() && !checkpoints.back().data_dft.empty()) {
-            const bool ok = checkpoints.back().load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        if (ctx_dft != nullptr && !checkpoints.empty() && !checkpoints.back()->data_dft.empty()) {
+            const bool ok = checkpoints.back()->load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
             llama_memory_seq_rm(llama_get_memory(ctx_dft), slot.id, -1, -1);
             if (!ok) {
                 SLT_WRN(slot, "draft context checkpoint data in '%s' does not match the draft context - dropped\n", filepath.c_str());
                 for (auto & cur : checkpoints) {
-                    cur.clear_dft();
+                    cur->clear_dft();
                 }
             }
         }
-        slot.prompt.checkpoints = std::move(checkpoints);
+        slot.prompt.checkpoints.assign(checkpoints.begin(), checkpoints.end());
         SLT_INF(slot, "restored %zu context checkpoint(s) from '%s'\n", slot.prompt.checkpoints.size(), filepath.c_str());
         return n_read;
     }
@@ -3201,7 +3217,7 @@ private:
         if (data_dft.empty() && data_spec.empty()) {
             return true;
         }
-        std::ofstream ofs(std::filesystem::u8path(filepath), std::ios::binary | std::ios::app);
+        std::ofstream ofs(filepath, std::ios::binary | std::ios::app);
         if (!ofs) {
             SLT_WRN(slot, "failed to append the draft state to '%s'\n", filepath.c_str());
             return false;
@@ -3227,7 +3243,7 @@ private:
         if (ctx_dft != nullptr) {
             llama_memory_seq_rm(llama_get_memory(ctx_dft), slot.id, -1, -1);
         }
-        std::ifstream ifs(std::filesystem::u8path(filepath), std::ios::binary | std::ios::ate);
+        std::ifstream ifs(filepath, std::ios::binary | std::ios::ate);
         const size_t file_size = ifs ? (size_t) ifs.tellg() : 0;
         if (!ifs || file_size < offset || !ifs.seekg(offset)) {
             return 0;
@@ -4596,7 +4612,8 @@ private:
                                     const auto it = std::find_if(
                                         slot.prompt.checkpoints.rbegin(),
                                         slot.prompt.checkpoints.rend(),
-                                        [&](const auto & cur) {
+                                        [&](const auto & ckpt) {
+                                            const auto & cur = *ckpt;
                                             // guarantee that a checkpoint will result in at least one token being processed [TAG_PROMPT_LOGITS]
                                             SLT_TRC(slot, "checking checkpoint with [%d, %d] against %d...\n", cur.pos_min, cur.pos_max, pos_min_thold);
                                             // workaround for [TAG_CHECKPOINTS_FIX_POS_MIN]
@@ -4610,10 +4627,12 @@ private:
                                     bool do_reset = it == slot.prompt.checkpoints.rend();
 
                                     if (!do_reset) {
+                                        const auto & cur = **it;
+
                                         // restore the context checkpoint
-                                        if (!it->load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) ||
-                                            !it->load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY)) {
-                                            if (it->id_task != -1) {
+                                        if (!cur.load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) ||
+                                            !cur.load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY)) {
+                                            if (cur.id_task != -1) {
                                                 GGML_ABORT("failed to restore context checkpoint\n");
                                             }
                                             // restored from a slot file, not guaranteed to load - fall back to full prompt re-processing
@@ -4623,12 +4642,14 @@ private:
                                     }
 
                                     if (!do_reset) {
-                                        // restore the draft's speculative state
-                                        common_speculative_set_state(spec.get(), slot.id, it->data_spec);
+                                        const auto & cur = **it;
 
-                                        pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
-                                        n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
-                                        SLT_TRC(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
+                                        // restore the draft's speculative state
+                                        common_speculative_set_state(spec.get(), slot.id, cur.data_spec);
+
+                                        pos_next = std::min(pos_next, std::max(cur.pos_min + 1, cur.pos_max));
+                                        n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) cur.n_tokens);
+                                        SLT_TRC(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, n_past, (float) cur.size() / 1024 / 1024);
                                     }
 
                                     if (do_reset) {
@@ -4643,7 +4664,7 @@ private:
                             {
                                 // erase any checkpoints with pos_max > pos_next, or that cover tokens not shared with the new prompt
                                 for (auto it = slot.prompt.checkpoints.begin(); it != slot.prompt.checkpoints.end();) {
-                                    const auto & cur = *it;
+                                    const auto & cur = **it;
                                     if (cur.pos_max > pos_next || cur.n_tokens > n_prefix) {
                                         SLT_TRC(slot, "erased invalidated context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_swa = %d, pos_next = %d, size = %.3f MiB)\n", cur.pos_min, cur.pos_max, cur.n_tokens, n_swa, pos_next, (float) cur.size() / 1024 / 1024);
                                         it = slot.prompt.checkpoints.erase(it);
@@ -4803,8 +4824,26 @@ private:
                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
 
 
+                    // fork: equal calls. A prompt longer than n_batch is cut into ceil(R / n_batch) calls of equal size, not n_batch plus a tail: every call
+                    // pays the whole expert upload whatever its token count (GLM 3.5 12434 tokens, rampool13: 10496 + 1938, the 1938-token tail took 12.2 s,
+                    // the same as the 10496 pass, 160 tokens/s). The checkpoint's 4-token tail stays its own call.
+                    // --moe equal-calls=0 switches the cut off (Qwen3.6 72k, 2026-11-08: the answer degenerated with calls of 24161 tokens and passes of 2014, fine
+                    // with 32768 and 2048 on the same engine; the cause is traced with the switch)
+                    static const bool equal_calls = [] { const char * e = llama_moe_get_opt("equal-calls"); return !e || atoi(e) != 0; }();
+                    size_t batch_cap = n_batch;
+                    if (equal_calls) {
+                        const int64_t R = (int64_t) slot.task->n_tokens() - slot.prompt.n_tokens() - (do_checkpoint ? 4 : 0);
+                        if (R > (int64_t) n_batch) {
+                            const int64_t calls = (R + n_batch - 1) / n_batch;
+                            // the call ends on a multiple of 256 cells: the KV and its mask are laid out in 256-cell pads (GGML_PAD(kv_end, 256), llama_context::decode);
+                            // Qwen3.6 72k, 2026-11-08: calls of 24161 tokens (boundary 97 past a pad) degenerated the answer with passes of 2014 and of exactly 2048 alike,
+                            // calls of 32768 were fine on the same engine
+                            const int64_t size = std::min<int64_t>(n_batch, ((R + calls - 1) / calls + 255) / 256 * 256);
+                            batch_cap = std::min<size_t>(n_batch, batch.size() + (size_t) size);
+                        }
+                    }
                     // add prompt tokens for processing in the current batch
-                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
+                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < batch_cap) {
                         // get next token to process
                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
                         if (cur_tok == LLAMA_TOKEN_NULL) {
@@ -4847,7 +4886,10 @@ private:
                             const auto pos = slot.prompt.n_tokens();
                             const auto & checkpoints = slot.prompt.checkpoints;
 
-                            if (pos == last_user_pos || checkpoints.empty() || pos > checkpoints.back().n_tokens + params_base.checkpoint_min_step) {
+                            // fork: not for a prefix this short: reading it again costs less than the extra pass the cut costs now (DeepSeek: a 27-token call of 4.8 s, every
+                            // expert the pass needs is uploaded whatever the token count; 6% of a 17.5k prompt)
+                            const bool worth_a_pass = pos >= 256;
+                            if (worth_a_pass && (pos == last_user_pos || checkpoints.empty() || pos > checkpoints.back()->n_tokens + params_base.checkpoint_min_step)) {
                                 break;
                             }
                         }
@@ -4925,7 +4967,7 @@ private:
                     do_checkpoint = do_checkpoint && (
                             slot.prompt.checkpoints.empty() ||
                             is_last_user_message || near_prompt_end ||
-                            n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
+                            n_tokens_start > slot.prompt.checkpoints.back()->n_tokens + params_base.checkpoint_min_step);
                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
 
                     // note: we create the checkpoint before calling llama_decode(), so the current batch is not
@@ -5217,6 +5259,22 @@ private:
             // shifted according to the current sub-batch
             const int tok_idx = slot.i_batch - off;
 
+            // fork: NaN logits sample token 0 for ever: a '!!!!' answer at a fine speed, and nobody is told. At a request's first token and every 64th after it (a scan of the
+            // vocabulary, far under 1% of a token) they fail the request with the reason instead.
+            if (slot.stats.n_gen % 64 == 0) {
+                const float * lg = llama_get_logits_ith(slot.ctx_tgt, tok_idx);
+                const int     nv = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(slot.ctx_tgt)));
+                bool bad = false;
+                for (int i = 0; lg && i < nv; ++i) { bad = bad || std::isnan(lg[i]); }
+                if (bad) {
+                    SLT_ERR(slot, "NaN logits at generated token %d: the engine computed garbage, the request fails (a debug run: --moe verify=1, GGML_SCHED_NAN_CHECK=1)\n", (int) slot.stats.n_gen);
+                    send_error(slot, "the model produced NaN logits: an engine bug, see the server log", ERROR_TYPE_SERVER);
+                    slot.i_batch = -1;
+                    slot.release();
+                    return;
+                }
+            }
+
             llama_token id;
             {
                 scoped_timer timer(t_sampl, n_sampl);
@@ -5234,6 +5292,7 @@ private:
 
             if (slot.stats.n_gen == 1) {
                 slot.stats.update_prompt_last();
+                llama_moe_decision_fork("phase", string_format("prefill -> decode: %d tokens %.1f s %.1f t/s %.2f ms per token", (int) slot.stats.n_prompt_processed, slot.stats.t_prompt_ms() / 1e3, slot.stats.n_prompt_tps(), slot.stats.t_prompt_per_token_ms()).c_str(), "");
                 slot.t_print_last = t_now;
                 slot.n_gen_last = 0;
             }
@@ -5305,9 +5364,10 @@ private:
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
 
+                // the recurrent snapshots are only guaranteed for batches of up to n_rs_seq + 1 tokens, so a longer draft uses its checkpoint
                 const bool use_ckpt_tgt =
                     ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
-                    (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_rollback > llama_n_rs_seq(ctx_tgt));
+                    (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_draft > llama_n_rs_seq(ctx_tgt));
 
                 // check for partial draft acceptance
                 if (n_rollback > 0) {
@@ -5571,6 +5631,13 @@ server_context_meta server_context::get_meta() const {
 
     const char * ftype_name = llama_ftype_name(llama_model_ftype(impl->model_tgt));
 
+    std::vector<std::string> tts_voices;
+    if (impl->mctx) {
+        for (int32_t i = 0; i < mtmd_gen_audio_get_info(impl->mctx).n_voices; i++) {
+            tts_voices.push_back(mtmd_gen_audio_voice_name(impl->mctx, i));
+        }
+    }
+
     return server_context_meta {
         /* build_info              */ std::string(llama_build_info()),
         /* model_name              */ impl->model_name,
@@ -5585,6 +5652,7 @@ server_context_meta server_context::get_meta() const {
         /* has_cap_chat            */ impl->has_cap_chat(),
         /* has_cap_tts             */ impl->has_cap_tts(),
         /* has_audio_stream        */ impl->mtmd_cap.audio_stream,
+        /* tts_voices              */ std::move(tts_voices),
         /* json_ui_settings        */ impl->json_ui_settings,
         /* slot_n_ctx              */ impl->n_ctx_slot(),
         /* pooling_type            */ llama_pooling_type(impl->ctx_tgt),
@@ -6052,6 +6120,9 @@ static json get_res_props(const server_context_meta & meta, const common_params 
 
     if (!params.server_connect_code.empty()) {
         props["connect_code"] = params.server_connect_code;
+    }
+    if (!meta.tts_voices.empty()) {
+        props["voices"] = meta.tts_voices;
     }
     if (params.use_jinja) {
         if (!tmpl_tools.empty()) {
@@ -6873,9 +6944,17 @@ void server_routes::init_routes() {
         const std::string lang       = json_value(body, "lang", std::string());
         const std::string voice      = json_value(body, "voice", std::string());
         const std::string tts_prompt = common_chat_get_tts_prompt(meta->chat_params.tmpls.get(), prompt, lang, voice);
+        // a model with predefined voices only speaks with one of them
+        mtmd::bitmap_ptr voice_ref;
+        if (!voice.empty() && info.n_voices > 0) {
+            voice_ref.reset(mtmd_gen_audio_get_voice(ctx_server.mctx, voice.c_str()));
+            if (!voice_ref) {
+                res->error(format_error_response("unknown voice \"" + voice + "\", see \"voices\" in GET /props", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
         task.tts_inp.set_prompt(tts_prompt.empty() ? prompt : tts_prompt);
         task.tts_inp.set_lang(lang);
-        task.tts_inp.set_voice(voice);
         task.tts_inp.data.stream    = stream;
         task.tts_inp.data.out_type  = response_format == "pcm"
             ? MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM
@@ -6914,12 +6993,27 @@ void server_routes::init_routes() {
         }
 
         if (speaker_ref_len > 0) {
+            if (voice_ref) {
+                res->error(format_error_response("\"voice\" and \"speaker_ref\" cannot be used together", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            if (!mtmd_support_audio(ctx_server.mctx)) {
+                res->error(format_error_response("this model has no voice encoder, \"speaker_ref\" cannot be used", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
             auto wrapper = mtmd_helper_bitmap_init_from_buf(ctx_server.mctx, speaker_ref_data, speaker_ref_len, false, ctx_server.init_opt);
             if (!wrapper.bitmap) {
                 res->error(format_error_response("failed to decode \"speaker_ref\"", ERROR_TYPE_INVALID_REQUEST));
                 return res;
             }
             task.tts_inp.set_speaker_ref(mtmd::bitmap_ptr(wrapper.bitmap));
+        } else if (voice_ref) {
+            task.tts_inp.set_speaker_ref(std::move(voice_ref));
+        } else if (info.n_voices > 0) {
+            // without a voice prompt the model produces near silence: the first voice is the default
+            const char * first = mtmd_gen_audio_voice_name(ctx_server.mctx, 0);
+            SRV_WRN("no voice given, speaking with \"%s\"\n", first);
+            task.tts_inp.set_speaker_ref(mtmd::bitmap_ptr(mtmd_gen_audio_get_voice(ctx_server.mctx, first)));
         } else {
             SRV_WRN("%s", "no speaker reference provided, the model may behave randomly\n");
         }

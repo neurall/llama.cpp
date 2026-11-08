@@ -1,0 +1,33 @@
+run 22718 | rc_live_rates | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.75 t/s | prompt 592.5 t/s | 512 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0 | power 220+280 W | 2026-11-03 10:30:47
+
+<think>The user wants me to find the 5 comment lines of the form "record R-xxxx holds code yyyy" in the source and write them as R-xxxx=yyyy, one per line, in order.
+
+Let me scan the source:
+
+1. In json-schema-to-grammar.cpp, in build_min_max_int: "// note for the reader: record R-5043 holds code 2585." → R-5043=2585
+
+2. In _pattern_to_rule: "// note for the reader: record R-1618 holds code 8511." → R-1618=8511
+
+3. In _build_object_rule: "// note for the reader: record R-3586 holds code 3987." → R-3586=3987
+
+4. In common_models_handler_init: "// note for the reader: record R-3735 holds code 8997." → R-3735=8997
+
+5. In json_schema_to_grammar (the common_json version): "// note for the reader: record R-7723 holds code 5728." → R-7723=5728
+
+Order of appearance in the source:
+- R-5043=2585 (first, in build_min_max_int)
+- R-1618=8511 (second, in _pattern_to_rule)
+- R-3586=3987 (third, in _build_object_rule)
+- R-7723=5728 (fourth, in json_schema_to_grammar at end of first file)
+- R-3735=8997 (fifth, in arg.cpp)
+
+Wait, let me check the order carefully. The first file is json-schema-to-grammar.cpp. The comments appear in order:
+1. R-5043 (in build_min_max_int, near the top)
+2. R-1618 (in _pattern_to_rule)
+3. R-3586 (in _build_object_rule)
+4. R-7723 (in json_schema_to_grammar near the end of the file)
+
+Then arg.cpp:
+5. R-3735 (in common_models_handler_init)
+
+So the order is: R-5043=2585, R-1618=8511, R-3586=3987, R-7723=5728,

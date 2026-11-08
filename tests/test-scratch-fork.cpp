@@ -49,7 +49,7 @@ static size_t count_nodes_fn(void * user, struct ggml_tensor * const * nodes, in
 // Builds one op in a fresh context (build returns the output and sets *ids for MUL_MAT_ID), uploads the ids and runs it with the region set: asked = what it took,
 // computed = what the backend says it takes. The weights and activations stay as allocated: what the op takes depends on shapes and types only.
 static bool run_op(ggml_backend_t be, int d, void * base, size_t cap, const std::function<ggml_tensor *(ggml_context *, ggml_tensor **)> & build,
-                   const std::vector<int32_t> & ids_v, size_t & asked, size_t & computed) {
+                   const std::vector<int32_t> & ids_v, size_t & asked, size_t & computed, const std::function<void()> & fill = nullptr) {
     struct ggml_init_params ip = { 16 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
     ggml_context * ctx = ggml_init(ip);
     ggml_tensor * ids = nullptr;
@@ -68,6 +68,7 @@ static bool run_op(ggml_backend_t be, int d, void * base, size_t cap, const std:
     if (ids) {
         ggml_backend_tensor_set(ids, ids_v.data(), 0, ggml_nbytes(ids));
     }
+    if (fill) { fill(); }   // tensors the build made beside ids, now that they have memory
     ggml_backend_t owner = g_owner ? g_owner : be;
     scratch_fn(d, base, cap, owner);                // set the region, clear the mark
     ggml_backend_graph_compute(be, gf);
@@ -121,9 +122,8 @@ int main(int argc, char ** argv) {
             n_run++;
             if (equal ? asked == computed : asked <= computed) { return; }
             n_failed++;
-            if (++bad_card <= 40) {
-                printf("  FAILED %s: the op took %zu bytes, computed %zu (%+lld)\n", what, asked, computed, (long long) computed - (long long) asked);
-            }
+            bad_card++;   // every failure prints: a cap hid whole classes behind the first type's rows
+            printf("  FAILED %s: the op took %zu bytes, computed %zu (%+lld)\n", what, asked, computed, (long long) computed - (long long) asked);
         };
         const std::vector<int32_t> no_ids;
 
@@ -146,6 +146,33 @@ int main(int argc, char ** argv) {
                                 }, iv, asked, computed)) { n_skipped++; continue; }
                             snprintf(what, sizeof(what), "MUL_MAT_ID %-8s %5lld x %-5lld %3lld experts %lld used, %5lld tokens, %lld activation rows, %s routing",
                                      ggml_type_name(type), (long long) sh.ne00, (long long) sh.ne01, (long long) sh.n_expert, (long long) sh.n_used, (long long) nt,
+                                     (long long) ne11, routing == 0 ? "same-expert" : "spread");
+                            check(asked, computed, routing == 0);
+
+                            // the same matmul on an expert cache (llama-graph mc_mm): src0 holds a pool's blocks, far more than experts; src[2] the blocks, src[3] the expert ids,
+                            // src[4] the table id -> block, -1 not on the card. MMQ's tile width and grid must follow the experts, while MMF still sizes by the blocks.
+                            const int64_t n_block = sh.n_expert * 4;
+                            std::vector<int32_t> table((size_t) sh.n_expert), blocks(iv.size());
+                            for (size_t e = 0; e < table.size(); ++e) { table[e] = e % 5 == 4 ? -1 : (int32_t) (e * 4); }
+                            for (size_t i = 0; i < iv.size(); ++i) { blocks[i] = table[iv[i]]; }
+                            ggml_tensor * sel = nullptr, * tbl = nullptr;
+                            if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor ** ids) {
+                                    ggml_tensor * w = ggml_new_tensor_3d(ctx, type, sh.ne00, sh.ne01, n_block);
+                                    ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, sh.ne00, ne11, nt);
+                                    *ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, sh.n_used, nt);
+                                    sel  = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, sh.n_used, nt);
+                                    tbl  = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, sh.n_expert);
+                                    ggml_tensor * m = ggml_mul_mat_id(ctx, w, x, *ids);
+                                    m->op_params[1] = 1;   // ids hold -1: the graph zeroes such an output first
+                                    m->src[3] = sel;
+                                    m->src[4] = tbl;
+                                    return m;
+                                }, blocks, asked, computed, [&] {
+                                    ggml_backend_tensor_set(sel, iv.data(), 0, ggml_nbytes(sel));
+                                    ggml_backend_tensor_set(tbl, table.data(), 0, ggml_nbytes(tbl));
+                                })) { n_skipped++; continue; }
+                            snprintf(what, sizeof(what), "MUL_MAT_ID %-8s %5lld x %-5lld %3lld experts in %lld blocks %lld used, %5lld tokens, %lld activation rows, %s routing",
+                                     ggml_type_name(type), (long long) sh.ne00, (long long) sh.ne01, (long long) sh.n_expert, (long long) n_block, (long long) sh.n_used, (long long) nt,
                                      (long long) ne11, routing == 0 ? "same-expert" : "spread");
                             check(asked, computed, routing == 0);
                         }

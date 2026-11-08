@@ -265,6 +265,23 @@ static int32_t common_cpu_get_num_math_raw() {
             }
         }
     }
+#elif defined(__riscv) && defined(__linux__)
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    std::string line;
+    int32_t n_a100 = 0;
+    while (std::getline(cpuinfo, line)) {
+        std::istringstream fields(line);
+        std::string key;
+        std::string separator;
+        uint64_t marchid;
+        if (fields >> key >> separator >> std::hex >> marchid &&
+            key == "marchid" && separator == ":" && marchid == UINT64_C(0x8000000041000002)) {
+            ++n_a100;
+        }
+    }
+    if (n_a100 > 0) {
+        return n_a100;
+    }
 #elif defined(__powerpc64__) || defined(__powerpc__)
     int32_t smt_factor = 1;
     int phy_cpus = common_cpu_get_num_physical_cores();
@@ -926,27 +943,7 @@ bool fs_validate_filename(const std::string & filename, bool allow_subdirs) {
     return true;
 }
 
-#include <iostream>
-
-
 #ifdef _WIN32
-std::wstring utf8_to_wstring(const std::string & str) {
-    if (str.empty()) {
-        return std::wstring();
-    }
-
-    int size = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
-
-    if (size <= 0) {
-        return std::wstring();
-    }
-
-    std::wstring wstr(size, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size);
-
-    return wstr;
-}
-
 std::string wstring_to_utf8(const std::wstring & str) {
     if (str.empty()) {
         return std::string();
@@ -964,12 +961,6 @@ std::string wstring_to_utf8(const std::wstring & str) {
     return utf8;
 }
 #endif
-
-// returns the path as a UTF-8 string, preserving its separators
-std::string fs_path_to_utf8(const std::filesystem::path & path) {
-    const auto value = path.u8string();
-    return std::string(value.begin(), value.end());
-}
 
 void fs_write_atomic(const std::filesystem::path & path, const std::string & data) {
     // a random suffix gives every writer its own temporary file, across processes and containers
@@ -994,7 +985,7 @@ void fs_write_atomic(const std::filesystem::path & path, const std::string & dat
 
     if (file.fail() || ec) {
         std::filesystem::remove(path_tmp, ec);
-        throw std::runtime_error("failed to write file: " + fs_path_to_utf8(path));
+        throw std::runtime_error("failed to write file: " + path.string());
     }
 }
 
@@ -1020,20 +1011,9 @@ void common_set_env(const std::string & name, const std::string & value) {
 #endif
 }
 
-std::filesystem::path common_get_path_from_env(const std::string & name) {
-#if defined(_WIN32)
-    const std::wstring wname = utf8_to_wstring(name);
-    const wchar_t * wvalue = _wgetenv(wname.c_str());
-    return wvalue ? std::filesystem::path(wvalue) : std::filesystem::path();
-#else
-    const char * value = std::getenv(name.c_str());
-    return value ? std::filesystem::path(value) : std::filesystem::path();
-#endif
-}
-
 #if !defined(_WIN32)
 static std::filesystem::path get_home_directory() {
-    std::filesystem::path home = common_get_path_from_env("HOME");
+    std::filesystem::path home = common_get_env("HOME");
     if (!home.empty()) {
         return home;
     }
@@ -1046,19 +1026,19 @@ static std::filesystem::path get_home_directory() {
 #endif
 
 std::filesystem::path fs_get_cache_directory() {
-    std::filesystem::path cache_directory = common_get_path_from_env("LLAMA_CACHE");
+    std::filesystem::path cache_directory = common_get_env("LLAMA_CACHE");
     if (!cache_directory.empty()) {
         return cache_directory;
     }
 #if defined(_WIN32)
-    cache_directory = common_get_path_from_env("LOCALAPPDATA");
+    cache_directory = common_get_env("LOCALAPPDATA");
     if (cache_directory.empty()) {
         throw std::runtime_error("Failed to find %LOCALAPPDATA% directory");
     }
 #elif defined(__APPLE__)
     cache_directory = get_home_directory() / "Library/Caches";
 #else
-    cache_directory = common_get_path_from_env("XDG_CACHE_HOME");
+    cache_directory = common_get_env("XDG_CACHE_HOME");
     if (cache_directory.empty()) {
         cache_directory = get_home_directory() / ".cache";
     }
@@ -1069,12 +1049,12 @@ std::filesystem::path fs_get_cache_directory() {
 std::filesystem::path fs_get_config_directory() {
     std::filesystem::path config_directory;
 #if defined(_WIN32)
-    config_directory = common_get_path_from_env("APPDATA");
+    config_directory = common_get_env("APPDATA");
     if (config_directory.empty()) {
         throw std::runtime_error("Failed to find %APPDATA% directory");
     }
 #else
-    config_directory = common_get_path_from_env("XDG_CONFIG_HOME");
+    config_directory = common_get_env("XDG_CONFIG_HOME");
     if (config_directory.empty()) {
         config_directory = get_home_directory() / ".config";
     }
@@ -1088,9 +1068,9 @@ std::filesystem::path fs_get_cache_file(const std::string & filename) {
     std::error_code ec;
     common_create_directories(cache_directory, ec);
     if (ec) {
-        throw std::runtime_error("failed to create cache directory: " + fs_path_to_utf8(cache_directory));
+        throw std::runtime_error("failed to create cache directory: " + cache_directory.string());
     }
-    return cache_directory / std::filesystem::u8path(filename);
+    return cache_directory / filename;
 }
 
 //
@@ -1254,9 +1234,8 @@ static size_t common_model_file_size(const std::string & path_model) {
     return size;
 }
 
-// bytes of the routed-expert tensors (*_exps), over all splits: the rest of the file is what the GPU has to hold before a cache slot fits
-// bytes of the tensors that need no VRAM for the expert cache to fit: the experts and the (per-layer) token embeddings
-static size_t common_model_expert_bytes(const std::string & path_model) {
+// bytes of the tensors whose name passes match, over all splits
+static size_t common_model_tensor_bytes(const std::string & path_model, bool (*match)(const char *)) {
     gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
     gguf_context * g0 = gguf_init_from_file(path_model.c_str(), gp);
     if (!g0) {
@@ -1277,16 +1256,21 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
             continue;
         }
         for (int64_t t = 0; t < gguf_get_n_tensors(g); t++) {
-            // the experts, and the token embeddings: they stay in host memory (a lookup, one row per token, e.g. the 26.8 GiB per_layer_token_embd of Qwen3.8-Flash-Next),
-            // so neither counts against the VRAM the cache needs besides the non-expert weights
-            const char * name = gguf_get_tensor_name(g, t);
-            if (strstr(name, "_exps") || strstr(name, "token_embd")) {
+            if (match(gguf_get_tensor_name(g, t))) {
                 bytes += gguf_get_tensor_size(g, t);
             }
         }
         gguf_free(g);
     }
     return bytes;
+}
+
+// bytes of the routed-expert tensors (*_exps), over all splits: the rest of the file is what the GPU has to hold before a cache slot fits
+// bytes of the tensors that need no VRAM for the expert cache to fit: the experts and the (per-layer) token embeddings
+static size_t common_model_expert_bytes(const std::string & path_model) {
+    // the experts, and the token embeddings: they stay in host memory (a lookup, one row per token, e.g. the 26.8 GiB per_layer_token_embd of Qwen3.8-Flash-Next),
+    // so neither counts against the VRAM the cache needs besides the non-expert weights
+    return common_model_tensor_bytes(path_model, [](const char * name) { return strstr(name, "_exps") != nullptr || strstr(name, "token_embd") != nullptr; });
 }
 
 // free memory summed over GPUs, of the largest GPU, and the GPU count
@@ -1362,6 +1346,20 @@ static void common_gpu_free(size_t & total, size_t & max, int & n) {
 // RAM that can be used without swapping: Linux MemAvailable (free + reclaimable page cache), 0 if unknown
 // with_pool: also the free pages of a reserved huge page pool (1 GiB and 2 MiB, Linux): MemAvailable does not count them, but the pinned weights buffer is taken
 // from exactly those pages, so for the decision to pin they are available RAM (a 100 GiB pool left 21 GiB "available" and a 109 GiB model fell back to mmap)
+// the RAM of the machine, huge pages included; 0 when unknown
+static size_t common_ram_total() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX st = {};
+    st.dwLength = sizeof(st);
+    return GlobalMemoryStatusEx(&st) ? (size_t) st.ullTotalPhys : 0;
+#elif defined(__linux__)
+    const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+    return pages > 0 && page > 0 ? (size_t) pages * (size_t) page : 0;
+#else
+    return 0;
+#endif
+}
+
 static size_t common_ram_available(bool with_pool = false) {
 #if defined(_WIN32)
     GGML_UNUSED(with_pool);
@@ -1752,9 +1750,9 @@ static uint32_t common_auto_ctx(common_params & params) {
         cp.n_ubatch = 2048;
         cp.n_batch  = std::max<uint32_t>(cp.n_batch, 2048);
         std::vector<ggml_backend_dev_t> devs;
-        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             trained = nctx;
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 const int64_t target = d < params.fit_params_target.size() ? (int64_t) params.fit_params_target[d] : 0;
@@ -1822,10 +1820,10 @@ static uint32_t common_auto_ubatch(common_params & params) {
         cp.n_ubatch = pu;
         cp.n_batch  = std::max(cp.n_batch, pu);
         std::vector<ggml_backend_dev_t> devs;
-        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         size_t sum = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 sum += dmd[d].compute;
                 if (i == 0) {
@@ -1876,9 +1874,9 @@ static uint32_t common_fits_ubatch(common_params & params) {
         cp.n_ubatch = ub;
         cp.n_batch  = std::max(cp.n_batch, ub);
         std::vector<ggml_backend_dev_t> devs;
-        uint32_t ngl = 0, nctx = 0, nexp = 0;
+        uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         try {
-            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
             int64_t left = 0, compute = 0;
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 left    += (int64_t) dmd[d].free - (int64_t) (dmd[d].model + dmd[d].context);
@@ -1893,6 +1891,7 @@ static uint32_t common_fits_ubatch(common_params & params) {
     return SAFE;
 }
 
+LLAMA_API void llama_moe_early_bench_fork(const char * model_path);   // llama-moecache-fork.cpp (no shared header)
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 static void common_moe_cache_auto_impl(common_params & params);
 
@@ -1987,14 +1986,29 @@ static size_t common_pass_buffer_reserve(common_params & params) {
     cp.n_batch  = std::max(cp.n_batch, ub);
     cp.n_ctx    = params.n_ctx > 0 ? std::min<uint32_t>(params.n_ctx, 32768) : 32768;
     std::vector<ggml_backend_dev_t> devs;
-    uint32_t ngl = 0, nctx = 0, nexp = 0;
+    uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
     try {
-        const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+        const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
         if (!dmd.empty()) { return dmd.back().compute; }   // the last entry is the host
     } catch (const std::exception & e) {
         COM_DBG("pass buffer probe failed (%s)\n", e.what());
     }
     return 0;
+}
+
+// Room left under the container's memory limit (cgroup v2 memory.max minus memory.current), SIZE_MAX when there is none. In a VM or a container MemAvailable says what the host has,
+// not what this process may use (user 2026-11-02: many models will run in dynamic VM environments).
+static size_t common_cgroup_room() {
+#if defined(__linux__)
+    size_t mx = 0, cur = 0;
+    std::ifstream fm("/sys/fs/cgroup/memory.max"), fc("/sys/fs/cgroup/memory.current");
+    std::string v;
+    if (fm >> v && v != "max" && (fc >> cur)) {
+        mx = (size_t) strtoull(v.c_str(), nullptr, 10);
+        return mx > cur ? mx - cur : 0;
+    }
+#endif
+    return SIZE_MAX;
 }
 
 static void common_auto_pin(common_params & params) {
@@ -2004,11 +2018,12 @@ static void common_auto_pin(common_params & params) {
     // measured +46% prompt processing, +3-5% decode on GLM-5.3-Flash; used whenever the model fits
     // in the RAM available now minus the margin below; a model that does not is pinned up to that limit and the rest is mapped
     if (params.auto_pin && params.load_mode == LLAMA_LOAD_MODE_AUTO) {
-        const size_t avail = common_ram_available(true);
-        // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: everything else is pinned (2026-10-21: 12 GiB, was 0 when the model fitted and 4 GiB when it did not),
-        // plus the largest prompt pass's pinned host buffer (user 2026-10-22: a full-size pass comes before how much of the model is pinned)
+        const size_t avail = std::min(common_ram_available(true), common_cgroup_room());
+        // RAM kept for the system, the KV cache in RAM and the page cache of the mapped rest: a tenth of the machine, at least 4 GiB (user 2026-11-02: a share, not 12 GiB on any machine; was 0 when
+        // the model fitted and 4 GiB when it did not until 2026-10-21), plus the largest prompt pass's pinned host buffer (user 2026-10-22: a full-size pass comes before how much of the model is pinned)
         const size_t pass_buf = common_pass_buffer_reserve(params);
-        const size_t margin = ((size_t) 12 << 30) + pass_buf;
+        const size_t ram_total = common_ram_total();
+        const size_t margin = std::max((size_t) 4 << 30, ram_total / 10) + pass_buf;
         LOG_INF("%s: %.1f GiB of RAM kept free for the pinned host buffer of the largest prompt pass\n", __func__, pass_buf / 1073741824.0);
         if (avail && model_size + margin <= avail) {
             params.load_mode        = LLAMA_LOAD_MODE_NONE;
@@ -2028,7 +2043,22 @@ static void common_auto_pin(common_params & params) {
                     fclose(f);
                 }
             }
-            params.load_pin_budget = pool + (mem > margin ? mem - margin : 0);
+            // The start value from the ratio of RAM to model (user 2026-11-02: "start from reasonable best base based on ram vs model size ratio", "70% as constant is nonsense"):
+            // what is not pinned and not kept for the system is page cache for the mapped rest, which needs a share h of its bytes cached: avail - pin = margin + h * (model - pin),
+            // so pin = (avail - margin - h * model) / (1 - h). The Engram table (TENSOR_READ_LAZY) is never pinned by the loader whatever the budget says and a token touches a few hundred of its
+            // bytes, so it is no part of model here (user rule: model minus Engram). DeepSeek on 125 GiB, 100 and 500 tokens: 78 GiB pinned 7 and 34 prompt t/s, 96 GiB 11 and 45, 101 GiB 12 and 46.
+            // --moe pin-cache=H changes h.
+            const double h = [] { const char * v = llama_moe_get_opt("pin-cache"); return v ? std::min(0.9, std::max(0.0, atof(v))) : 0.15; }();
+            const size_t engram = common_model_tensor_bytes(params.model.path, [](const char * name) { return strstr(name, "engram_kv") != nullptr; });
+            const double eq = ((double) mem - (double) margin - h * (double) (model_size - std::min(engram, model_size))) / (1.0 - h);
+            params.load_pin_budget = pool + (eq > 0 ? (size_t) eq : 0);
+            LOG_INF("%s: pin start %.1f GiB = (available %.1f - kept free %.1f - %.2f x (model %.1f - Engram %.1f)) / (1 - %.2f), reserved pool %.1f GiB\n", __func__,
+                    params.load_pin_budget / 1073741824.0, mem / 1073741824.0, margin / 1073741824.0, h, model_size / 1073741824.0, engram / 1073741824.0, h, pool / 1073741824.0);
+            // --moe pin-pct=N: at most N% of the machine's RAM pinned (the reserved pool always counts). Pinning all it can left DeepSeek (232 GiB) 12 GiB beside 109 GiB pinned: the page cache of the
+            // mapped rest stayed at 0, the kernel scanned 140 million pages a second and a second request's 16k pass read at 335 MB/s (user 2026-11-02: "make it %", fork/runs/paths.csv dsp-*)
+            if (const char * pct = llama_moe_get_opt("pin-pct"); pct && ram_total > 0) {
+                params.load_pin_budget = std::max(pool, std::min(params.load_pin_budget, ram_total / 100 * (size_t) std::max(0, atoi(pct))));
+            }
             llama_moe_set_opt("pin-budget", std::to_string(params.load_pin_budget).c_str());
         }
     }
@@ -2043,6 +2073,18 @@ static void common_moe_cache_auto(common_params & params) {
     // small cards) set margin_mb, which no engine setting read until 2026-10-22: every pool was sized with the 384 MiB default. The build is part of the
     // stored need's key (a new build measures again).
     params.moe_opts += (params.moe_opts.empty() ? "" : ",") + std::string("build-id=") + std::to_string(llama_build_number()) + "-" + llama_commit();
+    // The planner's stored posteriors are valid only where the same features give the same time: the RAM pool, the load mode and a simulated VRAM/RAM
+    // size change what an upload costs (the pool's SSD wait, the pin ring, the bytes held), so they key the posteriors too (regime=...; the planner
+    // reads it next to build-id).
+    {
+        auto opt = [&](const char * k) -> std::string {
+            const std::string o = "," + params.moe_opts + ",", key = std::string(",") + k + "=";
+            const size_t i = o.find(key);
+            return i == std::string::npos ? "" : o.substr(i + key.size(), o.find(',', i + key.size()) - i - key.size());
+        };
+        const std::string rp = opt("rampool"), sv = opt("sim-vram"), sr = opt("sim-ram");
+        params.moe_opts += std::string(",regime=rp") + (rp.empty() ? "0" : rp) + ".lm-" + llama_load_mode_name(params.load_mode) + (sv.empty() ? "" : ".sv" + sv) + (sr.empty() ? "" : ".sr" + sr);
+    }
     COM_DBG("moe_cache_slots=%d ctx=%d batch=%d ubatch=%d threads=%d threads_batch=%d repack=%s ngl=%d tensor_overrides=%zu fit=%s\n",
         params.n_moe_cache_slots, params.n_ctx, params.n_batch, params.n_ubatch, params.cpuparams.n_threads,
         params.cpuparams_batch.n_threads, params.no_extra_bufts ? "off" : "on", params.n_gpu_layers,
@@ -2093,6 +2135,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
     size_t vram_free, vram_max;
     int    n_gpu;
     common_gpu_free(vram_free, vram_max, n_gpu);
+    llama_moe_decision_fork("stage", "model file size and free VRAM read", "");
+    llama_moe_early_bench_fork(params.model.path.c_str());   // SSD maximum, RAM read and PCIe upload rates: measured once, kept in the state file section [machine]
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
     const size_t reserve = (size_t) n_gpu << 30;
     // --moe mode=cache is honored even when the model fits: the fit path returns before the placement is decided
@@ -2161,6 +2205,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
                 mode.c_str(), model_size / 1073741824.0, vram_free / 1073741824.0, path.c_str());
         }
         use_cache = mode != "stock";
+        llama_moe_decision_fork("stage", "placement decided", "");
         if (!g_moe_auto_mode.empty()) {
             ggml_set_abort_callback(moe_auto_abort_cb);   // a decision that is recorded may also be recorded as failed
         }
@@ -2187,6 +2232,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     if (params.n_ctx == 0) {
         const uint32_t fit_ctx = common_auto_ctx(params);
         llama_moe_set_opt("kv-budget-ctx", std::to_string(fit_ctx).c_str());   // the context the cache gets when the tail layout is declined (llama_context)
+        llama_moe_decision_fork("stage", "context size decided", "");
         params.n_ctx = fit_ctx ? fit_ctx : 17408; // ponytail: autofit would grow KV to n_ctx_train and starve the cache; -c N for more (17408 = the 16294-token "12k" benchmark prompt + 1k answer; with --moe kv-tail=1 there is no default at all)
     }
     if (common_autotune_on(params)) {
@@ -2525,6 +2571,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         LOG_INF("%s", "decision model reads the embeddings output, enabling embedding mode\n");
     }
 
+    if (llama_model_classifier_free_guidance(model)) {
+        params.kv_unified   = true;
+        cparams.kv_unified  = true;
+        cparams.n_seq_max  *= 2;
+    }
+
     // embeddings need the whole batch in one ubatch, so n_batch must not be larger than n_ubatch
     // (server.cpp does this check for --embedding, but before the model is loaded)
     if (cparams.embeddings && cparams.n_batch > cparams.n_ubatch) {
@@ -2785,7 +2837,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         if (params.control_vector_layer_start <= 0) params.control_vector_layer_start = 1;
         if (params.control_vector_layer_end   <= 0) params.control_vector_layer_end   = llama_model_n_layer(model);
 
-        const auto cvec = common_control_vector_load(params.control_vectors);
+        const auto cvec = common_control_vector_load(params.control_vectors, llama_model_n_layer(model));
         if (cvec.n_embd == -1) {
             return res;
         }
@@ -3387,7 +3439,7 @@ float common_embd_similarity_cos(const float * embd1, const float * embd2, int n
 // Control vector utils
 //
 
-static common_control_vector_data common_control_vector_load_one(const common_control_vector_load_info & load_info) {
+static common_control_vector_data common_control_vector_load_one(const common_control_vector_load_info & load_info, int32_t n_layer) {
     common_control_vector_data result = { -1, {} };
 
     ggml_context * ctx = nullptr;
@@ -3428,6 +3480,10 @@ static common_control_vector_data common_control_vector_load_one(const common_co
             COM_ERR("invalid (zero) direction tensor layer index in %s\n", load_info.fname.c_str());
             result.n_embd = -1;
             break;
+        } else if (layer_idx > n_layer) {
+            COM_ERR("direction tensor layer index %d exceeds the model layer count %d in %s\n", layer_idx, n_layer, load_info.fname.c_str());
+            result.n_embd = -1;
+            break;
         }
 
         struct ggml_tensor * tensor = ggml_get_tensor(ctx, name.c_str());
@@ -3451,10 +3507,10 @@ static common_control_vector_data common_control_vector_load_one(const common_co
         }
 
         // extend if necessary - do not store data for layer 0 (it's not used)
-        result.data.resize(std::max(result.data.size(), static_cast<size_t>(result.n_embd * layer_idx)), 0.0f);
+        result.data.resize(std::max(result.data.size(), (size_t) result.n_embd * layer_idx), 0.0f);
 
         const float * src = (const float *) tensor->data;
-        float * dst = result.data.data() + result.n_embd * (layer_idx - 1);  // layer 1 at [0]
+        float * dst = result.data.data() + (size_t) result.n_embd * (layer_idx - 1);  // layer 1 at [0]
         for (int j = 0; j < result.n_embd; j++) {
             dst[j] += src[j] * load_info.strength;  // allows multiple directions for same layer in same file
         }
@@ -3472,11 +3528,11 @@ static common_control_vector_data common_control_vector_load_one(const common_co
     return result;
 }
 
-common_control_vector_data common_control_vector_load(const std::vector<common_control_vector_load_info> & load_infos) {
+common_control_vector_data common_control_vector_load(const std::vector<common_control_vector_load_info> & load_infos, int32_t n_layer) {
     common_control_vector_data result = { -1, {} };
 
     for (const auto & info : load_infos) {
-        auto cur = common_control_vector_load_one(info);
+        auto cur = common_control_vector_load_one(info, n_layer);
 
         if (cur.n_embd == -1) {
             result.n_embd = -1;
@@ -3652,6 +3708,16 @@ int32_t common_batch::add_embd(llama_embd embd, const llama_pos * pos, llama_seq
     return size() - 1;
 }
 
+int32_t common_batch::add_embd_row(int32_t row, const llama_pos * pos, llama_seq_id seq_id, bool output) {
+    token t = { LLAMA_TOKEN_NULL, { 0, 0, 0, 0 }, seq_id, output, { nullptr, 0, 0 }, { nullptr, 0, 0 }, {} };
+    t.embd_row = row;
+    for (int32_t j = 0; j < n_pos; ++j) {
+        t.pos[j] = pos[j];
+    }
+    tokens.push_back(t);
+    return size() - 1;
+}
+
 llama_batch_ext * common_batch::get_sub_batch(int32_t off, int32_t n) {
     GGML_ASSERT(batch && "common_batch was not initialized with a context");
     GGML_ASSERT(off >= 0 && n >= 0 && off + n <= size());
@@ -3672,6 +3738,12 @@ llama_batch_ext * common_batch::get_sub_batch(int32_t off, int32_t n) {
             if (t.embd.data && !llama_batch_ext_set_embd_token(res, idx, t.embd)) {
                 GGML_ABORT("%s: failed to set the embedding of token %d at index %d\n", __func__, t.id, i);
             }
+        } else if (t.embd_row >= 0) {
+            idx = llama_batch_ext_add_embd_row(res, t.seq_id, t.embd_row);
+            if (idx < 0) {
+                GGML_ABORT("%s: failed to add embd row %d at index %d (error %d, n = %d)\n", __func__, t.embd_row, i, idx, n);
+            }
+            llama_batch_ext_set_pos(res, idx, t.pos.data());
         } else {
             idx = llama_batch_ext_add_embd(res, t.seq_id, t.embd);
             if (idx < 0) {

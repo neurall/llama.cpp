@@ -1,0 +1,186 @@
+run 23828 | rampool13-variant-trials | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.43 t/s | prompt 1228.2 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 20:58:51
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each part systematically.
+
+**Part 1: common/json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+   - When `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?` but the initial `item_rule` part should also be optional. Let me think... Actually, if `min_items == 0`, the first `item_rule` should be optional too. The current code does `item_rule + " " + build_repetition(...)` and then wraps the whole thing in `(...)?`. That seems correct - if min_items is 0, the entire sequence (first item + separator + rest) is optional.
+
+   Wait, but there's a subtle issue. When `min_items == 0` and `has_max`, the recursive call passes `max_items - 1`. But if `max_items` is 1, then `max_items - 1 = 0`, and `build_repetition` with `max_items == 0` returns `""`. So the result would be `item_rule + " " + ""` = `item_rule + " "`, then wrapped as `(item_rule + " ")?`. That seems correct for 0 or 1 items.
+
+   Actually wait, let me re-read. When `min_items == 0 && max_items == 1`, the function returns `item_rule + "?"` early. So that case is handled.
+
+   Let me look more carefully... The function seems correct to me.
+
+2. `build_min_max_int` function:
+   - The `uniform_range` lambda: when `sub_len > 0`, it computes `sub_len = from.length() - i - 1`. But what if `from.length() - i - 1` underflows? If `i == from.length() - 1`, then `sub_len = 0`, which is handled by the `else` branch. If `i == from.length()`, we wouldn't be in this branch because `i < from.length() && i < to.length()` is checked. So `sub_len >= 0`. OK.
+
+   - In the `has_min && has_max` case with `min_value < 0 && max_value < 0`: it calls `build_min_max_int(-max_value, -min_value, ...)`. This converts the negative range to positive. Seems correct.
+
+   - In the `has_min && has_max` case with `min_value < 0`: it calls `build_min_max_int(0, -min_value, ...)`. Wait, this should be `build_min_max_int(0, -min_value, ...)` for the negative part? No, the negative part is from `min_value` to `-1`, which is equivalent to `0` to `-min_value` after negation. But wait, it's `build_min_max_int(0, -min_value, ...)` - that would generate numbers from 0 to `-min_value`. But we want numbers from `min_value` to `-1`, which after negation is from `1` to `-min_value`. Hmm, actually the code says `build_min_max_int(0, -min_value, ...)` but it should be `build_min_max_int(1, -min_value, ...)`? No wait, let me re-read...
+
+   Actually, looking at it again: `min_value < 0` means we want to include negative numbers. The code does:
+   ```
+   out << "\"-\" (";
+   build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+   out << ") | ";
+   min_value = 0;
+   ```
+   
+   This generates `"-" (0 to -min_value)` which would be `"-0"` through `"-(-min_value)"`. But `"-0"` is not a valid representation... Actually wait, `build_min_max_int(0, -min_value)` would generate `0` through `-min_value`. So the full output would be `"-" (0 ... -min_value)` which means `"-0"` through `"-(-min_value)"`. But `"-0"` is weird. Hmm, but actually in JSON, `-0` is valid. And the range from `min_value` to `-1` (negative part) after negation is `1` to `-min_value`. So it should be `build_min_max_int(1, -min_value, ...)` not `build_min_max_int(0, -min_value, ...)`.
+
+   Wait, actually let me think again. If `min_value = -5`, then the negative part is `-5` to `-1`. After negation, this is `1` to `5`. So we want `build_min_max_int(1, 5, ...)`. But the code says `build_min_max_int(0, -min_value, ...)` = `build_min_max_int(0, 5, ...)`. This would include `0`, giving `"-0"` which is wrong.
+
+   Hmm, but actually maybe it's intentional? Let me look at the original code more carefully...
+
+   Actually, I think the bug is that it should be `build_min_max_int(1, -min_value, ...)` instead of `build_min_max_int(0, -min_value, ...)`.
+
+   Wait, but actually maybe `-0` is valid in JSON? Let me think... In JSON, `-0` is technically valid but unusual. And the grammar would match `"-0"` which is a valid JSON number. So maybe it's not a bug?
+
+   Hmm, but if `min_value = -5` and `max_value = 10`, we want numbers from -5 to 10. The negative part is -5 to -1. After negation, 1 to 5. So `build_min_max_int(1, 5)` would be correct. Using `build_min_max_int(0, 5)` would also match `-0` which is in the range [-5, 10]... wait no, `-0` is `0` which is in the range. But the code already handles `min_value = 0` after this, so `0` would be matched by the positive part. So including `-0` in the negative part would be redundant but not incorrect.
+
+   Actually, I think the issue is more subtle. Let me look at what happens when `min_value = -5, max_value = -1` (both negative):
+   ```
+   out << "\"-\" (";
+   build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+   out << ")";
+   ```
+   This becomes `build_min_max_int(1, 5, ...)` which generates `1` through `5`. So the output is `"-" (1 ... 5)` which matches `-1` through `-5`. Correct.
+
+   For `min_value = -5, max_value = 10`:
+   ```
+   out << "\"-\" (";
+   build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+   out << ") | ";
+   min_value = 0;
+   ```
+   This becomes `build_min_max_int(0, 5, ...)` which generates `0` through `5`. So the output is `"-" (0 ... 5) | ...`. This matches `-0` through `-5`. But `-0` is `0` which is already covered by the positive part. So it's redundant but not wrong.
+
+   Actually wait, I think the bug might be that it should be `build_min_max_int(1, -min_value, ...)` to avoid matching `-0`. But `-0` is valid JSON... Hmm.
+
+   Let me move on and look for more obvious bugs.
+
+3. In `_pattern_to_rule`, the handling of `{` (curly brackets):
+   - The code parses `{min,max}` but doesn't handle `{,max}` correctly. When `nums[0]` is empty, `min_times` stays at 0. When `nums[1]` is empty, `max_times` stays at `INT_MAX`. That seems correct.
+   - But wait, `string_split` on `","` - if the input is `{5}`, then `nums` would be `["5"]`, size 1. If input is `{2,5}`, nums would be `["2", "5"]`, size 2. If input is `{,5}`, nums would be `["", "5"]`, size 2. If input is `{2,}`, nums would be `["2", ""]`, size 2. Seems correct.
+
+4. In `_pattern_to_rule`, the handling of `*`, `+`, `?`:
+   - `seq.back() = std::make_pair(to_rule(seq.back()) + c, false);` - This converts the last element to a rule (string) and appends the quantifier. But `to_rule` returns a string, and then `c` is appended. So if the last element was a literal `"abc"`, `to_rule` would return `"\"abc\""`, and then `+ c` would give `"\"abc\"*"`. That seems correct for GBNF.
+
+   Wait, but what if the last element is already a rule (not literal)? Then `to_rule` returns the rule name, and appending `c` gives `rule_name + "*"`. That's correct.
+
+   But what if the last element is a literal that was already converted to a rule? Let me check... `to_rule` checks `ls.second` (is_literal). If it's a literal, it wraps in quotes. If it's a rule, it returns the rule name. So `to_rule(seq.back()) + c` would be `"literal"*` or `rule_name*`. Both are valid GBNF.
+
+   Hmm, but there's an issue: if the last element is a literal like `"abc"`, then `to_rule` returns `"\"abc\""`, and appending `*` gives `"\"abc\""*`. In GBNF, this would be `"abc"*` which means zero or more occurrences of the literal "abc". That seems correct.
+
+   Actually wait, I think there might be an issue with how `to_rule` handles the pair. Let me re-read:
+   ```cpp
+   auto to_rule = [&](const literal_or_rule & ls) {
+       auto is_literal = ls.second;
+       auto s = ls.first;
+       return is_literal ? "\"" + s + "\"" : s;
+   };
+   ```
+   
+   So for a literal, it wraps in quotes. For a rule, it returns as-is. Then `to_rule(seq.back()) + c` appends the quantifier. This seems correct.
+
+5. In `_pattern_to_rule`, the handling of `|`:
+   - `seq.emplace_back("|", false);` - This adds a pipe as a non-literal. Then in `join_seq`, it would be joined with spaces: `... | ...`. But wait, `join_seq` joins with `" "` (space). So if we have `["a", "|", "b"]`, the result would be `"a" | "b"`. That seems correct.
+
+   Actually, let me trace through more carefully. In `join_seq`:
+   ```cpp
+   for (const auto & item : seq) {
+       auto is_literal = item.second;
+       if (is_literal) {
+           literal += item.first;
+       } else {
+           flush_literal();
+           ret.push_back(item);
+       }
+   }
+   flush_literal();
+   ```
+   
+   So literals are accumulated, and non-literals (including `|`) are pushed directly. Then:
+   ```cpp
+   for (const auto & item : ret) {
+       results.push_back(to_rule(item));
+   }
+   return std::make_pair(string_join(results, " "), false);
+   ```
+   
+   So `["a", "|", "b"]` would become `ret = [("a", true), ("|", false), ("b", true)]`, then `results = ["\"a\"", "|", "\"b\""]`, then joined with spaces: `"\"a\"" | "\"b\""`. That's correct.
+
+6. In `_pattern_to_rule`, the handling of character classes `[...]`:
+   - The code reads characters until `]`, handling escapes. Seems correct.
+
+7. In `_pattern_to_rule`, the handling of literals:
+   - The condition for consuming a character as literal:
+   ```cpp
+   } else if (!is_non_literal(sub_pattern[i]) &&
+           (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+   ```
+   
+   This says: consume the character if it's not a special char AND (it's the last char OR the literal is empty OR the next char is `.` OR the next char is not a special char).
+   
+   Wait, this seems odd. Why would `sub_pattern[i + 1] == '.'` be a condition? If the current char is not special and the next char is `.`, we should consume the current char and stop before the `.`. That seems correct.
+   
+   But what about `literal.empty()`? If the literal is empty, we consume the current char even if the next char is special. That makes sense - we need to consume at least one character.
+   
+   Hmm, but what if the current char is not special and the next char is special (and literal is not empty)? Then we break. That means we stop consuming literals before a special char. That seems correct.
+
+   Actually wait, I think there's a subtle issue. Consider `abc*`. When processing `c`, `literal` would be `"ab"` (not empty), and `sub_pattern[i+1]` is `*` which is special. So we break. Then `literal = "ab"` is pushed, and `c` is processed in the next iteration as a special char... wait no, `c` is not special. Let me re-trace.
+
+   Actually, let me trace `abc*`:
+   - `i=0`, `c='a'`: not special, `i == length-1`? No (length=4). `literal.empty()`? Yes. So consume: `literal = "a"`, `i=1`.
+   - `i=1`, `c='b'`: not special, `i == length-1`? No. `literal.empty()`? No. `sub_pattern[2] == '.'`? No. `!is_non_literal('c')`? Yes (c is not special). So consume: `literal = "ab"`, `i=2`.
+   - `i=2`, `c='c'`: not special, `i == length-1`? No (length=4, i=2). `literal.empty()`? No. `sub_pattern[3] == '.'`? No. `!is_non_literal('*')`? No (`*` is special). So break.
+   - `literal = "ab"` is pushed as a literal.
+   - Next iteration: `i=2`, `c='c'`: not special, `i == length-1`? No. `literal.empty()`? Yes (new literal). So consume: `literal = "c"`, `i=3`.
+   - `i=3`, `c='*'`: special, handled by the `*` branch. `seq.back()` is `("c", true)`, so `to_rule` returns `"\"c\""`, and result is `"\"c\""*`.
+
+   So the result would be `"ab" "c"*`. That's correct.
+
+   But wait, what about `abc` (no special chars)?
+   - `i=0`, `c='a'`: not special, `literal.empty()`? Yes. Consume: `literal = "a"`, `i=1`.
+   - `i=1`, `c='b'`: not special, `literal.empty()`? No. `sub_pattern[2] == '.'`? No. `!is_non_literal('c')`? Yes. Consume: `literal = "ab"`, `i=2`.
+   - `i=2`, `c='c'`: not special, `i == length-1`? Yes (length=3, i=2). Consume: `literal = "abc"`, `i=3`.
+   - Loop ends. `literal = "abc"` is pushed.
+
+   Result: `"abc"`. Correct.
+
+   What about `a.b`?
+   - `i=0`, `c='a'`: not special, `literal.empty()`? Yes. Consume: `literal = "a"`, `i=1`.
+   - `i=1`, `c='.'`: special (in NON_LITERAL_SET). Break.
+   - `literal = "a"` is pushed.
+   - Next iteration: `i=1`, `c='.'`: handled by the `.` branch. `seq.emplace_back(get_dot(), false)`, `i=2`.
+   - `i=2`, `c='b'`: not special, `i == length-1`? Yes. Consume: `literal = "b"`, `i=3`.
+   - Loop ends. `literal = "b"` is pushed.
+
+   Result: `"a" dot "b"`. Correct.
+
+   What about `ab.`?
+   - `i=0`, `c='a'`: not special, `literal.empty()`? Yes. Consume: `literal = "a"`, `i=1`.
+   - `i=1`, `c='b'`: not special, `literal.empty()`? No. `sub_pattern[2] == '.'`? Yes. Consume: `literal = "ab"`, `i=2`.
+   - `i=2`, `c='.'`: special. Break.
+   - `literal = "ab"` is pushed.
+   - Next iteration: `i=2`, `c='.'`: handled by `.` branch.
+
+   Result: `"ab" dot`. Correct.
+
+   What about `a|b`?
+   - `i=0`, `c='a'`: not special, `literal.empty()`? Yes. Consume: `literal = "a"`, `i=1`.
+   - `i=1`, `c='|'`: special (in NON_LITERAL_SET). Break.
+   - `literal = "a"` is pushed.
+   - Next iteration: `i=1`, `c='|'`: handled by `|` branch.
+
+   Result: `"a" | "b"`. Correct.
+
+   What about `a+b`?
+   - `i=0`, `c='a'`: not special, `literal.empty()`? Yes. Consume: `literal = "a"`, `i=1`.
+   - `i=1`, `c='+'`: special. Break.
+   - `literal = "a"` is pushed.
+   - Next iteration: `i=1`, `c='+'`: handled by `+` branch. `seq.back

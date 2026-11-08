@@ -11,6 +11,7 @@
 #include "ggml-backend.h"
 #include "ggml-backend-impl.h"
 #include "ggml-alloc.h"
+#include "ggml-rampool-fork.h"
 #include "ggml-impl.h"
 
 #include <assert.h>
@@ -59,6 +60,28 @@ struct ggml_backend_buft_alloc_buffer_n_plan_item {
 
 using ggml_backend_buft_alloc_buffer_n_plan_t = std::vector<ggml_backend_buft_alloc_buffer_n_plan_item>;
 
+// fork: phase layout. The loader reads host weights with O_DIRECT straight into their buffer (one DMA from the SSD, no page cache copy); O_DIRECT needs the
+// buffer address and the file offset on the same 4096-byte grid, so a host tensor is placed at (page boundary + its file offset mod 4096). The gap in front
+// of a tensor is at least its phase: the head block of its read lands there. Set per allocation by llama-model.cpp; SIZE_MAX from the function = no phase.
+typedef size_t (*ggml_backend_alloc_phase_fn_t)(const struct ggml_tensor * t, void * user_data);
+static ggml_backend_alloc_phase_fn_t g_alloc_phase_fn = NULL;
+static void *                        g_alloc_phase_ud = NULL;
+extern "C" {
+    GGML_API void ggml_backend_set_alloc_phase_fn_fork(ggml_backend_alloc_phase_fn_t fn, void * user_data);
+}
+void ggml_backend_set_alloc_phase_fn_fork(ggml_backend_alloc_phase_fn_t fn, void * user_data) {
+    g_alloc_phase_fn = fn;
+    g_alloc_phase_ud = user_data;
+}
+// the offset a tensor starts at when `cur` bytes of the buffer are used: cur, or the next 4096 boundary plus the tensor's phase
+static bool ggml_backend_alloc_phase_on(ggml_backend_buffer_type_t buft) { return g_alloc_phase_fn != NULL && ggml_backend_buft_is_host(buft); }
+static size_t ggml_backend_alloc_phase_start(ggml_backend_buffer_type_t buft, const struct ggml_tensor * t, size_t cur) {
+    if (!ggml_backend_alloc_phase_on(buft)) { return cur; }
+    const size_t ph = g_alloc_phase_fn(t, g_alloc_phase_ud);
+    if (ph == SIZE_MAX) { return cur; }
+    return GGML_PAD(cur, 4096) + ph;
+}
+
 static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_plan(
         ggml_backend_buffer_type_t buft, struct ggml_tensor ** tensors, int n_tensors) {
     ggml_backend_buft_alloc_buffer_n_plan_t plan;
@@ -68,17 +91,19 @@ static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_
 
     size_t cur_buf_size = 0;
     int    first        = 0;
+    const size_t tail_pad = ggml_backend_alloc_phase_on(buft) ? 4096 : 1;   // fork: the last tensor's O_DIRECT read ends on the next 4096 boundary: the buffer owns that tail
 
     for (int i = 0; i < n_tensors; i++) {
         size_t this_size = 0;
         struct ggml_tensor * t = tensors[i];
         if (t->data == NULL && t->view_src == NULL) {
             this_size = GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), alignment);
+            this_size += ggml_backend_alloc_phase_start(buft, t, cur_buf_size) - cur_buf_size;   // fork: the gap in front (phase layout)
         }
 
         // flush the current buffer if adding this tensor would exceed max_size
         if (cur_buf_size > 0 && (cur_buf_size + this_size) > max_size) {
-            plan.push_back({ cur_buf_size, first, i });
+            plan.push_back({ GGML_PAD(cur_buf_size, tail_pad), first, i });
             cur_buf_size = this_size;
             first        = i;
         } else {
@@ -87,7 +112,7 @@ static ggml_backend_buft_alloc_buffer_n_plan_t ggml_backend_buft_alloc_buffer_n_
     }
 
     if (cur_buf_size > 0) {
-        plan.push_back({ cur_buf_size, first, n_tensors });
+        plan.push_back({ GGML_PAD(cur_buf_size, tail_pad), first, n_tensors });
     }
 
     return plan;
@@ -119,6 +144,7 @@ static ggml_backend_buffer_t ggml_backend_buft_alloc_buffer_n_default(ggml_backe
             struct ggml_tensor * t = tensors[j];
             if (t->data == NULL) {
                 if (t->view_src == NULL) {
+                    tallocr.offset = ggml_backend_alloc_phase_start(buft, t, tallocr.offset);   // fork: phase layout (the plan counted this gap)
                     if (ggml_tallocr_alloc(&tallocr, t) != GGML_STATUS_SUCCESS) {
                         t_failed = t;
                         break;
@@ -407,6 +433,62 @@ size_t ggml_backend_get_max_size(ggml_backend_t backend) {
     return ggml_backend_buft_get_max_size(ggml_backend_get_default_buffer_type(backend));
 }
 
+template <typename cb_get_buffer>
+static void ggml_backend_tensor_buft_groups(size_t n_tensors, cb_get_buffer && get_buffer, std::vector<std::vector<size_t>> & groups) {
+    std::unordered_map<ggml_backend_buffer_type_t, size_t> buft_idx;
+    groups.clear();
+    for (size_t i = 0; i < n_tensors; i++) {
+        ggml_backend_buffer_t buf = get_buffer(i);
+        auto it = buft_idx.find(buf->buft);
+        if (it == buft_idx.end()) {
+            buft_idx[buf->buft] = groups.size();
+            groups.emplace_back();
+        }
+        groups[buft_idx[buf->buft]].push_back(i);
+    }
+}
+
+static bool ggml_backend_tensor_batch_is_2d(
+        const struct ggml_tensor * const * tensors,
+        const size_t * offsets,
+        const size_t * sizes,
+        const size_t * data_offsets,
+        size_t n_tensors,
+        size_t * base_offset,
+        size_t * size,
+        size_t * stride_tensor,
+        size_t * stride_data) {
+    if (n_tensors <= 1) {
+        return false;
+    }
+
+    const struct ggml_tensor * tensor = tensors[0];
+    const size_t size0 = sizes[0];
+
+    if (size0 == 0 || offsets[1] < offsets[0] || data_offsets[1] < data_offsets[0]) {
+        return false;
+    }
+
+    const size_t stride_tensor0 = offsets[1] - offsets[0];
+    const size_t stride_data0   = data_offsets[1] - data_offsets[0];
+
+    for (size_t i = 1; i < n_tensors; i++) {
+        if (tensors[i] != tensor || sizes[i] != size0) {
+            return false;
+        }
+        if (offsets[i] != offsets[0] + i*stride_tensor0 || data_offsets[i] != data_offsets[0] + i*stride_data0) {
+            return false;
+        }
+    }
+
+    *base_offset   = offsets[0];
+    *size          = size0;
+    *stride_tensor = stride_tensor0;
+    *stride_data   = stride_data0;
+
+    return true;
+}
+
 void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(backend);
     GGML_ASSERT(tensor);
@@ -551,6 +633,154 @@ void ggml_backend_tensor_get_2d(const struct ggml_tensor * tensor, void * data, 
     buf->iface.get_tensor_2d(buf, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
 }
 
+void ggml_backend_tensor_set_n(struct ggml_tensor * const * tensors, const void * data,
+        const size_t * offsets, const size_t * sizes, const size_t * data_offsets, size_t n_tensors) {
+    if (n_tensors == 0) {
+        return;
+    }
+
+    std::vector<const void *> data_ptrs(n_tensors);
+    for (size_t i = 0; i < n_tensors; i++) {
+        data_ptrs[i] = (const char *) data + data_offsets[i];
+    }
+
+    ggml_backend_buffer_t buf = NULL;
+    bool same_buft = true;
+
+    for (size_t i = 0; i < n_tensors; i++) {
+        GGML_ASSERT(tensors[i] != NULL);
+        ggml_backend_buffer_t tensor_buf = tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
+        GGML_ASSERT(tensor_buf != NULL && "tensor buffer not set");
+        GGML_ASSERT(tensors[i]->data != NULL && "tensor not allocated");
+        GGML_ASSERT(offsets[i] + sizes[i] <= ggml_nbytes(tensors[i]) && "tensor write out of bounds");
+
+        if (buf == NULL) {
+            buf = tensor_buf;
+        } else if (buf->buft != tensor_buf->buft) {
+            same_buft = false;
+        }
+    }
+
+    if (same_buft && buf->iface.set_tensor_n != NULL) {
+        buf->iface.set_tensor_n(buf, tensors, data_ptrs.data(), offsets, sizes, n_tensors);
+        return;
+    }
+
+    if (!same_buft) {
+        std::vector<std::vector<size_t>> groups;
+        ggml_backend_tensor_buft_groups(n_tensors, [&](size_t i) {
+            return tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
+        }, groups);
+
+        for (size_t g = 0; g < groups.size(); g++) {
+            std::vector<ggml_tensor *> g_tensors;
+            std::vector<size_t> g_offsets;
+            std::vector<size_t> g_sizes;
+            std::vector<size_t> g_data_offsets;
+            g_tensors.reserve(groups[g].size());
+            g_offsets.reserve(groups[g].size());
+            g_sizes.reserve(groups[g].size());
+            g_data_offsets.reserve(groups[g].size());
+
+            for (size_t i : groups[g]) {
+                g_tensors.push_back(tensors[i]);
+                g_offsets.push_back(offsets[i]);
+                g_sizes.push_back(sizes[i]);
+                g_data_offsets.push_back(data_offsets[i]);
+            }
+
+            ggml_backend_tensor_set_n(g_tensors.data(), data, g_offsets.data(), g_sizes.data(), g_data_offsets.data(), g_tensors.size());
+        }
+        return;
+    }
+
+    size_t base_offset = 0, size = 0, stride_tensor = 0, stride_data = 0;
+    if (ggml_backend_tensor_batch_is_2d(tensors, offsets, sizes, data_offsets, n_tensors,
+                &base_offset, &size, &stride_tensor, &stride_data)) {
+        ggml_backend_tensor_set_2d(tensors[0], data_ptrs[0], base_offset, size,
+                n_tensors, stride_tensor, stride_data);
+        return;
+    }
+
+    for (size_t i = 0; i < n_tensors; i++) {
+        ggml_backend_tensor_set(tensors[i], data_ptrs[i], offsets[i], sizes[i]);
+    }
+}
+
+void ggml_backend_tensor_get_n(const struct ggml_tensor * const * tensors, void * data,
+        const size_t * offsets, const size_t * sizes, const size_t * data_offsets, size_t n_tensors) {
+    if (n_tensors == 0) {
+        return;
+    }
+
+    std::vector<void *> data_ptrs(n_tensors);
+    for (size_t i = 0; i < n_tensors; i++) {
+        data_ptrs[i] = (char *) data + data_offsets[i];
+    }
+
+    ggml_backend_buffer_t buf = NULL;
+    bool same_buft = true;
+
+    for (size_t i = 0; i < n_tensors; i++) {
+        GGML_ASSERT(tensors[i] != NULL);
+        ggml_backend_buffer_t tensor_buf = tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
+        GGML_ASSERT(tensor_buf != NULL && "tensor buffer not set");
+        GGML_ASSERT(tensors[i]->data != NULL && "tensor not allocated");
+        GGML_ASSERT(offsets[i] + sizes[i] <= ggml_nbytes(tensors[i]) && "tensor read out of bounds");
+
+        if (buf == NULL) {
+            buf = tensor_buf;
+        } else if (buf->buft != tensor_buf->buft) {
+            same_buft = false;
+        }
+    }
+
+    if (same_buft && buf->iface.get_tensor_n != NULL) {
+        buf->iface.get_tensor_n(buf, tensors, data_ptrs.data(), offsets, sizes, n_tensors);
+        return;
+    }
+
+    if (!same_buft) {
+        std::vector<std::vector<size_t>> groups;
+        ggml_backend_tensor_buft_groups(n_tensors, [&](size_t i) {
+            return tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
+        }, groups);
+
+        for (size_t g = 0; g < groups.size(); g++) {
+            std::vector<const ggml_tensor *> g_tensors;
+            std::vector<size_t> g_offsets;
+            std::vector<size_t> g_sizes;
+            std::vector<size_t> g_data_offsets;
+            g_tensors.reserve(groups[g].size());
+            g_offsets.reserve(groups[g].size());
+            g_sizes.reserve(groups[g].size());
+            g_data_offsets.reserve(groups[g].size());
+
+            for (size_t i : groups[g]) {
+                g_tensors.push_back(tensors[i]);
+                g_offsets.push_back(offsets[i]);
+                g_sizes.push_back(sizes[i]);
+                g_data_offsets.push_back(data_offsets[i]);
+            }
+
+            ggml_backend_tensor_get_n(g_tensors.data(), data, g_offsets.data(), g_sizes.data(), g_data_offsets.data(), g_tensors.size());
+        }
+        return;
+    }
+
+    size_t base_offset = 0, size = 0, stride_tensor = 0, stride_data = 0;
+    if (ggml_backend_tensor_batch_is_2d(tensors, offsets, sizes, data_offsets, n_tensors,
+                &base_offset, &size, &stride_tensor, &stride_data)) {
+        ggml_backend_tensor_get_2d(tensors[0], data_ptrs[0], base_offset, size,
+                n_tensors, stride_tensor, stride_data);
+        return;
+    }
+
+    for (size_t i = 0; i < n_tensors; i++) {
+        ggml_backend_tensor_get(tensors[i], data_ptrs[i], offsets[i], sizes[i]);
+    }
+}
+
 void ggml_backend_tensor_memset(struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
@@ -688,6 +918,19 @@ static void *                     g_moe_fill_ud = NULL;
 // card holds, data[id - lo] = the expert's bytes on the card or NULL, *buffer = the buffer they are in. Declared locally (no shared header, see g_xcopy_dst_ordered).
 typedef int (*ggml_backend_moe_where_fn_t)(const struct ggml_tensor * weight, int32_t lo, int32_t hi, ggml_backend_dev_t dev, const void ** data,
                                            ggml_backend_buffer_t * buffer, void * user_data);
+// fork: bytes of a host weight straight from its file (--moe read-direct, the expert cache sets it): a weight that stayed mapped reads as page faults and 128 KiB readahead on
+// the thread that issues the upload, with every byte through the page cache. Returns where the n bytes at off start, inside dst (cap bytes), or NULL; dst NULL only asks whether this
+// weight can be read that way. Declared locally (no shared header, see g_xcopy_dst_ordered).
+typedef const void * (*ggml_backend_moe_read_fn_t)(const struct ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * user_data);
+static ggml_backend_moe_read_fn_t g_moe_read_fn = NULL;
+static void *                     g_moe_read_ud = NULL;
+extern "C" {
+    GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);
+}
+void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data) {
+    g_moe_read_fn = fn;
+    g_moe_read_ud = user_data;
+}
 static ggml_backend_moe_where_fn_t g_moe_where_fn = NULL;
 static void *                      g_moe_where_ud = NULL;
 extern "C" {
@@ -772,6 +1015,17 @@ void ggml_backend_sched_link_bytes_fork(ggml_backend_dev_t dev, uint64_t * in_ho
     b.in_host = b.in_card = b.out_card = 0;
 }
 void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n) { ggml_backend_sched_upload_add(dev, n); }
+
+// fork: time spent pinning new staging blocks for card-to-card copies (ggml_cuda_xstage_copy), never reset. It lives here, not in ggml-cuda.cu: with
+// GGML_BACKEND_DL the CUDA backend is dlopen'ed and libllama cannot link a symbol of it; both sides declare these locally (no header edit).
+// llama_context::moe_mirror_fill reads it around a fill so the learned per-prompt fill cost excludes the once-per-process pins (rampool.md, fill cost spec).
+static std::atomic<uint64_t> g_xstage_pin_us{0};
+extern "C" {
+    GGML_API void     ggml_backend_xstage_pin_add_fork(uint64_t us);
+    GGML_API uint64_t ggml_cuda_xstage_pin_us_fork(void);
+}
+void     ggml_backend_xstage_pin_add_fork(uint64_t us) { g_xstage_pin_us.fetch_add(us, std::memory_order_relaxed); }
+uint64_t ggml_cuda_xstage_pin_us_fork(void) { return g_xstage_pin_us.load(std::memory_order_relaxed); }
 
 static ggml_backend_split_cb_t g_split_cb = NULL;
 static void *                  g_split_ud = NULL;
@@ -1017,6 +1271,59 @@ bool ggml_backend_moe_fill(const struct ggml_tensor * weight, int32_t expert, gg
     return g_moe_fill_cb && g_moe_fill_cb(weight, expert, dev, data, buffer, g_moe_fill_ud);
 }
 
+void ggml_backend_tensor_copy_n(const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors) {
+    if (n_tensors == 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < n_tensors; ++i) {
+        GGML_ASSERT(ggml_are_same_layout(srcs[i], dsts[i]) && "cannot copy tensors with different layouts");
+    }
+
+    ggml_backend_buffer_t buf = dsts[0]->view_src ? dsts[0]->view_src->buffer : dsts[0]->buffer;
+    bool same_buft = true;
+    for (size_t i = 0; i < n_tensors; ++i) {
+        ggml_backend_buffer_t dst_buf = dsts[i]->view_src ? dsts[i]->view_src->buffer : dsts[i]->buffer;
+        if (dst_buf->buft != buf->buft) {
+            same_buft = false;
+            break;
+        }
+    }
+
+    // if cpy_tensor_n returns false, it must not have performed any copies
+    if (same_buft && buf->iface.cpy_tensor_n != NULL) {
+        if (buf->iface.cpy_tensor_n(buf, srcs, dsts, n_tensors)) {
+            return;
+        }
+    }
+
+    if (!same_buft) {
+        std::vector<std::vector<size_t>> groups;
+        ggml_backend_tensor_buft_groups(n_tensors, [&](size_t i) {
+            return dsts[i]->view_src ? dsts[i]->view_src->buffer : dsts[i]->buffer;
+        }, groups);
+
+        for (size_t g = 0; g < groups.size(); g++) {
+            std::vector<const ggml_tensor *> g_srcs;
+            std::vector<ggml_tensor *> g_dsts;
+            g_srcs.reserve(groups[g].size());
+            g_dsts.reserve(groups[g].size());
+
+            for (size_t i : groups[g]) {
+                g_srcs.push_back(srcs[i]);
+                g_dsts.push_back(dsts[i]);
+            }
+
+            ggml_backend_tensor_copy_n(g_srcs.data(), g_dsts.data(), g_srcs.size());
+        }
+        return;
+    }
+
+    for (size_t i = 0; i < n_tensors; ++i) {
+        ggml_backend_tensor_copy(srcs[i], dsts[i]);
+    }
+}
+
 void ggml_backend_tensor_copy_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const struct ggml_tensor * src, struct ggml_tensor * dst) {
     GGML_ASSERT(ggml_are_same_layout(src, dst) && "cannot copy tensors with different layouts");
 
@@ -1096,7 +1403,19 @@ const char * ggml_backend_dev_description(ggml_backend_dev_t device) {
 }
 
 static void (*g_nan_hook_fork)(void) = nullptr;
-extern "C" { GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)) { g_nan_hook_fork = fn; } }   // the block form: GGML_API may expand to "extern", invalid after extern "C" on the same declaration
+extern "C" { GGML_API void ggml_sched_set_nan_hook_fork(void (*fn)(void)) { g_nan_hook_fork = fn; } }
+// --moe ledger=2 (led_split_cb in llama-moecache-fork.cpp): each split's graph right before it runs, for a line per pool range a node reads or writes
+static void (*g_split_hook_fork)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t) = nullptr;
+// fork, --moe ledger: every copy the CUDA backend queues into a card, when its stream reaches it and when it ends (ggml_cuda_dma, led_dma in llama-moecache-fork.cpp)
+extern "C" {
+    typedef void (*ggml_backend_dma_hook_t)(int device, const void * dst, size_t bytes, const char * who, int done);
+    GGML_API void ggml_backend_set_dma_hook_fork(ggml_backend_dma_hook_t fn);
+    GGML_API ggml_backend_dma_hook_t ggml_backend_dma_hook_fork(void);
+}
+static std::atomic<ggml_backend_dma_hook_t> g_dma_hook{nullptr};
+void ggml_backend_set_dma_hook_fork(ggml_backend_dma_hook_t fn) { g_dma_hook.store(fn); }
+ggml_backend_dma_hook_t ggml_backend_dma_hook_fork(void) { return g_dma_hook.load(std::memory_order_relaxed); }
+extern "C" { GGML_API void ggml_sched_set_split_hook_fork(void (*fn)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t)) { g_split_hook_fork = fn; } }   // the block form: GGML_API may expand to "extern", invalid after extern "C" on the same declaration
 
 void ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total) {
     GGML_ASSERT(device);
@@ -1225,6 +1544,9 @@ static const struct ggml_backend_buffer_i ggml_backend_multi_buffer_i = {
     /* .cpy_tensor      = */ NULL,
     /* .clear           = */ ggml_backend_multi_buffer_clear,
     /* .reset           = */ NULL,
+    /* .set_tensor_n    = */ NULL,
+    /* .get_tensor_n    = */ NULL,
+    /* .cpy_tensor_n    = */ NULL,
 };
 
 ggml_backend_buffer_t ggml_backend_multi_buffer_alloc_buffer(ggml_backend_buffer_t * buffers, size_t n_buffers) {
@@ -1328,6 +1650,18 @@ struct ggml_backend_sched_split {
 // Prefetch state of ONE card: expert tensors of its splits are uploaded on `backend` (a second instance of the card, its own stream) into `n_slots` staging slots
 // while the card computes the previous split. Each card that computes expert matmuls has its own ring: the multi-GPU prompt split gives every card a half of
 // the experts, and a ring for one card only left the other card's half on the slow path (read ids, sync, copy, compute, strictly in turn).
+// fork: the pinned chunks a direct read lands in, one set per card. An upload from pinned memory is queued and returns, so a chunk is taken again only when its event says the copy is done.
+#define GGML_SCHED_RD_CHUNKS 16
+#define GGML_SCHED_RD_CHUNK  ((size_t) 32 << 20)
+#define GGML_SCHED_RD_SLOT   (GGML_SCHED_RD_CHUNK + 3*4096)   // the block grid on both sides, and the alignment of the start
+struct sched_rd_ring {
+    ggml_backend_dev_t    dev;
+    ggml_backend_buffer_t buf;
+    ggml_backend_event_t  ev[GGML_SCHED_RD_CHUNKS];
+    bool                  used[GGML_SCHED_RD_CHUNKS];
+    int                   next;
+};
+
 struct sched_pf_ring {
     ggml_backend_dev_t      dev;
     int                     n_slots;                 // 0 = off for this card
@@ -1354,6 +1688,8 @@ struct ggml_backend_sched {
     // (the expert cache lends them). Removed by the #29943 merge, ported back here onto the callback-copy loop.
     struct sched_pf_ring    prefetch_ring[GGML_SCHED_MAX_PF_RINGS];   // one staging ring per card that runs expert matmuls (its own stream, events, slots, lent region)
     int                     prefetch_n_rings;
+    struct sched_rd_ring    rd_ring[GGML_SCHED_MAX_PF_RINGS];   // fork: --moe read-direct, ggml_backend_sched_upload_weight
+    int                     rd_n_rings;
     int                     prefetch_n_slots;        // configured number of slots per ring (0 = off); a ring drops to fewer when memory is short
     size_t                  prefetch_slot_bytes;     // largest staged expert tensor (padded), set while splits are scanned
     int n_backends;
@@ -1366,6 +1702,7 @@ struct ggml_backend_sched {
     struct ggml_hash_set  hash_set;
     int                 * hv_tensor_backend_ids; // [hash_set.size]
     struct ggml_tensor ** hv_tensor_copies;      // [hash_set.size][n_backends][n_copies]
+    bool                * hv_tensor_used;        // [hash_set.size] read across backends by a node that is computed
 
     int * node_backend_ids; // [graph_size]
     int * leaf_backend_ids; // [graph_size]
@@ -1918,6 +2255,9 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
             // check if we should start a new split based on the sources of the current node
             bool need_new_split = false;
+            // fork: the concat of an attention whose KV heads lie on several cards (--moe attn-split, llm_graph_context::build_attn): its inputs must not be copied at the start of the split
+            // that runs the home card's own part, that would wait for the other cards first and the parts would run one after the other
+            if (node->op == GGML_OP_CONCAT && strcmp(node->name, "attn_parts_merge") == 0) { need_new_split = true; }
             // fork: an expert matmul on host weights always starts a split, also behind a split without inputs yet: a split's inputs are copied before its first node runs,
             // so in one split with its router the expert upload (staging, or the copy callback) would come before the ids it needs. Moving the early router's nodes in
             // build_moe_ffn made that happen (Qwen3.6, blk.20.ffn_gate_exps behind ffn_moe_logits-20: logits off by 0.05 on one prompt in 8, whatever K).
@@ -2020,6 +2360,11 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                             ggml_backend_sched_split_inputs_grow(split);
                         }
                         split->inputs[n_inputs] = src;
+                    }
+                    // inputs of nodes that are not computed (e.g. the unselected branches of ggml_build_forward_select)
+                    // stay in the split so that the allocation does not change, but they do not need to be copied
+                    if (node->flags & GGML_TENSOR_FLAG_COMPUTE) {
+                        sched->hv_tensor_used[src_id] = true;
                     }
                     node->src[j] = tensor_id_copy(src_id, cur_backend_id, sched->cur_copy);
                 }
@@ -2303,6 +2648,74 @@ static bool ggml_backend_sched_is_host_weight(const struct ggml_tensor * t) {
         ggml_backend_buffer_is_host(t->buffer);
 }
 
+// fork: [off, off + n) of a host weight into its copy on the card, on this backend's stream. Weights the expert cache can read direct (--moe read-direct: they stayed mapped) go from
+// the file into pinned chunks at the SSD's queue depth; all others from their host memory, as ever. A failed read leaves the rest to the mapping.
+static void ggml_backend_sched_upload_weight_file(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n);
+// fork: an expert tensor in the RAM pool (--moe rampool=1, ggml-rampool-fork.h): the experts the pool holds go straight from their pinned blocks (runs that lie behind each other
+// in the pool as one copy), the rest and the bytes past the last whole expert the old way
+static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n) {
+    const size_t esz = input->nb[2];
+    if (esz == 0 || off % esz != 0 || n < esz || ggml_rampool_table_fork(input) == NULL) {
+        ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, off, n);
+        return;
+    }
+    const int64_t e0 = (int64_t) (off / esz), ne = (int64_t) (n / esz);
+    std::vector<const char *> ps((size_t) ne);
+    for (int64_t i = 0; i < ne; ++i) { ps[i] = ggml_rampool_use_fork(input, e0 + i); }
+    for (int64_t i = 0; i < ne; ) {
+        int64_t j = i + 1;
+        if (ps[i]) {
+            while (j < ne && ps[j] == ps[i] + (size_t) (j - i) * esz) { ++j; }
+            ggml_backend_tensor_set_async(backend, input_cpy, ps[i], (size_t) (e0 + i) * esz, (size_t) (j - i) * esz);
+        } else {
+            while (j < ne && !ps[j]) { ++j; }
+            ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, (size_t) (e0 + i) * esz, (size_t) (j - i) * esz);
+        }
+        i = j;
+    }
+    if (n > (size_t) ne * esz) { ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, off + (size_t) ne * esz, n - (size_t) ne * esz); }
+}
+
+static void ggml_backend_sched_upload_weight_file(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n) {
+    size_t done = 0;
+    if (g_moe_read_fn && g_moe_read_fn(input, 0, 0, NULL, 0, g_moe_read_ud) != NULL) {
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+        struct sched_rd_ring * R = NULL;
+        for (int r = 0; r < sched->rd_n_rings; r++) {
+            if (sched->rd_ring[r].dev == dev) { R = &sched->rd_ring[r]; }
+        }
+        if (!R && sched->rd_n_rings < GGML_SCHED_MAX_PF_RINGS) {
+            ggml_backend_buffer_type_t hb = ggml_backend_dev_host_buffer_type(dev);
+            ggml_backend_buffer_t b = hb ? ggml_backend_buft_alloc_buffer(hb, GGML_SCHED_RD_SLOT*GGML_SCHED_RD_CHUNKS) : NULL;
+            if (b) {
+                R = &sched->rd_ring[sched->rd_n_rings++];
+                R->dev = dev;
+                R->buf = b;
+                for (int i = 0; i < GGML_SCHED_RD_CHUNKS; i++) { R->ev[i] = ggml_backend_event_new(dev); }
+            }
+        }
+        while (R && done < n) {
+            const int i = R->next;
+            if (!R->ev[i]) { break; }
+            R->next = (i + 1) % GGML_SCHED_RD_CHUNKS;
+            if (R->used[i]) {
+                ggml_backend_event_synchronize(R->ev[i]);
+                R->used[i] = false;
+            }
+            const size_t len = std::min(GGML_SCHED_RD_CHUNK, n - done);
+            const void * got = g_moe_read_fn(input, off + done, len, (char *) ggml_backend_buffer_get_base(R->buf) + (size_t) i*GGML_SCHED_RD_SLOT, GGML_SCHED_RD_SLOT, g_moe_read_ud);
+            if (!got) { break; }
+            ggml_backend_tensor_set_async(backend, input_cpy, got, off + done, len);
+            ggml_backend_event_record(R->ev[i], backend);
+            R->used[i] = true;
+            done += len;
+        }
+    }
+    if (done < n) {
+        ggml_backend_tensor_set_async(backend, input_cpy, (const char *) input->data + off + done, off + done, n - done);
+    }
+}
+
 // NVTX ranges (GGML_NVTX=1): the scheduler thread names what it is doing, Nsight Systems shows it with the CUDA calls it contains. Function pointers from the CUDA backend.
 static void (*g_nvtx_push)(const char *) = NULL;
 static void (*g_nvtx_pop)(void) = NULL;
@@ -2411,7 +2824,7 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
                 const size_t pad = hi < input->ne[2] ? ggml_backend_sched_expert_pad(sched, split_backend_id, input) : 0;
                 NVTX_PUSH("ASYNC expert range %s [%d,%d) -> %s", input->name, (int) lo, (int) hi, ggml_backend_name(split_backend));
                 int64_t * ue = ggml_backend_sched_up_begin(split_backend, (size_t) (hi - lo)*esz + pad);
-                ggml_backend_tensor_set_async(split_backend, input_cpy, (const char *) input->data + off, off, (size_t) (hi - lo)*esz + pad);
+                ggml_backend_sched_upload_weight(sched, split_backend, input, input_cpy, off, (size_t) (hi - lo)*esz + pad);
                 ggml_backend_sched_upload_add(ggml_backend_get_device(split_backend), (uint64_t) (hi - lo)*esz);
                 if (hi == input->ne[2]) {
                     ggml_backend_tensor_zero_tail_fork(split_backend, input_cpy);
@@ -2940,6 +3353,47 @@ static bool ggml_backend_sched_nan_check_node(ggml_backend_sched_t sched, int sp
             (long long) first, (long long) (per2 > 0 ? first / per2 : 0), (long long) (t->ne[0] > 0 ? (first / t->ne[0]) % (t->ne[1] > 0 ? t->ne[1] : 1) : 0));
     GGML_LOG_WARN("nan-node:   op_params %d %d, expert range [%d,%d); first node of the split: %s %s\n", (int) t->op_params[0], (int) t->op_params[1],
             (int) t->op_params[8], (int) t->op_params[9], ggml_op_name(split->graph.nodes[0]->op), split->graph.nodes[0]->name);
+    if (t->op == GGML_OP_MUL_MAT_ID && t->type == GGML_TYPE_F32) {
+        // which experts gave the bad values: an output row is (token, the token's n-th expert); with an expert cache's chain src[3] holds the ids, src[4] the table id -> block
+        const int64_t nc = t->ne[0], ns = t->ne[1];
+        std::vector<int64_t> where;
+        std::map<int64_t, int64_t> per_col;
+        {
+            const uint32_t * v = (const uint32_t *) buf.data();
+            const size_t n = ggml_nbytes(t) / 4;
+            for (size_t i = 0; i < n; i++) {
+                if ((v[i] & 0x7f800000u) == 0x7f800000u && (v[i] & 0x007fffffu) != 0) {
+                    if (where.size() < 4096) { where.push_back((int64_t) i); }
+                    per_col[(int64_t) i % nc]++;
+                }
+            }
+        }
+        std::string cols;
+        for (const auto & c : per_col) { if (cols.size() < 160) { cols += " " + std::to_string(c.first) + ":" + std::to_string(c.second); } }
+        GGML_LOG_WARN("nan-node:   bad values per column (column:count):%s\n", cols.c_str());
+        const struct ggml_tensor * ids_t = t->src[4] ? t->src[3] : t->src[2];
+        std::vector<uint8_t> ids_b;
+        if (ids_t && ids_t->data && ids_t->buffer) {   // a view with a stride: its whole span, read through its own strides below
+            ids_b.resize(ggml_nbytes(ids_t));
+            ggml_backend_tensor_get(ids_t, ids_b.data(), 0, ids_b.size());
+        }
+        if (!ids_b.empty()) {
+            std::vector<uint8_t> table_b;
+            if (t->src[4] && read(t->src[4])) { table_b = buf; }
+            std::map<int32_t, int64_t> per_expert;
+            for (int64_t w : where) {
+                const int64_t row = w / nc, slot = row % ns, tok = row / ns;
+                per_expert[*(const int32_t *) (ids_b.data() + (size_t) (tok * ids_t->nb[1] + slot * ids_t->nb[0]))]++;
+            }
+            int said = 0;
+            for (const auto & pe : per_expert) {
+                const int32_t block = table_b.empty() || pe.first < 0 || (size_t) (pe.first + 1) * 4 > table_b.size() ? pe.first : ((const int32_t *) table_b.data())[pe.first];
+                const size_t off = block >= 0 ? (size_t) ((const char *) t->src[0]->data - (const char *) ggml_backend_buffer_get_base(t->src[0]->buffer)) + (size_t) block * t->src[0]->nb[2] : 0;
+                if (said++ < 24) { GGML_LOG_WARN("nan-node:   expert %d (%lld bad values of the first %zu): block %d, the weight's slice at byte %zu of its buffer, row bytes %zu\n", pe.first, (long long) pe.second, where.size(), block, off, t->src[0]->nb[1]); }
+            }
+        }
+        read(t);   // the shared buffer back to this tensor for what follows
+    }
     for (int k = 0; k < GGML_MAX_SRC; k++) {
         const struct ggml_tensor * src = t->src[k];
         if (src == NULL) { continue; }
@@ -3048,8 +3502,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         std::vector<uint8_t> filled;
         bool           partial    = false;
         int            layer      = -1;
-        std::vector<uint8_t> far;          // the prompt mix: experts another card computes, this slot never holds them
-        bool           from_far   = false; // staged from a ranking two layers back: the next ranking tops it up
+        std::vector<uint8_t> remote;          // the prompt mix: experts another card computes, this slot never holds them
+        int            look       = 0;     // how many layers before the nearest ranking this slot was last staged from: each nearer ranking tops it up, 0 = nothing left to add
     };
     std::vector<prefetch_pending> lookahead;
     ggml_backend_buffer_t pf_slot_buf [GGML_SCHED_MAX_PF_RINGS][GGML_SCHED_MAX_PREFETCH_SLOTS] = {};
@@ -3109,9 +3563,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     std::vector<int32_t> late_hid;
     std::vector<uint8_t> late_used;
     int    pfs_pred_t = 0, pfs_late_t = 0;
-    // The time a ring has for the next layer (user 2026-11-01): q1, a token's picks (n ranks of the ranking), always; q2, the oversampling up to n x multiplier, as far as the time before the
-    // layer's matmuls allows; with pp-depth 2 the layer after takes its q1 before this layer's q2, if that fits too. Time left = the last layer's measured time, less what passed since it
-    // started, less what the ring still has to send (issued bytes over the link's rate).
+    // The time a ring has (user 2026-11-02): the nearest layer first, q1, a token's n picks, always, q2, the oversampling up to n x multiplier, as far as the time before that layer's matmuls
+    // allows. What the time leaves goes to the layers behind it (pp-depth), which are ranked again at every step and mostly wrong from far: same 16 uploads per token, one look at l+1 found 93.9% of
+    // the picks, looks at l+3 and l+2 alone 87.7 (Qwen 3.6, 21 requests). Each look adds n x multiplier experts that cost an upload, so a layer collects them as it comes closer. Time left = the last
+    // layer's measured time, less what passed since it started, less what the ring still has to send (issued bytes over the link's rate).
     static const int pred_depth = std::max(1, std::min(3, getenv("GGML_PRED_DEPTH") ? atoi(getenv("GGML_PRED_DEPTH")) : 1));
     static double pf_layer_us = 0.0;   // the last layer's time, kept for the first layers of the next pass
     static double pred_q1     = 0.0;   // experts the last layer's q1 sent: what the next q1 will take
@@ -3178,6 +3633,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         if (total == 0 || !pred_hbuf) { pred.clear(); predx[0].clear(); predx[1].clear(); pred_in_split.clear(); }
         else { pred_hbase = (uint8_t *) ggml_backend_buffer_get_base(pred_hbuf); }
+        for (auto & v : pred_in_split) { std::sort(v.begin(), v.end()); }   // the nearest ranking first: its layer spends the link before the ones behind it
         pred_S.assign(pred.size(), 0.0);
         pred_cap.assign(pred.size(), -1);
         for (int j = 0; j < sched->n_splits; j++) {
@@ -3209,35 +3665,41 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     const auto pf_issued = [&](int ri, double bytes, double rate) {
         if (rate > 0.0) { pfu_free[ri] = std::max(pfu_free[ri], (double) ggml_time_us()) + bytes / rate; }
     };
-    // What layer T stages for tensor `input`: q1 and q2 by rank, nearest ranking first. held(id): the expert costs no upload (on the card, computed by another, already in the slot).
-    // Returns the experts q1 sends. GGML_PRED_KM=m (default: GGML_PRED_K experts): q1 takes the top m x (experts a token uses) of each ranking; GGML_PRED_KM2=m2: q2 takes ranks up to m2 x.
-    // GGML_PRED_BUDGET=b caps the staged count at b x (experts a token uses).
+    // What layer T stages for tensor `input` from its newest ranking, the one a nearer layer made knows better. held(id) = no upload (on the card, computed by another, already in the slot).
+    // q1, always: a token's first k1 ranks. q2, as far as cap_new allows: per token the next ranks that cost an upload, what the card holds takes no place, until the token sent k2 (user 2026-11-02:
+    // "skip and oversample 16 from next not yet in vram"; a link that cannot carry them sends fewer). Round by round, so the cap drops the worst ranks of all tokens. Returns the experts q1 sends.
+    // GGML_PRED_KM=m (default: GGML_PRED_K experts): k1 = m x (experts a token uses); GGML_PRED_KM2=m2: k2 = m2 x. GGML_PRED_BUDGET=b caps the staged count at b x (experts a token uses).
     const auto pred_pick = [&](int T, const ggml_tensor * input, int n_used, int64_t cap_new, auto && held, std::vector<uint8_t> & wanted) -> int64_t {
         static const double km  = getenv("GGML_PRED_KM")     ? atof(getenv("GGML_PRED_KM"))     : 0;
         static const double km2 = getenv("GGML_PRED_KM2")    ? atof(getenv("GGML_PRED_KM2"))    : 0;
         static const double bud = getenv("GGML_PRED_BUDGET") ? atof(getenv("GGML_PRED_BUDGET")) : 0;
         const int64_t k1 = pred_m > 0.0 ? (int64_t) n_used : km  > 0 ? (int64_t) (km *n_used + 0.5) : pred_k;
-        const int64_t k2 = pred_m > 0.0 ? (int64_t) (pred_m*n_used + 0.5) : km2 > 0 ? (int64_t) (km2*n_used + 0.5) : k1;
+        const int64_t k2 = std::max(k1, pred_m > 0.0 ? (int64_t) (pred_m*n_used + 0.5) : km2 > 0 ? (int64_t) (km2*n_used + 0.5) : k1);
         const int64_t cap = bud > 0 ? (int64_t) (bud*n_used + 0.5) : INT64_MAX;
         wanted.assign((size_t) input->ne[2], 0);
+        const pred_entry * e = NULL;
+        for (int lag = 2; lag >= 0; --lag) {
+            const std::vector<pred_entry> & pv = lag == 0 ? pred : predx[lag - 1];
+            if (T < (int) pv.size() && pv[T].prod >= 0 && pv[T].queued) { e = &pv[T]; }
+        }
+        if (e == NULL) { return 0; }
+        if (e->ev) { ggml_backend_event_synchronize(e->ev); }
+        const int32_t * rk = (const int32_t *) (pred_hbase + e->off);
+        std::vector<int64_t> at((size_t) e->ne1, 0), sent((size_t) e->ne1, 0);   // per token: the next rank to read, the experts it sent
         int64_t n_want = 0, n_new = 0, n_q1 = 0;
-        for (int tier = 0; tier < 2 && n_want < cap; ++tier) {
-            const int64_t r0 = tier == 0 ? 0 : k1, r1 = tier == 0 ? k1 : k2;
-            for (int lag = 0; lag < 3 && r0 < r1; ++lag) {
-                const std::vector<pred_entry> & pv = lag == 0 ? pred : predx[lag - 1];
-                if (T >= (int) pv.size() || pv[T].prod < 0 || !pv[T].queued) { continue; }
-                const pred_entry & e = pv[T];
-                if (e.ev) { ggml_backend_event_synchronize(e.ev); }
-                const int32_t * rk = (const int32_t *) (pred_hbase + e.off);
-                const int64_t rr1 = std::min<int64_t>(r1, e.ne0);
-                for (int64_t r = r0; r < rr1 && n_want < cap && (tier == 0 || n_new < cap_new); ++r) {
-                    for (int64_t t = 0; t < e.ne1 && n_want < cap && (tier == 0 || n_new < cap_new); ++t) {
-                        const int32_t id = rk[t*e.ne0 + r];
-                        if (id >= 0 && id < input->ne[2] && !wanted[id]) { wanted[id] = 1; n_want++; n_new += !held((int64_t) id); }
+        for (int64_t round = 0; round < k1 + k2 && n_want < cap && (round < k1 || n_new < cap_new); ++round) {
+            for (int64_t t = 0; t < e->ne1 && n_want < cap && (round < k1 || n_new < cap_new); ++t) {
+                while (at[t] < e->ne0 && sent[t] < k2) {
+                    const int32_t id = rk[t*e->ne0 + at[t]++];
+                    const bool none = id < 0 || id >= input->ne[2] || held((int64_t) id);
+                    if (!none) {
+                        if (!wanted[id]) { wanted[id] = 1; n_want++; n_new++; }
+                        sent[t]++;
                     }
+                    if (!none || round < k1) { break; }
                 }
             }
-            if (tier == 0) { n_q1 = n_new; }
+            if (round + 1 == k1) { n_q1 = n_new; }
         }
         return n_q1;
     };
@@ -3251,7 +3713,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         double bytes = 0.0;
         int64_t run0 = -1;
         for (int64_t id = q.lo; id <= q.hi; ++id) {
-            const bool need = id < q.hi && want[id] && !q.filled[(size_t) (id - q.lo)] && (q.far.empty() || !q.far[id]);
+            const bool need = id < q.hi && want[id] && !q.filled[(size_t) (id - q.lo)] && (q.remote.empty() || !q.remote[id]);
             if (need) {
                 if (run0 < 0) { run0 = id; }
                 q.filled[(size_t) (id - q.lo)] = 1;
@@ -3262,7 +3724,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const bool next_empty = id < q.hi && !q.filled[(size_t) (id - q.lo)];
                 const size_t o = (size_t) run0*esz;
                 const size_t len = (size_t) (id - run0)*esz + (id == q.hi ? padE : (next_empty ? ipad : 0));
-                ggml_backend_tensor_set_async(LR->backend, q.input_cpy, (const char *) q.input->data + o, o, len);
+                ggml_backend_sched_upload_weight(sched, LR->backend, q.input, q.input_cpy, o, len);
                 bytes += (double) (id - run0)*esz;
                 ggml_backend_sched_upload_add(sched->backends[backend_id]->device, (uint64_t) (id - run0)*esz);
                 run0 = -1;
@@ -3275,7 +3737,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     };
     // GGML_PF_STATS=1: one line per prompt graph on stderr, how many splits were staged by the prefetch ring and why the others were not (see prefetch_target for 1..5)
     static const bool pf_stats = getenv("GGML_PF_STATS") != NULL;
-    int pfs_fired = 0, pfs_why[7] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0, pfs_off = pf_on ? 0 : 1;
+    int pfs_fired = 0, pfs_why[7] = {0}, pfs_card = 0, pfs_dev = 0, pfs_prep = 0;
     double pfs_res_b = 0.0, pfs_up_b = 0.0;   // staged bytes copied on the card from its expert cache / uploaded from host memory
     // GGML_PF_TRACE=1: for graphs of 300+ splits, one line per staged copy (split, card, expert range, microseconds since the graph started, the split being launched at that moment)
     // and one per launched split (card, first node), to read the issue order of both cards' copies against an nsys timeline.
@@ -3376,18 +3838,20 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // fork (GGML_PRED_K): this layer's ranking is not on its way yet: the upload is issued after the launch that queues it (fire_ahead comes back after every
         // launch, and nothing of this card overtakes a deferred upload)
         int pred_T = -1;
-        bool pred_far = false;
+        int pred_look = 0;
         if (pred_k > 0 && !pred.empty()) {
             int T = -1;
             if (sscanf(input->name, "blk.%d.", &T) == 1 && T >= 0 && T < (int) pred.size() && pred[T].prod >= 0) {
                 if (!pred[T].queued) {
-                    // --moe pp-depth=2: the ranking made a layer earlier is there, and q1 of this layer fits in the time left: it goes now, the nearer ranking tops the slot up
+                    // --moe pp-depth: a ranking made earlier is there, and its q1 fits in what the nearer layers leave of the time to the next layer's start: it goes now, each nearer ranking tops the slot up
+                    for (int lag = 1; lag < pred_depth && pred_look == 0; ++lag) {
+                        if (T < (int) predx[lag - 1].size() && predx[lag - 1][T].prod >= 0 && predx[lag - 1][T].queued) { pred_look = lag; }
+                    }
                     const struct sched_pf_ring * Rf = ggml_backend_sched_pf_ring_for(sched, sched->backends[s->backend_id]->device);
-                    const double left = Rf ? pf_time_left((int) (Rf - sched->prefetch_ring), T) : -1.0;
+                    const double left = Rf && pred_look > 0 ? pf_time_left((int) (Rf - sched->prefetch_ring), T - pred_look) : -1.0;
                     const double rt   = ggml_backend_sched_pf_rate(sched->backends[s->backend_id]->device);
-                    const bool far_ok = pred_depth > 1 && T < (int) predx[0].size() && predx[0][T].prod >= 0 && predx[0][T].queued && left >= 0.0 && rt > 0.0 && pred_q1 * pred_S[T] / rt <= left;
+                    const bool far_ok = left >= 0.0 && rt > 0.0 && pred_q1 * pred_S[T] / rt <= left;
                     if (!far_ok) { pf_deferred = true; return; }
-                    pred_far = true;
                 }
                 pred_T = T;
             }
@@ -3443,6 +3907,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         input_cpy->buffer = pf_slot_buf[ri][slot];
         input_cpy->data   = pf_slot_data[ri][slot];
+        // The slot rotates from graph to graph (ring cursor), so a reused graph's split may read its weights from another slot than at its capture. A new uid
+        // makes the CUDA graph cache compare the split's nodes (the uid fast path compares nothing) and capture again when the address changed; a replay would
+        // otherwise read the slot of an earlier pass, which by now holds another layer's experts (the same kind of stale address as the scratch region of
+        // 2026-10-28). Prompt passes only: decode graphs stage nothing.
+        s->graph.uid = ggml_graph_next_uid();
         // Only the experts this MUL_MAT_ID owns (--moe prefill-split gives each card an id range, op_params 8 and 9; 0 is the precision, 1 the skip flag, 3 the src1 precision): one copy of that contiguous range,
         // not the whole tensor. The padding after the range is the MMQ rule of sched_copy_experts: the next expert's first bytes must not hold NaNs.
         const ggml_tensor * mm_node = s->graph.nodes[0];
@@ -3474,8 +3943,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             for (int64_t id = p.lo; id < p.hi; ++id) {
                 if (where[(size_t) (id - p.lo)] != (const void *) 1) { continue; }
                 where[(size_t) (id - p.lo)] = NULL;
-                if (p.far.empty()) { p.far.assign((size_t) input->ne[2], 0); }
-                p.far[id] = 1;
+                if (p.remote.empty()) { p.remote.assign((size_t) input->ne[2], 0); }
+                p.remote[id] = 1;
             }
             // fork (GGML_PRED_K): the experts to stage by prediction; empty = all of them
             std::vector<uint8_t> wanted;
@@ -3485,27 +3954,25 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const int n_used = s->graph.n_nodes > 0 && s->graph.nodes[0]->src[2] ? (int) s->graph.nodes[0]->src[2]->ne[0] : 8;
                 const bool first_of_layer = pred_cap[pred_T] < 0;
                 if (first_of_layer) {
-                    const double left = pf_time_left(ri, pred_T), S = pred_S[pred_T];
-                    // with a second layer to serve, its q1 comes before this layer's q2
-                    const double keep = pred_depth > 1 && pf_rt > 0.0 ? pred_q1 * S / pf_rt : 0.0;
-                    pred_cap[pred_T] = left >= 0.0 && pf_rt > 0.0 && S > 0.0 ? (int64_t) (std::max(0.0, left - keep) * pf_rt / S) : INT64_MAX;
+                    const double left = pf_time_left(ri, pred_T - pred_look), S = pred_S[pred_T];
+                    pred_cap[pred_T] = left >= 0.0 && pf_rt > 0.0 && S > 0.0 ? (int64_t) (left * pf_rt / S) : INT64_MAX;
                 }
-                const auto held = [&](int64_t id) { return id < p.lo || id >= p.hi || where[(size_t) (id - p.lo)] != NULL || (!p.far.empty() && p.far[id]); };
+                const auto held = [&](int64_t id) { return id < p.lo || id >= p.hi || where[(size_t) (id - p.lo)] != NULL || (!p.remote.empty() && p.remote[id]); };
                 const int64_t n_q1 = pred_pick(pred_T, input, n_used, pred_cap[pred_T], held, wanted);
                 if (first_of_layer) { pred_q1 = (double) n_q1; }
                 p.partial = true;
                 p.layer   = pred_T;
-                p.from_far = pred_far;
+                p.look    = pred_look;
                 p.filled.assign((size_t) (p.hi - p.lo), 0);
                 for (int64_t id = p.lo; id < p.hi; ++id) { pfs_pred_exp += wanted[id]; }
                 pfs_pred_t++;
             }
-            if (!p.far.empty()) {
+            if (!p.remote.empty()) {
                 if (wanted.empty()) { wanted.assign((size_t) input->ne[2], 1); p.filled.assign((size_t) (p.hi - p.lo), 0); }
-                for (int64_t id = p.lo; id < p.hi; ++id) { if (p.far[id]) { wanted[id] = 0; } }
+                for (int64_t id = p.lo; id < p.hi; ++id) { if (p.remote[id]) { wanted[id] = 0; } }
             }
             if ((n_res <= 0 || where_buf == NULL) && wanted.empty()) {
-                ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + off, off, (size_t) (p.hi - p.lo)*esz + pad);
+                ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, off, (size_t) (p.hi - p.lo)*esz + pad);
                 pfs_up_b += (double) (p.hi - p.lo)*esz;
                 ggml_backend_sched_upload_add(s_backend->device, (uint64_t) (p.hi - p.lo)*esz);
             } else {
@@ -3546,14 +4013,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     if (run0 >= 0) {   // a run of missing experts ends here: one upload (with the padding when it reaches the range's end, or a skipped expert follows)
                         const size_t o = (size_t) run0*esz;
                         const size_t n = (size_t) (id - run0)*esz + (id == p.hi ? pad : (skip ? ipad : 0));
-                        ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + o, o, n);
+                        ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, o, n);
                         pfs_up_b += (double) (id - run0)*esz;
                         ggml_backend_sched_upload_add(s_backend->device, (uint64_t) (id - run0)*esz);
                         run0 = -1;
                     } else if (skip && id > p.lo && where[(size_t) (id - 1 - p.lo)] != NULL) {   // a skipped expert behind a resident one: its first bytes are the resident one's padding
-                        ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + (size_t) id*esz, (size_t) id*esz, ipad);
+                        ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, (size_t) id*esz, ipad);
                     } else if (id == p.hi && pad > 0) {   // the range ended with a resident expert: the padding bytes still come from host memory
-                        ggml_backend_tensor_set_async(R->backend, input_cpy, (const char *) input->data + (size_t) p.hi*esz, (size_t) p.hi*esz, pad);
+                        ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, (size_t) p.hi*esz, pad);
                     }
                     if (res) {
                         srcs.push_back(where[(size_t) (id - p.lo)]);
@@ -3801,7 +4268,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (pf && split->inputs[input_id] == pf->input) {
                 continue;   // staged by the prefetch
             }
-            if (!ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
+            if (!ggml_backend_sched_is_host_weight(split->inputs[input_id]) && sched->hv_tensor_used[hash_id(split->inputs[input_id])]) {
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
         }
@@ -3811,7 +4278,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (pf && split->inputs[input_id] == pf->input) {
                 continue;
             }
-            if (ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
+            if (ggml_backend_sched_is_host_weight(split->inputs[input_id]) && sched->hv_tensor_used[hash_id(split->inputs[input_id])]) {
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id], d2h_pending);
             }
         }
@@ -3842,7 +4309,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     g_cs_cur_entry = g_cs_cur_set >= 0 ? cs_idx[split_id + 1] : -1;   // these copies feed the next split
                     std::vector<ggml_backend_t> nx_d2h;
                     for (int i = 0; i < nx->n_inputs; i++) {
-                        if (!ggml_backend_sched_is_host_weight(nx->inputs[i])) {
+                        if (!ggml_backend_sched_is_host_weight(nx->inputs[i]) && sched->hv_tensor_used[hash_id(nx->inputs[i])]) {
                             ggml_backend_sched_copy_input(sched, nx, nx->inputs[i], nx_d2h);
                         }
                     }
@@ -3855,7 +4322,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     static const bool ahead_w = !(getenv("GGML_SCHED_COPY_AHEAD_W") && atoi(getenv("GGML_SCHED_COPY_AHEAD_W")) == 0);
                     if (ahead_w && !(pf_on && lookahead[split_id + 1].slot != -1)) {
                         for (int i = 0; i < nx->n_inputs; i++) {
-                            if (ggml_backend_sched_is_host_weight(nx->inputs[i])) {
+                            if (ggml_backend_sched_is_host_weight(nx->inputs[i]) && sched->hv_tensor_used[hash_id(nx->inputs[i])]) {
                                 ggml_backend_sched_copy_input(sched, nx, nx->inputs[i], nx_d2h);
                             }
                         }
@@ -4007,12 +4474,17 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
             }
         }
+        if (g_split_hook_fork) { g_split_hook_fork(split_backend, &split->graph, split_id, sched->n_splits, split->graph.uid); }
         if (!sched->callback_eval) {
             static const int nan_mode = getenv("GGML_SCHED_NAN_CHECK") ? atoi(getenv("GGML_SCHED_NAN_CHECK")) : 0;
             static long nan_graph2 = 0;
             enum ggml_status ec = GGML_STATUS_SUCCESS;
-            if (nan_mode == 2 && sched->n_splits >= ggml_sched_nan_min_splits()) {
-                if (split_id == 0) { nan_graph2++; }
+            // GGML_SCHED_NAN_CHECK_ONLY=word: only the splits whose first node's name holds the word run node by node, the rest at full speed: an input that holds NaN by design
+            // (Qwen Next's inp_mixed_embd under poison) cannot take the one report, and a pass that a NaN check of every node would take minutes for stays short
+            static const char * const nan_only = getenv("GGML_SCHED_NAN_CHECK_ONLY");
+            if (split_id == 0 && nan_mode == 2) { nan_graph2++; }
+            if (nan_mode == 2 && sched->n_splits >= ggml_sched_nan_min_splits() &&
+                    (!nan_only || (split->graph.n_nodes > 0 && strstr(split->graph.nodes[0]->name, nan_only)))) {
                 ggml_sched_trace_install();
                 for (int nj = 0; nj < split->graph.n_nodes && ec == GGML_STATUS_SUCCESS; nj++) {
                     ggml_sched_trace_note(sched, split_id, nj, nan_graph2);
@@ -4066,22 +4538,28 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
             if (!pred_in_split.empty() && !pred_in_split[split_id].empty()) {
                 pred_queue(split_id);
-                // the ranking made right behind the layer before: the slots staged from the earlier ranking take what this one adds
+                // a nearer ranking: the slots staged from a farther one take what this one adds, the nearest layer first, in this look's time (pred_in_split is sorted by lag)
                 for (int code : pred_in_split[split_id]) {
-                    if ((code >> 12) != 0) { continue; }
-                    const int T = code & 4095;
+                    const int lag = code >> 12, T = code & 4095;
+                    bool first_of_layer = true;
                     for (int j = split_id + 1; j < sched->n_splits; j++) {
                         prefetch_pending & q = lookahead[j];
-                        if (q.slot < 0 || !q.partial || !q.from_far || q.layer != T) { continue; }
+                        if (q.slot < 0 || !q.partial || q.look <= lag || q.layer != T) { continue; }
+                        const double rt = ggml_backend_sched_pf_rate(sched->backends[splits[j].backend_id]->device);
+                        if (first_of_layer) {
+                            const double left = pf_time_left(q.ring, T - lag);
+                            pred_cap[T] = left >= 0.0 && rt > 0.0 && pred_S[T] > 0.0 ? (int64_t) (left * rt / pred_S[T]) : INT64_MAX;
+                            first_of_layer = false;
+                        }
                         const int n_used = splits[j].graph.nodes[0]->src[2] ? (int) splits[j].graph.nodes[0]->src[2]->ne[0] : 8;
                         std::vector<uint8_t> want;
-                        const auto held = [&](int64_t id) { return id < q.lo || id >= q.hi || q.filled[(size_t) (id - q.lo)] || (!q.far.empty() && q.far[id]); };
+                        const auto held = [&](int64_t id) { return id < q.lo || id >= q.hi || q.filled[(size_t) (id - q.lo)] || (!q.remote.empty() && q.remote[id]); };
                         pred_pick(T, q.input, n_used, pred_cap[T], held, want);
                         int n_top = 0;
                         const double b = pf_fill(q, splits[j].backend_id, want, &n_top);
                         pfs_up_b += b;
-                        pf_issued(q.ring, b, ggml_backend_sched_pf_rate(sched->backends[splits[j].backend_id]->device));
-                        q.from_far = false;
+                        pf_issued(q.ring, b, rt);
+                        q.look = lag;
                     }
                 }
             }
@@ -4258,6 +4736,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->hash_set    = ggml_hash_set_new(graph_size);
     sched->hv_tensor_backend_ids = (int *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
     sched->hv_tensor_copies      = (ggml_tensor **) malloc(sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
+    sched->hv_tensor_used        = (bool *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
 
     // At most one split per node is the proof-safe bound, but it costs ~21 KB per node (30 inputs x 2 tensors per split, plus the id arrays): at the 575k-node graph
     // of a 14336-token micro-batch that is 12 GB, committed at once. Linux overcommits it unseen; Windows refuses ("GGML_ASSERT(ctx->mem_buffer != NULL)" in ggml_init
@@ -4332,6 +4811,10 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
             ggml_backend_free(R->backend);
         }
     }
+    for (int r = 0; r < sched->rd_n_rings; r++) {   // every stream was synchronized above: no copy reads these chunks now
+        for (int i = 0; i < GGML_SCHED_RD_CHUNKS; i++) { ggml_backend_event_free(sched->rd_ring[r].ev[i]); }
+        ggml_backend_buffer_free(sched->rd_ring[r].buf);
+    }
     ggml_gallocr_free(sched->galloc);
     ggml_free(sched->ctx);
     ggml_hash_set_free(&sched->hash_set);
@@ -4342,6 +4825,7 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     free(sched->graph_inputs);
     free(sched->hv_tensor_backend_ids);
     free(sched->hv_tensor_copies);
+    free(sched->hv_tensor_used);
     free(sched->node_backend_ids);
     free(sched->leaf_backend_ids);
     free(sched->prev_node_backend_ids);
@@ -4492,6 +4976,7 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
         ggml_hash_set_reset(&sched->hash_set);
         memset(sched->hv_tensor_backend_ids, -1, sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
         memset(sched->hv_tensor_copies,       0, sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
+        memset(sched->hv_tensor_used,         0, sched->hash_set.size * sizeof(sched->hv_tensor_used[0]));
         sched->is_reset = true;
     }
     sched->is_alloc = false;
@@ -4711,6 +5196,11 @@ static struct ggml_tensor * graph_copy_dup_tensor(struct ggml_hash_set hash_set,
     }
 
     struct ggml_tensor * dst = ggml_dup_tensor_layout(src->data && !src->view_src ? ctx_allocated : ctx_unallocated, src);
+    // fork: ggml_dup_tensor_layout gathers a gappy tensor (the scheduler's copies between cards). This copy keeps the source's memory layout: a view shares its parent's bytes, and
+    // without its strides the unit tests' CPU reference read a stridden id view as contiguous (360 false failures of MUL_MAT_ID with n_used < n_mats, 2026-11-02).
+    for (int i = 0; i < GGML_MAX_DIMS; i++) {
+        dst->nb[i] = src->nb[i];
+    }
     if (src->view_src != NULL) {
         dst->view_src = graph_copy_dup_tensor(hash_set, node_copies, ctx_allocated, ctx_unallocated, src->view_src);
         dst->view_offs = src->view_offs;
@@ -4971,6 +5461,9 @@ static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_i = {
     /* .cpy_tensor      = */ ggml_backend_cpu_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_cpu_buffer_clear,
     /* .reset           = */ NULL,
+    /* .set_tensor_n    = */ NULL,
+    /* .get_tensor_n    = */ NULL,
+    /* .cpy_tensor_n    = */ NULL,
 };
 
 static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_from_ptr_i = {
@@ -4985,6 +5478,9 @@ static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_from_ptr_i = {
     /* .cpy_tensor      = */ ggml_backend_cpu_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_cpu_buffer_clear,
     /* .reset           = */ NULL,
+    /* .set_tensor_n    = */ NULL,
+    /* .get_tensor_n    = */ NULL,
+    /* .cpy_tensor_n    = */ NULL,
 };
 
 // CPU backend buffer type

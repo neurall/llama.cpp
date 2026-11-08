@@ -1,0 +1,92 @@
+run 22652 | dspark_fix3 | tetrisc | Qwen3.8-27B-IQ4_NL.gguf | decode 45.65 t/s | prompt 233.3 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-03 08:30:53
+
+The user is asking for the smallest HTML Tetris game. "Smallest" is the key constraint — they want a minimal, compact Tetris in a single HTML file. But I still want it to be a genuinely playable, polished Tetris — small in code size, not small in quality. The tension: "smallest" means minimal code, but I can still make it feel alive with clever CSS (glow, animations, score pop) without bloating the JS.
+
+Let me think about what "smallest" means. Probably: single file, minimal code, but functional. I should aim for a truly compact implementation — maybe 3–6KB — while still including:
+- 10x20 board
+- 7 tetrominoes with rotation
+- Collision detection
+- Line clearing
+- Score
+- Next piece preview
+- Game over + restart
+- Keyboard controls (arrows, space for hard drop, P for pause)
+- Some visual polish: colored pieces, subtle glow, line clear flash animation, score animation
+
+I can use canvas for the board — that's the most compact rendering approach. Canvas + a small amount of CSS.
+
+Let me write a compact but complete Tetris.
+
+Design decisions for compactness:
+- Single `<canvas>` for the board, small canvas or DOM for the next piece.
+- Use a 2D array grid of 10x20.
+- Pieces defined as rotation states or as a rotation function.
+
+Compact approach: define each piece as a matrix, rotate by transposing + reversing.
+
+Let me write it:
+
+```html
+<!DOCTYPE html>
+<html><head><meta charset=utf-8><title>Tetris</title>
+<style>
+body{background:#0b0e1a;display:flex;flex-direction:column;align-items:center;font-family:monospace;color:#fff}
+...
+</style></head><body>
+<canvas id=c width=300 height=600></canvas>
+...
+<script>
+```
+
+Let me design the game logic compactly:
+
+```js
+const W=10,H=20,S=30,c=document.getElementById('c'),x=c.getContext('2d');
+let g,p,n,sc,ov,tm;
+const P=[ // pieces as [shape matrix, color]
+ [[1,1,1,1],'#00e5ff'],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[1,1,0],[0,1,1]],
+ [[0,1,1],[1,1,0]],
+ [[1,1,0],[1,0,0]],
+ [[0,0,1],[0,1,1]]
+];
+```
+
+Colors: I'll give each piece its own color.
+
+Rotation: `m.map((r,i)=>m[0].map((_,j)=>m[j][i])).map(r=>r.reverse())` — rotate clockwise.
+
+Actually, the standard rotation: `rot(m)=m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Game loop with setInterval or requestAnimationFrame with a drop timer.
+
+Let me write it out fully:
+
+```js
+const W=10,H=20,S=30;
+const cv=document.createElement('canvas');cv.width=W*S;cv.height=H*S;document.body.appendChild(cv);
+const cx=cv.getContext('2d');
+const PC=[ // [matrix, color]
+ [[[1,1,1,1]],'#38bdf8'],
+ [[[1,1],[1,1]],'#facc15'],
+ [[[0,1,0],[1,1,1]],'#a78bfa'],
+ [[[1,1,0],[0,1,1]],'#fb923c'],
+ [[[0,1,1],[1,1,0]],'#4ade80'],
+ [[[1,1,0],[1,0,0]],'#f472b6'],
+ [[[0,0,1],[0,1,1]],'#f87171']];
+```
+
+Hmm, let me keep it simpler. Let me write the whole thing carefully.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tetris</title>
+<style>
+  html,body{margin:0;height:100%;}
+  body{display
+---

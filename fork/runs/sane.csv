@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+sl-q36,qwen36,1,pf128k,1000,"--moe state=/p/bw/data/state_sane.ini",--ctx 140000 --hog-gpu 4.5
+sl-glm,glm,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini",--ctx 140000
+sl-qn,qn_iq4xs,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini",--ctx 140000
+sl-mimo,mimo,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini",--ctx 140000
+sl-ds,ds,1,pf128k,1000,"--moe state=/p/bw/data/state_sane.ini",--clamp 16000 --ctx 20992
+sl-glm-q8,glm,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini -ctk q8_0 -ctv q8_0",--ctx 140000
+sl-qn-q8,qn_iq4xs,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini -ctk q8_0 -ctv q8_0",--ctx 140000
+sl-mimo-q8,mimo,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini -ctk q8_0 -ctv q8_0",--ctx 140000

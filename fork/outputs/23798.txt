@@ -1,0 +1,237 @@
+run 23798 | rel_b14244 | pf12k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 149.2 t/s | prompt 6620.4 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 18:03:06
+
+<think>
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Input:** A C++ source file containing two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+   - **Task:** Return the complete fixed version of the source file. Every line must be included. Every bug must be fixed. Each change must be marked by a comment. Do not summarize, skip unchanged parts, or stop early.
+   - **Constraints:** Strict formatting, line-by-line preservation, bug fixes with comments.
+
+2.  **Identify Potential Bugs/Issues in the Code:**
+   I need to carefully scan the provided code for common C++ errors, logical flaws, syntax issues, or missing includes/definitions. Since this is a large file, I'll look for:
+   - Missing includes or forward declarations
+   - Syntax errors (e.g., mismatched braces, missing semicolons)
+   - Logical bugs (e.g., incorrect loop conditions, missing checks)
+   - Undefined variables/functions
+   - Potential compilation errors
+   - Inconsistent naming or type mismatches
+   - Missing `#include` for standard libraries
+   - Potential runtime errors or undefined behavior
+
+   Let's go through the code systematically:
+
+   *Part 1: `common/json-schema-to-grammar.cpp`*
+   - Includes: `json-schema-to-grammar.h`, `common.h`, `trie.h`, `unicode.h`. Seems okay.
+   - `using json = common_json;` - OK.
+   - `build_repetition`: Looks fine.
+   - `build_min_max_int`: Uses `string_repeat` and `string_split` and `string_join` which are likely from `common.h`. OK.
+   - `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`: OK.
+   - `is_reserved_name`: OK.
+   - `INVALID_RULE_CHARS_RE`, etc.: OK.
+   - `replacePattern`: Uses `std::regex_search`. OK.
+   - `format_literal`: OK.
+   - `gbnf_escape_length`: OK.
+   - `common_chat_schema_converter` class:
+     - `friend std::string build_grammar(...)`: OK.
+     - `_dotall`, `_rules`, `_refs_being_resolving`, `_errors`, `_warnings`: OK.
+     - `as<T>`: OK.
+     - `_add_rule`: OK.
+     - `_generate_union_rule`: OK.
+     - `unsupported_pattern`, `invalid_pattern`: OK.
+     - `_visit_pattern`: OK.
+     - `_pattern_to_rule`: Complex regex parsing. Looks mostly fine. Potential issue: `string_split`, `string_join`, `string_repeat` are used but not explicitly included. They are likely in `common.h`. I'll assume they exist.
+     - `_not_strings`: Uses `common_trie`. OK.
+     - `_resolve_ref`: OK.
+     - `_build_object_rule`: Complex. Uses `string_join`, `string_split`? No, uses `std::vector`, `std::unordered_map`. OK.
+     - `_add_primitive`: OK.
+     - `visit`: Switch on `schema.kind()`. Uses `common_chat_schema::KIND_*`. OK.
+     - `check_errors`, `format_grammar`: OK.
+   - `json_schema_to_grammar` functions: OK.
+   - `build_grammar`: OK.
+
+   *Part 2: `common/arg.cpp`*
+   - Includes: `arg.h`, `build-info.h`, `chat.h`, `common.h`, `download.h`, `json-schema-to-grammar.h`, `json.h`, `llama.h`, `log.h`, `sampling.h`, `speculative.h`, `preset.h`.
+   - Windows includes: `#include <windows.h>`, `#include <shellapi.h>`. `shellapi.h` is usually `shlwapi.h` or `shellapi.h` might be non-standard. Actually, `shellapi.h` is not standard. It's usually `shlwapi.h` or `windows.h` covers it. I'll note it but keep it as is unless it's a clear bug. Actually, `shellapi.h` might be a typo for `shlwapi.h` or just a custom header. I'll leave it but add a comment if needed. Wait, `#include <shellapi.h>` is likely a mistake. Standard is `#include <windows.h>` and `#include <shlwapi.h>` or just rely on `windows.h`. I'll fix it to `#include <shlwapi.h>` or just remove it if it's not needed. Actually, `shellapi.h` is sometimes used in older code, but it's non-standard. I'll change it to `#include <shlwapi.h>` or just leave it with a comment. Let's stick to standard: `#include <windows.h>` is enough. I'll add a comment fixing it.
+   - `#include <cinttypes>` -> Typo! Should be `#include <cstdint>`.
+   - `#include <climits>` -> OK.
+   - `#include <cmath>` -> OK.
+   - `#include <cstdarg>` -> OK.
+   - `#include <filesystem>` -> OK.
+   - `#include <fstream>` -> OK.
+   - `#include <list>` -> OK.
+   - `#include <numeric>` -> OK.
+   - `#include <regex>` -> OK.
+   - `#include <set>` -> OK.
+   - `#include <string>` -> OK.
+   - `#include <system_error>` -> OK.
+   - `#include <thread>` -> OK.
+   - `#include <vector>` -> OK.
+   - Linux/AIX limits includes: `#include <linux/limits.h>` -> Non-standard. Should be `#include <limits.h>` or `#include <sys/limits.h>`. I'll fix to `#include <limits.h>`.
+   - `_AIX` includes `#include <sys/limits.h>` -> OK.
+   - `#include <sys/syslimits.h>` -> Non-standard. Should be `#include <limits.h>`.
+   - `LLAMA_MAX_URL_LENGTH 2084` -> OK.
+   - `using json = common_json;` -> OK.
+   - `using namespace common_arg_utils;` -> OK.
+   - `mmproj_examples` -> OK.
+   - `read_file` -> OK.
+   - `get_common_arg_defs` -> OK.
+   - `common_arg` methods -> OK.
+   - `get_value_from_env` -> OK.
+   - `has_value_from_env` -> OK.
+   - `break_str_into_lines` -> OK.
+   - `to_string` -> OK.
+   - `get_args`, `get_env` -> OK.
+   - `parse_tensor_buffer_overrides` -> Uses `ggml_backend_load_all()`, `ggml_backend_dev_count()`, etc. Assumes GGML headers are included elsewhere. OK.
+   - `clean_file_name` -> OK.
+   - `handle_model_result` -> OK.
+   - `kv_cache_types` -> OK.
+   - `kv_cache_type_from_str` -> OK.
+   - `get_all_kv_cache_types` -> OK.
+   - `parse_bool_value` -> OK.
+   - `arg_removed` -> OK.
+   - `get_default_local_path` -> OK.
+   - `spec_types_is_default` -> Function is cut off at the end! The prompt says "Do not stop early." I need to complete the file or note that it's truncated. The prompt says "Return the complete fixed version of the following source file: every line of it, from the first line to the last". The input ends abruptly at `static bool spec_types_is_default(const common_params & params) {`. I will assume it's a truncated input and I should just output what's given, but fix the bugs in the provided text. I'll keep the truncation as is, but fix the bugs in the provided lines.
+
+   Let's systematically identify bugs to fix:
+   1. `#include <cinttypes>` -> `#include <cstdint>`
+   2. `#include <shellapi.h>` -> `#include <shlwapi.h>` (or just remove, but I'll fix to standard)
+   3. `#include <linux/limits.h>` -> `#include <limits.h>`
+   4. `#include <sys/syslimits.h>` -> `#include <limits.h>`
+   5. `string_split<std::string>(value, ',')` in `parse_tensor_buffer_overrides` -> `string_split` might not take a template argument like that. Usually it's `string_split(value, ',')`. I'll fix to `string_split(value, ',')`.
+   6. `static std::list<std::string> buft_overrides;` inside a function -> This is a static local variable. It's fine but might cause issues if called multiple times. I'll leave it but add a comment if needed. Actually, it's fine.
+   7. `string_replace_all(neg_env, "LLAMA_ARG_", "LLAMA_ARG_NO_");` -> `string_replace_all` is likely from `common.h`. OK.
+   8. `args_neg.empty()` check in `get_value_from_env` and `has_value_from_env` -> `args_neg` is a member of `common_arg`. It's fine.
+   9. `common_arg::get_args()` returns `args` and `args_neg`. OK.
+   10. `common_arg::get_env()` -> OK.
+   11. `break_str_into_lines` -> `std::istringstream line_stream(l);` -> `line_stream >> word` skips whitespace. OK.
+   12. `to_string` -> `ss.tellp()` is non-standard for `ostringstream`. It should be `ss.str().size()` or `ss.tellp()` might work in some implementations but is not standard. I'll fix to `ss.str().size()` or just keep `tellp()` with a comment. Actually, `tellp()` is standard for `ostream`. I'll leave it.
+   13. `#include <windows.h>` and `#include <shellapi.h>` -> I'll fix `shellapi.h` to `shlwapi.h`.
+   14. `#include <linux/limits.h>` -> `#include <limits.h>`
+   15. `#include <sys/syslimits.h>` -> `#include <limits.h>`
+   16. `string_split<std::string>(value, ',')` -> The template argument is wrong. `string_split` usually takes `(string, char)`. I'll fix to `string_split(value, ',')`.
+   17. `static std::list<std::string> buft_overrides;` inside `parse_tensor_buffer_overrides` -> This is a static local variable. It's fine.
+   18. `ggml_backend_load_all();` -> Might need a comment if it's not defined, but it's likely from `ggml.h`.
+   19. `common_chat_schema_converter` class uses `string_join`, `string_split`, `string_repeat`, `string_replace_all`. These are from `common.h`. OK.
+   20. `build_min_max_int` uses `string_repeat`. OK.
+   21. `replacePattern` uses `std::regex_search`. OK.
+   22. `INVALID_RULE_CHARS_RE` uses `regex_replace` in `_add_rule`. OK.
+   23. `GRAMMAR_LITERAL_ESCAPE_RE` uses `replacePattern`. OK.
+   24. `gbnf_escape_length` -> OK.
+   25. `_pattern_to_rule` -> `string_split` and `string_join` used. OK.
+   26. `_not_strings` -> `common_trie` used. OK.
+   27. `_resolve_ref` -> `std::regex_replace` used. OK.
+   28. `_build_object_rule` -> `string_join` used. OK.
+   29. `visit` -> `string_join` used. OK.
+   30. `json_schema_to_grammar` -> OK.
+   31. `build_grammar` -> OK.
+
+   Let's check for more subtle bugs:
+   - `#include <cinttypes>` is definitely a typo. Fix to `#include <cstdint>`.
+   - `#include <shellapi.h>` is non-standard. Fix to `#include <shlwapi.h>`.
+   - `#include <linux/limits.h>` -> `#include <limits.h>`
+   - `#include <sys/syslimits.h>` -> `#include <limits.h>`
+   - `string_split<std::string>(value, ',')` -> The template parameter is incorrect. `string_split` typically returns `std::vector<std::string>`. I'll change to `string_split(value, ',')`.
+   - `static std::list<std::string> buft_overrides;` inside a function is fine, but it's better to make it static or just a local vector. I'll leave it.
+   - `args_neg` is used but not defined in the snippet. It's presumably a member of `common_arg`. I'll assume it's defined elsewhere.
+   - `common_arg::get_args()` returns `args` and `args_neg`. OK.
+   - `common_arg::get_env()` returns `env` and `LLAMA_ARG_NO_` variant. OK.
+   - `break_str_into_lines` -> `std::istringstream line_stream(l);` -> `line_stream >> word` works. OK.
+   - `to_string` -> `ss.tellp()` is fine.
+   - `parse_tensor_buffer_overrides` -> `ggml_backend_load_all();` might be missing a header, but it's fine.
+   - `handle_model_result` struct -> OK.
+   - `kv_cache_types` -> OK.
+   - `kv_cache_type_from_str` -> OK.
+   - `get_all_kv_cache_types` -> OK.
+   - `parse_bool_value` -> OK.
+   - `arg_removed` -> OK.
+   - `get_default_local_path` -> OK.
+   - `spec_types_is_default` -> Cut off. I'll just output it as is.
+
+   Wait, let's look at `#include <shellapi.h>` again. In Windows, it's usually `#include <windows.h>` and `#include <shlwapi.h>`. I'll fix it.
+   Also, `#include <linux/limits.h>` is wrong. It should be `#include <limits.h>`.
+   `#include <sys/syslimits.h>` is wrong. It should be `#include <limits.h>`.
+   `#include <cinttypes>` -> `#include <cstdint>`.
+
+   Let's check `string_split<std::string>(value, ',')`. The template argument `<std::string>` is likely a mistake. `string_split` usually takes `(const std::string&, char)`. I'll fix to `string_split(value, ',')`.
+
+   Another potential issue: `static std::list<std::string> buft_overrides;` inside `parse_tensor_buffer_overrides`. This is a static local variable. It's fine, but it might cause issues if the function is called multiple times (it will keep growing). I'll change it to `static std::vector<std::string> buft_overrides;` or just keep it. Actually, it's fine.
+
+   Let's check `common_arg::get_value_from_env`:
+   ```cpp
+   bool common_arg::get_value_from_env(std::string & output) const {
+       if (env == nullptr) return false;
+       if (!args_neg.empty()) {
+           std::string neg_env = env;
+           string_replace_all(neg_env, "LLAMA_ARG_", "LLAMA_ARG_NO_");
+           char * neg_value = std::getenv(neg_env.c_str());
+           if (neg_value) {
+               output = "0"; // falsey
+               return true;
+           }
+       }
+       char * value = std::getenv(env);
+       if (value) {
+           output = value;
+           return true;
+       }
+       return false;
+   }
+   ```
+   This looks fine.
+
+   Check `common_arg::has_value_from_env`:
+   ```cpp
+   bool common_arg::has_value_from_env() const {
+       if (env != nullptr && !args_neg.empty()) {
+           std::string neg_env = env;
+           string_replace_all(neg_env, "LLAMA_ARG_", "LLAMA_ARG_NO_");
+           if (std::getenv(neg_env.c_str())) {
+               return true;
+           }
+       }
+       return env != nullptr && std::getenv(env);
+   }
+   ```
+   Fine.
+
+   Check `break_str_into_lines`:
+   ```cpp
+   static std::vector<std::string> break_str_into_lines(std::string input, size_t max_char_per_line) {
+       std::vector<std::string> result;
+       std::istringstream iss(input);
+       std::string line;
+       auto add_line = [&](const std::string& l) {
+           if (l.length() <= max_char_per_line) {
+               result.push_back(l);
+           } else {
+               std::istringstream line_stream(l);
+               std::string word, current_line;
+               while (line_stream >> word) {
+                   if (current_line.length() + !current_line.empty() + word.length() > max_char_per_line) {
+                       if (!current_line.empty()) result.push_back(current_line);
+                       current_line = word;
+                   } else {
+                       current_line += (!current_line.empty() ? " " : "") + word;
+                   }
+               }
+               if (!current_line.empty()) result.push_back(current_line);
+           }
+       };
+       while (std::getline(iss, line)) {
+           add_line(line);
+       }
+       return result;
+   }
+   ```
+   Fine.
+
+   Check `to_string`:
+   ```cpp
+   std::string common_arg::to_string() const {
+       const static int n_leading_spaces = 40;
+       const static int n_char_per_line_help = 70;
+       std::string leading_spaces(n_leading_spaces, ' ');
+       std::ostringstream ss;
+       auto all_args = get_args();
+       for (const auto & arg :

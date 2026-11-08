@@ -1,0 +1,70 @@
+name,model,n,test,tokens,args,extra
+pa-qwen36-stream,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream,verify=1,poison=3",--clamp 16000 --ctx 20992 --hog-gpu 4.5 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-qwen36-mix,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,poison=3",--clamp 16000 --ctx 20992 --hog-gpu 4.5 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-qwen36-chain,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=1,poison=3",--clamp 16000 --ctx 20992 --hog-gpu 4.5 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-glm-stream,glm,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-glm-mix,glm,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-glm-chain,glm,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-qn_iq4xs-stream,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-qn_iq4xs-mix,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-qn_iq4xs-chain,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-mimo-stream,mimo,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-mimo-mix,mimo,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+pa-mimo-chain,mimo,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+dbg-stop,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,ledger=2,poison=3",--clamp 16000 --ctx 20992 --hog-gpu 4.5
+dbg-nan,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,ledger=2,poison=3",--clamp 16000 --ctx 20992 --hog-gpu 4.5 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+ptp-qwen36-stream,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=4:16000
+ptp-qwen36-mix,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=4:16000
+ptp-qwen36-chain,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=4:16000
+ptp-qwen36-stream-nofuse,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=4:16000 --env GGML_CUDA_DISABLE_FUSION=1
+dbg-qn-past,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain,verify=2,ledger=1,poison=3",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=1 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1
+dbg-qn-mixnode,qn_iq4xs,1,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,ledger=2,poison=3,margin_mb=384",--clamp 16000 --ctx 20992 --env GGML_SCHED_NAN_CHECK=2 --env GGML_SCHED_NAN_CHECK_ONLY=ffn_moe_cache
+dbg-qn-nopoison,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix,verify=1,margin_mb=384",--clamp 16000 --ctx 20992
+dbg-qn-stream,qn_iq4xs,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream,margin_mb=384",--clamp 16000 --ctx 20992
+ptp-qn_iq4xs-stream,qn_iq4xs,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-qn_iq4xs-mix,qn_iq4xs,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-qn_iq4xs-chain,qn_iq4xs,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-glm-stream,glm,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-glm-mix,glm,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-glm-chain,glm,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-mimo-stream,mimo,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-mimo-mix,mimo,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-mimo-chain,mimo,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-stock-qwen36,qwen36,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptp-stock-qn_iq4xs,qn_iq4xs,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=4:16000
+ptq-qwen36-stream,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=200:1000
+ptq-qwen36-mix,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=mix",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=200:1000
+ptq-qwen36-chain,qwen36,1,pf128k,1,"--moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=chain",--clamp 100 --ctx 20992 --hog-gpu 4.5 --env RUN_TRUE_PPL=200:1000
+ptq-stock-qwen36,qwen36,1,pf128k,1,,--clamp 100 --ctx 20992 --env RUN_TRUE_PPL=200:1000
+dsq-stream,ds,2,pfbest1k,1024,"--moe pp-path=stream",
+dsp-70,ds,2,pfbest1k,1024,"--moe pp-path=stream -nm 70%",
+dsp-50,ds,2,pfbest1k,1024,"--moe pp-path=stream -nm 50%",
+dsp-60,ds,2,pfbest1k,1024,"--moe pp-path=stream -nm 60%",
+dsp-25,ds,2,pfbest1k,1024,"--moe pp-path=stream -nm 25%",
+dsp-80,ds,2,pfbest1k,1024,"--moe pp-path=stream -nm 80%",
+dsp-101,ds,2,pfbest1k,1024,"--moe pp-path=stream -nm 101",
+dsp-0,ds,2,pfbest1k,1024,"--moe pp-path=stream -nm 0",
+dsp-105,ds,2,pfbest1k,1024,"--moe pp-path=stream -nm 105",
+dsr-70,ds,2,pfbest1k,1024,"--moe pp-path=stream,read-direct=1 -nm 70%",
+dsm-70,ds,2,pfbest1k,1024,"--moe pp-path=stream,pin-mlock=1 -nm 70%",
+dsrm-70,ds,2,pfbest1k,1024,"--moe pp-path=stream,read-direct=1,pin-mlock=1 -nm 70%",
+gl-61,glm,2,pfbest1k,1024,"-nm 61",
+gl-85,glm,2,pfbest1k,1024,"-nm 85",
+gl-101,glm,2,pfbest1k,1024,"-nm 101",
+mi-61,mimo,2,pfbest1k,1024,"-nm 61",
+mi-85,mimo,2,pfbest1k,1024,"-nm 85",
+mi-101,mimo,2,pfbest1k,1024,"-nm 101",
+qi-44,qn_iq4xs,2,pfbest1k,1024,"-nm 44",
+qi-62,qn_iq4xs,2,pfbest1k,1024,"-nm 62",
+qi-all,qn_iq4xs,2,pfbest1k,1024,"",
+dsa-auto,ds,2,pfbest1k,1024,"--moe pp-path=stream",
+gla-auto,glm,2,pfbest1k,1024,"",
+mia-auto,mimo,2,pfbest1k,1024,"",
+qs-auto,qn_iq4xs,2,pfbest1k,1024,"",
+qs-30,qn_iq4xs,2,pfbest1k,1024,"-nm 30",
+qs-56,qn_iq4xs,2,pfbest1k,1024,"-nm 56",
+qt-auto,qn_iq4xs,2,pfbest1k,1024,"",
+qt-4,qn_iq4xs,2,pfbest1k,1024,"-nm 4",
+qt-16,qn_iq4xs,2,pfbest1k,1024,"-nm 16",
+q3-auto,qwen38,2,pfbest1k,1024,"",
+q3-0,qwen38,2,pfbest1k,1024,"-nm 0",

@@ -1,0 +1,11 @@
+run 22751 | rc_live_rates | pf128k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 43.74 t/s | prompt 1727.5 t/s | 60 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,dense-split=0,pp-path=stream | power 220+280 W | 2026-11-03 11:19:24
+
+<think>
+
+</think>
+
+R-9184=7364
+R-2692=1130
+R-8773=8044
+R-8424=3902
+R-4349=2953

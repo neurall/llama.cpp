@@ -1,0 +1,12 @@
+run 22605 | warm_cpu | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.15 t/s | prompt 60.6 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-glm-s200.ini,log=wk | power 220+280 W | 2026-11-03 07:23:31
+
+The user wants me to delete code in `json-schema-to-grammar.cpp` that is never used. I need to analyze the file and figure out which functions/code paths are unused.
+
+Let me think about what this file typically contains. This is from llama.cpp's `common/json-schema-to-grammar.cpp`. Let me reconstruct the full file from memory and analyze which parts are unused.
+
+The file typically contains:
+
+1. `build_repetition` - helper for building repetition rules
+2. `parse_schema` / schema parsing functions
+3. `SchemaGrammarRuleBuilder` variants: `BuiltinRuleBuilder`, `StringRuleBuilder`,
+---

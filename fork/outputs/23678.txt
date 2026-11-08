@@ -1,0 +1,108 @@
+run 23678 | direct_load2 | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.03 t/s | prompt 468.4 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini | power 220+280 W | 2026-11-07 11:23:30
+
+ends_with(".gguf")) {
+        auto meta = common_gguf_meta_get_draft(params.speculative.draft.mparams.path);
+        if (meta.has_dspark) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
+        } else if (meta.has_dflash) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH };
+        } else if (meta.has_eagle3) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 };
+        } else if (meta.has_mtp) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+        }
+    }
+
+    // handle preset
+    if (!plan.preset.url.empty()) {
+        handler.preset_path = common_download_preset_file(plan.preset, opts);
+        params.model.path = handler.preset_path;
+    }
+
+    // handle model
+    if (!plan.model_files.empty()) {
+        add_tasks(plan.model_files, plan.model_files[0], params.model);
+    }
+
+    // handle mmproj
+    if (!plan.mmproj_files.empty()) {
+        add_tasks(plan.mmproj_files, plan.mmproj_files[0], params.mmproj);
+    }
+
+    // handle draft
+    if (!plan_spec.model_files.empty()) {
+        add_tasks(plan_spec.model_files, plan_spec.model_files[0], params.speculative.draft.mparams);
+    }
+
+    // handle mtp
+    if (!plan_spec.mtp.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.mtp.url;
+        task.local_path = plan_spec.mtp.local_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    // handle dflash
+    if (!plan_spec.dflash.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dflash.url;
+        task.local_path = plan_spec.dflash.local_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    // handle eagle3
+    if (!plan_spec.eagle3.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.eagle3.url;
+        task.local_path = plan_spec.eagle3.local_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    // handle dspark
+    if (!plan_spec.dspark.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dspark.url;
+        task.local_path = plan_spec.dspark.local_path;
+        task.opts       = opts;
+        tasks.push_back(task);
+    }
+
+    // run tasks
+    if (!tasks.empty()) {
+        common_download_run_tasks(tasks);
+    }
+
+    // if the model is a preset, we need to set the model path to the preset path
+    if (!handler.preset_path.empty()) {
+        params.model.path = handler.preset_path;
+    }
+
+    // if the model is a hf repo, we need to set the model path to the first file
+    if (!plan.model_files.empty()) {
+        params.model.path = hf_cache::finalize_file(plan.model_files[0]);
+    }
+
+    // if the mmproj is a hf repo, we need to set the mmproj path to the first file
+    if (!plan.mmproj_files.empty()) {
+        params.mmproj.path = hf_cache::finalize_file(plan.mmproj_files[0]);
+    }
+
+    // if the draft is a hf repo, we need to set the draft path to the first file
+    if (!plan_spec.model_files.empty()) {
+        params.speculative.draft.mparams.path = hf_cache::finalize_file(plan_spec.model_files[0]);
+    }
+
+    // if the mtp is a hf repo, we need to set the mtp path to the first file
+    if (!plan_spec.mtp.local_path.empty()) {
+        params.speculative.draft.mtp_path = plan_spec.mtp.local_path;
+    }
+
+    // if the dflash is a hf repo, we need to set the dflash path to the first file
+    if (!plan_spec.dflash.local_path.empty()) {
+        params.speculative.draft.dflash_path = plan_spec.dflash.local_path;
+    }
+
+    // if the eagle3 is a hf repo, we need to set the

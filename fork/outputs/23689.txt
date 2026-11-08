@@ -1,0 +1,20 @@
+run 23689 | up9_merged2 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.57 t/s | prompt 355.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-07 12:10:00
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` when `has_max` is true means `max_items >= 1`, fine.
+   - Actually wait, there's an edge case: if `min_items == 1` and `max_items == 1` with separator: result = item_rule + " " + build_repetition(..., 0, 0) → inner returns "" → result = item_rule + " " + "" → trailing space? Let me check: `build_repetition` with max_items == 0 returns "". So result = item_rule + " " + "" = "item_rule ". Hmm, that leaves a trailing space. Actually wait: `auto result = item_rule + " " + build_repetition(...)`. If the inner returns "", result is "item_rule " with trailing space. That's a minor formatting bug but might still be valid grammar? Actually in GBNF, trailing space in rule content... the rule would be `foo ::= bar ` — trailing whitespace might be ignored or might cause issues. Let me think again: min_items=1, max_items=1, separator non-empty. min_items == 0? No, so inner min = 0. has_max true, inner max = 0. Inner build_repetition returns "" (max_items == 0 check). So result = item_rule + " ". Then min_items != 0 so no "?" appended. So the rule is "item " with trailing space. This is a real edge-case bug — produces trailing space in grammar. Actually wait, is it valid? GBNF rules — trailing space in the rule text would be parsed as... hmm, in llama.cpp's grammar parser, whitespace in rules is generally ignored except within quotes. Actually the space rule is explicit. A trailing space character outside quotes... The grammar parser might treat it as whitespace and ignore it. So it's mostly harmless but sloppy. Actually let me double check the case min_items=1, max_items=1: e.g., array with minItems=1, maxItems=1. The generated rule would be `"[\" space " + item_rule + " " + " space \"]"` → `"[" space item  space "]"`. Double space — harmless in GBNF parsing since spaces outside literals are ignored? Actually in GBNF, whitespace is significant only inside quotes; outside it's skipped. So harmless but sloppy.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could use a struct or explicit recursion. Minor.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == std::numeric_limits<int64_t>::min()`, then `-min_value` overflows (UB for signed). Wait: in the `has_min && has_max` branch, `has_min` means min_value != INT64_MIN, so `-min_value` is safe. In the `has_min` only branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — here min_value != INT64_MIN (has_min), so `-min_value` is safe... but wait, if `min_value == INT64_MIN + something`? `-min_value` could overflow if min_value is negative and equals... no, has_min means min_value != INT64_MIN, so -min_value is representable. OK.
+   - In `has_max` branch: `build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), ...)` — max_value != INT64_MAX (has_max), so -max_value safe. But wait, if max_value == INT64_MIN? Then has_max is true (max_value != INT64_MAX), max_value < 0, so `-max_value` = -(INT64_MIN) → overflow UB! Let me check: `if (max

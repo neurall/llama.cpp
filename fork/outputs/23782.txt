@@ -1,0 +1,25 @@
+run 23782 | rampool11-planner-simple | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.79 t/s | prompt 585.7 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 17:05:30
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `min_items` is 0 and `max_items` is 1, the inner call gets min=0, max=0, which returns "" — then result = item_rule + " " + "" and then wrapped in `(...)?`. Hmm, actually let me check: `min_items == 0, max_items == 1` with separator: result = item_rule + " " + build_repetition("(sep item)", 0, 0). The inner call: max_items == 0 returns "". So result = item_rule + " " — then since min_items == 0, result = "(" + item_rule + " " + ")?" — that leaves a trailing space inside the parens which is a bit odd but grammatically might still be valid GBNF? Actually a trailing space in a sequence is harmless in GBNF. But it's sloppy. Actually wait — is it? `"foo" ` followed by nothing... In GBNF, a rule like `foo ::= "a" "b" ` with trailing space — the parser might handle it. Minor.
+   
+   Actually more importantly: if `min_items == 0 && max_items == 1` with a separator, the correct output should be just `item_rule?` (no separator needed since only one item). But the code goes into the separator branch and produces `(item_rule (sep item){0,0})?` — wait no. Let me re-check. The early return `if (min_items == 0 && max_items == 1) return item_rule + "?";` happens BEFORE the separator check. So that case is handled. OK good.
+
+   But what about `min_items == 1 && max_items == 1` with separator? Then inner: min=0, max=0 → "" → result = item_rule + " " → no "?" since min_items != 0. So result is `item_rule ` with trailing space. Harmless but sloppy.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could be a static helper function.
+   - `decimals_left` default 16 — magic number.
+   - The `uniform_range` lambda captures `out` and `more_digits` and `digit_range` by reference — fine.
+   - Potential issue: `digit_range(from[i], to[i] - 1)` — if `from[i] == to[i]`... can that happen? In `uniform_range`, after skipping common prefix, `from[i] != to[i]` is guaranteed since the loop advanced while equal. Actually wait — the loop condition is `i < from.length() && i < to.length() && from[i] == to[i]`. After the loop, if `i < from.length() && i < to.length()`, then `from[i] != to[i]`. Since digits are ascending (from < to numerically and same length), `from[i] < to[i]`. So `to[i] - 1 >= from[i]` is guaranteed. OK.
+   - In the `has_min` branch with `min_value < 0`: `out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — passing `INT64_MIN` as min means `has_min` is false, so it recurses into the `has_max` branch. `-min_value` where `min_value < 0` — if `min_value == INT64_MIN`, negation is UB! But wait, can `min_value == INT64_MIN` reach here? The check `has_min = min_value != INT64_MIN` — in the `has_min && has_max` branch, min_value < 0 requires has_min true, so min_value != INT64_MIN. In the `has_min` only branch (has_max false), `min_value < 0` — has_min is true so min_value != INT64_MIN. OK, so

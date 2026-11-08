@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+rd-glm-t,glm,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/rd-glm-t.ini,pp-chain=0,log=wk",--ctx 4096
+rd-mimo-t,mimo,2,tetrisc,128,"--moe state=/tmp/runstate/ppk/rd-mimo-t.ini,pp-chain=0,log=wk",--ctx 4096

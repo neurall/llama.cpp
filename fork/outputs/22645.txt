@@ -1,0 +1,50 @@
+run 22645 | dspark_fix3 | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.05 t/s | prompt 38.9 t/s | 965 tokens | args: -np 1 --moe dynhot=full | power 220+280 W | 2026-11-03 08:24:22
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to ship a bare terminal grid — I want to make it feel like an actual arcade object: a crafted, tactile build with a layered background, motion, micro-interactions, strong type contrast, and a distinctive display face paired with a readable body face.
+
+Balance: "smallest" means compact code. But I can still make it a beautiful, playable single-file Tetris with CRT/arcade aesthetic. Keep the code reasonably tight but the visuals rich.
+
+Let me design: an arcade cabinet-ish Tetris. The most characteristic thing to open with is the playfield itself, not a generic banner. So the page opens with the game board front and center, with a side panel showing score/level/next piece, held piece, and controls. Background: layered ambient — subtle grid, scanlines, faint drifting glow. Palette: dark slate-blue with vivid arcade accents (cyan, magenta, amber, lime). A near-black board with one neon accent would feel thin; a real Tetris set uses 7 distinct tetromino colors, so I'll lean on that full multi-hue piece palette as the color story, with a deep blue-purple base and a few ambient washes.
+
+Fonts: Google Fonts — display: "Monoton"? Too much. Maybe "Bungee" or "Press Start 2P" for arcade display, paired with a readable body face like "Space Grotesk" or "IBM Plex Sans". Press Start 2P is very characteristic of retro games but hard to read at length; use it sparingly for labels/scores. Actually pairing "Press Start 2P" (display) with "Space Grotesk" (body) is a nice contrast. Or use "Bungee" for display. Let me go with Press Start 2P for tiny labels/numbers and Space Grotesk for body copy. Hmm, Press Start 2P for numbers is very arcade. Good.
+
+Layout: a cabinet frame — left column: stats (score, level, lines, next, hold), center: board, right: controls legend + stats. A single-column stack on mobile.
+
+Features to make it feel alive:
+- Canvas-based board rendering with block bevels, glow.
+- Ghost piece.
+- Hold piece, next queue (3 pieces) with 7-bag randomizer.
+- Lock delay, soft/hard drop, wall kicks (SRS-ish simplified).
+- Line clear flash animation + particle burst.
+- Score/level/lines, speed ramp.
+- Combo/level-up toast.
+- Pause, restart, game over overlay.
+- Keyboard + touch buttons (mobile).
+- Sound via WebAudio (tiny beeps) with mute toggle.
+- Scanline overlay, subtle CRT flicker, ambient drifting gradient blobs — but rather than generic soft blobs, I'll do a faint pixel-grid + drifting tetromino silhouettes in the background, which is more on-theme.
+- Scroll reveals: page is mostly one screen; maybe add a small "how to play" section below with reveal. Keep it modest since "smallest".
+
+"Smallest" — I should keep the file compact-ish but rich. I'll aim for a single file, reasonably minified but readable. Let me write clean but dense code.
+
+Let me write the game logic compactly.
+
+Tetromino definitions using SRS rotation states via matrices, or use the classic approach: each piece as a matrix, rotate by transposing.
+
+Compact approach:
+
+```js
+const P='0123456789ABCDEF'... 
+```
+
+Simpler: define pieces as arrays of rotation states as coordinate offsets. Or use the standard trick:
+
+```js
+const S={I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],...}
+```
+
+Rotation: rotate matrix clockwise: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+Wall kicks: simple — try offsets [0,-1,1,-2,2] on x, and [0,-1,-2] on y.
+
+Board 10x20 (or 10x22 with buffer). Canvas: cell size 24 → 240x480. Let's use CSS-s
+---

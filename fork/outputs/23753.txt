@@ -1,0 +1,25 @@
+run 23753 | rampool8 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.0 t/s | prompt 480.9 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 15:40:17
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `min_items` is 0 and `max_items` is 1, the inner call gets min 0, max 0, which returns "" — then result = item_rule + " " + "" and then wrapped in `(...)?`. Hmm, actually let me check: `min_items == 0, max_items == 1` with separator: result = item_rule + " " + build_repetition("(sep item)", 0, 0). The inner call: max_items == 0 returns "". So result = item_rule + " " — then wrapped: "(" + item_rule + " " + ")?" — that has a trailing space inside parens. Actually wait, the outer result is `item_rule + " " + ""` = `item_rule + " "`. Then `result = "(" + result + ")?"` = `(item_rule )?`. That's a bit odd but grammatically valid (trailing space in GBNF might be an issue? Actually in GBNF, spaces in rules are typically ignored by the parser? No — in llama.cpp GBNF parsing, whitespace in rule definitions is generally ignored except within literals. Actually the GBNF parser ignores whitespace between elements. So `(item_rule )?` is fine.)
+   
+   Actually wait, there's a deeper issue: when min_items == 0 and max_items == 1 with a separator, the correct grammar should be just `item_rule?` (no separator needed since there's only one item). The current code produces `(item_rule (sep item){0,0})?` — hmm, let me re-check. min_items=0, max_items=1: inner call gets min_items = 0 (since min_items==0), max_items = has_max ? max_items-1 : ... = 0. Inner: max_items == 0 → returns "". So result = item_rule + " " + "" = "item_rule ". Then since min_items == 0: result = "(item_rule )?". So the grammar is `(item )?` which is correct semantically (0 or 1 items, no separator needed). OK fine.
+
+   But what about min_items == 1, max_items == 1 with separator? Inner: min_items = 0, max_items = 0 → "". result = item_rule + " " → then min_items != 0 so no wrapping. Result: `item_rule ` — trailing space, fine.
+
+   What about max_items == 0 but min_items > 0? E.g., min_items = 2, max_items = 0. The function returns "" immediately (max_items == 0 check comes first). That's contradictory schema (min > max), and the function silently returns empty rule. Hmm, that could produce an invalid grammar or silently accept anything? Actually returning "" as a rule content... The rule would be e.g. `"[" space  space "]"` — empty rule content. That might be a grammar error. But this is an edge case with invalid schema input. Worth mentioning.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` with recursion — fine but has overhead; could use a struct or explicit recursion. Minor.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — potential overflow if `min_value == std::numeric_limits<int64_t>::min()`? Let's check: in the `has_min && has_max` branch, if both negative: `-max_value` and `-min_value`. If min_value is INT64_MIN, then -min_value is UB (overflow). But wait — has_min means min_value != INT64_MIN, so min_value >= INT64_MIN + 1, so -min_value is fine. max_value < 0 means max_value <= -1, so -max_value >= 1, fine. OK.
+   - In the `has_min` branch with `min_value <

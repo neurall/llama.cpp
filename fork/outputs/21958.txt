@@ -1,0 +1,5 @@
+run 21958 | rc_nan_fixes | paris | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 394.1 t/s | prompt 390.4 t/s | 8 tokens | args: -np 1 | power 200+200 W | 2026-11-02 04:13:53
+
+
+---
+Paris is the capital of France.

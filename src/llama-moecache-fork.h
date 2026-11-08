@@ -174,13 +174,22 @@ struct llama_kv_tail_fork {
     std::function<void(ggml_type, ggml_type, const std::vector<char> *, const std::vector<std::pair<uint8_t *, size_t>> *, ggml_backend_buffer_t)> retype;
     ggml_type          type_k = GGML_TYPE_F16, type_v = GGML_TYPE_F16;   // the types the record has now
     bool               convertible = false;
+    bool               gather = false;   // the attention reads top-k cells of these rows, over quantized K/V through an f16 copy at decode too
+    // rot(layer, is_v): the rotation constant of a layer's K or V; null: its rows stay plain. Rows turning quantized are rotated, rows turning float rotate back (it is its own inverse)
+    std::function<ggml_tensor *(int32_t, bool)> rot;
+    // --moe attn-split: the record's layers that are out of the row at the start, and per layer: 0 plain, 1 a whole layer with parts, 2 a part; its model layer; which part.
+    // parts_set(on): the cache reads the parts from now on (llama_moe_cache_kv_parts_fork)
+    std::vector<char>    mask0;
+    std::vector<int8_t>  kind;
+    std::vector<int32_t> l_il, l_part;
+    std::function<void(bool)> parts_set;
 };
 void llama_moe_cache_kv_tail_add_fork(const llama_kv_tail_fork & rec);
 // a cache rebuilt with other KV types (llama_kv_refit) takes the place of the old one in the running pool
 void llama_moe_cache_kv_tail_rebind_fork();
 // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the tokens the pool can hold as KV with the expert cache at its floor, per tier, the smallest over the cards,
 // from the exact row layouts of each tier. valid is false before the pool exists. row_f16: bytes of one token's KV over all cards as f16.
-struct llama_kv_fit_caps { bool valid = false; size_t f16 = 0, k8v8 = 0, k4v4 = 0, row_f16 = 0, ram = 0; };   // ram: tokens with every growing layer's KV (tier 2 types) in host memory, from free RAM less 4 GiB
+struct llama_kv_fit_caps { bool valid = false; size_t f16 = 0, k8v8 = 0, k4v4 = 0, row_f16 = 0, ram = 0, pool = 0; };   // ram: tokens with every growing layer's KV (tier 2 types) in host memory, from free RAM less 4 GiB
 llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork();
 // qkv-ram-fallback in place: the convertible records of every card take K type tk and V type tv inside the pool. The rows in use are converted on the card
 // (through a staging range borrowed at the front of the pool), the zone takes the new rows' size and the blocks it leaves go back to the experts (converting up,

@@ -1,0 +1,12 @@
+run 22193 | rel_stable_auto | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 22.03 t/s | prompt 56.5 t/s | 128 tokens | args: -np 1 | power 220+280 W | 2026-11-02 12:49:57
+
+The user wants me to delete code in `json-schema-to-grammar.cpp` that is never used. I need to analyze the file and identify unused code. However, I only have a partial view of the file (the beginning). Let me think about what this file typically contains and what might be unused.
+
+This is from llama.cpp's `common/json-schema-to-grammar.cpp`. Let me recall the actual content of this file. The file implements a JSON schema to grammar converter for llama.cpp's grammar-based sampling.
+
+Let me recall the structure of the file:
+
+```cpp
+// file: common/json-schema-to-grammar.cpp
+#include
+---

@@ -25,6 +25,7 @@ static __global__ void flash_attn_ext_vec(
         const char * mask_ptr,
         const char * sinks_ptr,
         const int  * KV_max_ptr,
+        const int  * KV_rows_ptr,
         float      * dst_ptr,
         float2     * dst_meta_ptr,
         const float scale,
@@ -50,6 +51,7 @@ static __global__ void flash_attn_ext_vec(
     const int  * GGML_CUDA_RESTRICT KV_max   = KV_max_ptr;
     float      * GGML_CUDA_RESTRICT dst      = dst_ptr;
     float2     * GGML_CUDA_RESTRICT dst_meta = dst_meta_ptr;
+    GGML_UNUSED(KV_rows_ptr);
 
     // Skip unused kernel variants for faster compilation:
     if (use_logit_softcap && !(D == 128 || D == 256)) {
@@ -111,6 +113,9 @@ static __global__ void flash_attn_ext_vec(
     V += nb23*sequence + nb22*(head / gqa_ratio);
 
     const half * maskh  = (const half  *) (mask + nb33*(sequence % ne33) + nb31*ic0);
+    // fork: the mask covers only the cells from k0 on, every cell before them is visible to every row (llama_kv_cache::kq_mask_k0)
+    const int stride_mask = mask ? int(nb31 / sizeof(half)) : ne11;
+    const int k0_mask     = ne11 - stride_mask;
 
     const float slope = get_alibi_slope(max_bias, head, n_head_log2, m0, m1);
 
@@ -277,8 +282,8 @@ static __global__ void flash_attn_ext_vec(
                     sum = logit_softcap*tanhf(sum);
                 }
 
-                if (mask && (ncols == 1 || ic0 + j < int(ne01.z))) {
-                    sum += slope*__half2float(maskh[j*ne11 + i_KQ]);
+                if (mask && k_VKQ_0 >= k0_mask && (ncols == 1 || ic0 + j < int(ne01.z))) {
+                    sum += slope*__half2float(maskh[j*stride_mask + i_KQ - k0_mask]);
                 }
 
                 KQ_max_new[j] = fmaxf(KQ_max_new[j], sum + FATTN_KQ_MAX_OFFSET);
@@ -332,18 +337,8 @@ static __global__ void flash_attn_ext_vec(
 #pragma unroll
             for (int i_VKQ_0 = 0; i_VKQ_0 < D/2; i_VKQ_0 += nthreads_V*V_rows_per_thread/2) {
                 half2 tmp[V_rows_per_thread/2];
-                if constexpr (type_V == GGML_TYPE_BF16) {
-                    float2 tmp_f[V_rows_per_thread/2];
-                    dequantize_V(V + k*nb21, tmp_f,
-                        2*i_VKQ_0 + (nthreads_V == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads_V)*V_rows_per_thread);
-#pragma unroll
-                    for (int i_VKQ_1 = 0; i_VKQ_1 < V_rows_per_thread/2; ++i_VKQ_1) {
-                        tmp[i_VKQ_1] = __float22half2_rn(tmp_f[i_VKQ_1]);
-                    }
-                } else {
-                    dequantize_V(V + k*nb21, tmp,
-                        2*i_VKQ_0 + (nthreads_V == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads_V)*V_rows_per_thread);
-                }
+                dequantize_V(V + k*nb21, tmp,
+                    2*i_VKQ_0 + (nthreads_V == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads_V)*V_rows_per_thread);
 #pragma unroll
                 for (int i_VKQ_1 = 0; i_VKQ_1 < V_rows_per_thread/2; ++i_VKQ_1) {
 #pragma unroll
@@ -514,7 +509,7 @@ static __global__ void flash_attn_ext_vec(
         dst_meta[((sequence*int(ne01.z) + ic0 + tid)*ne02 + head)*gridDim.y + blockIdx.y] = make_float2(KQ_max[tid], KQ_sum[tid]);
     }
 #else
-    GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, dst_ptr, dst_meta_ptr, scale,
+    GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, KV_rows_ptr, dst_ptr, dst_meta_ptr, scale,
         max_bias, m0, m1, n_head_log2, logit_softcap,
         ne00, ne01, ne02, ne03,
               nb01, nb02, nb03,

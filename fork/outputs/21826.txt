@@ -1,0 +1,28 @@
+run 21826 | up8_gather_mask_fix | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.4 t/s | prompt 666.8 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 220+280 W | 2026-11-01 21:47:45
+
+    return num_physical_cores > 0 ? num_physical_cores : default_threads;
+#endif
+    unsigned int n_threads = std::thread::hardware_concurrency();
+    return n_threads > 0 ? (n_threads <= 4 ? n_threads : n_threads / 2) : 4;
+}
+
+std::string common_cpu_get_cpu_affinity_mask(int32_t n_threads) {
+    if (n_threads <= 0) {
+        return "";
+    }
+
+    // OpenBSD & NetBSD: no CPU affinity, but we can limit the number of CPUs
+    // by setting the "cpu" affinity class via sysctl
+#if defined(__OpenBSD__) || defined(__NetBSD__)
+    std::string sysctl_arg = std::string("hw.ncpu=") + std::to_string(n_threads);
+    std::string sysctl_cmd = "sysctl " + sysctl_arg;
+    int res = std::system(sysctl_cmd.c_str());
+    if (res) {
+        LOG_INF("warning: unable to set cpu affinity mask: %s\n", sysctl_cmd.c_str());
+    }
+    return "";
+#endif
+
+    std::string mask;
+    int32_t n_cpu = std::thread::hardware_concurrency();
+    if (n

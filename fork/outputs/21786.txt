@@ -1,0 +1,45 @@
+run 21786 | up8_gather_rows | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 14.53 t/s | prompt 946.4 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0 | power 220+280 W | 2026-11-01 18:38:35
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    // otherwise fall back to logical count
+    return std::thread::hardware_concurrency();
+}
+
+int32_t common_get_num_big_cores() {
+#if defined(__APPLE__) && defined(__MACH__)
+    int32_t num_big_cores = 0;
+    size_t len = sizeof(num_big_cores);
+    int result = sysctlbyname("hw.perflevel1.physicalcpu", &num_big_cores, &len, NULL, 0);
+    if (result == 0) {
+        return num_big_cores;
+    }
+#endif
+    return 0;
+}
+
+//
+// String utils
+//
+
+std::string string_strip(const std::string & str) {
+    if (str.empty()) {
+        return str;
+    }
+    size_t start = 0;
+    size_t end = str.size();
+
+    while (start < end && std::isspace((unsigned char)str[start])) {
+        start++;
+    }
+
+    while (end > start && std::isspace((unsigned char)str[end - 1])) {
+        end--;
+    }
+
+    return str.substr(start, end - start);
+}
+
+std::string string_strip(const std::

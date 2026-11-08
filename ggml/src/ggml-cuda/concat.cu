@@ -110,18 +110,19 @@ static __global__ void __launch_bounds__(CUDA_CONCAT_BLOCK_SIZE)
           uint64_t   nb13,
            int64_t   ne0,
            int64_t /*ne1*/,
-           int64_t /*ne2*/,
-           int64_t /*ne3*/,
+           int64_t   ne2,
+           int64_t   ne3,
           uint64_t   nb0,
           uint64_t   nb1,
           uint64_t   nb2,
           uint64_t   nb3) {
     static_assert(dim >= 0 && dim <= 3, "dim must be in [0, 3]");
 
-    const int64_t i3 = blockIdx.z;
-    const int64_t i2 = blockIdx.y;
+    // fork: grid y and z are capped at 65535 by the hardware; a concat along the KV cells of a long context is bigger (DeepSeek 64k, 2026-11-08: the kv-tail's
+    // K = concat(cache view, computed rows) at 65792 cells, "CUDA error: invalid argument" at launch), so blocks loop over the dims past the cap
     const int64_t i1 = blockIdx.x;
-
+    for (int64_t i3 = blockIdx.z; i3 < ne3; i3 += gridDim.z)
+    for (int64_t i2 = blockIdx.y; i2 < ne2; i2 += gridDim.y) {
     const T * x;
 
     for (int64_t i0 = threadIdx.x; i0 < ne0; i0 += blockDim.x) {
@@ -142,6 +143,7 @@ static __global__ void __launch_bounds__(CUDA_CONCAT_BLOCK_SIZE)
         T * y = (T *)(dst + i3*nb3 + i2*nb2 + i1*nb1 + i0*nb0);
 
         *y = *x;
+    }
     }
 }
 
@@ -176,7 +178,7 @@ static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml
     } else {
         GGML_ASSERT(!ggml_is_quantized(src0->type));
 
-        dim3 grid_dim(dst->ne[1], dst->ne[2], dst->ne[3]);
+        dim3 grid_dim(dst->ne[1], std::min<int64_t>(dst->ne[2], 65535), std::min<int64_t>(dst->ne[3], 65535));   // fork: the kernel loops past the y/z cap
         auto launch_kernel = [&](auto dim) {
             concat_non_cont<T, dim><<<grid_dim, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(
                 (const char *) src0->data, (const char *) src1->data, (char *) dst->data,

@@ -1,0 +1,8 @@
+run 22424 | dspark_fix3 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.44 t/s | prompt 22.1 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/ro-glm-t.ini | power 220+280 W | 2026-11-02 18:49:05
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minified request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, but still make it playable and not broken. I can keep it minimal but functional: 10x20 grid, 7 tetrominoes, rotation, movement, drop, line clearing, score, game over, keyboard controls.
+
+Let me think about how to write the smallest possible Tetris.
+
+
+---

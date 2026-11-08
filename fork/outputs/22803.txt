@@ -1,0 +1,46 @@
+run 22803 | rc_live_rates | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.13 t/s | prompt 162.2 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-base.ini --moe sim-ram=65536 | power 220+280 W | 2026-11-03 13:39:03
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to ship a bare terminal-looking block — even a tiny game deserves to feel alive and to look considered. I'll keep it compact but add a tasteful CRT/arcade aesthetic, keyboard controls, next-piece preview, score/level/lines, ghost piece, hold, pause, game over overlay, subtle animations, scanlines, ambient background.
+
+Balance: "smallest" means keep it one file, no dependencies, reasonably short code. I'll aim for a tight but readable implementation — maybe ~150-200 lines total. Not golfed to unreadable, but compact. I'll mention the minified one-liner option maybe.
+
+Design: arcade cabinet vibe. Distinctive display font (e.g., "Press Start 2P" for display via Google Fonts? That's a dependency but fine — but "smallest" suggests avoiding external fonts. Hmm. I could use a system font stack with a distinctive display choice. Let me use Google Fonts for a display face — it adds a link but keeps single file. Actually for "smallest", maybe better to avoid external requests. But the design guidance wants a distinctive display face paired with a readable body face. I can do that with a single Google Fonts link — acceptable and keeps it one file. Let's use something arcade-y but not cliché: "Chakra Petch" or "Bungee" or "Silkscreen". Silkscreen is a pixel font — very characteristic of the subject. Pair Silkscreen (display) with IBM Plex Mono or Space Grotesk (body). Hmm, pixel font + mono is good for Tetris.
+
+Actually, characteristic opening: not a generic hero — open with the game itself, an arcade cabinet layout: board on the left/center, a side rail with score, next, hold, controls. Header as a marquee strip.
+
+Palette: Tetris pieces have canonical colors (cyan, blue, orange, yellow, green, red, purple). The most characteristic palette is exactly those seven tetromino colors on a dark playfield. Let's use a dark slate/graphite background with the seven bright tetromino colors as the accent system — that's authentic to the subject rather than an arbitrary accent. Background: layered — subtle grid, faint falling tetromino silhouettes drifting (ambient motion), scanlines, vignette.
+
+Implementation details:
+- Canvas-based board rendering (compact) or DOM grid? Canvas is smaller code. Use canvas for board, next, hold.
+- 10x20 board, SRS-ish rotation with simple wall kicks.
+- 7-bag randomizer.
+- Ghost piece.
+- Hold with swap limit.
+- Lock delay? Keep simple: gravity + soft drop + hard drop (space).
+- Line clear animation: flash row white then collapse.
+- Score: 100/300/500/800 * level, soft drop +1/cell, hard drop +2/cell.
+- Level up every 10 lines, gravity speeds.
+- Pause (P), restart (R).
+- Touch buttons for mobile? Adds size. Maybe minimal on-screen buttons for touch — nice but adds. I'll add a compact touch pad row shown only on small screens via CSS. Keep it small-ish.
+
+Let me write the code.
+
+HTML structure:
+```
+<div class="cab">
+  <header class="marquee"> TETRIS ... </header>
+  <main class="stage">
+    <aside left: HOLD, stats (score big, level, lines)>
+    <div class="well"> canvas + overlay </div>
+    <aside right: NEXT (3 preview), controls legend>
+  </main>
+  <footer> keys </footer>
+</div>
+```
+
+Layout: asymmetric grid — board center-left, stats rail right. Let's do: left rail = score/level/lines stacked with big numbers; right rail = next queue + hold + keys.
+
+Ambient background: CSS gradients + a few animated tetromino shapes made of divs drifting slowly, plus a grid overlay and scanlines. Use `prefers-reduced-motion` guard.
+
+Micro-interactions: buttons hover, key legend chips light up when the corresponding key is pressed (nice touch — map keys to chips and flash them). Line clear flash. Score number pop on change.
+---

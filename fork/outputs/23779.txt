@@ -1,0 +1,36 @@
+run 23779 | rampool11-planner-simple | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.61 t/s | prompt 588.7 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 16:58:56
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: when `min_items > 0` and `max_items == 0`... returns "" which is fine.
+- When separator_rule is non-empty and min_items == 0, max_items == 1: the first check `min_items == 0 && max_items == 1` returns `item_rule + "?"` — but wait, with a separator, if you have 0 or 1 items, no separator is needed, so that's correct.
+- Hmm, but there's a subtle bug: `min_items == 0 && max_items == 1` check happens before separator handling — correct behavior.
+- What about `min_items > max_items`? Not validated. E.g., min_items=2, max_items=1 would produce weird grammar. Minor.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a static helper function instead.
+- `decimals_left = 16` default. There's a potential infinite recursion? Let's check: `build_min_max_int` with `has_min` and `min_value > 9` calls `build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false)`. `less_decimals = max(decimals_left - 1, 1)`. So decimals_left decreases until 1, then stays at 1. Hmm, if decimals_left stays at 1 forever, could there be infinite recursion? Let's trace: with `min_value <= 9` branch, it doesn't recurse. With `min_value > 9`, it recurses with `min_s.substr(1)` which is a shorter number. Eventually min_value becomes <= 9. So recursion terminates based on number length, not decimals_left. OK.
+- Wait, but there's the `has_min && min_value < 0` case: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Here min_value passed is INT64_MIN, so has_min = false, and has_max = true (since -min_value != INT64_MAX unless min_value == INT64_MIN... wait if original min_value is negative, -min_value could overflow if min_value == INT64_MIN. Actually in the `has_min && has_max` branch, min_value < 0 is handled: `build_min_max_int(0, -min_value, ...)`. If min_value == INT64_MIN, -min_value is UB (signed overflow). Hmm, is that reachable? `has_min = min_value != INT64_MIN`. In the `has_min && has_max` branch, min_value != INT64_MIN is guaranteed since has_min is true. So `-min_value` is safe there. In the `has_min` only branch (has_max false), min_value != INT64_MIN, so `-min_value` safe. OK.
+- `std::stoll(min_s.substr(1))` — min_s is a decimal string of a positive number; substr(1) could be empty if min_s is a single digit, but that branch requires min_value > 9, so min_s.length() >= 2. OK.
+- Potential issue: `more_digits` uses `std::numeric_limits<int>::max()` check for max_digits — fine.
+- The `uniform_range` lambda captures by reference and recurses via std::function — fine.
+- One thing: `digit_range(to[i], to[i])` — could just output the char. Minor.
+- In the `has_min && has_max` case with `min_value < 0 && max_value < 0`: outputs `"-" (...)` with negated range. OK.
+- Edge: `min_value == 0 && max_value == 0`? has_min true, has_max true. min_s = "0", max_s = "0", digits loop doesn't run (min_digits == max_digits == 1), uniform_range("0","0") outputs `"0"`. OK.
+
+3. `SPACE_RULE`: `"| \" \"

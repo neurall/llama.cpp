@@ -1,0 +1,23 @@
+run 23657 | direct_load2 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.5 t/s | prompt 508.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-07 09:54:19
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition`**: 
+   - `has_max` is computed before checking `max_items == 0`. If `max_items == 0` but `min_items > 0`, the function returns `""` — an empty rule that matches nothing, but the schema says min_items > 0. This is a semantic inconsistency: returning empty string means the rule matches empty, which contradicts min_items. Actually wait, let me re-read. If `max_items == 0`, return `""`. But if `min_items > 0`, this is contradictory — the schema requires at least min_items items but max is 0. Returning empty rule would silently accept an empty array. Hmm, actually returning "" as a rule content means the rule matches empty string, so an array with min_items=2, max_items=0 would generate `"[\" space  space \"]"` which matches empty array — violating min_items. This is arguably a bug or at least worth noting. Actually in practice, JSON Schema with maxItems=0 and minItems>0 is unsatisfiable; the converter silently produces something that accepts empty. Worth flagging.
+   - Also `has_max` computed as `max_items != std::numeric_limits<int>::max()` — fine.
+   - When `separator_rule` is non-empty and `min_items == 0 && max_items == 1`: handled earlier by `item_rule + "?"` — good.
+   - Edge: `min_items == 1 && max_items == 1` with separator: `build_repetition("(sep item)", 0, 0)` → max_items==0 → returns "" → result is `item_rule + " "` + "" = `item_rule ` with trailing space. Wait: `auto result = item_rule + " " + build_repetition(...)` — if the inner returns "", result = `item_rule + " "` — trailing space in rule. That's harmless for GBNF (space is a rule reference? No wait — in GBNF, "space" is a rule name; a literal space character in rule text... Actually in GBNF format, whitespace in rule definitions is generally ignored/allowed? Let me think. In llama.cpp GBNF parsing, spaces in rule bodies are typically ignored except within quotes. Actually the grammar parser treats whitespace as insignificant outside literals. So trailing space is harmless but sloppy.
+   - Actually wait, there's a subtle bug: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items`. If `max_items == 0` and separator non-empty... we already returned "" earlier for max_items==0. OK.
+   - If `min_items == 0 && max_items == 2` with separator: inner repetition gets (0, 1) → `(sep item)?` → result = `item (sep item)?` then wrapped in `( ... )?` → `(item (sep item)?)?` — correct.
+   - If min_items == 2, max_items == 2: inner gets (1,1) → `(sep item){1,1}`? Wait build_repetition with min=1,max=1 no separator: not (0,1), not (1,∞), not (0,∞) → falls to `item_rule + "{1,1}"`. Hmm, `{1,1}` is redundant but valid. Actually wait — min_items==1 && max_items==1: the checks: `min_items == 0 && max_items == 1`? No. `min_items == 1 && !has_max`? has_max is true (max=1 ≠ INT_MAX). `min_items == 0 && !has_max`? No. So falls through to `{1,1}`. Minor inefficiency, could just be the item itself. Not a bug.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` with recursive lambda — fine but has overhead; could be `auto` with self-reference in C++14 or a static function. Minor.
+   - `decimals_left = 16` default. The recursion decrements. `less_decimals = std::max(decimals_left - 1, 1)`.
+   - Potential issue: `more_digits(0, decimals_left - 1)` when `decimals_left` is 1 → `more_digits(0, 0)` → outputs `[0-9]{0,0}`? Let's check: `more_digits(min_digits=0, max_digits=

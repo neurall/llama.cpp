@@ -1,0 +1,3 @@
+run 21803 | up8_gather_rows | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.69 t/s | prompt 969.0 t/s | 64 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini | power 220+280 W | 2026-11-01 19:36:03
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!

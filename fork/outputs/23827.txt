@@ -1,0 +1,271 @@
+run 23827 | rampool13-variant-trials | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.08 t/s | prompt 1171.8 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 20:54:56
+
+<think>Let me analyze this source file carefully for bugs. The file contains two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each part systematically.
+
+**Part 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?`. But when `min_items > 0`, the first item is `item_rule` followed by repetitions of `(separator item)`. The count for the separator repetitions should be `min_items - 1` to `max_items - 1`. Let me check:
+   - `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`
+   - When `min_items == 0`, the inner repetition has min 0, and the whole thing is wrapped with `(...)?`. That seems correct.
+   - When `min_items == 1`, inner repetition has min 0, max = max_items - 1. So we get `item (sep item){0, max-1}`. That's correct for 1 to max items.
+   - When `min_items == 2`, inner repetition has min 1, max = max_items - 1. So we get `item (sep item){1, max-1}`. That's correct for 2 to max items.
+   - Looks correct.
+
+2. In `build_min_max_int`, let me check the logic carefully.
+
+   When `has_min && has_max`:
+   - Both negative: negate and recurse. Looks correct.
+   - min negative, max non-negative: handle negative part, then set min to 0. Looks correct.
+   - Then iterate over digit lengths. Looks correct.
+
+   When `has_min` only:
+   - `min_value < 0`: handle negative part, then non-negative part. Looks correct.
+   - `min_value == 0`: top_level gives `[0] | [1-9] [0-9]{0, less_decimals}`. Non-top-level gives `[0-9]{1, decimals_left}`. Looks correct.
+   - `min_value <= 9`: Looks correct.
+   - `min_value > 9`: Looks correct.
+
+   When `has_max` only:
+   - `max_value >= 0`: If top_level, add negative numbers. Then build 0 to max. Looks correct.
+   - `max_value < 0`: Handle negative. Looks correct.
+
+   Wait, let me look more carefully at the `has_max` case when `max_value >= 0`:
+   ```
+   if (top_level) {
+       out << "\"-\" [1-9] ";
+       more_digits(0, less_decimals);
+       out << " | ";
+   }
+   build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+   ```
+   This adds negative numbers (if top_level) and then 0 to max_value. Looks correct.
+
+   When `max_value < 0`:
+   ```
+   out << "\"-\" (";
+   build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+   out << ")";
+   ```
+   This builds the absolute value range. Looks correct.
+
+3. In `_pattern_to_rule`, let me check the character class handling:
+   - When encountering `[`, it reads until `]`. But what about `]` as the first character in a character class? In regex, `[]abc]` means the class contains `]`, `a`, `b`, `c`. The code doesn't handle this case - it would stop at the first `]`. But this might be intentional as a limitation.
+
+4. In `_pattern_to_rule`, the `|` handling:
+   ```
+   } else if (c == '|') {
+       seq.emplace_back("|", false);
+       i++;
+   }
+   ```
+   This adds `|` as a non-literal. Then in `join_seq`, it joins with spaces. So `a|b` becomes `a | b`. Looks correct.
+
+5. In `_pattern_to_rule`, the repetition handling for `*`, `+`, `?`:
+   ```
+   seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
+   ```
+   This converts the last element to a rule string and appends the quantifier. Looks correct.
+
+6. In `_pattern_to_rule`, the `{}` repetition handling:
+   ```
+   seq.back().first = build_repetition(
+       sub_is_literal ? "\"" + sub + "\"" : sub,
+       min_times,
+       max_times,
+       ""
+   );
+   seq.back().second = false;
+   ```
+   Looks correct.
+
+7. In `_pattern_to_rule`, the literal handling:
+   ```
+   } else if (sub_pattern[i] == '"') {
+       literal += "\\\"";
+       i++;
+   }
+   ```
+   This escapes `"` in the literal. But then when the literal is used in `to_rule`, it wraps with `"..."`. So the literal would be `"\"..."`. Wait, let me trace through:
+   - If the pattern has `"`, it adds `\"` to the literal.
+   - Then `to_rule` wraps: `"\"" + s + "\""`.
+   - So if s = `\"`, the result is `"\"\""`. That's a GBNF literal containing `"`. Looks correct.
+
+   Actually wait, let me re-read. The literal accumulates characters. If the pattern has `"`, it adds `\"` to the literal string. Then `to_rule` wraps the whole literal in quotes: `"\"" + s + "\""`. So if s = `\"`, the result is `"\"\""`. In GBNF, `"\""` is a literal containing `"`. So `"\"\""` would be... hmm, that's `"\""` followed by `\""` which doesn't make sense.
+
+   Actually, `to_rule` returns `"\"" + s + "\""`. If s = `\"`, then the result is `"\"\""`. In GBNF, this is the string `"\""` which is... let me parse: `"` starts a literal, `\"` is an escaped quote, `"` ends the literal. So the literal content is `"`. That's correct.
+
+   But wait, what about other characters in the literal? The literal might contain characters like `\n`, `\t`, etc. from escape sequences. When `to_rule` wraps with `"..."`, these are already in GBNF escape format. Looks correct.
+
+8. In `_not_strings`, the `rejects` string is built by concatenating UTF-8 characters. But these characters might need escaping in the `[^"...]` character class. For example, if a character is `"`, it would break the character class. Let me check:
+   ```
+   out << " | [^\"" << rejects << "] " << char_rule << "*";
+   ```
+   If `rejects` contains `"`, the output would be `[^"..."]` which is wrong. But this is a potential issue, not necessarily a bug in the current code.
+
+   Actually, looking at the trie, the children are keyed by codepoints. The `rejects` string is built from UTF-8 representations of codepoints. If a codepoint is `"`, the UTF-8 is `"`, which would break the character class. This could be a bug.
+
+   But let me focus on more obvious bugs.
+
+9. In `_build_object_rule`, the `get_recursive_refs` function:
+   ```
+   if (first_is_optional) {
+       res = comma_ref + (k == "*" ? "*" : "?");
+   } else {
+       res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+   }
+   ```
+   When `first_is_optional` is false and `k != "*"`, `res = kv_rule_name`. Then if there are more keys, it appends ` " " + _add_rule(...)`. So the result is `kv_rule_name rest_rule`. Looks correct.
+
+   When `first_is_optional` is false and `k == "*"`, `res = kv_rule_name + " " + comma_ref + "*"`. This means the first key-value pair is required, followed by zero or more additional comma-separated pairs. Looks correct.
+
+   When `first_is_optional` is true and `k != "*"`, `res = comma_ref + "?"`. This means an optional comma-separated pair. Looks correct.
+
+   When `first_is_optional` is true and `k == "*"`, `res = comma_ref + "*"`. This means zero or more comma-separated pairs. Looks correct.
+
+10. In `visit`, for `KIND_REF`:
+    ```
+    return _add_rule(rule_name, _resolve_ref(as<common_chat_schema_ref>(schema)));
+    ```
+    This adds a rule with `rule_name` that references the resolved ref. But `_resolve_ref` returns a rule name (string), not a rule definition. So `_add_rule(rule_name, ref_name)` would create a rule `rule_name ::= ref_name`. That's a valid alias rule. Looks correct.
+
+11. In `visit`, for `KIND_ANY_OF`:
+    ```
+    return _add_rule(rule_name, _generate_union_rule(name, as<common_chat_schema_any_of>(schema).children));
+    ```
+    `_generate_union_rule` uses `name` (not `rule_name`) for sub-rules. This could cause issues if `name` is reserved. But it's a minor issue.
+
+12. In `_visit_all_of`, the `enum_values` check:
+    ```
+    if (p.second == schema.children.size()) {
+        enum_intersection.push_back(p.first);
+    }
+    ```
+    This checks if an enum value appears in all children. But `add_component` only adds enum values for `KIND_ENUM` children. If some children are not enums, they don't contribute to `enum_values`. So `p.second == schema.children.size()` would only be true if ALL children are enums and all contain the same value. This seems correct.
+
+    Wait, but `add_component` is called for each child. For non-enum children, it doesn't add to `enum_values`. So if there are 3 children, 2 are enums and 1 is an object, then `p.second` can be at most 2, which is less than `schema.children.size()` (3). So the intersection would be empty. That's correct behavior - if not all children are enums, we can't use the enum intersection.
+
+    Actually, hmm. The `add_component` function is called for each child. For `KIND_ANY_OF` children, it iterates over alternatives. For other children, it calls `add_component(*child, true)`. So for a non-enum child, `add_component` does nothing for enum_values. So `p.second` counts how many children contributed this enum value. If `p.second == schema.children.size()`, it means all children contributed this value. But non-enum children don't contribute. So this only works if all children are enums.
+
+    Wait, but what if a child is an object with properties? Then `add_component` adds properties but not enum values. So `p.second` would be less than `schema.children.size()`. The intersection would be empty. Then we fall through to `_build_object_rule`. That seems correct.
+
+    Actually, I think there might be a subtle issue. The `add_component` function for `KIND_ANY_OF` iterates over alternatives and calls `add_component` for each. So if a child is `anyOf` with enum alternatives, each alternative contributes to `enum_values`. But the count would be the number of alternatives, not 1. So `p.second` could be greater than 1 for a single child. This could cause `p.second == schema.children.size()` to be true even if not all children are enums.
+
+    Hmm, but that's a design issue, not necessarily a bug.
+
+13. In `_visit_pattern`, the `rules_snapshot` is taken before calling `_pattern_to_rule`. If an exception is thrown, `_rules` is restored. Looks correct.
+
+14. In `_pattern_to_rule`, the `sub_rule_ids` map:
+    ```
+    std::string & sub_id = sub_rule_ids[sub];
+    if (sub_id.empty()) {
+        sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+    }
+    sub = sub_id;
+    ```
+    This creates a rule for the sub-pattern and reuses it. But `sub_rule_ids.size()` is used as a counter. After inserting a new entry, `sub_rule_ids.size()` increases. So the next rule name would be `name-1`, `name-2`, etc. Looks correct.
+
+    Wait, but `sub_rule_ids[sub]` inserts an entry if it doesn't exist. So after `sub_id = _add_rule(...)`, `sub_rule_ids.size()` has already increased. So the next call would use `name + "-" + std::to_string(sub_rule_ids.size())` which would be `name-1` (if this was the first entry). But the first entry was `name-0`. So the numbering is `name-0`, `name-1`, `name-2`, etc. Looks correct.
+
+    Actually wait, let me re-read. `sub_rule_ids[sub]` creates an entry with empty string. Then `sub_id` is a reference to that entry. `sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub)` - at this point, `sub_rule_ids.size()` is at least 1 (because we just inserted). So the first rule would be `name-1`. But if there are multiple entries, the size would be 2, 3, etc. So the numbering starts from 1, not 0. That's fine.
+
+    But wait, there's a subtle issue. `sub_rule_ids.size()` is called AFTER the entry is inserted (by `sub_rule_ids[sub]`). So for the first entry, size is 1, giving `name-1`. For the second entry, size is 2, giving `name-2`. Looks correct.
+
+15. In `_pattern_to_rule`, the `join_seq` function:
+    ```
+    return std::make_pair(string_join(results, " "), false);
+    ```
+    This joins all elements with spaces. But `|` elements are also joined with spaces. So `a | b` becomes `a | b`. Looks correct.
+
+    But wait, what about the case where `|` is at the beginning or end? For example, `|a` would produce ` | a`. That's a syntax error in GBNF. But this would be caught by the regex validation.
+
+16. In `_pattern_to_rule`, the handling of `(`:
+    ```
+    } else if (c == '(') {
+        i++;
+        if (i < length && sub_pattern[i] == '?') {
+            if (i + 1 < length && sub_pattern[i + 1] == ':') {
+                i += 2; // skip "?:" for non-capturing group, treat as regular group
+            } else {
+                throw unsupported_pattern("unsupported group syntax");
+            }
+        }
+        paren_depth++;
+        ...
+        seq.emplace_back("(" + to_rule(transform()) + ")", false);
+    }
+    ```
+    After skipping `?:`, it increments `paren_depth` and calls `transform()`. The `transform()` function will process until it finds `)`. Then it returns the joined sequence. The result is wrapped in `(...)`. Looks correct.
+
+    But wait, `to_rule(transform())` - `transform()` returns a `literal_or_rule` pair. `to_rule` converts it to a string. If the result is a literal (second is true), it wraps with `"..."`. But the result of `join_seq` always has `second = false`. So `to_rule` just returns the string. Looks correct.
+
+17. In `_pattern_to_rule`, the handling of `)`:
+    ```
+    } else if (c == ')') {
+        i++;
+        if (paren_depth == 0) {
+            throw invalid_pattern("unbalanced parentheses");
+        }
+        paren_depth--;
+        return join_seq();
+    }
+    ```
+    This returns the joined sequence when encountering `)`. The caller (the `(` handler) wraps it in `(...)`. Looks correct.
+
+18. In `_pattern_to_rule`, the handling of `^` and `$`:
+    ```
+    } else if (c == '^' || c == '$') {
+        throw unsupported_pattern("anchor inside the pattern");
+    }
+    ```
+    This throws for anchors inside the pattern. But the pattern is already stripped of `^` and `$` at the beginning. So this would only trigger for nested anchors. Looks correct.
+
+19. In `_pattern_to_rule`, the handling of `[`:
+    The code reads until `]`. But it doesn't handle the case where `]` is the first character in the class (e.g., `[]abc]`). In regex, `[]abc]` means the class contains `]`, `a`, `b`, `c`. The code would stop at the first `]`, producing `[]` which is an empty class. This could be a bug.
+
+    But actually, looking at the code more carefully:
+    ```
+    std::string square_brackets = std::string(1, c);  // "["
+    i++;
+    while (i < length && sub_pattern[i] != ']') {
+        ...
+    }
+    ```
+    If the first character after `[` is `]`, the loop doesn't execute, and we get `[]`. Then `i++` skips the `]`. So `[]` is produced. In GBNF, `[]` is an empty character class, which is a syntax error. This could be a bug.
+
+    But this is a limitation, not necessarily a bug in the current code.
+
+20. In `_pattern_to_rule`, the handling of `{`:
+    The code reads until `}`. Then parses the numbers. Looks correct.
+
+21. In `_pattern_to_rule`, the default case (literal characters):
+    ```
+    } else {
+        std::string literal;
+        auto is_non_literal = [&](char c) {
+            return NON_LITERAL_SET.find(c) != NON_LITERAL_SET.end();
+        };
+        while (i < length) {
+            if (sub_pattern[i] == '\\') {
+                ...
+            } else if (sub_pattern[i] == '"') {
+                literal += "\\\"";
+                i++;
+            } else if (!is_non_literal(sub_pattern[i]) &&
+                    (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+                literal += sub_pattern[i];
+                i++;
+            } else {
+                break;
+            }
+        }
+        if (literal.empty()) {
+            throw unsupported_pattern(std::string("unsupported character: ") + c);
+        }
+        seq.emplace_back(literal, true);
+    }
+    ```
+    The condition for adding a character to the literal is:
+    - The character is not in `NON_LITERAL_SET`
+    AND
+    - Either: it's the last character,

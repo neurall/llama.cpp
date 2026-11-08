@@ -1,0 +1,40 @@
+run 21787 | up8_gather_rows | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 14.95 t/s | prompt 672.6 t/s | 256 tokens | args: -np 1 --moe state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini -ctk q8_0 -ctv q8_0 | power 220+280 W | 2026-11-01 18:42:09
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    // otherwise fall back to logical count
+    return std::thread::hardware_concurrency();
+}
+
+int32_t common_cpu_get_num_cores() {
+#if defined(__linux__)
+    // enumerate the set of thread siblings, num entries is num cores
+    std::unordered_set<std::string> siblings;
+    for (uint32_t cpu=0; cpu < UINT32_MAX; ++cpu) {
+        std::ifstream thread_siblings("/sys/devices/system/cpu/cpu"
+            + std::to_string(cpu) + "/topology/thread_siblings");
+        if (!thread_siblings.is_open()) {
+            break; // no more cpus
+        }
+        std::string line;
+        if (std::getline(thread_siblings, line)) {
+            siblings.insert(line);
+        }
+    }
+    if (!siblings.empty()) {
+        return static_cast<int32_t>(siblings.size());
+    }
+#endif
+    // otherwise fall back to logical count
+    return std::thread::hardware_concurrency();
+}
+
+//
+// String utils
+//
+
+std::string string_strip(const std::string & str) {
+    size_t start = 0;
+    while

@@ -1,0 +1,7 @@
+run 22709 | preheat4 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 24.05 t/s | prompt 22.1 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/sc-glm-t.ini,log=wk | power 220+280 W | 2026-11-03 10:07:38
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so the priority is minimal byte count. Let me think about what "smallest" means: probably fewest characters in the HTML file. I should aim for a genuinely playable Tetris in as few bytes as possible, while still being functional (move, rotate, drop, line clears, score maybe).
+
+Let me think about the classic minimal Tetris implementations. There are famous tiny Tetris implementations:
+- The famous "Tetris in 140 bytes
+---

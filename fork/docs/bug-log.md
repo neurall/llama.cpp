@@ -335,3 +335,75 @@ Goal: a missed expert computed on the CPU must give the GPU's bits, so a greedy 
 ## 2026-10-30 llama-server does not exit after a second identical request in cache mode (open)
 
 Repro: GLM 3.5 with `--moe sim-vram=6000 wait-swaps=0`, two identical chat requests, then SIGTERM. The log ends with "cleaning up before exit" and the process stays; SIGKILL needed. Thread states read from /proc (ptrace denied). Cause not found; seen while running the exact-mode checks above, not tied to them.
+
+## 2026-11-01 Every answer above the sparse gate was `!!!!` on GLM and Qwen Next, and a day of rows reported it as a gain
+
+Repro: `python3 fork/run.py jobs -c up8kv -b up8_gather_rows -r 0 -nm -onl kvb-glm60,kvb-qn60` (build before the fix): answer `!!!!...`, decode and hit rate look excellent. Below the gate (GLM 10196 cells, Qwen Next 21784) nothing is wrong, so short rows and PPL at 16k on Qwen Next passed.
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `ggml/src/ggml-cuda/fattn-mma-f16.cuh` `flash_attn_ext_f16`, the mask stride | NaN logits, argmax token 0, one repeated token; GLM decode 27-28 t/s and Qwen Next 44 t/s with hit 99.9%, all void | commit "Attention mask only for the pass's own cells" derives the pass's first cell as `ne11 - stride`. In a gather `ne11` is the list length, not the KV length, so the mask was read far off and every cell was masked | `mask && !use_sparse` in the stride: a gather's mask covers all of K, there is no first cell to derive |
+| `fork/run.py` `is_loop`, `--keep-loops`, how results were read | the rows carried `ok=1`, and speeds were reported before answers | `--keep-loops` skipped the loop test, which is what caught `!!!!` | `is_garbage` fails such a row always. Every answer now goes to a judge model on W10 (`judge_row`, column `judge`), and a nonsense row has no accepted speed |
+
+Verified: build `up8_gather_mask_fix`, GLM 62k and Qwen Next 68k answers are real text (rows `kvb-glm60`, `kvb-qn60`). Long prompt rows for every engine build: `fork/runs/sane.csv`.
+
+## 2026-11-02 Second 128k request `!!!!` on Qwen3.6: a GLU fused into MMQ left the rows of skipped experts unwritten
+
+Repro: `python3 fork/run.py jobs -c up8kv -b up8_kv_auto10 -r 0 -nm -onl kvb-m90-128k` (build before the fix, 2 requests, about 3 min). The bug is on a prompt mix's first pass: the planner first tries the mix on request 2's last call, so request 1 is always fine.
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `ggml/src/ggml-cuda/ggml-cuda.cu` `ggml_cuda_try_fuse` (GLU into MMQ, upstream #30489, merged by hand) against `ggml_cuda_mul_mat_id` | Qwen3.6, `--hog-gpu 4.5`, 137014-token prompt: request 2 answers `!!!!`, fake 77 t/s. Without NaN bits in the old bytes, a coherent answer that parts from request 1 at character 5 (row 21866, `ok=1`) | the fused call went straight to `ggml_cuda_mul_mat_q` and skipped what `ggml_cuda_mul_mat_id` does before its kernel: zero the output (`op_params[1]`: the kernels leave rows of skipped experts unwritten), the expert ids and table (src[3], src[4]), the heat count. Only a pass of several tokens with skipped experts shows it, which is the mix's home card: those rows kept what the lent memory held and went into the experts' sum | `ggml_cuda_mul_mat_id_begin` shared by both paths; the fused call passes ids and table and its overlap check covers them. Build `fix_glu_fuse_zero`, rows `kvb-m384-128k`, `kvb-m90-128k`, one mix call each: request 2 coherent, parts from request 1 at character 342 as with `pp-mix=0`, decode 71-72 t/s |
+
+| false lead | why it looked right | why it was wrong |
+|---|---|---|
+| #31391 batched reads (reverted, then relanded) | `GGML_CUDA_NO_PINNED=1` cleared the NaN and switches that path off | the NaN stayed with the PR reverted; that switch also removed the mix call from the row |
+| `GGML_CUDA_DISABLE_GRAPHS=1`, `GGML_CUDA_DISABLE_FUSION=1` | both clean | the first row's answer still parted at character 5; the second row ran no mix call at all |
+| pool size, CUDA0's KV zone moving | every NaN row so far had the cold 384 MiB margin and a zone move | margin 90 with no zone move was NaN too |
+
+What found it: the NaN check named the first tensor (experts' sum on the mix's first layer), `pp-mix=0` proved the path, comparing the answer text of request 1 and 2 showed damage without a NaN, and the poison ledger showed nobody had written the bad row since the graph's lend. A switch that clears a bug proves nothing until the row shows the same path ran (mix calls, pool, margin).
+
+Rows with a mix call on builds `up8_kv_auto10` and `up8_no_gather` are void. Not run yet: `test-backend-ops` GLU fusion test on a GPU, a true PPL row through the fused path.
+
+## 2026-11-02 Qwen Next: an expert uploaded during decode left stale bytes behind its slice
+
+Repro: `python3 fork/run.py jobs -c paths -b up8_ledger2_verify -r 0 -nm -onl dbg-qn-past` (build before the fix, about 6 min). Found by the first run of the forced path list with `--moe verify=1`, not by any answer.
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `src/llama-moecache-fork.cpp`, the JIT upload in decode (and the move of experts between cards) | `pool-verify: BAD moe_cache_down.30 ...: 406 of 1741208 bytes differ, the first at +1740800 (only past the slice)` from request 2 on. Under poison, NaN in the last value of an output row (element 325119 of a 2560-wide tensor) on the mix's pass. Without poison the last value of each row reads stale bytes: wrong, or NaN when they were a graph's or the KV's | a matmul reads past the last row of a slice when rows are not a multiple of 512 values (Qwen Next and Qwen3.8 down rows of 640). The upload workers and the prompt chain wrote those bytes, the JIT upload wrote only the slice. Ledger: the last writer of all 130 flagged blocks was `jit-up` | one rule, `expert_past`, for every writer and for the byte check; the prompt chain now also writes zeros behind the last expert |
+
+Only models with such rows are touched; GLM, MiMo and Qwen3.6 showed 0 bad bytes on every path.
+
+The first fix had its own bug: it clamped those bytes to the class's view, which ends with the last block's slice, so that block's bytes were no longer written and the byte check no longer read them. `fix_jit_past_bytes` gave NaN under poison from request 1 with a clean byte check. Found with `GGML_SCHED_NAN_CHECK=2 GGML_SCHED_NAN_CHECK_ONLY=ffn_moe_cache`: all bad values in column 2559 of `ffn_moe_cache_down-30`, the table reaching the class's last block. Those bytes now go through `expert_past_view`, a tensor of their own. Verified on build `fix_jit_past_last_block`: `pa-qn_iq4xs-mix` under poison, NaN check and byte check, both requests: no NaN, 0 bad bytes in 5 byte checks.
+
+## 2026-11-02 Found by the forced path list and the long prompt list on the same night
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `src/llama-poolalloc-fork.h` `poolx_pick_slot` | Qwen Next, `pp-path=mix`, RUN_TRUE_PPL row: `general protection fault` in `llama_moe_cache_step_fork`, on the loop over `adopt_victims`, right after a 95-token pass | the picker went on to an empty block with the owner of an earlier candidate still in its answer. An adoption then took expert -1 of that owner: a write before its table, and a bad index at the next step | the owner is reset on both early returns; `tests/test-pass-fork.cpp` has the two cases, which fail on the old header. Build `fix_pick_owner_kv_flip`: the row runs, PPL 1.05099 |
+| `llama_moe_cache_kv_retype_fork` with the q8_0 policy | Qwen3.6 128k with the dense split on (`sl-q36`): HTTP 400 `kv-fit: CUDA0: no lend in front of the KV to stage the conversion` | the conversion asked for staging blocks with no rows to convert, and the dense split's copies left none in front of the zone. The policy's optional pick failed the request | no rows, no staging; a pick of the policy that cannot run stays on f16 with a logged decision. `sl-q36`: answer coherent, decode 70.9 t/s, prompt 2221 t/s |
+| `moe_fill_cb` | the adoption path wrote the slice only, like the JIT upload above | same as the JIT entry | `expert_past` there too |
+
+Verified on `fix_pick_owner_kv_flip`, `kvb-m90-128k`, one mix call on request 2: the two answers are identical over all 802 characters, decode 71.6 and 71.4 t/s.
+
+
+## 2026-11-02 MiMo off topic on the decode chain: the fused GLU's zeroing wiped its own inputs
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `ggml_cuda_try_fuse`, GLU into MMQ, with `ggml_cuda_mul_mat_id_begin` | MiMo, `pp-path=dec`, 121 tokens: the answer is off topic from its first word and loops, at speeds that look like gains. Clean with `upload-now=0` | The fix of the `!!!!` entry above zeroed the output before the quantize. The GLU is gate's and up's last reader, so the allocator lays the output (`ffn_moe_cache_down`) exactly on their bytes (all 46 expert layers, `ledger=2`). The zeroing wiped gate and up, every GPU expert of the pass came out as zero and only the CPU's picks reached the answer | the output is zeroed inside `ggml_cuda_mul_mat_q`, behind the quantize |
+
+It looked like an upload race because of how much was lost: with `upload-now=0` the CPU kept about 40% of the picks and the answer stayed on topic, with mid-pass uploads less stayed on the CPU, and `jit-all=1` gave the worst text. What did not find it: poison, `verify`, `--races`, `--map`, and the new `--dma` windows (32,720 copies, nothing under a running copy), because every byte was right and nothing was NaN. `GGML_SCHED_NAN_CHECK=1` kept the bug and `=2` cleared it (no fusion there), `GGML_CUDA_DISABLE_FUSION=1` cleared it, `fuse-off=GLU` named it and `ledger=2` showed the overlap.
+
+Reached by passes that run MMQ with ids that may be -1: the decode chain above the vector kernels' batch, the prompt mix, the 2-card prefill. No release has it. Rows of those paths since that fix are suspect even when on topic: the answers lost GPU experts.
+
+Verified on `glu_zero_late`, 100-token prompt, two requests each: MiMo, GLM and DeepSeek on the decode chain with uploads, MiMo with uploads off and on the mix, all answers on task.
+
+## 2026-11-08 the 64k gate night: three long-context faults
+
+| where | symptom | cause | fix / state |
+|---|---|---|---|
+| `tools/server/server-context.cpp`, the equal call cut | Qwen3.6-35B (hybrid, gated delta net) at 72k tokens: the answer degenerates into one repeated identifier in every run; rel_b14244 coherent; 12k fine | calls of 24161 tokens end 97 cells past a 256-cell pad; passes of 2014 and of exactly 2048 both fail, calls of 32768 pass: the boundary, not the pass size. The KV and its mask are laid out in 256-cell pads (`GGML_PAD(kv_end, 256)`); a call boundary off a pad corrupts something the recurrent layers read (the exact op is open) | the cut rounds the call size up to a multiple of 256 (022064c06d): coherent again (q35-calls256-64k). `--moe equal-calls=0` switches the cut off. The latent pad bug stays open |
+| `ggml/src/ggml-cuda/concat.cu`, the non-contiguous kernel | DeepSeek 64k: `CONCAT failed: CUDA error: invalid argument` on CUDA1 at pass 2/2 of the second call, every run | the kv-tail's K is `concat(cache view 16640 cells, computed rows 49152 cells)` along the cells; grid y = 65792 > 65535 | grid y and z capped at 65535, the blocks stride (b37b600705). Any model's kv-tail concat past 65535 cells hit it; rel_b14244 has the same kernel and never ran DS 64k (the cell froze PC1 at 101 GiB pinned) |
+| `llama_context::process_ubatch` / `decode` | DeepSeek 64k after the concat fix: a 16384-token pass at 57k -> 73k cells needs a 25.4 GiB graph (the indexer's cells x tokens term) against a 20.2 GiB lend: `ggml_gallocr_reserve: graph needs ... the external buffer holds ...`, HTTP 500 | the failure returned ALLOC_FAILED without the pool's refusal flag, so decode's smaller-pass retry never ran | the failure records a refusal and decode accepts ALLOC_FAILED there (c7c30dc30a); first try still died without a retry line, diagnostics added (f177f4a9aa), build retry-diag |

@@ -1,2 +1,2 @@
 name,model,n,test,tokens,args,extra
-q36-dbg-1000,qwen36,4,pf128k,1,"--moe pp-only=1,state=/home/o/.claude/jobs/44ecfe4e/tmp/state_ppw.ini,log=a",--clamp 1000 --vary --ctx 20992 --hog-gpu 4.5 --env GGML_PF_STATS=1
+cnt-ds-s100,ds,2,100in_128out_edit_src,128,"--moe state=/tmp/runstate/ppk/cnt-ds-s100.ini,pp-path=stream,pp-k=1,pp-depth=1,pf-slots=3,log=wk,pin-budget=108447924224 -lm mmap",--env GGML_PF_STATS=1

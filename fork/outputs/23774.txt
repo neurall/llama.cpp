@@ -1,0 +1,37 @@
+run 23774 | rel_b14244 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.49 t/s | prompt 916.8 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 16:46:09
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This is a JSON Schema to GBNF grammar converter
+- Complex logic for converting JSON schemas into grammar rules
+
+### Issues I can identify:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the recursive call passes `min_items - 1` which would be `-1` when `min_items == 0`. Wait, let me re-read: `min_items == 0 ? 0 : min_items - 1`. OK, that's handled.
+   - When `has_max` is false and separator is non-empty, `max_items - 1` would be `INT_MAX - 1`. That's fine since `has_max` is false, so it passes `max_items` unchanged. Wait: `has_max ? max_items - 1 : max_items`. When `has_max` is false, `max_items` is `INT_MAX`, so it passes `INT_MAX`. That's correct.
+   - When `min_items == 0` and separator is non-empty, the result wraps in `(...)?`. But the inner repetition starts with `min_items == 0 ? 0 : min_items - 1` which is `0`. So it becomes `item_rule (separator item_rule)*` wrapped in `(...)?`. That seems correct.
+
+2. **`build_min_max_int` function:**
+   - Very complex function with many edge cases
+   - The `uniform_range` lambda captures `out` by reference - this is fine since it's used within the function scope
+   - `std::function` for `uniform_range` - could be a lambda but it's recursive so `std::function` is needed
+   - The `decimals_left` parameter is used to limit digit depth - good for preventing exponential blowup
+   - Potential issue: when `min_value` is `INT64_MIN` and we negate it (`-min_value`), this would overflow. Let me check: `if (min_value < 0 && max_value < 0)` - it does `-max_value` and `-min_value`. If `min_value == INT64_MIN`, `-min_value` overflows. But wait, `has_min` checks `min_value != INT64_MIN`, so if `min_value == INT64_MIN`, `has_min` is false. So this path wouldn't be taken with `INT64_MIN`. Actually wait, let me re-read: `has_min = min_value != std::numeric_limits<int64_t>::min()`. So if `min_value == INT64_MIN`, `has_min` is false. Good.
+   - But in the `has_min && has_max` branch with `min_value < 0 && max_value < 0`: `-max_value` and `-min_value`. Since `has_min` is true, `min_value != INT64_MIN`, so `-min_value` is safe. Since `has_max` is true, `max_value != INT64_MAX`, so `-max_value` is safe (well, `-max_value` when `max_value < 0` means `max_value` is negative, so `-max_value` is positive, which is fine).
+   - Actually wait, in the `min_value < 0` case (mixed sign): `build_min_max_int(0, -min_value, ...)`. Since `has_min` is true, `min_value != INT64_MIN`, so `-min_value` is safe.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. This seems reasonable.
+   - Potential issue: the loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - if the rule exists with the same content, it stops and uses that name. If it doesn't exist, it stops and creates it. This is correct.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+   - However, `_rules` is a `std::map` and the snapshot copies the entire map. For large schemas, this could be expensive. Could use a more efficient approach.
+
+5. **`_

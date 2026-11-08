@@ -1,0 +1,84 @@
+run 23690 | up9_merged2 | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.95 t/s | prompt 146.8 t/s | 914 tokens | args: -np 1 | power 220+280 W | 2026-11-07 12:17:38
+
+The user wants me to add a function that counts the lines of this file and prints the count. This is a C++ file (json-schema-to-grammar.cpp). I need to write a function that counts lines of the file itself and prints the count.
+
+The file path is "common/json-schema-to-grammar.cpp". A function could open the file via std::ifstream, count lines by reading with std::getline, and print the count.
+
+Let me write a function like:
+
+```cpp
+static void count_and_print_file_lines(const std::string & file_path = "common/json-schema-to-grammar.cpp") {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "Could not open file: " << file_path << std::endl;
+        return;
+    }
+    size_t line_count = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        line_count++;
+    }
+    std::cout << "Number of lines in " << file_path << ": " << line_count << std::endl;
+}
+```
+
+I need to include <fstream> and <iostream>. The file currently includes various headers but not fstream or iostream. I should mention adding those includes.
+
+Where to add it? Probably near the top after includes, or at the end. Since the user's snippet is cut off mid-function (gbnf_escape_length), I can just provide the function and note where to add it.
+
+I could also make it callable, e.g., call it in main or provide a small standalone demonstration. Since this file is a library file (not necessarily with a main), I'll just add the function and optionally show how to call it.
+
+Let me write the answer: add includes <fstream> and <iostream>, then add the function. Also handle the case where the last line doesn't end with newline — std::getline counts it as a line anyway if there's content. That's fine.
+
+Alternative: count '\n' characters. But getline approach is standard.
+
+I'll present the code snippet with explanation. Keep it reasonably concise. Format: brief explanation, code block with the function, note about includes and how to call it.
+---
+Here's a function that counts the lines of this file and prints the count. Add the required includes first, then the function:
+
+**1. Add includes (at the top, with the other includes):**
+
+```cpp
+#include <fstream>
+#include <iostream>
+```
+
+**2. Add the function (e.g., near the top of the file, after the includes):**
+
+```cpp
+static void count_and_print_file_lines(const std::string & file_path = "common/json-schema-to-grammar.cpp") {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "Error: could not open file: " << file_path << std::endl;
+        return;
+    }
+
+    size_t line_count = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        line_count++;
+    }
+
+    std::cout << "File: " << file_path << "\n";
+    std::cout << "Line count: " << line_count << std::endl;
+}
+```
+
+**3. Call it** — for example, from wherever you want the count printed (e.g., at startup or in a debug/utility entry point):
+
+```cpp
+count_and_print_file_lines();
+```
+
+Example output:
+
+```
+File: common/json-schema-to-grammar.cpp
+Line count: 412
+```
+
+A few notes:
+
+- **`std::getline` counting**: this counts every line, including the last one even if it lacks a trailing newline. Blank lines are counted too. If you want to skip empty lines, add `if (!line.empty()) line_count++;` inside the loop.
+- **Path handling**: the default path assumes the program is run from the repository root. If the working directory may differ, you can pass an explicit path: `count_and_print_file_lines("/full/path/to/common/json-schema-to-grammar.cpp");` — or resolve the path relative to the executable at runtime.
+- **`static` linkage**: like the other helpers in this file (`build_repetition`, `format_literal`, etc.), the function is `static` so it stays internal to this translation unit. Remove `static` and add a declaration in `json-schema-to-grammar

@@ -1,0 +1,17 @@
+name,model,test,tokens
+qni3-s100,qwen38,100in_128out_edit_src,128
+qni3-s200,qwen38,200in_128out_edit_src,128
+qni3-s500,qwen38,500in_128out_edit_src,128
+qni3-s1000,qwen38,1kin_1kout_edit_src,1024
+glm-s100,glm,100in_128out_edit_src,128
+glm-s200,glm,200in_128out_edit_src,128
+glm-s500,glm,500in_128out_edit_src,128
+glm-s1000,glm,1kin_1kout_edit_src,1024
+mimo-s100,mimo,100in_128out_edit_src,128
+mimo-s200,mimo,200in_128out_edit_src,128
+mimo-s500,mimo,500in_128out_edit_src,128
+mimo-s1000,mimo,1kin_1kout_edit_src,1024
+ds-s100,ds,100in_128out_edit_src,128
+ds-s200,ds,200in_128out_edit_src,128
+ds-s500,ds,500in_128out_edit_src,128
+ds-s1000,ds,1kin_1kout_edit_src,1024

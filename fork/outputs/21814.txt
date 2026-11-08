@@ -1,0 +1,78 @@
+run 21814 | up8_gather_mask_fix | pf60k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 41.97 t/s | prompt 1513.4 t/s | 646 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini -ctk q8_0 -ctv q8_0 | power 220+280 W | 2026-11-01 20:27:36
+
+ params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    return ctx_arg;
+}
+
+void common_params_register_preset_hooks() {
+    auto & hooks = common_preset_get_hooks();
+
+    // get_params_from_args
+    hooks.get_params_from_args = [](const std::vector<std::string> & args) -> std::map<std::string, std::string> {
+        std::vector<char *> argv;
+        argv.push_back(nullptr); // argv[0] is unused
+        for (const auto & arg : args) {
+            argv.push_back(const_cast<char *>(arg.c_str()));
+        }
+        std::map<common_arg, std::string> out_map;
+        common_params_to_map((int)args.size() + 1, argv.data(), LLAMA_EXAMPLE_SERVER, out_map);
+        std::map<std::string, std::string> result;
+        for (const auto & pair : out_map) {
+            result[pair.first.get_args().front()] = pair.second;
+        }
+        return result;
+    };
+
+    // get_defaults
+    hooks.get_defaults = [](const std::string & name, const std::string & description, const std::string & filename) -> std::string {
+        std::string ini;
+        ini += "[" + name + "]\n";
+        ini += "model = " + filename + "\n";
+        if (!description.empty()) {
+            ini += "description = " + description + "\n";
+        }
+        return ini;
+    };
+
+    // get_arg_names
+    hooks.get_arg_names = []() {
+        std::set<std::string> names;
+        for (const auto & arg : get_common_arg_defs()) {
+            if (arg.is_preset_only) {
+                continue;
+            }
+            for (const auto & a : arg.get_args()) {
+                names.insert(a);
+            }
+        }
+        return names;
+    };
+
+    // get_arg_info
+    hooks.get_arg_info = [](const std::string & arg_name) -> common_preset_arg_info {
+        common_preset_arg_info info;
+        for (const auto & arg : get_common_arg_defs()) {
+            bool found = false;
+            for (const auto & a : arg.get_args()) {
+                if (a == arg_name) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                continue;
+            }
+            if (arg.value_hint != nullptr) {
+                info.value_hint = arg.value_hint;
+            }
+            if (arg.value_hint_2 != nullptr) {
+                info.value_hint_2 = arg.value_hint_2;
+            }
+            return info;
+        }
+        return info;
+    };
+}

@@ -1,0 +1,59 @@
+run 22672 | warm_cpu | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.01 t/s | prompt 178.4 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/qn-base.ini | power 220+280 W | 2026-11-03 08:51:57
+
+The user wants the smallest HTML Tetris game. The literal ask is "smallest" — so code golf-ish, minimal. But I want it to actually feel good to use, not just be tiny. The best interpretation: a compact single-file Tetris that's small in source but still crafted — playable, with nice touches.
+
+Let me write a genuinely small Tetris in one HTML file, but with good feel: next piece preview, hold, score/lines/level, ghost piece, keyboard controls, and a subtle layered background. Keep it tight but not unreadable.
+
+Let me aim for something like ~60-80 lines that's still a real game. I'll use canvas.
+
+Let me write it:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{background:#0b0d12;color:#e8ecf4;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;display:grid;place-items:center;min-height:100vh}
+...
+</style>
+<canvas id=c width=... >
+```
+
+Design: dark background but not near-black-with-one-neon. I want a richer palette: a deep slate background with a subtle grid/scanline texture and multiple accent colors — the tetromino colors themselves are the palette (cyan, blue, orange, yellow, green, purple, red). Use those as UI accents too. Type: monospace is characteristic for Tetris... but I want a distinctive display face paired with a readable body face. I can use a display face for the wordmark/score numbers — e.g., a heavy condensed face via system fonts? No external fonts to keep it small... Actually I could use Google Fonts link, but "smallest" argues against. I'll use font stacks: display = "Impact"/"Haettenschweiler"/"Arial Narrow Bold" — hmm, risky. Better: use a system stack for display like `ui-monospace` heavy weight with letter-spacing for the wordmark, and a different mono for body. Hmm, that's mono+mono.
+
+Alternative: keep it small but include one Google Font for display. That adds one line. I think it's worth it for craft: e.g., 'Archivo Black' or 'Bebas Neue' for the wordmark and big numbers, paired with a mono for body. But offline it degrades gracefully. Let me include a single `<link>` for a display face — it's one line and gives strong type contrast.
+
+Actually, for a Tetris game, the board itself is the star. Let me open with the playfield immediately rather than a title screen — the board IS the opening. Layout: left rail with wordmark + score/lines/level, center board, right rail with next queue + hold + keys legend.
+
+Let me write compact but readable code.
+
+Game logic:
+- 10x20 board.
+- Pieces as rotation-state strings or matrices. Compact approach: define pieces as coordinate sets, rotate by matrix rotation.
+
+Compact classic approach:
+
+```js
+const P='1111,0111 0110 0111,1111 1100 0111 0110,1111 1100 0011 0110,1111 0110 0110 1100,1111 0110 1100 0011,1111 1000 1110 0001'.split(',')
+```
+Hmm, too clever. Let me use a readable compact form:
+
+```js
+const S=[[[0,0,0],[1,1,1],[0,1,0]], ...]
+```
+
+Simplest: define each piece as a list of [x,y] offsets per rotation? Or use the standard "matrix rotate" approach:
+
+```js
+const SHAPES={
+ I:[[0,1],[1,1],[2,1],[3,1]],
+ ...
+}
+```
+
+I'll do: each piece defined by a square matrix, rotate by transposing+reversing. That's 3 lines.
+
+```js
+const P=[
+ [[1,1,1,1]],                       // I
+ [[1,1],[1,1]],                     //
+---

@@ -1,0 +1,10 @@
+run 22607 | warm_cpu | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.62 t/s | prompt 132.2 t/s | 128 tokens | args: -np 1 --moe state=/tmp/runstate/ppk/dc-glm-s500.ini,log=wk | power 220+280 W | 2026-11-03 07:26:11
+
+The user is asking me to delete code in this file that is never used. Let me analyze the provided code snippet carefully.
+
+The file is `json-schema-to-grammar.cpp` from llama.cpp (this is a known file from the llama.cpp project). The snippet shown is truncated - it cuts off mid-function in `build_min_max_int` (the `out << "` line is incomplete, suggesting the string literal continues).
+
+Let me think about what code is shown and what could be "never used":
+
+1. `build_repetition` - This function builds repetition patterns for grammar rules. It's used when converting JSON schema arrays with min
+---

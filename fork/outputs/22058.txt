@@ -1,0 +1,31 @@
+run 22058 | rc_nan_fixes | pf128k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.11 t/s | prompt 455.0 t/s | 256 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini -ctk q4_0 -ctv q4_0 | power 200+200 W | 2026-11-02 05:49:30
+
+ curr_ex) {
+    std::vector<std::string> config_files;
+    if (params.system_config) {
+        config_files.push_back(fs_get_system_config_path());
+    }
+    if (params.user_config) {
+        config_files.push_back(fs_get_user_config_path());
+    }
+    if (config_files.empty()) {
+        return;
+    }
+    for (const auto & config_file : config_files) {
+        if (!std::filesystem::exists(config_file)) {
+            continue;
+        }
+        LOG_INF("applying config file: %s\n", config_file.c_str());
+        common_params_parser_init(params, curr_ex, config_file.c_str());
+    }
+}
+
+static void common_params_apply_config_file(common_params & params, llama_example curr_ex, const std::string & config_file) {
+    if (!std::filesystem::exists(config_file)) {
+        throw std::runtime_error(string_format("error: config file '%s' does not exist\n", config_file.c_str()));
+    }
+    common_params_parser_init(params, curr_ex, config_file.c_str());
+}
+
+static void common_params_apply_preset(common_params & params, llama_example curr_ex, const std::string & preset_file) {
+    if (!std::filesystem::exists(preset_file))

@@ -1,0 +1,47 @@
+run 22151 | rel_stable_auto | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.48 t/s | prompt 8.4 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-02 11:53:57
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous tiny Tetris implementations. The classic "smallest tetris" is Michael Birken's 13-line Tetris (in C). For JS/HTML, people have done ~few hundred bytes. I want to make a genuinely playable Tetris in a very compact single HTML file — no external dependencies, no build step. I should aim for real minified-ish code but still readable enough? The user asked for smallest, so I should compress aggressively — short variable names, minimal DOM, canvas rendering.
+
+But I also have my own quality bar: even for a tiny artifact, I want it to feel authored — a clean page, a nice frame, maybe a monospace/pixel aesthetic, keyboard controls, score, game over, restart. The tension: "smallest" vs "polished". I think the right move is: the game code itself is extremely compact (the star of the show — I can even show the byte count), wrapped in a minimal but tasteful presentation. I can display the byte count of the game logic as a badge — that's a nice signature moment: "the whole game is N bytes". Actually, a really cool idea: show the entire game source on the page itself (like a self-displaying quine-ish listing) with the byte count. That's memorable and honest about the minimalism.
+
+Let me design the actual Tetris logic compactly.
+
+Core Tetris in minimal JS:
+
+- Playfield: 10 wide × 20 tall (or smaller grid for compactness, but standard 10×20 is fine).
+- 7 tetrominoes with rotations. Compact representation: use strings or arrays of bit patterns.
+
+A very compact known approach: represent each piece as a set of 4 cells in a 4×4 (or use rotation via matrix rotation on the fly). Rotating on the fly: store each piece as array of [x,y] offsets, rotate by (x,y)->(y,3-x) or similar. That's compact.
+
+Even more compact: the classic trick — encode all rotations of all 7 pieces as a single string of numbers. E.g., the well-known compact tetris uses:
+
+```js
+t=[["#","##","#"],["#","#","#","##"],...]
+```
+
+Hmm. Let me think of a genuinely compact encoding.
+
+Known minimal JS tetris (e.g., "tetris in 140 bytes" style) uses clever tricks, but those are often barely playable (no rotation, no score). I want: move left/right, rotate, soft drop (down), hard drop maybe, line clear, score, game over, next piece maybe (optional — adds bytes). For "smallest", I might skip next-piece preview and hold. Keep: score, level speed maybe fixed speed, game over + restart.
+
+Let me write compact code:
+
+```js
+D=document, C=D.querySelector('canvas').getContext('2d')
+```
+
+Board as a 2D array or a single array of length 200 (10×20). Use W=10, H=20.
+
+Pieces: I'll define shapes as arrays of coordinate pairs, with rotation function. Or define each tetromino by its 4 rotations as bitmasks in a 4x4 grid encoded as 16-bit numbers. That's very compact:
+
+For each piece, 4 rotation states, each a 16-bit mask (4×4 grid). Total 28 numbers. Encode as a string? Or just an array.
+
+Alternative compact trick used in many tiny tetris: define pieces via a string like:
+
+```js
+P="I2L3J4O5S6T7Z8..." 
+```
+
+Hmm, let me think about the classic approach: each tetromino can be represented by 4 cells (x,y) in a bounding box. Rotation: for a piece with cells relative to a pivot, rotate (x,y) → (y, -x) or (x,y)→(-y,x). Using a 4×4 box with rotation (x,y)→(y, 3-x) works for all pieces if we choose the right box offsets. Actually the standard trick: represent each piece as a list of 4 [x,y] cells within a 4×4 grid (or 3×3 for most), and rotate with the transform (x,y) → (y, size-1-x) where size is 3 or 4 depending
+---
