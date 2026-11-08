@@ -214,7 +214,9 @@ static inline double rls_ei(double mu, double var, double b) {
     const double sd = std::sqrt(std::fmax(0.0, var));
     if (sd <= 0.0) { return std::fmax(0.0, b - mu); }
     const double z = (b - mu) / sd;
-    return (b - mu) * rls_ncdf(z) + sd * std::exp(-0.5 * z * z) / std::sqrt(2.0 * 3.141592653589793);
+    // a pass cannot take less than 0, so the gain over the best arm b is at most b: an arm with a wild posterior (MiMo 64k, 2026-11-08: one card
+    // 1170 s against the split's 19.7 s, variance in the thousands) otherwise wins a trial through its variance alone
+    return std::min(std::fmax(0.0, b), (b - mu) * rls_ncdf(z) + sd * std::exp(-0.5 * z * z) / std::sqrt(2.0 * 3.141592653589793));
 }
 // Known here: the model's parameter uncertainty at this phi is no larger than the noise (phi' P phi <= mu^2, i.e. var <= 2 s2 mu^2): the arm ran at
 // comparable features. A measured arm extrapolated far from where it ran is not known here (the split measured at 10k says little at 2k).
