@@ -1022,6 +1022,7 @@ static std::atomic<uint64_t> g_pjit_left_l[256], g_pjit_pool_l[256];   // per la
 static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (llama_moe_cache_prompt_call_fork, set by llama_context::decode)
 static std::atomic<int64_t> g_mb_auto { 0 };       // outside a prompt call, the largest pass on the cache path: experts per layer / experts per token, the tokens that can touch them all
 static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call left a layer fewer blocks than its pass may use: its passes leave the prompt chain
+static std::atomic<uint32_t> g_pp_last_n{0}, g_pp_last_ub{0};   // the last decision's call (tokens, pass ceiling): decided again when the chain is refused after it
 static std::atomic<bool> g_pp_dec{false};        // this prompt call runs on the decode chain, misses may stay on the CPU (llama_moe_cache_pp_decide_fork)
 static bool              g_pp_dec_built = false; // the same when the last graph was finished
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
@@ -9665,24 +9666,32 @@ bool llama_moe_cache_pp_chain_takes_fork(int64_t n_tokens) {
 
 // after the lend of a built graph (llama_context::process_ubatch): the blocks the graph took are gone. True: a layer of the chain lost too many, the prompt call leaves the chain
 // and the graph is built again (the check at build time could not see this lend; a layer short of blocks would have experts nobody computes).
+void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
 bool llama_moe_cache_pp_short_fork() {
     moe_cache * mc = g_cache;
     if (!mc || !g_pp_built) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mc->mtx);
-    for (auto & l : mc->layers) {
-        if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want)) {
-            g_pp_short = true;
-            g_pp_built = false;
-            const std::string refused = format("prompt chain: layer %d keeps %lld blocks beside the graph, the pass may use %lld experts: this prompt takes the prompt path",
-                    l.pub.il, (long long) pp_blocks(mc, l), (long long) std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want));
-            LLAMA_LOG_WARN("moe-cache: %s\n", refused.c_str());
-            llama_moe_stats_log_fork("CHN", refused.c_str());
-            return true;
+    std::string refused;
+    {
+        std::lock_guard<std::mutex> lock(mc->mtx);
+        for (auto & l : mc->layers) {
+            if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want)) {
+                g_pp_short = true;
+                g_pp_built = false;
+                refused = format("prompt chain: layer %d keeps %lld blocks beside the graph, the pass may use %lld experts: the call is decided again without the chain",
+                        l.pub.il, (long long) pp_blocks(mc, l), (long long) std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want));
+                break;
+            }
         }
     }
-    return false;
+    if (refused.empty()) { return false; }
+    LLAMA_LOG_WARN("moe-cache: %s\n", refused.c_str());
+    llama_moe_stats_log_fork("CHN", refused.c_str());
+    // the pass has not run: the call is decided again among the other arms (Qwen3.8 200 tokens, both-splits 2026-11-08: the refused chain fell to the plain stream,
+    // 1510 ms, while the mix was calculated at 302 ms and took 574 on the next request)
+    llama_moe_cache_pp_decide_fork(g_pp_last_n.load(std::memory_order_relaxed), g_pp_last_ub.load(std::memory_order_relaxed));
+    return true;
 }
 
 // the misses of a chain layer, on the chain's stream, right behind its router (a graph custom op: the ids are on the host). The blocks: free ones, then the layers that already
@@ -12418,7 +12427,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     moe_cache * mc = g_cache;
     g_pp_path_call = PP_RING;   // until decided: the stream, nothing saved against it
     g_pp_save_us = 0.0;
-    if (!mc || !pp_chain_allowed() || !mb_is_auto() || ub_max == 0 || mc->n_links <= 0) {
+    g_pp_last_n.store(n_tokens, std::memory_order_relaxed); g_pp_last_ub.store(ub_max, std::memory_order_relaxed);
+    // a refused chain (g_pp_short) only takes the chain arm out below: the other arms are still decided (llama_moe_cache_pp_short_fork)
+    if (!mc || !pp_chain_on() || !g_prompt_call.load(std::memory_order_relaxed) || g_pp_dec.load(std::memory_order_relaxed) || !mb_is_auto() || ub_max == 0 || mc->n_links <= 0) {
         return;
     }
     const double R_read = llama_dsplit_read_rate_fork(mc->link_dev[0]);   // before any lock: it takes the split planner's (which calls into the cache under it)
@@ -12582,6 +12593,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     {
         bool ok[PP_PATHS];
         for (int p = 0; p < PP_PATHS; ++p) { ok[p] = g_pp_phi[p][1] > 0.0; }
+        if (g_pp_short.load(std::memory_order_relaxed)) { ok[PP_CHAIN] = false; }   // the lend left a chain layer too few blocks for this call
         // a call under the GPU's smallest expert batch (GGML_OP_OFFLOAD_MIN_BATCH, 32 tokens) streams nothing: its expert matmuls run on the CPU, each expert read from the pool or the SSD. The prompt's
         // 4-token tail (2026-11-08) took 1.1 s on GLM 3.5 and 1.7 s on DeepSeek that way, 0.5 and 0.3 s on the decode chain: about 10% of a 3k prompt. A chain whenever one can run.
         if (n < PP_MIN_BATCH && (ok[PP_CHAIN] || ok[PP_DEC])) {
