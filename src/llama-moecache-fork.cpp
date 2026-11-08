@@ -12596,7 +12596,10 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // against an arm known here, and a chain measured here (known) competes on its mean. (a448602c58 had dropped this as a ballpark; the
         // ballpark was the calculated dec_max, this is the measured one.)
         for (const int p : { PP_CHAIN, PP_DEC }) {
-            if (ok[p] && n > (double) g_mb_auto.load(std::memory_order_relaxed) && !known[p]) { ok[p] = false; }   // no trial past the measured crossover: MiMo 64k warm, a 16384-token decode chain trial calculated 8.6 s took 1170 s (the stream known, so the old test let it run)
+            // (g_mb_auto = experts / picks is 32 on these models, and the chains win well past it. Forced sweep 2026-10-31, t/s, cache / stream: MiMo 100 tokens 59/28, 200 64/55, 300 62/82; GLM 3.0 56/27, 62/54, 60/80;
+            // DeepSeek 200 53/13, 500 52/27, 1000 57/57. So up to the calculated crossover dec_max, at most 256 tokens: dec_max alone says thousands before a stream pass measured the compute, and a chain loses there; a chain that ran competes on its mean at any size)
+            // shortcut: 256 is the sweep's crossover on MiMo and GLM, not computed (DeepSeek's is near 1000); use dec_max alone once it is built from a measured compute and link rate
+            if (ok[p] && n > std::max((double) g_mb_auto.load(std::memory_order_relaxed), std::min(dec_max, 256.0)) && !known[p]) { ok[p] = false; }   // no trial past the crossover: MiMo 64k warm, a 16384-token decode chain trial calculated 8.6 s took 1170 s (the stream known, so the old test let it run)
         }
         // The predictions compete on their calculated upload (user 2026-11-08: "if we are not trying it prior full stream than it is bug"), the lowest k first: it stages the least,
         // a higher k only after it ran. The mix competes on its mean up to PP_MIX_COLD (2026-11-08 auto rows: MiMo 418 tokens 3018 ms against the stream's 3834, 1016 tokens 3187

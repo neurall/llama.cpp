@@ -163,6 +163,9 @@ x 1.3 (PP_K_LATE: the forced sweep's break-even at 77% of a layer's experts, 202
 and against a known stream a VOI trial. Lowest k first (a higher k only after it ran). Earlier revision: never a cold candidate and the upload feature upside down (the stream's x (1 - 2^i x picks / experts), so k x32
 looked free and was tried first). Measured wins stand (DS 16k 31.4 vs 45.0 s, MiMo 16k 32.3 vs 35.0; GLM 3.5 10k lost 17.4 vs 16.9).
 
+R1b R1's bound is max(g_mb_auto, min(dec_max, 256)): g_mb_auto (experts / picks) is 32 on the big models while the chains win to about 200 tokens on MiMo and GLM and to about 1000 on DeepSeek (forced sweep 2026-10-31).
+The calculated crossover dec_max (in every CAL line) says thousands before a stream pass measured the compute, so it is capped at 256; a chain that ran competes on its mean at any size.
+
 R3b the mix competes on its mean up to 4096 tokens (PP_MIX_COLD): MiMo 418 tokens 3018 ms against 3834, 1016 tokens 3187 against 3907 (2026-11-08); Qwen3.8 IQ3 +18-47% at 1.5-4.5k; GLM 3.5 2.3k +10%. Past 4096 it stays a VOI trial: MiMo 12k 495 against 933 t/s, DS 12k 304 against 530.
 
 R5b a call under GGML_OP_OFFLOAD_MIN_BATCH (32 tokens) streams nothing: its expert matmuls run on the CPU, so the stream family (stream, mix, k) is no candidate when a chain can run, and such a call never
