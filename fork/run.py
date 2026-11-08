@@ -7654,14 +7654,7 @@ def run_list(name, argv):
         for r in rows:
             if not r["_b"].startswith("stock") and "-nm" not in shlex.split(r.get("args") or ""): r["args"] = ((r.get("args") or "") + f" -nm {o.no_pool}").strip()
     auto_pin = {b: has_auto_pin(b) for b in dict.fromkeys(r["_b"] for r in rows)}
-    for r in rows:   # builds with the auto pin: no forced pin share, the build computes it from RAM and model size and logs the numbers (a -nm 0 row stays: it asks for no pinning)
-        if auto_pin.get(r["_b"]) and not r["_b"].startswith("stock"):
-            tok = shlex.split(r.get("args") or ""); keep = []
-            for i, t in enumerate(tok):
-                if t == "-nm" and i + 1 < len(tok) and re.fullmatch(r"[\d.]+%?", tok[i + 1]) and float(tok[i + 1].rstrip("%")) != 0: continue
-                if i and tok[i - 1] == "-nm" and re.fullmatch(r"[\d.]+%?", t) and float(t.rstrip("%")) != 0: continue
-                keep.append(t)
-            r["args"] = shlex.join(keep)
+    # a numeric -nm in a row or on the command line reaches every build: the user sets the best pin budget per model (2026-11-08; before, auto-pin builds dropped it)
     ram_gib = int(open("/proc/meminfo").readline().split()[1]) >> 20
     for r in rows:   # a model that cannot fit RAM beside 16 GiB for the system must not be pinned (128 GiB GLM on 125 GiB froze PC1): -lm mmap, no pool; stock mmaps already
         if not r["_b"].startswith("stock") and not auto_pin.get(r["_b"]) and (size(r) >> 30) + 16 > ram_gib and not nomount_args(r.get("args") or "")[1]:
