@@ -158,8 +158,12 @@ R4 the memory crosses processes: the state file stores every arm's RLS (theta, P
 persistence rule, rampool.md) and loads it as the prior. This is the largest lever in the data: the cold gap (27-31%) is exactly what a process
 without the last process's means loses. The cells are run with `-cs` (empty state) only for the cold-start rows; every other row keeps its state.
 
-R5 the k arms (stream with k x picks ahead): never a cold candidate; a VOI trial on warm requests only; measured wins stand (DS 16k 31.4 vs 45.0 s,
-MiMo 16k 32.3 vs 35.0; GLM 3.5 10k lost 17.4 vs 16.9). k > 1 has never run: trials start at the lowest k.
+R5 the k arms (stream with k x picks ahead): each competes on its calculated upload: the experts the call's tokens rank in their first 2^i x picks, by the lifetime counts,
+x 1.3 (PP_K_LATE: the forced sweep's break-even at 77% of a layer's experts, 2026-10-31), so a prompt that touches most experts is the stream's and a short one is the arm's: a mean pick, cold too,
+and against a known stream a VOI trial. Lowest k first (a higher k only after it ran). Earlier revision: never a cold candidate and the upload feature upside down (the stream's x (1 - 2^i x picks / experts), so k x32
+looked free and was tried first). Measured wins stand (DS 16k 31.4 vs 45.0 s, MiMo 16k 32.3 vs 35.0; GLM 3.5 10k lost 17.4 vs 16.9).
+
+R3b the mix competes on its mean up to 4096 tokens (PP_MIX_COLD): MiMo 418 tokens 3018 ms against 3834, 1016 tokens 3187 against 3907 (2026-11-08); Qwen3.8 IQ3 +18-47% at 1.5-4.5k; GLM 3.5 2.3k +10%. Past 4096 it stays a VOI trial: MiMo 12k 495 against 933 t/s, DS 12k 304 against 530.
 
 R5b a call under GGML_OP_OFFLOAD_MIN_BATCH (32 tokens) streams nothing: its expert matmuls run on the CPU, so the stream family (stream, mix, k) is no candidate when a chain can run, and such a call never
 teaches the stream arms or the SSD rate. Measured 2026-11-08: the prompt's 4-token tail 1.1 s (GLM 3.5) and 1.7 s (DS) on that path, 0.5 and 0.3 s on the decode chain; the 2-token start-up call, priced against the

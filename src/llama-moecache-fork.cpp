@@ -11707,7 +11707,9 @@ static double pp_pass_floor(double n) {
 // pass). This is what auto decides by (user 2026-11-01: per size, from measured values). The paths are told apart by the graph that ran, a forced path measures as well.
 // PP_RING: the stream, every expert staged on the fastest link's card. PP_MIX: the stream with the prompt mix. PP_DEC: the decode chain. PP_K + i: the stream with predicted staging, q2 up to 2^i x a token's picks.
 enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_PATHS = PP_K + 8 };
+static constexpr double PP_MIX_COLD = 4096.0;   // below it the prompt mix competes on its mean from the first request, above it only a trial (shortcut: a fixed size, the data has wins to 4.5k and losses at 12k; compute it from the cross-card traffic when 5-10k is measured)
 static constexpr double PP_MIN_BATCH = 32.0;   // GGML_OP_OFFLOAD_MIN_BATCH's default: under it a pass's experts run on the CPU, whichever path was planned
+static constexpr double PP_K_LATE = 1.3;   // predicted staging's real cost over the upload of the experts it calculates; the forced sweep's break-even at 77% of a layer's experts needed (2026-10-31, campaign predictor-upload-bw-reducer)
 static struct { double n = 0.0, us = 0.0; } g_pp_took[PP_PATHS][32];
 static bool g_pp_no_chain[32] = {};   // per size: the chain's graph refused such a pass
 // ---- the learned planner (fork/docs/rampool.md "Robust planner design"; --moe split-model=0 keeps the per-size rules above for one release) ----
@@ -12424,6 +12426,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     std::vector<cost> v;
     double U = 0.0, Um = 0.0;   // the stream's upload, without and with the prompt mix
     double M = 0.0;             // of the stream's bytes, the ones read from the SSD: tensors still on the mapping
+    double Uk[PP_PATHS - PP_K] = {}, Mk[PP_PATHS - PP_K] = {};   // the same two for predicted staging with 2^i x the picks: the experts the call's tokens rank that high (cold counts: nearly all of them)
+    const double n = (double) std::min(n_tokens, ub_max);
     int n_expert = 0;
     bool has_slower = false;
     bool cpu_known = false;   // the CPU's read rate is measured: without it the decode chain's time cannot be calculated, and no prompt call takes it
@@ -12452,7 +12456,14 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             for (const auto x : l.glob_count) { all += (double) x; }
             for (size_t e = 0; e < l.expert_slot.size(); ++e) {
                 const bool on_card = l.expert_slot[e] >= 0;
-                if (r0 > 0 && !(on_card && l.link == 0)) { U += S / r0; M += Sm; }   // the fastest link's card holds it: copied there, else it streams
+                if (r0 > 0 && !(on_card && l.link == 0)) {   // the fastest link's card holds it: copied there, else it streams
+                    U += S / r0; M += Sm;
+                    const double p1 = (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all;   // its share of one token's picks
+                    for (int i = 0; i < PP_PATHS - PP_K; ++i) {
+                        const double hit = 1.0 - std::exp(n * std::log1p(-std::min(1.0, p1 * (double) (1 << i))));
+                        Uk[i] += hit * S / r0; Mk[i] += hit * Sm;
+                    }
+                }
                 if (r0 > 0 && !on_card) { Um += S / r0; }                    // the mix: computed on its home card if a card holds it
                 if (!on_card && rl > 0) {
                     v.push_back({ std::log1p(-std::min(1.0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all)), S / rl, rc > 0.0 ? S / rc : 0.0, Sm });
@@ -12461,7 +12472,6 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         }
     }
     std::lock_guard<std::mutex> lk(g_pp_mu);
-    const double n = (double) std::min(n_tokens, ub_max);
     double up = 0.0, cpu = 0.0;   // what the call's misses cost uploaded (once per expert it touches) and on the CPU (once per token routed to them)
     for (const auto & x : v) {
         up  += (1.0 - std::exp(n * x.l1p)) * x.us;
@@ -12555,10 +12565,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     double ssd_miss = 0.0;
     if (ssd_rate > 0.0) { for (const auto & x : v) { ssd_miss += (1.0 - std::exp(n * x.l1p)) * x.sm / (ssd_rate * 1e3); } }
     if (cpu_known) { cand(PP_DEC, up + chunk_at(n) + ssd_miss); }
-    // a prediction of 2^i x the picks stages that share of the experts ahead: the stream's upload less what it hides (C16: the arms differ from the
-    // start instead of nine copies of the stream); the coefficient learns the rest
+    // a prediction of 2^i x the picks uploads what the call's tokens rank that high (the same SSD rule as Ts), not the whole layer: the stream's upload at a
+    // long prompt where every expert is touched, a fraction at a short one. x PP_K_LATE: what the forced sweep shows it pays beyond that (late fixes, the ranking nodes).
+    // Was the stream's upload x (1 - 2^i x picks / experts), upside down: k x32 cost nothing, the planner tried it first (rows 2026-11-08: 57 k x32 picks against 5 k x1).
     for (int i = 0; k_auto && PP_K + i < PP_PATHS && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) {
-        cand(PP_K + i, Ts * std::max(0.0, 1.0 - (double) (1 << i) * (double) mc->n_expert_used / (double) n_expert));
+        cand(PP_K + i, PP_K_LATE * (ssd_rate > 0.0 ? std::max(Uk[i], Mk[i] / (ssd_rate * 1e3)) : Uk[i]));
     }
     int best_mu = -1;
     for (int p = 0; p < PP_PATHS; ++p) {
@@ -12587,11 +12598,13 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         for (const int p : { PP_CHAIN, PP_DEC }) {
             if (ok[p] && n > (double) g_mb_auto.load(std::memory_order_relaxed) && !known[p]) { ok[p] = false; }   // no trial past the measured crossover: MiMo 64k warm, a 16384-token decode chain trial calculated 8.6 s took 1170 s (the stream known, so the old test let it run)
         }
-        // the stream's variants (mix, predictions k x1 .. x32) that never ran here are trials only, never a mean pick: their prior is the stream's (or the
-        // stream's upload less a guess), so their means differ by noise and the pick flipped between them (rampool12 rows 23784-23789: k x8/16/32 in
-        // turn, nothing known, the split never tried, warm 438-576 against 586-613 on rampool11)
+        // The predictions compete on their calculated upload (user 2026-11-08: "if we are not trying it prior full stream than it is bug"), the lowest k first: it stages the least,
+        // a higher k only after it ran. The mix competes on its mean up to PP_MIX_COLD (2026-11-08 auto rows: MiMo 418 tokens 3018 ms against the stream's 3834, 1016 tokens 3187
+        // against 3907; Qwen3.8 IQ3 1.5-4.5k +18-47%, GLM 3.5 2.3k +10%); past it a mix that never ran here is a trial only, never a mean pick: its prior is the stream's (means
+        // equal to noise, rampool12 rows 23784-23789) and the cross-card traffic grows with the tokens (MiMo 12k 495 against 933 t/s, DS 12k 304 against 530)
         bool tonly[PP_PATHS];
-        for (int p = 0; p < PP_PATHS; ++p) { tonly[p] = (p == PP_MIX || p >= PP_K) && g_pp_rls[p].n == 0; }
+        for (int p = 0; p < PP_PATHS; ++p) { tonly[p] = p == PP_MIX && g_pp_rls[p].n == 0 && n > PP_MIX_COLD; }
+        for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
     }
