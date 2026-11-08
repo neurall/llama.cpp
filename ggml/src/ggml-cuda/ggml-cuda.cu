@@ -1,6 +1,8 @@
 #if defined(__linux__)
 #include <sys/mman.h>
-#include <nvtx3/nvToolsExt.h>   // fork: NVTX ranges for diagnostics (GGML_NVTX), Linux only
+#endif
+#if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#include <nvtx3/nvToolsExt.h>   // fork: NVTX ranges for diagnostics (GGML_NVTX), Linux CUDA only
 #else
 // fork: no NVTX outside Linux builds: the ranges compile to nothing
 #define nvtxRangePushA(x) ((void)(x))
