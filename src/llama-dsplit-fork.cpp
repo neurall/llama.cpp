@@ -2749,6 +2749,14 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         bool kn1 = false;
         int n1 = 0;   // the one-card arm's samples: the bench cap below is for an arm never measured, not one measured once (rls_known wants more)
         if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth, &kn1, &n1) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); kn1 = rls_known(g_rls_one, mu1, v1); n1 = g_rls_one.n; }   // C18
+        else if (g_rls_one.n > 1) {
+            // the moe-cache's path model spans short prompts to 12k: far from most of its samples its spread exceeds the time itself (MiMo 12k b14965: one card
+            // 11.84 +- 18.68 s against 12.6 s measured, a one-card trial on every server start, 990 against 1241 t/s split). The split planner's own one-card
+            // model of the passes it weighed (stored, so it holds across restarts) is taken where it is the narrower one
+            double vo = 0.0;
+            const double mo = rls_pred(g_rls_one, phi, &vo);
+            if (mo > 0.0 && vo < v1) { mu1 = mo; v1 = vo; kn1 = rls_known(g_rls_one, mo, vo); n1 = g_rls_one.n; }
+        }
         // MiMo 12k relcand2: one card measured 11.98 +- 0.76 s, the cap made it 11.97 +- 4.31, nothing was known, and the wide one card won a trial every request; the split (9 s) never ran
         if (!kn1 && n1 == 0 && c_one_bench > 0.0) {
             // one card never measured here: the moe-cache's cold prior (MiMo 3k, no-map-reads 2026-11-08: 8.7 s for a pass b14929 ran in 4.0-4.3 s on one card) sent every call to
@@ -2843,8 +2851,9 @@ static void dsplit_pass_end_locked() {
     // the decode chain neither (Qwen3.8-Flash-Next 15.5k: 35.0 s on the decode chain, 10.1 s streamed)
     if (llama_moe_cache_pp_chain_pass_fork() || llama_moe_cache_pp_dec_pass_fork()) { return; }
     const bool learned = dsplit_split_model_on();
-    // the learned planner: a one-card pass learns in the moe-cache's model of the path that ran (llama_moe_cache_prefill_report_fork), never here
-    if (learned && p.choice != 1 && llama_moe_cache_pp_planned_fork()) { return; }
+    // the learned planner: a one-card pass learns in the moe-cache's model of the path that ran (llama_moe_cache_prefill_report_fork), and here too: that
+    // model spans every pass size of the path, while g_rls_one (stored with the split's posterior) sees only the passes the split was weighed for (below)
+    const bool mc_planned = learned && p.choice != 1 && llama_moe_cache_pp_planned_fork();
     // A pass under a quarter of the card limit (the micro-batch the pools allow now) is no sample: the server's short tail calls (1024-2144 tokens at the
     // end of a long prompt) are mostly the pass's fixed part and its upload, and their pass sizes are too close together to separate the two - recorded,
     // GLM's one-card curve became 4395 us per token from them and the 4k request picked the split it lost (pre13). Small requests are predicted from the
@@ -2881,7 +2890,7 @@ static void dsplit_pass_end_locked() {
         const double phi[4] = { 1.0, (double) p.T, (double) p.T * p.att * cm, std::max(0.0, p.U_us) };
         if (rls_update(g_rls_one, phi, us) > 1.0) { g_dsf_redraw = true; }
         g_rls_dirty = true;
-        if (p.mu >= 0.0) { llama_dsplit_plan_book_fork(p.lo < 0.0 || p.mu <= p.lo ? 0.0 : std::max(0.0, us - p.lo), us <= p.lo + p.sd); }
+        if (p.mu >= 0.0 && !mc_planned) { llama_dsplit_plan_book_fork(p.lo < 0.0 || p.mu <= p.lo ? 0.0 : std::max(0.0, us - p.lo), us <= p.lo + p.sd); }
         return;
     }
     if (learned) {
