@@ -6960,7 +6960,36 @@ static void ggml_cuda_scratch_check_end_fork(int device, const ggml_cgraph * cgr
     }
 }
 
+// fork diagnostics: GGML_CUDA_OP_PROFILE=N times every node (stream sync around each, graphs off) and prints the ops by share of
+// wall time every N graphs; a fused group counts as its first node. The sync adds launch latency, which is part of what it measures.
+static const int g_op_prof_every = getenv("GGML_CUDA_OP_PROFILE") ? atoi(getenv("GGML_CUDA_OP_PROFILE")) : 0;
+struct ggml_cuda_op_prof {
+    std::map<std::string, std::pair<double, int64_t>> t;   // op key -> (us, calls)
+    std::string cur;
+    std::chrono::steady_clock::time_point t0;
+    int graphs = 0;
+    void mark(cudaStream_t s, const ggml_tensor * next) {   // ends the running node, starts `next` (nullptr: end of graph)
+        CUDA_CHECK(cudaStreamSynchronize(s));
+        const auto now = std::chrono::steady_clock::now();
+        if (!cur.empty()) { auto & e = t[cur]; e.first += std::chrono::duration<double, std::micro>(now - t0).count(); e.second++; }
+        cur = next ? std::string(ggml_op_desc(next)) + " " + (next->src[0] ? ggml_type_name(next->src[0]->type) : "-") : "";
+        t0 = now;
+        if (!next && ++graphs % g_op_prof_every == 0) {
+            std::vector<std::pair<double, std::string>> v; double tot = 0.0;
+            for (auto & kv : t) { v.push_back({ kv.second.first, kv.first }); tot += kv.second.first; }
+            std::sort(v.rbegin(), v.rend());
+            GGML_LOG_WARN("op profile: %d graphs, %.1f ms per graph\n", g_op_prof_every, tot / 1e3 / g_op_prof_every);
+            for (size_t k = 0; k < v.size() && k < 16; k++) {
+                const auto & e = t[v[k].second];
+                GGML_LOG_WARN("  %5.1f%%  %8.1f us/graph  %6.1f us/call  %s\n", 100.0 * v[k].first / tot, v[k].first / g_op_prof_every, v[k].first / e.second, v[k].second.c_str());
+            }
+            t.clear();
+        }
+    }
+};
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
+    static ggml_cuda_op_prof op_prof;
     bool graph_evaluated_or_captured = false;
 
     // flag used to determine whether it is an integrated_gpu
@@ -7072,6 +7101,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (nodes_fused[i]) {
                     continue;
                 }
+                if (g_op_prof_every > 0 && !ggml_is_empty(node) && node->op != GGML_OP_NONE) { op_prof.mark(cuda_ctx->stream(), node); }
 #ifdef USE_CUDA_GRAPH
                 // fused nodes are skipped together, so a cut never splits a fusion
                 // a concurrent region must join before its capture can end
@@ -7179,6 +7209,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     try_launch_concurrent_event(node);
                }
             }
+            if (g_op_prof_every > 0) { op_prof.mark(cuda_ctx->stream(), nullptr); }
         }
 
 #ifdef USE_CUDA_GRAPH
@@ -7218,7 +7249,7 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
     if (graph->instances.empty()) {
-        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA) {
+        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA || g_op_prof_every > 0) {
             if (!graph->disable_due_to_gpu_arch && ggml_cuda_graph_debug_enabled()) {
                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
             }
