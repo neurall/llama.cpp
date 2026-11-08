@@ -594,16 +594,14 @@ struct llama_mmap::impl {
 
         HANDLE hFile = (HANDLE) _get_osfhandle(file->file_id());
 
-        // copy-on-write view: Vulkan host import refuses read-only pages; nothing writes, so pages stay shared
-        const bool cow = getenv("GGML_VK_IGPU_HOST_IMPORT") && atoi(getenv("GGML_VK_IGPU_HOST_IMPORT")) != 0;
-        hMapping = CreateFileMappingA(hFile, NULL, cow ? PAGE_WRITECOPY : PAGE_READONLY, 0, 0, NULL);
+        hMapping = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
 
         if (hMapping == NULL) {
             DWORD error = GetLastError();
             throw std::runtime_error(format("CreateFileMappingA failed: %s", llama_format_win_err(error).c_str()));
         }
 
-        addr = MapViewOfFile(hMapping, cow ? FILE_MAP_COPY : FILE_MAP_READ, 0, 0, 0);
+        addr = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
         DWORD error = GetLastError();
 
         if (addr == NULL) {
