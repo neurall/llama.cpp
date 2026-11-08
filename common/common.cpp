@@ -1315,14 +1315,18 @@ static std::string common_pci_slot(const char * bus_id) {
 #endif
 }
 
-static void common_gpu_free(size_t & total, size_t & max, int & n) {
+static void common_gpu_free(size_t & total, size_t & max, int & n, const std::vector<ggml_backend_dev_t> & sel = {}) {
     total = max = 0;
     n = 0;
     g_gpu_total_max = 0;
     std::vector<std::string> ids;
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
+        // -dev picks the devices that count; else the discrete GPUs, or the integrated ones when there is no discrete GPU (as the model loader does)
+        const bool want = !sel.empty() ? std::find(sel.begin(), sel.end(), dev) != sel.end()
+                        : ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ||
+                          (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) == nullptr);
+        if (!want) {
             continue;
         }
         size_t free, tot;
@@ -1437,7 +1441,7 @@ void common_spec_auto(common_params & params) {
     }
     size_t vram, vram_max;
     int    n_gpu;
-    common_gpu_free(vram, vram_max, n_gpu);
+    common_gpu_free(vram, vram_max, n_gpu, params.devices);
     const double ratio = vram ? (double) common_model_file_size(params.model.path) / vram : 1e9;
     // measured: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) is fastest at 2, GLM-5.3-Flash (2.3x) at 0
     dft.n_start = ratio <= 1 ? 3 : ratio <= 2 ? 2 : 0;
@@ -2134,7 +2138,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     const size_t model_size = common_model_file_size(params.model.path);
     size_t vram_free, vram_max;
     int    n_gpu;
-    common_gpu_free(vram_free, vram_max, n_gpu);
+    common_gpu_free(vram_free, vram_max, n_gpu, params.devices);
     llama_moe_decision_fork("stage", "model file size and free VRAM read", "");
     llama_moe_early_bench_fork(params.model.path.c_str());   // SSD maximum, RAM read and PCIe upload rates: measured once, kept in the state file section [machine]
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
