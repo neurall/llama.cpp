@@ -9384,8 +9384,12 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
         if (&l.pub != pub) {
             continue;
         }
-        const int64_t want = std::min<int64_t>((int64_t) l.expert_slot.size(), n_tokens * n_used);
+        // --moe pp-off=F: F of the pairs stay off the card, so the pass needs at most (1 - F) of the experts' blocks (the least used ones are what stays off)
+        static const double off_f = [] { const char * e = moe_opt("pp-off"); return e ? atof(e) : 0.0; }();
+        const int64_t want = (int64_t) std::ceil((1.0 - off_f) * (double) std::min<int64_t>((int64_t) l.expert_slot.size(), n_tokens * n_used));
         if (!mc->link_be[l.link] || pp_blocks(mc, l) < want) {
+            static int n_log = 0;
+            if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt chain refused: layer %d has %lld blocks, wants %lld\n", pub->il, (long long) pp_blocks(mc, l), (long long) want); }
             return -1;
         }
         g_pp_want  = n_tokens * n_used;
@@ -9517,7 +9521,7 @@ bool llama_moe_cache_pp_short_fork() {
     }
     std::lock_guard<std::mutex> lock(mc->mtx);
     for (auto & l : mc->layers) {
-        if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want)) {
+        if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want) && !moe_opt("pp-off")) {
             g_pp_short = true;
             g_pp_built = false;
             const std::string refused = format("prompt chain: layer %d keeps %lld blocks beside the graph, the pass may use %lld experts: this prompt takes the prompt path",
