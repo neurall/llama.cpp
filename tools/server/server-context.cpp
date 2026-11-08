@@ -4835,7 +4835,11 @@ private:
                         const int64_t R = (int64_t) slot.task->n_tokens() - slot.prompt.n_tokens() - (do_checkpoint ? 4 : 0);
                         if (R > (int64_t) n_batch) {
                             const int64_t calls = (R + n_batch - 1) / n_batch;
-                            batch_cap = std::min<size_t>(n_batch, batch.size() + (size_t) ((R + calls - 1) / calls));
+                            // the call ends on a multiple of 256 cells: the KV and its mask are laid out in 256-cell pads (GGML_PAD(kv_end, 256), llama_context::decode);
+                            // Qwen3.6 72k, 2026-11-08: calls of 24161 tokens (boundary 97 past a pad) degenerated the answer with passes of 2014 and of exactly 2048 alike,
+                            // calls of 32768 were fine on the same engine
+                            const int64_t size = std::min<int64_t>(n_batch, ((R + calls - 1) / calls + 255) / 256 * 256);
+                            batch_cap = std::min<size_t>(n_batch, batch.size() + (size_t) size);
                         }
                     }
                     // add prompt tokens for processing in the current batch
