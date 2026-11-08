@@ -306,8 +306,15 @@ static bool ggml_cuda_hip_blas_has_arch(const char * gcn_arch) {
 #endif
     }
     std::error_code ec;
-    if (dir.empty() || !std::filesystem::is_directory(dir, ec)) {
+    if (dir.empty()) {
         return true;
+    }
+    if (!std::filesystem::is_directory(dir, ec)) {
+#ifdef _WIN32
+        return false;   // rocblas.dll found but no rocblas\library next to it (the release zip ships none): every rocBLAS GEMM would fail
+#else
+        return true;    // distro packages keep the kernels elsewhere (Debian: <libdir>/rocblas/<version>/library)
+#endif
     }
     for (const auto & f : std::filesystem::directory_iterator(dir, ec)) {
         if (f.path().filename().string().find(arch) != std::string::npos) {
