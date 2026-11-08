@@ -7280,7 +7280,23 @@ static void mg_on_segv(int sig, siginfo_t * si, void * uc) {
     raise(sig);
 }
 #endif
-static const void * rp_cpu_ptr(const ggml_tensor * src0, int64_t e) { return ggml_rampool_get_fork(src0, e); }
+// The CPU kernel's copy of expert e. Most paths ask the pool before the kernel (llama_moe_cache_jit_fork); a layer the prompt chain could not take runs the plain path, whose small passes
+// stay on the CPU with no such step (GLM 3.5 map-guard 2026-11-08: the 2-token call read blk.3's gate tensor through the mapping in vec_dot). So a miss is asked here, the wait a page fault
+// would have been, in pinned RAM instead of the page cache. An expert the pool refuses still reads the mapping.
+static const void * rp_cpu_ptr(const ggml_tensor * src0, int64_t e) {
+    if (const char * p = ggml_rampool_get_fork(src0, e)) { return p; }
+    if (const moe_cache * mc = g_cache) {
+        const int32_t id = (int32_t) e;
+        for (const auto & l : mc->layers) {
+            if (l.pub.up_src == src0 || l.pub.gate_src == src0 || l.pub.down_src == src0) {
+                const void * keys[3] = { l.pub.up_src, l.pub.gate_src, l.pub.down_src };
+                ggml_rampool_need_fork(keys, 3, &id, 1);
+                return ggml_rampool_get_fork(src0, e);
+            }
+        }
+    }
+    return nullptr;
+}
 static void rp_pre_free(moe_cache * mc) {   // pieces the pool did not take go back
     for (auto * b : mc->rp_pre) { ggml_backend_buffer_free(b); }
     mc->rp_pre.clear();
@@ -9674,6 +9690,27 @@ bool llama_moe_cache_pp_short_fork() {
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     GGML_ASSERT(mc != nullptr);
+    if (mc->rp_on) {   // this pass's misses into the pool first, no lock of the cache held (the reads take ms): the uploads below are DMAs from its pinned blocks, not from the unpopulated mapping
+        std::vector<int32_t> need;
+        {
+            std::lock_guard<std::mutex> lock(mc->mtx);
+            for (const auto & l : mc->layers) {
+                if (&l.pub != pub || !l.rp_tab[0]) { continue; }
+                std::vector<uint8_t> seen(l.expert_slot.size(), 0);
+                for (int64_t t = 0; t < ids->ne[1]; ++t) {
+                    for (int64_t i = 0; i < ids->ne[0]; ++i) {
+                        const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+                        if (e >= 0 && e < (int32_t) seen.size() && !seen[e]) { seen[e] = 1; if (l.expert_slot[e] < 0) { need.push_back(e); } }
+                    }
+                }
+                break;
+            }
+        }
+        if (!need.empty()) {
+            const void * keys[3] = { pub->up_src, pub->gate_src, pub->down_src };
+            ggml_rampool_need_fork(keys, 3, need.data(), (int) need.size());
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
         layer_state * lsp = nullptr;
@@ -9737,11 +9774,12 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                 led_upload(mc, "chain-up", jli, id, slot, false);
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
-                    ggml_backend_tensor_set_async(be, dsts[k], (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
+                    const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;   // the pool's pinned block (asked above), not the mapping; the block carries the past bytes too
+                    ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
                     const char * from = nullptr;
                     if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], from)) {
                         ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);
-                        ggml_backend_tensor_set_async(be, &z, from, 0, pb);
+                        ggml_backend_tensor_set_async(be, &z, rp ? rp + sz : from, 0, pb);
                     }
                 }
                 ls.slot_expert[slot]   = id;
