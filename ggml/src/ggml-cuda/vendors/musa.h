@@ -58,6 +58,7 @@
 #define cudaEventDisableTiming musaEventDisableTiming
 #define cudaEventRecord musaEventRecord
 #define cudaEventSynchronize musaEventSynchronize
+#define cudaEventElapsedTime musaEventElapsedTime
 #define cudaEvent_t musaEvent_t
 #define cudaEventDestroy musaEventDestroy
 #define cudaFree musaFree
