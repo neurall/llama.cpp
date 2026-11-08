@@ -5342,6 +5342,7 @@ def cmd_publish(a):
     # 9-character prefix and any further hex digits
     arch = sorted(f for f in os.listdir(REL_OUT) if "llama-release-b" in f and re.search(rf"-{h}[0-9a-f]*-", f))
     if not arch: sys.exit(f"publish: no archives for {h} in {REL_OUT}")
+    arch += [f for f in os.listdir(REL_OUT) if f.startswith("cudart-llama-bin-win-") and any("-bin-win-cuda-" in x for x in arch)]   # the shared Windows CUDA runtime has no hash in its name: without it every Windows release ran on the CPU (b14965 and before)
     b = re.search(r"llama-release-b(\d+)-", arch[0]).group(1); tag = f"release-b{b}-{h}-{a.name}"
     gh = ["gh", "-R", "neurall/llama.cpp"]
     if a.replace:
