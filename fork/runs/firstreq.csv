@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+mimo-12k-r3,mimo,3,pf12k1k,1024,,
+glm35-4k-r3,glm35,3,pf4k1k,1024,,
+qni3-edit-r3,qwen38,3,edit4c,1024,,
