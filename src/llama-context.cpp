@@ -4644,6 +4644,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                         const uint32_t left = (uint32_t) (tk.size() - (size_t) n_tokens_prev), passes = (left + u2 - 1) / u2;
                         if (passes > 1) { u2 = std::max<uint32_t>(64, ((left + passes - 1) / passes + 31) / 32 * 32); }
                     }
+                    {   // the ceiling in tokens x cells (g_oom_tc, as after a CUDA out-of-memory): later calls and requests never ask for the pass that did not fit
+                        // (DeepSeek 64k, 2026-11-08: every request paid a refused 16384-token reserve at 57k cells before its 2 x 8192)
+                        llama_pos cells = 0;
+                        for (uint32_t i = 0; i < ubatch.n_tokens; ++i) { cells = std::max(cells, ubatch.pos[i] + 1); }
+                        const uint64_t tc = (uint64_t) ((double) ubatch.n_tokens * (double) std::max<llama_pos>(cells, 1) * std::min(share, 0.9)), prev = g_oom_tc.load();
+                        g_oom_tc = prev ? std::min(prev, tc) : tc;
+                    }
                     LLAMA_LOG_WARN("%s: the pool refused a pass of %u tokens: the rest of this call, %zu tokens, in passes of at most %u\n", __func__, ubatch.n_tokens, tk.size() - (size_t) n_tokens_prev, u2);
                     call_abandon();
                     const uint32_t cap_prev = g_pass_cap_fork;
