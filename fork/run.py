@@ -1293,6 +1293,7 @@ RUN_COLS += ["start_ts", "end_ts", "load_s", "wall_s"]   # start_ts / end_ts: wh
 RUN_COLS += ["uniq4", "out_chars", "code", "loop"]   # text class of the generated output: share of unique word 4-grams (a repetition loop is ~0.1, real text ~0.9+), characters, 1 if it contains code; the text itself is in runs.db table outputs
 RUN_COLS += ["thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "gain_t", "gain_pp", "stock_id", "stock_bno"]   # the server's auto choices (threads for decode / batch, batch, ubatch, context) from its log; the machine line of the run; our decode / prompt speed over the newest stock row (best run of the cell against the stock row it was shown with, set when the cell ends) and that stock row's id and build number
 RUN_COLS += ["link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs"]   # measured maxima of the server's startup probes (per-card prefill link GB/s as the server printed them, CPU memory bandwidth it saturated at) and min/avg/max over the run of the CPU clock (MHz) and temperature (C), the GPU SM clock and temperature (one "min/avg/max" per card, joined by |), and the PCIe host->device rate per card (peak/mean GB/s): what to read to judge afterwards whether the automatic choices were right; local and remote runs fill the same fields
+RUN_COLS += ["driver"]   # the NVIDIA kernel module loaded when the row was written (/proc/driver/nvidia/version: "580.173.02", "595.104.02 (P2P build)"): the boot swap to the P2P module can fail silently (2026-11-07, 11-08: nvidia_fs held the module), and numbers move with the driver
 RUN_COLS += ["gpu_pp", "gpu_tg"]   # the same GPU samples split at the end of the prompt (server timings prompt_ms): prefill phase and generation phase separately, per GPU "util / clock / power / share of samples at the software power cap"; the whole-run gpu_log below blends both and hides that a prefill is compute bound while the decode idles
 RUN_COLS += ["gpu_log"]   # per-GPU summary of the 5 Hz nvidia-smi samples of the run (share of busy samples, mean and 5th percentile SM clock and mean power over the busy samples (GPU utilization >= 20%), max temp, throttle reason bits, min PCIe width) and the sample file
 CAMP_COLS = ["name", "start", "note", "conclusion", "why"]
@@ -3652,6 +3653,10 @@ def store(row, build, test, rec, note, hw, vstr):
         if os.path.exists(lg):
             for k, v in server_params(open(lg, errors="replace").read()).items(): row.setdefault(k, v)
             break
+    if not row.get("driver"):   # the loaded kernel module, read from /proc (no nvidia-smi: it can mismatch the module and costs NVML calls); a remote cell sets its own
+        try:
+            _dv = open("/proc/driver/nvidia/version").read(); row["driver"] = re.search(r"\b(\d{3}\.\d+(?:\.\d+)?)\b", _dv).group(1)
+        except Exception: pass
     if not row.get("hwline"):   # the machine line of this host (a remote cell sets its own), read once per process
         if "hw" not in _HWL: _HWL["hw"] = hw_line()
         row["hwline"] = _HWL["hw"]
