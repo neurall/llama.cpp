@@ -142,6 +142,7 @@ static vk_buffer ggml_vk_create_buffer(vk_device& device, size_t size, const std
             import_info.setPNext(&mem_flags_info);
             buf->device_memory = device->device.allocateMemory({ size, memory_type_idx, &import_info });
         } catch (const vk::SystemError& e) {
+            GGML_LOG_WARN("ggml_vulkan: host pointer import failed (%s)\n", e.what());
         }
     } else {
         for (auto it = req_flags_list.begin(); it != req_flags_list.end(); it++) {

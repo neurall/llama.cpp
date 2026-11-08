@@ -46,6 +46,16 @@
 
 void llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
 
+// a card of the dense split: a GPU that computes at least a quarter of the fastest one (Radeon 780M next to an RTX 4060: 1/11, attention 18x slower, a forced split took a 12k
+// prompt from 2446 to 169 prompt t/s). Without a probe every GPU counts.
+static bool dsplit_card(const llama_model & model, ggml_backend_dev_t d) {
+    if (!ggml_backend_dev_is_gpu(d)) { return false; }
+    double top = 0.0;
+    for (const auto & c : model.devices) { if (const auto * r = llama_gpu_probe_find_fork(c.dev)) { top = std::max(top, r->compute); } }
+    const auto * r = llama_gpu_probe_find_fork(d);
+    return !r || r->compute >= 0.25 * top;
+}
+
 namespace {
 
 // --moe mirror-pool (default on with the compute alias): one card's copies live at the start of its expert pool buffer, in the blocks a prompt pass that
@@ -128,7 +138,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
     }
     std::vector<ggml_backend_dev_t> gpus;
     for (const auto & d : model.devices) {
-        if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpus.push_back(d.dev); }
+        if (dsplit_card(model, d.dev)) { gpus.push_back(d.dev); }
     }
     if (gpus.size() < 2) {
         if (llama_moe_get_opt("dense-split")) {   // a default-on switch is not worth a warning on a one-GPU machine
@@ -150,7 +160,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
             if (name.find("_exps") != std::string::npos) { continue; }                               // routed experts stay shared by id range
             if (t == nullptr || t->buffer == nullptr) { continue; }
             ggml_backend_dev_t td = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
-            if (td == nullptr || td == D || ggml_backend_dev_type(td) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (td == nullptr || td == D || !dsplit_card(model, td)) { continue; }
             src.push_back(t);
             bytes += ggml_nbytes(t);
         }
@@ -210,7 +220,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
 namespace {
 int dsplit_n_gpus(const llama_model & model) {
     int n = 0;
-    for (const auto & d : model.devices) { n += ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU; }
+    for (const auto & d : model.devices) { n += dsplit_card(model, d.dev); }
     return n;
 }
 
@@ -231,7 +241,7 @@ double dsplit_link_once(ggml_backend_dev_t d) {
 
 // The cards of a split pass (2026-10-23, any number of cards, any links and compute): every GPU whose copies have memory, in range order, the slowest link
 // first and the expert card last. The expert card computes the experts of every layer while the helpers hold none (the dense split alone); it is the card
-// with the fastest link, since every pass uploads the experts it does not hold (on a tie: the card the one-card passes run on). Nothing here is about two
+// with the fastest compute, then the fastest link, since every pass uploads the experts it does not hold (on a tie: the card the one-card passes run on). Nothing here is about two
 // cards: three cards on x16, x8 and x4 links get three ranges, the x16 card computes the experts, and the live balance gives each card the tokens that make
 // them take equally long (llama-splitplan-fork.h, dsb_target). Under g_mu.
 std::vector<ggml_backend_dev_t> g_cards;
@@ -240,7 +250,7 @@ void dsplit_cards_update(const llama_model & model, const dsplit_set & S) {
     if (g_card_order.empty()) {
         std::vector<std::pair<double, ggml_backend_dev_t>> v;
         for (const auto & d : model.devices) {
-            if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!dsplit_card(model, d.dev)) { continue; }
             bool seen = false;
             for (const auto & p : v) { seen = seen || p.second == d.dev; }
             if (!seen) { v.push_back({ dsplit_link_once(d.dev), d.dev }); }
@@ -256,12 +266,18 @@ void dsplit_cards_update(const llama_model & model, const dsplit_set & S) {
         std::sort(desc.begin(), desc.end(), std::greater<double>());
         auto cls = [&](double r) { int c = 0; double head = desc[0]; for (double d : desc) { if (d < 0.9 * head) { ++c; head = d; } if (d == r) { break; } } return c; };
         std::stable_sort(v.begin(), v.end(), [&](const auto & a, const auto & b) { return cls(a.first) > cls(b.first); });
-        // the expert card: the fastest link; among the cards within 10% of it, the card the one-card passes run on
+        // the expert card: the fastest compute first (a shared-memory GPU's "link" is a memcpy, it says nothing about what the card can compute: Radeon 780M 29 GB/s
+        // against an RTX 4060's 13, at 1/11 of its compute); cards within 30% of the best count as equal, so two like cards on x16 and x4 still go by link. Among
+        // those the fastest link, and within 10% of that the card the one-card passes run on. No probe (compute 0): every card is a candidate, the link decides.
+        auto comp = [](ggml_backend_dev_t d) { const auto * r = llama_gpu_probe_find_fork(d); return r ? r->compute : 0.0; };
+        double ctop = 0.0;
+        for (const auto & p : v) { ctop = std::max(ctop, comp(p.second)); }
+        double ltop = 0.0;
+        for (const auto & p : v) { if (comp(p.second) >= 0.7 * ctop) { ltop = std::max(ltop, p.first); } }
+        const ggml_backend_dev_t off = model.dev_offload < model.devices.size() ? model.devices[model.dev_offload].dev : nullptr;
         size_t xi = v.size() - 1;
-        if (model.dev_offload < model.devices.size()) {
-            const ggml_backend_dev_t off = model.devices[model.dev_offload].dev;
-            for (size_t i = 0; i < v.size(); ++i) { if (v[i].second == off && v[i].first >= 0.9 * top) { xi = i; } }
-        }
+        for (size_t i = 0; i < v.size(); ++i) { if (comp(v[i].second) >= 0.7 * ctop && v[i].first >= 0.9 * ltop) { xi = i; } }
+        for (size_t i = 0; i < v.size(); ++i) { if (v[i].second == off && comp(off) >= 0.7 * ctop && v[i].first >= 0.9 * ltop) { xi = i; } }
         std::rotate(v.begin() + xi, v.begin() + xi + 1, v.end());   // the expert card to the end, the others keep their order
         for (const auto & p : v) { g_card_order.push_back(p.second); }
         std::string txt;
@@ -625,7 +641,7 @@ static std::string dsplit_pci_file(const std::string & busid, const char * file)
 static std::string dsplit_hw_key(const llama_model & model, bool log = true, bool with_gen = true) {
     std::string desc;
     for (const auto & d : model.devices) {
-        if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+        if (!dsplit_card(model, d.dev)) { continue; }
         ggml_backend_dev_props p; ggml_backend_dev_get_props(d.dev, &p);
         const std::string bus = p.device_id ? p.device_id : "";
         // vendor + device id and the slot say which card sits where; "generation x width" the link it has there (4x16 = PCIe 4.0 x16): short, stable, no measuring
@@ -1073,7 +1089,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     for (int il = 0; il < L; ++il) {
         const ggml_backend_dev_t ld = model.dev_layer(il);   // where the layer's KV cache or recurrent state is
         for (int i = 0; i < n; ++i) { if (cards[i] == ld) { lcard[il] = i; } }
-        if (ld && ggml_backend_dev_type(ld) == GGML_BACKEND_DEVICE_TYPE_GPU) { lB[il] = dsplit_link_once(ld); }
+        if (ld && ggml_backend_dev_is_gpu(ld)) { lB[il] = dsplit_link_once(ld); }
         if (lB[il] <= 0.0) { lB[il] = 1e9; }
         if (model.hparams.is_recr(il)) { continue; }
         att_w[il] = 1.0 / std::max(1, n_att);
@@ -1440,7 +1456,7 @@ double llama_dsplit_read_rate_fork(ggml_backend_dev_t d) {
 
 void llama_dsplit_bench_fork(const llama_model & model) {
     std::vector<ggml_backend_dev_t> devs;
-    for (const auto & d : model.devices) { if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { devs.push_back(d.dev); } }
+    for (const auto & d : model.devices) { if (dsplit_card(model, d.dev)) { devs.push_back(d.dev); } }
     std::lock_guard<std::mutex> lk(g_plan_mu);
     dsplit_mm_bench(model, devs);
 }
@@ -1771,7 +1787,7 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
     return B;
 }
 double dsplit_link(ggml_backend_dev_t d) {
-    return d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU ? dsplit_link_once(d) : 0.0;
+    return d && ggml_backend_dev_is_gpu(d) ? dsplit_link_once(d) : 0.0;
 }
 // what a card's link adds, modelled from the planner's numbers (g_hop_bytes_tok, g_kv_layers) and the probed link rates: the stamps time compute, not copies
 void dsplit_bal_costs(dsplit_bal & B) {
@@ -2749,6 +2765,14 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         bool kn1 = false;
         int n1 = 0;   // the one-card arm's samples: the bench cap below is for an arm never measured, not one measured once (rls_known wants more)
         if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth, &kn1, &n1) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); kn1 = rls_known(g_rls_one, mu1, v1); n1 = g_rls_one.n; }   // C18
+        else if (g_rls_one.n > 0) {   // one sample at this size is already narrow (about +-6%: s2 0.045^2, q ~ 1 there); at another size it stays wide and vo < v1 keeps the cache's
+            // the moe-cache's path model spans short prompts to 12k: far from most of its samples its spread exceeds the time itself (MiMo 12k b14965: one card
+            // 11.84 +- 18.68 s against 12.6 s measured, a one-card trial on every server start, 990 against 1241 t/s split). The split planner's own one-card
+            // model of the passes it weighed (stored, so it holds across restarts) is taken where it is the narrower one
+            double vo = 0.0;
+            const double mo = rls_pred(g_rls_one, phi, &vo);
+            if (mo > 0.0 && vo < v1) { mu1 = mo; v1 = vo; kn1 = rls_known(g_rls_one, mo, vo); n1 = g_rls_one.n; }
+        }
         // MiMo 12k relcand2: one card measured 11.98 +- 0.76 s, the cap made it 11.97 +- 4.31, nothing was known, and the wide one card won a trial every request; the split (9 s) never ran
         if (!kn1 && n1 == 0 && c_one_bench > 0.0) {
             // one card never measured here: the moe-cache's cold prior (MiMo 3k, no-map-reads 2026-11-08: 8.7 s for a pass b14929 ran in 4.0-4.3 s on one card) sent every call to
@@ -2843,8 +2867,9 @@ static void dsplit_pass_end_locked() {
     // the decode chain neither (Qwen3.8-Flash-Next 15.5k: 35.0 s on the decode chain, 10.1 s streamed)
     if (llama_moe_cache_pp_chain_pass_fork() || llama_moe_cache_pp_dec_pass_fork()) { return; }
     const bool learned = dsplit_split_model_on();
-    // the learned planner: a one-card pass learns in the moe-cache's model of the path that ran (llama_moe_cache_prefill_report_fork), never here
-    if (learned && p.choice != 1 && llama_moe_cache_pp_planned_fork()) { return; }
+    // the learned planner: a one-card pass learns in the moe-cache's model of the path that ran (llama_moe_cache_prefill_report_fork), and here too: that
+    // model spans every pass size of the path, while g_rls_one (stored with the split's posterior) sees only the passes the split was weighed for (below)
+    const bool mc_planned = learned && p.choice != 1 && llama_moe_cache_pp_planned_fork();
     // A pass under a quarter of the card limit (the micro-batch the pools allow now) is no sample: the server's short tail calls (1024-2144 tokens at the
     // end of a long prompt) are mostly the pass's fixed part and its upload, and their pass sizes are too close together to separate the two - recorded,
     // GLM's one-card curve became 4395 us per token from them and the 4k request picked the split it lost (pre13). Small requests are predicted from the
@@ -2881,7 +2906,7 @@ static void dsplit_pass_end_locked() {
         const double phi[4] = { 1.0, (double) p.T, (double) p.T * p.att * cm, std::max(0.0, p.U_us) };
         if (rls_update(g_rls_one, phi, us) > 1.0) { g_dsf_redraw = true; }
         g_rls_dirty = true;
-        if (p.mu >= 0.0) { llama_dsplit_plan_book_fork(p.lo < 0.0 || p.mu <= p.lo ? 0.0 : std::max(0.0, us - p.lo), us <= p.lo + p.sd); }
+        if (p.mu >= 0.0 && !mc_planned) { llama_dsplit_plan_book_fork(p.lo < 0.0 || p.mu <= p.lo ? 0.0 : std::max(0.0, us - p.lo), us <= p.lo + p.sd); }
         return;
     }
     if (learned) {
@@ -3005,7 +3030,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     }
     if (g_dev_all.empty() && model.dev_offload < model.devices.size()) {
         for (const auto & d : model.devices) {
-            if (ggml_backend_dev_type(d.dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!dsplit_card(model, d.dev)) { continue; }
             const std::string nm = ggml_backend_dev_name(d.dev);
             g_dev_all += (g_dev_all.empty() ? "" : "+") + nm;
             if (d.dev != model.devices[model.dev_offload].dev) { g_dev_rest += (g_dev_rest.empty() ? "" : "+") + nm; }

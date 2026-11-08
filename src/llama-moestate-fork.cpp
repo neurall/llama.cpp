@@ -920,7 +920,7 @@ uint32_t llama_moe_ubadapt_cache_fork(uint32_t n_tokens, uint32_t planned, uint3
         g_ub_cur = one;   // what the finished call reports as its pass size
         return one;
     }
-    const int bk = 31 - __builtin_clz(n_tokens);
+    int bk = 0; while (n_tokens >> (bk + 1)) { bk++; }   // floor(log2), portable to MSVC
     ubc_t & b = g_ubc[bk];
     const uint32_t p0 = (n_tokens + planned - 1) / planned;
     if (b.p0 != p0 || ++b.calls >= 16) {   // the planner's answer moved (cache state, memory) or time to look again: start over, keep the best

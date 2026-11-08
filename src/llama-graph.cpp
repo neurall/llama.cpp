@@ -36,6 +36,7 @@
 
 int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used);   // src/llama-moecache-fork.cpp: the prompt chain
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
+void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched);
 ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork * pub);
 extern "C" { GGML_API double ggml_backend_pred_get_fork(); }   // ggml-backend.cpp: predicted staging of this pass   // the prompt mix: the card whose ring takes this layer's misses, null = no mix
 #include <string>
@@ -2972,6 +2973,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // outputs sum to the exact result. Larger batches keep the stock path, where
     // the scheduler streams the used experts to the GPU instead.
     const llama_moe_cache_layer_fork * mcache = nullptr;
+    bool mc_ppk = false;                // the prompt upload with misses kept on the host (--moe pp-off)
     bool mc_pp = false;                 // the prompt chain: this pass's experts run on the GPU alone, see llama_moe_cache_pp_upload_fork
     ggml_tensor * mc_ids_all = nullptr; // LLAMA_MOE_DEFER: full ids (router observation) and the deferred ids
     ggml_tensor * mc_ids_def = nullptr;
@@ -2981,16 +2983,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * mc_defer_mask = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
+    ggml_tensor *  mc_cpu_ids     = nullptr;   // --moe pp-off: the CPU's misses (the device's are -1)
+    ggml_tensor *  mc_miss_ids    = nullptr;   // --moe miss-dev: the misses' ids (the rest -1), computed on the device holding up_m
     ggml_tensor *  mc_pred        = nullptr;
     if (cparams.moe_cache && n_tokens > 0 && n_tokens <= llama_moe_cache_max_batch_fork() && !gate_up_exps && gate_exps && down_exps &&
         !up_exps_b && !gate_exps_b && !down_exps_b &&
         !up_exps_s && !gate_exps_s && !down_exps_s &&
         type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
         mcache = llama_moe_cache_lookup_fork(up_exps);
+        if (mcache && sched) { llama_moe_cache_link_backends_fork(sched); }
         // a prompt call: the prompt chain, or the prompt path for a layer whose blocks cannot hold the pass (a dense split keeps its own path)
         const int pp = mcache && moe_ranges.empty() ? llama_moe_cache_pp_chain_fork(mcache, n_tokens, n_expert_used) : 0;
         mc_pp  = pp > 0;
         mcache = pp < 0 ? nullptr : mcache;
+        // --moe pp-off=F: the prompt upload leaves the least-used misses (F of the pass's expert-token pairs) on the host: they run on the miss device and the CPU
+        // (pp-off-dev), next to the card's chain, which then has the decode chain's shape
+        static const float pp_off = [] { const char * e = moe_opt("pp-off"); return e ? (float) atof(e) : 0.0f; }();
+        if (mc_pp && pp_off > 0.0f) { mc_pp = false; mc_ppk = true; }
     }
     // The prompt mix, a stream pass on a layer whose cache sits behind a slower link: what the home card holds is computed there from its blocks, nothing crosses a link for it;
     // the rest is streamed to the fastest link's card by its ring and computed there, the two partial sums meet on the home card. Without this the stream pass sends every
@@ -3150,10 +3159,47 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     memcpy(dst->data, a->data, ggml_nbytes(a));
                 }
             };
-            ggml_tensor * jit = ggml_map_custom1(ctx0, selected_experts, mc_pp ? pp_op : jit_op, 1, (void *) mcache);
+            ggml_tensor * jit = ggml_map_custom1(ctx0, selected_experts, mc_pp || mc_ppk ? pp_op : jit_op, 1, (void *) mcache);
             ggml_backend_sched_set_tensor_backend(sched, jit, cpu_backend);
             cb(jit, "ffn_moe_cache_jit", il);
             ggml_build_forward_expand(gf, jit);
+            if (mcache->up_m && mc_ppk) {   // the prompt upload chose the device's share (miss_on_dev); the CPU takes the other misses
+                mc_miss_ids = ggml_map_custom1(ctx0, jit, [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
+                    if (ith != 0) { return; }
+                    const llama_moe_cache_layer_fork * mc = (const llama_moe_cache_layer_fork *) ud;
+                    const int32_t * tbl = (const int32_t *) mc->host_table->data;
+                    for (int64_t i = 0; i < ggml_nelements(a); ++i) {
+                        const int32_t v = ((const int32_t *) a->data)[i];
+                        ((int32_t *) dst->data)[i] = v >= 0 && tbl[v] == mc->n_slots && mc->miss_on_dev[v] ? v : -1;
+                    }
+                }, 1, (void *) mcache);
+                mc_cpu_ids = ggml_map_custom1(ctx0, jit, [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
+                    if (ith != 0) { return; }
+                    const llama_moe_cache_layer_fork * mc = (const llama_moe_cache_layer_fork *) ud;
+                    for (int64_t i = 0; i < ggml_nelements(a); ++i) {
+                        const int32_t v = ((const int32_t *) a->data)[i];
+                        ((int32_t *) dst->data)[i] = v >= 0 && !mc->miss_on_dev[v] ? v : -1;   // cached ids are skipped by the table as before
+                    }
+                }, 1, (void *) mcache);
+                ggml_backend_sched_set_tensor_backend(sched, mc_miss_ids, cpu_backend);
+                ggml_backend_sched_set_tensor_backend(sched, mc_cpu_ids, cpu_backend);
+                cb(mc_miss_ids, "ffn_moe_miss_ids", il);
+                ggml_build_forward_expand(gf, mc_miss_ids);
+                ggml_build_forward_expand(gf, mc_cpu_ids);
+            } else if (mcache->up_m && !mc_pp && !mc_ids_all && [] { const char * e = moe_opt("miss-decode"); return !e || atoi(e) != 0; }()) {   // --moe miss-decode=0: decode misses stay on the CPU   // decode and prompt passes on the decode chain (pp-chain=0); a -1 id is a zero row on the device (Vulkan: count_experts zeroes it)
+                mc_miss_ids = ggml_map_custom1(ctx0, jit, [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
+                    if (ith != 0) { return; }
+                    const llama_moe_cache_layer_fork * mc = (const llama_moe_cache_layer_fork *) ud;
+                    const int32_t * tbl = (const int32_t *) mc->host_table->data;
+                    for (int64_t i = 0; i < ggml_nelements(a); ++i) {
+                        const int32_t v = ((const int32_t *) a->data)[i];
+                        ((int32_t *) dst->data)[i] = v >= 0 && tbl[v] == mc->n_slots ? v : -1;
+                    }
+                }, 1, (void *) mcache);
+                ggml_backend_sched_set_tensor_backend(sched, mc_miss_ids, cpu_backend);
+                cb(mc_miss_ids, "ffn_moe_miss_ids", il);
+                ggml_build_forward_expand(gf, mc_miss_ids);
+            }
         }
 
         // slot ids from the device table, after the CPU split above so they see the JIT's table updates;
@@ -3217,6 +3263,25 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
 
+        if (mc_miss_ids) {   // the misses on the device that imported them, behind the card's chain so the two overlap; the card's output and theirs sum to the whole
+            ggml_backend_t mb = nullptr;
+            const ggml_backend_dev_t md = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->up_m->buffer));
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                if (ggml_backend_get_device(ggml_backend_sched_get_backend(sched, i)) == md) { mb = ggml_backend_sched_get_backend(sched, i); }
+            }
+            if (mb) {
+                auto on_m = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, mb); return t; };
+                ggml_tensor * up_m   = on_m(ggml_mul_mat_id(ctx0, mcache->up_m,   cur, mc_miss_ids));   // cur: the host copy made before the card's chain was queued, reading mc_inp here would wait for that chain
+                ggml_tensor * gate_m = on_m(ggml_mul_mat_id(ctx0, mcache->gate_m, cur, mc_miss_ids));
+                ggml_tensor * down_m = on_m(ggml_mul_mat_id(ctx0, mcache->down_m, on_m(mc_act(gate_m, up_m)), mc_miss_ids));
+                cb(down_m, "ffn_moe_miss_down", il);
+                down_g = ggml_add(ctx0, down_g, down_m);
+            } else {
+                mc_miss_ids = nullptr;   // the device is not in this context: the CPU chain computes them
+                mc_cpu_ids  = nullptr;
+            }
+        }
+
         if (!mc_mix_b) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
             ggml_build_forward_expand(gf, down_g);
         }
@@ -3264,7 +3329,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
             if (mcache && !mc_mix_b) {
                 up->src[3] = mcache->host_table;
-                up->op_params[0] = mcache->n_slots;
+                up->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;   // no id equals INT32_MIN: nothing on the host, the router observation stays
                 if (mc_cpu_backend) {
                     // must run where the skip table is honored (CPU), never op-offloaded
                     ggml_backend_sched_set_tensor_backend(sched, up, mc_cpu_backend);
@@ -3292,7 +3357,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         cur->src[6] = probs;   // policy r: the router's probability of every expert for these tokens, the relevance the cache scores by
                     }
                     cur->src[3] = mcache->host_table;
-                    cur->op_params[0] = mcache->n_slots;
+                    cur->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;
+                    if (mc_ppk) { ggml_format_name(cur, "ffn_moe_defer_ppk-%d", il); }   // the prompt upload observed the pass's ids already: the CPU's op must not count them again
                     if (mc_cpu_backend) {
                         ggml_backend_sched_set_tensor_backend(sched, cur, mc_cpu_backend);
                     }
@@ -3762,12 +3828,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         experts = down_g;   // the prompt chain computed every expert of the pass
         cb(experts, "ffn_moe_cache_merged", il);
     } else {
-        experts = expert_chain(cur, selected_experts);
+        experts = expert_chain(cur, mc_cpu_ids ? mc_cpu_ids : selected_experts);
     }
 
     if (mcache && !mc_pp) {
         experts->src[3] = mcache->host_table;
-        experts->op_params[0] = mcache->n_slots;
+        experts->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;
         if (mc_cpu_backend) {
             ggml_backend_sched_set_tensor_backend(sched, experts, mc_cpu_backend);
         }

@@ -8,7 +8,10 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(__CUDACC__)
+#if defined(__HIPCC__)
+#include <hip/hip_runtime.h>   // __host__ __device__ __forceinline__ in the host pass too
+#endif
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #define GGML_DET_FN static __host__ __device__ __forceinline__
 #else
 #define GGML_DET_FN static inline

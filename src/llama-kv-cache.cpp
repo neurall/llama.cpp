@@ -190,7 +190,7 @@ llama_kv_cache::llama_kv_cache(
         const char * tm = llama_moe_get_opt("kv-token-major");
         bool gpu_kv = false;   // the tail record lives on a GPU: a model whose KV layers all sit on the CPU (-ngl 0) keeps a normal buffer, of the full size asked for
         for (uint32_t il = 0; il < hparams.n_layer_all && offload; ++il) {
-            if (hparams.has_kv(il) && (!filter || filter(il)) && ggml_backend_dev_type(model.dev_layer(il)) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpu_kv = true; break; }
+            if (hparams.has_kv(il) && (!filter || filter(il)) && ggml_backend_dev_is_gpu(model.dev_layer(il))) { gpu_kv = true; break; }
         }
         const bool can = tm && atoi(tm) != 0 && !other && n_stream == 1 && !v_trans && type_k == type_v && !share && offload && gpu_kv;
         if (kt && atoi(kt) != 0 && uc && !can) {
@@ -294,11 +294,11 @@ llama_kv_cache::llama_kv_cache(
     // 1: from the start. 2: from a request past a threshold of cells (the copies between the cards cost more than they save below it: -5% decode on a short context); under
     // it the layer's whole entry holds the rows, the graph is the plain one (llama_moe_cache_kv_parts_fork moves them).
     std::vector<ggml_backend_dev_t> gpu_devs;
-    for (const auto & d : model.devices) { if (ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU) { gpu_devs.push_back(d.dev); } }
+    for (const auto & d : model.devices) { if (ggml_backend_dev_is_gpu(d.dev)) { gpu_devs.push_back(d.dev); } }
     const auto parts_of = [&](uint32_t il) -> uint32_t {
         static const bool on = [] { const char * e = llama_moe_get_opt("attn-split"); return e && atoi(e) != 0; }();
         if (!on || !tm_on || !tail_req || !offload || is_mla || gpu_devs.size() < 2 || hparams.indexer_head_size > 0 || hparams.indexer_top_k > 0 || hparams.is_swa(il)) { return 1; }
-        if (ggml_backend_dev_type(model.dev_layer(il)) != GGML_BACKEND_DEVICE_TYPE_GPU) { return 1; }
+        if (!ggml_backend_dev_is_gpu(model.dev_layer(il))) { return 1; }
         uint32_t p = std::min<uint32_t>((uint32_t) gpu_devs.size(), hparams.n_head_kv(il));
         while (p > 1 && (hparams.n_head_kv(il) % p != 0 || hparams.n_head(il) % p != 0)) { --p; }
         return std::max<uint32_t>(1, p);
@@ -490,7 +490,7 @@ llama_kv_cache::llama_kv_cache(
         ggml_backend_buffer_t buf;
         auto tm_it = tm_map.find(buft);
         ggml_backend_dev_t tdev = ggml_backend_buft_get_device(buft);
-        const bool tail_here = kv_tail && !ctxs_bufs.no_alloc && tm_it != tm_map.end() && tm_it->second.rec && tdev && ggml_backend_dev_type(tdev) == GGML_BACKEND_DEVICE_TYPE_GPU;
+        const bool tail_here = kv_tail && !ctxs_bufs.no_alloc && tm_it != tm_map.end() && tm_it->second.rec && tdev && ggml_backend_dev_is_gpu(tdev);
         if (tail_here) {
             // no memory of its own: a zero-size buffer so the scheduler sees the tensors as allocated; the pool places the record at its tail (attach below).
             // Nothing runs on the KV before that (no warm-up decode with kv-tail, the pool starts at the first real decode), and nothing is allocated or freed.

@@ -4,6 +4,7 @@
 
 #include "build-info.h"
 #include "common.h"
+#include "../src/llama-backend-fork.h"
 #include "cpu-topo-fork.h"
 
 #include "../src/llama-ext.h"
@@ -1275,6 +1276,8 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
 
 // free memory summed over GPUs, of the largest GPU, and the GPU count
 static std::string g_gpu_id;       // the GPUs' names and PCI bus ids, hashed: identifies the hardware (and the slot, so the link) in the placement record
+static std::vector<ggml_backend_dev_t> g_gpu_used;   // the GPUs whose memory the placement counts
+static bool   g_gpu_shared_only = false; // every GPU in use shares system RAM (integrated: 780M, Strix Halo): an expert cache would only copy RAM to RAM
 static size_t g_gpu_total_max = 0; // fallback identity when the backend has no PCI id; free VRAM is not used: it moves with every browser tab
 
 // the slot of a GPU, "x16g4": negotiated link width (idle cards keep their width, only the speed drops) and the highest speed the card and its parent port
@@ -1315,26 +1318,45 @@ static std::string common_pci_slot(const char * bus_id) {
 #endif
 }
 
-static void common_gpu_free(size_t & total, size_t & max, int & n) {
+static void common_gpu_free(size_t & total, size_t & max, int & n, const std::vector<ggml_backend_dev_t> & sel = {}) {
     total = max = 0;
     n = 0;
     g_gpu_total_max = 0;
-    std::vector<std::string> ids;
+    std::vector<std::string> ids, seen;
+    g_gpu_used.clear();
+    bool any_dgpu = sel.empty() && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr;
+    for (ggml_backend_dev_t d : sel) { any_dgpu = any_dgpu || (d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU); }   // -dev lists end with a nullptr
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
+        // -dev picks the devices that count; else the discrete GPUs, or the integrated ones when there is no discrete GPU (as the model loader does)
+        const bool want = !sel.empty() ? std::find(sel.begin(), sel.end(), dev) != sel.end()
+                        : ggml_backend_dev_is_gpu(dev) ||
+                          (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) == nullptr);
+        if (!want) {
             continue;
+        }
+        ggml_backend_dev_props props;
+        ggml_backend_dev_get_props(dev, &props);
+        // one card seen by two backends (4060 as CUDA0 and Vulkan1) counts once, as the model loader uses it once (13.9 GiB "free" on an 8 GiB card)
+        if (props.device_id && std::find(seen.begin(), seen.end(), std::string(props.device_id)) != seen.end()) {
+            continue;
+        }
+        if (props.device_id) {
+            seen.push_back(props.device_id);
         }
         size_t free, tot;
         ggml_backend_dev_memory(dev, &free, &tot);
-        total += free;
-        max    = std::max(max, free);
-        g_gpu_total_max = std::max(g_gpu_total_max, tot);
-        ggml_backend_dev_props props;
-        ggml_backend_dev_get_props(dev, &props);
+        // an integrated GPU's memory is system RAM: next to a discrete GPU it is no VRAM (780M + 4060: 22 GiB "free", a model of 11 GiB "fits" and got no expert cache)
+        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_IGPU || !any_dgpu) {
+            total += free;
+            max    = std::max(max, free);
+            g_gpu_total_max = std::max(g_gpu_total_max, tot);
+            g_gpu_used.push_back(dev);
+        }
         ids.push_back(std::string(ggml_backend_dev_name(dev)) + "|" + (props.device_id ? props.device_id : "") + "|" + common_pci_slot(props.device_id) + "|" + std::to_string(tot >> 30));
         n++;
     }
+    g_gpu_shared_only = n > 0 && !any_dgpu;
     std::sort(ids.begin(), ids.end());   // the order the backend lists them in does not matter
     uint32_t h = 2166136261u;            // FNV-1a: the same on every platform, so a state file can move with its machine
     for (const auto & id : ids) { for (char c : id) { h = (h ^ (uint8_t) c) * 16777619u; } h *= 16777619u; }
@@ -1437,7 +1459,7 @@ void common_spec_auto(common_params & params) {
     }
     size_t vram, vram_max;
     int    n_gpu;
-    common_gpu_free(vram, vram_max, n_gpu);
+    common_gpu_free(vram, vram_max, n_gpu, params.devices);
     const double ratio = vram ? (double) common_model_file_size(params.model.path) / vram : 1e9;
     // measured: Qwen3.8-Flash-Next (1.9x VRAM, 95% cache hits) is fastest at 2, GLM-5.3-Flash (2.3x) at 0
     dft.n_start = ratio <= 1 ? 3 : ratio <= 2 ? 2 : 0;
@@ -1892,6 +1914,8 @@ static uint32_t common_fits_ubatch(common_params & params) {
 }
 
 LLAMA_API void llama_moe_early_bench_fork(const char * model_path);   // llama-moecache-fork.cpp (no shared header)
+LLAMA_API double llama_moe_ram_read_gbs_fork(void);
+LLAMA_API double llama_moe_vram_gbs_fork(ggml_backend_dev_t d);
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 static void common_moe_cache_auto_impl(common_params & params);
 
@@ -1907,7 +1931,7 @@ static void common_hog(void) {
         const size_t keep = (size_t) (atof(hg) * 1048576.0);
         for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!ggml_backend_dev_is_gpu(dev)) { continue; }
             size_t free = 0, tot = 0;
             ggml_backend_dev_memory(dev, &free, &tot);
             if (free <= keep) { continue; }
@@ -1926,7 +1950,7 @@ static void common_hog(void) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         std::string key = std::string("hog-") + ggml_backend_dev_name(dev);
         for (char & c : key) { c = (char) tolower((unsigned char) c); }
-        const char * h = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ? llama_moe_get_opt(key.c_str()) : nullptr;
+        const char * h = ggml_backend_dev_is_gpu(dev) ? llama_moe_get_opt(key.c_str()) : nullptr;
         if (!h || atof(h) <= 0) { continue; }
         ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) (atof(h) * 1048576.0));
         if (!buf) { LOG_WRN("hog: could not take %s MiB on %s\n", h, ggml_backend_dev_name(dev)); continue; }
@@ -2142,7 +2166,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
     const size_t model_size = common_model_file_size(params.model.path);
     size_t vram_free, vram_max;
     int    n_gpu;
-    common_gpu_free(vram_free, vram_max, n_gpu);
+    common_gpu_free(vram_free, vram_max, n_gpu, params.devices);
     llama_moe_decision_fork("stage", "model file size and free VRAM read", "");
     llama_moe_early_bench_fork(params.model.path.c_str());   // SSD maximum, RAM read and PCIe upload rates: measured once, kept in the state file section [machine]
     // ponytail: weights vs free VRAM minus 1 GiB per GPU for context/compute; fit handles the borderline rest
@@ -2150,7 +2174,23 @@ static void common_moe_cache_auto_impl(common_params & params) {
     // --moe mode=cache is honored even when the model fits: the fit path returns before the placement is decided
     const char * forced_mode = llama_moe_get_opt("mode");
     const bool forced_cache = forced_mode && std::string(forced_mode) == "cache";
-    if (n_gpu == 0 || (model_size + reserve <= vram_free && !forced_cache)) {
+    // GPUs that share system RAM (integrated: Radeon 780M, Strix Halo): the expert cache would copy experts from RAM to the same RAM every miss. Stock
+    // placement instead: the weights stay where they are and what the GPU's share cannot hold runs on the CPU over the same memory (780M ROCm, Qwen3.6 35B:
+    // 7.8 t/s decode with the cache planned against Vulkan's 18.3 without one)
+    // Measured, not by device type (user 2026-11-08: "measure gpus ... speed and compare to ram and if not bigger disable moe cache"): the cache pays only where a GPU's own
+    // memory is clearly faster than RAM. 2x: a shared-RAM GPU's copy can read a bit above the CPU's RAM read rate (it drives the memory harder than half the CPU
+    // threads), discrete cards are 3-15x. Without a measurement (state off) the device type decides.
+    const double ram_gbs = llama_moe_ram_read_gbs_fork();
+    double best_vram = 0.0;
+    for (ggml_backend_dev_t d : g_gpu_used) { best_vram = std::max(best_vram, llama_moe_vram_gbs_fork(d)); }
+    const bool measured = ram_gbs > 0.0 && best_vram > 0.0;
+    const bool shared_ram = !forced_cache && n_gpu > 0 && (measured ? best_vram < 2.0 * ram_gbs : g_gpu_shared_only);
+    if (shared_ram) {
+        decide_fork("placement", "stock (GPU memory not faster than RAM)", measured
+            ? string_format("fastest GPU memory %.1f GB/s against RAM read %.1f GB/s (< 2x): no expert cache, it would copy RAM to RAM", best_vram, ram_gbs)
+            : std::string("every GPU in use shares system RAM (not measured): no expert cache, it would copy RAM to RAM"));
+    }
+    if (n_gpu == 0 || shared_ram || (model_size + reserve <= vram_free && !forced_cache)) {
         COM_DBG("MoE model (%.1f GiB) fits free VRAM (%.1f GiB on %d GPUs), no expert cache\n",
             model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
         if (n_gpu > 0 && common_autotune_on(params)) {
@@ -2159,7 +2199,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
             params.n_batch  = std::max<uint32_t>(params.n_batch, 2 * ub);
             if (params.n_ctx > 0) { params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(params.n_ctx, ub)); }
             params.n_ubatch = ub;
-            decide_fork("placement", "fits VRAM (stock)", string_format("model fits the free VRAM (%.1f GiB), no expert cache", vram_free / 1073741824.0));
+            if (!shared_ram) { decide_fork("placement", "fits VRAM (stock)", string_format("model fits the free VRAM (%.1f GiB), no expert cache", vram_free / 1073741824.0)); }
             decide_fork("ubatch", std::to_string(ub), "model fits the VRAM: largest pass up to min(context, 16384) whose compute buffer is at most half of the free VRAM");
             LOG_INF("%s: ubatch %u: the model fits the VRAM, no cache to weigh (the largest pass up to min(context, 16384) whose compute buffer takes at most half of the free VRAM)\n", __func__, ub);
         }
@@ -2232,6 +2272,22 @@ static void common_moe_cache_auto_impl(common_params & params) {
         if (params.moe_opts.find("kv-tail") == std::string::npos) {
             llama_moe_set_opt("kv-tail", "1");
             if (params.moe_opts.find("kv-token-major") == std::string::npos) { llama_moe_set_opt("kv-token-major", "1"); }
+        }
+        // shortcut: the KV tail and the compute alias live in the CUDA backend's hooks (scratch, graph hook, slices); on another backend (Vulkan, HIP) they
+        // abort at the context, so they are off there until ported. Decided from the backend of the GPUs in use: the devices given with -dev, else all.
+        bool cuda_gpu = false, other_gpu = false;   // every GPU in use must have the scratch hook (llama-backend-fork.h): a mixed set keeps them off too
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (!ggml_backend_dev_is_gpu(dev)) { continue; }
+            if (!params.devices.empty() && std::find(params.devices.begin(), params.devices.end(), dev) == params.devices.end()) { continue; }
+            // an integrated GPU next to a discrete one holds no layers and no pool (llama-model.cpp): it does not decide the pool's features
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) { continue; }
+            (llama_fork_proc_dev(dev, "ggml_backend_fork_scratch_fork") ? cuda_gpu : other_gpu) = true;
+        }
+        if (!cuda_gpu || other_gpu) {
+            if (params.moe_opts.find("kv-tail") == std::string::npos) { llama_moe_set_opt("kv-tail", "0"); }
+            if (params.moe_opts.find("alias")   == std::string::npos) { llama_moe_set_opt("alias",   "0"); }
+            LOG_WRN("%s: the expert cache runs without the KV tail and the compute alias (CUDA-only so far): static KV, compute buffers outside the pool\n", __func__);
         }
     }
     // the default context is set before the micro-batch below, which takes the context as its maximum. Set after it (as until 2026-10-14), a run without -c
@@ -2802,7 +2858,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
         size_t g = 0;
         for (size_t i = 0; i < ggml_backend_dev_count() && g < retry.fit_params_target.size(); ++i) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!ggml_backend_dev_is_gpu(dev)) { continue; }
             size_t mem_free = 0, mem_total = 0;
             ggml_backend_dev_memory(dev, &mem_free, &mem_total);
             retry.fit_params_target[g++] += std::max<size_t>((size_t) 3 << 30, mem_total / 100 * 20);

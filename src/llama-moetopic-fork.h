@@ -32,6 +32,7 @@
 // No ggml in here: tests/test-moetopic-fork.cpp drives it.
 #pragma once
 #include <algorithm>
+#include <bitset>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -307,7 +308,7 @@ struct moe_topic_layer {
     std::string path;             // the layer's directory: "": nothing written
 
     size_t words() const { return (n_exp + 63) / 64; }
-    static uint32_t popc(const std::vector<uint64_t> & m) { uint32_t n = 0; for (uint64_t w : m) { n += (uint32_t) __builtin_popcountll(w); } return n; }
+    static uint32_t popc(const std::vector<uint64_t> & m) { uint32_t n = 0; for (uint64_t w : m) { n += (uint32_t) std::bitset<64>(w).count(); } return n; }
     std::string sets_path() const { return path + "/sets.js"; }
     std::string rows_path() const { return path + "/rows.js"; }
     std::string moes_path() const { return path + "/moes.js"; }
@@ -376,7 +377,7 @@ struct moe_topic_layer {
                 for (size_t n = 0; n < nodes.size(); ++n) {
                     if (kind[n] != 's' || !nodes[n].refs.empty()) { continue; }
                     uint32_t i = 0;
-                    for (size_t w = 0; w < words(); ++w) { i += (uint32_t) __builtin_popcountll(nodes[n].mask[w] & target[w]); }
+                    for (size_t w = 0; w < words(); ++w) { i += (uint32_t) std::bitset<64>(nodes[n].mask[w] & target[w]).count(); }
                     if (i >= MIN_SET && i < nodes[n].size && i > bi) { best = (int32_t) n; bi = i; }
                 }
                 if (best < 0) { break; }

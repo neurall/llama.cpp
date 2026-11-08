@@ -1,4 +1,5 @@
 #include "llama-model.h"
+#include "llama-backend-fork.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -1871,6 +1872,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             size_t free;
             ggml_backend_dev_memory(dev, &free, &total);
 
+            // fork: an integrated GPU next to a discrete one holds no layers by default: its memory is system RAM and it computes a fraction of the card (780M + 4060: 1/11)
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU &&
+                    std::any_of(devices.begin(), devices.end(), [](const llama_device & d) { return ggml_backend_dev_type(d.dev) == GGML_BACKEND_DEVICE_TYPE_GPU; })) {
+                splits[i] = 0.0f;
+                continue;
+            }
+
             // devices can return 0 bytes for free and total memory if they do not
             // have any to report. in this case, we will use the host memory as a fallback
             // fixes: https://github.com/ggml-org/llama.cpp/issues/18577
@@ -2195,6 +2203,22 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     //     across disjoint ranges of a file (see get_mapping_ranges)
     pimpl->ctxs_bufs.reserve(ml.ctx_map.size() * ml.files.size());
 
+    // fork: a Vulkan device that imports the mapped weights may need them in anonymous memory; swap before any context wraps the old view
+    for (auto & [ctx_key, ctx_ptr] : ml.ctx_map) {
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(ctx_key.buft);
+        ggml_backend_dev_props props;
+        if (!dev || ml.no_alloc || !ml.use_mmap || ggml_get_first_tensor(ctx_ptr.get()) == nullptr ||
+            strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "Vulkan") != 0) { continue; }
+        ggml_backend_dev_get_props(dev, &props);
+        if (!props.caps.buffer_from_host_ptr) { continue; }
+        for (auto & m : ml.mappings) {
+            if (m && !m->to_anonymous()) {
+                throw std::runtime_error("unable to copy the mapped weights into anonymous memory for the Vulkan import");
+            }
+        }
+        break;
+    }
+
     for (auto & [ctx_key, ctx_ptr] : ml.ctx_map) {
         ggml_backend_buffer_type_t buft = ctx_key.buft;
         ggml_context * ctx = ctx_ptr.get();
@@ -2234,14 +2258,55 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 //     from disk, MoE tensors kept on the CPU, etc) are left out and stay out of RAM
                 // this also allows using partial offloading when the model size exceeds the metal buffer
                 //     size, but not the RAM size
+                const bool   vk_chunks = strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "Vulkan") == 0;
                 void * addr = ml.mappings.at(idx)->addr();
+                // fork: a Vulkan buffer is one VkBuffer, capped by the device (2 GiB on a Radeon 780M) and the import needs page-aligned ends: a range is
+                // imported as overlapping page-aligned chunks; each overlaps the next by the largest tensor, so every tensor lies whole in one of them
+                const size_t page      = 65536;   // covers minImportedHostPointerAlignment (4 KiB) and the Windows view granularity
+                const size_t map_end   = GGML_PAD(ml.mappings.at(idx)->size(), 4096);
+                const size_t chunk     = std::max(ggml_backend_buft_get_max_size(buft) / page * page, page);
 
                 for (const auto & range : ml.get_mapping_ranges(idx, ctx)) {
-                    ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + range.first, range.last - range.first, max_size);
-                    if (buf == nullptr) {
-                        throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
+                    if (!vk_chunks) {
+                        ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + range.first, range.last - range.first, max_size);
+                        if (buf == nullptr) {
+                            throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
+                        }
+                        bufs.emplace_back(buf);
+                        continue;
                     }
-                    bufs.emplace_back(buf);
+                    if (max_size + 2*page >= chunk) {
+                        throw std::runtime_error(format("a %zu MiB tensor does not fit one %s import of %zu MiB", max_size >> 20, ggml_backend_buft_name(buft), chunk >> 20));
+                    }
+                    // the tensors of this range by file offset; a chunk is cut where the next tensor would not fit
+                    std::vector<std::pair<size_t, size_t>> ts;
+                    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+                        const auto * w = ml.get_weight(ggml_get_name(t));
+                        if (w && w->idx == idx && w->offs >= range.first && w->offs < range.last) {
+                            ts.emplace_back(w->offs, w->offs + ggml_nbytes(t));
+                        }
+                    }
+                    std::sort(ts.begin(), ts.end());
+                    auto import = [&](size_t s0, size_t e0) {
+                        s0 = s0 / page * page;
+                        e0 = std::min(GGML_PAD(e0, 4096), map_end);
+                        ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + s0, e0 - s0, max_size);
+                        if (buf == nullptr) {
+                            throw std::runtime_error(format("unable to import %zu MiB of mapped weights into a %s buffer (at offset %zu MiB, after %zu buffers)", (e0 - s0) >> 20, ggml_backend_buft_name(buft), s0 >> 20, bufs.size()));
+                        }
+                        ml.host_origin[buf] = (const uint8_t *) addr + s0;
+                        bufs.emplace_back(buf);
+                    };
+                    size_t c0 = 0, c1 = 0;   // current chunk [c0, c1), empty while c1 == 0
+                    for (const auto & [t0, t1] : ts) {
+                        if (c1 != 0 && GGML_PAD(t1, 4096) - c0 / page * page > chunk) {
+                            import(c0, c1);
+                            c1 = 0;
+                        }
+                        if (c1 == 0) { c0 = t0; }
+                        c1 = std::max(c1, t1);
+                    }
+                    if (c1 != 0) { import(c0, c1); }
                 }
             }
         } else {
@@ -2257,9 +2322,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 int (*host_cache)(int, void *) = nullptr;
                 std::string cache_key;
                 if (getenv("GGML_CUDA_HUGEFS") && (!ml.use_mmap || ml.pin_budget > 0) && strstr(ggml_backend_buft_name(buft), "Host") != nullptr) {   // (mmap with a pin budget: the pinned part of the hybrid)
-                    if (auto * reg = ggml_backend_reg_by_name("CUDA")) {
-                        host_cache = (int (*)(int, void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_cache");
-                    }
+                    host_cache = (int (*)(int, void *)) llama_fork_proc("ggml_backend_fork_host_cache");
                     if (host_cache) {
                         uint64_t h = 1469598103934665603ull; // FNV-1a
                         auto mix = [&h](const void * d, size_t n) { for (size_t i = 0; i < n; i++) { h = (h ^ ((const uint8_t *) d)[i]) * 1099511628211ull; } };

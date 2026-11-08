@@ -14,6 +14,16 @@
 #include <stdlib.h> // for qsort
 #include <stdio.h>  // for GGML_ASSERT
 
+// fork: portable acquire/release flag for the lazily built lookup tables (the GCC builtins do not exist in MSVC)
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#define FORK_LOAD_ACQ(p)       (*(volatile int *) (p))
+#define FORK_STORE_REL(p, v)   ((void) _InterlockedExchange((volatile long *) (p), (v)))
+#else
+#define FORK_LOAD_ACQ(p)       __atomic_load_n((p), __ATOMIC_ACQUIRE)
+#define FORK_STORE_REL(p, v)   __atomic_store_n((p), (v), __ATOMIC_RELEASE)
+#endif
+
 #define GROUP_MAX_EPS 1e-15f
 #define GROUP_MAX_EPS_IQ3_XXS 1e-8f
 #define GROUP_MAX_EPS_IQ2_S 1e-8f
@@ -2762,10 +2772,10 @@ static const int8_t keven_signs_q2xs[1024] = {
 // in natural weight order, so the activations need no rearranging. Signs: 7-bit fields by multishift, sign bytes by vpermi2b over the 128-byte table, applied as masked
 // subtracts. vpdpbusd for the dot (grid <= 43, maddubs never saturated: same integer sums).
 static void ggml_vec_dot_iq2_xxs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
-    static uint8_t cdl[256] __attribute__((aligned(64))), cdh[256] __attribute__((aligned(64)));
-    static uint8_t pat[4][64] __attribute__((aligned(64))), seli[64] __attribute__((aligned(64))), sels[64] __attribute__((aligned(64)));
+    static _Alignas(64) uint8_t cdl[256], cdh[256];
+    static _Alignas(64) uint8_t pat[4][64], seli[64], sels[64];
     static int ready = 0;
-    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) {   // identical values, so two threads racing here write the same bytes
+    if (!FORK_LOAD_ACQ(&ready)) {   // identical values, so two threads racing here write the same bytes
         for (int e = 0; e < 256; ++e) {
             unsigned code = 0;
             for (int b = 0; b < 8; ++b) { const unsigned v = (iq2xxs_grid[e] >> (8 * b)) & 255; code |= (v == 8 ? 0u : v == 25 ? 1u : 2u) << (2 * b); }
@@ -2773,7 +2783,7 @@ static void ggml_vec_dot_iq2_xxs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s
         }
         for (int k = 0; k < 4; ++k) { for (int l = 0; l < 64; ++l) { pat[k][l] = 0; } for (int q = 0; q < 8; ++q) { pat[k][8 * q] = (uint8_t) (8 * k + q); pat[k][8 * q + 1] = (uint8_t) (64 + 8 * k + q); } }
         for (int l = 0; l < 64; ++l) { seli[l] = (uint8_t) (l < 32 ? 8 * (l >> 2) + (l & 3) : 0); sels[l] = (uint8_t) (l < 32 ? 8 * (l >> 2) + 4 + (l & 3) : 0); }
-        __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
+        FORK_STORE_REL(&ready, 1);
     }
     const block_iq2_xxs * GGML_RESTRICT x = vx;
     const block_q8_K    * GGML_RESTRICT y = vy;
@@ -2980,9 +2990,9 @@ static inline __m512i iq2_scales16_k(__m512i all, int k) {
 // IQ2_XS with AVX-512 VBMI, same method as IQ2_XXS: 9-bit index (two 256-entry halves per code plane, picked by index bit 8), 7-bit sign index per index in the top bits of
 // the 16-bit word, scale per 16 weights.
 static void ggml_vec_dot_iq2_xs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
-    static uint8_t cdl[512] __attribute__((aligned(64))), cdh[512] __attribute__((aligned(64))), pat[4][64] __attribute__((aligned(64)));
+    static _Alignas(64) uint8_t cdl[512], cdh[512], pat[4][64];
     static int ready = 0;
-    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) { iq2_make_code_tables(iq2xs_grid, 512, cdl, cdh); iq2_make_patterns(pat); __atomic_store_n(&ready, 1, __ATOMIC_RELEASE); }
+    if (!FORK_LOAD_ACQ(&ready)) { iq2_make_code_tables(iq2xs_grid, 512, cdl, cdh); iq2_make_patterns(pat); FORK_STORE_REL(&ready, 1); }
     const block_iq2_xs * GGML_RESTRICT x = vx;
     const block_q8_K   * GGML_RESTRICT y = vy;
     const int nb = n / QK_K;
@@ -3316,9 +3326,9 @@ void ggml_vec_dot_iq2_xs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const v
 #if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__) && defined(__AVX512VBMI__)
 // IQ2_S with AVX-512 VBMI: 10-bit index (four 256-entry quarters per code plane, picked by the two bits of qh), raw sign bytes (no sign table), scale per 16 weights.
 static void ggml_vec_dot_iq2_s_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
-    static uint8_t cdl[1024] __attribute__((aligned(64))), cdh[1024] __attribute__((aligned(64))), pat[4][64] __attribute__((aligned(64)));
+    static _Alignas(64) uint8_t cdl[1024], cdh[1024], pat[4][64];
     static int ready = 0;
-    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) { iq2_make_code_tables(iq2s_grid, 1024, cdl, cdh); iq2_make_patterns(pat); __atomic_store_n(&ready, 1, __ATOMIC_RELEASE); }
+    if (!FORK_LOAD_ACQ(&ready)) { iq2_make_code_tables(iq2s_grid, 1024, cdl, cdh); iq2_make_patterns(pat); FORK_STORE_REL(&ready, 1); }
     const block_iq2_s * GGML_RESTRICT x = vx;
     const block_q8_K  * GGML_RESTRICT y = vy;
     const int nb = n / QK_K;
@@ -3686,13 +3696,13 @@ static void ggml_vec_dot_iq3_xxs_q8_K_fast(int n, float * GGML_RESTRICT s, size_
 // of 32 weights); the 7-bit sign fields come out of the gas words with one multishift, the sign bytes from a vpermi2b over the 128-byte sign table, and the sign flip of
 // 64 weights is one masked subtract. vpdpbusd replaces maddubs + madd (grid bytes <= 62, so maddubs never saturated: same integer sums).
 static void ggml_vec_dot_iq3_xxs_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
-    static uint8_t plane[4][256] __attribute__((aligned(64)));
-    static uint8_t tidx[4][64]   __attribute__((aligned(64)));
+    static _Alignas(64) uint8_t plane[4][256];
+    static _Alignas(64) uint8_t tidx[4][64]  ;
     static int ready = 0;
-    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) {   // identical values, so two threads racing here write the same bytes
+    if (!FORK_LOAD_ACQ(&ready)) {   // identical values, so two threads racing here write the same bytes
         for (int e = 0; e < 256; ++e) { for (int p = 0; p < 4; ++p) { plane[p][e] = (uint8_t) ((iq3xxs_grid[e] >> (8 * p)) & 255); } }
         for (int p = 0; p < 4; ++p) { for (int j = 0; j < 64; ++j) { tidx[p][j] = (uint8_t) ((4 * j + p) & 127); } }
-        __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
+        FORK_STORE_REL(&ready, 1);
     }
     const block_iq3_xxs * GGML_RESTRICT x = vx;
     const block_q8_K    * GGML_RESTRICT y = vy;
@@ -4082,13 +4092,13 @@ static void ggml_vec_dot_iq3_s_q8_K_fast(int n, float * GGML_RESTRICT s, size_t 
 // bit t of the qh byte of the group: the 8 qh bytes are one 64-bit mask over the 64 indices), vpermi2b lookups, activations rearranged into plane order, the raw
 // sign bytes (32 bytes = 4 x 64-bit masks) applied as masked subtracts, vpdpbusd for the dot.
 static void ggml_vec_dot_iq3_s_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
-    static uint8_t plane[4][512] __attribute__((aligned(64)));
-    static uint8_t tidx[4][64]   __attribute__((aligned(64)));
+    static _Alignas(64) uint8_t plane[4][512];
+    static _Alignas(64) uint8_t tidx[4][64]  ;
     static int ready = 0;
-    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) {   // identical values, so two threads racing here write the same bytes
+    if (!FORK_LOAD_ACQ(&ready)) {   // identical values, so two threads racing here write the same bytes
         for (int e = 0; e < 512; ++e) { for (int p = 0; p < 4; ++p) { plane[p][e] = (uint8_t) ((iq3s_grid[e] >> (8 * p)) & 255); } }
         for (int p = 0; p < 4; ++p) { for (int j = 0; j < 64; ++j) { tidx[p][j] = (uint8_t) ((4 * j + p) & 127); } }
-        __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
+        FORK_STORE_REL(&ready, 1);
     }
     const block_iq3_s * GGML_RESTRICT x = vx;
     const block_q8_K  * GGML_RESTRICT y = vy;
@@ -4405,21 +4415,21 @@ static void ggml_vec_dot_iq1_s_q8_K_gather_kernel(int n, float * GGML_RESTRICT s
 // (multishift, no table needed: the 2-bit field IS u). The dot is vpdpbusd of u with the activations; the true dot is that minus the sum of the activations of the group,
 // which the block already carries (bsums), and the delta term uses the same sums.
 static void ggml_vec_dot_iq1_s_q8_K_vbmi_kernel(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy) {
-    static uint8_t cdl[2048] __attribute__((aligned(64))), cdh[2048] __attribute__((aligned(64))), pat[4][64] __attribute__((aligned(64)));
+    static _Alignas(64) uint8_t cdl[2048], cdh[2048], pat[4][64];
     static int ready = 0;
-    if (!__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) {
+    if (!FORK_LOAD_ACQ(&ready)) {
         for (int e = 0; e < 2048; ++e) {
             unsigned code = 0;
             for (int b = 0; b < 8; ++b) { const unsigned v = (unsigned) ((iq1s_grid[e] >> (8 * b)) & 255); code |= (v == 255 ? 0u : v == 0 ? 1u : 2u) << (2 * b); }
             cdl[e] = (uint8_t) (code & 255); cdh[e] = (uint8_t) (code >> 8);
         }
         for (int k = 0; k < 4; ++k) { for (int l = 0; l < 64; ++l) { pat[k][l] = 0; } for (int q = 0; q < 8; ++q) { pat[k][8 * q] = (uint8_t) (8 * k + q); pat[k][8 * q + 1] = (uint8_t) (64 + 8 * k + q); } }
-        __atomic_store_n(&ready, 1, __ATOMIC_RELEASE);
+        FORK_STORE_REL(&ready, 1);
     }
     const block_iq1_s * GGML_RESTRICT x = vx;
     const block_q8_K  * GGML_RESTRICT y = vy;
     const int nb = n / QK_K;
-    uint8_t seli[64] __attribute__((aligned(64)));
+    _Alignas(64) uint8_t seli[64];
     for (int l = 0; l < 64; ++l) { seli[l] = (uint8_t) (l < 32 ? 8 * (l >> 2) + (l & 3) : 0); }
     const __m512i SI = _mm512_load_si512((const void *) seli);
     const __m512i hsc = _mm512_set1_epi64(0x15120f0c09060300ll);   // byte i: bit offset 3i of the qword (qh word): offsets 0,3,6,9,12,15,18,21

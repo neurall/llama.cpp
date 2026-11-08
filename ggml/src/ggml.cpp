@@ -1,11 +1,14 @@
 #include "ggml-impl.h"
 
+#include <cstdio>
+
 #include <cstdlib>
 #include <exception>
 
 static std::terminate_handler previous_terminate_handler;
 
 GGML_NORETURN static void ggml_uncaught_exception() {
+    try { if (std::current_exception()) { throw; } } catch (const std::exception & e) { fprintf(stderr, "uncaught exception: %s\n", e.what()); } catch (...) { fprintf(stderr, "uncaught exception of unknown type\n"); }   // fork: Windows prints nothing otherwise
     ggml_print_backtrace();
     if (previous_terminate_handler) {
         previous_terminate_handler();

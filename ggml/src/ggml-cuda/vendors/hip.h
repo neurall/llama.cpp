@@ -64,6 +64,7 @@
 #define cudaEventDisableTiming hipEventDisableTiming
 #define cudaEventRecord hipEventRecord
 #define cudaEventSynchronize hipEventSynchronize
+#define cudaEventElapsedTime hipEventElapsedTime
 #define cudaEvent_t hipEvent_t
 #define cudaEventDestroy hipEventDestroy
 #define cudaFree hipFree
@@ -338,3 +339,24 @@ static __device__ __forceinline__ uint32_t ggml_hip_perm(const uint32_t hi, cons
     return __builtin_amdgcn_perm(hi, lo, sel);
 #endif // __has_builtin(__builtin_amdgcn_is_invocable)
 }
+
+// fork: CUDA calls of the fork's code (graph capture checks, event polls, driver version, the staged copy's uncached loads)
+#define cudaStreamCaptureStatus     hipStreamCaptureStatus
+#define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
+#define cudaStreamIsCapturing       hipStreamIsCapturing
+#define cudaEventQuery              hipEventQuery
+#define cudaHostRegisterMapped      hipHostRegisterMapped
+#define cudaSetDeviceFlags          hipSetDeviceFlags
+#define cudaDeviceScheduleSpin      hipDeviceScheduleSpin
+#define cudaEventCreate             hipEventCreate
+#define cudaFuncAttributes          hipFuncAttributes
+#define cudaFuncGetAttributes       hipFuncGetAttributes
+#define cudaErrorNotReady           hipErrorNotReady
+#define cudaDriverGetVersion        hipDriverGetVersion
+// __ldcv (load, cache volatile): non-temporal loads, so the GPU cache never serves an old line of a reused pinned block (a volatile load only stops
+// the compiler; idea from github.com/Sophia-Thickums/hip-moe). The builtin takes scalars only, so the 16-byte path is four 4-byte loads.
+static __device__ __forceinline__ uint4 __ldcv(const uint4 * p) {
+    const unsigned int * q = reinterpret_cast<const unsigned int *>(p);
+    return make_uint4(__builtin_nontemporal_load(q + 0), __builtin_nontemporal_load(q + 1), __builtin_nontemporal_load(q + 2), __builtin_nontemporal_load(q + 3));
+}
+static __device__ __forceinline__ uint8_t __ldcv(const uint8_t * p) { return __builtin_nontemporal_load(p); }

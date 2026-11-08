@@ -1027,6 +1027,68 @@ uint32_t ggml_vk_find_queue_family_index(std::vector<vk::QueueFamilyProperties>&
     abort();
 }
 
+// fork: integrated-GPU keep-alive, see vk_device_struct::keepalive. `iters` = GGML_VK_IGPU_KEEPALIVE: 1 = default spin length, more = loop iterations.
+static void ggml_vk_keepalive_init(vk_device & device, uint32_t family, uint32_t index, uint32_t iters) {
+    auto & ka = device->keepalive;
+    iters = iters > 1 ? iters : 300000;
+    try {
+        vk::DeviceQueueInfo2 qi{};
+        qi.queueFamilyIndex = family;
+        qi.queueIndex = index;
+        if (device->has_internally_synchronized_queues) {
+            qi.flags = eInternallySynchronizedKHR;
+        }
+        ka.queue = device->device.getQueue2(qi);
+        ka.module = device->device.createShaderModule({ {}, keepalive_len, reinterpret_cast<const uint32_t *>(keepalive_data) });
+        const vk::DescriptorSetLayoutBinding binding{ 0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute };
+        ka.dsl = device->device.createDescriptorSetLayout({ {}, 1, &binding });
+        const vk::PushConstantRange pc{ vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t) };
+        ka.layout = device->device.createPipelineLayout({ {}, 1, &ka.dsl, 1, &pc });
+        const vk::PipelineShaderStageCreateInfo stage{ {}, vk::ShaderStageFlagBits::eCompute, ka.module, "main" };
+        ka.pipeline = device->device.createComputePipeline(VK_NULL_HANDLE, vk::ComputePipelineCreateInfo{ {}, stage, ka.layout }).value;
+        const vk::DescriptorPoolSize ps{ vk::DescriptorType::eStorageBuffer, 1 };
+        ka.dpool = device->device.createDescriptorPool({ {}, 1, 1, &ps });
+        ka.set = device->device.allocateDescriptorSets({ ka.dpool, 1, &ka.dsl })[0];
+        ka.buf = ggml_vk_create_buffer_device(device, 256);
+        const vk::DescriptorBufferInfo bi{ ka.buf->buffer, 0, 256 };
+        device->device.updateDescriptorSets({ vk::WriteDescriptorSet{ ka.set, 0, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &bi } }, {});
+        ka.pool = device->device.createCommandPool({ vk::CommandPoolCreateFlags{}, family });
+        ka.cmd = device->device.allocateCommandBuffers({ ka.pool, vk::CommandBufferLevel::ePrimary, 1 })[0];
+        ka.cmd.begin(vk::CommandBufferBeginInfo{});
+        ka.cmd.bindPipeline(vk::PipelineBindPoint::eCompute, ka.pipeline);
+        ka.cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, ka.layout, 0, { ka.set }, {});
+        ka.cmd.pushConstants(ka.layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t), &iters);
+        ka.cmd.dispatch(1, 1, 1);
+        ka.cmd.end();
+        ka.fence = device->device.createFence({});
+        // one timed spin for the log (the clocks are those of an idle GPU here, so a busy one spins shorter)
+        const int64_t t0 = ggml_time_us();
+        const vk::SubmitInfo si{ 0, nullptr, nullptr, 1, &ka.cmd };
+        ka.queue.submit({ si }, ka.fence);
+        VK_CHECK(device->device.waitForFences({ ka.fence }, true, UINT64_MAX), "keepalive waitForFences", device);
+        GGML_LOG_INFO("ggml_vulkan: %s: integrated-GPU keep-alive on: queue %u.%u, a spin of %u iterations took %lld us\n", device->name.c_str(), family, index, iters,
+                (long long) (ggml_time_us() - t0));
+        ka.on = true;
+    } catch (const vk::SystemError & e) {
+        GGML_LOG_WARN("ggml_vulkan: %s: keep-alive not available (%s)\n", device->name.c_str(), e.what());
+    }
+}
+
+// a new spin once the previous one is done (non-blocking): called by every graph compute, so a decode keeps the GPU busy between its bursts
+static void ggml_vk_keepalive_kick(vk_device & device) {
+    auto & ka = device->keepalive;
+    if (!ka.on) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ka.mutex);
+    if (device->device.getFenceStatus(ka.fence) != vk::Result::eSuccess) {
+        return;
+    }
+    device->device.resetFences({ ka.fence });
+    const vk::SubmitInfo si{ 0, nullptr, nullptr, 1, &ka.cmd };
+    ka.queue.submit({ si }, ka.fence);
+}
+
 std::unique_ptr<vk_queue> ggml_vk_create_queue(vk_device& device, uint32_t queue_family_index, uint32_t queue_index, vk::PipelineStageFlags&& stage_flags, bool transfer_only) {
     VK_LOG_DEBUG("ggml_vk_create_queue()");
     std::lock_guard<std::recursive_mutex> guard(device->mutex);
@@ -4558,11 +4620,22 @@ vk_device ggml_vk_get_device(size_t idx) {
                                                 eInternallySynchronizedKHR :
                                                 vk::DeviceQueueCreateFlags();
 
+        // fork: the integrated-GPU keep-alive takes one more queue of the compute family, at the lowest priority (vk_device_struct::keepalive)
+        const char * keepalive_env = getenv("GGML_VK_IGPU_KEEPALIVE");
+        const bool keepalive_want = device->uma && keepalive_env && atoi(keepalive_env) != 0;
+        static const float priorities_ka[] = { 1.0f, 1.0f, 0.0f };
+        uint32_t keepalive_index = UINT32_MAX;
         if (compute_queue_family_index != transfer_queue_family_index) {
-            device_queue_create_infos.push_back({queue_flags, compute_queue_family_index, 1, priorities});
+            if (keepalive_want && queue_family_props[compute_queue_family_index].queueCount >= 2) {
+                keepalive_index = 1;
+            }
+            device_queue_create_infos.push_back({queue_flags, compute_queue_family_index, keepalive_index == 1 ? 2u : 1u, priorities_ka + 1});
             device_queue_create_infos.push_back({queue_flags, transfer_queue_family_index, 1, priorities + 1});
         } else if(!device->single_queue) {
-            device_queue_create_infos.push_back({queue_flags, compute_queue_family_index, 2, priorities});
+            if (keepalive_want && queue_family_props[compute_queue_family_index].queueCount >= 3) {
+                keepalive_index = 2;
+            }
+            device_queue_create_infos.push_back({queue_flags, compute_queue_family_index, keepalive_index == 2 ? 3u : 2u, priorities_ka});
         } else {
             device_queue_create_infos.push_back({queue_flags, compute_queue_family_index, 1, priorities});
         }
@@ -4849,6 +4922,11 @@ vk_device ggml_vk_get_device(size_t idx) {
 
         // Queues
         device->compute_queue = ggml_vk_create_queue(device, compute_queue_family_index, 0, { vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer }, false);
+        if (keepalive_index != UINT32_MAX) {
+            ggml_vk_keepalive_init(device, compute_queue_family_index, keepalive_index, (uint32_t) atoi(keepalive_env));
+        } else if (keepalive_want) {
+            GGML_LOG_WARN("ggml_vulkan: %s: keep-alive not available (no spare queue in the compute family)\n", device->name.c_str());
+        }
 
         // Shaders
         // Disable matmul tile sizes early if performance low or not supported
@@ -14449,6 +14527,8 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
 
+    ggml_vk_keepalive_kick(ctx->device);
+
     ctx->device->diag_cgraph = nullptr;
     ctx->device->diag_prev_start = -1;
     ctx->device->diag_prev_end = -1;
@@ -15589,7 +15669,10 @@ static void ggml_backend_vk_device_get_props(ggml_backend_dev_t dev, struct ggml
     props->caps = {
         /* .async                 = */ true,
         /* .host_buffer           = */ true,
-        /* .buffer_from_host_ptr  = */ false,
+        // fork: an iGPU reads the host RAM it shares in place (mapped weights imported, no copy into the device-local heap). Opt-in while measured:
+        // upstream keeps import off on AMD (amdgpu on Linux re-faults the imported pages on every submission); the Windows driver is not known yet.
+        // shortcut: environment switch GGML_VK_IGPU_HOST_IMPORT=1, make it a default per driver once measured
+        /* .buffer_from_host_ptr  = */ ctx->is_integrated_gpu && getenv("GGML_VK_IGPU_HOST_IMPORT") != nullptr && atoi(getenv("GGML_VK_IGPU_HOST_IMPORT")) != 0,
         /* .events                = */ true,
         /* .mmap_support          = */ !ctx->is_integrated_gpu,
     };
@@ -16699,6 +16782,18 @@ vk_device_struct::~vk_device_struct() {
     }
 
     VK_LOG_DEBUG("destroy device " << name);
+
+    if (keepalive.fence) {
+        (void) device.waitForFences({ keepalive.fence }, true, UINT64_MAX);
+        device.destroyFence(keepalive.fence);
+    }
+    device.destroyPipeline(keepalive.pipeline);
+    device.destroyPipelineLayout(keepalive.layout);
+    device.destroyDescriptorPool(keepalive.dpool);
+    device.destroyDescriptorSetLayout(keepalive.dsl);
+    device.destroyShaderModule(keepalive.module);
+    device.destroyCommandPool(keepalive.pool);
+    ggml_vk_destroy_buffer(keepalive.buf);
 
     device.destroyFence(fence);
 

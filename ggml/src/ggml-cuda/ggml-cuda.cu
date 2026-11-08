@@ -1,6 +1,8 @@
 #if defined(__linux__)
 #include <sys/mman.h>
-#include <nvtx3/nvToolsExt.h>   // fork: NVTX ranges for diagnostics (GGML_NVTX), Linux only
+#endif
+#if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#include <nvtx3/nvToolsExt.h>   // fork: NVTX ranges for diagnostics (GGML_NVTX), Linux CUDA only
 #else
 // fork: no NVTX outside Linux builds: the ranges compile to nothing
 #define nvtxRangePushA(x) ((void)(x))
@@ -116,6 +118,20 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <functional>
+#endif
+#if defined(GGML_USE_HIP)
+#include <filesystem>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>   // GetModuleHandleA: where rocblas.dll (and its kernel library) was loaded from
+#else
+#include <dlfcn.h>
+#endif
 #endif
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
@@ -270,6 +286,43 @@ static int ggml_cuda_parse_id(const char * devName) {
 
     return GGML_CUDA_CC_OFFSET_AMD + cc;
 }
+
+// rocBLAS loads its GEMM kernels per GPU from <its dir>/rocblas/library (TensileLibrary*_gfxNNNN*); without a file for this GPU its first GEMM ends the
+// process (ROCm 6.4 on Windows, Radeon 780M: "Cannot read ...TensileLibrary.dat ... for GPU arch : gfx1103", exit code 0). An unknown layout counts as ok.
+static bool ggml_cuda_hip_blas_has_arch(const char * gcn_arch) {
+    std::string arch(gcn_arch);
+    arch = arch.substr(0, arch.find(':'));   // "gfx1103:sramecc-:xnack-"
+    std::string dir;
+    if (const char * e = getenv("ROCBLAS_TENSILE_LIBPATH")) {
+        dir = e;
+    } else {
+#ifdef _WIN32
+        char p[MAX_PATH];
+        HMODULE h = GetModuleHandleA("rocblas.dll");
+        if (h && GetModuleFileNameA(h, p, MAX_PATH)) { dir = p; dir = dir.substr(0, dir.find_last_of("\\/")) + "\\rocblas\\library"; }
+#else
+        Dl_info di;
+        if (dladdr((void *) &hipblasCreate, &di) && di.dli_fname) { dir = di.dli_fname; dir = dir.substr(0, dir.find_last_of('/')) + "/rocblas/library"; }
+#endif
+    }
+    std::error_code ec;
+    if (dir.empty()) {
+        return true;
+    }
+    if (!std::filesystem::is_directory(dir, ec)) {
+#ifdef _WIN32
+        return false;   // rocblas.dll found but no rocblas\library next to it (the release zip ships none): every rocBLAS GEMM would fail
+#else
+        return true;    // distro packages keep the kernels elsewhere (Debian: <libdir>/rocblas/<version>/library)
+#endif
+    }
+    for (const auto & f : std::filesystem::directory_iterator(dir, ec)) {
+        if (f.path().filename().string().find(arch) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
 #endif // defined(GGML_USE_HIP)
 
 static ggml_cuda_device_info ggml_cuda_init() {
@@ -386,6 +439,10 @@ static ggml_cuda_device_info ggml_cuda_init() {
                       id, prop.name, prop.gcnArchName, info.devices[id].cc & 0xffff,
                       device_vmm ? "yes" : "no", prop.warpSize,
                       device_vram_mib);
+        info.devices[id].blas_ok = ggml_cuda_hip_blas_has_arch(prop.gcnArchName);
+        if (!info.devices[id].blas_ok) {
+            GGML_LOG_WARN("  Device %d: rocBLAS has no kernels for %s: matrix multiplies that need BLAS run on the CPU\n", id, prop.gcnArchName);
+        }
 #elif defined(GGML_USE_MUSA)
         info.devices[id].smpbo = prop.sharedMemPerBlockOptin;
         info.devices[id].cc = GGML_CUDA_CC_OFFSET_MTHREADS + prop.major * 0x100;
@@ -3067,6 +3124,13 @@ static bool ggml_cuda_should_fuse_mul_mat_q(const ggml_tensor * up, const ggml_t
     return ggml_cuda_mmq_fusion_is_efficient(x_up->type, ggml_prec_get_src(up, 1), x_up->ne[1], ncols, nchannels, device);
 }
 
+// a plain 2D float matmul the vector kernel can take column chunk by column chunk (the GPU without BLAS kernels)
+static bool ggml_cuda_mul_mat_vec_f_chunked_ok(const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst, int cc, int warp_size) {
+    return !ggml_is_quantized(src0->type) && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
+        && src0->ne[2] == 1 && src0->ne[3] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1
+        && ggml_cuda_should_use_mmvf(src0->type, cc, warp_size, src0->ne, src0->nb, 1);
+}
+
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_TENSOR_BINARY_OP_LOCALS
 
@@ -3117,6 +3181,18 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     }
     if (ggml_cuda_should_use_mmq(src0->type, cc, ne11, /*n_experts =*/ 0)) {
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
+        return;
+    }
+    if (!ggml_cuda_info().devices[ctx.device].blas_ok && ggml_cuda_mul_mat_vec_f_chunked_ok(src0, src1, dst, cc, warp_size)) {
+        // no rocBLAS kernels for this GPU (gfx1103): the vector kernel over 8 columns at a time. The small float weights (Qwen3.6 ssm_alpha/beta, the
+        // MoE router) stay on the GPU: rejecting them sent them to CPU memory and split every decode step 141 times (8 t/s against Vulkan's 18)
+        for (int64_t c = 0; c < ne11; c += MMVF_MAX_BATCH_SIZE) {
+            ggml_tensor s1 = *src1, d = *dst;
+            s1.ne[1] = d.ne[1] = std::min<int64_t>(MMVF_MAX_BATCH_SIZE, ne11 - c);
+            s1.data = (char *) src1->data + c*src1->nb[1];
+            d.data  = (char *) dst->data  + c*dst->nb[1];
+            ggml_cuda_mul_mat_vec_f(ctx, src0, &s1, nullptr, &d);
+        }
         return;
     }
     ggml_cuda_mul_mat_cublas(ctx, src0, src1, dst);
@@ -6891,7 +6967,49 @@ static void ggml_cuda_scratch_check_end_fork(int device, const ggml_cgraph * cgr
     }
 }
 
+// fork diagnostics: GGML_CUDA_OP_PROFILE=N times every node on the GPU (an event before each, graphs off, one wait per graph: no idle gaps
+// between kernels) and prints the ops by share of GPU time every N graphs, keyed by op, weight type and shape (m x k, columns n);
+// a fused group counts as its first node
+static const int g_op_prof_every = getenv("GGML_CUDA_OP_PROFILE") ? atoi(getenv("GGML_CUDA_OP_PROFILE")) : 0;
+struct ggml_cuda_op_prof {
+    std::map<std::string, std::pair<double, int64_t>> t;   // op key -> (us, calls)
+    std::vector<cudaEvent_t> ev;
+    std::vector<std::string> lab;   // lab[k]: the node that runs between ev[k] and ev[k + 1]
+    int graphs = 0;
+    void mark(cudaStream_t s, const ggml_tensor * next) {   // starts `next`; nullptr ends the graph
+        if (ev.size() <= lab.size()) { cudaEvent_t e; CUDA_CHECK(cudaEventCreate(&e)); ev.push_back(e); }
+        CUDA_CHECK(cudaEventRecord(ev[lab.size()], s));
+        if (next) {
+            char key[160];
+            const ggml_tensor * a = next->src[0], * b = next->src[1];
+            snprintf(key, sizeof key, "%s %s m=%lld k=%lld n=%lld", ggml_op_desc(next), a ? ggml_type_name(a->type) : "-", a ? (long long) a->ne[1] : 0LL,
+                     a ? (long long) a->ne[0] : 0LL, b ? (long long) b->ne[1] : 0LL);
+            lab.push_back(key);
+            return;
+        }
+        CUDA_CHECK(cudaEventSynchronize(ev[lab.size()]));
+        for (size_t k = 0; k < lab.size(); ++k) {
+            float ms = 0.0f;
+            CUDA_CHECK(cudaEventElapsedTime(&ms, ev[k], ev[k + 1]));
+            auto & e = t[lab[k]]; e.first += 1e3 * ms; e.second++;
+        }
+        lab.clear();
+        if (++graphs % g_op_prof_every == 0) {
+            std::vector<std::pair<double, std::string>> v; double tot = 0.0;
+            for (auto & kv : t) { v.push_back({ kv.second.first, kv.first }); tot += kv.second.first; }
+            std::sort(v.rbegin(), v.rend());
+            GGML_LOG_WARN("op profile: %d graphs, %.1f ms per graph\n", g_op_prof_every, tot / 1e3 / g_op_prof_every);
+            for (size_t k = 0; k < v.size() && k < 24; k++) {
+                const auto & e = t[v[k].second];
+                GGML_LOG_WARN("  %5.1f%%  %8.1f us/graph  %6.1f us/call  %s\n", 100.0 * v[k].first / tot, v[k].first / g_op_prof_every, v[k].first / e.second, v[k].second.c_str());
+            }
+            t.clear();
+        }
+    }
+};
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
+    static ggml_cuda_op_prof op_prof;
     bool graph_evaluated_or_captured = false;
 
     // flag used to determine whether it is an integrated_gpu
@@ -7003,6 +7121,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (nodes_fused[i]) {
                     continue;
                 }
+                if (g_op_prof_every > 0 && !use_cuda_graph && !ggml_is_empty(node) && node->op != GGML_OP_NONE) { op_prof.mark(cuda_ctx->stream(), node); }
 #ifdef USE_CUDA_GRAPH
                 // fused nodes are skipped together, so a cut never splits a fusion
                 // a concurrent region must join before its capture can end
@@ -7110,6 +7229,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     try_launch_concurrent_event(node);
                }
             }
+            if (g_op_prof_every > 0 && !use_cuda_graph) { op_prof.mark(cuda_ctx->stream(), nullptr); }
         }
 
 #ifdef USE_CUDA_GRAPH
@@ -7149,7 +7269,7 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
     if (graph->instances.empty()) {
-        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA) {
+        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_VOLTA || g_op_prof_every > 0) {
             if (!graph->disable_due_to_gpu_arch && ggml_cuda_graph_debug_enabled()) {
                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
             }
@@ -8130,6 +8250,28 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 if (op->op == GGML_OP_MUL_MAT_ID && ggml_get_op_params_i32(op, 3) == GGML_PREC_F32) {
                     return false;
                 }
+#ifdef GGML_USE_HIP
+                if (!ggml_cuda_info().devices[dev_ctx->device].blas_ok) {
+                    // no rocBLAS kernels for this GPU (gfx1103): only what the dispatch sends to the fork's own kernels; the rest runs on the CPU
+                    // instead of ending the process (Qwen3.6 35B float tensors at a 2k-token batch)
+                    const int cc = ggml_cuda_info().devices[dev_ctx->device].cc;
+                    const int ws = ggml_cuda_info().devices[dev_ctx->device].warp_size;
+                    if (b->type != GGML_TYPE_F32 || op->type != GGML_TYPE_F32) {
+                        return false;
+                    }
+                    if (op->op == GGML_OP_MUL_MAT_ID) {
+                        if (!ggml_is_quantized(a->type)) {
+                            return false;
+                        }
+                    } else if (!(ggml_cuda_should_use_mmvf(a->type, cc, ws, a->ne, a->nb, b->ne[1]) ||
+                                 ggml_cuda_mul_mat_vec_f_chunked_ok(a, b, op, cc, ws) ||
+                                 ggml_cuda_should_use_mmf(a->type, cc, ws, a->ne, a->nb, b->ne[1], false) ||
+                                 ggml_cuda_should_use_mmvq(a->type, cc, b->ne[1]) ||
+                                 ggml_cuda_should_use_mmq(a->type, cc, b->ne[1], 0))) {
+                        return false;
+                    }
+                }
+#endif // GGML_USE_HIP
 #ifdef GGML_USE_MUSA
                 const int cc = ggml_cuda_info().devices[dev_ctx->device].cc;
                 if (b->ne[2]*b->ne[3] > 1 && !ggml_is_transposed(a) && !ggml_is_transposed(b)) {
@@ -8737,7 +8879,11 @@ static void ggml_backend_cuda_thread_sync_fork() {
 }
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
-    GGML_UNUSED(reg);
+    // fork: the core asks for hooks by the neutral name ggml_backend_fork_<x> (src/llama-backend-fork.h); here they are the ggml_backend_cuda_<x> functions
+    if (strncmp(name, "ggml_backend_fork_", 18) == 0) {
+        const std::string cuda_name = std::string("ggml_backend_cuda_") + (name + 18);
+        return ggml_backend_cuda_reg_get_proc_address(reg, cuda_name.c_str());
+    }
     if (strcmp(name, "ggml_backend_cuda_last_oom_fork") == 0) {
         return (void *)ggml_backend_cuda_last_oom_fork;
     }

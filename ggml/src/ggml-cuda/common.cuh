@@ -1195,6 +1195,7 @@ struct ggml_cuda_device_info {
         int     physical_device;                // backing physical CUDA device for this (virtual) device
         int     physical_share_count;           // number of (virtual) devices sharing this device's physical GPU
         int     virtual_index;                  // index of this (virtual) device among those sharing its physical GPU
+        bool    blas_ok = true;                 // HIP: rocBLAS ships GEMM kernels for this GPU (ROCm 6.4 has none for gfx1103, the Radeon 780M)
     };
 
     cuda_device_info devices[GGML_CUDA_MAX_DEVICES] = {};
