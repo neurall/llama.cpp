@@ -140,6 +140,13 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
                 total = ret.back().total;
             }
         }
+        // fork: an integrated GPU beside a discrete one gets no layers from the fit (llama-model.cpp holds the same rule for the default split): its memory is the
+        // host's, pinned for it as CUDA_Host; MiMo on the 4060 + 780M: 44 layers in one 3.9 GiB pinned buffer, "failed to allocate CUDA_Host buffer"
+        if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            for (size_t j = 0; j < nd; j++) {
+                if (ggml_backend_dev_type(llama_model_get_device(model, j)) == GGML_BACKEND_DEVICE_TYPE_GPU) { free = 0; total = 0; }
+            }
+        }
         ret[i].free  = free;
         ret[i].total = total;
     }
