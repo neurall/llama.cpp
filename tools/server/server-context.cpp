@@ -4827,8 +4827,11 @@ private:
                     // fork: equal calls. A prompt longer than n_batch is cut into ceil(R / n_batch) calls of equal size, not n_batch plus a tail: every call
                     // pays the whole expert upload whatever its token count (GLM 3.5 12434 tokens, rampool13: 10496 + 1938, the 1938-token tail took 12.2 s,
                     // the same as the 10496 pass, 160 tokens/s). The checkpoint's 4-token tail stays its own call.
+                    // --moe equal-calls=0 switches the cut off (Qwen3.6 72k, 2026-11-08: the answer degenerated with calls of 24161 tokens and passes of 2014, fine
+                    // with 32768 and 2048 on the same engine; the cause is traced with the switch)
+                    static const bool equal_calls = [] { const char * e = llama_moe_get_opt("equal-calls"); return !e || atoi(e) != 0; }();
                     size_t batch_cap = n_batch;
-                    {
+                    if (equal_calls) {
                         const int64_t R = (int64_t) slot.task->n_tokens() - slot.prompt.n_tokens() - (do_checkpoint ? 4 : 0);
                         if (R > (int64_t) n_batch) {
                             const int64_t calls = (R + n_batch - 1) / n_batch;
