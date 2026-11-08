@@ -1,0 +1,59 @@
+run 24055 | no-map-reads | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.08 t/s | prompt 574.2 t/s | 906 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:14:27
+
+Let me analyze this file carefully to identify which code is never used.
+
+First, let me understand what's used from this file. The file is `json-schema-to-grammar.cpp` and it includes `json-schema-to-grammar.h`. I need to figure out what functions are declared in the header and what's used elsewhere.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function, need to check if it's called
+2. `build_min_max_int` - static function, need to check if it's called
+3. `SPACE_RULE` - const string, need to check if it's used
+4. `BuiltinRule` struct - used by PRIMITIVE_RULES and STRING_FORMAT_RULES
+5. `PRIMITIVE_RULES` - static, need to check if used
+6. `STRING_FORMAT_RULES` - static, need to check if used
+7. `is_reserved_name` - static, need to check if called
+8. `INVALID_RULE_CHARS_RE` - static regex, need to check if used
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - static regex, used in `format_literal`
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - static regex, need to check if used
+11. `GRAMMAR_LITERAL_ESCAPES` - static map, used in `format_literal`
+12. `MAX_PATTERN_DEPTH` - static const int, need to check if used
+13. `NON_LITERAL_SET` - static set, need to check if used
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - static set, need to check if used
+15. `replacePattern` - static function, used in `format_literal`
+16. `format_literal` - static function, used by `gbnf_format_literal`
+17. `gbnf_format_literal` - non-static, likely declared in header
+18. `gbnf_escape_length` - static function, need to check if called
+
+The file is truncated at `gbnf_escape_length`, so there's more code. But based on what's shown, let me analyze:
+
+Looking at the code shown:
+
+- `build_repetition` - I don't see it called anywhere in the shown code. But it might be called in the truncated part.
+- `build_min_max_int` - I don't see it called anywhere in the shown code. But it might be called in the truncated part.
+- `SPACE_RULE` - not referenced in shown code
+- `PRIMITIVE_RULES` - referenced by `is_reserved_name`
+- `STRING_FORMAT_RULES` - referenced by `is_reserved_name`
+- `is_reserved_name` - not called in shown code
+- `INVALID_RULE_CHARS_RE` - not referenced in shown code
+- `GRAMMAR_LITERAL_ESCAPE_RE` - used in `format_literal`
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - not referenced in shown code
+- `GRAMMAR_LITERAL_ESCAPES` - used in `format_literal`
+- `MAX_PATTERN_DEPTH` - not referenced in shown code
+- `NON_LITERAL_SET` - not referenced in shown code
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - not referenced in shown code
+- `replacePattern` - used in `format_literal`
+- `format_literal` - used in `gbnf_format_literal`
+- `gbnf_format_literal` - non-static, likely exported
+- `gbnf_escape_length` - static, truncated
+
+Wait, but the file is truncated. The user says "Delete the code in this file that is never used." This means I need to consider the entire file, but I only see part of it. However, the user is asking me to work with what's shown.
+
+Actually, re-reading the prompt, the user is showing me the file content (which appears to be truncated at `gbnf_escape_length`) and asking me to delete code that's never used.
+
+Let me think about this more carefully. The file is `json-schema-to-grammar.cpp`. It's a .cpp file, so it implements functions declared in `json-schema-to-grammar.h`. The non-static functions are the public API.
+
+From what's shown:
+- `gbnf_format_literal` is non-static - likely declared in header
+- `gbnf_escape_length` is static - but it
+---

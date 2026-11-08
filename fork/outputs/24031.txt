@@ -1,0 +1,45 @@
+run 24031 | pool-whole-expert | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.57 t/s | prompt 568.6 t/s | 1024 tokens | args: -np 1 --moe rampool=0 | power 220+280 W | 2026-11-08 12:22:26
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (e.g., `"[" space  space "]"` — actually with empty string it would be `"[" space  space "]"` with double spaces, which might still parse but semantically wrong). Actually wait, if min_items > 0 and max_items == 0, that's a contradictory schema. The function returns "" which would produce `"[" space  space "]"`. Hmm, that's a minor issue. Actually in GBNF, consecutive spaces might be fine. But semantically, a schema with minItems=2, maxItems=0 is invalid JSON Schema anyway. Minor.
+
+Also `has_max` is computed before checking `max_items == 0`. Fine.
+
+Another subtle issue: when `separator_rule` is non-empty and `min_items == 0 && max_items == 1`, the code returns `item_rule + "?"` before checking separator — that's correct behavior (no separator needed for single item).
+
+Wait, actually there's a subtle bug: when `min_items == 0 && max_items == 1`, it returns `item_rule + "?"` — correct. But what about `min_items == 1 && max_items == 1` with separator? It goes to the separator branch: `build_repetition("(" + sep + " " + item + ")", 0, 0)` → max_items == 0 → returns "". So result = item_rule + " " + "" = `item_rule + " "`. Hmm, that leaves a trailing space in the rule. E.g., `"[" space item "," space  space "]"`. Wait let me re-check: `build_repetition(item_rule, 1, 1, sep)`:
+- has_max = true (1 != INT_MAX)
+- max_items != 0
+- not (min==0 && max==1)
+- separator non-empty → result = item_rule + " " + build_repetition("(sep item)", min_items==0?0:min_items-1 = 0, has_max ? max_items-1 = 0) → inner call: max_items == 0 → returns "". So result = item_rule + " " + "" = "item_rule ". Trailing space. That's cosmetically odd but grammatically fine (GBNF ignores whitespace? Actually in GBNF, whitespace between rule elements is ignored). So it's fine but produces slightly ugly output. Minor.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `has_min`/`has_max` sentinel-based detection: uses INT64_MIN/MAX as "unset" markers. This means you can't express a schema that actually requires the value to be exactly INT64_MIN. Edge case, probably acceptable.
+
+- `std::function<void(const std::string_view &, const std::string_view &)> uniform_range = [&]...` — recursion via std::function captured by reference; the lambda captures `uniform_range` by reference implicitly? Actually `[&]` captures everything by reference including `uniform_range` itself — but `uniform_range` is being declared, so capturing it by reference in its own initializer... Actually in C++, a lambda's capture list can capture variables declared before it. `uniform_range` is being initialized by the lambda; can the lambda capture itself? Yes — the variable `uniform_range` is in scope at the point of the lambda's definition? No wait — the variable is being declared; the name is in scope after the declarator... Actually for `auto x = [...] { ... x ... }`, the variable `x` is in scope within its own initializer (the point of declaration is after the declarator, before the initializer). So capturing `uniform_range` by reference works. This is a known pattern but fragile. Using `std::function` for recursion is fine but has overhead. Not a bug.
+
+- In `uniform_range`, `digit_range(from[i], to[i] - 

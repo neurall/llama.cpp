@@ -1,0 +1,46 @@
+run 24081 | no-map-reads | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.05 t/s | prompt 105.7 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:42:13
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. But I don't want to ship a bare terminal-looking page — I want it to feel like an actual arcade cabinet: a distinctive display face, an ambient background, real motion, and micro-interactions that respond to input.
+
+The tension: "smallest" vs. making it feel crafted. I'll interpret "smallest" as the *code* being tight/minified-ish while the *UI* still reads as a real machine. So: a single file, compact JS, but with a strong visual identity — arcade/CRT aesthetic. A near-black screen with one neon accent would be the obvious move, but it's also the lazy version of that idea; let me do something richer instead — a multi-hue tetromino palette on a deep plum/ink background with a layered ambient background (scanlines + subtle grid + glow), and a chunky display face.
+
+Design direction: Arcade cabinet. Display face: something chunky and distinctive — e.g., "Chakra Petch", "Bungee", "Silkscreen", "Press Start 2P" (too cliché maybe but very characteristic of the subject). Let me pick a distinctive display: "Bungee" is bold. Or "Archivo Black". Pair with body face "Space Grotesk" or "IBM Plex Mono". Actually for a Tetris game, a pixel/mono face is characteristic. Let's use display: "Silkscreen" (pixel) for the wordmark and numbers, body: "Space Grotesk" for instructions. Hmm, but numbers in the HUD benefit from mono. Let me do:
+
+- Display: "Bungee" or "Chakra Petch" — Chakra Petch is techy and distinctive.
+- Actually let's do display "Silkscreen" for the logo/title (very characteristic of the subject — pixel blocks), and body "Space Grotesk" for readable instructions, and "Space Mono" or the Silkscreen for HUD numbers.
+
+Hmm, keep it to two families: Silkscreen (display/pixel) + Space Grotesk (body). HUD numbers in Silkscreen look great and pixel-ish.
+
+Palette: deep ink/charcoal-blue background (#12101c-ish), with a warm off-white text, and the seven tetromino colors as the accent system (cyan, yellow, purple, green, red, blue, orange) — that's inherently multi-hue, which beats leaning on a single accent color. Background: layered — subtle diagonal gradient, a faint block grid, scanlines, and a soft vignette. Plus ambient floating tetromino shapes drifting slowly in the background (living elements).
+
+Layout: open with the cabinet itself — the playfield on the left/center with a side rail HUD (score, level, lines, next piece, hold). Asymmetric. Big oversized score numerals. A "SIDEWALL" with rotated text maybe.
+
+Features (compact but complete):
+- Canvas-based 10x20 playfield.
+- 7-bag randomizer.
+- SRS-ish rotation with simple wall kicks.
+- Hold piece.
+- Ghost piece.
+- Next queue (3 pieces).
+- Levels & speed, line clear scoring, soft/hard drop.
+- Keys: arrows, Z/X rotate, Space hard drop, C hold, P pause, R restart.
+- Touch buttons for mobile.
+- Line clear flash animation, screen shake on hard drop, particle bits maybe (keep small).
+- Pause overlay, game over overlay.
+- Sound? Could add tiny WebAudio blips — nice "alive" touch, small code. Yes, tiny beeper with toggle.
+
+Keep code reasonably compact but readable-ish. "Smallest" — I'll aim for a tight single file, minified-ish variable names but still working. I should mention it's a single file.
+
+Let me write it.
+
+Canvas rendering: draw board with block style — beveled blocks with a lighter top-left edge and darker bottom-right, plus a subtle inner highlight. Nice.
+
+Implementation plan (compact):
+
+```js
+const W=10,H=20,S=22; // cell size
+let B=[...Array(H)].map(_=>Array(W).fill(0)) // 0 empty, else color index
+```
+
+Pieces as rotation matrices: standard approach — define shapes as arrays of coordinates per rotation, or use matrix rotation.
+---

@@ -1,0 +1,76 @@
+run 24034 | pool-whole-expert | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.03 t/s | prompt 1197.4 t/s | 1024 tokens | args: -np 1 --moe rampool=0 | power 220+280 W | 2026-11-08 12:27:59
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` cases - correct
+  - When separator is non-empty, builds `item (separator item)*` pattern - looks correct
+  - The recursion for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for the separator pattern
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda is recursive and handles digit-by-digit range matching
+- Potential issue: `decimals_left` parameter is used but the name is misleading - it's about digit count, not decimals
+- The `top_level` parameter controls whether leading zeros are allowed
+- Edge case: when `min_value == max_value`, the function should handle it correctly through the uniform_range
+- The function throws if neither min nor max is set - but this is called with both set in the main path
+
+### _add_rule function
+- Deduplication logic: if rule already exists with same content, returns existing name
+- If rule exists with different content, appends a number suffix
+- Potential issue: the loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the rule doesn't exist or it matches. This seems correct.
+
+### _pattern_to_rule function
+- Complex regex-to-grammar conversion
+- Handles various regex constructs: `.`, `()`, `[]`, `|`, `*`, `+`, `?`, `{}`, literals
+- The `join_seq` function merges consecutive literals
+- Potential issue: the literal accumulation logic in the `else` branch is complex and could have edge cases
+- The `sub_rule_ids` map is used for `{}` repetition - it creates sub-rules for repeated groups
+
+### _not_strings function
+- Generates a rule that matches strings that are NOT in a given set
+- Uses a trie for efficient matching
+- The `rejects` string accumulates characters for the negated character class
+- Potential issue: if `rejects` contains characters that need escaping in a character class (like `]`, `-`, `\`), they're not escaped
+
+### _resolve_ref function
+- Handles `$ref` resolution with cycle detection
+- The `ref_name` is computed from the fragment, but if the rule already exists, it returns the existing name
+- Potential issue: if the ref is being resolved (cycle), it returns `ref_name` which may not exist yet - this could lead to a dangling reference
+
+### _build_object_rule function
+- Builds object rules with required and optional properties
+- The `get_recursive_refs` function generates alternatives for optional properties
+- Potential issue: the rule generation for optional properties creates many alternatives which could lead to very large grammars
+
+### _visit_pattern function
+- Snapshots `_rules` before attempting pattern conversion
+- On failure, reverts `_rules` to snapshot
+- Potential issue: the snapshot is a full copy of the map, which could be expensive for large schemas
+
+### _visit_all_of function
+- Handles `allOf` by merging properties from all children
+- Enum intersection logic: counts occurrences and checks if all children contribute
+- Potential issue: `enum_values[p.second] == schema.children.size()` - this checks if the enum value appears in ALL children, but some children might not be enums, so this comparison might be wrong
+
+### visit function
+- Main dispatch function
+- The `rule_name` computation: `is_reserved_name(name) ? name + "-" : name.empty() ? "root" : name`
+- Potential issue: if `name` is empty, `rule_name` becomes "root", but `sub_name` becomes "" (empty), which could lead to naming issues
+
+### _add_primitive function
+- Adds primitive rules and their dependencies
+- Recursively adds dependencies
+- Potential issue: if a dependency is not found in either map, it pushes an error but continues - this could lead to incomplete grammars
+
+### check_errors function
+- Throws if there are errors
+- Prints warnings to stderr
+- The warning message

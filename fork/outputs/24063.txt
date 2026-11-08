@@ -1,0 +1,62 @@
+run 24063 | no-map-reads | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.32 t/s | prompt 44.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:23:49
+
+The user wants the smallest HTML Tetris game. Let me make something that actually feels alive and playable. "Smallest" — they want compact. But I should still make it feel crafted. Let me balance: a compact single-file Tetris that's genuinely playable, with nice polish but tight code.
+
+Let me write a small but polished Tetris. Keep it one file, minimal but with feel: ghost piece, next piece, score, hold maybe. "Smallest" suggests minimal — but I don't want a bare canvas. Let me aim for genuinely small code but with a satisfying look: dark background, neon-ish blocks. A near-black board with one neon accent would read as generic, though — Tetris pieces are inherently multi-color, so I'll lean on the seven tetromino colors as the palette itself and build a warm dark slate background with a subtle grid/vignette.
+
+Let me use a distinctive layout: game board left, stats panel right, big display numbers.
+
+Typography: I want a strong mono display for the numbers. "Chakra Petch" (700) for display + "IBM Plex Mono" for body reads techy and legible — good fit for an arcade game.
+
+Palette: deep desaturated blue-slate (#11141c-ish) with a subtle radial ambient and a faint grid. Piece colors: classic Tetris-ish but tuned.
+
+Implementation: canvas-based, compact JS. Let me write it tight but readable.
+
+Key features (small code):
+- 10x20 board, canvas
+- SRS-ish rotation simple
+- Ghost piece
+- Next queue (1 next, or 3)
+- Score/lines/level
+- Keyboard controls
+- Pause, restart
+- Line clear flash animation
+- Soft/hard drop
+
+Let me write compact code.
+
+```js
+const B=10,H=20,S=24,c=document.getElementById('c'),x=c.getContext('2d');
+```
+
+Pieces as matrices via strings? Compact approach: define shapes as arrays of rotation states using coordinate offsets.
+
+A classic compact trick: use the "P" piece trick with string rotation. Let me use per-piece 4x4 bit patterns... Simpler: define pieces as arrays of [x,y] cells in spawn orientation, and rotate around a center.
+
+Compact rotation: for piece defined in a 4x4 (or NxN) box, rotate indices. Let me define each piece as a bitmask of 4x4 = 16 bits, then rotate the box.
+
+Actually simplest readable-compact: define shapes as arrays of strings per piece, and rotate by transposing.
+
+```js
+const P=[ // 0..7 color index
+ [[1,1,1,1]],      // I
+ [[1,1],[1,1]],    // O
+ [[0,1,0],[1,1,1]],// T
+ [[0,1,1],[1,1,0]],// S
+ [[1,1,0],[0,1,1]],// Z
+ [[1,0,0],[1,1,1]],// L
+ [[0,0,1],[1,1,1]] // J
+];
+```
+Rotation: `r=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())` — that's clockwise rotation.
+
+Collision check straightforward.
+
+Colors: I = #4cc7f6 (cyan), O = #f7d154 (yellow), T = #b07af0 (purple), S = #5fd68a (green), Z = #f2646f (red), L = #f2a154 (orange), J = #5f8ef2 (blue).
+
+Background: deep slate #0e1117 with subtle noise/grid, ambient soft glow blobs behind the panel — but I'll keep them as tight, static radial glows at low opacity rather than big drifting blobs, so they read as arcade-cabinet glow.
+
+Layout: header with title "TETRIS" in big display type, side panel with SCORE big number, LINES, LEVEL, NEXT canvas, controls legend. Plus mobile touch buttons? Keep small — maybe just keyboard + tap buttons minimal. I'll add small touch controls since it's nice, but "smallest" — I'll include a compact touch row hidden on desktop. Hmm, adds code. I'll include it lightly.
+
+Let me keep it focused: keyboard only + click to focus, plus a small hint. Actually adding touch
+---

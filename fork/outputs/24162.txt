@@ -1,0 +1,16 @@
+run 24162 | split-keeps-upload | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 17.01 t/s | prompt 410.7 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=2,dense-split=0 | power 220+280 W | 2026-11-08 15:56:27
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends mid-function `gbnf_escape_length`. The user says "Delete the code in this file that is never used." The file shown is incomplete (it cuts off at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` followed by blank lines).
+
+Hmm, this is tricky. The file is truncated, so I can only see part of it. The task is to delete code that is never used. I need to determine, within the visible portion, what's used.
+
+Let me think about what's actually used in the full llama.cpp file `json-schema-to-grammar.cpp`. Actually, this looks like it's from llama.cpp's common directory. Let me recall the actual file content.
+
+The actual llama.cpp file `common/json-schema-to-grammar.cpp` contains
+---

@@ -1,0 +1,39 @@
+run 24069 | no-map-reads | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.71 t/s | prompt 8.8 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:34:47
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minification request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, but still make it playable and not broken. The "smallest" constraint overrides my usual preference for elaborate visuals — but I can still make it look decent within a tiny footprint (a dark background, colored blocks via a palette string, etc.).
+
+Let me think about how to write a genuinely compact Tetris.
+
+Key components:
+1. Canvas rendering (canvas is compact).
+2. Board: 10x20 grid.
+3. 7 tetrominoes with rotation. Compact trick: encode shapes as strings, or use the classic "binary encoding" trick.
+4. Gravity, movement, rotation, line clear, score, game over, keyboard controls.
+5. Maybe a next-piece preview? That adds bytes. For "smallest", I might skip next preview and hold. But a tiny next preview is cheap-ish. Let's see.
+
+Classic minimal Tetris implementations (like the famous "Tetris in 140 bytes of JavaScript" or the ~few hundred byte ones) exist. Let me write my own compact version, aiming for maybe under 1000 bytes of actual code, but readable-ish? The user said "smallest html tetris game" — I'll aim for genuinely small total file size. I could minify aggressively.
+
+Let me design the logic compactly.
+
+Approach used by famous minimal tetris (e.g., "Tiny Tetris" by Ryan Farnell / the 418-byte tetris): 
+
+A well-known compact approach:
+- Pieces encoded as arrays of rotation states, each state as a string of coordinates or a bitmask.
+- Use a single string like "0123..." mapping.
+
+Let me craft my own.
+
+Board: 10 wide, 20 tall. Store board as array of 20 strings? Or a flat array of 200 cells. Use Uint8Array? For golf, plain array works.
+
+Piece representation: The classic trick — represent each tetromino rotation as a 4x4 grid encoded in a 16-bit number, or as a string of 16 chars. Even more compact: use the "SRS-like" trick where each piece is defined by 4 numbers (bitmask of 16 cells each).
+
+Compact encoding idea: define pieces via a string like:
+```
+"0123456789ABCDEF..." 
+```
+Hmm.
+
+Alternative super-compact trick: represent each rotation state as a list of [x,y] offsets derived from a base shape via rotation formula. Rotating (x,y) -> (y, 3-x) or similar in a 4x4 box gives all 4 rotations from one shape. But some pieces (O, I, S, Z) don't rotate cleanly in a 4x4 box with that formula... Actually with the right box placement they do approximately. Many minimal tetris implementations use the trick: define each piece once as 4 cells, and rotate using (x,y)->(size-1-y, x) within a bounding box. For I piece in a 4x4 box: cells (1,0),(1,1),(1,2),(1,3) rotated -> (0,2),(1,2),(2,2),(3,2)? Let's check: rotation (x,y) -> (y, 3-x): (1,0)->(0,2), (1,1)->(1,2), (1,2)->(2,2), (1,3)->(3,2). That's a horizontal I in row 2. Rotating again: (0,2)->(2,3), (1,2)->(2,2), (2,2)->(2,1), (3,2)->(2,0) — vertical column x=2, y=0..3. Third rotation: (2,3)->(3,1), (2,2)->(2,1), (2,1)->(1,1), (2,0)->(0,1) — horizontal row y=1, x=0..3. Fourth: back to vertical x=1. So I piece oscillates between x=1 vertical and y=2 horizontal, and x=2 vertical / y=1 horizontal. That's acceptable for a minimal game (not perfect SRS but playable).
+
+O piece: cells (1,0),(2,0),(1,1),(2,1). Rotate: (1,0)->(0,2), (2,0)->(0,1), (1,1)->(1,
+---

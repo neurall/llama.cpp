@@ -1,0 +1,30 @@
+run 23991 | ram-pool | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.53 t/s | prompt 501.1 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 220+280 W | 2026-11-08 10:39:46
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` when `has_max` is true means `max_items >= 1`, so `max_items - 1 >= 0`. OK.
+   - Actually wait, if `min_items == 0 && max_items == 1` with separator: returns `item_rule?` — hmm, but with a separator rule, for 0 or 1 items, the separator is irrelevant, so that's correct.
+   - Edge case: `min_items == 1 && max_items == 1` with separator: `build_repetition("(sep item)", 0, 0)` → returns "" (since max_items == 0). So result = `item_rule " " ""` → `item_rule ` with trailing space. Hmm, that produces `item_rule ` followed by empty string — trailing space in the rule. Actually `item_rule + " " + ""` = `item_rule ` — trailing whitespace. That's a minor cosmetic issue but grammars may tolerate it. Actually wait: `build_repetition("(sep item)", 0, 0)` — max_items == 0 returns "". So result = `item_rule + " " + ""` = "item_rule ". Then min_items != 0 so no "?" appended. So the rule has a trailing space. Minor.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `decimals_left` default 16, `less_decimals = std::max(decimals_left - 1, 1)`.
+   - Potential issue: `digit_range(from[i] + 1, to[i])` — char arithmetic; `from[i]` is a digit char, adding 1 is fine.
+   - In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == std::numeric_limits<int64_t>::min()`, then `-min_value` is UB (overflow). But wait, in that branch `has_min` is true means `min_value != INT64_MIN`. And `has_max` true means `max_value != INT64_MAX`. So `-max_value` and `-min_value` are safe. OK.
+   - In `has_min` branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — passing INT64_MIN as min means `has_min` false in the recursive call. `-min_value` where min_value > 0, safe.
+   - `std::stoll(min_s.substr(1))` — min_value > 9, so substr(1) is at least one digit; safe.
+   - Hmm, one thing: in the `has_min` branch when `min_value < 0`: `out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — wait, this is called with top_level=false. Inside, has_min is false (INT64_MIN), has_max is true (-min_value). So it goes to the `has_max` branch: `if (max_value >= 0)` — yes since -min_value > 0. `if (top_level)` — false, so skip. Then `build_min_max_int(0, max_value, out, decimals_left, true)`. OK.
+   - The `decimals_left` limiting: numbers with more than 16 digits are excluded. This is a documented approximation presumably.
+
+3. **`SPACE_RULE`**: `"| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"` — starts with `|` which is an empty alternative. That's intentional (allow empty space). OK.
+
+4. **`is_reserved_name`**: uses a static initialized lambda — fine. But note `PRIMITIVE_RULES` and `STRING_FORMAT

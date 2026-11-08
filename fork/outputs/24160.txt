@@ -1,0 +1,12 @@
+run 24160 | split-keeps-upload | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.57 t/s | prompt 412.7 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=1,dense-split=0 | power 220+280 W | 2026-11-08 15:53:30
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends mid-function `gbnf_escape_length`. The user says "Delete the code in this file that is never used." The file shown is incomplete (it cuts off at `static size_t gbnf_escape_length(...)` with just a comment). Hmm, but the task is to delete unused code from this file. Since the file is truncated, I need to work with what's shown. Actually, the instruction is likely a test: find functions/variables defined in this file that are never referenced anywhere in the file (since we can't see the rest, we assume the file ends where shown... but it ends mid-function).
+
+Wait — the file ends abruptly at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` followed by blank lines. So the file is
+---

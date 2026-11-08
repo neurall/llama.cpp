@@ -1,0 +1,58 @@
+run 23949 | ram-pool | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.03 t/s | prompt 42.6 t/s | 965 tokens | args: -np 1 -lm pin | power 220+280 W | 2026-11-08 09:10:16
+
+The user wants the smallest HTML Tetris game. Let me think about this.
+
+The request is "generate smallest html tetris game." So they want a compact, single-file Tetris. But I don't want to just dump the tiniest possible golfed code — even a small build can feel crafted. I can make it small but still genuinely nice: good typography, a polished playfield, keyboard controls, score/level/next piece, ghost piece, maybe sound via WebAudio.
+
+Balance: "smallest" is the explicit ask. So I should keep the code genuinely compact — but write it well. A single HTML file, no dependencies, small. But I can still make it feel alive: subtle background, motion, micro-interactions, good type contrast.
+
+Let me write a compact but readable Tetris. Aim for maybe 60-100 lines total. Include:
+- Canvas rendering
+- 7 pieces, rotation (SRS-lite), wall kicks simple
+- Ghost piece
+- Line clear, scoring, levels, gravity increasing
+- Next piece preview
+- Hold maybe (keeps it bigger). Maybe skip hold to keep small... Actually hold is nice. Let's see size.
+- Keyboard: arrows, Z/X rotate, Space hard drop, P pause
+- Overlay for start/game over
+- Subtle CRT-ish styling, scanlines maybe.
+
+Design: the most characteristic thing about Tetris is the playfield itself, so that should be the hero — not a generic header block. Layout: playfield left, HUD right with big numbers. For type I want a distinctive display face paired with a readable body face. Use Google Fonts? That adds a network dependency but keeps HTML small. "smallest" refers to the file. I'll use a Google Fonts link — one line. Pair something distinctive: e.g., 'Chakra Petch' or 'Orbitron' (overused), 'Bungee', 'Silkscreen' (pixel), 'Press Start 2P' (pixel, very Tetris-y but hard to read at body sizes). Pair 'Silkscreen' display with 'Space Grotesk' body? Or 'Chakra Petch'. Let's do display: 'Bungee Shade'? Hmm.
+
+Tetris aesthetic: brutalist, blocky, high-contrast. I'll use 'Silkscreen' for numerals/labels (pixel) and 'Space Grotesk' for body text. Actually Silkscreen is quite characteristic of retro games. Good pairing.
+
+Fallback: include font-family fallbacks so it works offline.
+
+Color: a single neon accent on a near-black background would feel generic here. Tetris pieces are inherently multicolored, so let me use a deep desaturated background with a subtle grid, and the 7 classic tetromino colors as the palette. Background: dark slate/indigo-ish? An indigo/violet gradient would read generic — let's use a dark teal-charcoal (#0d1117-ish but not exactly) with a faint grid and a soft radial glow behind the board that shifts. Plus a subtle animated scanline.
+
+Let me make the background layered: base #0a0d12, a repeating grid, a slow-drifting radial glow in cyan/magenta low opacity, and floating tetromino silhouettes drifting slowly (CSS animation) — that's "living elements". Keep it cheap.
+
+Micro-interactions: piece lock flash, line clear flash, score number pop animation, buttons hover, key hints highlight when pressed.
+
+Let me write the code.
+
+Structure:
+
+```html
+<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>TETRIS</title>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=Space+Grotesk:wght@400;700&display=swap" rel=stylesheet>
+<style>...</style>
+<body>
+<div class=wrap>
+  <aside class=panel> ... </aside>
+  <main class=stage>
+    <canvas id=c width=300 height=600></canvas>
+    <div id=over>...</div>
+  </main>
+  <aside class=panel> next canvas, hold canvas, keys </aside>
+</div>
+<script>...</script>
+```
+
+Keep it reasonably compact. Let me write the JS carefully.
+
+Tetris logic compact version:
+
+```
+---

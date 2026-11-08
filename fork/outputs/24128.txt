@@ -1,0 +1,48 @@
+run 24128 | ram-pool | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.84 t/s | prompt 343.6 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-11-08 15:06:16
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends mid-function `gbnf_escape_length`. The user says "Delete the code in this file that is never used." The file shown is incomplete (it cuts off at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` followed by blank lines).
+
+Hmm, this is tricky. The file appears truncated. The task is to identify dead code within what's shown. Let me think about what's actually used within the shown portion.
+
+Let me analyze each item:
+
+- `build_repetition`: static function, not called anywhere in the shown code. But wait — in the actual llama.cpp codebase, `build_repetition` is used later in the file (in `build_object_rule` and schema-to-grammar conversion). But the file as shown is truncated. The instruction says "Delete the code in this file that is never used." Since we only have this file content, we should analyze usage within the file. But functions declared static and used later in the file (which is truncated) would be used...
+
+Hmm, but the typical setup for these tasks: the file is given in full (possibly truncated at the end intentionally?), and we need to find dead code. Actually the file ends abruptly at `gbnf_escape_length` with an incomplete body. That suggests the file was cut off. But the task says "Delete the code in this file that is never used" — meaning within the provided content.
+
+Let me carefully check what's used within the provided content:
+
+Definitions:
+1. `build_repetition` (static function) — not called in shown code.
+2. `build_min_max_int` (static function) — not called in shown code. It calls itself recursively. Uses `string_repeat` (from common.h presumably), `std::function`.
+3. `SPACE_RULE` (const std::string) — not used in shown code.
+4. `struct BuiltinRule` — used by PRIMITIVE_RULES and STRING_FORMAT_RULES maps.
+5. `PRIMITIVE_RULES` — used by `is_reserved_name` (iterates over it).
+6. `STRING_FORMAT_RULES` — used by `is_reserved_name`.
+7. `is_reserved_name` (static function) — not called in shown code.
+8. `INVALID_RULE_CHARS_RE` (static std::regex) — not used in shown code.
+9. `GRAMMAR_LITERAL_ESCAPE_RE` — used in `format_literal`.
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` — not used in shown code.
+11. `GRAMMAR_LITERAL_ESCAPES` — used in `format_literal` (via `.at(c)`).
+12. `NON_LITERAL_SET` — not used in shown code.
+13. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` — not used in shown code.
+14. `replacePattern` (static function) — used by `format_literal`.
+15. `format_literal` (static function) — used by `gbnf_format_literal`.
+16. `gbnf_format_literal` (non-static, presumably declared in header) — not called within the file, but it's a public API function (declared in json-schema-to-grammar.h presumably). It's used externally.
+17. `gbnf_escape_length` (static function) — incomplete/truncated, body not shown.
+
+Hmm wait. This is a real file from llama.cpp. Let me recall the actual file content. In llama.cpp's `common/json-schema-to-grammar.cpp`, there are these functions:
+
+- `build_repetition` — used in `build_object_rule` and in schema conversion (e.g., for arrays with minItems/maxItems, and string patterns).
+- `build_min_max_int` — used for integer minimum/maximum constraints.
+- `SPACE_RULE` — used in generated grammars.
+- `is_reserved_name` — used when generating rule names.
+- `INVALID_RULE_CHARS_RE` — used in `parse_pattern` / rule name sanitization.
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` —
+---

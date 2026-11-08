@@ -1,0 +1,60 @@
+run 23969 | ram-pool | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.27 t/s | prompt 501.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:36:14
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Issue: If `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (e.g., `"[" space  space "]"` with double spaces). Actually wait, let me think. If min_items > 0 and max_items == 0, that's a contradictory schema (min > max). The function returns "" which would produce `"[" space  space "]"` — with two spaces. Actually the caller does `"\"[\" space " + build_repetition(...) + " space \"]\""` so it would be `"[" space  space "]"`. Hmm, that's a minor formatting issue but the grammar might still parse. Actually in GBNF, consecutive spaces... the rule would be `"[" space  space "]"` — this is a syntax issue potentially. But more importantly, min > max is a schema validation issue that should probably be caught earlier.
+
+Also potential issue: `min_items == 0 && max_items == 1` returns `item_rule + "?"`. OK.
+
+If `separator_rule` is non-empty and `max_items` is INT_MAX, then `max_items - 1` — wait, `has_max ? max_items - 1 : max_items` — if has_max is false, it passes max_items (INT_MAX) unchanged, fine. If has_max is true, max_items - 1, fine.
+
+But wait: if `min_items == 0 ? 0 : min_items - 1` — if min_items is INT_MIN? Not realistic.
+
+Hmm, one subtle bug: in `build_repetition` with separator, when `min_items == 0`, the result is `(item (sep item)*)?` — wait let me re-check. `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, ...)`. So for min_items=0, max=INT_MAX: inner call returns `(sep item)*`, so result = `item (sep item)*`, then wrapped in `(...)?`. Good.
+
+For min_items=1: inner gets min=0, so `item (sep item)*`. Good.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `has_min` / `has_max` sentinel-based using INT64_MIN/MAX. This means you can't actually express a schema with minimum = INT64_MIN. Edge case, probably acceptable but worth noting.
+
+- In the `has_min && has_max` branch with both negative: `build_min_max_int(-max_value, -min_value, ...)`. If min_value == INT64_MIN... then -min_value is UB (overflow). But has_min would be false in that case... wait, if min_value == INT64_MIN, has_min is false, so we wouldn't be in the `has_min && has_max` branch. OK.
+
+- `if (min_value < 0)`: `build_min_max_int(0, -min_value, ...)`. If min_value == INT64_MIN, has_min false, not reached. OK.
+
+- The digit loop:
+```cpp
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+uniform_range(min_s, max_s);
+```
+This looks correct for building ranges across digit lengths.
+
+- `uniform_range` lambda: uses `std::function` with recursive capture. Fine.
+
+Potential issue in `uniform_range`: when `from_sub == sub_zeros` branch: `digit_range(from[i], to[i] - 1)` — what if `from[i] == to[i]`? Then `digit_range(from[i], to[i]-1)` would output `[x-y]` where y < x, e.g. `[5-4]`, invalid regex. Let me check: uniform_range is called

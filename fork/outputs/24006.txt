@@ -1,0 +1,21 @@
+run 24006 | pinpool-default | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.74 t/s | prompt 567.1 t/s | 1024 tokens | args: -np 1 --moe rampool=0 | power 220+280 W | 2026-11-08 11:22:15
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, then `max_items - 1` is fine. But wait — if `min_items == 0` and `has_max` is false, `build_repetition` is called with `max_items` = INT_MAX, fine.
+   - Potential issue: if `max_items == 0` returns "" — but then the caller wraps it: `"\"[\" space " + build_repetition(...) + " space \"]\""` — this would produce `"[" space  space "]"` which matches an empty array even if `min_items > 0`? Wait, if `max_items == 0` and `min_items > 0`, that's a contradictory schema (min > max). The function returns "" silently, which would allow zero items even though min_items > 0. Actually if max_items == 0, the array must be empty, and returning "" means the repetition matches empty — but if min_items > 0, the schema is contradictory and should probably error. Minor edge case.
+   - Also `build_repetition` with separator: `min_items == 0 ? 0 : min_items - 1` — if min_items is 1, becomes 0, so `(sep item)*` wrapped... Let me trace: item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1). With min=0, max=INT_MAX: returns `(sep item)*`. So result = `item (sep item)*`. Then if min_items == 0, wrap in `(...)?`. OK.
+   - Edge: `min_items == 0 && max_items == 1` with separator: returns `item_rule + "?"` — correct since separator never needed for single item.
+   - Edge: `min_items == 1 && max_items == 1` with separator: `item_rule (sep item){0,0}`? Let's see: build_repetition called with min=0, max=0 → returns "" (max_items == 0 check). So result = `item_rule ` with trailing space. Hmm, `item_rule + " " + ""` = "item_rule " — trailing space in grammar rule. GBNF might tolerate trailing space? Actually the rule would be `item ` — a trailing space in the rule text. In GBNF, whitespace in rule definitions... Actually in llama.cpp's GBNF parser, spaces in rule definitions are generally ignored? No wait — in GBNF, literal spaces must be quoted. Unquoted spaces are typically ignored by the parser (they're allowed as separators). Let me think: the grammar text `foo ::= "a" "b"` — spaces between tokens are separators. A trailing space should be harmless. But it's sloppy. Actually wait, is it? `build_repetition(item, 1, 1, sep)` → `item + " " + build_repetition("(sep item)", 0, 0)` → `item + " " + ""` = `"item "`. The trailing space is likely harmless in GBNF parsing but sloppy output. Minor.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` with recursion — fine but has overhead; could be a static helper.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == INT64_MIN`, then `-min_value` is UB (signed overflow)! Let's check: `has_min = min_value != INT64_MIN`. In the `has_min && has_max` branch: `if (min_value < 0 && max_value < 0)` → `build_min_max_int(-max_value, -min_value, ...)`. If min_value is INT64_MIN and max_value < 0, then `-min_value` overflows → UB. Hmm, but wait: can min_value be INT64_MIN here? The caller: `case common_chat_schema::KIND_INTEGER` checks `if (i.minimum == INT64_MIN && i.maximum == INT64_MAX)` → primitive. But if minimum == INT64_MIN and maximum is some negative number, we reach `build_min_max_int(INT64_MIN, negative_max)`. Then has_min = false, has_max = true

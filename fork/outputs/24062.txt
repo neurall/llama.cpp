@@ -1,0 +1,61 @@
+run 24062 | no-map-reads | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.57 t/s | prompt 81.2 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:22:39
+
+The user wants the smallest HTML Tetris game. Let me think about this.
+
+The request is "generate smallest html tetris game." That's a direct request for minimal code. But my instinct says make it something crafted... but the user explicitly asked for smallest. I should respect the request — smallest. But I can make it small AND still feel alive. There's a tension. The best answer: a genuinely compact single-file Tetris, but with polish that costs almost nothing — nice colors, ghost piece, next piece, score. Actually "smallest" is the explicit ask, so I should deliver something tiny. But I can offer a tiny-but-beautiful version.
+
+Let me write the smallest possible playable Tetris in HTML.
+
+Classic minimal Tetris in ~10 lines using canvas and a string-replace trick. Let me write a compact but readable one.
+
+Let me craft it carefully.
+
+```html
+<canvas id=c width=128 height=256 onload="T()"></canvas>
+<script>
+```
+
+Let me do the well-known minimal approach but write my own.
+
+Approach: 64x64 canvas scaled with CSS. Grid 8x16 cells of 8px... Actually let's do cell = 16, cols=10, rows=20 → canvas 160x320.
+
+Minimal code:
+
+```html
+<canvas id=C width=160 height=320 tabindex=0></canvas>
+<script>
+with(Math)B=document.body,C=C.getContext`2d`,B.style="margin:0;background:#111;display:grid;place-items:center;height:100vh",G=[],R=20,K=10,g=0,s=0,
+P=_=>[...`0,0;1,0;2,0;3,0
+0,0;1,0;2,0;2,1
+0,0;1,0;2,0;1,1
+0,0;1,0;0,1;1,1
+0,0;0,1;1,1;2,1
+0,0;1,0;1,1;1,2
+0,0;2,0;0,1;1,1`].map(s=>s.split`;`.map(v=>v*1)),
+```
+
+Hmm, that's getting long. Let me use the classic matrix rotation with numbers.
+
+A very compact representation: pieces as arrays of 4 [x,y] pairs. Rotation via [y,-x] transform.
+
+```js
+P=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[2,0],[2,1]],...]
+```
+
+Alternative super-compact: encode each piece as a hex bitmask of a 4x4 (or 3x3) box. Classic trick:
+
+```js
+S="1f0 20e0 2244 2222 4620 8222 660" // no
+```
+
+Let me use the well-known compact Tetris:
+
+```js
+O="15,39,5d,18,6c,36,66" // hex of 4x4? 
+```
+
+Hmm. Let's think: 4x4 grid = 16 bits = 4 hex chars. Pieces:
+- I: row of 4 → 0xF0 → "f000"
+- J: [[0,0],[0,1],[1,1],[2,1]] → rows: bit at (0,0), (0,1),(1,1),(2,1). Using 4x4 with bit = y*4+x: 1 + 2 + 6 + 10 = 0x1 + 0x2 + 0x6 + 0xA → mask = 0b0110_0010_0010_0000? Let me just compute: bits set: 1,2,6,10 → value = 2+4+64+1024 = 1094 = 0x446. So "0446".
+- L: [[2,0],[0,1],[1,1],[2,1]] → bits 2,4,5,6 → 
+---

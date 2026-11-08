@@ -1,0 +1,53 @@
+run 24033 | pool-whole-expert | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.23 t/s | prompt 1239.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 12:26:38
+
+<think>The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and min=1, no max: returns `item_rule + "+"` - correct
+  - When separator is empty and min=0, no max: returns `item_rule + "*"` - correct
+  - When separator is empty with min/max: returns `{min,max}` - correct
+  - With separator: builds `item (sep item)*` pattern - looks correct
+  - When `min_items == 0` with separator: wraps in `()?` - correct
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda is recursive but uses `std::function` - this is fine
+- Potential issue: `decimals_left` parameter is used but the logic seems complex. Let me trace through some cases.
+- When both min and max are set and both negative: negates and recurses - correct
+- When min is negative and max is positive: handles negative part then continues with positive - correct
+- The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - this ensures at least 1 decimal left
+- Potential issue: when `min_value` is `std::numeric_limits<int64_t>::min()`, negating it would overflow. Let me check... In the `has_min` case with `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Wait, that's passing `int64_t::min()` as the min, which is the sentinel for "no min". That seems intentional - it means "any negative number up to -min_value".
+
+Actually wait, let me re-read. When `has_min` is true and `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+This passes `int64_t::min()` as the min, which means `has_min` will be false in the recursive call. So it will go to the `has_max` branch. That's correct - it means "any negative number whose absolute value is at most -min_value".
+
+But wait, `-min_value` when `min_value` is `int64_t::min()` would overflow. However, `min_value` can't be `int64_t::min()` here because `has_min` checks `min_value != int64_t::min()`. So `min_value` is strictly greater than `int64_t::min()`, meaning `-min_value` is safe.
+
+Actually, let me re-check: `has_min = min_value != std::numeric_limits<int64_t>::min()`. So if `min_value` is `int64_t::min()`, `has_min` is false. If `has_min` is true and `min_value < 0`, then `min_value` is in range `[int64_t::min() + 1, -1]`, so `-min_value` is in range `[1, int64_t::max()]`. Safe.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static unordered_maps - these are initialized at namespace scope. In C++11+, this is thread-safe for initialization.
+- The `is_reserved_name` function uses a static local with a lambda - this is thread-safe in C++11+.
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - replaces invalid chars with `-`
+- `GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]")` - matches chars needing escaping in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]")` - matches chars needing escaping in ranges
+- Note: `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` is defined but never used! This is dead code.
+
+### replacePattern function
+- Uses `std::regex_search` in a loop - this is correct for replacing all matches
+- The `searchStart

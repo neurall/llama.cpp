@@ -1,0 +1,39 @@
+run 24259 | split-keeps-upload | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 29.89 t/s | prompt 110.4 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=1,dense-split=0 | power 220+280 W | 2026-11-08 17:37:18
+
+_generation_prompt = true;
+    params.tool_choice           = "auto";
+    params.chat_format           = chat_format;
+    params.chat_template         = chat_template;
+    params.model                 = model;
+    params.tokenizer             = tokenizer;
+    params.logprobs              = 0;
+    params.top_logprobs          = 0;
+    params.max_tokens            = 1;
+    params.temperature           = 0.0;
+    params.seed                  = 0;
+    params.stop                  = json::array({});
+
+    auto one_arg_result = generate(params);
+    if (!one_arg_result.success) {
+        return;
+    }
+
+    params.messages = json::array({ user_msg, assistant_two_args });
+    auto two_args_result = generate(params);
+    if (!two_args_result.success) {
+        return;
+    }
+
+    std::string one_arg_text = one_arg_result.text;
+    std::string two_args_text = two_args_result.text;
+
+    if (one_arg_text.empty() || two_args_text.empty()) {
+        return;
+    }
+
+    if (one_arg_text == two_args_text) {
+        return;
+    }
+
+    size_t common_len = 0;
+    while (common_len < one_arg_text.size() && common_len < two_args_text

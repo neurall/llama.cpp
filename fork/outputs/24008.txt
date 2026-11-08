@@ -1,0 +1,53 @@
+run 24008 | pinpool-default | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.41 t/s | prompt 1200.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 11:27:17
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` - correct
+  - When separator is non-empty, builds `item (separator item)*` pattern - looks correct
+  - The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for the separator pattern
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda is recursive (via `std::function`) - potential for deep recursion but bounded by digit length
+- The `to_reached` variable is declared inside the `if (sub_len > 0)` block but used in the `if (!to_reached)` check - this is fine since it's in the same scope
+- Wait, actually `to_reached` is initialized to `false` and then potentially set to `true` in one branch. The `if (!to_reached)` check after the first `if` block - this looks correct.
+- The `decimals_left` parameter defaults to 16 - this limits recursion depth
+- The `top_level` parameter controls whether leading zeros are allowed
+
+Potential issues:
+1. In `build_min_max_int`, when `min_value < 0 && max_value < 0`, it negates both and recurses. But if `min_value == INT64_MIN`, then `-min_value` would overflow. Let me check... Actually, `min_value < 0 && max_value < 0` means both are negative, so `-max_value` and `-min_value` are both positive. But if `min_value == INT64_MIN`, then `-min_value` overflows. This is a potential issue.
+
+2. When `min_value < 0` (but `max_value >= 0`), it handles the negative part and then sets `min_value = 0`. The negative part calls `build_min_max_int(0, -min_value, ...)`. If `min_value == INT64_MIN`, `-min_value` overflows.
+
+3. The `has_min` check uses `min_value != std::numeric_limits<int64_t>::min()` - this means if someone explicitly sets minimum to INT64_MIN, it's treated as "no minimum". This is a design choice but could be surprising.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization order - these are file-scope statics, initialized before `main()`. The `is_reserved_name` function uses a function-local static that references these, so it should be fine.
+
+### _add_rule
+- The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. This could potentially create many rules if called repeatedly with different content for the same name.
+
+### _visit_pattern
+- Takes a snapshot of `_rules` before attempting to parse, and restores on failure. This is a good pattern for rollback.
+- However, `_refs_being_resolved` is not snapshotted/restored - potential issue if a ref resolution fails during pattern parsing.
+
+### _pattern_to_rule
+- The `transform` lambda is recursive (via `std::function`) - handles nested groups
+- `paren_depth` tracking for balanced parentheses
+- Character class parsing: handles escapes but could have issues with `]` inside character classes (e.g., `[]]`)
+- The literal parsing section has complex logic for determining when to stop accumulating literals
+
+Potential issues:
+1. In the character class parsing, `while (i < length && sub_pattern[i] != ']')` - this doesn't handle `]` as the first character in a character class (which is valid in regex: `[]]` matches `]`). This could cause incorrect parsing.
+
+2. The `sub_rule_ids` map is used for `{n,m}` repetition of non-literal rules. The key is the rule content, and the value is the rule ID. But if the same content appears with different names, this could cause issues.
+
+3. In the literal parsing, the condition `!is_non_literal(sub_pattern[i]) && (i == length - 1

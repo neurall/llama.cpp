@@ -1,0 +1,45 @@
+run 24041 | pool-admit-all | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.49 t/s | prompt 524.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 12:44:36
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (empty rule). Actually in GBNF, an empty rule might be problematic. Let me think... If min_items > 0 and max_items == 0, the schema is contradictory (can't have at least min but at most 0 items). Returning "" silently accepts this. Hmm, actually returning "" means the rule content is empty — `rule ::= ` which is invalid GBNF. This could be a bug worth noting.
+
+Also `has_max` is computed before checking `max_items == 0`, fine.
+
+Another subtle issue: when `separator_rule` is non-empty and `min_items == 0`, it builds `(item (sep item)*)?` — wait, let's trace: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. For min_items=0, max_items=max: inner repetition gets min=0, max=max-1. If max_items == 1, then inner gets max = 0, so inner returns "" — result = item_rule + " " + "" = "item " with trailing space. Then wrapped in parens with "?" — `(item )?`. Trailing space in grammar — probably harmless but sloppy. Actually wait, if max_items == 1 and min_items == 0: result = item_rule + " " + "" = "item ". Then `(item )?`. The trailing space before `)` — in GBNF, spaces outside quotes are ignored? Actually in llama.cpp GBNF, whitespace in rules is generally ignored except within literals. So it's cosmetically imperfect but functionally OK.
+
+Hmm, but wait — there's a subtle bug: if `max_items == 1` and `min_items == 1` with separator: inner gets min=0, max=0 → "" → result "item " → no "?" since min_items != 0. So "item " with trailing space. OK.
+
+What about `min_items > 0 && max_items == 0`? Contradictory; returns "". The caller in KIND_ARRAY: `int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;` then `build_repetition(item_rule_name, arr.min_items, max_items, ...)`. If schema says min_items=2, max_items=0 — invalid schema, but the code silently produces empty rule. Edge case.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `has_min`/`has_max` sentinel-based detection: uses `std::numeric_limits<int64_t>::min()/max()` as "unset" markers. This means you can't express a schema that actually requires exactly INT64_MIN or INT64_MAX. Minor.
+
+- In the `has_min && has_max` branch with both negative: `build_min_max_int(-max_value, -min_value, ...)`. OK.
+
+- `min_value < 0` (and max >= 0): emits `"-" (...) | ` then sets min_value = 0 and continues. Note: after emitting the negative part, the positive part is built with `top_level` still true? Let's check: the code after the negative handling continues to `auto min_s = std::to_string(min_value);` etc. The top_level flag remains whatever was passed. For the top-level call, top_level=true. Hmm, in the has_min-only branch (no max), for min_value < 0: `out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1);`
+
+Wait —

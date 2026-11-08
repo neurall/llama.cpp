@@ -1,0 +1,53 @@
+run 24019 | past-in-pool | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.79 t/s | prompt 612.1 t/s | 1024 tokens | args: -np 1 --moe rampool=0 | power 220+280 W | 2026-11-08 11:53:35
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` bug**: 
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+```
+Wait, if `max_items == 0`, it returns empty string. But what if `min_items > 0`? That would be an impossible constraint (min > max), and returning "" silently produces a grammar that matches nothing... Actually returning "" means the rule content is empty, which would be invalid GBNF. Hmm, actually if max_items == 0 and min_items > 0, the schema is contradictory. Returning "" would produce an empty rule which is invalid. But maybe that's intentional to match nothing? Actually an empty rule in GBNF would be a parse error. Let me think... Actually in the original llama.cpp code, this is the same. Let me check the original implementation... The original code in llama.cpp has:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+```
+
+Yes, this matches the original. But it's still worth noting as a potential issue: if min_items > 0 and max_items == 0, the schema is unsatisfiable, and the function silently returns an empty rule, which would produce invalid GBNF output (a rule with empty content). Actually wait — an empty rule content in GBNF... `foo ::= ` is invalid. Hmm, but maybe it never happens in practice.
+
+Also note: `has_max` is computed before checking `max_items == 0`. If max_items == 0, has_max is true. Fine.
+
+Another subtle issue: when `separator_rule` is non-empty and `min_items == 0 && max_items == 1`, the code returns `item_rule + "?"` before checking separator — that's correct since a separator is only needed between items.
+
+Wait, actually there's a subtle bug: for `min_items == 0 && max_items == 1` with a separator, returning `item_rule + "?"` is correct.
+
+But for the case `min_items == 1 && max_items == 1` with separator: `build_repetition("(" + sep + " " + item + ")", 0, 0)` — max_items - 1 = 0, so the inner call returns "" (because max_items == 0). So result = item_rule + " " + "" = item_rule + " ". Trailing space. Hmm, that produces `item_rule " "` — a trailing space in the rule. Actually wait: `result = item_rule + " " + build_repetition(...)` where the inner returns "". So result = "item_rule " with trailing space. That's a minor cosmetic issue but grammatically it means item followed by space? No wait — in GBNF, a trailing space in the rule text... the rule string is `item_rule + " "` — the space here is part of the rule *syntax* (whitespace between symbols), not a literal space character. In GBNF, whitespace between symbols is insignificant. So `item_rule ` with trailing space is just item_rule. OK fine.
+
+Hmm wait, but actually in this grammar format, spaces in rules are separators between symbols; literal spaces are `" "`. So trailing space is harmless.
+
+2. **`build_min_max_int` recursion**: uses `std::function` with recursion — fine but has overhead. The `uniform_range` lambda captures `out` and itself by reference. Recursion via std::function is fine.
+
+Potential issue: `decimals_left` default 16 — for numbers with more than 16 digits, the grammar may not cover all values. That's a known limitation.
+
+In `build_min_max_int`, the check `if (has_min && has_max)` handles both bounds. Then `has_min` only, then `has_max` only, then throws. OK.
+
+One thing: in the `has_min` branch with `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") |

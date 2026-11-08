@@ -1,0 +1,94 @@
+run 24131 | ram-pool | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 54.65 t/s | prompt 1077.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 15:09:44
+
+},},
+    {"uuid", "\"\\\\\" \"[\" ( [0-9a-fA-F]{" << 8 << "} \"-\" | ){4} [0-9a-fA-F]{" << 12 << "} \"]\"", {}},
+    {"null", {"\"null\"", {}}},
+    {"char", {"[^\"\\\\\\x7F\\x00-\\x1F] | \"\\\\\" ( [\"\\\\/bfnrt] | \"u\"[0-9a-fA-F]{4}) ", {}}},
+    {"string", {"\"\\\\\" char+ \"\\\\\" ", {"char"}},},
+    {"space", {"\" \"? | space [ \\t\\n\\r]", {}}},
+};
+
+static std::string escape_json(std::string s) {
+    std::string result;
+    for (char c : s) {
+        switch (c) {
+            case '"':
+                result += "\\\"";
+                break;
+            case '\\':
+                result += "\\\\";
+                break;
+            case '\n':
+                result += "\\n";
+                break;
+            case '\r':
+                result += "\\r";
+                break;
+            case '\t':
+                result += "\\t";
+                break;
+            default:
+                result += c;
+                break;
+        }
+    }
+    return result;
+}
+
+static std::string format_string(const std::string & s) {
+    return "\"\\\\\"" + escape_json(s) + " \"\\\\\"";
+}
+
+static std::string to_number(std::variant<int, double> a) {
+    return std::visit([](const auto & a) { return std::to_string(a); }, a);
+}
+
+static std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const std::vector<std::string> & hack_rules = {}) {
+    auto result = std::make_shared<std::stringstream>();
+    auto builder = common_grammar_builder{
+        result,
+        {
+            {"primitive-rule", [&](const std::string & rule) {
+                if (PRIMITIVE_RULES.count(rule) && std::find(hack_rules.begin(), hack_rules.end(), rule) == hack_rules.end()) {
+                    *result << " " << rule << " ::= " << "\n" << PRIMITIVE_RULES[rule].content << "    {primspec=\"bnf\"}\n";
+                    for (const auto & dep : PRIMITIVE_RULES[rule].deps) {
+                        if (std::find(hack_rules.begin(), hack_rules.end(), dep) == hack_rules.end()) {
+                            *result << " | " << dep << " ::= " << "\n" << PRIMITIVE_RULES[dep].content << "    {primspec=\"bnf\"}\n";
+                        }
+                    }
+                }
+            }},
+            {"rule", [&](const std::string & rule, const std::string & content) {
+                if (!content.empty()) {
+                    *result << " " << rule << " ::= " << "\n" << content << "\n";
+                }
+                auto neg = rule.substr(0, 3) == "not";
+                if (neg) {
+                    rule = rule.substr(4);
+                }
+
+                if (std::find(hack_rules.begin(), hack_rules.end(), rule) == hack_rules.end()) {
+                    *result << " | " << (neg ? "not " : "") << "\"" << rule << "\" ::= " << "\n";
+                    if (neg) {
+                        *result << "    " << " ( \"\\\\\" " << rule << " \"\\\\\" ) [^ ]";
+                    } else {
+                        *result << "    " << rule;
+                    }
+                    *result << "\n";
+                }
+            }},
+        },
+    };
+    cb(builder);
+
+    return result->str();
+}
+
+static std::string build_object(const std::vector<std::string> & rules) {
+    std::stringstream out;
+    auto n = rules.size();
+    out << "\"{\" space ( " << (rules[0] == "not \"}\"" ? "not \"}\" " : ("(" + rules[0] + ") ")) << " space";
+    for (int i = 1; i < n; i++) {
+        out << " ( \",\" space ( " << (rules[i] == "not \"}\"" ? "not \"}\" " : ("(" + rules[i] + ") ")) << " space )";
+    }
+    out << " \"}\"";

@@ -1,0 +1,68 @@
+run 24106 | one-card-prior-cap | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.2 t/s | prompt 551.1 t/s | 906 tokens | args: -np 1 | power 220+280 W | 2026-11-08 14:29:00
+
+Let me analyze this file carefully to identify which code is never used.
+
+Let me go through each function, variable, and definition:
+
+1. `build_repetition` - static function, need to check if it's called anywhere in this file.
+
+2. `build_min_max_int` - static function, need to check if it's called.
+
+3. `SPACE_RULE` - const string, need to check if used.
+
+4. `BuiltinRule` struct - used by PRIMITIVE_RULES and STRING_FORMAT_RULES.
+
+5. `PRIMITIVE_RULES` - used by `is_reserved_name` and likely elsewhere.
+
+6. `STRING_FORMAT_RULES` - used by `is_reserved_name` and likely elsewhere.
+
+7. `is_reserved_name` - static function, need to check if called.
+
+8. `INVALID_RULE_CHARS_RE` - static regex, need to check if used.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - used in `format_literal`.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - static regex, need to check if used.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - used in `format_literal`.
+
+12. `MAX_PATTERN_DEPTH` - static const int, need to check if used.
+
+13. `NON_LITERAL_SET` - static unordered_set, need to check if used.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - static unordered_set, need to check if used.
+
+15. `replacePattern` - static function, used in `format_literal`.
+
+16. `format_literal` - static function, used by `gbnf_format_literal`.
+
+17. `gbnf_format_literal` - non-static, likely used externally.
+
+18. `gbnf_escape_length` - non-static, likely used externally.
+
+Now, the file is truncated at `gbnf_escape_length`. Let me analyze what's visible:
+
+Looking at the code that's shown:
+
+- `build_repetition` - I don't see it being called anywhere in the visible code. It's a static function. But it might be called in the rest of the file (which is truncated). Since the file is truncated, I need to be careful.
+
+Wait, the user says "Delete the code in this file that is never used." The file appears to be truncated at `gbnf_escape_length`. Let me look at what's visible.
+
+Actually, looking more carefully, the file is cut off. The user wants me to identify unused code in what's shown.
+
+Let me check each item:
+
+1. `build_repetition` - Not called anywhere in the visible code. But it could be called in the truncated part. Hmm, but the user says "in this file" - so if it's not called in this file, it's unused (unless it's used elsewhere, but it's static so it can only be used in this file).
+
+Wait, `build_repetition` is `static`, so it can only be used within this file. If it's not called anywhere in this file, it's unused.
+
+2. `build_min_max_int` - It's called recursively within itself (in the `has_min && has_max` section and in the `has_min` section). So it IS used (at least by itself). But is it called from outside? It's static, so only within this file. The recursive calls count as usage. So it's used.
+
+Wait, but if `build_min_max_int` is only called by itself (recursively), and never called from any other function in this file, then it's effectively dead code (the entry point is never reached). Let me check... Actually, it's a static function that's only called recursively. If no other code in the file calls it, then it's never used.
+
+Hmm, but the file is truncated. Let me think about what's visible.
+
+Actually, looking at the visible code, `build_min_max_int` is only called recursively within itself. If there's no other caller in the file, it's unused.
+
+3. `SPACE_RULE` - Not referenced anywhere in the visible code. It's a `const` (not static), so it could be used elsewhere. But since it's a global const, it's not "never used" if it's used in other files. However, the user says "in this file" - so if it's not used
+---

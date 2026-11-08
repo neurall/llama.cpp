@@ -1,0 +1,51 @@
+run 24086 | no-map-reads | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.14 t/s | prompt 413.1 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:51:55
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends mid-function `gbnf_escape_length`. The user says "Delete the code in this file that is never used." The file shown is incomplete (it cuts off at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` followed by blank lines).
+
+Hmm, this is tricky. The file appears truncated. The task is to identify dead code within what's shown. Let me think about what's actually used within the shown portion.
+
+Let me analyze each item:
+
+- `build_repetition`: static function, not called anywhere in the shown code. But wait — in the actual llama.cpp codebase, `build_repetition` is used later in the file (in `build_object_rule` and schema-to-grammar conversion). But the file as shown is truncated. The instruction says "Delete the code in this file that is never used." Since we only have this file content, we should analyze usage within the file. But functions declared static and used later in the file (which is truncated) would be used...
+
+Hmm, but the typical setup for these tasks: the file is given in full (or the relevant portion), and we need to remove unused code. The file ends abruptly at `gbnf_escape_length` with an incomplete body. That suggests the file was cut off. But maybe the intent is that this IS the whole file content to consider, and we should find dead code.
+
+Actually, let me reconsider. This looks like a synthetic task where the file content is given and we need to identify unused declarations. Let me carefully check each symbol:
+
+Includes:
+- "json-schema-to-grammar.h" - needed presumably
+- "common.h" - needed? `common_json` is used via `using json = common_json;`. Actually `common_json` is defined in common.h presumably. So needed.
+- "trie.h" - is trie used? In the shown code, no trie usage. In the full llama.cpp file, trie is used for `StringTrie` etc. But in the shown portion, no. Hmm.
+- "unicode.h" - used? In the shown code, no direct usage. In the full file, unicode functions are used later.
+
+Headers: `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>`.
+
+Used in shown code:
+- `<limits>`: `std::numeric_limits` — used.
+- `<map>`: not used in shown code (std::map not used). In full file, `std::map` might be used later.
+- `<regex>`: used (std::regex, std::smatch).
+- `<sstream>`: used (std::stringstream).
+- `<string>`: used.
+- `<unordered_map>`: used.
+- `<unordered_set>`: used.
+- `<vector>`: used (std::vector<std::string> in BuiltinRule).
+- `<algorithm>`: `std::max` is used in `build_min_max_int` — `std::max(decimals_left - 1, 1)`. Actually std::max is in `<algorithm>`. Yes, used.
+
+Functions:
+- `build_repetition`: not called in shown code. In the full llama.cpp file, it IS called (e.g., in `build_object_rule` and in schema conversion for arrays with minItems/maxItems). But given the truncated file... Hmm.
+
+Wait — maybe the task intends for us to consider only the code shown, and the file was truncated intentionally at a point, and we should determine what's unused based on the entire file? That's impossible without the rest.
+
+Alternatively, maybe the task is: the file content shown IS the complete file (the truncation at `gbnf_escape_length` with empty body is odd though — it ends with `{` and blank lines, which wouldn't compile).
+
+Let me re-read the end:
+
+```
+std::string gbnf_format_literal(const std::string &
+---

@@ -1,0 +1,65 @@
+run 24120 | map-guard-bt | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.22 t/s | prompt 459.3 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-11-08 14:54:27
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends mid-function `gbnf_escape_length`. The user says "Delete the code in this file that is never used." The file shown is incomplete (it cuts off at `static size_t gbnf_escape_length(...)` with just a comment). Hmm, but the task is to delete unused code from this file. Since the file is truncated, I need to work with what's shown.
+
+Wait — the file ends abruptly at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` followed by blank lines. So the file as given is incomplete. The instruction: "Delete the code in this file that is never used."
+
+I need to determine which functions/variables in the shown portion are never used within the shown portion. But typically in these tasks, the file is a real file from llama.cpp (json-schema-to-grammar.cpp). Let me recall the actual file content from llama.cpp.
+
+The actual llama.cpp file `common/json-schema-to-grammar.cpp` contains:
+
+- `build_repetition` (used by `build_array_rule`, `build_object_rule`, etc.)
+- `build_min_max_int` (used by `build_min_max_int` calls in schema-to-grammar conversion for integer minimum/maximum)
+- `SPACE_RULE`
+- `BuiltinRule` struct
+- `PRIMITIVE_RULES`
+- `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- `INVALID_RULE_CHARS_RE`
+- `GRAMMAR_LITERAL_ESCAPE_RE`
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`
+- `GRAMMAR_LITERAL_ESCAPES`
+- `MAX_PATTERN_DEPTH`
+- `NON_LITERAL_SET`
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`
+- `replacePattern`
+- `format_literal`
+- `gbnf_format_literal`
+- `gbnf_escape_length`
+- ... and more functions like `parse_pattern`, `parse_regex`, `is_pattern_char`, `regex_to_gbnf`, etc.
+
+But the file shown here is truncated. The task says "Delete the code in this file that is never used." Since the file is truncated, I should analyze only what's shown. The shown portion includes definitions but few usages. Let me check what's used within the shown portion:
+
+- `build_repetition`: not called anywhere in the shown portion. But it's likely used later in the truncated part. Hmm.
+- `build_min_max_int`: calls itself recursively; `string_repeat` from common.h. Not called elsewhere in shown portion.
+- `SPACE_RULE`: not used in shown portion (PRIMITIVE_RULES uses "space" as a name but the actual space rule is defined elsewhere... Actually in the real file, SPACE_RULE is used when building the grammar output — the space rule is added to the output grammar).
+- `is_reserved_name`: uses PRIMITIVE_RULES and STRING_FORMAT_RULES. Is `is_reserved_name` itself used? In the real file, yes — in `validate_rule_name` or when naming rules from property names.
+- `INVALID_RULE_CHARS_RE`: used in `replace_rule_name` / naming functions later.
+- `GRAMMAR_LITERAL_ESCAPE_RE`: used in `format_literal`.
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`: used in... hmm, in the real file, is it used? Let me think. In the real llama.cpp file, there's `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` used in... Actually I recall in the Python version `json-schema-to-grammar.py` there's `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` used in `_format_literal`? No wait.
+
+Let me recall the actual llama.cpp code. The current version of `common/json-schema-to-grammar.cpp`:
+
+```cpp
+#pragma once
+
+// not for use as a header, just here to make the compiler happy about function signatures
+#include "json-schema-to-grammar.h"
+
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+#include <algorithm>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <regex>
+#include <sstream
+---

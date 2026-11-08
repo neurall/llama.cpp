@@ -1,0 +1,46 @@
+run 24320 | ram-pool | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.31 t/s | prompt 1238.6 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 19:22:13
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1, "")` 
+  - For `min_items=0, max_items=5`: inner call is `build_repetition("(sep item)", 0, 4, "")` → `"(sep item){0,4}"` → result is `item (sep item){0,4}` → wrapped as `(item (sep item){0,4})?`
+  - This seems correct.
+
+- When `separator_rule` is non-empty and `min_items == 1`: inner call is `build_repetition("(sep item)", 0, max_items-1, "")` → `"(sep item){0, max-1}"` → result is `item (sep item){0, max-1}`. This is correct.
+
+- When `separator_rule` is non-empty and `min_items == 2`: inner call is `build_repetition("(sep item)", 1, max_items-1, "")` → `"(sep item){1, max-1}"` → result is `item (sep item){1, max-1}`. Correct.
+
+- Edge case: `min_items == 0, max_items == 0` with separator: returns "" early. Correct.
+- Edge case: `min_items == 0, max_items == 1` with separator: returns `item_rule + "?"` early. Correct.
+
+- What about `min_items > max_items`? Not validated. Could produce invalid grammar.
+
+### build_min_max_int function
+- Complex recursive function. Let me check some edge cases:
+  - `min_value == max_value`: Both `has_min` and `has_max` are true. `min_s == max_s`, `min_digits == max_digits`. The for loop doesn't execute. `uniform_range(min_s, max_s)` is called. This should work.
+  - `min_value == 0, max_value == 0`: `min_s = "0"`, `max_s = "0"`. `uniform_range("0", "0")` - common prefix is "0", so `i=1`. Since `i > 0`, outputs `"0"`. Since `i >= from.length()`, the `if (i < from.length() && i < to.length())` is false. So just outputs `"0"`. Correct.
+  
+- The `uniform_range` lambda captures `out` by reference. It's defined inside `build_min_max_int` so it's fine.
+
+- `decimals_left` parameter: default is 16. Used to limit digit depth. The `less_decimals` is `std::max(decimals_left - 1, 1)`. This seems like a safeguard against deep recursion.
+
+- In the `has_min` branch when `min_value < 0`:
+  ```
+  out << "\"-\" (";
+  build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false);
+  out << ") | [0] | [1-9] ";
+  more_digits(0, decimals_left - 1);
+  ```
+  Wait, this is for `has_min` only (no max). So `min_value < 0` means we need numbers >= min_value (which is negative). The output includes negative numbers and non-negative numbers. But `build_min_max_int(INT64_MIN, -min_value, ...)` - this would generate numbers from INT64_MIN to -min_value (which is positive). Hmm, that seems wrong. Let me re-read.
+
+  Actually wait - `has_min` is true, `has_max` is false. So we're generating numbers >= min_value. If min_value is negative, we need:
+  - Negative numbers >= min_value (i.e., from min_value to -1)
+  - Non-negative numbers (0, 1, 2, ...)
+
+  The code does: `"-" (build_min_max_int(INT64_MIN, -min_value, ...))` - this generates numbers from INT64_MIN to -min_value. But we want numbers from min_value to -1, which is equivalent to -(1 to -min_value). So

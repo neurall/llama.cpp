@@ -1,0 +1,41 @@
+run 23987 | ram-pool | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.54 t/s | prompt 435.1 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=91268055040 | power 220+280 W | 2026-11-08 10:28:35
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns empty string, which would be an invalid schema (min > max). But that's probably handled upstream. Actually wait — if `min_items > 0` and `max_items == 0`, the schema is contradictory; returning "" silently accepts... hmm, actually returning "" means the grammar would have an empty rule there. Actually in GBNF, an empty rule content might be problematic. But this is an edge case of an invalid schema.
+
+Also `has_max` is computed before checking `max_items == 0`. Fine.
+
+Another subtle issue: when `separator_rule` is non-empty and `min_items == 0`, `max_items == 1`: the code goes to the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, has_max ? max_items - 1 : max_items)` — with max_items == 1, inner call gets max 0, returns "", so result = item_rule + " " + "" = item_rule + " ", then wrapped in "(...)?" — trailing space in grammar. Minor cosmetic issue. Actually wait: `result = item_rule + " " + build_repetition(...)` — if inner returns "", result is `item_rule + " "` then `("(" + result + ")?")` = `(item_rule )?`. Trailing space — harmless in GBNF but sloppy.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+- `std::function<void(const std::string_view &, const std::string_view &)> uniform_range` — uses `std::function` with recursion. OK.
+
+- In `uniform_range`, when `from_sub == sub_zeros` branch: `digit_range(from[i], to[i] - 1)` — what if `from[i] == to[i]`? Then `digit_range(from[i], to[i]-1)` would output `[x-(x-1)]` which is an invalid/inverted range. Wait, can that happen? `uniform_range` is called with from <= to (as strings of equal length). If `from[i] == to[i]` and `i < from.length() && i < to.length()`... Let's think: the loop advances `i` while chars are equal. So after the loop, either `i == from.length()` or `i == to.length()` or `from[i] != to[i]`. So inside the `if (i < from.length() && i < to.length())` block, we know `from[i] != to[i]`. Since from <= to numerically and same length, `from[i] < to[i]`. So `to[i] - 1 >= from[i]`. OK, safe.
+
+- `digit_range(from[i] + 1, to[i])` when `to_sub == sub_nines`: sets `to_reached = true`. OK.
+
+- Hmm, one thing: in the `has_min && has_max` branch with negative handling: `if (min_value < 0 && max_value < 0)` — negates both and swaps. OK.
+
+- `if (min_value < 0)`: outputs `"-" (0..-min_value) | ` then sets min_value = 0 and continues to build the positive part. But wait — after this, `has_min` is still true (min_value = 0 now, but has_min was computed at the top based on original min_value != INT64_MIN). Since min_value = 0 now, the code proceeds to `min_s = std::to_string(0)` etc. That's fine.
+
+- Potential overflow: `-min_value` when `min_value == INT64_MIN`? But `has_min` would be false in that case... wait, `has_min = min_value != std::numeric_limits<int64_t>::min()`. In the `has_min && has_max` branch, min_value != INT64_MIN, so `-min_value` is safe. In the `has_min` (only) branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` —

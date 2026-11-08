@@ -1,0 +1,53 @@
+run 24053 | no-map-reads | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.74 t/s | prompt 1234.3 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:11:37
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - For separator case: when `min_items == 0`, it wraps the result in `(...)?` - correct
+  - The separator case with `min_items == 0` and `has_max` - the recursive call passes `max_items - 1` which could be -1 if `max_items == 0`, but that's already handled by the early return. Wait, if `max_items == 0` we return early. But what if `max_items == 1` and `min_items == 0`? We return `item_rule + "?"` before reaching the separator logic. What if `max_items == 1` and `min_items == 1`? Then `has_max` is true, and we'd go to the separator case: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, 0)` which returns `""`. So result would be `item_rule + " "` which has a trailing space. That's a bug - trailing space when max_items == 1 with separator.
+
+  Actually wait, let me re-read. If `min_items == 1 && max_items == 1` with separator:
+  - `has_max` = true
+  - Not `max_items == 0`
+  - Not `min_items == 0 && max_items == 1`
+  - separator_rule is not empty
+  - `min_items == 1 && !has_max` is false (has_max is true)
+  - So we go to the separator case
+  - `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, 0)` returns `""`
+  - Result: `item_rule + " " + ""` = `item_rule + " "` - trailing space bug!
+
+  Actually, looking more carefully at the separator case:
+  ```
+  auto result = item_rule + " " + build_repetition(...);
+  ```
+  If the inner repetition returns empty string, we get `item_rule + " "` which has a trailing space. This is a bug.
+
+  Also, when `min_items == 0` and separator is present, the result is wrapped in `(...)?`. But if `max_items == 1`, the inner repetition returns `""`, so result would be `item_rule + " "` then wrapped as `(item_rule + " ")?`. That's also wrong - it should just be `item_rule?`.
+
+  Wait, but `min_items == 0 && max_items == 1` is handled early with `return item_rule + "?"`. So that case is fine.
+
+  Let me check `min_items == 1, max_items == 1` with separator again:
+  - Early returns don't trigger
+  - separator_rule is not empty
+  - `min_items == 1 && !has_max` is false
+  - `min_items == 0 && !has_max` is false
+  - We go to separator case
+  - `build_repetition("(" + sep + " " + item + ")", 0, 0)` returns `""`
+  - `result = item + " " + ""` = `item + " "` - trailing space
+
+  This is indeed a bug. The trailing space should be trimmed or the logic should handle this case.
+
+  Actually, looking at how this is used in arrays:
+  ```
+  "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\""
+  ```
+  So the result is embedded in a larger string. A trailing space would result in `item_rule_name + " " + " space \"]\""` which would be `item_rule_name + "  space \"]\""` - double space. In GBNF, spaces are significant (they're literal spaces in the grammar), so this would be a bug.
+
+  Wait, actually in GBNF, the space between tokens is just whitespace in the grammar definition, not a literal space. Let me reconsider... Actually, looking at the grammar format, spaces between tokens in the rule definition are just separators. So `item_rule_name + " "` followed by `" space \"]\""` would just be `item_rule_name + "

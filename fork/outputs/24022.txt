@@ -1,0 +1,50 @@
+run 24022 | past-in-pool | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.73 t/s | prompt 1186.1 t/s | 1024 tokens | args: -np 1 --moe rampool=0 | power 220+280 W | 2026-11-08 11:59:08
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - For separator case: when `min_items == 0`, it wraps the result in `(...)?` - correct
+  - The separator case with `min_items == 0` and `has_max`: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1)` - this seems correct for the separator case
+  - When `min_items == 1` and separator: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, has_max ? max_items - 1 : max_items)` - wait, when `min_items == 1`, the first item is always present, then we need `min_items - 1 = 0` more items after separators. That's correct.
+  - When `min_items > 1` and separator: `build_repetition(..., min_items - 1, has_max ? max_items - 1 : max_items)` - correct
+
+### build_min_max_int function
+- This is a complex function for generating integer ranges. Let me check some edge cases:
+  - When both min and max are set and both negative: handles by negating - correct
+  - When min is negative and max is positive: handles negative part then continues with positive - correct
+  - The `uniform_range` lambda is recursive and complex - potential for issues
+  - The `decimals_left` parameter limits recursion depth - good
+  - When `has_min` only: various cases for min_value ranges - seems correct
+  - When `has_max` only: handles max_value ranges - seems correct
+  - Throws when neither is set - correct
+
+- Potential issue: In the `has_min` case with `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` - this generates rules for negative numbers from INT64_MIN to -min_value. But the output starts with `"- ("` and then the rule, followed by `") | [0] | [1-9] "` - this seems to handle the case where min is negative.
+
+- In the `has_max` case with `max_value >= 0` and `top_level`: it outputs `"- [1-9] "` followed by `more_digits(0, less_decimals)` then `| ` then `build_min_max_int(0, max_value, ...)`. This handles negative numbers (any negative) plus non-negative up to max_value. But wait - this only handles negative numbers when `top_level` is true. When `top_level` is false (nested), it doesn't include negative numbers. That seems intentional.
+
+- Potential issue: In `has_max` with `max_value >= 0` and `top_level`, the negative part `"- [1-9] " + more_digits(0, less_decimals)` allows any negative number, but doesn't limit it. This is correct since there's no min bound.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- These are static unordered_maps - potential thread safety issues if accessed concurrently, but since they're initialized at static init time and only read after, should be fine.
+
+### is_reserved_name
+- Uses a static lambda for initialization - good pattern.
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - replaces invalid chars with `-`
+- `GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]")` - matches chars needing escaping in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]")` - matches chars needing escaping in ranges - but this regex is defined but never used! Dead code.
+
+### GRAMMAR_LITERAL_ESCAPES
+- Maps characters to their escaped forms - includes `-`, `]` which are for range contexts, but `format_literal` only uses `GRAMMAR_LITERAL_ESCAPE_RE` which doesn't match `-` or `]`. So the `-` and `]` entries in `GRAMMAR_LITERAL_ESCAPES` are unused by `format_literal`. They might be used elsewhere though.
+
+### gbnf_escape_length
+- Handles various escape sequences - good
+- Comment says "keep in sync with parse_char() in src/

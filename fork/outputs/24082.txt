@@ -1,0 +1,42 @@
+run 24082 | no-map-reads | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.38 t/s | prompt 46.4 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:43:17
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small but make it feel crafted and alive rather than a bare gray grid: add a layered background, strong type contrast, a distinctive display face paired with a readable body face, micro-interactions, and a subtle "line clear" feedback. But keep it small — the user asked for smallest. So I should balance: small code, but polished. I'll deliver a compact single-file Tetris that's genuinely small (a few hundred bytes-ish minified-ish but readable), plus a nice frame.
+
+Let me think about "smallest" — they want minimal code. I'll aim for something like ~1000 characters of core game logic, presented readably. I should not bloat it into a giant page. But I still want it crafted. A good compromise: a compact single-file game with a tight, characteristic presentation — the playfield itself is the focal point, not a generic header.
+
+Design instinct: Tetris-appropriate aesthetic — the playfield itself is the focal point, not a generic header. Use a bold display face for the score (e.g., a monospace/pixel-ish display face). Pair display + body: e.g., "Press Start 2P" is cliché but characteristic... maybe use a bold condensed display like "Archivo Black" or "Bungee" paired with a readable body like "IBM Plex Sans". Actually for Tetris, a chunky geometric display works. Let's use Google Fonts: display "Bungee" or "Archivo Black"; body "Space Grotesk" or "IBM Plex Mono". Hmm, keeping it small means external fonts add weight. But it's fine — one link.
+
+Actually, "smallest" — I'll keep the fonts to one Google Fonts link with two families.
+
+Palette: rather than the obvious near-black board with a single neon accent, let me do a warm-dark slate with multiple piece colors (Tetris pieces are inherently polychrome — cyan, yellow, magenta, green, red, blue, orange). That's inherently a multi-color palette, which suits the subject. Background: layered — subtle grid lines + a faint drifting gradient. I'll use a fine grid/graph-paper texture with a vignette and a subtle scanline, plus a very slow drifting radial. That's characteristic of a CRT/arcade feel without being a near-black canvas with one neon accent.
+
+Let me write the game compactly.
+
+Compact Tetris approach:
+
+```js
+const W=10,H=20;
+let g=[...Array(H)].map(_=>Array(W).fill(0)), s=0, lv=1, ln=0;
+```
+
+Piece definitions using rotation via matrices or via string offsets. A classic tiny approach:
+
+```js
+const P='0000,0222,0000|000,022,020|000,222,020|220,022,000|022,220,000|000,222,020|000,222,000'
+```
+
+Simpler: use the standard 7 pieces as arrays of rotation states? That's bigger. Use matrix rotation.
+
+Tiny approach with numbers:
+
+```js
+const S='....:....:....|000:022:020|000:222:020|220:022:000|022:220:000|000:222:000|000:020:000'
+```
+
+Hmm, let me use a well-known compact representation:
+
+```js
+P=[[],[0,1,10,11],[4,5,14,15],[1,11,20,21],[10,11,14,15],[1,10,11,21],[1,10,11,12],[1,10,11,20]]
+```
+Wait, that's the classic "Tetris in 10 lines" style using 4x4 bit offsets. Actually a known trick: pieces defined as 4 numbers in a 4x4
+---

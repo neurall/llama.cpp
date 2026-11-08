@@ -1,0 +1,88 @@
+run 24132 | ram-pool | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 54.79 t/s | prompt 1554.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 15:10:56
+
+ }},
+    {"uuid", "\"\\\\\" \"[\" ( [0-9a-fA-F]{" << 8 << "} \"-\" | ){4} [0-9a-fA-F]{" << 12 << "} \"\\\\\" \"]\"", {}},
+    {"string", {"\"\\\\\" \"\\\\\" | \"\\\\\" \"[uU]\" [0-9a-fA-F]{4} | [\\u0020-\\u007E] | [\\u00A0-\\uD7FF] | \"\\uD800\" [\\uDC00-\\uDFFF] | \"\\uDBFF\" [\\uDC00-\\uDFFF] | [\\uE000-\\uFFFF]", {}}},
+};
+
+static std::unordered_map<std::string, BuiltinRule> CONTEXT_RULES = {
+    {"space", {"(\" \" | \"\\n\"{1,2} [ \\t]{0,20})?", {}}},
+};
+
+static std::string escape_json_string(const std::string & input) {
+    std::string result = "\"";
+    for (auto c : input) {
+        if (c == '\n') {
+            result += "\\n";
+        } else if (c == '\t') {
+            result += "\\t";
+        } else if (c == '\"') {
+            result += "\\\"";
+        } else if (c == '\\') {
+            result += "\\\\";
+        } else {
+            result += c;
+        }
+    }
+    result += "\"";
+    return result;
+}
+
+static std::string add_whitespace(std::string grammar) {
+    // add whitespace to make the grammar more readable
+    static const std::regex substitution_pattern(R"(~==)");
+    std::sregex_token_iterator token_begin(grammar.begin(), grammar.end(), substitution_pattern, -1), token_end{};
+    std::string result;
+    for (auto it = token_begin; it != token_end; ++it) {
+        result += regex_replace(*it, std::regex(R"(^(.*?):)"), "$1\n  ");
+        result += regex_replace(*it, std::regex(R"(^(.+?) \| )"), "$1  | ");
+    }
+    return result + ")";
+}
+
+static void validate_schema(const json & schema) {
+    if (!schema.is_object() && !schema.is_array()) {
+        throw std::runtime_error("Schema must be an object or an array");
+    }
+
+    if (schema.is_object()) {
+        if (schema.count("anyOf") && schema.count("oneOf")) {
+            throw std::runtime_error("Only one of anyOf or oneOf is allowed");
+        }
+        if (schema.count("enum") && schema.count("const")) {
+            throw std::runtime_error("Only one of enum or const is allowed");
+        }
+        if (schema.count("enum") && !schema["enum"].is_array()) {
+            throw std::runtime_error("enum must be an array");
+        }
+        if (schema.count("additionalProperties") && !(schema["additionalProperties"].is_object() || schema["additionalProperties"].is_bool())) {
+            throw std::runtime_error("additionalProperties must be an object or a boolean");
+        }
+        if (schema.count("additionalItems") && !(schema["additionalItems"].is_object() || schema["additionalItems"].is_bool())) {
+            throw std::runtime_error("additionalItems must be an object or a boolean");
+        }
+        if (schema.count("maximum")) {
+            auto max = schema["maximum"];
+            if (!max.is_number() || !max.is_number_integer()) {
+                throw std::runtime_error("maximum must be an integer");
+            }
+        }
+        if (schema.count("minimum")) {
+            auto min = schema["minimum"];
+            if (!min.is_number() || !min.is_number_integer()) {
+                throw std::runtime_error("minimum must be an integer");
+        }
+        }
+        if (schema.count("items")) {
+            auto items = schema["items"];
+            if (!items.is_object() && !items.is_array() && !items.is_bool()) {
+                throw std::runtime_error("items must be an object, array, or boolean");
+            }
+        }
+        if (schema.count("minItems")) {
+            if (!schema["minItems"].is_number_integer()) {
+                throw std::runtime_error("minItems must be an integer");
+            }
+        }
+        if (schema.count("maxItems")) {
+           

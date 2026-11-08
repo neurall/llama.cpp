@@ -1,0 +1,98 @@
+run 24290 | both-splits | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.43 t/s | prompt 467.7 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-11-08 18:23:25
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends mid-function `gbnf_escape_length`. The user says "Delete the code in this file that is never used." The file shown is incomplete (it cuts off at `static size_t gbnf_escape_length(...)` with just a comment). Hmm, but the task is to delete unused code from this file. Since the file is truncated, I need to reason about what's used within the shown portion, and possibly what would be used by the rest of the file (which we can't see).
+
+Wait — this is a known file from llama.cpp. Let me recall the actual llama.cpp `json-schema-to-grammar.cpp` file. The actual file contains functions like:
+
+- `build_repetition`
+- `build_min_max_int`
+- `SPACE_RULE`
+- `BuiltinRule`
+- `PRIMITIVE_RULES`
+- `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- `INVALID_RULE_CHARS_RE`
+- `GRAMMAR_LITERAL_ESCAPE_RE`
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`
+- `GRAMMAR_LITERAL_ESCAPES`
+- `MAX_PATTERN_DEPTH`
+- `NON_LITERAL_SET`
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`
+- `replacePattern`
+- `format_literal`
+- `gbnf_format_literal`
+- `gbnf_escape_length`
+- `gbnf_escape_regex_chars` (maybe)
+- `gbnf_literal_or_range`... 
+
+Actually, let me recall the real llama.cpp file. The real file (as of recent versions) has:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {...}
+
+static void build_min_max_int(...) {...}
+
+const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";
+
+struct BuiltinRule {...};
+
+static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_RULES = {...};
+static std::unordered_map<std::string, BuiltinRule> STRING_FORMAT_RULES = {...};
+
+static bool is_reserved_name(...) {...}
+
+static std::regex INVALID_RULE_CHARS_RE(...);
+static std::regex GRAMMAR_LITERAL_ESCAPE_RE(...);
+static std::regex GRAMMAR_RANGE_LITERAL_ESCAPE_RE(...);
+static std::unordered_map<char, std::string> GRAMMAR_LITERAL_ESCAPES = {...};
+
+static const int MAX_PATTERN_DEPTH = 100;
+
+static std::unordered_set<char> NON_LITERAL_SET = {...};
+static std::unordered_set<char> ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS = {...};
+
+static std::string replacePattern(...) {...}
+
+static std::string format_literal(...) {...}
+
+std::string gbnf_format_literal(...) {...}
+
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+    if (pos >= pattern.length()) return 0;
+    ...
+}
+
+static std::string gbnf_escape_regex_chars(const std::string & pattern, ...) {...}
+
+static std::string gbnf_literal_or_range(...) {...}
+
+...
+
+static std::string build_grammar(...);
+
+class SchemaConverter {
+private:
+    ...
+    std::function<std::string(const std::string &)> _space;
+    ...
+    std::string _add_rule(const std::string & name, const std::string & rule) {...}
+    ...
+    void _build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {...}
+    ...
+public:
+    ...
+    std::string visit(json & schema, const std::string & name, const json & root_def, bool is_property = false) {...}
+    ...
+};
+
+std::string json_schema_to_grammar(const json & schema) {...}
+```
+
+Hmm, actually in the real llama.cpp file, `build_min_max_int` is a free function used by `SchemaConverter::_build_min_max_int`? Let me
+---

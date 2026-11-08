@@ -1,0 +1,72 @@
+run 24374 | nommap5 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.03 t/s | prompt 988.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 20:36:42
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` cases - correct
+  - When separator is present, builds `item (separator item)*` pattern - looks correct
+  - The recursive call for separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` - this seems correct for building `item (sep item){min-1,max-1}`
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda handles digit-by-digit range generation
+- Potential issue: `std::stoll` could throw if the substring is not a valid number, but since it's derived from `std::to_string(min_value)`, it should be safe
+- The `decimals_left` parameter limits recursion depth - good
+- The `top_level` parameter handles leading zero restrictions - good
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization order: `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` are file-scope statics. `is_reserved_name` uses a function-local static that references both. This should be fine since they're initialized before `is_reserved_name` is called (they're at file scope, initialized before main).
+
+### is_reserved_name
+- Uses function-local static for initialization - good pattern
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - replaces invalid chars with `-`
+- `GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]")` - matches chars needing escaping in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - defined but never used! This is dead code.
+
+### replacePattern
+- Standard regex replacement pattern - looks correct
+
+### format_literal
+- Escapes special characters and wraps in quotes - correct
+
+### gbnf_escape_length
+- Handles escape sequences - looks correct
+- Comment says "keep in sync with parse_char() in src/llama-grammar.cpp" - good practice
+
+### common_chat_schema_converter class
+
+#### _add_rule
+- Handles name collisions by appending numbers - good
+- The loop condition `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Looks correct.
+
+#### _generate_union_rule
+- Generates alternatives - straightforward
+
+#### _visit_pattern
+- Snapshots rules before attempting pattern conversion, reverts on failure - good error handling
+- On unsupported pattern, falls back to accepting any string - reasonable
+- On invalid pattern, records error and returns empty string - could cause issues downstream
+
+#### _pattern_to_rule
+- Complex regex-to-grammar conversion
+- The `transform` lambda is recursive and handles various regex constructs
+- Potential issues:
+  - The literal accumulation logic is complex and could have edge cases
+  - The `sub_rule_ids` map is used for caching sub-rules but the key is the rule content, which could lead to collisions
+  - The curly bracket parsing doesn't handle nested braces (e.g., `{2,{3}}`) but that's not valid regex anyway
+  - `std::stoi` could throw `std::out_of_range` for very large numbers, but it's caught by `std::logic_error` which is a base class of `std::out_of_range` - wait, actually `std::out_of_range` derives from `std::logic_error`, so this is caught. Good.
+
+#### _not_strings
+- Generates a rule that matches strings that are none of the provided strings
+- Uses a trie for efficiency - good
+- The `rejects` string accumulates characters for the negated character class - correct
+- Potential issue: if a character in `rejects` needs escaping (like `"` or `\`), it's not escaped. The `rejects` is placed inside `[...]` so `"` doesn't need escaping there, but `\` would. Actually, looking at the output: `[^\"" << rejects << "]` - the `"` is escaped

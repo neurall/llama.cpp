@@ -1,0 +1,49 @@
+run 23950 | ram-pool | pf16k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.24 t/s | prompt 683.4 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:11:20
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - CLI argument parsing (appears truncated at the end)
+
+Let me do a thorough code review of both files.
+
+**File 1: json-schema-to-grammar.cpp**
+
+Let me look through this carefully:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Wait, there's a subtle issue: if `max_items == 0` but `min_items > 0`, that's an inconsistent schema (min > max). The function returns "" silently. That might be intentional (empty grammar), but could mask schema errors. Actually in JSON Schema, if min_items > max_items, the schema is invalid. Returning "" would produce an empty rule which might be invalid GBNF. Hmm, actually returning "" as a rule content... `_add_rule(rule_name, "")` would produce `name ::= ` which is invalid grammar. Let me think... Actually in the array case: `build_repetition(item_rule_name, arr.min_items, max_items, ...)` - if min_items > 0 and max_items == 0, we'd get an empty string, and the rule would be `"[" space  space "]"` which is weird but parseable? Actually `"[" space  space "]"` with double space - the grammar parser might handle it. But the semantics would be wrong: min_items > 0 requires at least min_items items but max_items == 0 allows none - contradictory schema. This is an edge case.
+
+Also `min_items == 0 && max_items == 1` returns `item_rule + "?"` - fine.
+
+For the separator case:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+Hmm, wait. If `min_items == 1` and `max_items == 1` with separator: result = item_rule + " " + build_repetition(sep-item, 0, 0) = item_rule + " " + "" = item_rule + " " — trailing space. Actually build_repetition with max_items=0 returns "", so result = `item_rule + " " + ""` = "item_rule " with trailing space. That's probably harmless in GBNF (extra space), but sloppy. Actually wait, let me check: min_items=1, max_items=1: `min_items == 0 ? 0 : min_items - 1` = 0, `has_max ? max_items - 1 : max_items` = 0. So build_repetition(sep_item, 0, 0) → max_items == 0 → return "". So result = item_rule + " ". Trailing space in rule. GBNF tolerates whitespace, so it works but is sloppy.
+
+Hmm, but actually there's a deeper issue: when min_items == 0 and separator is present, the result is `(item_rule (sep item)*)?` — wait no. Let's trace: min_items=0, max_items=unbounded: result = item_rule + " " + build_repetition("(sep item)", 0, max) = item_rule + " " + "(sep item)*". Then since min_items == 0: result = "(" + result + ")?" = `(item_rule (sep item)*)?`. Good.
+
+min_items=2, max=5: result = item + " " + build_repetition("(sep item)", 1, 4) = item + " " + "(sep item){1,4}". Good.
+
+What about min_items=1, max_items=0 (invalid schema)? result = item + " " + "" = "item ". Then min_items != 0 so no "?" wrap. Rule = "item " — trailing space. Semantics: requires 1 item but schema says max 0. Invalid schema anyway.
+
+2. `build_min_max_int`:
+
+This is complex recursive logic for generating integer range regexes. Let me check some edge cases:
+
+- `decimals_left = 16` default. The recursion decrements via `less_decimals = std::max(decimals_left - 1, 1)`. Note `std::max(decimals

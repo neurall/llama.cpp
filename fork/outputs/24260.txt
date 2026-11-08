@@ -1,0 +1,37 @@
+run 24260 | split-keeps-upload | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.51 t/s | prompt 116.7 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=1,dense-split=0 | power 220+280 W | 2026-11-08 17:38:55
+
+ion
+        std::string prefix_marker_tools = !format.tools_section_start.empty() ? format.tools_section_start : prefix_marker;
+        std::string suffix_marker_tools = !format.tools_section_end.empty() ? format.tools_section_end : suffix_marker;
+
+        if (!diff.left.empty()) {
+            std::string prefix = until_common_prefix(diff.left, prefix_marker, prefix_marker_tools);
+            arguments.args_prefix = prefix;
+        }
+
+        if (!diff.right.empty()) {
+            std::string suffix = until_common_suffix(diff.right, suffix_marker, suffix_marker_tools);
+            arguments.args_suffix = suffix;
+        }
+    } else {
+        if (!diff.left.empty()) {
+            std::string prefix = until_common_prefix(diff.left, ARG_FIRST);
+            arguments.args_prefix = prefix;
+        }
+
+        if (!diff.right.empty()) {
+            std::string suffix = until_common_suffix(diff.right, ARG_FIRST);
+            arguments.args_suffix = suffix;
+        }
+    }
+}
+
+void analyze_tools::extract_tool_markers() {
+    json assistant_no_tool = json{
+        { "role",       "assistant"},
+        { "content",    ""         },
+        { "tool_calls", json::array({}) }
+    };
+
+    json assistant_with_tool = json{
+        { "role",      

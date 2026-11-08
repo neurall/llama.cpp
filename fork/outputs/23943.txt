@@ -1,0 +1,40 @@
+run 23943 | ram-pool | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.82 t/s | prompt 25.6 t/s | 949 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:04:27
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal Tetris game with:
+- 7 piece types (I, O, T, S, Z, J, L)
+- Rotation
+- Line clearing
+- Score
+- Game over
+
+Let me make it as compact as possible while still being functional.
+---
+```html
+<!DOCTYPE html><html><body><canvas id=c width=300 height=600></canvas><script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=30;
+let g=Array.from({length:H},()=>Array(W).fill(0)),p,sc=0,over=false;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]];
+const C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+function spawn(){p={s:P[Math.random()*7|0],x:3,y:0,c:C[Math.random()*7|0]};if(collide(p.x,p.y,p.s))over=true}
+function collide(px,py,s){return s.some((r,ry)=>r.some((v,rx)=>v&&(px+rx<0||px+rx>=W||py+ry>=H||g[py+ry]?.[px+rx])))}
+function draw(){x.fillStyle='#000';x.fillRect(0,0,W*S,H*S);g.forEach((r,y)=>r.forEach((v,px)=>{if(v){x.fillStyle=v;x.fillRect(px*S,y*S,S,S)}}));if(p&&!over)p.s.forEach((r,ry)=>r.forEach((v,rx)=>{if(v){x.fillStyle=p.c;x.fillRect((p.x+rx)*S,(p.y+ry)*S,S,S)}}));x.fillStyle='#fff';x.font='20px monospace';x.fillText('Score:'+sc,10,25);if(over){x.fillStyle='#f00';x.font='30px monospace';x.fillText('GAME OVER',60,300)}}
+function lock(){p.s.forEach((r,ry)=>r.forEach((v,rx)=>{if(v)g[p.y+ry][p.x+rx]=p.c}));let n=0;g=g.filter(r=>{if(r.every(v=>v)){n++;return false}return true});while(g.length<H)g.unshift(Array(W).fill(0));sc+=n*n*100;spawn()}
+function move(dx,dy){if(!collide(p.x+dx,p.y+dy,p.s)){p.x+=dx;p.y+=dy}else if(dy>0)lock()}
+function rotate(){let s=p.s[0].map((_,i)=>p.s.map(r=>r[i]).reverse());if(!collide(p.x,p.y,s))p.s=s}
+document.onkeydown=e=>{if(over)return;let k=e.key;if(k==='ArrowLeft')move(-1,0);if(k==='ArrowRight')move(1,0);if(k==='ArrowDown')move(0,1);if(k==='ArrowUp')rotate();if(k===' '){while(!collide(p.x,p.y+1,p.s))p.y++;lock()}e.preventDefault()};
+spawn();let t=0;function loop(){t++;if(t%15===0)move(0,1);draw();requestAnimationFrame(loop)}loop();
+</script></body></html>
+```
+
+
+
+**Features:**
+- **7 piece types** (I, O, T, S, Z, J, L) with distinct colors
+- **Controls:** ← → move, ↓ soft drop, ↑ rotate, Space hard drop
+- **Line clearing** with scoring (100/400/900/1600 for 1-4 lines)
+- **Game over** detection
+- **Speed** increases every 15 frames
+
+Save as `.html` and open in a browser to play.

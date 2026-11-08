@@ -1,0 +1,43 @@
+run 23972 | ram-pool | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.15 t/s | prompt 6.2 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:43:36
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual approach of making polished, memorable experiences. The user explicitly asked for "smallest" — so the goal here is extreme minification while keeping it functional and playable.
+
+Let me think about what "smallest" means here. A single HTML file with embedded JS/CSS, as few bytes as possible, but still a working Tetris: falling tetrominoes, rotation, movement, line clearing, game over, score maybe.
+
+I should aim for a genuinely tiny implementation. Let me write it carefully and count bytes mentally, then compress.
+
+Key components:
+1. Canvas for rendering (canvas is usually smallest for grid rendering).
+2. Game state: board (10x20), current piece, position, rotation.
+3. Piece definitions — the big byte cost. Trick: encode pieces as bitmasks or use compact representation.
+
+Classic minimal Tetris tricks:
+- Represent each tetromino as a 4x4 or 3x3 matrix encoded in a number (binary).
+- Rotation via matrix transpose/reverse, or precompute rotations, or use bitwise rotation on 16-bit numbers.
+
+A well-known ultra-compact approach: store pieces as arrays of coordinates, rotate with (x,y)->(y, 3-x) or similar.
+
+Let me design:
+
+Board: 10 wide, 20 tall. Use a single array `b` of length 200, values 0 or color index (or just 1).
+
+Pieces: 7 tetrominoes. Compact encoding: each piece as a 16-bit number representing 4x4 grid, rotate by bit manipulation. Rotating a 4x4 bit grid within 16 bits: 
+
+If bits are indexed row-major (row r, col c → bit r*4+c), rotation clockwise: new[r][c] = old[3-c][r]. As bit index: new bit (r*4+c) = old bit ((3-c)*4 + r). That's a fixed bit permutation — can be done with a lookup or arithmetic. Arithmetic rotation of 4x4 nibble grid is a bit fiddly.
+
+Alternative: store pieces as arrays of [x,y] pairs and rotate with formula. E.g., piece = list of 4 cells. Rotate clockwise around some pivot: (x,y) -> (y, -x) then normalize. To keep it simple, use 4x4 grid coordinates 0..3 and rotate (x,y) -> (y, 3-x). This works for all tetrominoes if we place them appropriately in the 4x4 box... Actually for I piece placed in row 1 (y=1, x=0..3), rotating (x,y)->(y,3-x): (0,1)->(1,3), (1,1)->(1,2), (2,1)->(1,1), (3,1)->(1,0) — gives column x=1, y=0..3. Good, that's a valid I rotation. For 3x3 pieces (T, S, Z, L, J) placed in top-left 3x3, rotating within 4x4 with (x,y)->(y,3-x) shifts them: (0,0)->(0,3)... hmm, (x,y)->(y,3-x): (0,0)->(0,3), (1,0)->(0,2), (2,0)->(0,1). So a top row becomes left column at x=0, y=1..3. That's fine geometrically but the piece drifts to bottom-left of the 4x4 box. Repeated rotations cycle through 4 orientations, all consistent. It works — the piece just occupies different cells in the 4x4 box, which is fine as long as collision detection uses actual cell coordinates. The drift means rotation also effectively moves the piece down-left a bit, which plays okay-ish but might feel weird. Actually many golfed Tetris implementations do exactly this and it's acceptable.
+
+Alternatively use (x,y)->(y,2-x) for 3x3 pieces and separate handling for I and O. That complicates code.
+
+Simplest robust approach used in famous golfed tetris (e.g., the ~140-byte one by ... there's a famous tiny tetris). Let me just write my own clean-ish minimal version.
+
+Plan:
+
+```html
+<body onload="...">
+<canvas id=c width=100 height=200>
+<script>...</script>
+```
+
+Actually to minimize, I can create canvas via JS: `document.body.appendChild(c=document.createElement('canvas'))`. Or just `<canvas id=c>` in HTML — HTML tags cost bytes
+---

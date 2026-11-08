@@ -1,0 +1,3 @@
+run 24213 | split-keeps-upload | pf128k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 0.0 t/s | prompt 256.7 t/s | 1 tokens | args: -np 1 --moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0 | power 220+280 W | 2026-11-08 16:44:43
+
+ ...

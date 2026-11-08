@@ -1,0 +1,19 @@
+run 24250 | split-keeps-upload | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.42 t/s | prompt 531.6 t/s | 1024 tokens | args: -np 1 --moe pp-path=stream,pp-k=0,dense-split=0 | power 220+280 W | 2026-11-08 17:18:02
+
+<think>We need answer code review. Need inspect source. User asks "Do a code review of following source file." They pasted two files? common/json-schema-to-grammar.cpp and common/arg.cpp partial. Need review. Need identify issues. Need be thorough but concise. Need likely focus on code. Need mention bugs, style, safety, correctness. Need maybe note file truncated? arg.cpp ends mid-function. Need review both? The prompt says source file singular but includes two files. We should review both, noting arg.cpp appears truncated. Need analyze.
+
+We need produce code review. Need inspect json-schema-to-grammar.cpp deeply. Let's parse.
+
+File common/json-schema-to-grammar.cpp. Includes. Functions.
+
+Potential issues:
+
+1. build_repetition:
+- max_items == 0 returns "" even if min_items > 0? If min_items > max_items? It returns empty. But if min_items > 0 and max_items == 0 invalid. Could be schema invalid. Maybe should handle.
+- For separator_rule non-empty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?". Need check semantics. For min_items=0 max_items=1 separator: result = item_rule + " " + build_repetition("(sep item)", 0, 0) = item_rule + " " + "" = item_rule; then result = "(item)?" -> okay. For min=1 max=1: result = item + " " + build_repetition("(sep item)",0,0) = item; no optional -> item. okay. For min=2 max=2: result = item + " " + build_repetition("(sep item)",1,1) = item + " " + "(sep item)"? Wait build_repetition with separator empty? Actually inner call separator_rule default empty, item_rule = "(sep item)", min=1 max=1. In build_repetition: max_items==1, min_items==1, separator empty. It doesn't hit min=0 max=1. separator empty: min=1 !has_max? has_max true (max=1). returns item_rule + "{1,1}"? Let's see: if separator empty: if min_items==1 && !has_max return +; if min=0 && !has_max return *; return item_rule + "{" + min + "," + max + "}". So returns "(sep item){1,1}". Then result = item + " " + "(sep item){1,1}". That matches item sep item. But GBNF repetition {1,1} maybe okay. For min=2 max=3: inner min=1 max=2 -> "(sep item){1,2}" -> item + " " + ... = item sep item sep item? Wait item + (sep item){1,2} yields item sep item sep item? Actually item + (sep item){1,2} = item sep item sep item? If repetition of "(sep item)" twice: item sep item sep item. Yes for 3 items: item + sep item + sep item = item sep item sep item. Good. For min=0 max=2: result = item + build_repetition("(sep item)",0,1) = item + "(sep item)?"? Wait inner min=0 max=1 separator empty: returns item_rule + "?" = "(sep item)?"; result = item + " " + "(sep item)?"; then optional whole = "(item (sep item)?)?"? Actually result = item + " " + "(sep item)?"; then result = "(" + result + ")?" = "(item (sep item)?)?" This allows empty, item, item sep item. Good. But for min=0 max=2, should allow 0,1,2 items. Yes.
+
+Potential issue: build_repetition with separator and min_items=0 max_items=0 returns "" due max_items==0 before separator. okay.
+
+2. build_min_max_int:
+- Uses std::function and string_view. Need include <functional>? Not included explicitly. It uses std::function in file. Maybe common.h includes? But should include <functional>. Also uses std::stoll, std::runtime_error, std::string_view. Need include <stdexcept>, <string_view>, <functional>. Not in includes. Could be transitive but code review mention.
+- `uniform_range` lambda captures out and uses `string_repeat` from common. It assumes from/to same length? It handles. But

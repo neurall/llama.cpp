@@ -1,0 +1,27 @@
+run 24249 | split-keeps-upload | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 18.97 t/s | prompt 496.2 t/s | 1024 tokens | args: -np 1 --moe pp-path=stream,pp-k=0,dense-split=0 | power 220+280 W | 2026-11-08 17:14:55
+
+<think>We need answer code review. Need inspect source. User provided two files? They ask "Do a code review of following source file." It includes json-schema-to-grammar.cpp and arg.cpp partial. Need review. Need identify bugs, style, correctness, security, maintainability. Need be thorough but not too verbose. Need likely focus on code. Need analyze.
+
+We need review source. Let's parse.
+
+First file common/json-schema-to-grammar.cpp. Need review.
+
+Second file common/arg.cpp partial. Need review too? The prompt includes both. "following source file" maybe entire snippet. Need review both. We can structure.
+
+Need identify issues.
+
+Let's analyze json-schema-to-grammar.cpp.
+
+Includes. using json = common_json.
+
+build_repetition:
+- max_items int, min_items int. If max_items == 0 return "". If min_items==0 && max_items==1 return item_rule + "?". If separator empty:
+  - min=1 no max -> item_rule + "+"
+  - min=0 no max -> item_rule + "*"
+  - return item_rule + "{" + min + "," + (has_max ? max : "") + "}"
+Potential bug: if min_items == max_items? It emits {n,n}? Actually if has_max and min==max, emits {n,n}? GBNF supports {n}? It emits {n,n} maybe valid? In GBNF repetition syntax maybe {n,m} with n=m? Could be okay. But if min_items==0 and max_items==0 handled. If min_items==0 and max_items==1 handled. If min_items==0 and has_max >1, emits {0,max}. Fine.
+- separator branch: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?". Need check for max_items=0? Already returned. For min_items=0 max_items=1? Earlier returns item_rule+"?" before separator branch. But with separator and min=0 max=1, should be optional item? It returns item_rule+"?" ignoring separator. That's correct for one item no separator. For min=0 max=2 separator: result = item_rule + " " + build_repetition("(sep item)", 0, 1) -> item_rule + " " + "(sep item)?" then wrap optional -> (item_rule (sep item)?)? This allows empty or item or item sep item. Good. For min=1 max=2: result = item_rule + " " + build_repetition("(sep item)", 0, 1) -> item_rule (sep item)? Good. For min=2 max=2: result = item_rule + " " + build_repetition("(sep item)", 1, 1) -> item_rule (sep item) (since min=1 max=1 no separator? build_repetition with separator empty? Wait inner call separator_rule default empty because call build_repetition("(sep item)", min-1, max-1) no separator. For min=1 max=1, separator empty: max_items==1, min_items==1, not min0 max1, separator empty, min=1 !has_max? has_max true (max=1), so returns item_rule + "{1,1}"? Actually has_max true, min=1, max=1, separator empty: not min=1 !has_max, not min=0 !has_max, returns item_rule + "{1,1}". So result item_rule + " " + "(sep item){1,1}". That's okay but maybe {1,1} weird. Could simplify. For min=2 max=2, should item sep item. It yields item (sep item){1,1}. Fine.
+Potential bug: max_items - 1 when max_items=0? handled. If max_items=1 and min_items=0 with separator, earlier returns item_rule+"?" ignoring separator. Good.
+Potential bug: if max_items < min_items? Not checked. Could produce invalid repetition. Schema validation maybe ensures. But build_repetition should guard. If min_items > max_items, e.g. min=2 max=1, returns item_rule+"{2,1}" invalid. Need validate. Also negative min/max? arr.min_items maybe int; schema may allow negative? In array, min_items default? They use arr.min_items. If negative? build_repetition with min negative could produce invalid. Need check schema parsing. Could be issue.
+
+build_min

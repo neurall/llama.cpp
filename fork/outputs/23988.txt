@@ -1,0 +1,43 @@
+run 23988 | ram-pool | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.46 t/s | prompt 486.5 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 10:31:33
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (empty rule). Actually in GBNF, an empty rule might match empty string. If min_items > 0 and max_items == 0, that's a contradictory schema; returning "" silently accepts empty. Hmm, but that's an edge case. Actually wait — if max_items == 0 and min_items > 0, the schema is unsatisfiable. Returning "" means the rule matches nothing... Actually an empty rule body in GBNF... The generated grammar would be `rule ::= ` which might be invalid or match empty. This is a minor edge case.
+
+Also `build_repetition` with separator: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items`. If max_items == 0 handled earlier. OK.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `has_min`/`has_max` sentinel values via `std::numeric_limits<int64_t>::min()/max()`. This means you can't express a schema that actually requires exactly INT64_MIN or INT64_MAX. Edge case, probably acceptable.
+
+- In `more_digits`, `max_digits != std::numeric_limits<int>::max()` — comparing int to int max, fine.
+
+- The `uniform_range` lambda uses `std::function` recursion — fine but has overhead.
+
+- Potential bug: in the `has_min && has_max` branch, when `min_value < 0 && max_value < 0`, it negates. OK.
+
+- `min_value < 0` (and max >= 0): emits `"-" (...) | ` then sets min_value = 0 and continues to build the positive part. But wait — after emitting `"-" ( ... ) | `, it falls through to `auto min_s = std::to_string(min_value);` with min_value = 0. Then the loop `for (auto digits = min_digits; digits < max_digits; digits++)` — min_digits = 1 ("0"), max_digits = length of max_s. Then uniform_range("0", max_s)... wait, first iteration: digits = 1 < max_digits, so uniform_range("0", "9"), then min_s = "10", out << " | ", etc. Then uniform_range(min_s, max_s). Hmm, but uniform_range("0", "9") — from="0", to="9", i=0, from[0]='0', to[0]='9', sub_len = 0, so emits `[0-9]`. OK that's right.
+
+Wait, actually there's a subtle issue: when min_value was negative and got clamped to 0, the emitted regex for the positive side starts at 0. uniform_range("0", max_s) — the common prefix is empty since "0" vs e.g. "123". i=0, so no prefix emitted. sub_len = from.length()-1 = 0, so emits `[0-9]`... wait no. Let me re-check: `uniform_range("0", "123")`: i=0 (from[0]='0' != to[0]='1'). i < from.length() && i < to.length() → true. sub_len = 1 - 0 - 1 = 0. So else branch: `out << "[" << from[i] << "-" << to[i] << "]"` → `[0-1]`. Hmm, that's wrong! We want 0..123, but `[0-1]` only matches single digit 0 or 1. Wait, but the loop before: digits from min_digits=1 to max_digits-1: uniform_range("0", "9") → `[0-9]`, then min_s = "10"; digits=2: uniform_range("10", "99"), then min_s =

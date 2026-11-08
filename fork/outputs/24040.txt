@@ -1,0 +1,47 @@
+run 24040 | pool-admit-all | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.67 t/s | prompt 544.2 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 12:41:27
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (empty rule). Actually in GBNF, an empty rule might be problematic. Let me think... If min_items > 0 and max_items == 0, the schema is contradictory (can't have at least min but at most 0 items). Returning "" would produce an empty rule like `foo ::= ` which is invalid GBNF. This is an edge case worth noting.
+
+Also `has_max` is computed before checking `max_items == 0`, fine.
+
+Another subtle issue: when `separator_rule` is non-empty and `min_items == 0 && max_items == 1`, the code returns `item_rule + "?"` before checking separator — that's correct behavior since with max 1 item there's no separator needed. Good.
+
+Wait, actually there's a subtle bug: when `min_items == 0 && max_items == 1`, it returns `item_rule + "?"` — correct. But what about `min_items == 1 && max_items == 1`? Falls through to the separator branch: `build_repetition("(" + sep + " " + item + ")", 0, 0)` → max_items == 0 → returns "". So result = item_rule + " " + "" = item_rule + " ". Hmm, that leaves a trailing space. Actually `item_rule + " " + ""` gives "item_rule " with trailing space. That's cosmetically odd but grammatically fine (whitespace in GBNF rules is ignored). Actually wait — is it? In GBNF, spaces in rule definitions are generally ignored except within literals. So trailing space is fine.
+
+Hmm, but actually let me check: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If min_items == 1, max_items == 1: inner call gets min 0, max 0 → returns "" (because max_items == 0 check). So result = item + " ". OK.
+
+If min_items == 2, max_items == 1: contradictory; inner gets min 1, max 0 → "" → result = item + " ". Grammar would allow only 1 item though schema requires 2. Edge case, schema validation issue.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `has_min` / `has_max` sentinel-based: uses `std::numeric_limits<int64_t>::min()` as "no min" sentinel. This means you can't express a schema with actual minimum of INT64_MIN. Edge case.
+
+- In `more_digits`, `max_digits != std::numeric_limits<int>::max()` — comparing int to int max, fine.
+
+- The `uniform_range` lambda is recursive via `std::function` — fine but has overhead; also recursion depth could be an issue for very long numbers, but bounded by 19 digits.
+
+- Potential bug: in `uniform_range`, when `from_sub == sub_zeros` branch: `digit_range(from[i], to[i] - 1)` — what if `from[i] == to[i]`? Then `digit_range(from[i], to[i]-1)` would output `[c-c-1]`... wait, let's think. If `from[i] == to[i]` and `from_sub == sub_zeros` and `to_sub != sub_nines`... Hmm, can that happen? If from[i] == to[i], then the common prefix loop `while (i < from.length() && i < to.length() && from[i] == to[i]) i++;` would have advanced past i. So at this point from[i] != to[i], guaranteed from[i] < to[i]. OK so `digit_range(from[i], to[i] - 1)`

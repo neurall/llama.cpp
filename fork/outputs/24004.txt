@@ -1,0 +1,23 @@
+run 24004 | pinpool-default | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 13.74 t/s | prompt 517.1 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 11:17:01
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` when `has_max` is true means `max_items >= 1`, so `max_items - 1 >= 0`. OK.
+   - Actually wait, if `min_items == 0 && max_items == 1` with separator: returns `item_rule?` — hmm, but with a separator rule, for 0 or 1 items, the separator is irrelevant, so that's correct.
+   - Edge case: `min_items == 1 && max_items == 1` with separator: `build_repetition("(sep item)", 0, 0)` → returns "" (since max_items == 0). So result is `item_rule + " " + ""` = `item_rule ` with trailing space. Hmm, that produces `item_rule ` followed by nothing — trailing space in the rule. Actually `item_rule + " " + ""` = "item_rule " — there's a trailing space. That's a minor formatting issue but grammars might tolerate it. Actually wait, let me check: `min_items=1, max_items=1`: `has_max = true`. Not (min==0 && max==1). separator non-empty. So `result = item_rule + " " + build_repetition("(sep item)", 0, 0)`. The inner call: `max_items == 0` → return "". So result = "item_rule " with trailing space. Minor cosmetic issue.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `uniform_range` lambda captures by reference recursively via std::function — OK.
+   - Potential issue: `decimals_left` default 16, and `less_decimals = std::max(decimals_left - 1, 1)`. When `decimals_left` reaches 1, `less_decimals` stays 1 — could this cause infinite recursion? Let's see: `build_min_max_int` with `has_min` and `min_value > 9` path calls `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)`. Each recursion reduces decimals_left by 1 until it hits 1, then `less_decimals` stays 1... but the recursion also reduces the number of digits in min_s each time (since it takes substr(1)), so eventually min_value <= 9 path is taken. Hmm, but wait — if `min_s.substr(1)` is empty? `std::stoll("")` throws `std::invalid_argument`. When can that happen? If `min_value` is a single digit, we'd be in the `min_value <= 9` branch, so `min_s.length() >= 2` in the else branch. OK.
+   - Actually there's a subtle issue: in the `min_value <= 9` branch, `char c = '0' + min_value;` — fine for 1-9.
+   - The `has_min && has_max` case with `min_value < 0 && max_value < 0`: negates both. `-max_value` where `max_value == std::numeric_limits<int64_t>::min()`? Wait, if `max_value < 0` and `max_value == INT64_MIN`, then `-max_value` is UB (overflow). But wait — `has_max = max_value != INT64_MAX`. If `max_value == INT64_MIN`, then `has_max` is true, and `-max_value` overflows. Hmm, but can that happen? The caller passes `i.minimum` and `i.maximum` from the schema. If schema says `maximum: -9223372036854775808`, then `-max_value` is UB. Edge case, but worth noting. Actually wait, in the `has_min && has_max` branch: `if (min_value

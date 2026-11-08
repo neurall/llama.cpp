@@ -1,0 +1,74 @@
+run 24067 | no-map-reads | edit4c | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.93 t/s | prompt 583.3 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:31:16
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function, used by... let me check. It's used in the schema conversion code (which appears to be cut off in the provided snippet). Actually, the file is truncated at `gbnf_escape_length`. So I only see part of the file. Hmm, but the task says "Delete the code in this file that is never used." I need to work with what's shown.
+
+Wait, the file shown is incomplete - it ends mid-function at `gbnf_escape_length`. So I need to reason about what's used within the shown portion, and presumably the rest of the file (not shown) uses some of these functions.
+
+Actually, this is a known task format: given a file, delete unused code. The file appears truncated, but I should treat the shown content as the file content. Let me re-read.
+
+The file ends with:
+```
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+   
+```
+
+That's an incomplete function. Hmm. This is tricky. The instruction says delete code that is never used. Since the file is cut off, maybe I should assume the rest of the file exists but isn't shown? Or maybe the task intends for me to analyze only the shown code.
+
+Let me think about this differently. This looks like it's from llama.cpp's `json-schema-to-grammar.cpp`. Let me recall the actual file content and figure out what's unused.
+
+In the actual llama.cpp file, there are functions like:
+- `build_repetition` - used
+- `build_min_max_int` - used
+- `SPACE_RULE` - used
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES` - used
+- `is_reserved_name` - used
+- `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `GRAMMAR_LITERAL_ESCAPES` - used
+- `MAX_PATTERN_DEPTH` - used
+- `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - used
+- `replacePattern` - used
+- `format_literal`, `gbnf_format_literal` - used
+- `gbnf_escape_length` - used in `gbnf_escape_string`...
+
+Hmm, but the task is to find code that is never used. Let me look more carefully at the shown code for internal inconsistencies.
+
+Looking at `build_min_max_int`:
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+    ...
+```
+
+Inside, there's a lambda `uniform_range` defined with `std::function`. It's used in the `has_min && has_max` branch and in the `min_value > 9` branch... wait, let me check.
+
+In the `has_min` branch:
+- `min_value < 0`: calls `build_min_max_int` recursively, uses `more_digits`.
+- `min_value == 0`: uses `more_digits`.
+- `min_value <= 9`: uses `digit_range`, `more_digits`.
+- else (min_value > 9): uses `digit_range`, `more_digits`, and recursive `build_min_max_int`. Does it use `uniform_range`? No! In the else branch, it uses `digit_range` and recursion, not `uniform_range`.
+
+Wait, actually in the real llama.cpp code, let me recall... The actual code:
+
+```cpp
+    if (has_min) {
+        if (min_value < 0) {
+            ...
+        } else if (min_value == 0) {
+            ...
+        } else if (min_value <= 9) {
+            ...
+        } else {
+            auto min_s = std::to_string(min_value);
+            auto len = min_s.length();
+            auto c = min_s[0];
+
+            if (c > '1') {
+
+---

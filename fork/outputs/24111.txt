@@ -1,0 +1,97 @@
+run 24111 | one-card-prior-cap | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 54.27 t/s | prompt 1070.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 14:36:26
+
+},},
+    {"uuid", "\"\\\\\" \"[\" ( [0-9a-fA-F]{" << 8 << "} \"-\" | ){4} [0-9a-fA-F]{" << 12 << "} \"]\"", {}},
+    {"string", {"\"\\\\\" ( \"[\" char{1,1024} \"]\" | char{1,1024} )", {"char"}}},
+    {"char", {"[^\"\\\\ \\x7f \\x00-\\x1f] | \"\\\\\" ( \"[\" ( [\"\\\\/bfnrt] | \"u\"[0-9a-fA-F]{4} ) \"]\" | char )", {}},},
+    {"string-escaped", {"\"\\\\\" ( \"[\" char{1,1024} \"]\" | char{1,1024} )", {"char"}}},
+    {"null", {"\"null\"", {}}},
+};
+
+static std::unordered_map<std::string, BuiltinRule> CONTEXT_RULES = {
+    {"space", {"(\" \" | \"\\n\"{1,2} [ \\t]{0,20})?", {}}},
+};
+
+static std::string format_regex(const std::string & s) {
+    // Convert a regex to GBNF grammar format
+    std::string result;
+    bool in_char_class = false;
+    bool escaped = false;
+
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+
+        if (escaped) {
+            result += c;
+            escaped = false;
+            continue;
+        }
+
+        if (c == '\\') {
+            result += '\\';
+            escaped = true;
+            continue;
+        }
+
+        if (c == '[') {
+            in_char_class = true;
+            result += '[';
+        } else if (c == ']') {
+            in_char_class = false;
+            result += ']';
+        } else if (c == '"' && !in_char_class) {
+            result += "\\\"";
+        } else if (c == '|' && !in_char_class) {
+            result += " | ";
+        } else if (c == '(' && !in_char_class) {
+            result += "(";
+        } else if (c == ')' && !in_char_class) {
+            result += ")";
+        } else if (c == '{' && !in_char_class) {
+            result += "{";
+        } else if (c == '}' && !in_char_class) {
+            result += "}";
+        } else if (c == '*' && !in_char_class) {
+            result += "*";
+        } else if (c == '+' && !in_char_class) {
+            result += "+";
+        } else if (c == '?' && !in_char_class) {
+            result += "?";
+        } else if (c == '.' && !in_char_class) {
+            result += "[^\"\\\\ \\x7f \\x00-\\x1f]";
+        } else {
+            result += c;
+        }
+    }
+
+    return result;
+}
+
+static std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const std::vector<std::string> & hacks) {
+    auto t0 = ggml_time_us();
+    auto bnf = common_grammar_builder_create();
+
+    cb(bnf);
+    for (auto & hack : hacks) {
+        if (hack == "space") {
+            common_grammar_builder_add_rule(bnf, "space", "( \" \" | \"\\n\"{1,2} [ \\t]{0,20})?");
+        }
+    }
+
+    auto t1 = ggml_time_us();
+    LOG_INF("%.2f ms to build grammar\n", (t1 - t0) / 1000.0f);
+
+    std::stringstream out;
+    common_grammar_builder_write(bnf, out);
+
+    auto t2 = ggml_time_us();
+    LOG_INF("%.2f ms to write grammar\n", (t2 - t1) / 1000.0f);
+
+    common_grammar_builder_free(bnf);
+    return out.str();
+}
+
+static std::string build_grammar_from_json(const json & schema, const std::vector<std::string> & hacks) {
+    return build_grammar(
+        [&](const common_grammar_builder & bnf) {
+            std::function<std::string(const json &

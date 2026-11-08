@@ -1,0 +1,70 @@
+run 24023 | past-in-pool | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.46 t/s | prompt 1232.8 t/s | 1024 tokens | args: -np 1 --moe rampool=0 | power 220+280 W | 2026-11-08 12:01:18
+
+<think>The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and `min_items == 1 && !has_max`, returns `item_rule + "+"` - correct
+  - When separator is empty and `min_items == 0 && !has_max`, returns `item_rule + "*"` - correct
+  - When separator is empty, returns `{min,max}` - correct
+  - With separator: builds `item (sep item)*` pattern - looks correct
+  - When `min_items == 0` with separator, wraps in `()?` - correct
+
+Potential issue: When `min_items > max_items` (invalid input), no validation is done. This could produce invalid grammar.
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda is recursive via `std::function` - this is fine but could be slow
+- The function handles negative ranges, mixed ranges, etc.
+- Potential issue: `std::stoll` could throw if the substring is not a valid number, but since it's derived from `std::to_string(min_value)`, it should be safe
+- The `decimals_left` parameter limits recursion depth - good
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization order: `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` are file-scope statics. `is_reserved_name` uses a function-local static that references both. This should be fine since they're initialized before `is_reserved_name` is called.
+
+### INVALID_RULE_CHARS_RE, GRAMMAR_LITERAL_ESCAPE_RE, etc.
+- Static regex objects - these are initialized at file scope. Could have static initialization order issues if used before initialization, but since they're in the same file and used within functions called after main starts, should be fine.
+
+### gbnf_escape_length
+- Handles various escape sequences
+- Comment says "keep in sync with parse_char() in src/llama-grammar.cpp" - good practice
+- Looks correct
+
+### common_chat_schema_converter class
+
+#### _add_rule
+- Handles name collisions by appending numbers
+- The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Looks correct.
+
+#### _generate_union_rule
+- Generates alternatives with numbered suffixes
+- Looks correct
+
+#### _visit_pattern
+- Snapshots rules before attempting pattern conversion
+- On failure, reverts rules and either warns or errors
+- Good error handling pattern
+
+#### _pattern_to_rule
+- Complex regex-to-grammar conversion
+- Handles various regex constructs
+- Potential issues:
+  - The `paren_depth` check at the end: `if (paren_depth != 0)` - but `paren_depth` is a local variable in `_pattern_to_rule`, and the `transform` lambda captures it by reference. The check happens after `transform()` returns. If there are unbalanced parens, the `transform` function would throw when it encounters `)` with `paren_depth == 0`, or the final check catches unclosed `(`. Looks correct.
+  - The character class parsing: handles escapes within `[]`
+  - The curly brace repetition parsing: handles `{n}`, `{n,m}`, `{n,}`, `{,m}`
+  - The literal parsing: handles various escape sequences
+
+Potential issue in `_pattern_to_rule`: The `sub_rule_ids` map is used to create sub-rules for repeated patterns. The key is the sub-pattern string, and the value is the rule ID. But the rule name uses `sub_rule_ids.size()` which could collide if different sub-patterns are added. Actually, looking more carefully:
+```cpp
+std::string & sub_id = sub_rule_ids[sub];
+if (sub_id.empty()) {
+    sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+}
+```
+The `sub_rule_ids.size()` is used as a counter, but since `sub_id` is inserted into the map before the size is checked... wait, actually `sub_rule_ids[sub]` creates an entry if it doesn't exist, so `sub_rule_ids.size()` would include this new entry. So if this is the first

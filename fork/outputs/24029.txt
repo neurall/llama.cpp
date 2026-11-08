@@ -1,0 +1,20 @@
+run 24029 | pool-whole-expert | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.26 t/s | prompt 596.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 12:17:19
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` when `has_max` is true means `max_items >= 1`, fine.
+   - Actually wait, there's a potential issue: if `min_items == 0 && max_items == 1` with a separator, the result would be `(item (sep item))?` — hmm, actually for min=0, max=1, the inner repetition is min=0, max=0, which returns "" — so result is `(item )?` — wait let me trace: `build_repetition(item_rule, 0, 0, sep)` → inner call: `item_rule + " " + build_repetition("(sep item)", 0, has_max ? 1-1=0 : ...)`. Inner inner: max_items == 0 → returns "". So result = `item_rule + " "` then wrapped in `( ... )?` → `(item )?`. Hmm, there's a trailing space. Actually wait — the outer call for min=0, max=1: `result = item_rule + " " + build_repetition(...)` where inner returns "" so result = `item_rule + " "`, then `result = "(" + result + ")?"` → `(item )?`. That trailing space is harmless in GBNF but sloppy. Actually wait, does the code check `min_items == 0 && max_items == 1` before the separator branch? Yes: `if (min_items == 0 && max_items == 1) { return item_rule + "?"; }` — this happens before the separator check, so for min=0/max=1 it returns `item_rule + "?"` without separator. That's correct behavior (a single item doesn't need a separator). OK.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — minor performance issue but fine.
+   - `uniform_range` lambda captures by reference recursively via `std::function` — OK.
+   - Potential issue: `digit_range(from[i], to[i] - 1)` — if `from[i] == to[i]`... wait, in that branch, we know `from[i] < to[i]` because we skipped common prefix and `from_sub != sub_zeros`... hmm, actually let me think. If `from[i] == to[i]`, then... the code enters the `if (i < from.length() && i < to.length())` branch. If `from_sub == sub_zeros`, then `digit_range(from[i], to[i] - 1)` — if `from[i] == to[i]`, this would be `digit_range(c, c-1)` which produces `[c--1]` or something weird. Can `from[i] == to[i]` happen here? We know `i` is the first position where they differ OR one of them ended. If `i < from.length() && i < to.length()`, then `from[i] != to[i]` (since the while loop advanced past all equal chars). Wait, the while loop: `while (i < from.length() && i < to.length() && from[i] == to[i]) i++;` — so after the loop, either `i >= from.length()` or `i >= to.length()` or `from[i] != to[i]`. So in the branch `if (i < from.length() && i < to.length())`, we have `from[i] != to[i]`. And since this is numeric strings of the same... hmm, wait, are they the same length? In the top-level call from the `has_min && has_max` branch, `uniform_range(min_s, string_repeat("9", digits))` — same length. And `uniform_range(min_s, max_s)` — different lengths possible! E.g., min=95, max=123: digits loop from 2 to 2 (max_digits=3): digits=

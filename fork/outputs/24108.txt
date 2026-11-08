@@ -1,0 +1,69 @@
+run 24108 | one-card-prior-cap | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.8 t/s | prompt 381.1 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-11-08 14:33:01
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. It's cut off at the end (the `gbnf_escape_length` function is incomplete), but I need to work with what's shown.
+
+Let me go through each piece of code and determine what's used:
+
+1. `build_repetition` - static function. Is it used? It's typically used by `build_min_max_int`? No, actually `build_repetition` is used in schema-to-grammar conversion for arrays with minItems/maxItems. But within this file as shown, is it called anywhere? Let me check... `build_min_max_int` doesn't call `build_repetition`. The file is truncated, so we can't see the rest. Hmm.
+
+Wait, the instruction says "Delete the code in this file that is never used." The file shown is truncated mid-function (`gbnf_escape_length`). So I need to reason about what's used within the visible portion, and possibly what would be used by the rest of the file (which we can't see).
+
+Actually, this is a common task format: given a file, remove dead code. The file is truncated, but presumably the analysis should be based on the whole file's typical content (this is llama.cpp's json-schema-to-grammar.cpp). Let me recall the actual llama.cpp file to determine what's used.
+
+The actual llama.cpp `common/json-schema-to-grammar.cpp` contains:
+
+- `build_repetition` - used in `build_object_rule` (for properties) and in schema-to-grammar visitors for arrays (minItems/maxItems), and strings with minLength/maxLength? Actually it's used for arrays and for `"oneOf"`? Let me recall.
+
+Actually in llama.cpp's implementation:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+```
+
+Used in:
+- `build_object_rule` for required/optional properties? Actually object rule building uses `build_repetition` for the key-value pairs repetition.
+- array handling: `build_repetition(...)` with separator `","`.
+- string handling with `minLength`/`maxLength`? Hmm, in llama.cpp, strings with min/length use `build_repetition` on char rule? Let me think... Actually yes: for `"minLength"`/`"maxLength"` on strings, they generate `char{min,max}` via build_repetition? I recall something like that.
+
+- `build_min_max_int` - used for integer/number with minimum/maximum constraints.
+
+- `SPACE_RULE` - used as the space rule in generated grammars.
+
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES` - used.
+
+- `is_reserved_name` - used when generating rule names to avoid collisions.
+
+- `INVALID_RULE_CHARS_RE` - used in `parse_jsonschema`/rule name generation (`make_rule_name` or similar).
+
+- `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `GRAMMAR_LITERAL_ESCAPES` - used in `format_literal` and `format_range_literal`? Hmm, in the C++ version, is there a `format_range_literal`? Let me recall.
+
+Actually in llama.cpp json-schema-to-grammar.cpp (the C++ port), there are functions:
+
+```cpp
+static std::string format_literal(const std::string & literal) {
+    std::string escaped = replacePattern(literal, GRAMMAR_LITERAL_ESCAPE_RE, [&](const std::smatch & match) {
+        char c = match.str()[0];
+        return GRAMMAR_LITERAL_ESCAPES.at(c);
+    });
+    return "\"" + escaped + "\"";
+}
+
+std::string gbnf_format_literal(const std::string & literal) { return format_literal(literal); }
+```
+
+And there's also:
+
+```cpp
+static std::string format_range_literal(const std::string & literal) {
+    std::string escaped = replacePattern(literal, GRAMMAR_RANGE_LITERAL_ESCAPE_RE, [&](const std::smatch & match) {
+        char c = match.str()[0];
+        return GRAMMAR_LITERAL_ESCAPES.at(c);
+    });
+    return "\"" + escaped + "\"";
+}
+```
+
+Hmm, wait. Actually I recall in the Python version there's `_format_literal
+---

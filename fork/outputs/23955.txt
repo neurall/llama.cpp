@@ -1,0 +1,47 @@
+run 23955 | ram-pool | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.56 t/s | prompt 7.9 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:21:32
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but readable-ish implementation, single HTML file, no dependencies (that keeps it small — no CDN needed).
+
+Key features a Tetris needs to be a real Tetris:
+- 10×20 board
+- 7 tetrominoes (I, O, T, S, Z, J, L) with rotation
+- Movement: left, right, down (soft drop), rotate, hard drop maybe
+- Line clearing
+- Score
+- Game over
+- Gravity/speed increase
+
+I can compress heavily:
+- Use canvas for rendering (small code).
+- Encode pieces as arrays of rotation states or use a compact encoding.
+- Use keyboard events with key codes.
+- Use setInterval or requestAnimationFrame with a timer.
+
+Let me design a genuinely compact implementation. I'll aim for something like ~600-800 bytes of JS, maybe less. Let me actually write it carefully.
+
+Classic approach: represent each tetromino as a 4×4 or 3×3 matrix encoded as a string/binary. A very compact trick: store all rotations of all 7 pieces as a single string of bits, or use the "SRS-lite" approach where rotation is computed by rotating a matrix.
+
+Compact piece representation: each piece as array of 4 rotation states, each state as array of cells [x,y] pairs, or as a binary number.
+
+A well-known ultra-compact encoding: pieces as numbers where each rotation is a bitmask in a 4x4 grid (16 bits). 7 pieces × 4 rotations = 28 masks × 16 bits = 448 bits = 56 bytes if packed. But decoding adds code.
+
+Alternative compact trick used in famous golfed tetris: define pieces via a string like "0123" indices into a shape table.
+
+Let me think of the classic minimal tetris in JS. There's a famous one:
+
+```js
+b=Array(200).fill(0) // board
+```
+
+Let me just write my own, aiming for clarity-within-compactness. I'll write it as one HTML file with minimal markup, canvas, and a compact script. I'll also add a tiny bit of styling so it doesn't look like garbage — but keep it minimal since "smallest" is the goal. Actually the user asked for smallest — I should prioritize byte count. But I can still make it look decent with very few bytes: monochrome-ish blocks with distinct colors per piece via a small palette string, dark background, centered canvas. A few lines of CSS.
+
+Let me draft the game logic.
+
+Board: 10 wide, 20 tall. Represent as array of 200, values 0 = empty, else color index (1-7) or piece id.
+
+Pieces: I'll encode each tetromino's 4 rotation states. Compact way: for each piece, store a base shape as list of [x,y] offsets in a 4x4 or within bounding box, and rotate mathematically: rotation of a cell (x,y) in an NxN box: (x,y) -> (N-1-y, x) for clockwise. Different pieces have different box sizes: I and O use 4x4? Actually standard: I in 4x4, O in 2x2 (rotation no-op), others in 3x3. To keep code small, I can put everything in a 4x4 box and rotate within it — but then I piece rotation in 4x4 works (the classic I rotations in 4x4: horizontal row at y=1, vertical column at x=2). Rotating a 4x4: (x,y)->(3-y,x). Row y=1: cells (0,1),(1,1),(2,1),(3,1) -> becomes column x=2: (3-1=2, x): (2,0),(2,1),(2,2),(2,3). Yes that's the standard I rotation in a 4x4 box. 
+
+For 3x3 pieces placed in a 4x4 box, rotation within 4x4 would move them around the box, which changes the piece position — not good. Better: rotate within the piece's own box size. So store box size per piece:
+---

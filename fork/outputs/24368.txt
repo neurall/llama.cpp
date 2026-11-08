@@ -1,0 +1,70 @@
+run 24368 | nommap5 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.61 t/s | prompt 991.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 20:23:03
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, and potential problems.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` cases - correct
+  - When separator is present, builds `item (separator item)*` pattern - looks correct
+  - The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for the separator pattern
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda handles digit-by-digit range generation
+- Potential issue: `from[i] - 1` when `from[i]` is '0' would give '/' which is not a digit - but this is guarded by the `from_sub == sub_zeros` check
+- The `to_reached` variable is used to track if the upper bound is already covered
+- The function handles negative numbers by negating and recursing
+- `decimals_left` parameter seems to limit recursion depth for unbounded cases
+
+### _add_rule function
+- Handles name collisions by appending numbers
+- The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Looks correct.
+
+### _pattern_to_rule function
+- Complex regex-to-grammar conversion
+- Handles various regex constructs: `.`, `()`, `[]`, `|`, `*`, `+`, `?`, `{}`, escapes
+- The `join_seq` function merges consecutive literals
+- Potential issue: The literal merging logic in `join_seq` - when items are literals, they're concatenated. But the condition for when to break out of literal accumulation seems complex.
+
+### _not_strings function
+- Generates a rule that matches strings that are NOT in a given set
+- Uses a trie for efficient matching
+- The `rejects` string accumulates characters for the negated character class
+- Potential issue: If `rejects` contains characters that need escaping in a character class (like `]`, `-`, `\`), they're not escaped. This could be a bug.
+
+### _resolve_ref function
+- Handles `$ref` resolution with cycle detection
+- The `ref_fragment` extraction looks correct
+
+### _build_object_rule function
+- Complex function for building object rules with required and optional properties
+- The `get_recursive_refs` function builds alternatives for optional properties
+- Potential issue: The rule generation for optional properties creates alternatives that might not cover all valid orderings
+
+### _visit_pattern function
+- Snapshots `_rules` before attempting pattern conversion
+- On failure, reverts `_rules` to snapshot
+- This is a good pattern for rollback
+
+### _pattern_to_rule - character class handling
+- When processing `[...]`, it accumulates characters until `]`
+- The escape handling uses `gbnf_escape_length` to determine escape length
+- Potential issue: The character class content is passed through as-is to the grammar. If the regex character class contains characters that need escaping in GBNF (like `]`, `-`, `\`), they might not be properly escaped.
+
+### _pattern_to_rule - literal handling
+- The condition for when to break out of literal accumulation:
+```cpp
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+```
+This is complex. It seems to be trying to accumulate characters that are "literal" (not special regex chars) but also checking if the next character is special. This logic seems potentially buggy - it's checking if the current char is not special AND (end of string OR literal is empty OR next char is '.' OR next char is not special). The `literal.empty()` condition seems odd - if literal is empty, it would add the current char even if the next char is special.
+
+Wait, let me re-read. The condition is:
+- Current char is not in NON_LITERAL_SET (i.e., it's a "literal" character)
+- AND (end of string OR literal is empty OR next char is

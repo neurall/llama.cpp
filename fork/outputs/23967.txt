@@ -1,0 +1,49 @@
+run 23967 | ram-pool | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.97 t/s | prompt 45.2 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:31:56
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small but make it feel crafted and alive rather than a bare gray grid: add a layered background, strong type contrast, a distinctive display face paired with a readable body face, micro-interactions, and a subtle "line clear" feedback.
+
+But "smallest" — they want minimal code. So I should balance: keep the code compact but polished. I'll deliver a compact single-file Tetris with tight CSS, keyboard controls, next-piece preview, score/level/lines, and some perceptible feedback (line-clear flash, particle-ish, screen shake, sound via WebAudio maybe). Keep it small-ish but not obfuscated.
+
+Design instinct: the most characteristic thing about Tetris is the playfield itself, so I'll open with the board, not a generic header. The 7 tetromino colors are already a distinctive multi-color palette, so I'll lean on those rather than inventing a gradient. A dark background is natural for Tetris, but a flat near-black with a single neon accent would feel generic; instead I'll use a rich dark slate/blue-black with layered subtle grid texture and the classic 7 tetromino colors as the palette — that's characteristic and multi-color.
+
+Typography: display face — something geometric/chunky. Use Google Fonts? That adds a network dependency; "smallest" suggests minimal. I could use system fonts but I want a distinctive display face paired with a readable body face. I can link Google Fonts with two families: e.g., "Bungee" or "Archivo Black" or "Space Grotesk" for display, and "IBM Plex Mono" or "DM Sans" for body. Tetris vibe: chunky pixel/geometric. Let's use "Chakra Petch" or "Bungee"? Maybe display: "Archivo Black" — strong. Body: "IBM Plex Mono". Actually a nice pairing: display "Bungee" (blocky, arcade) + body "Space Grotesk". Hmm, Bungee is very blocky and arcade — fits Tetris. Let's do display: 'Bungee' for the wordmark and big numbers? Bungee numerals are chunky. Body: 'Space Grotesk' or 'IBM Plex Mono'. I'll use Bungee for display headings/score labels and Space Grotesk for body text. Include fallbacks.
+
+Keep it small: use a single <link> to Google Fonts with both families.
+
+Implementation plan (compact but readable):
+
+HTML structure:
+- Left: playfield canvas (or DOM grid). Canvas is smaller code. Use canvas 10x20, scaled.
+- Right rail: score/lines/level, next piece mini-canvas, hold maybe, controls legend.
+- Header: wordmark "TETRIS" with a small kicker.
+
+Actually "smallest" — I'll aim for ~120 lines total. Let's write it well.
+
+Game logic compact:
+
+```js
+const W=10,H=20,S=24;
+```
+
+Pieces as strings or matrices. Compact approach: use the classic "S" piece definitions via arrays of rotation states? A compact way: define pieces as numbers and rotate by matrix rotation.
+
+```js
+const P='1111 0000 100 110 01 11 11 011 110 1 1 11 11 10 01 11 01 11 100 011'.split(' ')
+```
+Too cryptic. Better readable-compact:
+
+```js
+const SHAPES=[
+ [[1,1,1,1]],            // I
+ [[1,1],[1,1]],          // O
+ [[0,1,0],[1,1,1]],      // T
+ [[1,0,0],[1,1,1]],      // J
+ [[0,0,1],[1,1,1]],      // L
+ [[0,1,1],[1,1,0]],      // S
+ [[1,1,0],[0,1,1]]       // Z
+];
+```
+Rotate: transpose+reverse rows.
+
+Colors: classic Tetris guideline colors: I cyan #00f0f0, O yellow #f0f00
+---

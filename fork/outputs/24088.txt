@@ -1,0 +1,54 @@
+run 24088 | no-map-reads | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.37 t/s | prompt 7.0 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:56:28
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — they want minimal code. But I also care about quality. There's tension here: "smallest" means minimal bytes, but my taste says no plain squares as particles (not relevant here), no emoji, etc. For a code-golf Tetris, the aesthetic will be raw canvas blocks — that's fine, it's what the user asked for. The user explicitly asked for "smallest", so I should honor that intent: a genuinely tiny, working Tetris in a single HTML file.
+
+Let me think about what "smallest" means. I should aim for a genuinely compact implementation — maybe under 1KB or close to it, while still being a real playable Tetris: movement, rotation, line clearing, scoring, game over.
+
+Let me design a minimal Tetris:
+
+Core components:
+1. Canvas for rendering (or even render with divs? Canvas is smaller).
+2. Board: 10x20 array.
+3. Pieces: 7 tetrominoes. Compact encoding.
+4. Game loop with gravity.
+5. Keyboard input: left/right/down move, up rotate, hard drop maybe.
+6. Line clear + score.
+7. Game over detection.
+
+Compact piece encoding: A classic trick is to encode each rotation of each piece as bit patterns, or use a single 4x4 matrix per piece and rotate programmatically. Even smaller: use the "kick-less" rotation by rotating coordinates.
+
+A very compact known approach: store pieces as arrays of coordinates, rotate via (x,y) -> (y, 3-x) or similar within a bounding box.
+
+Let me write it:
+
+```html
+<body onload="setInterval(f=()=>{...},100)">
+```
+
+Let me actually craft it carefully. I'll aim for something genuinely small but readable-ish, maybe with minimal golfing so it stays functional. I could present two things: the golfed one-liner-ish file, and mention its size. The user asked for "smallest html tetris game" — deliver the file, keep my explanation brief.
+
+Let me write a compact Tetris. Known minimal implementations exist around 300-500 bytes. Let me try to write my own solid one, maybe ~600-800 bytes, fully playable.
+
+Plan:
+
+```html
+<canvas id=c width=120 height=240></canvas>
+<script>
+// board 10x20
+B=[],S=0
+P=(x,y,w,h)=>... 
+```
+
+Pieces: define as arrays of [x,y] pairs in a 4x4 box? Or use binary numbers.
+
+Compact piece data trick: each piece = 4 cells; encode as a number where bits represent cells in a 4x4 grid (16 bits). Then rotation = bit manipulation? Rotating a 4x4 bit grid: cell (x,y) at bit index y*4+x; rotated 90° CW: new index x', y' where x' = 3-y, y' = x → bit (3-y)*4 + x... Actually rotating bits in a 16-bit number is doable but messy.
+
+Alternative: store pieces as arrays of coordinate pairs and rotate with a function: r(p)=p.map(([x,y])=>[3-y,x]) — wait need consistent bounding. For pieces defined in a 4x4 box with coords 0..3, rotation CW: (x,y) -> (3-y, x)? Let's check: rotating CW within 4x4: new_x = 3 - y, new_y = x. Hmm, standard CW rotation: (x,y) -> (y, 3-x) for CCW... Let me define: CW rotation maps (x,y) -> (3-y, x). Check with I piece horizontal: cells (0,1),(1,1),(2,1),(3,1). Apply (x,y)->(3-y,x): (0,1)->(2,0), (1,1)->(2,1), (2,1)->(2,2), (3,1)->(2,3). That's vertical column at x=2. Good, that's a valid CW rotation.
+
+O piece: (1,1),(2,1),(1,2),(2,2) → rotates to itself-ish: (1,1)->(2,1), (2,1)->(2,2), (1,2)->(1,1), (2,2)->(1,2). Same set. Good.
+
+So pieces as coordinate arrays:
+- I: [[0,1],[1,1],[2,1],[3,1]]
+- O: [[1,1],[2,1],[1,2],[2,2]]
+- T: [[1,0],[0,1],[
+---

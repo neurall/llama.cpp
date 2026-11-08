@@ -1,0 +1,75 @@
+run 24068 | no-map-reads | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.66 t/s | prompt 11.3 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:32:37
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent (minimal but not ugly).
+
+Let me think about what "smallest" means here. I should aim for a very compact implementation — minified-ish code, short variable names, minimal DOM. But it should still be a real, playable Tetris: 10×20 board, 7 tetrominoes with rotation, line clearing, scoring, gravity, keyboard controls, game over.
+
+I can write it as a single HTML file with inline CSS and JS, heavily compacted. I'll keep it readable enough to explain but compact. Let me aim for something like under 1KB or a few hundred bytes of JS if possible. Realistically a functional Tetris in JS golfed can be ~500-800 bytes. Let me try to write a compact but correct version.
+
+Design considerations: Even for a tiny golfed Tetris, I can make it look intentional — a dark charcoal background, a crisp monospace/retro font, blocks drawn with slight inner shading via canvas. But "smallest" conflicts with fancy styling. I'll keep styling minimal but tasteful: centered canvas, dark background, a small title, score line. Actually to keep it truly small, maybe just canvas + minimal CSS. But I want it to not look like a cheap gray box. I can do a lot with very few bytes: a dark background (#0a0a0f or similar), canvas with a subtle border, and blocks colored per tetromino with a simple two-tone cell (lighter top-left edge) — that's just a few extra bytes in the draw function and makes it look crafted rather than flat.
+
+Let me design the golfed Tetris logic:
+
+Classic compact approach:
+- Board: 10 wide, 20 tall (plus hidden rows maybe). Use a 2D array or a single array of strings.
+- Pieces: define as arrays of rotation states, or use a compact encoding.
+
+A very compact known trick: represent each tetromino's rotations via coordinate lists derived from a base shape with rotation function. Or encode pieces as bit patterns.
+
+Common minimal approach (from famous golfed tetris implementations):
+
+One famous minimal Tetris (by Ryan Farnell / "tiny tetris") uses:
+
+```js
+d=Document
+...
+```
+
+Let me just write my own compact version.
+
+Plan:
+
+```html
+<!doctype html><meta charset=utf8><title>T</title><body style=...><canvas id=c width=200 height=400></canvas><script>...</script>
+```
+
+JS logic:
+
+Variables:
+- `b` board: array of 20 rows, each row array of 10 cells (0 or color index).
+- `p` current piece: {shape matrix, x, y, color}.
+- Shapes: define as arrays of [x,y] offsets per rotation? Or matrix + rotate function.
+
+Compact shape representation: Use strings. Each tetromino as a 4x4 or matrix encoded.
+
+A neat trick: define shapes as arrays of arrays of coordinates:
+
+```js
+S=[[1,1],[[1,0],[1,1],[0,1],[1,2]],...]
+```
+
+Hmm. Let me think of the classic compact encoding used in many golfed tetris:
+
+Pieces as binary matrices per rotation. E.g.:
+
+```js
+const P=[
+ [[0,1,0],[1,1,1],[0,0,0]], // T
+ ...
+]
+```
+
+and rotate by transposing+reversing: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`.
+
+That's compact: one matrix per piece, rotate function ~40 bytes.
+
+Colors: array of 7 colors.
+
+Collision: for each cell of matrix, check bounds and board.
+
+Gravity via setInterval or requestAnimationFrame with drop counter.
+
+Controls: left/right/down arrows move; up rotates; also maybe 'z' rotate CCW. Hard drop with space? Space adds bytes; maybe include since it's cheap: move piece down until collision then lock. Actually hard drop is like 30 bytes. Include it — it makes the game feel complete.
+
+Line clear: after lock, filter full rows, add empty rows on top, score += [100,300,500,800][cleared-1] or simpler: score += cleared*cleared*100? Keep simple: `s+=[0,100,300,500,800][n]` — that's compact-ish. Or `s+=n*n*100`? Fewer bytes: `s+=
+---

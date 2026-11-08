@@ -1,0 +1,64 @@
+run 24144 | split-keeps-upload | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.85 t/s | prompt 1559.3 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 15:33:19
+
+},},
+    {"uuid", "\"\\\\\" \"[\" ( [0-9a-fA-F]{" << 8 << "} \"-\" [0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{" << 12 << "} ) \"]\"", {}},
+    {"string", {"\"\\\\\" ( \"[\" ( [^\"\\\\\\x7F\\x00-\\x1F] | \"\\\\\" ( [\"\\\\/bfnrt] | \"u\" [0-9a-fA-F]{4} ) )* \"]\" )\"", {}},},
+    {"time", {"\"\\\\\" \"[\" [0-9]{2} \":\" [0-9]{2} ( \":\" [0-9]{2} ( \".\" [0-9]{1,16} )? )? \"]\"\"", {}},},
+    {"date", {"\"\\\\\" \"[\" [0-9]{4} \"-\" [0-9]{2} \"-\" [0-9]{2} \"]\"\"", {}},},
+    {"date-time", {"date \"T\" time", {"date", "time"}}},
+    {"date-full", {"\"\\\\\" \"[\" date \"]\"\"", {"date"}}},
+    {"date-time-full", {"\"\\\\\" \"[\" date-time \"]\"\"", {"date-time"}}},
+    {"space", {"\" \" | \"\\n\"{1,2} [ \\t]{0,20}", {}}},
+};
+
+static std::unordered_map<std::string, BuiltinRule> STRING_FORMAT_RULES = {
+    {"date", {"\"\\\\\" \"[\" ( \"[0-9]{4}\" ( \"-\" [0-9]{2} ){2} ) \"]\"\"", {}},},
+    {"time", {"\"\\\\\" \"[\" [0-9]{2} \":\" [0-9]{2} ( \":\" [0-9]{2} )? \"]\"\"", {}},},
+};
+
+static void build_conversion_rule(const common_json & convert, std::string & out) {
+    if (convert.contains("remove_prefix")) {
+        std::string rule = convert["remove_prefix"].get<std::string>();
+        out += rule + " ";
+    }
+    if (convert.contains("convert")) {
+        std::string rule = convert["convert"].get<std::string>();
+        if (rule == "int") {
+            out += "integer";
+        } else if (rule == "float") {
+            out += "number";
+        } else if (rule == "bool") {
+            out += "boolean";
+        } else {
+            throw std::runtime_error("llama.cpp: unknown conversion type in grammar: " + rule);
+        }
+    }
+}
+
+static std::string escape_regex(std::string str) {
+    // Don't escape characters inside character classes
+    bool in_char_class = false;
+    std::string result;
+    for (size_t i = 0; i < str.size(); ++i) {
+        if (str[i] == '[') {
+            in_char_class = true;
+            result += str[i];
+        } else if (str[i] == ']') {
+            in_char_class = false;
+            result += str[i];
+        } else if (!in_char_class && std::strchr(".^$|?()*+\\{}", str[i])) {
+            result += '\\';
+            result += str[i];
+        } else {
+            result += str[i];
+        }
+    }
+    return result;
+}
+
+static std::string format_regex(std::string regex, int depth) {
+    if (regex == R"((?:[0-9]{4})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[1-2][0-9]|3[0-1]))") {
+        return "date";
+    } else if (regex == R"((?:[0-9]{4})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[1-2][0-9]|3[0-1])T(?:[0-1][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9])") {
+        return "date-time";
+    } else if (

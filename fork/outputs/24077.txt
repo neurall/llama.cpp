@@ -1,0 +1,82 @@
+run 24077 | no-map-reads | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 54.93 t/s | prompt 1289.3 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:39:22
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided a C++ source file snippet, likely truncated. Need review. Need analyze code. Need produce final code review. Need likely identify bugs, style, correctness, performance, security, maintainability. Need maybe note incomplete file. Need be thorough.
+
+We need inspect code. File: common/json-schema-to-grammar.cpp. Includes headers. using json = common_json;
+
+Function build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Potential issues:
+- If max_items == 0 and min_items > 0? JSON schema invalid? returns empty string, maybe should throw or handle. If min_items > max_items invalid.
+- If min_items negative? not checked.
+- If max_items == INT_MAX and min_items? has_max false. For separator case: has_max ? max_items - 1 : max_items. If has_max true and max_items == INT_MAX? has_max false if INT_MAX. If max_items = INT_MAX? no overflow. If max_items = INT_MAX? has_max false. If max_items = INT_MAX? okay. If max_items = INT_MAX? no. If max_items = INT_MAX? okay. If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? has_max false. If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.
+- If max_items = INT_MAX? okay.

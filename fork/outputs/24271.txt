@@ -1,0 +1,43 @@
+run 24271 | short-paths | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.41 t/s | prompt 559.2 t/s | 1024 tokens | args: -np 1 --moe map-guard=1 | power 220+280 W | 2026-11-08 17:54:08
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: when `min_items > 0` and `max_items == 0`... returns "" which is fine.
+- When separator_rule is non-empty and min_items == 0, max_items == 1: the first check `min_items == 0 && max_items == 1` returns `item_rule + "?"` — but wait, this ignores the separator! If you have a repetition with separator and max 1 item, there's no separator needed, so that's correct.
+- Hmm, but wait: `if (min_items == 0 && max_items == 1) return item_rule + "?";` — this is checked before the separator handling, which is correct since with max 1 item no separator appears.
+- Edge: `min_items == 1 && max_items == 1` with separator: goes to `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, 0)` — build_repetition with max_items=0 returns "", so result is `item_rule + " "` — trailing space! Actually wait: `build_repetition(...)` with max_items == 0 returns "". So result = `item_rule + " " + ""` = `item_rule + " "`. That leaves a trailing space in the grammar rule. Hmm, is that a bug? Let me check: min_items=1, max_items=1, separator non-empty. result = item_rule + " " + build_repetition(..., min_items==0?0:min_items-1 = 0, has_max ? max_items-1 : max_items = 0). The inner call: max_items == 0 → return "". So result = "item_rule ". Trailing space. In GBNF, trailing space in a rule... the rule would be like `foo ::= "bar" ` with trailing space. Actually GBNF parsers might tolerate trailing whitespace? The rule content ends with a space character which is part of the rule definition... Actually in GBNF format, whitespace in the rule body is generally insignificant except within literals? Hmm, in llama.cpp's GBNF parser, spaces outside quotes are typically ignored/normalized. Actually the grammar parser treats whitespace as separators. A trailing space at end of rule is likely harmless. But it's sloppy. Let me double check the actual upstream code... This is llama.cpp's json-schema-to-grammar. The original code has this same structure. Actually in the original llama.cpp code:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Yes this matches upstream. OK.
+
+2. `build_min_max_int` — recursive function with `std::function` recursion via lambda capturing itself. `uniform_range` is declared as `std::function<void(...)>` and recursively calls itself — that's fine but has overhead. Note `decimals_left` default 16.
+
+Potential bug: In `build_min_max_int`, when `has_min && has_max` and both negative: `out << "\"-\" ("; build_min_max_int(-max_value, -min_value, ...)`. OK.
+
+When `min_value < 0` (and max >= 0): `out << "\"-\" ("; build_min_max_int(0, -min_value, ...)` then `out << ") | "; min_value = 0;` then continues to the has_min/has_max branch below? Wait no — after this, the code continues to `auto min_s = std::to_string(min_value);` etc. within the `if (has_min && has_max)` block. Yes, min_value is set to 0 and then the positive range is handled. OK.
+
+Hmm, wait — there's a subtle issue: when `min_value < 0 && max_value >= 0`, the negative part is emitted as `"-" (0..-min

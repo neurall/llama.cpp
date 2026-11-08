@@ -1,0 +1,53 @@
+run 23999 | ram-pool | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.46 t/s | prompt 1235.4 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 220+280 W | 2026-11-08 10:57:23
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with pattern matching, rule building, and schema traversal
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` case. Let me trace through:
+     - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1)` 
+     - Then wraps in `(...)?`
+     - This seems correct for 0 items (just the optional group) or 1+ items.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item?` - correct.
+   - The separator case: if `min_items == 0`, the inner repetition gets `min_items - 1` which would be `-1`... wait, no: `min_items == 0 ? 0 : min_items - 1`. So it's 0. Then the result is wrapped in `(...)?`. This means 0 items = empty, 1 item = just item, 2+ items = item (sep item)*. That seems correct.
+
+2. **`build_min_max_int` function:**
+   - Complex recursive function for generating integer ranges
+   - The `uniform_range` lambda captures `out` by reference - fine
+   - `decimals_left` parameter is used to limit digit depth - good for preventing infinite recursion
+   - When `has_min && has_max` and both negative: negates and swaps - correct
+   - When `has_min && has_max` and min negative: handles negative part then continues with non-negative - correct
+   - The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - ensures at least 1
+   - Potential issue: when `min_value < 0` and only `has_min`, the recursive call passes `std::numeric_limits<int64_t>::min()` as min_value, which means `has_min` will be false in the recursive call... wait, `min_value != std::numeric_limits<int64_t>::min()` would be false. So it would go to the `has_max` branch. That seems intentional.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if rule already exists with same content, returns existing name. If different content, appends a number. This could potentially loop if there are many rules with the same name but different content, but it's bounded by the number of rules.
+   - The `while` loop condition: `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Seems correct.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good rollback mechanism.
+   - However, `_rules` is a `std::map` and the snapshot is a full copy - could be expensive for large schemas.
+
+5. **`_pattern_to_rule` function:**
+   - Complex regex-to-grammar conversion
+   - The `transform` lambda is recursive (calls itself for groups)
+   - `paren_depth` tracking for balanced parentheses
+   - Character class parsing: handles escapes but could have issues with `]` inside character classes (e.g., `[]]`)
+   - The literal parsing section has complex conditions for when to stop consuming characters
+   - `sub_rule_ids` is used to deduplicate sub-rules within a pattern
+
+6. **`_not_strings` function:**
+   - Builds a trie-based rule to match strings that are NOT in a given set
+   - The `rejects` string accumulates characters for the negation class
+   - Potential issue: if a character in the trie is a special regex character (like `]`, `-`, `^`), it could break the character class. The function doesn't escape these characters.
+   - Wait, looking more carefully: `rejects += c` where `c` is a UTF-8 character. If `c` is

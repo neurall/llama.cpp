@@ -1,0 +1,5 @@
+run 24301 | relcand | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 17.06 t/s | prompt 108.8 t/s | 16 tokens | args: -np 1 --moe pp-only=1 | power 220+280 W | 2026-11-08 18:44:53
+
+_generation_prompt = true;
+    params.tool_choice           = "auto";
+    params

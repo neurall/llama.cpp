@@ -1,0 +1,4 @@
+run 24284 | both-splits | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 14.32 t/s | prompt 121.2 t/s | 16 tokens | args: -np 1 --moe pp-only=1 | power 220+280 W | 2026-11-08 18:16:03
+
+ion
+        std::string prefix_marker_tools = !format.section_start.empty()

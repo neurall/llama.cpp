@@ -1,0 +1,79 @@
+run 23948 | ram-pool | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 56.33 t/s | prompt 82.7 t/s | 965 tokens | args: -np 1 -lm pin | power 220+280 W | 2026-11-08 09:09:17
+
+The user wants the smallest HTML Tetris game. Let me think about this.
+
+The request is "generate smallest html tetris game." The most honest reading: they want a tiny, single-file Tetris. But I don't want to just slap together the bare minimum — I can make it small in bytes yet still feel considered and alive. A compact but complete Tetris in one HTML file, with tight code, but with real polish: nice board rendering, ghost piece, next piece, score, level, hold, pause, game over.
+
+Balance: "smallest" is the ask. So I should deliver genuinely compact code — but not at the cost of it feeling dead. I can make it small AND good-looking with minimal CSS. Let me aim for something like a few KB that's readable-ish but dense.
+
+Let me write it.
+
+Approach: Canvas-based, single file. Use a compact but complete implementation.
+
+Let me write compact Tetris:
+
+```html
+<canvas id=c width=260 height=520><svg onload=...>
+```
+
+Actually let's write clean compact code.
+
+```html
+<canvas id=C width=260 height=520></canvas>
+<script>
+// Tetris
+</script>
+```
+
+Compact tetris core:
+
+Pieces as rotation states via matrix rotation. Use standard shapes.
+
+```js
+let c=C,b=c.getContext`2d`,W=10,H=20,S=26,
+g=Array.from({length:H},_=>Array(W).fill(0)),
+p,n=0,s=0,l=1,r=0,d=0,h=0,
+P=[[],[1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1],[1,1,1,1]]
+```
+
+Better: define pieces as strings of 4x4 bit patterns.
+
+Classic tiny tetris:
+
+```js
+const O='1111 11 111 111 111 11 111 111 11 111 11 11 111 111 11'.split(' ')
+```
+
+Hmm, let me use the well-known compact approach: pieces defined by index arrays.
+
+A neat trick: use the "tetromino as 4 numbers" approach.
+
+Let me just do:
+
+```js
+P=[0,0x0F00,0x60,0x6000,0x60,0x6000,0xE0,0x60,0x60,0x60,0xE0,0x60,0x60,0xE0,0x60,0x60]
+```
+
+Too fiddly. Let me use explicit matrices — clearer and still small.
+
+```js
+const S=[[[0,1],[1,1],[1,0]],[[1,0],[1,1],[0,1]],[[1,1,1],[0,1,0]]...]
+```
+
+Simplest robust: define 7 pieces as 4x4 bitmasks per rotation using a rotate function on square matrices.
+
+```js
+const P=[[],[[1,1],[1,1]],[[0,1,0],[0,1,0],[0,1,0],[0,1,0]]...]
+```
+
+Rotation of non-square matrices: I'll pad to square. Use 4x4 for I and O, 3x3 for others. Rotation function works on NxN.
+
+```js
+R=m=>m.map((r,i)=>r.map((_,j)=>m[j][i]))  // transpose = rotate... 
+```
+
+transpose then reverse rows gives clockwise rotation. `m[0].map((_,i)=>m.map(r=>r[i]).reverse())` is clockwise... let's verify: standard rotate 90 CW = transpose then reverse each row. Actually: rotate CW: `m[0].map((_, i) => m.map(row => row[i]).reverse())`. Hmm.
+
+For matrix m = [[1,2],[3,4]], CW rotation should give [[3,1],[4,2]].
+`m[0].map((_,i)=>m.map(r=>r[i]).reverse())`: i=0 →
+---

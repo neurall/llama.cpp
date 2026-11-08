@@ -1,0 +1,28 @@
+run 24002 | ram-pool | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 16.16 t/s | prompt 510.7 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 220+280 W | 2026-11-08 11:03:13
+
+<think>We need answer code review. Need inspect source. User provided two files? They ask "Do a code review of following source file." It includes json-schema-to-grammar.cpp and arg.cpp partial. Need review. Need identify bugs, style, correctness, security, maintainability. Need be thorough but not too verbose. Need likely focus on code. Need analyze.
+
+We need review source. Let's parse.
+
+First file common/json-schema-to-grammar.cpp. Need review.
+
+Second file common/arg.cpp partial. Need review too? The prompt includes both. "following source file" maybe entire snippet. Need review both. We can structure.
+
+Need identify issues.
+
+Let's analyze json-schema-to-grammar.cpp.
+
+Includes. using json = common_json.
+
+build_repetition:
+- max_items int, min_items int. If max_items == 0 return "". If min_items==0 && max_items==1 return item_rule + "?". If separator empty:
+  - min=1 no max -> item_rule + "+"
+  - min=0 no max -> item_rule + "*"
+  - return item_rule + "{" + min + "," + (has_max ? max : "") + "}"
+Potential bug: if min_items == max_items? It emits {n,n}? Actually if has_max and min==max, emits {n,n}? GBNF supports {n}? It emits {n,n} maybe valid? In GBNF repetition syntax: {m,n}, {m}, maybe {n,n} valid? likely. But if min_items > max_items? Not checked. Could produce invalid. Need validate schema min/max. Also if max_items == 0 and min_items >0? returns "" silently, invalid. Should error. If min_items negative? Not checked. For arrays min_items maybe nonnegative. But build_repetition can be called with min_items from schema. Need validate.
+
+Separator branch:
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) result = "(" + result + ")?";
+return result;
+Potential bug: if max_items == 0 and separator nonempty? It doesn't early return? Actually max_items==0 returns "" before separator. Good. If min_items==0 and max_items==1: returns item_rule + "?" before separator, ignoring separator. For array with min=0 max=1, should allow zero or one item, no separator. item_rule? okay. If min_items==0 and max_items>1 with separator: result = item_rule + " " + build_repetition("(sep item)", 0, max-1). Then wraps optional. This allows zero items? Let's test: item_rule + " " + repetition of (sep item) 0..max-1, then optional whole. If zero items, optional whole absent -> empty. If one item, optional whole present: item_rule + " " + repetition 0..max-1. But repetition with min=0 max=max-1 can be empty, so item_rule + " " trailing space? Wait result = item_rule + " " + build_repetition(...). If repetition empty, result = item_rule + " ". Then optional whole = (item_rule + " )? -> if present, includes trailing space. In grammar, array rule is "\"[\" space " + build_repetition(...) + " space \"]\"". For min=0 max=1, build_repetition returns item_rule + "?" (no separator). Then array: "[" space item? space "]". If zero items: "[" space space "]"? Actually space rule includes optional whitespace? SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"? Need understand. It may allow whitespace. For one item: "[" space item space "]". Good. For min=0 max=2 with separator: build_repetition(item,0,2,",") = item + " " + build_repetition("(, item)",0,1). build_repetition with min=0 max=1 returns "(, item)?" (since max=1 min=0). result = item + " " + "(, item)?"; then wrap optional: (item + " " + (, item)?)? This allows zero items (optional absent), one item (optional present, inner optional absent) -> item + " " (trailing space), two items -> item + " " + (, item). But array rule adds space before closing. So one item: "[" space item +

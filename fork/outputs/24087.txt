@@ -1,0 +1,57 @@
+run 24087 | no-map-reads | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.75 t/s | prompt 1.2 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:53:30
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — they want minimal code. But I also care about quality. There's tension here: "smallest" means minimal bytes, but I usually want to deliver something polished. The user explicitly asked for "smallest", so I should honor that intent — a genuinely tiny, single-file Tetris. But I can still make it *good* tiny: playable, with rotation, line clearing, scoring, levels, game over, next piece maybe. The constraint is the point.
+
+Let me think about what "smallest" means. Options:
+1. Minified single-line code, tiny canvas, keyboard controls.
+2. Keep it readable-ish but compact.
+
+I think the best deliverable: a genuinely small (under ~1KB or close to it) playable Tetris in a single HTML file, minified but with a brief explanation of how it works and what features it packs. I can present the byte count as part of the appeal — that's the "signature moment": a full Tetris in under 1KB (or ~700-900 bytes). That's memorable and honest craft.
+
+Let me actually write a minimal Tetris and golf it carefully.
+
+Core requirements for it to feel like real Tetris:
+- 10×20 grid
+- 7 tetrominoes with rotation
+- Gravity (falling)
+- Move left/right, rotate, soft drop
+- Line clear + score
+- Game over detection
+- Collision detection
+
+Classic golfing trick: encode pieces as binary matrices or use a single string. A well-known ultra-compact approach: represent each rotation state via bit manipulation.
+
+Let me design my own compact version.
+
+Approach A: pieces as arrays of coordinate sets per rotation. That's verbose.
+
+Approach B: encode all 7 pieces × 4 rotations as a single string of bits. Each piece in a 4×4 (or 16-bit) box. 7 pieces × 4 rotations × 16 bits = 448 bits = 56 chars if base64-ish. Actually a famous trick: use a string where each char encodes 4 rotations... 
+
+Known minimal Tetris implementations exist (e.g., "smallest tetris" JS golf challenges). A famous one is ~ 500 bytes. Let me write my own clean-ish version, aiming for maybe 700–1000 bytes, readable enough to explain.
+
+Let me design:
+
+Grid: 10 wide, 20 tall. Store as array of 20 strings? Or 2D array. For golf, use a single array `d` of length 200, values 0 or color index (1-7).
+
+Pieces: I'll use the standard trick — define pieces as 16-bit numbers per rotation, or generate rotations by rotating a 4x4 matrix.
+
+Compact piece definition: each piece as a 4x4 binary matrix, rotations computed by matrix rotation at runtime. Define 7 matrices compactly.
+
+A neat encoding: each piece = 16-bit integer, rows of 4 bits. Rotation of a 4x4 bit matrix can be done with bit tricks, but simpler: store piece as array of 4 numbers (rows), rotate by turning columns into rows.
+
+Alternative classic golf: represent each tetromino as a string of coordinates. E.g., I: [0,1,2,3] offsets... 
+
+Let me try the "binary string" approach:
+
+Pieces in 4x4 grids (row-major, 16 bits each), one rotation state, then compute rotations by rotating bits:
+
+rotate(m): for 4x4 matrix stored as 16-bit int with row r at bits (r*4 .. r*4+3), rotation clockwise: new[r][c] = old[3-c][r]. Bit trick: 
+rot = m => {
+  let r=0;
+  for(let i=0;i<16;i++) if(m>>i&1) r |= 1 << (3-(i%4))*4 + (i>>2);
+  ...
+}
+Hmm, let me define: bit index i = row*4+col. Clockwise rotation: new cell at (row, col) = old cell at (col, 3-row). So new bit index (row*4+col) = old bit (col*4 + (3-row)). So for each old bit i (row=i>>2, col=i&3), it goes to new position: newRow = col, newCol = 3-row → newIndex = col*4 + 3 - row = (i&3)*4 + 3 - (i>>2).
+
+So rot = m => {let r=0; for(i=0;i<16;i++) r |= (m>>i&1) << ((i&3)*4+3-(i>>2
+---

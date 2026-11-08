@@ -1,0 +1,127 @@
+run 24057 | no-map-reads | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.23 t/s | prompt 9.5 t/s | 1010 tokens | args: -np 1 | power 220+280 W | 2026-11-08 13:17:20
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+5. Score
+
+Let me write a compact version:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+// ... game code
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>canvas{background:#000}</style>
+</head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let grid=[],score=0,piece,nextPiece;
+const shapes=[
+  [[1,1,1,1]], // I
+  [[1,1],[1,1]], // O
+  [[0,1,0],[1,1,1]], // T
+  [[1,0,0],[1,1,1]], // S
+  [[0,0,1],[1,1,1]], // Z
+  [[1,1,0],[0,1,1]], // J... wait let me get the shapes right
+  [[0,1,1],[1,1,0]]  // L... 
+];
+```
+
+Actually let me be more careful with the shapes. Standard tetrominoes:
+
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+
+Let me write a compact but complete game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>canvas{background:#000}</style>
+</head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let g=[],sc=0,p,n;
+const sh=[
+[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],
+[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],
+[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]
+];
+const co=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+
+function newP(){
+  n=Math.floor(Math.random()*7);
+  p={s:sh[n],x:3,y:0,c:co[n]};
+}
+
+function collide(p,g){
+  for(let r=0;r<p.s.length;r++)
+    for(let c=0;c<p.s[r].length;c++)
+      if(p.s[r][c]){
+        let nx=p.x+c,ny=p.y+r;
+        if(nx<0||nx>=W||ny>=H) return true;
+        if(ny>=0&&g[ny][nx]) return true;
+      }
+  return false;
+}
+
+function merge(p,g){
+  for(let r=0;r<p.s.length;r++)
+    for(let c=0;c<p.s[r].length;c++)
+      if(p.s[r][c]&&p.y+r>=0)
+        g[p.y+r][p.x+c]=p.c;
+}
+
+function clear(){
+  for(let r=H-1;r>=0;r--){
+    if(g[r].every(v=>v)){
+      g.splice(r,1);
+      g.unshift(Array(W).fill(0));
+      sc+=100;
+      r++;
+    }
+  }
+}
+
+function rotate(p){
+  let s=p.s;
+  let rs=s[0].map((_,i)=>s.map(r=>r[i]).reverse
+---

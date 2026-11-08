@@ -1,0 +1,41 @@
+run 23961 | ram-pool | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf | decode 72.86 t/s | prompt 49.2 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:26:40
+
+We need answer user: "generate smallest html tetris game." Need produce minimal HTML Tetris game likely single file. Need think in same language as user? User English. Need final answer likely code. Need smallest? Could provide compact HTML with JS. Need ensure playable. Need maybe minified but readable? User asks generate smallest html tetris game. We can provide a single HTML file, maybe very compact. Need satisfy. Need design minimal Tetris. Need consider size. Could produce extremely small HTML with canvas, keyboard controls, basic tetrominoes, rotation, line clear, score, game over. Need maybe no external assets. Need smallest? Could be a code golf-ish. But should be useful. Need maybe include controls. Need ensure works. Let's craft compact but not too obfuscated. Could use HTML + JS. Need maybe use <canvas>, requestAnimationFrame. Need minimal. Let's design.
+
+Need generate smallest HTML tetris game. Could output:
+<!doctype html><canvas id=c><script>...
+But need valid HTML. Smallest maybe:
+<!doctype html><canvas id=c><script>...
+But canvas needs width/height? default 300x150. Could set via CSS? Need board. Could use canvas 10x20 scaled. Use CSS width/height.
+
+Need implement Tetris. Let's create compact code.
+
+Option: Use 10x20 grid. Pieces as arrays of coordinates. Rotation by mapping (x,y)->(y,-x) or (y,-x) and normalize. Need collision.
+
+Minimal code:
+<!doctype html><canvas id=c><script>
+let c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=15,g=Array(H).map(r=>Array(W).fill(0)),p=0,q=0,o=0,s=0,t=0;
+function P(){return[[0,0],[1,0],[0,1],[1,1]][p]}? Need all pieces.
+Could define pieces as strings? For compact:
+let P=[[[0,0],[1,0],[0,1],[1,1]],[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[2,0],[1,1]],[[0,0],[1,0],[1,1],[2,1]],[[0,0],[1,0],[1,1],[0,1]],[[0,0],[1,0],[2,0],[1,1]],[[0,0],[1,0],[2,0],[2,1]]];
+But need colors. Could use index+1.
+
+Spawn: p=Math.random()*7|0; q=0; o=0; x=3? Need piece coords relative.
+
+Rotation: function R(a){return a.map(([x,y])=>[y,-x])} then normalize min x/y.
+
+Collision: function C(a,x,y){return a.some(([a,b])=>x+a<0||x+a>=W||y+b>=H||y+b>=0&&g[y+b])}
+Need y+b>=0? If above top allowed? For spawn y=0 maybe some coords negative? We can normalize spawn to y=0. Collision if y+b<0 false? If above top, no collision. But if y+b<0, not collide. Need if y+b>=H or x out or (y+b>=0 && g[y+b][x+a]).
+
+Move: function M(dx,dy){let a=rot(p,o); if(!C(a,x+dx,y+dy)){x+=dx;y+=dy;return 1} return 0}
+Rotation: function T(){let a=R(rot(p,o)); if(!C(a,x,y))o++}
+Need rot function: function rot(p,o){let a=P[p]; for(i=0;i<o;i++)a=R(a); return a}
+But R returns new. Could precompute rotations? Simpler.
+
+Gravity: every interval. Use setInterval? Smallest: setInterval(loop,100). But need input. Use keydown.
+
+Game loop:
+function L(){if(!M(0,1)){lock();spawn()}}
+Lock: a=rot(p,o); a.forEach(([a,b])=>{if(y+b>=0)g[y+b][x+a]=p+1}); clear lines; spawn.
+Clear: for r=H-1;r>=
+---

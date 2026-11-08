@@ -1,0 +1,3 @@
+run 24266 | split-keeps-upload | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 6.43 t/s | prompt 522.7 t/s | 16 tokens | args: -np 1 --moe pp-path=stream,pp-k=0,dense-split=0,pf-slots=6 | power 220+280 W | 2026-11-08 17:44:51
+
+<think>We need to review the source file. The user provided two files concatenated:

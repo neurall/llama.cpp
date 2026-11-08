@@ -1,0 +1,30 @@
+run 24262 | split-keeps-upload | pf128k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.79 t/s | prompt 265.3 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=0,dense-split=0 | power 220+280 W | 2026-11-08 17:40:32
+
+ template_params params_B = params_A;
+    // Apply the modifier to B
+    params_modifier(params_B);
+
+    // Apply template to both variants
+    std::string rendered_A = apply_template(tmpl, params_A);
+    std::string rendered_B = apply_template(tmpl, params_B);
+
+    // If either failed, return nullopt
+    if (rendered_A == ERR_TMPL || rendered_B == ERR_TMPL) {
+        return std::nullopt;
+    }
+
+    // If identical, no difference
+    if (rendered_A == rendered_B) {
+        return compare_variants_result{ false, std::nullopt };
+    }
+
+    // Find the first difference
+    size_t diff_pos = 0;
+    size_t min_len  = std::min(rendered_A.size(), rendered_B.size());
+
+    while (diff_pos < min_len && rendered_A[diff_pos] == rendered_B[diff_pos]) {
+        ++diff_pos;
+    }
+
+    // If one is a prefix of the other, diff_pos is at the end of the shorter one
+    if (diff_pos == min_len && rendered_A.size() != rendered_B.size())

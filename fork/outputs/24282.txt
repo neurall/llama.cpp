@@ -1,0 +1,4 @@
+run 24282 | both-splits | pf128k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 51.35 t/s | prompt 578.7 t/s | 16 tokens | args: -np 1 --moe pp-only=1 | power 220+280 W | 2026-11-08 18:13:59
+
+ template_params params_B = params_A;
+    // Apply the modifier to B

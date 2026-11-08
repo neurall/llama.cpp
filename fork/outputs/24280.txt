@@ -1,0 +1,6 @@
+run 24280 | both-splits | pf128k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 51.09 t/s | prompt 313.0 t/s | 16 tokens | args: -np 1 --moe pp-only=1 | power 220+280 W | 2026-11-08 18:13:22
+
+ ...
+```
+
+Given the error "grp_attn_n was not declared",

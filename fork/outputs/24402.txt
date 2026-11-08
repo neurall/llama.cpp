@@ -1,0 +1,51 @@
+run 24402 | firstreq | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.25 t/s | prompt 1255.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 21:52:58
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with regex parsing, grammar building, and schema traversal
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+     - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1)` 
+     - This gives `item (sep item)*` for min=0, max=inf
+     - Then wraps: `(item (sep item)*)?` - this is correct for 0 or more items with separator
+   - When `min_items == 1` and `max_items == 1` with separator: `item + " " + build_repetition("(sep item)", 0, 0)` → `build_repetition` returns `""` for max=0, so result is `item ` (with trailing space). This seems like a minor issue - trailing space in the rule.
+   - Actually wait, when max_items == 0, it returns "". So for min=1, max=1 with separator: `item + " " + ""` = `item `. The trailing space could be an issue but probably harmless in GBNF.
+
+2. **`build_min_max_int` function:**
+   - Complex recursive function for generating integer ranges
+   - The `uniform_range` lambda captures `out` by reference - this is fine since it's used within the same scope
+   - `std::function` for `uniform_range` - could be a performance concern but it's recursive so needs type erasure
+   - The `decimals_left` parameter is used to limit digit depth - good for preventing infinite recursion
+   - When `min_value < 0 && max_value < 0`: negates both and recurses - correct
+   - When `min_value < 0` (mixed sign): handles negative part then sets min to 0 - correct
+   - The `top_level` parameter controls whether leading zeros are allowed - good
+
+3. **`_add_rule` method:**
+   - The deduplication logic: if rule name exists with same content, reuse it; if exists with different content, append a number. This could theoretically loop forever if there are many conflicting rules with the same name, but in practice it's bounded.
+   - The `while` loop condition checks both existence AND content mismatch - if a numbered variant exists with matching content, it reuses it. This is correct.
+
+4. **`_visit_pattern` method:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and restores on failure. This is a good rollback mechanism.
+   - However, `_rules` is a `std::map` and the snapshot copies the entire map - this could be expensive for large schemas.
+
+5. **`_pattern_to_rule` method:**
+   - Complex regex-to-grammar conversion
+   - The `transform` lambda is recursive (calls itself for groups) - uses `std::function` for type erasure
+   - `paren_depth` tracking for balanced parentheses - good
+   - `MAX_PATTERN_DEPTH` of 100 - reasonable limit
+   - The character class parsing: handles escapes but doesn't handle negated character classes (`[^...]`) specially - it just passes them through as-is. This might work if GBNF supports the same syntax.
+   - The `{` repetition parsing: `std::stoi` can throw `std::out_of_range` which is a subclass of `std::logic_error` - caught. But `std::stoi` on empty string throws `std::invalid_argument` which is also a `std::logic_error` - caught. Good.
+   - Wait, actually `std::out_of_range` derives from `std::logic_error`? Let me check... No, `std::out_of_range` derives from `std::logic_error`. Actually, `std::out_of_range` derives from `std::logic_error`. So the catch is correct.
+   - Actually, I need to double-check: `std::out_of_range` inherits from `std::logic_error`. Yes, that's correct.
+
+6. **`_not_strings` method:**
+   - Builds a trie-based rule to match strings that are NOT in a given set

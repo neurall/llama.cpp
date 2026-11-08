@@ -1,0 +1,27 @@
+run 23986 | ram-pool | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 13.58 t/s | prompt 431.2 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=91268055040 | power 220+280 W | 2026-11-08 10:25:22
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (e.g., `"[" space  space "]"` — actually it would produce `"[" space  space "]"` with double space, which might be a grammar error or at least weird). Actually wait, if max_items == 0 and min_items > 0, the schema is contradictory (min > max). The function silently returns "". This could produce invalid grammar like `"[" space  space "]"`. Hmm, actually with the space concatenation it'd be `"[" space " " space "]"` — wait no. Let me check: `build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space")` is embedded as `"\"[" space " + build_repetition(...) + " space \"]\""`. If build_repetition returns "", we get `"[" space  space "]"` — double space, which in GBNF might be a syntax error or just match nothing... Actually in GBNF, consecutive spaces between rule references... The grammar text `"[" space  space "]"` would be parsed as sequence of `"["`, `space`, `space`, `"]"` — two space rules in a row. That's valid GBNF but matches two whitespace chars. Hmm, actually it's a minor issue. But also `min_items > 0 && max_items == 0` is a contradictory schema; silently producing something is questionable but not a big deal.
+
+Also potential integer underflow: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If `min_items > 0` and `max_items == 0`... wait, we already returned "" for max_items == 0. But what if `min_items == 0` and `max_items == 1`? Handled earlier. What if min_items = 1, max_items = 1? Then recursion: min_items-1 = 0, max_items-1 = 0 → inner build_repetition returns "" (max_items == 0). So result = item_rule + " " + "" = `item_rule ` with trailing space. Hmm, that gives `"a "` — trailing space in the rule. Actually wait: `auto result = item_rule + " " + build_repetition(...)`. If inner returns "", result = `item_rule + " "` — trailing space. In GBNF, trailing space in a rule definition... the rule would be `foo ::= "a" ` with trailing space. GBNF parsers might tolerate trailing whitespace, or might not. Actually in llama.cpp's GBNF parser, trailing whitespace in a rule is generally tolerated I believe. But it's sloppy. Let me double check: min_items=1, max_items=1, separator non-empty. has_max = true. max_items != 0. Not (0,1). separator non-empty. result = item_rule + " " + build_repetition("(sep item)", 0, 0). Inner: max_items == 0 → return "". So result = `item_rule ` — trailing space. Hmm wait, actually is that right? For min=1,max=1 with separator, the correct grammar is just `item_rule`. The code produces `item_rule + " " + ""` = `item_rule ` with a trailing space. That trailing space is part of the rule content. In GBNF, `foo ::= "a" ` — trailing whitespace after the rule content is typically ignored by the parser. Actually in llama.cpp grammar parser, whitespace in sequences... hmm, in GBNF, spaces are generally ignored outside of literals? No wait — in llama.cpp GBNF, whitespace between elements is ignored (the `space` rule is explicit). Actually the llama.cpp grammar parser skips whitespace between tokens. So trailing space is fine. OK, minor.
+
+But there's a real bug potential: `min_items - 1` when `min_items == 0` is guarded. OK.
+
+What about `max_items - 1` when `has_max` is true and max_items could be... we returned early

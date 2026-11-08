@@ -1,0 +1,54 @@
+run 23971 | ram-pool | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 13.67 t/s | prompt 363.7 t/s | 918 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:41:47
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends mid-function `gbnf_escape_length`. The user says "Delete the code in this file that is never used." The file shown is incomplete (it cuts off at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` followed by blank lines).
+
+Hmm, this is tricky. The file appears truncated. The task is to identify dead code within what's shown. Let me think about what's actually used within the shown portion.
+
+Let me carefully check each symbol defined in the shown code and whether it's referenced anywhere in the shown code:
+
+- `build_repetition`: defined but not called anywhere in the shown code. However, in the real llama.cpp file, it IS used later (in `build_object_rule` and schema-to-grammar conversion functions). But since the file is truncated, we can only judge based on what's shown? Actually, the instruction says "Delete the code in this file that is never used." The file as given is truncated. Hmm.
+
+Wait — maybe the intent is that this is the complete file as far as the exercise is concerned, and we should find dead code within it. But the file ends mid-function definition `gbnf_escape_length` with an opening brace and nothing after. That's clearly truncated.
+
+Actually, let me reconsider. This looks like a task from a benchmark where a file is given (possibly truncated) and we need to remove unused code. The typical approach: identify functions/variables that are defined but never referenced within the file (and since they're static, they can't be used externally... except through the header).
+
+Let me check the header `json-schema-to-grammar.h` — it presumably declares `gbnf_format_literal` (non-static, so it's exported). Also there might be other exported functions like `json_schema_to_grammar` etc., but those would be defined later in the file (truncated part).
+
+Given the truncation, I need to be careful. Let me think about what's actually dead in the shown portion:
+
+1. `build_repetition` — static, not called in shown code. In the real llama.cpp source, it's called in `build_object_rule` and in the schema converter. But in the shown portion, it's not called. Hmm.
+
+2. `build_min_max_int` — static, recursive (calls itself), not called elsewhere in shown code. In real llama.cpp, it's called from the schema converter for integer minimum/maximum constraints.
+
+3. `SPACE_RULE` — a constant string. Not used in shown code. In real llama.cpp, it's used in generated rules.
+
+4. `BuiltinRule` struct — used by PRIMITIVE_RULES and STRING_FORMAT_RULES maps.
+
+5. `PRIMITIVE_RULES` — used by `is_reserved_name` (shown). Also used later in real file.
+
+6. `STRING_FORMAT_RULES` — used by `is_reserved_name` (shown).
+
+7. `is_reserved_name` — static function; not called in shown code. In real file, it's called later.
+
+8. `INVALID_RULE_CHARS_RE` — static regex; not used in shown code. Used later in real file (in `parse_state` / rule name sanitization).
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` — used by `format_literal` (shown).
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` — not used in shown code. In real file, used in `gbnf_escape_regex` or similar for character ranges.
+
+11. `GRAMMAR_LITERAL_ESCAPES` — used by `format_literal` (shown).
+
+12. `MAX_PATTERN_DEPTH` — not used in shown code. In real file, used in regex-to-grammar conversion.
+
+13. `NON_LITERAL_SET` — not used in shown code. Used later in real file.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` — not used in shown code. Used later in real file.
+
+15. `replacePattern` — used by `format_literal
+---

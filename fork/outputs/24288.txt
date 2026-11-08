@@ -1,0 +1,72 @@
+run 24288 | both-splits | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.45 t/s | prompt 738.3 t/s | 906 tokens | args: -np 1 | power 220+280 W | 2026-11-08 18:19:28
+
+Let me analyze this file carefully to identify which code is never used.
+
+Let me go through each function, variable, and definition:
+
+1. `build_repetition` - Let me check if it's used anywhere in this file... I don't see it being called in the visible code. But wait, the file is truncated. Let me look at what's visible.
+
+2. `build_min_max_int` - This is a static function. Is it called? I don't see it being called in the visible portion of the file.
+
+3. `SPACE_RULE` - Is it used? Not visible in the code shown.
+
+4. `BuiltinRule` struct - Used by `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+
+5. `PRIMITIVE_RULES` - Used by `is_reserved_name`.
+
+6. `STRING_FORMAT_RULES` - Used by `is_reserved_name`.
+
+7. `is_reserved_name` - Is it called? Not visible in the code shown.
+
+8. `INVALID_RULE_CHARS_RE` - Is it used? Not visible.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - Used by `format_literal`.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - Is it used? Not visible.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - Used by `format_literal`.
+
+12. `MAX_PATTERN_DEPTH` - Is it used? Not visible.
+
+13. `NON_LITERAL_SET` - Is it used? Not visible.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - Is it used? Not visible.
+
+15. `replacePattern` - Used by `format_literal`.
+
+16. `format_literal` - Used by `gbnf_format_literal`.
+
+17. `gbnf_format_literal` - This is a non-static function, so it's likely used externally (declared in the header).
+
+18. `gbnf_escape_length` - This is a non-static function, likely used externally.
+
+Wait, the file is truncated. The question says "Delete the code in this file that is never used." This means I need to look at the entire file, but it's cut off. Let me re-read...
+
+Actually, the file content is truncated at `gbnf_escape_length`. The question asks me to delete code that is never used. Since the file is truncated, I should work with what's visible.
+
+But wait - the question is asking me to identify code that is never used *within this file*. Since many functions are declared `static`, they can only be used within this file. Non-static functions (like `gbnf_format_literal` and `gbnf_escape_length`) are likely used externally.
+
+Let me re-examine:
+
+Static functions/variables that are never called/used in the visible code:
+
+1. `build_repetition` - static, not called in visible code
+2. `build_min_max_int` - static, not called in visible code  
+3. `SPACE_RULE` - not used in visible code
+4. `is_reserved_name` - static, not called in visible code
+5. `INVALID_RULE_CHARS_RE` - not used in visible code
+6. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - not used in visible code
+7. `MAX_PATTERN_DEPTH` - not used in visible code
+8. `NON_LITERAL_SET` - not used in visible code
+9. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - not used in visible code
+
+But wait - the file is truncated. These might be used later in the file. The question says "Delete the code in this file that is never used" - this implies the file is complete and I should identify unused code.
+
+Hmm, but the file is clearly truncated (it ends mid-function). Let me reconsider.
+
+Actually, looking at this more carefully, the question is asking me to identify code that is never used. Since the file is truncated, I should assume the visible portion is what I need to analyze, and the code after the truncation point doesn't exist (or I should only consider what's shown).
+
+Wait, actually re-reading the prompt: "Delete the code in this file that is never used." - The file content is provided and I need to identify unused code within it.
+
+Let me look at this more carefully. The file is truncated at `gbnf_escape_length`. So the code after
+---

@@ -1,0 +1,45 @@
+run 23966 | ram-pool | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.23 t/s | prompt 103.6 t/s | 965 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:31:02
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I'll keep it small, but I don't want it to be a bare gray box — I want it to feel crafted and alive: a nice arcade/CRT cabinet aesthetic, responsive feedback, particle line clears, next-piece preview, hold, score/level/lines, keyboard controls, pause, game over.
+
+"Smallest" — I should keep the code compact but still make it feel alive. Balance: compact code, but a rich visual. I'll write a dense-but-readable single file. Let me aim for something like ~200 lines that's genuinely small in bytes but with strong design.
+
+Design direction: arcade cabinet / CRT terminal. A near-black screen with one lone neon accent would feel generic and cold for Tetris, though — the pieces are inherently polychrome, so the board itself should carry multiple colors. Let me lean into a lit control-panel look: a lighter graphite/steel chassis with the classic Tetris piece palette (cyan, blue, orange, yellow, green, purple, red) as the multi-color system, plus a paper-ish side panel? Hmm.
+
+Let me think: a distinctive look — an arcade cabinet marquee at top with chunky display type, board in the middle, side rails with NEXT / HOLD / stats. Use a bold display face (e.g., "Press Start 2P" is cliché-ish but very characteristic... maybe too pixel-cliché but appropriate). Better: pair a chunky display face like "Bungee" or "Archivo Black" or "Chakra Petch" with a readable body face like "IBM Plex Mono" or "Space Grotesk". Google Fonts links add bytes but that's fine — "smallest" refers to the game code, and I can keep fonts to one link.
+
+Actually, since they asked for "smallest", maybe I should keep it truly minimal in file size but still well-designed. I'll use one Google Fonts link with two families, CSS custom properties, canvas rendering.
+
+Palette: deep slate-blue chassis (#161a25-ish) — but that risks reading as the near-black-plus-neon trap again. Let me instead do a warm-dark arcade: charcoal + off-white panel + full tetromino spectrum. Multiple accents (7 piece colors) keep it polychrome and lively. Add an ambient layered background: subtle grid, scanlines, radial glow, and floating tetromino glyphs drifting slowly.
+
+Layout: rather than a centered stack, I'll go asymmetric — left column with a vertical marquee/title lockup, board center, right rail with stats. Or top marquee spanning, then a 3-column playfield row. Let's do: header bar with logo lockup left, live score readouts right (big numbers). Then main: HOLD column | BOARD | NEXT stack + stats. Bottom: controls legend keys as keycaps.
+
+Features:
+- Canvas board 10x20, rendered with crisp blocks, subtle bevel.
+- Ghost piece.
+- 7-bag randomizer.
+- Next queue of 3.
+- Hold with one-use-per-piece.
+- Score: line clears 100/300/500/800 * level, soft drop 1/cell, hard drop 2/cell.
+- Level up every 10 lines, speed curve.
+- Lock delay? Keep simple but nice: small lock delay maybe skip for size.
+- Pause (P), restart (R).
+- Line-clear flash animation + particle burst.
+- Screen shake on hard drop.
+- Sound: tiny WebAudio beeps (optional, adds bytes but adds life). I'll add a compact audio blip function — nice touch. Keep it small.
+- Touch/mobile: on-screen buttons? Adds size. Maybe minimal: swipe/tap controls. I'll add a compact touch control row that shows on small screens. Hmm, "smallest" — I'll include a tiny d-pad row that's hidden on desktop. It's worth it for responsiveness.
+
+Let me keep code tight but readable.
+
+Implementation details:
+
+Pieces as matrices via string or numbers. Compact approach: use SRS-ish spawn matrices.
+
+I'll define:
+```
+const P='IJKLOSTZ'... 
+```
+Simplest compact: define shapes as arrays of coordinate offsets per rotation? Or use matrix rotate.
+
+Compact approach: each piece = {c: color
+---

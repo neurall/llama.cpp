@@ -1,0 +1,20 @@
+run 24164 | split-keeps-upload | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.12 t/s | prompt 417.9 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=4,dense-split=0 | power 220+280 W | 2026-11-08 15:59:27
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? It's a static function in this file. Let me check if it's called anywhere in the shown code... The file is truncated at `gbnf_escape_length`. Hmm, the file shown is incomplete - it cuts off mid-function. So I need to figure out what's used based on typical llama.cpp code (this is from llama.cpp's json-schema-to-grammar.cpp).
+
+Actually, this looks like the llama.cpp file `common/json-schema-to-grammar.cpp`. Let me recall the actual file content. The actual file in llama.cpp has functions like:
+
+- `build_repetition`
+- `build_min_max_int`
+- `SPACE_RULE`
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `GRAMMAR_LITERAL_ESCAPES`
+- `NON_LITERAL
+---

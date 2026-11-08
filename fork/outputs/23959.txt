@@ -1,0 +1,33 @@
+run 23959 | ram-pool | edit4c | Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf | decode 68.93 t/s | prompt 2159.1 t/s | 556 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:25:20
+
+We need answer user: "Delete the code in this file that is never used." They provided a C++ file snippet ending with function gbnf_escape_length incomplete? Need likely produce modified file removing unused code. Need analyze what is never used. We need infer from context? File common/json-schema-to-grammar.cpp includes headers. Functions: build_repetition, build_min_max_int, SPACE_RULE, PRIMITIVE_RULES, STRING_FORMAT_RULES, is_reserved_name, regexes, replacePattern, format_literal, gbnf_format_literal, gbnf_escape_length (incomplete). User asks delete code in this file that is never used. We need likely identify unused code in this file? Maybe from llama.cpp? json-schema-to-grammar.cpp. Need output code with unused code removed? Need be careful.
+
+We need understand entire file? Provided only beginning. Maybe they want remove dead code from this file. We need determine which functions/variables are never used within this file? But many are used by other functions? Let's inspect.
+
+File includes:
+- build_repetition: likely used by schema_to_grammar functions not shown.
+- build_min_max_int: likely used by number/integer schema.
+- SPACE_RULE: likely used in object/array? But PRIMITIVE_RULES object/array use space? Actually object rule uses "space" not SPACE_RULE? In GBNF, space rule maybe defined elsewhere? SPACE_RULE constant maybe used to add space rule? In llama.cpp json-schema-to-grammar.cpp, SPACE_RULE is used in grammar? Let's recall.
+
+llama.cpp common/json-schema-to-grammar.cpp has functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE etc
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length
+- gbnf_escape_pattern? maybe.
+- schema_to_grammar? etc.
+
+User only pasted up to gbnf_escape_length. Maybe they want delete code never used in this file? Could be from a larger file where some functions are unused after refactoring? Need maybe answer with exact code to delete? Need likely produce a cleaned file. But incomplete file. Need maybe identify unused code among shown: `gbnf_escape_length` is never used? It is incomplete. Also `gbnf_format_literal` maybe unused? `format_literal` used by gbnf_format_literal? If gbnf_format_literal unused? Need know.
+
+Let's search memory. In llama.cpp, json-schema-to-grammar.cpp includes:
+
+```
+static std::string g
+---

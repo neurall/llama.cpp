@@ -1,0 +1,79 @@
+run 23973 | ram-pool | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.73 t/s | prompt 6.3 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:46:11
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — they want minimal code. But I also care about quality. There's tension here: "smallest" suggests extreme minification, a single compact file. I should honor that request — make it genuinely tiny — while keeping it playable and not broken.
+
+Let me think about what "smallest" means. A truly minimal Tetris in a single HTML file. I can write it compactly but still readable-ish, or I can golf it hard. The user said "smallest html tetris game" — I'll aim for a very compact single-file implementation, maybe a few hundred bytes to ~1KB of actual code. Let me try to write a genuinely small but functional Tetris.
+
+Core requirements for it to be a real Tetris:
+- 10×20 grid
+- 7 tetrominoes with rotation
+- Gravity, movement left/right, rotation, soft drop
+- Line clearing
+- Game over
+- Score maybe
+
+Let me design a minimal implementation.
+
+Approach: use a canvas, draw cells as squares. Board as array of strings or numbers. Pieces defined as coordinate sets.
+
+A classic ultra-compact approach: represent each tetromino as a 4×4 or 3×3 binary matrix, rotate by transposing+reversing.
+
+Let me write it:
+
+```html
+<canvas id=c></canvas>
+<script>
+...
+</script>
+```
+
+Minimal data. Pieces as arrays of [x,y] pairs, rotate around a pivot: (x,y) -> (y, -x) or similar.
+
+Let me define pieces with rotation via matrix rotation. Common golfed Tetris uses:
+
+```js
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,0],[1,1,1]]]
+```
+
+Rotation: m[0].map((_,i)=>m.map(r=>r[i]).reverse())
+
+Collision check, merge, line clear.
+
+Let me write compact but working code:
+
+```js
+C=c.getContext`2d`
+D=document
+B=D.body
+B.bg=0 // hmm
+```
+
+Let me be careful — I want it to actually work. Let me write it properly first, then compress.
+
+Full logic:
+
+```js
+const W=10,H=20,S=16;
+const cv=document.body.appendChild(document.createElement('canvas'));
+cv.width=W*S;cv.height=H*S;
+const x=cv.getContext('2d');
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,0],[1,1,1]]];
+const K=[]; // board
+for(let i=0;i<H;i++)K.push(Array(W).fill(0));
+let p,m,px,py;
+function spawn(){m=P[Math.random()*7|0].map(r=>[...r]);px=3;py=0;if(hit())over=1}
+function hit(){return m.some((r,y)=>r.some((v,X)=>v&&(K[py+y]&&K[py+y][px+X])!==0? ... ))}
+```
+
+Careful: cells outside board horizontally or below bottom = collision; above top only collision if merged cell exists? Standard: collision if v && (px+X<0 || px+X>=W || py+y>=H || (py+y>=0 && K[py+y][px+X])).
+
+Rotation with wall kicks: try shifting by 0, -1, +1, maybe -2/+2 for I piece. Keep simple: try offsets [0,-1,1,-2,2].
+
+Line clear: after merge, filter full rows, add empty rows on top, score += cleared.
+
+Gravity loop with setInterval or requestAnimationFrame with time accumulator. Simplest: setInterval(tick, 400) plus key handling for move/rotate/drop.
+
+Game over: when new piece collides immediately.
+
+Drawing: clear, draw board cells (filled color), draw current piece. Colors: could give each piece a color from a palette. For "smallest", maybe monochrome, but a bit of color is nice and costs little: `x.fillStyle=hsl(...)`. Actually to keep small, use a fixed palette array of 7 colors
+---

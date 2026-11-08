@@ -1,0 +1,71 @@
+run 24376 | nommap5 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.98 t/s | prompt 1254.6 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 20:39:40
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, and potential problems.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and min=1, no max: returns `item_rule + "+"` - correct
+  - When separator is empty and min=0, no max: returns `item_rule + "*"` - correct
+  - When separator is empty with min/max: returns `{min,max}` - correct
+  - With separator: builds `item (sep item)*` pattern - looks correct
+  - When `min_items == 0` with separator: wraps in `()?` - correct
+
+### build_min_max_int function
+- This is a complex function for generating integer ranges. Let me check:
+  - `decimals_left` parameter defaults to 16 - this limits digit depth
+  - `top_level` parameter controls whether leading zeros are allowed
+  - The `uniform_range` lambda handles digit-by-digit range generation
+  - There's a potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is empty or invalid, but since `min_s` is from `std::to_string(min_value)` and `min_value > 9`, `min_s` has at least 2 characters, so `min_s.substr(1)` is non-empty.
+  - The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - this ensures at least 1 decimal left, preventing infinite recursion.
+
+- Potential issue: In the `has_min` branch when `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. But `-min_value` when `min_value` is `INT64_MIN` would overflow. However, the code checks `min_value < 0` first, and if `min_value == INT64_MIN`, then `-min_value` would be `INT64_MAX` (which is actually UB in C++ for signed integers). Wait, actually `-INT64_MIN` is undefined behavior in C++ because `INT64_MIN` is `-2^63` and `2^63` doesn't fit in `int64_t`. This is a potential bug.
+
+Actually wait, let me re-read. The condition is `min_value < 0`. If `min_value == INT64_MIN`, then `-min_value` would overflow. But looking at the code more carefully:
+
+```cpp
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+    out << ") | [0] | [1-9] ";
+    more_digits(0, decimals_left - 1);
+}
+```
+
+Here `-min_value` when `min_value == INT64_MIN` is UB. This is a real bug.
+
+Similarly in the `has_min && has_max` case:
+```cpp
+if (min_value < 0 && max_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+    out << ")";
+    return;
+}
+```
+If `min_value == INT64_MIN`, `-min_value` is UB.
+
+And:
+```cpp
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+    out << ") | ";
+    min_value = 0;
+}
+```
+Same issue.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- These are static `unordered_map`s. They're initialized at file scope, which is fine for C++.
+- The `is_reserved_name` function uses a static local set initialized from these maps - this is thread-safe in C++11+.
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - replaces invalid chars with `-`
+- `GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]")` - matches chars needing escaping in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-

@@ -1,0 +1,29 @@
+run 24257 | split-keeps-upload | pf128k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.09 t/s | prompt 97.9 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=0,dense-split=0 | power 220+280 W | 2026-11-08 17:34:54
+
+_generation_prompt = true;
+    params.tool_choice           = "auto";
+    params.chat_format           = chat_format;
+    params.model_name            = model_name;
+    params.model_type            = model_type;
+    params.model_version         = model_version;
+    params.model_creator         = model_creator;
+    params.model_architecture     = model_architecture;
+    params.model_quantization    = model_quantization;
+    params.model_context_length  = model_context_length;
+    params.model_family          = model_family;
+    params.model_name            = model_name;
+    params.model_type            = model_type;
+    params.model_version         = model_version;
+    params.model_creator         = model_creator;
+    params.model_architecture     = model_architecture;
+    params.model_quantization    = model_quantization;
+    params.model_context_length  = model_context_length;
+    params.model_family          = model_family;
+    params.model_name            = model_name;
+    params.model_type            = model_type;
+    params.model_version         = model_version;
+    params.model_creator         = model_creator;
+    params.model_architecture     = model_architecture;
+    params.model_quantization    = model_quantization;
+    params.model_context_length  = model_context_length;
+    params.model_family          = model_family

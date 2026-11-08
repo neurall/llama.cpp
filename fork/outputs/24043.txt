@@ -1,0 +1,32 @@
+run 24043 | pool-admit-all | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.8 t/s | prompt 612.8 t/s | 1024 tokens | args: -np 1 --moe rampool=0 | power 220+280 W | 2026-11-08 12:49:50
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` bug**: 
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+```
+Wait, if `max_items == 0`, it returns "" — but what if `min_items > 0`? That would be an unsatisfiable constraint (min > max), and returning "" silently produces an empty rule. Actually in grammar terms, an empty rule matches empty string, which would violate min_items. Hmm, but this may be intentional — if max_items == 0, no items can be produced. But if min_items > 0, the schema is contradictory. Returning "" means the grammar matches empty. This might be a subtle bug but arguably acceptable behavior. Actually wait — there's a subtle issue: `has_max` is computed before checking `max_items == 0`. If max_items == 0, we return "". OK.
+
+Also in the separator case:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+If `max_items == 0` we already returned. If `has_max` and max_items >= 1, then max_items - 1 >= 0. OK. But if min_items > max_items... e.g., min_items=5, max_items=3: build_repetition with min=4, max=2. Recursively... eventually max_items == 0 returns "" but min_items > 0. The result would be `item_rule (sep item){4,2}`? Wait no — when max_items hits 0, it returns "". So result = item_rule + " " + "" = item_rule + " ". Hmm, that's wrong — it would allow just one item when min is 5. Actually let's trace: build_repetition(item, 5, 3, sep): has_max=true, max!=0, min!=0 or max!=1. separator non-empty: result = item + " " + build_repetition("(sep item)", 4, 2). In that call: max=2 != 0, min=4: result = "(sep item) " + build_repetition("(sep item)", 3, 1). Then: max=1, min=3: "(sep item) " + build_repetition("(sep item)", 2, 0). In that call: max_items == 0 → return "". So we get "(sep item) " + "" = "(sep item) ". So overall: item + " (sep item) " — which matches 2 items, not 5. So contradictory min/max silently produce wrong grammar rather than an error. This is an edge case; a schema with min_items > max_items is invalid anyway. Worth mentioning as a robustness note.
+
+2. **`build_min_max_int` uses `std::function`** — fine but has recursion via std::function; also `uniform_range` lambda is recursive through std::function wrapper. Minor performance thing, acceptable.
+
+3. **Potential infinite recursion / stack overflow in `build_min_max_int`?** Let's see: `has_min && has_max` case with negative values: `build_min_max_int(-max_value, -min_value, ...)` — both positive now, so no infinite recursion. The `min_value < 0` case sets min_value = 0 and continues. OK.
+
+In the `has_min` only case: `build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false)` — recursion with fewer decimals (less_decimals = max(decimals_left - 1, 1)). Since decimals_left decreases but is clamped at 1... wait, `less_decimals = std::max(decimals_left - 1, 1)`. If decimals_left is 1, less_decimals = 1. Then recursion: build_min_max_int(stoll(min_s.substr(1)), INT64_MAX, out, 1, false). In that call, has_min true, min_value <= 9? If min_s.substr(1) is e.g. "23", stoll = 23 > 9,

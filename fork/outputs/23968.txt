@@ -1,0 +1,33 @@
+run 23968 | ram-pool | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 10.73 t/s | prompt 496.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 09:32:56
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, then `max_items - 1` is fine. But wait — if `min_items == 0` and `has_max` is true, `max_items - 1` could be... if `max_items == 0` we return early. OK.
+   - Actually there's a subtle bug: in `build_repetition` with separator, when `min_items == 0`, the result is `(item (sep item)* )?` — wait let me re-read:
+   ```cpp
+   auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+   ```
+   If `min_items == 0` and `max_items == 1`: the inner call gets min=0, max=0 → returns "" → result = `item_rule + " " + ""` = `item_rule ` with trailing space, then wrapped in `( ... )?`. Hmm, that gives `item_rule ` with a trailing space — probably harmless but sloppy. Actually wait, if max_items == 1 and min_items == 0, the first check `if (min_items == 0 && max_items == 1) return item_rule + "?";` catches it before the separator branch. OK.
+   
+   But what if `min_items == 1` and `max_items == 1` with separator? Inner call: min = 0, max = 0 → returns "". Result: `item_rule + " " + ""` → trailing space. Minor formatting issue.
+
+   Also potential integer issue: `max_items - 1` when `max_items == 0`? No, early return handles that. What about `min_items - 1` when `min_items == 0`? Handled by ternary.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `decimals_left` default 16 — magic number.
+   - The `more_digits` lambda: `out << "{"; out << min_digits; ...` — if `min_digits == max_digits && min_digits == 1` returns early without `{}`. OK.
+   - Potential issue: `digit_range(from[i] + 1, to[i])` — `from[i]` is a char; `from[i] + 1` promotes to int, passed to `char from` parameter — narrowing but fine for digits.
+   - In the `has_min && has_max` branch with negative handling: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == INT64_MIN` and `max_value < 0`, then `-min_value` is UB (overflow). Wait: `has_min = min_value != INT64_MIN`. If both has_min and has_max and both negative, then min_value > INT64_MIN so `-min_value` is fine. But `max_value` could be... `max_value < 0` so `-max_value` fine. OK.
+   - In `has_min` branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — here min_value < 0 so `-min_value` could overflow if `min_value == INT64_MIN`. If `min_value == INT64_MIN`, then `has_min` is false, so we don't enter this branch. OK.
+   - `std::stoll(min_s.substr(1))` — could this throw? `min_s` is a decimal string of a positive number, so fine.
+   - The recursion for `uniform_range` uses `std::function` with capture by reference — the lambda captures itself by reference via `std::function`. That's fine.
+   - Hmm, one thing: in `uniform_range`, when `from_sub == sub_zeros` branch: `digit_range(from[i], to[i] - 1)` — if `from[i] == to[i]`... can that happen? If `from[i] == to[i]` and we've consumed common prefix... Actually the loop advances `i` while chars are equal, so at this point `from[i] != to[i
