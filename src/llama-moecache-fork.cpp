@@ -11930,6 +11930,37 @@ static std::vector<upload_job> preheat_swap(moe_cache * mc, const std::vector<ui
     return jobs;
 }
 
+// the prompt path a pass of this call runs on (the split's own pass is PP_DENSE)
+static int pp_cur_path() {
+    int path = llama_dsplit_cur_fork() == 1 ? PP_DENSE : g_pp_dec_built ? PP_DEC : g_pp_built ? PP_CHAIN : g_pp_mix_built ? PP_MIX : PP_RING;
+    if ((path == PP_RING || path == PP_MIX) && g_pp_k_built) {
+        path = PP_K;
+        for (double m = g_pp_k_m; m > 1.0; m /= 2.0) { ++path; }
+    }
+    return path;
+}
+static int g_pp_pass_learned = 0;   // passes of this call that taught their path (the call's end then adds no second sample)
+// Every prompt pass teaches its path at once (llama_moe_prompt_progress_fork), not only the call's end: the split planner re-plans every pass against the
+// one-card arm, and a stale one-card mean held for a whole call (GLM 3.0 64k, 2026-11-08: a stored stream posterior of one sample said 4 s for a 10144-token
+// pass, one-card passes took 15 s, the 56k call ran one card from the first pass to the last at 491-581 tokens/s while the split does 750-800).
+void llama_moe_cache_pp_pass_learn_fork(uint32_t n, double us) {
+    std::lock_guard<std::mutex> lk(g_pp_mu);
+    if (!g_cache || us <= 0.0 || n < 64) { return; }
+    const int path = pp_cur_path();
+    if (path == PP_DENSE || g_pp_phi[path][1] <= 0.0) { return; }
+    const double planned = g_pp_phi[path][1];
+    if ((double) n < 0.8 * planned || (double) n > 1.25 * planned) { return; }   // a pass of another size than the features were built for (the call's tail)
+    dsf_rls & rp = pp_rls(path);
+    const double nis = rls_update(rp, g_pp_phi[path], us);
+    if (nis > 1.0) { g_pp_redraw = true; }
+    if (rp.storable()) { llama_dsplit_state_set_fork(("pp.rls." + std::to_string(path)).c_str(), rls_str(rp)); }
+    g_pp_pass_learned++;
+    if (moe_log_has("w")) {
+        double v = 0.0;
+        const double m = rls_pred(rp, g_pp_phi[path], &v);
+        LLAMA_LOG_WARN("moe-cache: pass of %u tokens on %s took %.2f s: its arm now %.2f +- %.2f s (n=%d, nis %.2f)\n", n, pp_path_name(path).c_str(), us / 1e6, m / 1e6, std::sqrt(std::max(0.0, v)) / 1e6, rp.n, nis);
+    }
+}
 void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     moe_cache * mc = g_cache;
     if (mc && mc->pf_count_on) {
@@ -11978,11 +12009,9 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     if (mc && us > 0 && n_tokens > 0 && llama_dsplit_cur_fork() != 1 && !g_pp_dec_built) { pp_pass_add(n_tokens, g_pp_built ? std::max(0.0, (double) us - chain_up) : (double) us, g_pp_built); }
     if (mc && us > 0 && n_tokens > 1) {   // a call of P passes: one pass of its size
         const double P = n_tokens == g_pp_n && g_pp_P > 0 ? (double) g_pp_P : 1.0;
-        int path = llama_dsplit_cur_fork() == 1 ? PP_DENSE : g_pp_dec_built ? PP_DEC : g_pp_built ? PP_CHAIN : g_pp_mix_built ? PP_MIX : PP_RING;
-        if ((path == PP_RING || path == PP_MIX) && g_pp_k_built) {
-            path = PP_K;
-            for (double m = g_pp_k_m; m > 1.0; m /= 2.0) { ++path; }
-        }
+        const int path = pp_cur_path();
+        const int learned = g_pp_pass_learned;
+        g_pp_pass_learned = 0;
         // the SSD rate of the stream: the bytes the process read from storage over this call (only a stream pass, which reads the mapped experts; the chains read few)
         if (g_pp_ssd_m > 0.0 && path != PP_DEC && path != PP_CHAIN && path != PP_DENSE) {
             const unsigned long long rb = pp_self_read_bytes();
@@ -12000,7 +12029,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             if (path != PP_DENSE && g_pp_phi[path][1] > 0.0) {
                 dsf_rls & rp = pp_rls(path);
                 const double mu = g_pp_pmu[path], sd = std::sqrt(std::max(0.0, g_pp_var[path]));
-                const double nis = rls_update(rp, g_pp_phi[path], took);
+                const double nis = learned > 0 ? rp.nis : rls_update(rp, g_pp_phi[path], took);   // the passes taught the arm already (llama_moe_cache_pp_pass_learn_fork)
                 if (nis > 1.0) { g_pp_redraw = true; }   // the posterior moved more than it expected: the next call draws again
                 // stored only when determined and quiet (feedback_stored_values_policy): a next start begins from it as its prior
                 if (rp.storable()) { llama_dsplit_state_set_fork(("pp.rls." + std::to_string(path)).c_str(), rls_str(rp)); }

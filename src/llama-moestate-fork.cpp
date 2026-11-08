@@ -737,6 +737,7 @@ static std::vector<unsigned long long> nvml_energy_mj_all() {
     for (const gpu_energy_pub & p : g_energy) { out.push_back(p.e_mj + (unsigned long long) ((double) p.mw * std::max(0.0, now - p.t))); }
     return out;
 }
+void llama_moe_cache_pp_pass_learn_fork(uint32_t n_tokens, double us);   // llama-moecache-fork.cpp: a prompt pass teaches its path
 int llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
 struct tok_snap { int64_t c[8] = {}; int n = 0; std::vector<unsigned long long> e; double t = 0.0; };
 static tok_snap tok_snap_now() { tok_snap s; s.n = llama_moe_cache_counters_fork(s.c, 8); s.e = nvml_energy_mj_all(); s.t = llama_moe_span_now_fork(); return s; }
@@ -1006,6 +1007,7 @@ void llama_moe_prompt_progress_fork(uint32_t done) {
         const std::string pass_line = format("prompt pass %u/%u: %u tokens in %.1f s (%.0f t/s)%s, %u of %u done after %.1f s", pass, passes,
                 done - prev, s_pass, s_pass > 0 ? (done - prev) / s_pass : 0.0, hs2, done, tokens, s_all);
         LLAMA_LOG_WARN("%s: %s\n", __func__, pass_line.c_str());
+        llama_moe_cache_pp_pass_learn_fork(done - prev, s_pass * 1e6);   // the pass teaches its prompt path now, not at the call's end
         const tok_snap pass_end = tok_snap_now();
         llama_moe_stats_log_fork("PAS", (pass_line + format(", %.2f ms per token; ", done > prev ? s_pass * 1e3 / (done - prev) : 0.0) + tok_per_token(g_pass_snap, pass_end, done - prev)).c_str());
         g_pass_snap = pass_end;
