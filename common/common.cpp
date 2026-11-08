@@ -2242,6 +2242,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
             if (!ggml_backend_dev_is_gpu(dev)) { continue; }
             if (!params.devices.empty() && std::find(params.devices.begin(), params.devices.end(), dev) == params.devices.end()) { continue; }
+            // an integrated GPU next to a discrete one holds no layers and no pool (llama-model.cpp): it does not decide the pool's features
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) { continue; }
             (llama_fork_proc_dev(dev, "ggml_backend_fork_scratch_fork") ? cuda_gpu : other_gpu) = true;
         }
         if (!cuda_gpu || other_gpu) {
