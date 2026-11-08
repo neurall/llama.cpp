@@ -272,7 +272,7 @@ Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights,
 
 ## Known limits
 
-- **One machine measured:** 2x RTX 3090 (x16 + x4 slots), Ryzen 7 3700X, 128 GB DDR4. Other hardware, AMD/Intel GPUs and 3+ GPUs are untested; CUDA only for now (Vulkan and AMD binaries are next, see below). Windows binaries are smoke-tested only.
+- **One machine measured:** 2x RTX 3090 (x16 + x4 slots), Ryzen 7 3700X, 128 GB DDR4. Other hardware, AMD/Intel GPUs and 3+ GPUs are untested; the release archives carry CUDA and Vulkan, and the Windows archive also HIP (ROCm 6.4) for AMD cards. Vulkan is measured on an RTX 4060 and a Radeon 780M (Windows); on Linux it is only load-tested (no GPU run yet). Windows binaries are smoke-tested only.
 - **The first runs of a model are slower.** The hot-expert state in `moe-state.ini` is learned from use (copy the pre-warmed [fork/moe-state.ini](fork/moe-state.ini) to start from it).
 - **Models larger than free RAM load lazily.** The server answers while the expert weights are still being pinned in the background (about 80 s for 100 GiB), so the first big prompt after start can be several times slower than the next ones (GLM 3.5-bit, 3k prompt: 26-147 prompt t/s on the first request, 225-267 on the second request on the same server). The table shows the steady-state speed.
 - **Perplexity:** equal to stock where the pass shape is the same; on the two-card paths Qwen 3.8 Next IQ3_S reads +0.3%, which is the size of stock's own change between `-ub 512` and `-ub 256` (see [Perplexity moves with the micro-batch size](#perplexity-moves-with-the-micro-batch-size-in-stock-too)).
@@ -281,7 +281,7 @@ Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights,
 
 ## What's next
 
-1. **Vulkan version and AMD binaries.** The top priority. Work is now allocated and scheduled dynamically from each card's compute speed and the bandwidth of the PCIe slot it sits in, so cards of different vendors should be able to share a model. In theory this works; I have not been able to test it.
+1. **AMD tuning and Linux HIP.** Vulkan ships in the release archives and HIP in the Windows archive since b15021. HIP decode on the Radeon 780M still trails Vulkan (11.9 against 16.5 t/s); a kernel choice measured per card at start is next, then a Linux HIP build. Work is allocated by each card's compute speed and PCIe link, so cards of different vendors should be able to share a model; a mixed-vendor model split is untested.
 2. **One pool for the expert cache and the staging buffers.** Merging the two is expected to improve VRAM efficiency further.
 3. **Expert-cache lookup per topic and initialisation per request**, planned for later versions.
 4. **Testing on more hardware.** Everything here was measured on one X570 board (x16 + x4 slots) with two RTX 3090s, plus a notebook with an RTX 4060. Multi-GPU setups with fast slots on every card are the most wanted: send your numbers and the startup log (`-lv 5`).
