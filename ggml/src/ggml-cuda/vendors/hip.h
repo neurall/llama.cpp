@@ -338,3 +338,18 @@ static __device__ __forceinline__ uint32_t ggml_hip_perm(const uint32_t hi, cons
     return __builtin_amdgcn_perm(hi, lo, sel);
 #endif // __has_builtin(__builtin_amdgcn_is_invocable)
 }
+
+// fork: CUDA calls of the fork's code (graph capture checks, event polls, driver version, the staged copy's uncached loads)
+#define cudaStreamCaptureStatus     hipStreamCaptureStatus
+#define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
+#define cudaStreamIsCapturing       hipStreamIsCapturing
+#define cudaEventQuery              hipEventQuery
+#define cudaErrorNotReady           hipErrorNotReady
+#define cudaDriverGetVersion        hipDriverGetVersion
+// __ldcv (load, cache volatile): a volatile load per 4 bytes; pinned host memory a kernel reads over the link is not cached on AMD
+static __device__ __forceinline__ uint4 __ldcv(const uint4 * p) {
+    const volatile unsigned int * q = (const volatile unsigned int *) p;
+    uint4 r; r.x = q[0]; r.y = q[1]; r.z = q[2]; r.w = q[3];
+    return r;
+}
+static __device__ __forceinline__ uint8_t __ldcv(const uint8_t * p) { return *(const volatile uint8_t *) p; }

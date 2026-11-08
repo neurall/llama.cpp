@@ -1307,7 +1307,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
     // The loading is done with decreasing granularity for D for better memory bandwidth.
     const half2 scale_h2 = make_half2(scale, scale);
 #pragma unroll
-    for (int stride_k : {warp_size, warp_size/2, warp_size/4, warp_size/8}) {
+    for (int ik = 0; ik < 4; ++ik) {   // (no initializer list: its begin() is host-only in a HIP build with -fno-cuda-host-device-constexpr)
+        const int stride_k = warp_size >> ik;
         const int k0_start  = stride_k == warp_size ? 0 : DKQ/2 - (DKQ/2) % (2*stride_k);
         const int k0_stop   =                             DKQ/2 - (DKQ/2) % (1*stride_k);
         const int stride_jc = warp_size / stride_k;
@@ -1747,7 +1748,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
             float2 * dstk_fixup_data = dstk_fixup + gridDim.x*(2*ncols) + blockIdx.x*(ncols*(DV/2));
 
 #pragma unroll
-            for (int stride_k : {warp_size, warp_size/2, warp_size/4, warp_size/8}) {
+            for (int ik = 0; ik < 4; ++ik) {   // (no initializer list: its begin() is host-only in a HIP build with -fno-cuda-host-device-constexpr)
+                const int stride_k = warp_size >> ik;
                 const int k0_start  = stride_k == warp_size ? 0 : nbatch_combine - nbatch_combine % (2*stride_k);
                 const int k0_stop   =                             nbatch_combine - nbatch_combine % (1*stride_k);
                 const int stride_jc = warp_size / stride_k;
