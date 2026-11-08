@@ -3155,7 +3155,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             ggml_backend_sched_set_tensor_backend(sched, jit, cpu_backend);
             cb(jit, "ffn_moe_cache_jit", il);
             ggml_build_forward_expand(gf, jit);
-            if (mcache->up_m && !mc_pp && !mc_ids_all && n_tokens == 1) {   // decode only: the device's kernels skip a -1 id (zero row)
+            if (mcache->up_m && !mc_pp && !mc_ids_all) {   // decode and prompt passes on the decode chain (pp-chain=0); a -1 id is a zero row on the device (Vulkan: count_experts zeroes it)
                 mc_miss_ids = ggml_map_custom1(ctx0, jit, [](ggml_tensor * dst, const ggml_tensor * a, int ith, int, void * ud) {
                     if (ith != 0) { return; }
                     const llama_moe_cache_layer_fork * mc = (const llama_moe_cache_layer_fork *) ud;
