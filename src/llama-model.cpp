@@ -2268,19 +2268,37 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                         bufs.emplace_back(buf);
                         continue;
                     }
-                    if (max_size + page >= chunk) {
+                    if (max_size + 2*page >= chunk) {
                         throw std::runtime_error(format("a %zu MiB tensor does not fit one %s import of %zu MiB", max_size >> 20, ggml_backend_buft_name(buft), chunk >> 20));
                     }
-                    for (size_t s0 = range.first / page * page; ; ) {
-                        const size_t e0 = std::min(std::min(s0 + chunk, GGML_PAD(range.last, 4096)), map_end);
+                    // the tensors of this range by file offset; a chunk is cut where the next tensor would not fit
+                    std::vector<std::pair<size_t, size_t>> ts;
+                    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+                        const auto * w = ml.get_weight(ggml_get_name(t));
+                        if (w && w->idx == idx && w->offs >= range.first && w->offs < range.last) {
+                            ts.emplace_back(w->offs, w->offs + ggml_nbytes(t));
+                        }
+                    }
+                    std::sort(ts.begin(), ts.end());
+                    auto import = [&](size_t s0, size_t e0) {
+                        s0 = s0 / page * page;
+                        e0 = std::min(GGML_PAD(e0, 4096), map_end);
                         ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + s0, e0 - s0, max_size);
                         if (buf == nullptr) {
                             throw std::runtime_error(format("unable to import %zu MiB of mapped weights into a %s buffer (at offset %zu MiB, after %zu buffers)", (e0 - s0) >> 20, ggml_backend_buft_name(buft), s0 >> 20, bufs.size()));
                         }
                         bufs.emplace_back(buf);
-                        if (e0 >= range.last) { break; }
-                        s0 = (e0 - max_size) / page * page;   // the next chunk starts a largest tensor before this one ends
+                    };
+                    size_t c0 = 0, c1 = 0;   // current chunk [c0, c1), empty while c1 == 0
+                    for (const auto & [t0, t1] : ts) {
+                        if (c1 != 0 && GGML_PAD(t1, 4096) - c0 / page * page > chunk) {
+                            import(c0, c1);
+                            c1 = 0;
+                        }
+                        if (c1 == 0) { c0 = t0; }
+                        c1 = std::max(c1, t1);
                     }
+                    if (c1 != 0) { import(c0, c1); }
                 }
             }
         } else {
