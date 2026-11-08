@@ -708,7 +708,7 @@ bool   llama_moe_cache_pp_no_dense_fork();                      // llama-moecach
 bool   llama_moe_cache_pp_planned_fork();                       // llama-moecache-fork.cpp: this call has one-card candidates (the moe-cache planned it)
 bool   llama_moe_cache_pp_yield_fork(const char * why);         // llama-moecache-fork.cpp: the call's one-card path gives the pass to the split (the stream runs); false: a path the user set keeps it
 static dsf_pass g_dsf_ps;                // the prompt pass decided last (open until the synchronize after it)
-double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path, bool * known);   // llama-moecache-fork.cpp: the call's lowest drawn one-card pass
+double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path, bool * known, int * n_obs);   // llama-moecache-fork.cpp: the call's lowest drawn one-card pass
 std::string llama_moe_cache_pp_path_name_fork(int p);
 double llama_moe_cache_att_us_cell_fork();   // the moe-cache's measured attention per token and cell (us), 0 = not fitted yet
 // ---- the learned planner (fork/docs/rampool.md "Robust planner design"): the split pass and the copy fill are one RLS each (llama-rls-fork.h); the one-card
@@ -2747,8 +2747,10 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         int pth = -1;
         const double phi[4] = { 1.0, (double) T, (double) T * att * cm, U };
         bool kn1 = false;
-        if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth, &kn1) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); kn1 = rls_known(g_rls_one, mu1, v1); }   // C18
-        if (!kn1 && c_one_bench > 0.0) {
+        int n1 = 0;   // the one-card arm's samples: the bench cap below is for an arm never measured, not one measured once (rls_known wants more)
+        if (llama_moe_cache_pp_one_draw_fork(T, (int64_t) cm, &mu1, &v1, &pth, &kn1, &n1) < 0.0) { mu1 = rls_pred(g_rls_one, phi, &v1); kn1 = rls_known(g_rls_one, mu1, v1); n1 = g_rls_one.n; }   // C18
+        // MiMo 12k relcand2: one card measured 11.98 +- 0.76 s, the cap made it 11.97 +- 4.31, nothing was known, and the wide one card won a trial every request; the split (9 s) never ran
+        if (!kn1 && n1 == 0 && c_one_bench > 0.0) {
             // one card never measured here: the moe-cache's cold prior (MiMo 3k, no-map-reads 2026-11-08: 8.7 s for a pass b14929 ran in 4.0-4.3 s on one card) sent every call to
             // the split (5.2-5.5 s) and one pass of stake never paid the trial. Same rule as the split's prior: max(upload, the bench's one-card compute), uncertain by RLS_SPLIT_ONE_SDLOG
             const double b = std::max(U, (double) T * c_one_bench);

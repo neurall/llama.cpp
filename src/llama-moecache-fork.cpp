@@ -12703,7 +12703,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
 // For the learned split planner (dsf_plan): the lowest drawn one-card time of a pass of n tokens at c cells over this call's candidates, by the same draws the
 // call's pick used (one consistent view per request); its posterior mean and variance in *mu, *var. -1: no candidate (the call was not planned here).
 // shortcut: a candidate's upload is the call's pass size's (U at n of the call); passes of other sizes in one call are the tail only. Upgrade if calls mix sizes.
-double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path, bool * known) {
+double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path, bool * known, int * n_obs) {
     // planner-simple: the one-card side is the path this call picked, its posterior mean and variance at this pass (no draws); -1 when none
     std::lock_guard<std::mutex> lk(g_pp_mu);
     const int p = g_pp_pick >= 0 ? g_pp_pick : -1;
@@ -12713,6 +12713,7 @@ double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, doubl
     dsf_rls & rp = pp_rls(p);
     const double m = rls_pred(rp, phi, &v);
     if (known) { *known = rls_known(rp, m, v); }
+    if (n_obs) { *n_obs = rp.n; }
     if (mu) { *mu = m; }
     if (var) { *var = v; }
     if (path) { *path = p; }
