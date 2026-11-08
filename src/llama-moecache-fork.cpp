@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
+#include <climits>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
@@ -9532,6 +9533,7 @@ bool llama_moe_cache_pp_short_fork() {
 // the misses of a chain layer, on the chain's stream, right behind its router (a graph custom op: the ids are on the host). The blocks: free ones, then the layers that already
 // ran and this layer's experts the pass does not use, then the layer furthest ahead: the same order as the JIT's prompt rule. An expert a slow layer or the hot set holds on to
 // is the last choice, never refused: nothing in a prompt may stop a miss.
+static std::atomic<int64_t> g_ppoff_pairs{0}, g_ppoff_dev{0}, g_ppoff_all{0};   // --moe pp-off: kept-off pairs, of them on the device, all pairs
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     GGML_ASSERT(mc != nullptr);
@@ -9545,10 +9547,11 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
         layer_state & ls = *lsp;
         const size_t  jli = (size_t) (&ls - mc->layers.data());
         std::vector<uint8_t> used(ls.expert_slot.size(), 0);
+        std::vector<int64_t> cnt(ls.expert_slot.size(), 0);
         for (int64_t t = 0; t < ids->ne[1]; ++t) {
             for (int64_t i = 0; i < ids->ne[0]; ++i) {
                 const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
-                if (e >= 0 && e < (int32_t) used.size()) { used[e] = 1; }
+                if (e >= 0 && e < (int32_t) used.size()) { used[e] = 1; cnt[e]++; }
             }
         }
         std::vector<int32_t> miss;
@@ -9556,6 +9559,28 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
         for (int32_t e = 0; e < (int32_t) used.size(); ++e) {
             n_visited += used[e] ? 1 : 0;
             if (used[e] && ls.expert_slot[e] < 0) { miss.push_back(e); }
+        }
+        // --moe pp-off=F[,pp-off-dev=R]: the misses with the fewest tokens (the most upload per token of work), up to F of the pass's expert-token pairs, stay on the
+        // host; of those the R most used (by pairs) run on the miss device (up_m), the rest on the CPU. The graph built the decode chain's shape for this (mc_ppk).
+        static const double off_f = [] { const char * e = moe_opt("pp-off"); return e ? atof(e) : 0.0; }();
+        static const double off_r = [] { const char * e = moe_opt("pp-off-dev"); return e ? atof(e) : 0.5; }();
+        if (off_f > 0.0) {
+            ls.pub.miss_on_dev.assign(used.size(), 0);
+            std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return cnt[a] < cnt[b]; });
+            const double budget = off_f * (double) (ids->ne[0] * ids->ne[1]);
+            double off = 0; size_t k = 0;
+            while (k < miss.size() && off + (double) cnt[miss[k]] <= budget + 1e-9) { off += (double) cnt[miss[k]]; ++k; }
+            if (ls.pub.up_m) {   // most used first onto the device, up to R of the kept pairs
+                double dev = 0;
+                for (size_t j = k; j-- > 0; ) {
+                    if (dev + (double) cnt[miss[j]] > off_r * off + 1e-9) { continue; }
+                    dev += (double) cnt[miss[j]];
+                    ls.pub.miss_on_dev[miss[j]] = 1;
+                }
+                g_ppoff_dev += (int64_t) dev;
+            }
+            g_ppoff_pairs += (int64_t) off; g_ppoff_all += ids->ne[0] * ids->ne[1];
+            miss.erase(miss.begin(), miss.begin() + (ptrdiff_t) k);
         }
         mc->n_jit_miss += miss.size();
         g_pjit_layers++;
@@ -12816,6 +12841,10 @@ void llama_moe_cache_free_fork() {
             mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query, mc->n_adopted);
     LLAMA_LOG_WARN("moe-cache: staging lookups: %lld range calls, %lld experts asked, %lld found on the card, %lld found but still in flight, %lld asked of the wrong card\n",
             (long long) g_ac.where_calls.load(), (long long) g_ac.where_range.load(), (long long) g_ac.where_found.load(), (long long) g_ac.where_inflight.load(), (long long) g_ac.where_wrongdev.load());
+    if (g_ppoff_all > 0) {
+        LLAMA_LOG_WARN("moe-cache: pp-off: %.1f%% of the prompt's expert-token pairs kept off the card: %.1f%% on the miss device, %.1f%% on the CPU\n",
+                100.0*g_ppoff_pairs/g_ppoff_all, 100.0*g_ppoff_dev/g_ppoff_all, 100.0*(g_ppoff_pairs - g_ppoff_dev)/g_ppoff_all);
+    }
     alias_cost_log("at exit");
     // --moe layer-stats=1: how many cache slots each layer holds filled at the end of the run, and its hit rate (does a fixed per-layer share fill up evenly?)
     if (const char * e = moe_opt("layer-stats"); e && atoi(e) != 0) {

@@ -51,6 +51,8 @@ struct llama_moe_cache_layer_fork {
     ggml_tensor * up_m   = nullptr;
     ggml_tensor * gate_m = nullptr;
     ggml_tensor * down_m = nullptr;
+    // --moe pp-off: per expert, set by the prompt upload: 1 = this pass's miss runs on the up_m device, 0 = on the CPU
+    std::vector<uint8_t> miss_on_dev;
 
     // device-resident cache slots, ne[2] == n_slots + 1 (last slot all zeros)
     ggml_tensor * up_c   = nullptr;
