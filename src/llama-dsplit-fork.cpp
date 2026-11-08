@@ -46,6 +46,16 @@
 
 void llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
 
+// a card of the dense split: a GPU that computes at least a quarter of the fastest one (Radeon 780M next to an RTX 4060: 1/11, attention 18x slower, a forced split took a 12k
+// prompt from 2446 to 169 prompt t/s). Without a probe every GPU counts.
+static bool dsplit_card(const llama_model & model, ggml_backend_dev_t d) {
+    if (!ggml_backend_dev_is_gpu(d)) { return false; }
+    double top = 0.0;
+    for (const auto & c : model.devices) { if (const auto * r = llama_gpu_probe_find_fork(c.dev)) { top = std::max(top, r->compute); } }
+    const auto * r = llama_gpu_probe_find_fork(d);
+    return !r || r->compute >= 0.25 * top;
+}
+
 namespace {
 
 // --moe mirror-pool (default on with the compute alias): one card's copies live at the start of its expert pool buffer, in the blocks a prompt pass that
@@ -128,7 +138,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
     }
     std::vector<ggml_backend_dev_t> gpus;
     for (const auto & d : model.devices) {
-        if (ggml_backend_dev_is_gpu(d.dev)) { gpus.push_back(d.dev); }
+        if (dsplit_card(model, d.dev)) { gpus.push_back(d.dev); }
     }
     if (gpus.size() < 2) {
         if (llama_moe_get_opt("dense-split")) {   // a default-on switch is not worth a warning on a one-GPU machine
@@ -150,7 +160,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
             if (name.find("_exps") != std::string::npos) { continue; }                               // routed experts stay shared by id range
             if (t == nullptr || t->buffer == nullptr) { continue; }
             ggml_backend_dev_t td = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
-            if (td == nullptr || td == D || !ggml_backend_dev_is_gpu(td)) { continue; }
+            if (td == nullptr || td == D || !dsplit_card(model, td)) { continue; }
             src.push_back(t);
             bytes += ggml_nbytes(t);
         }
@@ -210,7 +220,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
 namespace {
 int dsplit_n_gpus(const llama_model & model) {
     int n = 0;
-    for (const auto & d : model.devices) { n += ggml_backend_dev_is_gpu(d.dev); }
+    for (const auto & d : model.devices) { n += dsplit_card(model, d.dev); }
     return n;
 }
 
@@ -240,7 +250,7 @@ void dsplit_cards_update(const llama_model & model, const dsplit_set & S) {
     if (g_card_order.empty()) {
         std::vector<std::pair<double, ggml_backend_dev_t>> v;
         for (const auto & d : model.devices) {
-            if (!ggml_backend_dev_is_gpu(d.dev)) { continue; }
+            if (!dsplit_card(model, d.dev)) { continue; }
             bool seen = false;
             for (const auto & p : v) { seen = seen || p.second == d.dev; }
             if (!seen) { v.push_back({ dsplit_link_once(d.dev), d.dev }); }
@@ -631,7 +641,7 @@ static std::string dsplit_pci_file(const std::string & busid, const char * file)
 static std::string dsplit_hw_key(const llama_model & model, bool log = true, bool with_gen = true) {
     std::string desc;
     for (const auto & d : model.devices) {
-        if (!ggml_backend_dev_is_gpu(d.dev)) { continue; }
+        if (!dsplit_card(model, d.dev)) { continue; }
         ggml_backend_dev_props p; ggml_backend_dev_get_props(d.dev, &p);
         const std::string bus = p.device_id ? p.device_id : "";
         // vendor + device id and the slot say which card sits where; "generation x width" the link it has there (4x16 = PCIe 4.0 x16): short, stable, no measuring
@@ -1446,7 +1456,7 @@ double llama_dsplit_read_rate_fork(ggml_backend_dev_t d) {
 
 void llama_dsplit_bench_fork(const llama_model & model) {
     std::vector<ggml_backend_dev_t> devs;
-    for (const auto & d : model.devices) { if (ggml_backend_dev_is_gpu(d.dev)) { devs.push_back(d.dev); } }
+    for (const auto & d : model.devices) { if (dsplit_card(model, d.dev)) { devs.push_back(d.dev); } }
     std::lock_guard<std::mutex> lk(g_plan_mu);
     dsplit_mm_bench(model, devs);
 }
@@ -2984,7 +2994,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     }
     if (g_dev_all.empty() && model.dev_offload < model.devices.size()) {
         for (const auto & d : model.devices) {
-            if (!ggml_backend_dev_is_gpu(d.dev)) { continue; }
+            if (!dsplit_card(model, d.dev)) { continue; }
             const std::string nm = ggml_backend_dev_name(d.dev);
             g_dev_all += (g_dev_all.empty() ? "" : "+") + nm;
             if (d.dev != model.devices[model.dev_offload].dev) { g_dev_rest += (g_dev_rest.empty() ? "" : "+") + nm; }
