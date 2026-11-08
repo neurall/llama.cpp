@@ -3265,6 +3265,18 @@ void resource_probe(moe_cache * mc) {
             }
         }
     }
+    if (!mc->rp_pre.empty()) {   // --moe rampool: the expert tensors are the unpopulated mapping (the pool fills after this probe), so a read of them is a page fault from the SSD, not RAM
+        // (GLM 3.5 2026-11-08: the probe said RAM 22.4 GB/s against 45.0 with the tensors pinned; the planner then kept the uploads at a quarter and the CPU took the misses, decode
+        // 60.5 against a possible 16+ t/s). The pieces pinned for the pool are populated RAM: the probe reads and DMAs from them instead, in slices of an expert's size.
+        const size_t n = mc->layers[0].pub.up_src->nb[2];
+        src.clear();
+        for (ggml_backend_buffer_t b : mc->rp_pre) {
+            const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(b);
+            for (size_t o = 0, sz = ggml_backend_buffer_get_size(b); o + n <= sz; o += 7 * n) { src.push_back({ base + o, n }); }
+        }
+        LLAMA_LOG_WARN("moe-cache: resource probe: reads and DMAs from the pool's %zu pinned pieces (%zu slices of %.1f MiB), not from the mapped expert tensors\n", mc->rp_pre.size(), src.size(), n / 1048576.0);
+    }
+    if (src.empty()) { return; }
     // one target per link: slot 0 of the first layer on it (empty now; the preload fills it after the probe)
     std::vector<int> link_layer(mc->n_links, -1);
     for (size_t li = 0; li < mc->layers.size(); ++li) {
@@ -3305,10 +3317,10 @@ void resource_probe(moe_cache * mc) {
                     auto & ls = mc->layers[link_layer[k]];
                     size_t i = (size_t) k * 977;
                     while (!stop) {
-                        const ggml_tensor * t = ls.pub.up_src;
-                        const int64_t e = (int64_t) (i++ % (size_t) t->ne[2]);
-                        ggml_backend_tensor_set(ls.pub.up_c, (const uint8_t *) t->data + (size_t) e*t->nb[2], 0, t->nb[2]);
-                        got[n_thr + k] += (double) t->nb[2];
+                        const chunk & c = src[i++ % src.size()];   // the same sources as the CPU readers: pinned slices, with the pool its pieces (never the mapping)
+                        const size_t n = std::min(c.n, (size_t) ls.pub.up_src->nb[2]);
+                        ggml_backend_tensor_set(ls.pub.up_c, c.p, 0, n);
+                        got[n_thr + k] += (double) n;
                     }
                 });
             }
