@@ -3357,7 +3357,7 @@ void resource_probe(moe_cache * mc) {
     if (!user_knobs().count("UPLOAD_WAIT")) { knobs().gate = 3; }
     // The link rates are the early benchmark's (early_link_gbs: measured once per process, the fastest of four copies), shared, not measured a second time; the loop above only had them alone for the CPU/links mix
     for (int k = 0; k < mc->n_links; ++k) {
-        if (const double e = early_link_gbs(mc->link_dev[k]); e > 0.0) { link_alone[k] = e; }
+        if (const double e = mc->link_dev[k] ? early_link_gbs(mc->link_dev[k]) : 0.0; e > 0.0) { link_alone[k] = e; }
     }
     std::string links, rs;
     for (int k = 0; k < mc->n_links; ++k) {

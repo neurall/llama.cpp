@@ -326,29 +326,37 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                 ggml_free(ctx);
                 return best;
             };
-            double best = 0.0;
+            std::vector<double> link(local.size(), 0.0);
             for (size_t k = 0; k < local.size(); ++k) {
                 ggml_backend_dev_t dev = model->devices[local[k]].dev;
-                const double gbs = h2d_gbs(dev);
-                LLAMA_LOG_INFO("%s: %s host->device upload %.1f GB/s\n", __func__, ggml_backend_dev_name(dev), gbs);
-                // within 15% counts as equal: identical setups keep the first GPU
-                if (k == 0 || gbs > 1.15*best) {
-                    model->dev_offload = local[k];
-                    best = gbs;
-                }
+                link[k] = h2d_gbs(dev);
+                LLAMA_LOG_INFO("%s: %s host->device upload %.1f GB/s\n", __func__, ggml_backend_dev_name(dev), link[k]);
             }
-            LLAMA_LOG_INFO("%s: prompt processing is offloaded to %s (fastest upload link of %zu GPUs)\n", __func__,
-                    ggml_backend_dev_name(model->devices[model->dev_offload].dev), local.size());
 
             // per-GPU probe (upload alone and with all cards at once, hand-off latency, compute speed); the results feed the prefill layer plan in
             // llama_model_base::load_tensors (see llama-gpu-probe-fork.cpp for what is measured and how the plan uses it)
             std::vector<ggml_backend_dev_t> probe_devs;
             for (size_t i : local) { probe_devs.push_back(model->devices[i].dev); }
             std::vector<std::vector<double>> probe_conc;
+            std::vector<double> comp(local.size(), 0.0);
             for (const auto & r : llama_gpu_probe_fork(probe_devs, &probe_conc)) {
                 LLAMA_LOG_INFO("%s: probe %s: upload %.1f GB/s alone, %.1f GB/s with all cards, small copy %.0f us, compute %.3g GB*tokens/s (sustained %.3g), result latency %.0f us\n", __func__,
                         r.name.c_str(), r.h2d_gbs, r.h2d_conc_gbs, r.lat_us, r.compute / 1e9, r.compute_sust / 1e9, r.res_us);
+                if (r.index < comp.size()) { comp[r.index] = r.compute; }
             }
+            // the offload card: the fastest link among the cards within 30% of the best compute (a shared-memory GPU's upload is a memcpy, it says nothing about what the
+            // card can compute: Radeon 780M 29 GB/s against an RTX 4060's 13, at 1/11 of its compute). Without a probe every card is a candidate and the link decides.
+            const double ctop = *std::max_element(comp.begin(), comp.end());
+            double best = -1.0;
+            for (size_t k = 0; k < local.size(); ++k) {
+                // links within 15% count as equal: identical setups keep the first GPU
+                if (comp[k] >= 0.7 * ctop && (best < 0.0 || link[k] > 1.15 * best)) {
+                    model->dev_offload = local[k];
+                    best = link[k];
+                }
+            }
+            LLAMA_LOG_INFO("%s: prompt processing is offloaded to %s (fastest upload link among the fastest computing of %zu GPUs)\n", __func__,
+                    ggml_backend_dev_name(model->devices[model->dev_offload].dev), local.size());
         } else if (local.size() == 1) {
             model->dev_offload = local[0];
         }
