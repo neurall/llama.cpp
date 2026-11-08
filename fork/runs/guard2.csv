@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+ds-12k-guard,ds,2,pf12k1k,1024,"--moe map-guard=1",
+glm35-12k-guard,glm35,2,pf12k1k,1024,"--moe map-guard=1",
+glm30-12k,glm,2,pf12k1k,1024,,
+qni3-a200,qwen38,2,pf128k,16,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+mimo-a500,mimo,2,pf128k,16,"--moe pp-only=1",--clamp 500 --vary --ctx 8192
+qni3-a500,qwen38,2,pf128k,16,"--moe pp-only=1",--clamp 500 --vary --ctx 8192
+mimo-12k,mimo,2,pf12k1k,256,,

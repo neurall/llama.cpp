@@ -110,10 +110,10 @@ def judge_answer(url, text, ask="", start=False):
     v = judge_text(url, text, ask)
     if v["verdict"] != "nonsense" or not v["parts"]:   # no parts: one repeated token, no opinion needed
         return v
-    if not os.path.exists(SECOND_CMD[2]):   # no model file: no 3 minute wait for a server that cannot come up
+    second = url.rsplit(":", 1)[0] + f":{SECOND_PORT}"
+    if not server_up(second) and not os.path.exists(SECOND_CMD[2]):   # a running one (PC2's, started there by hand) first; no model file: no 3 minute wait for a server that cannot come up
         v["second"] = "none"; v["why"] += " (no second opinion: model missing)"
         return v
-    second = url.rsplit(":", 1)[0] + f":{SECOND_PORT}"
     if not server_up(second) and not (start and second_start(second)):
         v["second"] = "none"
         return v

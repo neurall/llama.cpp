@@ -2859,7 +2859,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 row["p_" + k] = v
         if t.get("draft_n"):  # speculative decoding (MTP / draft model): accepted / drafted tokens
             row["note"] = f"draft {t.get('draft_n_accepted')}/{t['draft_n']}"
-        if "from pageable host memory" in log:  # weights not pinned: uploads are slower, the run does not compare with pinned ones
+        if "from pageable host memory" in log and "reads and DMAs from the pool's" not in log:  # weights not pinned (the pool's pinned pieces serve the uploads when that line follows): uploads are slower, the run does not compare with pinned ones
             row["note"] = (row.get("note", "") + " pageable uploads").strip()
     row.update(cache_stats(log))
     row.update(ok=1 if row.get("tps") else 0, args=" ".join(args))
@@ -3387,6 +3387,14 @@ def cmd_stats(a):
             elif show(l): print(l, end="", flush=True)
 
 
+def cmd_test(a):
+    """run.py test cross [-b BUILD ...] [--since TS] [--models M] [--all]: the planner's five strategy crossovers (misses on the CPU vs uploaded, stream vs chain/k,
+    stream vs mix, one card vs dense split, split vs expert split) judged per model from the stats.logs the cells kept (fork/crosstest.py): PASS, FAIL with the
+    prompt time lost, or unverified with the forced cell to run. Exit code = the number of FAIL cells; `build --release` runs it first (user 2026-11-08)."""
+    import crosstest
+    argv = sum([["-b", b] for b in a.build], []) + (["--since", a.since] if a.since else []) + (["--models", a.models] if a.models else []) + (["--all"] if a.all else [])
+    sys.exit(min(crosstest.run(argv), 125))
+
 def judge_local_pidfile():
     return os.path.join(QDIR, "judge-local.pid")
 
@@ -3692,7 +3700,7 @@ def store(row, build, test, rec, note, hw, vstr):
         ok=row.get("ok", 1), model=row["model"], build=build, args=rec.get("args", ""), md5=row.get("md5"), campaign=CAMPAIGN,
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
-        pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
+        pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "driver", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
         branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "judge", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     save_output_file(row["ts"], build, test, row["model"])   # fork/outputs/<run id>.txt: the answer, readable on GitHub without runs.db
     global _EMB_OFF
@@ -5322,7 +5330,10 @@ def cmd_publish(a):
     br = _git(tree, "branch", "--show-current")
     for ref in [f"refs/heads/{br}:refs/heads/{br}"]:
         subprocess.run(["git", "-C", tree, "push", "neurall", ref], check=True)
-    _publish_db(here)
+    try:
+        _publish_db(here)
+    except subprocess.CalledProcessError:   # runs.db passed GitHub's 100 MB file limit (101 MB, 2026-11-08): the release itself does not wait for the history
+        print("publish: the runs-db push FAILED (runs.db too big for GitHub); continuing with the release", flush=True)
     if not a.name:
         return
     rev = _git(tree, "rev-parse", "HEAD"); h = rev[:9]
@@ -5360,6 +5371,37 @@ def set_latest_link(tree, link="/p/bw/latest"):
         print(f"latest link not set: {e}", flush=True)
 
 
+def build_progress(log, done, label):
+    """A progress bar of a build for the terminal, every 10 s until `done` is set: percent from the last "[ 47%]" (make) or "[123/456]" (ninja) line the build wrote to `log`, the object being compiled, and the
+    time left from the progress of the last 3 minutes (the early objects are ccache hits and the CUDA template instances are slow, so the average since the start is a poor guide; it is the fallback).
+    On a terminal the line is rewritten, in a file (nohup) every update is a line. (user 2026-11-08: "during builds show live % and est time remaining progressbar in status updated every 10s")"""
+    t0 = time.time(); hist = []; tty = sys.stdout.isatty()
+    def frac():
+        try:
+            with open(log, "rb") as f:
+                f.seek(0, 2); f.seek(max(0, f.tell() - 65536)); tail = f.read().decode("utf-8", "replace")
+        except OSError:
+            return None, ""
+        m = re.findall(r"\[\s*(\d+)%\]", tail); n = re.findall(r"\[(\d+)/(\d+)\]", tail)
+        obj = re.findall(r"Building \w+ object (\S+)", tail)
+        f_ = int(m[-1]) / 100 if m else int(n[-1][0]) / max(1, int(n[-1][1])) if n else None
+        return f_, os.path.basename(obj[-1])[:34] if obj else ""
+    def mmss(x):
+        return f"{int(x // 60):d}:{int(x % 60):02d}"
+    def loop():
+        while not done.wait(10):
+            f_, obj = frac()
+            if f_ is None:
+                continue
+            now = time.time(); el = now - t0; hist.append((now, f_)); hist[:] = [h for h in hist if now - h[0] <= 180]
+            rate = (f_ - hist[0][1]) / (now - hist[0][0]) if now - hist[0][0] >= 30 and f_ > hist[0][1] else f_ / el if f_ > 0 else 0
+            eta = (1 - f_) / rate if rate > 0 else None
+            bar = col("32;40", "█" * int(f_ * 20)) + col("2;37;40", "░" * (20 - int(f_ * 20)))
+            line = f"build {label} [{bar}] " + col(1, f"{f_ * 100:3.0f}%") + f"  {mmss(el)} elapsed, " + (f"~{mmss(eta)} left" if eta is not None else "? left") + f"  {obj}"
+            print(("\r\033[K" if tty else "") + line, end="" if tty else "\n", flush=True)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def cmd_build(a):
     r"""Builds, in containers (pc1) or on the W10 laptop (pc3), with ccache.
     default: dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
@@ -5375,6 +5417,10 @@ def cmd_build(a):
     if not a.name:
         sys.exit("build: NAME is needed (the directory under DEVBUILDS)")
     name = a.name
+    if a.release and not a.no_cross:   # the crossover audit first (user 2026-11-08: "run them prior any rel build"): a FAIL cell stops the release build
+        import crosstest
+        fails = crosstest.run(["-b", a.cross] if a.cross else [])
+        if fails: sys.exit(f"build --release: {fails} crossover cells FAIL (run.py test cross): fix the planner, or --no-cross to build anyway")
     log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "logs", f"build-{name}" + ("" if a.machine == "pc1" else f"-{a.machine}") + ".log")
     if a.machine == "pc3" and not a.release:
         sys.exit("build --machine pc3: only the release recipe (clang 20 for the CPU backend, as every published Windows release); the dev bat uses MSVC and fails on the GCC-style kernels. Add --release.")
@@ -5395,7 +5441,9 @@ def cmd_build(a):
             cmd = (f"cd /d N:\\llama.cpp && git fetch -q C:\\Users\\o\\{ref}.bundle {ref} && git checkout -q FETCH_HEAD && call N:\\llama.cpp\\release-out\\winbuild-rel.bat"
                    f" && (if not exist N:\\build mkdir N:\\build) && (if not exist N:\\build\\{name} mkdir N:\\build\\{name}) && xcopy /q /y /e N:\\build\\rel-cuda134-clang\\* N:\\build\\{name}\\"
                    f" & (copy /y N:\\build\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\build\\{name}\\ >nul 2>&1) & echo PKG_OK {short}")   # the VC runtime DLLs of an old build, when it is still there: the release zip takes them from the b11214 zip anyway
+            _bp = threading.Event(); build_progress(log, _bp, name + " (pc3)")
             subprocess.run(ssh + [cmd], stdout=lf, stderr=subprocess.STDOUT)
+            _bp.set()
         os.remove(bundle)
         ok = f"PKG_OK {short}" in open(log).read() and "BUILD_OK" in open(log).read()   # PKG_OK is echoed even when the bat failed
         if ok and a.release:   # the zip the way every published Windows release was made (build-cuda-dl\bin + the VC runtime DLLs + LICENSE)
@@ -5456,7 +5504,9 @@ def cmd_build(a):
               "-v", f"{gitc}:{gitc}:ro", "llama-rel-el8", "bash", "-c", inner]
     t0 = time.time()
     with open(log, "w") as lf:
+        _bp = threading.Event(); build_progress(log, _bp, name)
         rc = subprocess.run(docker, stdout=lf, stderr=subprocess.STDOUT).returncode
+        _bp.set()
     del lk
     binp = os.path.join(B, "bin")
     if rc != 0 or not os.path.exists(os.path.join(binp, "llama-server")):
@@ -7616,14 +7666,7 @@ def run_list(name, argv):
         for r in rows:
             if not r["_b"].startswith("stock") and "-nm" not in shlex.split(r.get("args") or ""): r["args"] = ((r.get("args") or "") + f" -nm {o.no_pool}").strip()
     auto_pin = {b: has_auto_pin(b) for b in dict.fromkeys(r["_b"] for r in rows)}
-    for r in rows:   # builds with the auto pin: no forced pin share, the build computes it from RAM and model size and logs the numbers (a -nm 0 row stays: it asks for no pinning)
-        if auto_pin.get(r["_b"]) and not r["_b"].startswith("stock"):
-            tok = shlex.split(r.get("args") or ""); keep = []
-            for i, t in enumerate(tok):
-                if t == "-nm" and i + 1 < len(tok) and re.fullmatch(r"[\d.]+%?", tok[i + 1]) and float(tok[i + 1].rstrip("%")) != 0: continue
-                if i and tok[i - 1] == "-nm" and re.fullmatch(r"[\d.]+%?", t) and float(t.rstrip("%")) != 0: continue
-                keep.append(t)
-            r["args"] = shlex.join(keep)
+    # a numeric -nm in a row or on the command line reaches every build: the user sets the best pin budget per model (2026-11-08; before, auto-pin builds dropped it)
     ram_gib = int(open("/proc/meminfo").readline().split()[1]) >> 20
     for r in rows:   # a model that cannot fit RAM beside 16 GiB for the system must not be pinned (128 GiB GLM on 125 GiB froze PC1): -lm mmap, no pool; stock mmaps already
         if not r["_b"].startswith("stock") and not auto_pin.get(r["_b"]) and (size(r) >> 30) + 16 > ram_gib and not nomount_args(r.get("args") or "")[1]:
@@ -10822,6 +10865,8 @@ if __name__ == "__main__":
     bd.add_argument("--machine", default="pc1", choices=["pc1", "pc3"])
     bd.add_argument("--w10-base", default="6846d4803", help="a commit the W10 repository has: the bundle carries only what is newer")
     bd.add_argument("--no-regress", action="store_true", help="skip the regress cell after the build")
+    bd.add_argument("--cross", default="", help="--release: the dev build whose kept stats.logs the crossover audit (test cross) judges before the build; default: every model's newest")
+    bd.add_argument("--no-cross", action="store_true", help="--release: skip the crossover audit")
     bd.add_argument("--targets", nargs="+", default=[], help="dev build: more cmake targets beside server, cli and perplexity (a test-* target turns the tests on), e.g. --targets test-scratch-fork")
     qk = sp.add_parser("quick", help="the short benchmark for any machine: --fork build against --stock, short chat answers and a 12k-token prompt, one markdown table (nothing is recorded unless --record)")
     qk.add_argument("--model", required=True, help="the .gguf file (the first part of a split model)")
@@ -10933,6 +10978,12 @@ if __name__ == "__main__":
     sl = sp.add_parser("stats", help="follow the stats.log of the row that runs now (events and once-a-second status, one line each), or show the one a cell kept")
     sl.add_argument("tag", nargs="?", default="", help="the cell's tag, e.g. BUILD-ROW: its kept stats.log, printed once")
     sl.add_argument("--only", default="", help="comma list of line types, e.g. DEC,DON,STA")
+    tc = sp.add_parser("test", help="checks before a release: `test cross` judges the planner's five strategy crossovers per model from the kept stats.logs (fork/crosstest.py); exit code = FAIL cells")
+    tc.add_argument("what", choices=["cross"], help="cross: the crossover audit (X1 CPU vs upload misses, X2 stream vs chain/k, X3 mix, X4 dense split, X5 expert split)")
+    tc.add_argument("-b", "--build", action="append", default=[], help="builds to judge (repeatable); default: every model's newest build")
+    tc.add_argument("--since", default="", help="only cells from this time on, 'YYYY-MM-DD HH:MM'")
+    tc.add_argument("--models", default="", help="comma list of short model names: glm30,glm35,mimo,ds,qwen36,qni4,qni3,qn1m,olmoe")
+    tc.add_argument("--all", action="store_true", help="every (model, build) of the window, not only each model's newest build")
     jd = sp.add_parser("judge", help="Qwen3.6 on W10 reads stored answers (fork/judge_w10.py), nonsense makes a row ok=0: what it said so far; --sync its copy and verdicts; IDS or --build reads now")
     jd.add_argument("ids", nargs="*", type=int, help="runs.db row ids to read now, read again even when judged before")
     jd.add_argument("--build", default="", help="read now the rows of this build that have no verdict")
@@ -10957,5 +11008,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "test": cmd_test, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)

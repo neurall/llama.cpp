@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+glm-i,glm,2,pfbest1k,1024,,
+mimo-i,mimo,2,pfbest1k,1024,,
+ds-i,ds,2,pfbest1k,1024,,
+glm35-i,glm35,2,pfbest1k,1024,,

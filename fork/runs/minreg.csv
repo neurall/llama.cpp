@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+mimo-io,mimo,2,edit4c,1024,,
+glm35-io,glm35,2,edit4c,1024,,
+qni3-io,qwen38,2,edit4c,1024,,

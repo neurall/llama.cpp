@@ -11,8 +11,9 @@
 //   - One writer function, rp_read, and it writes only inside the block it owns.
 //   - Check and load BEFORE the kernel (ggml_rampool_need_fork), never on a memory access.
 //   - A block is taken from an element only when nobody can still read it: not asked by this graph or the one before it (a copy of the previous graph can still run), no holds.
-//   - Eviction: of 64 sampled evictable blocks of the class the one expected back last; a newcomer gets it only when it is expected back sooner (else it stays out, "refused",
-//     and its caller reads it the old way): a cold expert read once does not push a warm one out.
+//   - Eviction: of 64 sampled evictable blocks of the class the one expected back last, and every demanded element gets one. Refusing the newcomers expected back later than
+//     that block (until 2026-11-08) refused every expert never seen before, and its caller read it from the mapping: GLM 3.5 12k, 4899 of 12871 cold misses per request,
+//     16 GiB of page cache next to a 101 GiB pool, 1000 major faults per second and swapping through the decode. The read into the pool costs the same SSD bytes and leaves nothing behind.
 //   - Elements of a class lie behind each other as the file has them after the fill, so one DMA serves a run. A matmul that reads past a slice needs the real next expert's
 //     bytes there (llama-moecache-fork.cpp, expert_past): such tensors are not given to the pool.
 #include "ggml-rampool-fork.h"
@@ -66,6 +67,7 @@ struct rp_tensor {
     const void * key  = nullptr;
     int          fd   = -1, dfd = -1;   // the file; the same file opened O_DIRECT, -1: not possible here
     size_t       off  = 0, esz = 0;     // where element 0 lies, element bytes
+    size_t       pad  = 0;              // bytes a kernel reads past an element: its block is esz + pad and carries them (the next element's; zeros behind the last)
     int64_t      n    = 0;
     int          cls  = 0;
     int32_t      idx  = 0;
@@ -168,16 +170,17 @@ bool rp_read(rp_pool * p, int dfd, int fd, char * dst, size_t n, uint64_t off, c
         if (pos < off || end < edge) {
             want = RP_SECTOR;   // a sector shared with a neighbour
         } else {
-            want = (size_t) ((end - pos) / RP_SECTOR * RP_SECTOR);
-            if (p->rq > 0) { want = std::min(want, p->rq / RP_SECTOR * RP_SECTOR); }
+            want = (size_t) ((end - pos) / RP_SECTOR * RP_SECTOR);   // the whole-sector middle in one go: sr_read splits it into the drive's measured shape (256 KiB blocks, 32 in flight)
         }
         const uint64_t u0 = std::max(pos, off), u1 = std::min(pos + want, end);   // the bytes of this request that belong to dst
         char * d = dst + (size_t) (u0 - off);
         const size_t ma = p->memal.load(std::memory_order_relaxed);
         const bool whole = u0 == pos && u1 == pos + want;
         const bool direct = whole && ((uintptr_t) d & (ma - 1)) == 0;
-        if (!direct) { want = std::min(want, bounce_n); }
-        ptrdiff_t r = sr_pread1(dfd, direct ? d : bounce, want, pos);
+        if (!direct) { want = std::min(want, std::min(bounce_n, p->rq > 0 ? p->rq / RP_SECTOR * RP_SECTOR : bounce_n)); }
+        // the platform's async engine (ggml-read-fork.h: kernel AIO, io_uring or overlapped I/O, the stored rd_blk_kb / rd_qd shape) for a whole-sector span straight into the block
+        // (user 2026-11-08: the pool reads through the one reader wrapper, at the measured shape, not 512 KiB preads); one read at a time only for the sectors shared with a neighbour
+        ptrdiff_t r = direct && want > RP_SECTOR ? (sr_read(dfd, d, pos, want, want) ? (ptrdiff_t) want : (ptrdiff_t) -1) : sr_pread1(dfd, direct ? d : bounce, want, pos);
         if (r < 0 && errno == EINVAL && direct) {   // this file system or device wants more alignment than dma_alignment says: the bounce buffer from now on
             p->memal.store(RP_SECTOR, std::memory_order_relaxed);
             continue;
@@ -216,20 +219,20 @@ char * rp_bounce_new(size_t n) {
 #endif
 }
 
-// out of a graph's reach: not read by this graph or the one before it, and no reader outside a graph
-bool rp_evictable(const rp_pool * p, const rp_rec & r) {
-    return r.state == RP_IN && r.holds == 0 && r.graph + 1 < p->graph.load(std::memory_order_relaxed);
+// out of a graph's reach: not read by this graph or the one before it, and no reader outside a graph. force (a CPU kernel's demand): only this graph's are kept, the one
+// before it has been synchronised (the counter moves after the sync); DS 12k relcand: the 13.5k stream call asked for every block, so the tail's demand found none
+bool rp_evictable(const rp_pool * p, const rp_rec & r, bool force = false) {
+    return r.state == RP_IN && r.holds == 0 && r.graph + (force ? 0u : 1u) < p->graph.load(std::memory_order_relaxed);
 }
 
-// A block for an element of class c expected back at `want` (the heat clock), -1: none. The caller holds the lock. A free block first; else of 64 sampled evictable blocks the
-// one expected back last, taken only when the newcomer is expected back sooner.
-int32_t rp_take_block(rp_pool * p, rp_class & c, double want) {
+// A block for an element of class c, -1: none. The caller holds the lock. A free block first; else of 64 sampled evictable blocks the one expected back last.
+int32_t rp_take_block(rp_pool * p, rp_class & c, bool force) {
     if (!c.free.empty()) {
         const uint32_t s = c.free.back();
         c.free.pop_back();
         return (int32_t) s;
     }
-    if (!p->evict) { return -1; }
+    if (!p->evict && !force) { return -1; }
     const uint32_t n = (uint32_t) c.owner.size();
     if (n == 0) { return -1; }
     int32_t best = -1;
@@ -240,13 +243,13 @@ int32_t rp_take_block(rp_pool * p, rp_class & c, double want) {
         const rp_owner o = c.owner[s];
         if (o.t < 0) { continue; }
         rp_tensor & t = *p->tensors[o.t];
-        if (!rp_evictable(p, t.rec[o.e])) { continue; }
+        if (!rp_evictable(p, t.rec[o.e], force)) { continue; }
         seen++;
         const double h = p->heat(t.key, o.e, p->ud);
         if (h > bh) { bh = h; best = (int32_t) s; }
     }
     c.sample = (c.sample + 1) % n;
-    if (best < 0 || !(want < bh)) { return -1; }
+    if (best < 0) { return -1; }
     const rp_owner o = c.owner[best];
     rp_tensor & t = *p->tensors[o.t];
     t.ptr[o.e].store(nullptr, std::memory_order_release);
@@ -257,13 +260,13 @@ int32_t rp_take_block(rp_pool * p, rp_class & c, double want) {
     return best;
 }
 
-// element e leaves for a block and a reader. The caller holds the lock. false: no block (refused).
-bool rp_start(rp_pool * p, rp_tensor & t, int64_t e) {
-    const double want = p->heat(t.key, e, p->ud);
-    if (want == HUGE_VAL) { return false; }   // a card holds it: a RAM copy pays nothing
+// element e leaves for a block and a reader. The caller holds the lock. false: no block (refused). force: a block is taken from the fill's set even with eviction
+// off (a CPU kernel's demand: the only other source is the mapping, ggml_rampool_demand_fork)
+bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false) {
+    if (!force && p->heat(t.key, e, p->ud) == HUGE_VAL) { return false; }   // a card holds it (the fill): a RAM copy pays nothing
     rp_class & c = p->cls[t.cls];
     rp_rec & r = t.rec[e];
-    const int32_t s = rp_take_block(p, c, want);
+    const int32_t s = rp_take_block(p, c, force);
     if (s < 0) { return false; }
     r.slot    = s;
     r.state   = RP_READING;
@@ -271,6 +274,19 @@ bool rp_start(rp_pool * p, rp_tensor & t, int64_t e) {
     c.owner[s] = { t.idx, (int32_t) e };
     p->demand.push_back({ &t, e });
     return true;
+}
+
+// the read rp_start just queued is taken back: the lock has been held since, so no reader claimed it. The block goes to the free list (its evicted owner is gone: a rare loss).
+void rp_unstart(rp_pool * p, rp_tensor & t, int64_t e) {
+    rp_rec & r = t.rec[e];
+    rp_class & c = p->cls[t.cls];
+    for (auto it = p->demand.rbegin(); it != p->demand.rend(); ++it) {
+        if (it->t == &t && it->e == e) { p->demand.erase(std::next(it).base()); break; }
+    }
+    c.owner[r.slot] = rp_owner();
+    c.free.push_back((uint32_t) r.slot);
+    r.slot  = -1;
+    r.state = RP_OUT;
 }
 
 void rp_reader(rp_pool * p) {
@@ -294,7 +310,9 @@ void rp_reader(rp_pool * p) {
         rp_class & c = p->cls[t.cls];
         char * dst = c.at((uint32_t) r.slot);   // the block is ours: its owner changes only under RP_IN
         // O_DIRECT: a buffered read leaves a second copy in the page cache, which then pushes out the slices the pool does not hold (rampool3, GLM 3.5 warm decode 13.0 -> 6.5 t/s)
-        const bool ok = bounce != nullptr && rp_read(p, t.dfd, t.fd, dst, t.esz, t.off + (uint64_t) j.e * t.esz, bounce, bn);
+        const size_t pad = j.e + 1 < t.n ? t.pad : 0;   // the next element's first bytes come along; behind the last element zeros
+        if (t.pad > pad) { memset(dst + t.esz, 0, t.pad); }
+        const bool ok = bounce != nullptr && rp_read(p, t.dfd, t.fd, dst, t.esz + pad, t.off + (uint64_t) j.e * t.esz, bounce, bn);
         {
             std::lock_guard<std::mutex> lk(p->mu);
             if (ok) {
@@ -318,20 +336,20 @@ void rp_reader(rp_pool * p) {
 
 extern "C" {
 
-void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n, size_t esz, int32_t kind) {
+void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n, size_t esz, size_t pad, int32_t kind) {
     if (g_rp == nullptr) { g_rp = new rp_pool(); }
     rp_pool * p = g_rp;
     auto t = std::make_unique<rp_tensor>();
-    t->key = key; t->fd = fd; t->off = file_off; t->n = n; t->esz = esz; t->idx = (int32_t) p->tensors.size();
+    t->key = key; t->fd = fd; t->off = file_off; t->n = n; t->esz = esz; t->pad = pad; t->idx = (int32_t) p->tensors.size();
     t->rec.resize((size_t) n);
     t->ptr.reset(new std::atomic<const char *>[(size_t) n]);
     for (int64_t e = 0; e < n; ++e) { t->ptr[e].store(nullptr, std::memory_order_relaxed); }
     int c = -1;
-    for (size_t i = 0; i < p->cls.size(); ++i) { if (p->cls[i].size == esz && p->cls[i].kind == kind) { c = (int) i; } }
+    for (size_t i = 0; i < p->cls.size(); ++i) { if (p->cls[i].size == esz + pad && p->cls[i].kind == kind) { c = (int) i; } }
     if (c < 0) {
         c = (int) p->cls.size();
         p->cls.emplace_back();
-        p->cls.back().size = esz;
+        p->cls.back().size = esz + pad;
         p->cls.back().kind = kind;
     }
     t->cls = c;
@@ -427,9 +445,11 @@ void ggml_rampool_fill_fork(void) {
         for (int64_t e = 0; e < t.n; ) {
             if (t.rec[e].slot < 0) { ++e; continue; }
             int64_t b = e + 1;
-            while (b < t.n && t.rec[b].slot == t.rec[e].slot + (b - e) && (uint32_t) t.rec[b].slot / c.per_chunk == (uint32_t) t.rec[e].slot / c.per_chunk) { ++b; }
-            uint64_t off = t.off + (uint64_t) e * t.esz, end = t.off + (uint64_t) b * t.esz;
+            while (t.pad == 0 && b < t.n && t.rec[b].slot == t.rec[e].slot + (b - e) && (uint32_t) t.rec[b].slot / c.per_chunk == (uint32_t) t.rec[e].slot / c.per_chunk) { ++b; }   // padded blocks: one element per range (file neighbours are esz apart, their blocks esz + pad)
+            const size_t pad = b < t.n ? t.pad : 0;   // the next element's first bytes come along; behind the last element zeros
+            uint64_t off = t.off + (uint64_t) e * t.esz, end = t.off + (uint64_t) b * t.esz + pad;
             char * dst = c.at((uint32_t) t.rec[e].slot);
+            if (t.pad > pad) { memset(dst + t.esz, 0, t.pad); }
             while (off < end) {
                 const uint64_t cut = std::min(end, (off / piece + 1) * piece);
                 jobs.push_back({ &t, dst, (size_t) (cut - off), off });
@@ -479,8 +499,8 @@ void ggml_rampool_fill_fork(void) {
         }
     }
     const double s = std::max(1e-3, (rp_now_us() - t0) / 1e6);
-    GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, requests of %zu KiB%s), %llu of %llu slices a card holds also in RAM (the blocks left after all others)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
-            p->n_threads, p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card_in, (unsigned long long) n_card);
+    GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, the async engine at %zu KiB blocks x %d in flight, edge sectors in %zu KiB reads%s), %llu of %llu slices a card holds also in RAM (the blocks left after all others)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
+            p->n_threads, sr_blk() >> 10, sr_qd(), p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card_in, (unsigned long long) n_card);
     for (int i = 0; i < p->n_threads; ++i) { p->readers.emplace_back(rp_reader, p); }
 }
 
@@ -514,30 +534,53 @@ void ggml_rampool_graph_fork(void) {
     if (g_rp) { g_rp->graph.fetch_add(1, std::memory_order_relaxed); }
 }
 
-void ggml_rampool_need_fork(const void * key, const int32_t * ids, int n) {
-    rp_tensor * t = rp_find(key);
-    if (t == nullptr || n <= 0) { return; }
+static void rp_need(const void * const * keys, int nk, const int32_t * ids, int n, bool force);
+void ggml_rampool_need_fork(const void * const * keys, int nk, const int32_t * ids, int n) { rp_need(keys, nk, ids, n, false); }
+// A CPU kernel's demand: the element is read into the pool whatever the fill's set or the eviction switch (DeepSeek 12k map-guard, build short-paths 2026-11-08:
+// the tail call's missed experts found no VRAM block, the CPU computed them, and 22 of 123 GiB of experts were out of the pool with eviction off, so
+// ggml_vec_dot_iq1_m read blk.3's down tensor through the mapping). The block comes from the sampled coldest of the class.
+void ggml_rampool_demand_fork(const void * const * keys, int nk, const int32_t * ids, int n) { rp_need(keys, nk, ids, n, true); }
+static void rp_need(const void * const * keys, int nk, const int32_t * ids, int n, bool force) {
     rp_pool * p = g_rp;
+    if (p == nullptr || n <= 0) { return; }
+    rp_tensor * ts[8];
+    int nt = 0;
+    for (int k = 0; k < nk && nt < 8; ++k) { if (rp_tensor * t = rp_find(keys[k])) { ts[nt++] = t; } }
+    if (nt == 0) { return; }
     const uint32_t g = p->graph.load(std::memory_order_relaxed);
     int reading = 0, started = 0, hit = 0, refused = 0;
     std::unique_lock<std::mutex> lk(p->mu);
+    // An element is in RAM in all of its tensors or in none: with one tensor out (its class found no colder victim while the others did) the caller takes the
+    // element as held and the CPU kernel reads the missing tensor through the mapping (DS 12k, build past-in-pool: all major faults in the down tensor's vec_dot,
+    // 1000/s). So one element's reads start together, and when one of them finds no block the ones started are taken back and the element stays out whole.
     for (int i = 0; i < n; ++i) {
         const int64_t e = ids[i];
-        if (e < 0 || e >= t->n) { continue; }
-        rp_rec & r = t->rec[e];
-        r.graph = g;
-        if (r.state == RP_IN) { hit++; continue; }
-        if (r.state == RP_READING) { reading++; continue; }
-        if (rp_start(p, *t, e)) { started++; reading++; } else { refused++; }
+        int begun[8]; int nb = 0, n_out = 0; bool fail = false;
+        for (int k = 0; k < nt; ++k) {
+            rp_tensor * t = ts[k];
+            if (e < 0 || e >= t->n) { continue; }
+            rp_rec & r = t->rec[e];
+            r.graph = g;
+            if (r.state == RP_IN) { hit++; continue; }
+            if (r.state == RP_READING) { reading++; continue; }
+            n_out++;
+            if (!fail && rp_start(p, *t, e, force)) { begun[nb++] = k; } else { fail = true; }
+        }
+        if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } refused += n_out; }
+        else { started += nb; reading += nb; }
     }
-    p->st_asked += (uint64_t) n; p->st_hit += (uint64_t) hit; p->st_cold += (uint64_t) started; p->st_refused += (uint64_t) refused;
+    p->st_asked += (uint64_t) n * nt; p->st_hit += (uint64_t) hit; p->st_cold += (uint64_t) started; p->st_refused += (uint64_t) refused;
     if (started > 0) { if (started > 1) { p->work_cv.notify_all(); } else { p->work_cv.notify_one(); } }
     if (reading > 0) {
         const int64_t t0 = rp_now_us();
-        int i = 0;
+        int k = 0, i = 0;
         p->done_cv.wait(lk, [&]() {
-            while (i < n && (ids[i] < 0 || ids[i] >= t->n || t->rec[ids[i]].state != RP_READING)) { ++i; }
-            return i == n;
+            for (; k < nt; ++k, i = 0) {
+                const rp_tensor * t = ts[k];
+                while (i < n && (ids[i] < 0 || ids[i] >= t->n || t->rec[ids[i]].state != RP_READING)) { ++i; }
+                if (i < n) { return false; }
+            }
+            return true;
         });
         const uint64_t w = (uint64_t) (rp_now_us() - t0);
         p->st_wait_us += w; p->wait_total_us += w;
@@ -550,7 +593,11 @@ const char * ggml_rampool_get_fork(const void * key, int64_t e) {
     const rp_rec & r = t->rec[e];
     // asked by this graph or the one before it: no eviction before the graph after next (the graph counter moves only between graphs). Without eviction a block in stays in, so
     // no stamp is needed: a prompt pass's CPU op (no need before it) reads the pool too, not the mapping (rampool3: first 1938-token pass 46.8 s vs 16.7 s without the pool)
-    if (g_rp->evict && r.graph + 1 < g_rp->graph.load(std::memory_order_relaxed)) { return nullptr; }
+    const uint32_t g = g_rp->graph.load(std::memory_order_relaxed);
+    if (g_rp->evict && r.graph + 1 < g) { return nullptr; }
+    // eviction off: a CPU kernel's read is stamped, so a forced demand in this graph (another thread, another expert) never takes the block it reads
+    // shortcut: no lock, so a demand that checked the stamp just before this store can still take the block; nanoseconds wide, forced demands only; a hazard flag if it shows
+    if (!g_rp->evict && r.graph != g) { __atomic_store_n(const_cast<uint32_t *>(&r.graph), g, __ATOMIC_SEQ_CST); }
     return t->ptr[e].load(std::memory_order_acquire);
 }
 

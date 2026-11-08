@@ -18,8 +18,9 @@ typedef void * (*ggml_rampool_alloc_t)(size_t bytes, void * ud);
 typedef double (*ggml_rampool_heat_t)(const void * key, int64_t e, void * ud);
 
 // ---- set-up, in this order ----
-// `key` holds n elements of esz bytes each, at file_off of the file behind fd. kind: elements of two kinds never share a block (the ggml type: what lies behind an element is read as this type)
-GGML_API void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n, size_t esz, int32_t kind);
+// `key` holds n elements of esz bytes each, at file_off of the file behind fd. kind: elements of two kinds never share a block (the ggml type: what lies behind an element is read as this type).
+// pad: bytes a kernel reads past an element (0: none); its block is esz + pad and carries them, the next element's bytes read along, zeros behind the last element
+GGML_API void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n, size_t esz, size_t pad, int32_t kind);
 // at most `bytes` of pool, every class the same share of its elements, n_threads readers. false: no pool, every call below is a no-op and every table NULL
 GGML_API bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampool_heat_t heat, void * ud, int n_threads);
 GGML_API void ggml_rampool_fill_fork(void);    // reads as many elements as the pool holds, the soonest expected first, laid out in file order; then the readers start
@@ -32,9 +33,11 @@ GGML_API void ggml_rampool_evict_fork(bool on);
 GGML_API const char * const * ggml_rampool_table_fork(const void * key);
 // the next graph starts: what the one before it asked for is left alone a little longer (its copies may still run), what is older may be evicted
 GGML_API void ggml_rampool_graph_fork(void);
-// CHECK AND LOAD BEFORE THE KERNEL: these elements are read now if they are out, returns when they are in. An element that stays out (no block: it is expected later than
-// every resident) has no table entry: the caller reads it the old way, the stats count those as refused.
-GGML_API void ggml_rampool_need_fork(const void * key, const int32_t * ids, int n);
+// CHECK AND LOAD BEFORE THE KERNEL: these elements of each of the nk tensors are read now if they are out (all reads start first, then one wait), returns when they are
+// in. An element that stays out (no block: it is expected later than every resident) has no table entry: the caller reads it the old way, the stats count those as refused.
+GGML_API void ggml_rampool_need_fork(const void * const * keys, int nk, const int32_t * ids, int n);
+// the same for a CPU kernel's demand: a block is taken even from the fill's set with eviction off (the alternative is a read of the mapping)
+GGML_API void ggml_rampool_demand_fork(const void * const * keys, int nk, const int32_t * ids, int n);
 // a kernel's look-up (no lock, no read): the element's block when it is in (with eviction on: only when this graph or the one before it asked for it, it cannot be evicted before the graph after next), else NULL
 GGML_API const char * ggml_rampool_get_fork(const void * key, int64_t e);
 // a prompt pass's copy: the block when the element is in (it is kept until the graph after next), NULL: out, read it the old way; never reads, counted as pp_hit / pp_miss
