@@ -1276,6 +1276,7 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
 
 // free memory summed over GPUs, of the largest GPU, and the GPU count
 static std::string g_gpu_id;       // the GPUs' names and PCI bus ids, hashed: identifies the hardware (and the slot, so the link) in the placement record
+static std::vector<ggml_backend_dev_t> g_gpu_used;   // the GPUs whose memory the placement counts
 static bool   g_gpu_shared_only = false; // every GPU in use shares system RAM (integrated: 780M, Strix Halo): an expert cache would only copy RAM to RAM
 static size_t g_gpu_total_max = 0; // fallback identity when the backend has no PCI id; free VRAM is not used: it moves with every browser tab
 
@@ -1322,6 +1323,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
     n = 0;
     g_gpu_total_max = 0;
     std::vector<std::string> ids, seen;
+    g_gpu_used.clear();
     bool any_dgpu = sel.empty() && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr;
     for (ggml_backend_dev_t d : sel) { any_dgpu = any_dgpu || (d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU); }   // -dev lists end with a nullptr
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
@@ -1349,6 +1351,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
             total += free;
             max    = std::max(max, free);
             g_gpu_total_max = std::max(g_gpu_total_max, tot);
+            g_gpu_used.push_back(dev);
         }
         ids.push_back(std::string(ggml_backend_dev_name(dev)) + "|" + (props.device_id ? props.device_id : "") + "|" + common_pci_slot(props.device_id) + "|" + std::to_string(tot >> 30));
         n++;
@@ -1911,6 +1914,8 @@ static uint32_t common_fits_ubatch(common_params & params) {
 }
 
 LLAMA_API void llama_moe_early_bench_fork(const char * model_path);   // llama-moecache-fork.cpp (no shared header)
+LLAMA_API double llama_moe_ram_read_gbs_fork(void);
+LLAMA_API double llama_moe_vram_gbs_fork(ggml_backend_dev_t d);
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 static void common_moe_cache_auto_impl(common_params & params);
 
@@ -2172,9 +2177,18 @@ static void common_moe_cache_auto_impl(common_params & params) {
     // GPUs that share system RAM (integrated: Radeon 780M, Strix Halo): the expert cache would copy experts from RAM to the same RAM every miss. Stock
     // placement instead: the weights stay where they are and what the GPU's share cannot hold runs on the CPU over the same memory (780M ROCm, Qwen3.6 35B:
     // 7.8 t/s decode with the cache planned against Vulkan's 18.3 without one)
-    const bool shared_ram = g_gpu_shared_only && !forced_cache;
+    // Measured, not by device type (user 2026-11-08: "measure gpus ... speed and compare to ram and if not bigger disable moe cache"): the cache pays only where a GPU's own
+    // memory is clearly faster than RAM. 2x: a shared-RAM GPU's copy can read a bit above the CPU's RAM read rate (it drives the memory harder than half the CPU
+    // threads), discrete cards are 3-15x. Without a measurement (state off) the device type decides.
+    const double ram_gbs = llama_moe_ram_read_gbs_fork();
+    double best_vram = 0.0;
+    for (ggml_backend_dev_t d : g_gpu_used) { best_vram = std::max(best_vram, llama_moe_vram_gbs_fork(d)); }
+    const bool measured = ram_gbs > 0.0 && best_vram > 0.0;
+    const bool shared_ram = !forced_cache && n_gpu > 0 && (measured ? best_vram < 2.0 * ram_gbs : g_gpu_shared_only);
     if (shared_ram) {
-        decide_fork("placement", "stock (shared-RAM GPU)", string_format("every GPU in use shares system RAM: no expert cache (it would copy RAM to RAM); %.1f GiB GPU share", vram_free / 1073741824.0));
+        decide_fork("placement", "stock (GPU memory not faster than RAM)", measured
+            ? string_format("fastest GPU memory %.1f GB/s against RAM read %.1f GB/s (< 2x): no expert cache, it would copy RAM to RAM", best_vram, ram_gbs)
+            : std::string("every GPU in use shares system RAM (not measured): no expert cache, it would copy RAM to RAM"));
     }
     if (n_gpu == 0 || shared_ram || (model_size + reserve <= vram_free && !forced_cache)) {
         COM_DBG("MoE model (%.1f GiB) fits free VRAM (%.1f GiB on %d GPUs), no expert cache\n",

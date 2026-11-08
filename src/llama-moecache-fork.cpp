@@ -10267,6 +10267,37 @@ static void rd_shape_bench(const char * path, unsigned long long dev, const std:
 //   ram_read_gbs.<threads>     sequential read of 1 GiB by hardware threads/2 threads, best of three passes; measured once, then stored
 //   h2d_gbs.<gpu index>.<name> pinned host to device, 64 MiB copies, the fastest of four (early_link_gbs); measured at every start (0.1 s), stored with the value before
 //   rd_blk_kb/rd_gap_kb/rd_qd.<dev>  the async engine's read shape on the drive (rd_shape_bench); measured once, then stored
+// A GPU's own memory speed: one 256 MiB copy inside its memory (read + write), the fastest of four. Next to the RAM read rate it says whether an expert cache
+// can pay at all: a GPU that shares system RAM (780M, Strix Halo) copies at about RAM speed, a discrete card several times faster (user 2026-11-08:
+// "measure gpus latency and speed and compare to ram and if not bigger disable moe cache")
+static double g_ram_read_gbs = 0.0;
+static std::vector<std::pair<ggml_backend_dev_t, double>> g_vram_gbs;
+static double vram_copy_gbs(ggml_backend_dev_t d) {
+    const size_t n = 256u << 20;
+    ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(d), 2 * n);
+    if (!b) { return 0.0; }
+    char * base = (char *) ggml_backend_buffer_get_base(b);
+    ggml_tensor x = {}, y = {};
+    for (ggml_tensor * t : { &x, &y }) {
+        t->type = GGML_TYPE_I8; t->buffer = b;
+        t->ne[0] = (int64_t) n; t->ne[1] = t->ne[2] = t->ne[3] = 1; t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = n;
+    }
+    x.data = base; y.data = base + n;
+    double best = 0.0;
+    for (int r = 0; r < 4; ++r) {   // the first copy warms up; contention only lowers a reading
+        const int64_t t0 = ggml_time_us();
+        ggml_backend_tensor_copy(&x, &y);
+        best = std::max(best, 2.0 * (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3);
+    }
+    ggml_backend_buffer_free(b);
+    return best;
+}
+LLAMA_API double llama_moe_ram_read_gbs_fork(void) { return g_ram_read_gbs; }
+LLAMA_API double llama_moe_vram_gbs_fork(ggml_backend_dev_t d) {
+    for (const auto & e : g_vram_gbs) { if (e.first == d) { return e.second; } }
+    return 0.0;
+}
+
 LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
     if (!moe_state_enabled() || !model_path || !*model_path) { return; }
     const double t0 = llama_moe_span_now_fork();
@@ -10302,6 +10333,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
         const std::string key = format("ram_read_gbs.%u", hw / 2);
         const double s0 = llama_moe_span_now_fork();
         if (moe_state_get(sec, key, v) && atof(v.c_str()) > 0.0) {
+            g_ram_read_gbs = atof(v.c_str());
             LLAMA_LOG_WARN("moe-cache: machine: RAM read %.2f GB/s with %u threads (stored)\n", atof(v.c_str()), hw / 2);
         } else {
             const size_t n = (size_t) 1 << 30;
@@ -10324,6 +10356,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
                 best = std::max(best, (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t1) / 1e3);
             }
             moe_state_set(sec, {{ key, format("%.3f", best) }});
+            g_ram_read_gbs = best;
             LLAMA_LOG_WARN("moe-cache: machine: RAM read %.2f GB/s with %u threads (measured)\n", best, nt);
             llama_moe_span_fork("machine benchmark: RAM read (1 GiB, all threads)", s0, llama_moe_span_now_fork(), n, "RAM probe");
         }
@@ -10339,6 +10372,12 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
             moe_state_get(sec, key, old);
             moe_state_set(sec, {{ key, format("%.3f", g) }});
             LLAMA_LOG_WARN("moe-cache: machine: PCIe upload to %s %.2f GB/s (stored before: %s)\n", ggml_backend_dev_name(d), g, old.empty() ? "none" : old.c_str());
+            const std::string kv = format("vram_gbs.%zu.%s", i, ggml_backend_dev_name(d));   // the memory speed of a card does not change: measured once, then stored
+            double vg = moe_state_get(sec, kv, old) ? atof(old.c_str()) : 0.0;
+            const bool stored = vg > 0.0;
+            if (!stored) { vg = vram_copy_gbs(d); if (vg > 0.0) { moe_state_set(sec, {{ kv, format("%.3f", vg) }}); } }
+            g_vram_gbs.push_back({ d, vg });
+            LLAMA_LOG_WARN("moe-cache: machine: %s memory %.2f GB/s (%s), RAM read %.2f GB/s\n", ggml_backend_dev_name(d), vg, stored ? "stored" : "measured", g_ram_read_gbs);
         }
         llama_moe_span_fork("machine benchmark: PCIe uploads to every card", s0, llama_moe_span_now_fork(), 0, "PCIe probe");
     }
