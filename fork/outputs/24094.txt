@@ -1,0 +1,30 @@
+run 24094 | no-map-reads | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 32.95 t/s | prompt 20.3 t/s | 987 tokens | args: -np 1 | power 220+280 W | 2026-11-08 14:09:04
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, line clearing, rotation, gravity. Need maybe use canvas and keyboard. Need avoid bugs.
+
+Let's design compact single-file Tetris.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes. Need rotation. Could represent pieces as arrays of coordinates. Simpler: use 4x4 matrices for each tetromino and rotate matrix. But compact.
+
+Alternative use predefined rotations? Need minimal.
+
+Let's implement with 4x4 matrices. Board 10x20. Piece object {shape: matrix, x, y}. Matrix 4x4 with 1s. Rotation: rotate matrix clockwise. Collision: for each cell in matrix, if 1 and board[y+r][x+c] or out of bounds. Spawn at x=3, y=0? Need top. Board rows 0..19. Piece matrix 4x4. Spawn x=3, y=-? If matrix has top row empty, y=0 okay. But some pieces have cells in row 0. Need spawn y=0. If collision at top? Board empty. Fine. But if piece matrix has empty top row, y=0 means cells start row 1. That's okay. Need maybe spawn y=-1? Let's use y=0. For I piece matrix row 1? Let's define shapes with top row maybe. Need ensure no out-of-bounds. If y=0 and matrix row 3 has cells, within board. Good.
+
+Need line clearing. Board array 20 rows x 10 cols. When piece locks, add cells. Then clear full rows: for each row from bottom to top, if all 1, remove row and unshift empty row. Score += 100 maybe. Need update.
+
+Need gravity: setInterval or requestAnimationFrame. Use setInterval 500ms. On tick, try move down; if collision, lock piece, clear lines, spawn new. If spawn collision -> game over. Need handle keyboard: left/right/down/up rotate/space hard drop? Minimal. Need prevent default for arrows. Need maybe pause? Not necessary.
+
+Need draw: clear canvas, draw board cells, draw piece. Use colors. Need maybe draw grid. Minimal.
+
+Need ensure rotation collision. Rotation function: rotate matrix clockwise: new[r][c] = old[3-c][r]? Let's derive. For clockwise rotation of 4x4: new[r][c] = old[3-c][r]? Check old at (row, col). Clockwise: new row = col, new col = 3-row. So new[r][c] = old[3-c][r]? Let's test old[0][0]=1. Clockwise should go to (0,3)? Wait coordinate: matrix rows top to bottom, cols left to right. Rotating clockwise: old (r,c) -> new (c, 3-r). So new[r][c] = old[3-c][r]? If new (r,c) = old(3-c, r). For old(0,0), new(0,3)? new r=0,c=3 -> old(3-3=0,0)=1 yes. Good. So new[r][c] = old[3-c][r]. Good.
+
+Need collision function: for each r,c if shape[r][c] and (x+c<0 || x+c>=10 || y+r<0 || y+r>=20 || board[y+r][x+c]) return true. Note y can be negative? Spawn y=0. Rotation may have cells at y+r. Fine. If y+r<0 collision. But piece y never negative except maybe? We don't move up. Good.
+
+Need lock: for each cell set board[y+r][x+c]=1. Then clear lines. Then spawn. Need if spawn collision game over. Need maybe reset? Could include restart on click? Minimal maybe game over stops. Could add restart with R. But "smallest" maybe no restart. But game over should show. Could include restart via R. Need maybe not too much.
+
+
+---
