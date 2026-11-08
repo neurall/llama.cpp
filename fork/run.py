@@ -3387,6 +3387,14 @@ def cmd_stats(a):
             elif show(l): print(l, end="", flush=True)
 
 
+def cmd_test(a):
+    """run.py test cross [-b BUILD ...] [--since TS] [--models M] [--all]: the planner's five strategy crossovers (misses on the CPU vs uploaded, stream vs chain/k,
+    stream vs mix, one card vs dense split, split vs expert split) judged per model from the stats.logs the cells kept (fork/crosstest.py): PASS, FAIL with the
+    prompt time lost, or unverified with the forced cell to run. Exit code = the number of FAIL cells; `build --release` runs it first (user 2026-11-08)."""
+    import crosstest
+    argv = sum([["-b", b] for b in a.build], []) + (["--since", a.since] if a.since else []) + (["--models", a.models] if a.models else []) + (["--all"] if a.all else [])
+    sys.exit(min(crosstest.run(argv), 125))
+
 def judge_local_pidfile():
     return os.path.join(QDIR, "judge-local.pid")
 
@@ -5409,6 +5417,10 @@ def cmd_build(a):
     if not a.name:
         sys.exit("build: NAME is needed (the directory under DEVBUILDS)")
     name = a.name
+    if a.release and not a.no_cross:   # the crossover audit first (user 2026-11-08: "run them prior any rel build"): a FAIL cell stops the release build
+        import crosstest
+        fails = crosstest.run(["-b", a.cross] if a.cross else [])
+        if fails: sys.exit(f"build --release: {fails} crossover cells FAIL (run.py test cross): fix the planner, or --no-cross to build anyway")
     log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "logs", f"build-{name}" + ("" if a.machine == "pc1" else f"-{a.machine}") + ".log")
     if a.machine == "pc3" and not a.release:
         sys.exit("build --machine pc3: only the release recipe (clang 20 for the CPU backend, as every published Windows release); the dev bat uses MSVC and fails on the GCC-style kernels. Add --release.")
@@ -10853,6 +10865,8 @@ if __name__ == "__main__":
     bd.add_argument("--machine", default="pc1", choices=["pc1", "pc3"])
     bd.add_argument("--w10-base", default="6846d4803", help="a commit the W10 repository has: the bundle carries only what is newer")
     bd.add_argument("--no-regress", action="store_true", help="skip the regress cell after the build")
+    bd.add_argument("--cross", default="", help="--release: the dev build whose kept stats.logs the crossover audit (test cross) judges before the build; default: every model's newest")
+    bd.add_argument("--no-cross", action="store_true", help="--release: skip the crossover audit")
     bd.add_argument("--targets", nargs="+", default=[], help="dev build: more cmake targets beside server, cli and perplexity (a test-* target turns the tests on), e.g. --targets test-scratch-fork")
     qk = sp.add_parser("quick", help="the short benchmark for any machine: --fork build against --stock, short chat answers and a 12k-token prompt, one markdown table (nothing is recorded unless --record)")
     qk.add_argument("--model", required=True, help="the .gguf file (the first part of a split model)")
@@ -10964,6 +10978,12 @@ if __name__ == "__main__":
     sl = sp.add_parser("stats", help="follow the stats.log of the row that runs now (events and once-a-second status, one line each), or show the one a cell kept")
     sl.add_argument("tag", nargs="?", default="", help="the cell's tag, e.g. BUILD-ROW: its kept stats.log, printed once")
     sl.add_argument("--only", default="", help="comma list of line types, e.g. DEC,DON,STA")
+    tc = sp.add_parser("test", help="checks before a release: `test cross` judges the planner's five strategy crossovers per model from the kept stats.logs (fork/crosstest.py); exit code = FAIL cells")
+    tc.add_argument("what", choices=["cross"], help="cross: the crossover audit (X1 CPU vs upload misses, X2 stream vs chain/k, X3 mix, X4 dense split, X5 expert split)")
+    tc.add_argument("-b", "--build", action="append", default=[], help="builds to judge (repeatable); default: every model's newest build")
+    tc.add_argument("--since", default="", help="only cells from this time on, 'YYYY-MM-DD HH:MM'")
+    tc.add_argument("--models", default="", help="comma list of short model names: glm30,glm35,mimo,ds,qwen36,qni4,qni3,qn1m,olmoe")
+    tc.add_argument("--all", action="store_true", help="every (model, build) of the window, not only each model's newest build")
     jd = sp.add_parser("judge", help="Qwen3.6 on W10 reads stored answers (fork/judge_w10.py), nonsense makes a row ok=0: what it said so far; --sync its copy and verdicts; IDS or --build reads now")
     jd.add_argument("ids", nargs="*", type=int, help="runs.db row ids to read now, read again even when judged before")
     jd.add_argument("--build", default="", help="read now the rows of this build that have no verdict")
@@ -10988,5 +11008,5 @@ if __name__ == "__main__":
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
     {"run": cmd_run, "publish": cmd_publish, "numa": cmd_numa, "devpub": cmd_devpub, "bench": cmd_bench, "report": cmd_report, "gains": lambda a: [gains_write(c) for c in a.campaigns], "machine": cmd_machine, "remote": cmd_remote, "rcell": cmd_rcell, "prompt": cmd_prompt, "ctl": cmd_ctl,
-     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
+     "show": cmd_show, "gen": cmd_gen, "judge": cmd_judge, "stats": cmd_stats, "test": cmd_test, "memwatch": cmd_memwatch, "regress": cmd_regress, "build": cmd_build, "quick": cmd_quick, "hugepool": cmd_hugepool, "stop": cmd_stop, "hotmapmat": cmd_hotmapmat, "hotmapsets": cmd_hotmapsets, "tokpred": cmd_tokpred, "dynfill": cmd_dynfill, "hitlog": cmd_hitlog, "queue": cmd_queue, "cell": cmd_cell, "branches": cmd_branches, "misfires": cmd_misfires, "cells": cmd_cells, "sweep-log": cmd_sweep_log, "experiment": cmd_experiment, "nsys": cmd_nsys, "status": cmd_status, "onepass": cmd_onepass, "calib": cmd_calib,
      "exp": lambda a: runexp.run_exp(a.spec, sys.modules[__name__], a.dry, a.only.split(",") if a.only else None, a.rounds)}[a.cmd](a)
