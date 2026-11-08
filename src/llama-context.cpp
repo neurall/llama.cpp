@@ -3601,7 +3601,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 res->reset();
                 continue;
             }
-            if (cparams.moe_cache && !moe_alias_bufs.empty() && ubatch.n_tokens > 64) { llama_moe_cache_alias_refused_fork(ubatch.n_tokens); }   // fork: decode runs the rest of the call in smaller passes
+            if (cparams.moe_cache && ubatch.n_tokens > 64) {   // fork: decode runs the rest of the call in smaller passes
+                llama_moe_cache_alias_refused_fork(ubatch.n_tokens);
+                LLAMA_LOG_WARN("%s: the graph of a %u-token pass did not fit the blocks the pool lent (%zu alias buffers): recorded as a refusal, decode shrinks the pass\n", __func__, ubatch.n_tokens, moe_alias_bufs.size());
+            }
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
@@ -4631,6 +4634,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 llama_memory_recurrent_no_compute_fork(true);
                 const bool back = memory->seq_rm(ubatch.seq_id[0][0], ubatch.pos[0], -1);
                 llama_memory_recurrent_no_compute_fork(false);
+                if (!back) { LLAMA_LOG_WARN("%s: a refused pass of %u tokens could not give its cells back (seq_rm from pos %d): the call fails\n", __func__, ubatch.n_tokens, (int) ubatch.pos[0]); }
                 if (back) {
                     const double share = room > 0 && room < need ? (double) room / (double) need : 0.75;
                     const uint32_t u2 = std::max<uint32_t>(64, (uint32_t) ((double) ubatch.n_tokens * std::min(share, 0.9)) / 32 * 32);
