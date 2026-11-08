@@ -1,0 +1,33 @@
+run 23771 | rampool10 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.85 t/s | prompt 422.8 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 16:31:21
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle issue: `build_repetition` with separator: `min_items == 0 ? 0 : min_items - 1`. If `min_items` is 0, then result is `(item (sep item)*)?` — correct.
+   - Potential issue: if `max_items == 0` returns "" — but then the caller wraps it with `"[" space ... space "]"` — an empty repetition. That's probably intended (empty array).
+   - Edge case: `min_items > 0 && max_items == 0`? Then it returns "" which would be wrong (min_items can't be satisfied), but that's an invalid schema anyway.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `uniform_range` lambda captures by reference and recurses via `std::function`.
+   - Potential issue: `digit_range(from[i] + 1, to[i])` — char arithmetic. `from[i]` is a digit char, so `from[i] + 1` is int; `digit_range` takes chars — implicit conversion, fine.
+   - In `more_digits`, `max_digits != std::numeric_limits<int>::max()` — comparing int to int max, fine.
+   - The `decimals_left` parameter defaults to 16, and `less_decimals = std::max(decimals_left - 1, 1)`. Hmm, when `decimals_left` is 1, `less_decimals` is 1 — so it never goes below 1? That means the recursion could... let me check. Actually in the `min_value <= 9` branch: `more_digits(1, less_decimals)` and `more_digits(0, less_decimals)`. If `less_decimals` stays at 1 forever, no infinite recursion there since these are just output strings.
+   - In the `else` branch (min_value > 9): `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)` — recursion on shorter string, terminates.
+   - Wait, there's a potential issue with `std::stoll(min_s.substr(1))` — if `min_s` is "1000000000000000000" (19 digits), substr(1) is "000000000000000000" which stoll handles fine (leading zeros). OK.
+   - Hmm, but what about `min_value` being like 10? min_s = "10", c = '1', then `build_min_max_int(0, INT64_MAX, out, less_decimals, false)`. In that recursive call, has_min is true (0 != INT64_MIN), min_value == 0, top_level false → `more_digits(1, decimals_left)`. OK.
+
+3. **`SPACE_RULE`**: `"| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"` — starts with `|` which means empty alternative. This is intentional in GBNF (allows empty).
+
+4. **`is_reserved_name`**: uses a static initialized lambda — fine, thread-safe since C++11.
+
+5. **`replacePattern`**: 
+   - `result.append(searchStart, searchStart + match.position())` — `match.position()` is relative to the beginning of the search range? Actually, `match.position()` returns the offset of the first character of the match relative to the beginning of the target sequence... Hmm, when using `std::regex_search(searchStart, searchEnd, match, regex)`, `match.position()` returns `match[0].first - input.begin()`? Let me think. The standard says `match.position()` returns the offset from the beginning of the target sequence. Actually, `match_ready` — for `regex_search` with iterators, `match.position()` is defined as `std::distance(begin of sequence, match[0].first)`. Hmm, actually the standard says: `difference_type position() const;` Returns: `(*this)[0].first - begin`? Let me recall... cppreference: "position() returns the position of the first character of the submatch

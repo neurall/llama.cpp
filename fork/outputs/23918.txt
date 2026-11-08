@@ -1,0 +1,482 @@
+run 23918 | dsv4-rollback | pf64k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 21.71 t/s | prompt 184.1 t/s | 4096 tokens | args: -np 1 -np 1 --moe dense-split=one | power 595 W | 2026-11-08 04:59:53
+
+<think>The user wants me to return the complete fixed version of the source file. Let me analyze the file carefully for bugs.
+
+Looking at the file, it appears to be a concatenation of multiple source files:
+1. `common/json-schema-to-grammar.cpp`
+2. `common/arg.cpp`
+3. `common/arg.h`
+4. `common/build-info.h`
+5. `common/chat-auto-parser-generator.cpp`
+
+Let me look for bugs in each file.
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+Let me examine carefully...
+
+Looking at the `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+This looks correct to me.
+
+Looking at `build_min_max_int`:
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+The `uniform_range` lambda looks complex. Let me check for issues...
+
+Actually, let me look at the `_pattern_to_rule` function more carefully:
+
+```cpp
+std::string _pattern_to_rule(const std::string & pattern, const std::string & name) {
+    if (pattern.length() < 2 || pattern.front() != '^' || pattern.back() != '$') {
+        throw unsupported_pattern("not anchored with '^' and '$'");
+    }
+```
+
+This looks correct.
+
+Let me look at the `transform` lambda:
+
+```cpp
+std::function<literal_or_rule()> transform = [&]() -> literal_or_rule {
+```
+
+Wait, `transform` is declared as `std::function<literal_or_rule()>` but it's assigned a lambda that captures by reference `[&]`. The lambda captures `i`, `length`, `paren_depth`, `seq`, `sub_pattern`, `_dotall`, `sub_rule_ids`, `name`, etc. This should be fine since they're all in scope.
+
+Actually, wait - `transform` is recursive (it calls itself inside the `(` handling). Let me check:
+
+```cpp
+seq.emplace_back("(" + to_rule(transform()) + ")", false);
+```
+
+Yes, `transform` calls itself. Since it's a `std::function`, this should work.
+
+Let me look at the `join_seq` lambda:
+
+```cpp
+auto join_seq = [&]() {
+    std::vector<literal_or_rule> ret;
+
+    std::string literal;
+    auto flush_literal = [&]() {
+        if (literal.empty()) {
+            return false;
+        }
+        ret.emplace_back(literal, true);
+        literal.clear();
+        return true;
+    };
+
+    for (const auto & item : seq) {
+        auto is_literal = item.second;
+        if (is_literal) {
+            literal += item.first;
+        } else {
+            flush_literal();
+            ret.push_back(item);
+        }
+    }
+    flush_literal();
+
+    std::vector<std::string> results;
+    results.reserve(ret.size());
+    for (const auto & item : ret) {
+        results.push_back(to_rule(item));
+    }
+    return std::make_pair(string_join(results, " "), false);
+};
+```
+
+This returns a `literal_or_rule` (which is `std::pair<std::string, bool>`). The `flush_literal` lambda returns `bool` but the return value is not used. That's fine.
+
+Wait, `flush_literal` returns `bool` but the lambda's return type is deduced. The first return is `false` (bool), second is `true` (bool). So the return type is `bool`. That's fine.
+
+Let me look at the `_not_strings` function:
+
+```cpp
+std::string _not_strings(const std::vector<std::string> & strings) {
+    common_trie trie(strings);
+
+    std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+    std::ostringstream out;
+    out << "[\"] ( ";
+    std::function<void(size_t)> visit = [&](size_t idx) {
+        const auto & node = trie.nodes[idx];
+        std::string rejects;
+        auto first = true;
+        for (const auto & [cpt, child] : node.children) {
+            std::string c = common_unicode_cpt_to_utf8(cpt);
+            rejects += c;
+            if (first) {
+                first = false;
+            } else {
+                out << " | ";
+            }
+            out << "[" << c << "]";
+            if (!trie.nodes[child].children.empty()) {
+                out << " (";
+                visit(child);
+                out << ")";
+            } else {
+                out << " " << char_rule << "+";
+            }
+        }
+        if (!node.children.empty()) {
+            out << " | [^\"" << rejects << "] " << char_rule << "*";
+        }
+    };
+    visit(0);
+
+    out << " )";
+    if (trie.nodes[0].pattern < 0) {
+        out << "?";
+    }
+    out << " [\"]";
+    return out.str();
+}
+```
+
+Hmm, `rejects` is built by appending UTF-8 characters. But then it's used in `[^"rejects]`. If any of the characters in `rejects` are special characters in a character class (like `]`, `\`, `-`, `^`), this could be problematic. But that's a potential issue, not necessarily a bug in the code as written.
+
+Let me look at the `_build_object_rule` function:
+
+```cpp
+std::string _build_object_rule(
+    const std::vector<std::pair<std::string, const common_chat_schema *>> & properties,
+    const std::unordered_set<std::string> & required,
+    const std::string & name,
+    const common_chat_schema * additional_properties)
+{
+    ...
+    if (additional_properties) {
+        std::string sub_name = name + (name.empty() ? "" : "-") + "additional";
+        std::string value_rule =
+            additional_properties->kind() != common_chat_schema::KIND_ANY ? visit(*additional_properties, sub_name + "-value")
+            : _add_primitive("value", PRIMITIVE_RULES.at("value"));
+
+        auto key_rule =
+            prop_names.empty() ? _add_primitive("string", PRIMITIVE_RULES.at("string"))
+            : _add_rule(sub_name + "-k", _not_strings(prop_names));
+        std::string kv_rule = _add_rule(sub_name + "-kv", key_rule + " \":\" space " + value_rule);
+        prop_kv_rule_names["*"] = kv_rule;
+        optional_props.push_back("*");
+    }
+    ...
+```
+
+Wait, the `kv_rule` uses `key_rule + " \":\" space " + value_rule`. But looking at other kv rules:
+
+```cpp
+prop_kv_rule_names[prop_name] = _add_rule(
+    name + (name.empty() ? "" : "-") + prop_name + "-kv",
+    format_literal(json(prop_name).dump()) + " space \":\" space " + prop_rule_name
+);
+```
+
+The regular kv rule has `space` before `":"`. The additional properties kv rule doesn't have `space` before `":"`. Let me check... Actually, `key_rule` is a rule reference (like `string` or a custom rule), not a literal. So it would be `key_rule` followed by `":"`. But the regular one has `format_literal(...) + " space \":\" space "`. So the additional properties one should also have `space` before `":"`.
+
+Wait, let me re-read:
+```cpp
+std::string kv_rule = _add_rule(sub_name + "-kv", key_rule + " \":\" space " + value_rule);
+```
+
+vs:
+```cpp
+format_literal(json(prop_name).dump()) + " space \":\" space " + prop_rule_name
+```
+
+The regular one has `space` before `":"`. The additional one doesn't. This could be a bug - missing `space` before `":"`.
+
+Actually wait, let me look more carefully. The regular one is:
+```
+format_literal(json(prop_name).dump()) + " space \":\" space " + prop_rule_name
+```
+
+This is: `"literal" space ":" space value_rule`
+
+The additional one is:
+```
+key_rule + " \":\" space " + value_rule
+```
+
+This is: `key_rule ":" space value_rule`
+
+Missing `space` before `":"`. This is a bug.
+
+Hmm, but actually, maybe `key_rule` already includes trailing space? Let me check... `key_rule` is either `_add_primitive("string", ...)` which returns a rule name like `"string"`, or `_add_rule(sub_name + "-k", _not_strings(prop_names))` which returns a rule name. Neither includes trailing space.
+
+So yes, the additional properties kv rule is missing `space` before `":"`. This is a bug.
+
+Wait, actually let me re-read the code more carefully:
+
+```cpp
+std::string kv_rule = _add_rule(sub_name + "-kv", key_rule + " \":\" space " + value_rule);
+```
+
+Hmm, but actually looking at the original code from llama.cpp, I think this might be intentional or might be a different formatting. Let me think about what the correct grammar should be...
+
+In JSON, a key-value pair is: `"key" : value`. So there should be optional space before and after `:`. The regular kv rule has `space` before `":"`. The additional one doesn't. This seems like a bug.
+
+Actually, wait. Let me look at this more carefully. The `key_rule` for additional properties is either `string` (which matches `"..."`) or a custom rule from `_not_strings`. Both of these match a complete JSON string (including quotes). So the grammar would be:
+
+```
+key_rule ":" space value_rule
+```
+
+vs the regular:
+```
+"literal" space ":" space value_rule
+```
+
+The missing `space` before `":"` in the additional properties case is indeed a bug.
+
+Hmm, but actually, I need to be more careful. Let me look at the actual llama.cpp source to see if this is a known bug or intentional.
+
+Actually, I'm supposed to find bugs in the provided source. Let me continue looking.
+
+Let me look at the `visit` function:
+
+```cpp
+std::string visit(const common_chat_schema & schema, const std::string & name) {
+    std::string rule_name = is_reserved_name(name) ? name + "-" : name.empty() ? "root" : name;
+    std::string sub_name  = name + (name.empty() ? "" : "-");
+    ...
+```
+
+This looks correct.
+
+Let me look at the `KIND_ARRAY` case:
+
+```cpp
+case common_chat_schema::KIND_ARRAY: {
+    const auto & arr = as<common_chat_schema_array>(schema);
+    if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+        return _visit_primitive(rule_name, "array");
+    }
+    std::string item_rule_name = visit(*arr.items, sub_name + "item");
+    int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;
+    return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+}
+```
+
+This looks correct.
+
+Let me look at the `KIND_STRING` case:
+
+```cpp
+case common_chat_schema::KIND_STRING: {
+    const auto & str = as<common_chat_schema_string>(schema);
+    if (!str.pattern.empty()) {
+        return _visit_pattern(str.pattern, rule_name);
+    }
+    if (str.format == common_chat_schema::FORMAT_UUID) {
+        return _visit_primitive(rule_name, "uuid");
+    }
+    if (str.format != common_chat_schema::FORMAT_NONE) {
+        std::string prim_name = std::string(str.format == common_chat_schema::FORMAT_DATE ? "date" : str.format == common_chat_schema::FORMAT_TIME ? "time" : "date-time") + "-string";
+        return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
+    }
+    if (str.min_length > 0 || str.max_length >= 0) {
+        std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+        int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+        return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, str.min_length, max_len) + " \"\\\"\"");
+    }
+    return _visit_primitive(rule_name, "string");
+}
+```
+
+This looks correct.
+
+Let me look at the `KIND_INTEGER` case:
+
+```cpp
+case common_chat_schema::KIND_INTEGER: {
+    const auto & i = as<common_chat_schema_integer>(schema);
+    if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max()) {
+        return _visit_primitive(rule_name, "integer");
+    }
+    std::stringstream out;
+    out << "(";
+    build_min_max_int(i.minimum, i.maximum, out);
+    out << ")";
+    return _add_rule(rule_name, out.str());
+}
+```
+
+This looks correct.
+
+Now let me look at the `json_schema_to_grammar` functions:
+
+```cpp
+std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf) {
+#ifdef LLAMA_USE_LLGUIDANCE
+    if (!force_gbnf) {
+        return "%llguidance {}\nstart: %json " + schema.dump();
+    }
+#else
+    (void)force_gbnf;
+#endif // LLAMA_USE_LLGUIDANCE
+    try {
+        return json_schema_to_grammar(common_chat_schema_from_json(schema));
+    } catch (const std::runtime_error & e) {
+        throw std::invalid_argument(std::string("JSON schema conversion failed:\n") + e.what());
+    }
+}
+```
+
+This looks correct.
+
+```cpp
+std::string json_schema_to_grammar(const common_chat_schema_document & schema) {
+    common_chat_schema_converter converter(false);
+    converter.visit(*schema.root, "");
+    converter.check_errors();
+    return converter.format_grammar();
+}
+```
+
+This looks correct.
+
+```cpp
+std::string build_grammar(const std::function<void(const common_grammar_builder &)> & cb, const common_grammar_options & options) {
+    common_chat_schema_converter converter(options.dotall);
+    common_grammar_builder builder {
+        /* .add_rule = */ [&](const std::string & name, const std::string & rule) {
+            return converter._add_rule(name, rule);
+        },
+        /* .add_schema = */ [&](const std::string & name, const common_chat_schema & schema) {
+            return converter.add_schema(name == "root" ? "" : name, schema);
+        },
+    };
+    cb(builder);
+    converter.check_errors();
+    return converter.format_grammar();
+}
+```
+
+This looks correct.
+
+Now let me look at **File 2: common/arg.cpp**
+
+Let me look for bugs...
+
+```cpp
+static std::string read_file(const std::string & fname) {
+    std::ifstream file(fname);
+    if (!file) {
+        throw std::runtime_error(string_format("error: failed to open file '%s'\n", fname.c_str()));
+    }
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+    return content;
+}
+```
+
+This looks correct.
+
+```cpp
+static const std::vector<common_arg> & get_common_arg_defs() {
+    static const std::vector<common_arg> options = [] {
+        common_params params;
+        auto ctx = common_params_parser_init(params, LLAMA_EXAMPLE_SERVER, nullptr);
+        return ctx.options;
+    }();
+    return options;
+}
+```
+
+This looks correct.
+
+```cpp
+common_arg & common_arg::set_examples(std::initializer_list<enum llama_example> examples) {
+    this->examples = examples;
+    return *this;
+}
+```
+
+This looks correct.
+
+```cpp
+bool common_arg::get_value_from_env(std::string & output) const {
+    if (env == nullptr) return false;
+    if (!args_neg.empty()) {
+        // for compatibility, we need to check LLAMA_ARG_NO_ env as well
+        std::string neg_env = env;
+        string_replace_all(neg_env, "LLAMA_ARG_", "LLAMA_ARG_NO_");
+        char * neg_value = std::getenv(neg_env.c_str());
+        if (neg_value) {
+            output = "0"; // falsey
+            return true;
+        }
+    }
+    char * value = std::getenv(env);
+    if (value) {
+        output = value;
+        return true;
+    }
+    return false;
+}
+```
+
+This looks correct.
+
+```cpp
+bool common_arg::has_value_from_env() const {
+    if (env != nullptr && !args_neg.empty()) {
+        // for compatibility, we need to check LLAMA_ARG_NO_ env as well
+        std::string neg_env = env;
+        string_replace_all(neg_env, "LLAMA_ARG_", "LLAMA_ARG_NO_");
+        if (std::getenv(neg_env.c_str())) {
+            return true;
+        }
+    }
+    return env != nullptr && std::getenv(env);
+}
+```
+
+This looks correct.
+
+```cpp
+static std::vector<std::string> break_str_into_lines(std::string input, size_t max_char_per_line) {
+    std::vector<std::string> result;
+    std::istringstream iss(input);
+    std::string line;
+    auto add_line = [&](const std::string& l) {
+        if (l.length() <= max_char_per_line) {
+            result.push_back(l);
+        } else {
+            std::istringstream line_stream(l);
+            std::string word, current_line;
+            while (line_stream >> word) {
+                if (current_line.length() + !current_line.empty() + word.length() > max_char_per_line) {
+                    if (!current_line

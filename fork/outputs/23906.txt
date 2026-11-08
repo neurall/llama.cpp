@@ -1,0 +1,81 @@
+run 23906 | dsv4-rollback | pf64k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 19.81 t/s | prompt 329.5 t/s | 4096 tokens | args: -np 1 -np 1 -lm mmap --moe pin-budget=68719476736 | power 595 W | 2026-11-08 03:32:34
+
+<think>We need answer complete fixed version of source file. Need identify bugs. User provided huge source concatenating multiple files? They ask "Return complete fixed version of following source file: every line from first to last, with every bug fixed and each change marked by comment. Do not summarise..." The source includes multiple file markers: common/json-schema-to-grammar.cpp, common/arg.cpp, common/arg.h, common/build-info.h, common/chat-auto-parser-generator.cpp. It ends mid-code at "auto tools_pa" incomplete. Need infer task likely from benchmark where source file has bugs and need fix. Need produce entire fixed source. Need inspect for bugs. We need determine intended bugs. Could be a code repair benchmark with injected bugs? Need find all bugs in provided source. Need output complete fixed version with comments marking changes. Need not skip unchanged parts. Need include all lines. Need fix bugs. Need be careful.
+
+We need analyze source. It's llama.cpp common files. There may be deliberate bugs inserted. Need identify. Let's inspect.
+
+First file json-schema-to-grammar.cpp. Potential bugs:
+- build_repetition separator logic? Let's verify. For separator_rule nonempty, result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?". This seems from llama.cpp. Need check max_items -1 when max_items=0? Already max_items==0 returns "". If max_items=1 and min_items=0 returns item_rule+"?" before separator. For separator with min_items=0 max_items=1 returns item_rule+"?" ignoring separator, correct. For min_items=1 max_items=1: result = item_rule + " " + build_repetition("(sep item)", 0, 0) -> build_repetition max_items=0 returns ""; result = item_rule + " " (trailing space?) Hmm original code maybe has bug? Let's check llama.cpp actual. I recall build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (max_items == 0) return "";
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (separator_rule.empty()) { ... }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) result = "(" + result + ")?";
+    return result;
+}
+For min=1 max=1, result = item_rule + " " + build_repetition(...,0,0) = item_rule + " " (trailing space). That seems wrong? Maybe actual code uses if (min_items == 1 && max_items == 1) return item_rule;? Let's search memory. In llama.cpp json-schema-to-grammar.cpp, build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (max_items == 0) return "";
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (separator_rule.empty()) { ... }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) result = "(" + result + ")?";
+    return result;
+}
+Maybe trailing space is acceptable? Grammar "item " with trailing space? It would require space after item? Actually result = item_rule + " " + "" = item_rule + " ". In grammar, trailing space literal? In GBNF, spaces in rule are literal? The rule string includes spaces as literal? In llama grammar, spaces are literal? They use "space" rule for JSON whitespace, but in build_repetition separator_rule "\",\" space" includes literal space? Wait separator_rule passed as "\",\" space" (string contains `"," space`). In build_repetition, result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...). The spaces are literal spaces in grammar? In GBNF, spaces are literal characters? Actually GBNF grammar syntax: whitespace separates tokens, not literal. A literal space must be quoted. But they use `space` rule for whitespace. Here separator_rule = "\",\" space" includes `space` rule name, not literal. The `" "` between item_rule and repetition is grammar whitespace separator, not literal. So trailing space is just separator, harmless. For min=1 max=1, result = item_rule + " " + "" = item_rule + " " (trailing whitespace in grammar) harmless. So not bug.
+
+- build_min_max_int: Need check logic. Potential bug in uniform_range: `auto sub_len = from.length() - i - 1;` If i < from.length() && i < to.length(), and from/to same length? For uniform_range called with min_s and string_repeat("9", digits) where min_s length may be less than digits? Wait in loop digits from min_digits to max_digits-1: uniform_range(min_s, string_repeat("9", digits)); min_s length = min_digits, to length = digits. If digits > min_digits, from shorter than to. uniform_range assumes same length? It computes sub_len = from.length() - i - 1, then from_sub = from.substr(i+1), to_sub = to.substr(i+1). If from shorter, from_sub empty, to_sub longer. Then sub_len maybe negative? Let's examine. In original llama.cpp, they pad min_s? Actually code:
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+If min_s length < digits, uniform_range from shorter to longer. But uniform_range likely handles? Let's test min_s="5", digits=2, to="99". i=0, from[0]='5', to[0]='9' differ. i=0. sub_len = from.length()-i-1 = 1-0-1=0. sub_len >0 false. else out << "[" << from[i] << "-" << to[i] << "]"; -> [5-9]. That matches numbers 5-9? But for two-digit range 5 to 99, should include 5-9 and 10-99. The loop then min_s = "1" + string_repeat("0", digits) = "10" for digits=2? Wait digits variable is 2, min_s becomes "1"+"00" = "100"? Actually string_repeat("0", digits) length digits, so "1"+"00" = "100" length 3. Hmm original code maybe min_s = "1" + string_repeat("0", digits - 1)? Let's check. For min_digits=1, max_digits=3. digits=1: uniform_range("5","9") -> [5-9]; min_s = "1" + string_repeat("0", 1) = "10" (length 2). digits=2: uniform_range("10","99") -> 10-99; min_s = "1" + string_repeat("0",2) = "100" (length 3). digits=3? loop digits<max_digits (3) stops at 2. Then uniform_range(min_s="100", max_s maybe 999) -> 100-999. That works. So min_s length equals digits+1 after update. For digits=1, min_s length 2, to length 1? Wait uniform_range("5","9") both length 1. Then min_s="10" length 2. Next digits=2, uniform_range("10","99") both length 2. Good. So no issue. For min_digits=2, max_digits=4. digits=2: uniform_range(min_s length2, to length2). min_s="1"+"00" = "100" length3. digits=3: uniform_range("100","999") length3. min_s="1"+"000" length4. digits=4? loop digits<4 stops at 3. Then uniform_range("1000", max_s length4). Good. So okay.
+
+Potential bug in build_min_max_int negative handling: if min_value < 0 && max_value < 0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value, out, decimals_left, true); out << ")"; return. For min=-10 max=-5, -max=5, -min=10 -> positive range 5-10, prefixed "-" -> -5 to -10? Actually "-" (5-10) matches -5..-10, yes. But order? It matches -5 to -10? Grammar range 5-10 includes 5,6,7,8,9,10, prefixed - gives -5..-10. That's correct set. Good.
+
+If min_value < 0 and max_value >=0: out << "\"-\" ("; build_min_max_int(0, -min_value, ...); out << ") | "; min_value=0; Then later builds positive min=0 max=max. This matches negative numbers -1..-min_value? Wait build_min_max_int(0, -min_value) includes 0..-min_value. Prefixed "-" gives -0..-min_value. But -0 is "0"? Actually "-0" maybe not valid? JSON number can be -0? It might match "-0" which is weird. Original code maybe uses build_min_max_int(1, -min_value) to avoid -0? Let's check actual llama.cpp. I recall:
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+    out << ") | ";
+    min_value = 0;
+}
+Maybe -0 allowed? JSON allows -0? It is a number. But grammar may accept "-0". Not bug.
+
+Potential bug in `_visit_pattern`: catch unsupported_pattern: `return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));` This adds rule name with content of primitive string rule? `_add_primitive` returns rule name (e.g. "string"), then `_add_rule(name, "string")` creates alias. But if name is "root", _add_rule("root","string") okay. However `_add_primitive("string", ...)` may add rule "string" and deps. Fine.
+
+Potential bug in `_pattern_to_rule`: `auto rule = to_rule(transform()); if (paren_depth != 0) throw invalid_pattern...` But transform returns when encountering ')' and decrements paren_depth. If top-level transform consumes all, paren_depth should be 0. If unbalanced closing, transform throws. If unbalanced opening, transform reaches end with paren_depth>0, then check. Good.
+
+Potential bug in `_pattern_to_rule` handling `{` repetition: `auto &last = seq.back(); auto &sub = last.first; auto sub_is_literal = last.second; if (!sub_is_literal) { std::string & sub_id = sub_rule_ids[sub]; if (sub_id.empty()) { sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub); } sub = sub_id; } seq.back().first = build_repetition(sub_is_literal ? "\"" + sub + "\"" : sub, min_times, max_times, ""); seq.back().second = false;`
+Potential bug: if sub_is_literal, sub is literal string, then build_repetition("\"" + sub + "\"", ...). But sub may contain escaped characters? It was built as literal with escapes. It may contain `\"` etc. Wrapping in quotes okay? If sub contains `"` escaped as `\"`, then `"\"" + sub + "\""` yields `"\"...\""`? Actually sub literal may contain `\"` (backslash quote). Wrapping with quotes: `"` + `\"` + `"` = `"\"`? Let's see: sub = `\"` (two chars backslash quote). Then `"\"" + sub + "\""` = `"` + `\"` + `"` = `"\"`? That is quote, backslash, quote, quote? Hmm GBNF literal escaping. But original code likely uses `format_literal(sub)`? Let's check actual llama.cpp. I recall in _pattern_to_rule:
+if (!sub_is_literal) {
+    std::string & sub_id = sub_rule_ids[sub];
+    if (sub_id.empty()) {
+        sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+    }
+    sub = sub_id;
+}
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+seq.back().second = false;
+Maybe okay because sub literal already escaped? In literal accumulation, they escape `"` as `\\\"` and backslash escapes preserved. So sub may contain `\\\"`? Let's inspect literal handling: if sub_pattern[i] == '"' then literal += "\\\""; i++; So literal contains backslash quote. If later build_repetition wraps in quotes: `"` + `\"` + `"` = `"\"`? Actually string characters: `"` (quote), `\` (backslash), `"` (quote), `"` (quote). That is `"\"`? Let's write: `"\"" + sub + "\""` where sub = `\"` (backslash quote). First `"\""` is a C++ string literal containing `"`? Wait `"\""` is C++ string literal: characters `"`? Let's parse: `"\""` = double quote, escaped double quote? Actually C++ string literal `"\""` contains one double quote? It starts with `"`, then `\"` escaped quote, then closing `"`. So it is a string containing `"`. So `"\""` is just `"`. Then + sub (`\"`) + `"\""` (just `"`) = `"` + `\` + `"` + `"` = `"\"`? That is quote, backslash, quote, quote. In GBNF, to represent literal `"` you need `\"` inside quotes? Actually GBNF literal `"` is escaped as `\"`. A literal string containing a quote should be `"\""`? Let's not dwell.
+
+Potential bug in `_not_strings`: `common_trie trie(strings);` Need check trie API. `trie.nodes[0].pattern < 0`? Maybe pattern field? In llama.cpp trie.h, node has `std::map<int, size_t> children; int pattern;`? Need check. The code uses `trie.nodes[0].pattern < 0` to decide optional. Maybe correct.
+
+Potential bug in `_resolve_ref`: `auto it = schema.ref.find('#'); std::string ref_fragment = it != std::string::npos ? schema.ref.substr(it + 1) : schema.ref;` If ref is "#/definitions/foo", ref_fragment = "/definitions/foo". Then regex replace nonalnum with "-" -> "-definitions-foo". ref_name = "ref" + "-definitions-foo" = "ref-definitions-foo". Fine. But if ref is "#foo", ref_fragment = "foo". Good. If ref is "foo#bar", ref_fragment = "bar". Maybe okay.
+
+Potential bug in `_build_object_rule`: `std::string prop_rule_name = visit(*prop_schema, name + (name.empty() ? "" : "-") + prop_name);` If name empty, prop_rule_name = visit(schema, prop_name). Then `_add_rule(name + (name.empty() ? "" : "-") + prop_name + "-kv", ...)` If name empty, rule name = prop_name + "-kv". But visit may have used prop_name as rule name. If prop_name is reserved? visit handles. Fine.
+
+Potential bug in `_build_object_rule` optional props recursion: `std::string comma_ref = "( \",\" space " + kv_rule_name + " )"; if (first_is_optional) { res = comma_ref + (k == "*" ? "*" : "?"); } else { res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : ""); }` For k=="*" and first_is_optional, res = comma_ref + "*" (zero or more additional kv). For k=="*" and not first, res = kv_rule_name + " " + comma_ref + "*" (one additional kv then zero or more). Good.
+
+Potential bug in `_visit_all_of`: `enum_values[_generate_constant_rule(v)] += 1;` Then `if (p.second == schema.children.size())` but schema.children includes any_of children? They add components from any_of alternatives with is_required false. For enum intersection, they count occurrences across all components? If any_of child has multiple alternatives, each enum value counted per alternative. But schema.children.size() is number of top-level children, not number of components. This seems bug? Let's inspect original llama.cpp. I recall `_visit_all_of`:
+std::map<std::string, size_t> enum_values;
+std::function<void(const common_chat_schema

@@ -1,0 +1,261 @@
+run 23910 | dsv4-rollback | pf64k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 21.68 t/s | prompt 736.7 t/s | 4096 tokens | args: -np 1 -np 1 | power 595 W | 2026-11-08 04:04:11
+
+<think>The user wants me to return the complete fixed version of the source file. Let me analyze the code carefully for bugs.
+
+Looking at the code, I need to find bugs in both files. Let me go through them carefully.
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+Let me look for bugs:
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `()?` but the initial `item_rule` is always included. Let me trace through:
+   - `result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`
+   - When `min_items == 0`, the recursive call has `min_items = 0`, so it returns `""` (since `max_items` could be 0 if `max_items == 1`... wait no, `has_max ? max_items - 1 : max_items` - if `max_items == 1`, then `max_items - 1 = 0`, so the recursive call returns `""`).
+   - Then `result = item_rule + " " + "" = item_rule + " "`, then wrapped as `(item_rule + " ")?`.
+   - Hmm, that trailing space seems wrong. Actually wait, let me re-read. When `min_items == 0 && max_items == 1`, the function returns `item_rule + "?"` at the top. So the separator case wouldn't be reached for that case.
+   - Actually, the separator case is only reached when `separator_rule` is not empty. Let me trace again for `min_items=0, max_items=2, separator=","`:
+     - `result = item_rule + " " + build_repetition("(" + "," + " " + item_rule + ")", 0, 1)`
+     - The recursive call: `min_items=0, max_items=1` → returns `item_rule + "?"` where `item_rule` is `("(" + "," + " " + item_rule + ")")`.
+     - So `result = item_rule + " " + "(" + "," + " " + item_rule + ")?"`
+     - Then since `min_items == 0`, `result = "(" + result + ")?" = "(" + item_rule + " " + "(" + "," + " " + item_rule + ")?") + ")?"`
+     - This gives: `(item_rule (, item_rule)?)?` which is correct for 0-2 items with separator.
+
+   Actually wait, there's a trailing space issue. `result = item_rule + " " + ...` - the space after `item_rule` is intentional as a separator between the first item and the rest.
+
+   Hmm, but when `min_items == 0`, the result is `(item_rule + " " + rest)?` - the space is inside the optional group, so it's fine.
+
+   Let me look for more obvious bugs.
+
+2. In `build_min_max_int`, the `uniform_range` lambda captures `from` and `to` as `std::string_view`. The `sub_len` calculation: `auto sub_len = from.length() - i - 1;` - this is the length of the remaining substring after position `i`. If `from` has length `n` and `i` is the first differing position, then `from.substr(i+1)` has length `n - i - 1`. That seems correct.
+
+3. In `_pattern_to_rule`, the `join_seq` function returns `std::make_pair(string_join(results, " "), false)` - but `results` contains strings that are either quoted literals or rule references. The `false` means it's not a literal. But wait, if all items in `ret` are literals (merged into one), then `results` would have one element which is a quoted string, and returning `false` would mean it's treated as a rule reference, not a literal. Let me check...
+
+   Actually, `to_rule` returns `"\"" + s + "\""` for literals and `s` for rules. So `results` contains the final strings. Then `string_join(results, " ")` joins them. The `false` means the result is not a literal (it's a rule expression). This seems correct because even if it's a single quoted literal, it's already been processed.
+
+   Wait, but then when this result is used in the `{...}` repetition handler:
+   ```
+   auto &sub = last.first;
+   auto sub_is_literal = last.second;
+   if (!sub_is_literal) {
+       std::string & sub_id = sub_rule_ids[sub];
+       if (sub_id.empty()) {
+           sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+       }
+       sub = sub_id;
+   }
+   seq.back().first = build_repetition(
+       sub_is_literal ? "\"" + sub + "\"" : sub,
+       min_times, max_times, ""
+   );
+   ```
+   
+   Since `join_seq` returns `false` for `is_literal`, the `sub_is_literal` would be `false`, so it would try to add a rule for the joined sequence. That seems correct.
+
+   But wait, there's a subtle issue. When `join_seq` is called from `transform()` at the end (when `i >= length`), it returns the joined result. But when called from the `)` handler, it also returns the joined result. The `false` flag means it's not a literal.
+
+   Actually, I think the issue might be that `join_seq` always returns `false` even when the result is a single quoted literal. Let me think about this more carefully...
+
+   If `seq` has one item that is a literal `"abc"`, then `ret` would have one item `("abc", true)`, `results` would have `("\"abc\"", ...)`, and `string_join` would give `"\"abc\""`. Returning `("\"abc\"", false)` means it's treated as a rule reference. Then when used in `{...}`, it would create a rule for `"\"abc\""`. That seems wasteful but not incorrect.
+
+   Actually wait, I think there might be a bug where `join_seq` should return `true` when the result is a single literal. Let me check...
+
+   Hmm, actually looking at the code more carefully, `join_seq` merges consecutive literals into one, then converts each to its rule form via `to_rule`. The result is always a space-joined string of rule expressions. Returning `false` (not a literal) is correct because the result is a grammar expression, not a raw literal.
+
+   Let me look for other bugs.
+
+4. In `_visit_pattern`, the catch blocks restore `_rules` but the `_warnings` and `_errors` are still appended. That seems intentional.
+
+5. In `_not_strings`, the `rejects` string is built by appending characters. But if a character is a special character in a character class (like `]`, `\`, `-`, `^`), it could break the grammar. The function uses `common_unicode_cpt_to_utf8(cpt)` which could produce multi-byte characters. For a character class `[^"rejects]`, if `rejects` contains `]` or `\`, it would break. But this is a potential issue, not necessarily a bug in the current code.
+
+6. In `_build_object_rule`, the `get_recursive_refs` function:
+   ```
+   if (first_is_optional) {
+       res = comma_ref + (k == "*" ? "*" : "?");
+   } else {
+       res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+   }
+   ```
+   When `first_is_optional` is `false` and `k != "*"`, `res = kv_rule_name`. Then if there are more keys, it appends `" " + _add_rule(...)`. This seems correct.
+
+   When `first_is_optional` is `false` and `k == "*"`, `res = kv_rule_name + " " + comma_ref + "*"`. This means the first key-value pair is required, then followed by zero or more additional pairs. That seems correct for the `*` (additional properties) case.
+
+   When `first_is_optional` is `true` and `k == "*"`, `res = comma_ref + "*"`. This means zero or more additional pairs. Correct.
+
+   When `first_is_optional` is `true` and `k != "*"`, `res = comma_ref + "?"`. This means an optional pair. Correct.
+
+7. In `visit`, for `KIND_REF`:
+   ```
+   return _add_rule(rule_name, _resolve_ref(as<common_chat_schema_ref>(schema)));
+   ```
+   If `_resolve_ref` returns `""` (error case), then `_add_rule(rule_name, "")` would add an empty rule. That might be a bug but it's handled by `check_errors`.
+
+8. In `visit`, for `KIND_ARRAY`:
+   ```
+   if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+       return _visit_primitive(rule_name, "array");
+   }
+   ```
+   `arr.max_items < 0` - this checks if max_items is negative (meaning unlimited). But `build_repetition` uses `std::numeric_limits<int>::max()` for unlimited. Let me check... `int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;` - so `arr.max_items < 0` means unlimited. The condition `arr.max_items < 0` in the early return is correct.
+
+9. In `visit`, for `KIND_STRING`:
+   ```
+   if (str.min_length > 0 || str.max_length >= 0) {
+   ```
+   This checks if there's a length constraint. `str.max_length >= 0` means there's a max length set (0 or positive). `str.min_length > 0` means there's a min length. This seems correct.
+
+10. In `visit`, for `KIND_INTEGER`:
+    ```
+    if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max()) {
+        return _visit_primitive(rule_name, "integer");
+    }
+    ```
+    This checks if both min and max are at their limits (no constraints). Correct.
+
+11. In `json_schema_to_grammar(const common_json & schema, bool force_gbnf)`:
+    ```
+    return json_schema_to_grammar(common_chat_schema_from_json(schema));
+    ```
+    This calls the other overload. Seems correct.
+
+12. In `build_grammar`:
+    ```
+    /* .add_schema = */ [&](const std::string & name, const common_chat_schema & schema) {
+        return converter.add_schema(name == "root" ? "" : name, schema);
+    },
+    ```
+    This maps "root" to empty string. Seems intentional.
+
+Now let me look at **File 2: common/arg.cpp**
+
+1. In `common_arg::to_string()`:
+    ```
+    if (ss.tellp() > n_leading_spaces - 3) {
+    ```
+    `ss.tellp()` returns `std::streampos`, and `n_leading_spaces - 3` is `int`. The comparison might have issues with signed/unsigned but `streampos` is signed, so it should be fine.
+
+2. In `common_arg::to_string()`:
+    ```
+    ss << std::string(leading_spaces.size() - ss.tellp(), ' ');
+    ```
+    If `ss.tellp()` is larger than `leading_spaces.size()`, this would underflow. But the previous `if` handles the case where `tellp() > n_leading_spaces - 3`, so in the `else` branch, `tellp() <= n_leading_spaces - 3 = 37`, and `leading_spaces.size() = 40`, so `40 - 37 = 3` minimum. That's fine.
+
+3. In `common_params_parse_ex`, the environment variable handling:
+    ```
+    if (opt.handler_string) {
+        opt.handler_string(params, value);
+        continue;
+    }
+    ```
+    The `continue` is inside the `if (opt.handler_string)` block, but it's also inside the `try` block. The `continue` would skip to the next iteration of the `for` loop. But wait, there's also `handler_int` and `handler_bool` that are checked before `handler_string`. If `handler_int` or `handler_bool` is set, they would be called first, and then `handler_string` would also be called if set. The `continue` after `handler_string` would prevent further processing. But since these are mutually exclusive (an arg has only one handler type), this should be fine.
+
+    Actually wait, looking more carefully:
+    ```
+    if (opt.handler_void && is_truthy(value)) {
+        opt.handler_void(params);
+    }
+    if (opt.handler_int) {
+        opt.handler_int(params, std::stoi(value));
+    }
+    if (opt.handler_bool) {
+        opt.handler_bool(params, parse_bool_value(value));
+    }
+    if (opt.handler_string) {
+        opt.handler_string(params, value);
+        continue;
+    }
+    ```
+    The `continue` is only in the `handler_string` case. For `handler_void`, `handler_int`, `handler_bool`, there's no `continue`. So if an arg has `handler_void` set, it would be called, and then if `handler_int` is also set (which shouldn't happen), it would also be called. Since only one handler is set per arg, this should be fine.
+
+    But wait, there's a subtle issue: if `handler_void` is set and `is_truthy(value)` is false, the handler is not called, but execution continues to check `handler_int`, `handler_bool`, `handler_string`. Since only one handler is set, the others would be null and skipped. So this is fine.
+
+4. In `common_params_parse_ex`, the CLI argument parsing:
+    ```
+    auto parse_cli_args = [&]() {
+        std::set<std::string> seen_args;
+        for (int i = 1; i < argc; i++) {
+            ...
+        }
+    };
+    ```
+    The `seen_args` is declared inside the lambda, so it's fresh each time the lambda is called. But the lambda is only called once (`parse_cli_args()`), so this is fine.
+
+5. In `common_params_parse_ex`, after `parse_cli_args()`:
+    ```
+    postprocess_cpu_params(params.cpuparams,       nullptr);
+    postprocess_cpu_params(params.cpuparams_batch, &params.cpuparams);
+    postprocess_cpu_params(params.speculative.draft.cpuparams,       &params.cpuparams);
+    postprocess_cpu_params(params.speculative.draft.cpuparams_batch, &params.cpuparams_batch);
+    ```
+    This seems correct.
+
+6. In `common_params_parse_ex`:
+    ```
+    if (params.mmproj_use_gpu && params.mmproj_device == nullptr && !params.devices.empty()) {
+        params.mmproj_device = params.devices.front();
+        params.mmproj_use_gpu = params.mmproj_device != nullptr;
+    }
+    ```
+    If `params.devices.front()` is `nullptr` (which happens when "none" is specified), then `mmproj_use_gpu` would be set to `false`. That seems correct.
+
+7. In `common_params_parse_ex`:
+    ```
+    if (!params.kv_overrides.empty()) {
+        params.kv_overrides.emplace_back();
+        params.kv_overrides.back().key[0] = 0;
+    }
+    ```
+    This adds a terminator entry. Seems intentional.
+
+8. In `common_params_parse_ex`:
+    ```
+    const size_t ntbo = llama_max_tensor_buft_overrides();
+    while (params.tensor_buft_overrides.size() < ntbo) {
+        params.tensor_buft_overrides.push_back({nullptr, nullptr});
+    }
+    ```
+    This pads the overrides. Seems correct.
+
+9. In `common_params_parse_ex`:
+    ```
+    if (!params.speculative.draft.tensor_buft_overrides.empty()) {
+        params.speculative.draft.tensor_buft_overrides.push_back({nullptr, nullptr});
+    }
+    ```
+    This adds a terminator for draft overrides. Seems correct.
+
+10. In `common_params_parse_ex`:
+    ```
+    if (!params.default_template_kwargs.count("preserve_reasoning")) {
+        params.default_template_kwargs["preserve_reasoning"] = "true";
+    }
+    ```
+    This sets a default. Seems correct.
+
+11. In `common_params_to_map`:
+    ```
+    if (opt.value_hint == nullptr && opt.value_hint_2 == nullptr) {
+        // bool arg (need to reverse the meaning for negative args)
+        bool is_neg = std::find(opt.args_neg.begin(), opt.args_neg.end(), arg) != opt.args_neg.end();
+        val = is_neg ? "0" : "1";
+    }
+    if (opt.value_hint != nullptr) {
+        // arg with single value
+        check_arg(i);
+        val = argv[++i];
+    }
+    if (opt.value_hint_2 != nullptr) {
+        // TODO: support arg with 2 values
+        throw std::invalid_argument("error: argument with 2 values is not yet supported\n");
+    }
+    ```
+    The issue here: if `value_hint` is not null but `value_hint_2` is also not null, both blocks would execute. The first block (`value_hint == nullptr && value_hint_2 == nullptr`) would be skipped, then `value_hint != nullptr` would execute (consuming one arg), then `value_hint_2 != nullptr` would throw. That seems correct.
+
+    But if `value_hint` is null and `value_hint_2` is not null, the first block would execute (setting `val` to "0" or "1"), then `value_hint != nullptr` would be false (skip), then `value_hint_2 != nullptr` would throw. That seems correct too.
+
+    Actually wait, there's a potential issue: if `value_hint` is not null, the first block is skipped, then the second block executes and sets `val`. Then if `value_hint_2` is also not null, the third block throws. But what if `value_hint` is not null and `value_hint_2` is null? Then only the second block executes, setting `val`. That's correct.
+
+    What if both are null? First block sets `val`, second and third are skipped. Correct.
+
+    What if `value_hint` is null and `value_hint_2` is null? First block sets `val`. Correct.
+
+    Hmm, but there's a subtle issue: the first block uses `if` (not `else if`), so if `value_hint` is not null, the first block is skipped (condition is false), then the second block executes. But what if `value_hint` is null and `value_hint_2` is not null? First block executes (sets val), second block is

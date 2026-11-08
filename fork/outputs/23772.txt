@@ -1,0 +1,22 @@
+run 23772 | rel_b14244 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.78 t/s | prompt 272.8 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-11-07 16:40:44
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - Wait, there's a subtle issue: `if (max_items == 0) return "";` — if `min_items > 0` and `max_items == 0`, this is an impossible constraint (min > max), and returning empty string silently accepts invalid schema. Actually returning "" means the rule matches empty — hmm, actually returning "" would produce an empty rule which might be invalid grammar. Let me think. If max_items == 0 and min_items == 0, returning "" is correct (empty repetition). But if min_items > 0 and max_items == 0, the schema is contradictory; returning "" silently produces something that matches nothing or is malformed. Minor.
+   - In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and `min_items == 1`, then inner call gets max_items = 0, min_items = 0, returns "" — so result is `item_rule + " " + ""` = `item_rule ` with trailing space. Hmm, that would produce trailing space in the rule. Actually wait: `item_rule + " " + build_repetition(...)` where the inner returns "" gives `item_rule + " "` — trailing space. That's a formatting bug but grammars might tolerate it? Actually in GBNF, whitespace in rules... the grammar parser might treat spaces as significant or not. In llama.cpp's GBNF parser, whitespace between elements is generally ignored except within literals. Actually, I recall the GBNF parser skips whitespace. So trailing space is harmless but sloppy.
+   - Also if `min_items == 0` and `max_items == 1` with separator: result = `item_rule + " " + build_repetition(...)` where inner gets min 0, max 0 → "" → result = `item_rule ` then wrapped in `(result)?` → `(item_rule )?` — hmm, that means with max_items==1, min_items==0, the output is `(item_rule )?` which allows the item but the separator handling... wait no. Let me re-check: with separator, min=0, max=1: inner call: min_items = 0 (since min_items==0), max_items = has_max ? max_items-1 = 0. So inner returns "". Result = `item_rule + " " + ""` = `"item "`. Then since min_items == 0, result = `(item )?`. So the grammar is `(item )?` — trailing space inside parens. Works but ugly.
+   - Actually wait, there's a real bug potential: when `min_items == 0 && max_items == 1` at the top: `if (min_items == 0 && max_items == 1) return item_rule + "?";` — this is checked BEFORE the separator check, so with a separator rule and max 1 item, the separator is irrelevant anyway (no separator needed for a single item). OK that's fine.
+   - But what about `min_items == 1 && max_items == 1` with separator? Falls through to the separator branch: inner gets min 0, max 0 → "" → result = `item_rule + " "` → no wrapping since min_items != 0. So rule = `item ` with trailing space. Fine-ish.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` with recursion — fine but has overhead; could be a static helper.
+   - `decimals_left = 16` default; recursion decrements. When `decimals_left` reaches... `less_decimals = std::max(decimals_left - 1, 1)` — so it never goes below 1, meaning the recursion could be infinite? Let's see: `build_min_max_int` with has_min and min_value > 9 recurses with `less_decimals`. Since less_decimals is clamped at 1, if min_value keeps being > 9... wait, the recursion is `build_min_max_int(std::stoll(min_s.substr(1)), ...)` — the value shrinks each time (drops leading digit), so it terminates. OK.
+   - Potential issue: `std::stoll(min_s.substr(1))`

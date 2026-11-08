@@ -1,0 +1,444 @@
+run 23848 | split-trial-mix-on | pf64k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 20.26 t/s | prompt 1037.6 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 23:38:53
+
+<think>The user wants me to return the complete fixed version of the source file. Let me analyze the file carefully for bugs.
+
+Looking at the file, it appears to be a concatenation of multiple source files:
+1. `common/json-schema-to-grammar.cpp`
+2. `common/arg.cpp`
+3. `common/arg.h`
+4. `common/build-info.h`
+5. `common/chat-auto-parser-generator.cpp`
+
+Let me look for bugs in each file.
+
+**File 1: `common/json-schema-to-grammar.cpp`**
+
+Let me examine carefully...
+
+Looking at the `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+This looks correct to me.
+
+Looking at `build_min_max_int`:
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+```
+
+This looks correct.
+
+Let me look at the `_pattern_to_rule` function more carefully...
+
+Actually, let me look at the `join_seq` lambda inside `transform`:
+
+```cpp
+auto join_seq = [&]() {
+    std::vector<literal_or_rule> ret;
+
+    std::string literal;
+    auto flush_literal = [&]() {
+        if (literal.empty()) {
+            return false;
+        }
+        ret.emplace_back(literal, true);
+        literal.clear();
+        return true;
+    };
+
+    for (const auto & item : seq) {
+        auto is_literal = item.second;
+        if (is_literal) {
+            literal += item.first;
+        } else {
+            flush_literal();
+            ret.push_back(item);
+        }
+    }
+    flush_literal();
+
+    std::vector<std::string> results;
+    results.reserve(ret.size());
+    for (const auto & item : ret) {
+        results.push_back(to_rule(item));
+    }
+    return std::make_pair(string_join(results, " "), false);
+};
+```
+
+Wait, `join_seq` returns a `literal_or_rule` (which is `std::pair<std::string, bool>`), but the return type is `std::make_pair(string_join(results, " "), false)` which is `std::pair<std::string, bool>`. That's correct.
+
+But wait - `join_seq` is declared as `auto join_seq = [&]() { ... }` - it returns `std::make_pair(string_join(results, " "), false)` which is `std::pair<std::string, bool>`. The lambda's return type is deduced. That's fine.
+
+Hmm, but `flush_literal` returns `bool` - that's fine since it's used as a statement.
+
+Let me look at the `_not_strings` function:
+
+```cpp
+std::string _not_strings(const std::vector<std::string> & strings) {
+    common_trie trie(strings);
+
+    std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+    std::ostringstream out;
+    out << "[\"] ( ";
+    std::function<void(size_t)> visit = [&](size_t idx) {
+        const auto & node = trie.nodes[idx];
+        std::string rejects;
+        auto first = true;
+        for (const auto & [cpt, child] : node.children) {
+            std::string c = common_unicode_cpt_to_utf8(cpt);
+            rejects += c;
+            if (first) {
+                first = false;
+            } else {
+                out << " | ";
+            }
+            out << "[" << c << "]";
+            if (!trie.nodes[child].children.empty()) {
+                out << " (";
+                visit(child);
+                out << ")";
+            } else {
+                out << " " << char_rule << "+";
+            }
+        }
+        if (!node.children.empty()) {
+            out << " | [^\"" << rejects << "] " << char_rule << "*";
+        }
+    };
+    visit(0);
+
+    out << " )";
+    if (trie.nodes[0].pattern < 0) {
+        out << "?";
+    }
+    out << " [\"]";
+    return out.str();
+}
+```
+
+This looks correct.
+
+Let me look at `_build_object_rule`:
+
+```cpp
+std::string _build_object_rule(
+    const std::vector<std::pair<std::string, const common_chat_schema *>> & properties,
+    const std::unordered_set<std::string> & required,
+    const std::string & name,
+    const common_chat_schema * additional_properties)
+{
+    ...
+    if (additional_properties) {
+        std::string sub_name = name + (name.empty() ? "" : "-") + "additional";
+        std::string value_rule =
+            additional_properties->kind() != common_chat_schema::KIND_ANY ? visit(*additional_properties, sub_name + "-value")
+            : _add_primitive("value", PRIMITIVE_RULES.at("value"));
+
+        auto key_rule =
+            prop_names.empty() ? _add_primitive("string", PRIMITIVE_RULES.at("string"))
+            : _add_rule(sub_name + "-k", _not_strings(prop_names));
+        std::string kv_rule = _add_rule(sub_name + "-kv", key_rule + " \":\" space " + value_rule);
+        prop_kv_rule_names["*"] = kv_rule;
+        optional_props.push_back("*");
+    }
+    ...
+```
+
+Wait, there's a missing `space` after `key_rule` before `":"`. Let me check... `key_rule + " \":\" space " + value_rule` - actually the `space` is after `":"`, which is correct for JSON (key, colon, space, value). But wait, there should be a `space` before the colon too? Let me check the object rule:
+
+```
+"\"{\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \"}\""
+```
+
+So the pattern is `string ":" space value`. So `key_rule + " \":\" space " + value_rule` is correct - no space before colon.
+
+Hmm, but actually looking at the kv rule for regular properties:
+```cpp
+prop_kv_rule_names[prop_name] = _add_rule(
+    name + (name.empty() ? "" : "-") + prop_name + "-kv",
+    format_literal(json(prop_name).dump()) + " space \":\" space " + prop_rule_name
+);
+```
+
+There's a `space` before `":"` here! So for additional properties, the kv rule should also have `space` before `":"`. Let me check...
+
+Actually wait, looking more carefully:
+- Regular kv: `format_literal(...) + " space \":\" space " + prop_rule_name` - has space before colon
+- Additional kv: `key_rule + " \":\" space " + value_rule` - missing space before colon
+
+That's a bug! The additional properties kv rule is missing `space` before `":"`.
+
+Let me continue looking...
+
+Actually, wait. Let me re-read the additional kv rule:
+```cpp
+std::string kv_rule = _add_rule(sub_name + "-kv", key_rule + " \":\" space " + value_rule);
+```
+
+vs regular kv:
+```cpp
+prop_kv_rule_names[prop_name] = _add_rule(
+    name + (name.empty() ? "" : "-") + prop_name + "-kv",
+    format_literal(json(prop_name).dump()) + " space \":\" space " + prop_rule_name
+);
+```
+
+Yes, the additional kv rule is missing `space` before `":"`. This is a bug.
+
+Let me look at the `visit` function:
+
+```cpp
+std::string visit(const common_chat_schema & schema, const std::string & name) {
+    std::string rule_name = is_reserved_name(name) ? name + "-" : name.empty() ? "root" : name;
+    std::string sub_name  = name + (name.empty() ? "" : "-");
+    ...
+```
+
+This looks correct.
+
+Let me look at the `KIND_STRING` case:
+
+```cpp
+case common_chat_schema::KIND_STRING: {
+    const auto & str = as<common_chat_schema_string>(schema);
+    if (!str.pattern.empty()) {
+        return _visit_pattern(str.pattern, rule_name);
+    }
+    if (str.format == common_chat_schema::FORMAT_UUID) {
+        return _visit_primitive(rule_name, "uuid");
+    }
+    if (str.format != common_chat_schema::FORMAT_NONE) {
+        std::string prim_name = std::string(str.format == common_chat_schema::FORMAT_DATE ? "date" : str.format == common_chat_schema::FORMAT_TIME ? "time" : "date-time") + "-string";
+        return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
+    }
+    if (str.min_length > 0 || str.max_length >= 0) {
+        std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+        int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+        return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, str.min_length, max_len) + " \"\\\"\"");
+    }
+    return _visit_primitive(rule_name, "string");
+}
+```
+
+This looks correct.
+
+Let me look at the `KIND_INTEGER` case:
+
+```cpp
+case common_chat_schema::KIND_INTEGER: {
+    const auto & i = as<common_chat_schema_integer>(schema);
+    if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max()) {
+        return _visit_primitive(rule_name, "integer");
+    }
+    std::stringstream out;
+    out << "(";
+    build_min_max_int(i.minimum, i.maximum, out);
+    out << ")";
+    return _add_rule(rule_name, out.str());
+}
+```
+
+This looks correct.
+
+Let me look at the `KIND_ARRAY` case:
+
+```cpp
+case common_chat_schema::KIND_ARRAY: {
+    const auto & arr = as<common_chat_schema_array>(schema);
+    if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+        return _visit_primitive(rule_name, "array");
+    }
+    std::string item_rule_name = visit(*arr.items, sub_name + "item");
+    int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;
+    return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+}
+```
+
+This looks correct.
+
+Let me look at the `KIND_TUPLE` case:
+
+```cpp
+case common_chat_schema::KIND_TUPLE: {
+    const auto & items = as<common_chat_schema_tuple>(schema).items;
+    std::string rule = "\"[\" space ";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i > 0) {
+            rule += " \",\" space ";
+        }
+        rule += visit(*items[i], sub_name + "tuple-" + std::to_string(i));
+    }
+    rule += " space \"]\"";
+    return _add_rule(rule_name, rule);
+}
+```
+
+This looks correct.
+
+Let me look at the `_visit_all_of` function:
+
+```cpp
+std::string _visit_all_of(const common_chat_schema_all_of & schema, const std::string & name, const std::string & rule_name) {
+    std::unordered_set<std::string> required;
+    std::vector<std::pair<std::string, const common_chat_schema *>> properties;
+    std::map<std::string, size_t> enum_values;
+    std::function<void(const common_chat_schema &, bool)> add_component = [&](const common_chat_schema & comp, bool is_required) {
+        if (comp.kind() == common_chat_schema::KIND_REF) {
+            if (const auto * target = as<common_chat_schema_ref>(comp).target) {
+                add_component(*target, is_required);
+            }
+        } else if (comp.kind() == common_chat_schema::KIND_OBJECT) {
+            for (const auto & prop : as<common_chat_schema_object>(comp).properties) {
+                properties.emplace_back(prop.name, prop.schema.get());
+                if (is_required) {
+                    required.insert(prop.name);
+                }
+            }
+        } else if (comp.kind() == common_chat_schema::KIND_ENUM) {
+            for (const auto & v : as<common_chat_schema_enum>(comp).values) {
+                enum_values[_generate_constant_rule(v)] += 1;
+            }
+        }
+    };
+    for (const auto & child : schema.children) {
+        if (child->kind() == common_chat_schema::KIND_ANY_OF) {
+            for (const auto & alt : as<common_chat_schema_any_of>(*child).children) {
+                add_component(*alt, false);
+            }
+        } else {
+            add_component(*child, true);
+        }
+    }
+    if (!enum_values.empty()) {
+        std::vector<std::string> enum_intersection;
+        for (const auto & p : enum_values) {
+            if (p.second == schema.children.size()) {
+                enum_intersection.push_back(p.first);
+            }
+        }
+        if (!enum_intersection.empty()) {
+            return _add_rule(rule_name, "(" + string_join(enum_intersection, " | ") + ")");
+        }
+    }
+    return _add_rule(rule_name, _build_object_rule(properties, required, name, nullptr));
+}
+```
+
+This looks correct.
+
+Let me look at the `_resolve_ref` function:
+
+```cpp
+std::string _resolve_ref(const common_chat_schema_ref & schema) {
+    auto it = schema.ref.find('#');
+    std::string ref_fragment = it != std::string::npos ? schema.ref.substr(it + 1) : schema.ref;
+    static const std::regex nonalphanumeric_regex(R"([^a-zA-Z0-9-]+)");
+    std::string ref_name = "ref" + std::regex_replace(ref_fragment, nonalphanumeric_regex, "-");
+    if (_rules.find(ref_name) == _rules.end() && _refs_being_resolved.find(schema.ref) == _refs_being_resolved.end()) {
+        if (!schema.target) {
+            _errors.push_back("Unresolved $ref " + schema.ref);
+            return "";
+        }
+        _refs_being_resolved.insert(schema.ref);
+        ref_name = visit(*schema.target, ref_name);
+        _refs_being_resolved.erase(schema.ref);
+    }
+    return ref_name;
+}
+```
+
+This looks correct.
+
+Let me look at the `_add_rule` function:
+
+```cpp
+std::string _add_rule(const std::string & name, const std::string & rule) {
+    std::string esc_name = regex_replace(name, INVALID_RULE_CHARS_RE, "-");
+    if (_rules.find(esc_name) == _rules.end() || _rules[esc_name] == rule) {
+        _rules[esc_name] = rule;
+        return esc_name;
+    }
+    int i = 0;
+    while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule) {
+        i++;
+    }
+    std::string key = esc_name + std::to_string(i);
+    _rules[key] = rule;
+    return key;
+}
+```
+
+This looks correct.
+
+Let me look at the `_add_primitive` function:
+
+```cpp
+std::string _add_primitive(const std::string & name, const BuiltinRule & rule) {
+    auto n = _add_rule(name, rule.content);
+    for (const auto & dep : rule.deps) {
+        BuiltinRule dep_rule;
+        auto it = PRIMITIVE_RULES.find(dep);
+        if (it == PRIMITIVE_RULES.end()) {
+            it = STRING_FORMAT_RULES.find(dep);
+            if (it == STRING_FORMAT_RULES.end()) {
+                _errors.push_back("Rule " + dep + " not known");
+                continue;
+            }
+        }
+        if (_rules.find(dep) == _rules.end()) {
+            _add_primitive(dep, it->second);
+        }
+    }
+    return n;
+}
+```
+
+Wait, there's a bug here. `it` is declared as `auto it = PRIMITIVE_RULES.find(dep)` which returns an iterator to `PRIMITIVE_RULES`. Then if it's not found, `it = STRING_FORMAT_RULES.find(dep)` - but `STRING_FORMAT_RULES` has a different type than `PRIMITIVE_RULES` (both are `std::unordered_map<std::string, BuiltinRule>`), so the iterator types should be compatible. Actually, both are `std::unordered_map<std::string, BuiltinRule>`, so the iterators are the same type. That's fine.
+
+But wait, `BuiltinRule dep_rule;` is declared but never used. That's a minor issue but not a bug per se.
+
+Actually, looking more carefully, `it` is an iterator to `PRIMITIVE_RULES` (which is `std::unordered_map<std::string, BuiltinRule>`), and `STRING_FORMAT_RULES` is also `std::unordered_map<std::string, BuiltinRule>`. So the iterator types are the same. That's fine.
+
+But `BuiltinRule dep_rule;` is unused. That's a warning but not a bug.
+
+Let me look at the `_visit_pattern` function:
+
+```cpp
+std::string _visit_pattern(const std::string & pattern, const std::string & name) {
+    auto rules_snapshot = _rules;
+    try {
+        return _pattern_to_rule(pattern, name);
+    } catch (const unsupported_pattern & err) {
+        // revert rules
+        _rules = std::move(rules_snapshot);
+        _warnings.push_back("pattern " + pattern + " is not supported (" + err.what() + "), accepting any string");
+        return _add_rule(name,

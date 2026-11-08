@@ -1,0 +1,44 @@
+run 23775 | rel_b14244 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.91 t/s | prompt 978.5 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 16:48:00
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with pattern matching, grammar building, etc.
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` by passing `0` to the recursive call. This seems correct but could be confusing.
+   - When `max_items == 0`, returns empty string - but what if `min_items > 0`? That would be an invalid schema (min > max), but it's not checked.
+
+2. **`build_min_max_int` function:**
+   - Very complex recursive function. The `decimals_left` parameter is used as a depth limiter but the name is misleading - it's not about decimals, it's about digit depth.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+   - Potential issue: when `min_value == 0` and `top_level` is false, it calls `more_digits(1, decimals_left)` which means at least 1 digit - but this could produce "0" followed by more digits which is a leading zero issue... Actually wait, `more_digits` just generates `[0-9]{1,N}` which could produce leading zeros. But in the context of `top_level=false`, this is for sub-digits after the first significant digit, so leading zeros are fine there.
+   - The `uniform_range` lambda captures `out` by reference - this is fine since it's used within the same scope.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+   - However, `_rules` is a `std::map` and copying it on every pattern visit could be expensive for large schemas.
+
+5. **`_pattern_to_rule` function:**
+   - The `transform` lambda is complex and handles regex parsing.
+   - The `paren_depth` check at the end: `if (paren_depth != 0)` - but `paren_depth` is captured by reference in the lambda, so it should be correct.
+   - Issue: The `sub_rule_ids` map is used for `{n,m}` repetition, but the key is the sub-rule content. If two different sub-rules have the same content, they'd share the same ID, which is actually correct behavior.
+   - The character class parsing: `while (i < length && sub_pattern[i] != ']')` - this doesn't handle `]` as the first character in a character class (which is valid in regex: `[]abc]` means `]`, `a`, `b`, `c`). This could be a bug.
+   - Actually wait, looking more carefully: the initial `[` is consumed, then it reads until `]`. So `[]abc]` would be parsed as `[]` (empty class) followed by `abc]`. This is indeed a bug - in regex, `[]abc]` is a valid character class containing `]`, `a`, `b`, `c`.
+
+6. **`_not_strings` function:**
+   - Builds a trie-based rule to match strings that are NOT in a given set.
+   - The `rejects` string accumulates characters for the negation class `[^...]`. If any character is a regex metacharacter (like `]`, `-`, `\`), this could produce an invalid character class. For example, if a property name contains `]`, the output would be `[^"]...]` which is malformed.
+   - Actually, looking at it: `out << " | [^\"" << rejects << "] " << char_rule << "*";` - the `rejects` is placed inside `[^"..."...]`. If `rejects` contains `]` or `-`, this would break the character class.
+
+7. **`

@@ -1,0 +1,86 @@
+run 23869 | rel_b14244 | pf64k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 121.42 t/s | prompt 5579.4 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-08 00:47:59
+
+<think>
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Input:** A large C++ source file (or multiple files concatenated) containing code for `common/json-schema-to-grammar.cpp`, `common/arg.cpp`, `common/arg.h`, `common/build-info.h`, and `common/chat-auto-parser-generator.cpp`.
+   - **Task:** Return the *complete fixed version* of the source file. Every line must be included. Every bug must be fixed. Each change must be marked by a comment. Do not summarize, skip unchanged parts, or stop early.
+   - **Constraints:** Strict, detailed, line-by-line, bug fixes with comments, no summarization.
+
+2.  **Identify the Core Problem/Context:**
+   - The user provided a massive chunk of C++ code from what looks like `llama.cpp` or a similar project.
+   - The prompt says "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment."
+   - I need to carefully scan the provided code for bugs, inconsistencies, or missing parts.
+   - Wait, the input cuts off abruptly at the end: `auto tools_pa`. This is clearly an incomplete file. The prompt says "every line of it, from the first line to the last". I must complete the file or fix the truncation.
+   - Let's check the structure. It seems to be a concatenation of multiple files:
+     - `// file: common/json-schema-to-grammar.cpp`
+     - `// file: common/arg.cpp`
+     - `// file: common/arg.h`
+     - `// file: common/build-info.h`
+     - `// file: common/chat-auto-parser-generator.cpp`
+   - The last file `chat-auto-parser-generator.cpp` is cut off at `auto tools_pa`.
+   - I need to reconstruct the missing part or fix the truncation. Since I don't have the original full file, I'll need to infer what's missing or just complete it logically based on the context, but the prompt says "every bug fixed". The truncation itself is a bug. I'll add a comment marking the fix for the truncation and complete the function/class appropriately, or just note that it was truncated and provide a plausible completion, but I must be careful. Actually, I should just fix obvious bugs in the provided text and complete the cut-off part logically, marking each change with a comment.
+   - Let's scan for actual bugs in the provided code:
+     - `#include <cinttypes>` -> should be `#include <cstdint>`
+     - `#include <linux/limits.h>` -> usually `#include <limits.h>` or `#include <linux/limits.h>` is fine, but maybe `#include <limits.h>` is standard. I'll leave it or fix if obvious.
+     - `string_format` usage: `string_format("error: failed to open file '%s'\n", fname.c_str())` -> `string_format` might not be defined, but it's likely a helper in `common.h`. I'll assume it's fine.
+     - `GGML_ASSERT(params.n_gpu_layers < 0);` -> This is fine.
+     - `common_arg` constructors: The constructors in `arg.h` use `const std::initializer_list<const char *> & args`. This is fine.
+     - `common_params_parser_init` has a lot of `add_opt` calls. Some have syntax issues? Let's check:
+       - `add_opt(common_arg( {"-h", "--help", "--usage"}, "print usage and exit", [](common_params & params) { params.usage = true; } ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD}));` -> This matches the constructor signature: `common_arg(const std::initializer_list<const char *> & args, const std::string & help, void (*handler)(common_params & params))`. Correct.
+       - `add_opt(common_arg( {"--version"}, "show version and build info", [](common_params &) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"-cl", "--cache-list"}, "show list of models in cache", [](common_params &) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"--completion-bash"}, "print source-able bash completion script for llama.cpp", [](common_params & params) { params.completion = true; } ));` -> Correct.
+       - `add_opt(common_arg( {"--server-base"}, "URL", string_format("connect to this server...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_CLI}));` -> Constructor: `args, value_hint, help, handler_string`. Correct.
+       - `add_opt(common_arg( {"--display-prompt"}, {"--no-display-prompt"}, string_format("whether to print prompt...", [](common_params & params, bool value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}));` -> Constructor: `args, args_neg, help, handler_bool`. Correct.
+       - `add_opt(common_arg( {"-co", "--color"}, "[on|off|auto]", "Colorize output...", [](common_params & params, const std::string & value) { ... } ).set_examples({...}));` -> Correct.
+       - `add_opt(common_arg( {"-t", "--threads"}, "N", string_format("number of CPU threads...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_THREADS"));` -> Constructor: `args, value_hint, help, handler_int`. Correct.
+       - `add_opt(common_arg( {"--cpu-strict"}, "<0|1>", string_format("use strict CPU placement...", [](common_params & params, const std::string & value) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"--prio"}, "N", string_format("set process/thread priority...", [](common_params & params, int prio) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"--poll"}, "<0...100>", string_format("use polling level...", [](common_params & params, const std::string & value) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"--cpu-strict-batch"}, "<0|1>", "use strict CPU placement...", [](common_params & params, int value) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"--prio-batch"}, "N", string_format("set process/thread priority...", [](common_params & params, int prio) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"--poll-batch"}, "<0|1>", "use polling to wait...", [](common_params & params, int value) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"-lcs", "--lookup-cache-static"}, "FNAME", "path to static lookup cache...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"-lcd", "--lookup-cache-dynamic"}, "FNAME", "path to dynamic lookup cache...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"-c", "--ctx-size"}, "N", string_format("size of the prompt context...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_CTX_SIZE"));` -> Correct.
+       - `add_opt(common_arg( { "--kv-unified-per-slot" }, "N", "context limit per parallel slot...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_KV_UNIFIED_PER_SLOT").set_examples({ LLAMA_EXAMPLE_SERVER }));` -> Correct.
+       - `add_opt(common_arg( {"-n", "--predict", "--n-predict"}, "N", string_format("number of tokens to predict...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_N_PREDICT"));` -> Correct.
+       - `add_opt(common_arg( {"-b", "--batch-size"}, "N", string_format("logical maximum batch size...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_BATCH"));` -> Correct.
+       - `add_opt(common_arg( {"-ub", "--ubatch-size"}, "N", string_format("physical maximum batch size...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_UBATCH"));` -> Correct.
+       - `add_opt(common_arg( {"--keep"}, "N", string_format("number of tokens to keep...", [](common_params & params, int value) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"--swa-full"}, string_format("use full-size SWA cache...", [](common_params & params) { ... } ).set_env("LLAMA_ARG_SWA_FULL"));` -> Correct.
+       - `add_opt(common_arg( {"-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"}, "N", string_format("max number of context checkpoints...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_CTX_CHECKPOINTS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));` -> Correct.
+       - `add_opt(common_arg( {"-cms", "--checkpoint-min-step"}, "N", string_format("minimum spacing between context checkpoints...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT").set_examples({LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"-cram", "--cache-ram"}, "N", string_format("set the maximum cache size...", [](common_params & params, int value) { ... } ).set_env("LLAMA_ARG_CACHE_RAM").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));` -> Correct.
+       - `add_opt(common_arg( {"-kvu", "--kv-unified"}, {"-no-kvu", "--no-kv-unified"}, "use single unified KV buffer...", [](common_params & params, bool value) { ... } ).set_env("LLAMA_ARG_KV_UNIFIED").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BATCHED, LLAMA_EXAMPLE_BENCH, LLAMA_EXAMPLE_PARALLEL}));` -> Correct.
+       - `add_opt(common_arg( {"--cache-idle-slots"}, {"--no-cache-idle-slots"}, "save idle slots...", [](common_params & params, bool value) { ... } ).set_env("LLAMA_ARG_CACHE_IDLE_SLOTS").set_examples({LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"--context-shift"}, {"--no-context-shift"}, string_format("whether to use context shift...", [](common_params & params, bool value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_IMATRIX, LLAMA_EXAMPLE_PERPLEXITY}).set_env("LLAMA_ARG_CONTEXT_SHIFT"));` -> Correct.
+       - `add_opt(common_arg( {"--chunks"}, "N", string_format("max number of chunks...", [](common_params & params, int value) { ... } ).set_examples({LLAMA_EXAMPLE_IMATRIX, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_RETRIEVAL}));` -> Correct.
+       - `add_opt(common_arg({ "-fa", "--flash-attn" }, "[on|off|auto]", string_format("set Flash Attention use...", [](common_params & params, const std::string & value) { ... }).set_env("LLAMA_ARG_FLASH_ATTN"));` -> Correct.
+       - `add_opt(common_arg( {"--prefetch-experts-slots"}, "N", "MoE expert H2D staging slots...", [](common_params & params, const std::string & value) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"-p", "--prompt"}, "PROMPT", "prompt to start generation...", [](common_params & params, const std::string & value) { ... } ).set_excludes({LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"-sys", "--system-prompt"}, "PROMPT", "system prompt to use...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_MTMD}));` -> Correct.
+       - `add_opt(common_arg( {"--perf"}, {"--no-perf"}, string_format("whether to enable internal libllama performance timings...", [](common_params & params, bool value) { ... } ).set_env("LLAMA_ARG_PERF"));` -> Correct.
+       - `add_opt(common_arg( {"--show-timings"}, {"--no-show-timings"}, string_format("whether to show timing information...", [](common_params & params, bool value) { ... } ).set_examples({LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SHOW_TIMINGS"));` -> Correct.
+       - `add_opt(common_arg( {"-f", "--file"}, "FNAME", "a file containing the prompt...", [](common_params & params, const std::string & value) { ... } ).set_excludes({LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"-sysf", "--system-prompt-file"}, "FNAME", "a file containing the system prompt...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_DIFFUSION}));` -> Correct.
+       - `add_opt(common_arg( {"--in-file"}, "FNAME", "an input file...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_IMATRIX}));` -> Correct.
+       - `add_opt(common_arg( {"-bf", "--binary-file"}, "FNAME", "binary file containing the prompt...", [](common_params & params, const std::string & value) { ... } ).set_excludes({LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"-e", "--escape"}, {"--no-escape"}, string_format("whether to process escapes sequences...", [](common_params & params, bool value) { ... } ));` -> Correct.
+       - `add_opt(common_arg( {"-ptc", "--print-token-count"}, "N", string_format("print token count every N tokens...", [](common_params & params, int value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"--prompt-cache"}, "FNAME", "file to cache prompt state...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"--prompt-cache-all"}, "if specified, saves user input...", [](common_params & params) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"--prompt-cache-ro"}, "if specified, uses the prompt cache...", [](common_params & params) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"-r", "--reverse-prompt"}, "PROMPT", "halt generation at PROMPT...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"-sp", "--special"}, string_format("special tokens output enabled...", [](common_params & params) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_SERVER}));` -> Correct.
+       - `add_opt(common_arg( {"-cnv", "--conversation"}, {"-no-cnv", "--no-conversation"}, "whether to run in conversation mode...", [](common_params & params, bool value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"-st", "--single-turn"}, "run conversation for a single turn...", [](common_params & params) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}));` -> Correct.
+       - `add_opt(common_arg( {"-i", "--interactive"}, string_format("run in interactive mode...", [](common_params & params) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"-if", "--interactive-first"}, string_format("run in interactive mode and wait...", [](common_params & params) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"-mli", "--multiline-input"}, "allows you to write or paste...", [](common_params & params) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}));` -> Correct.
+       - `add_opt(common_arg( {"--in-prefix-bos"}, "prefix BOS to user inputs...", [](common_params & params) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"--in-prefix"}, "STRING", "string to prefix user inputs...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"--in-suffix"}, "STRING", "string to suffix after user inputs...", [](common_params & params, const std::string & value) { ... } ).set_examples({LLAMA_EXAMPLE_COMPLETION}));` -> Correct.
+       - `add_opt(common_arg( {"--warmup"}, {"--no-warm

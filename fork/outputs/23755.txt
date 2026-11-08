@@ -1,0 +1,51 @@
+run 23755 | rampool8 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.21 t/s | prompt 328.7 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 15:45:49
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns empty string, which silently produces an unmatchable rule (or actually a rule that matches empty). Actually in grammar terms, returning "" means the rule matches empty string, but if min_items > 0, the schema requires at least min_items items — so the constraint is violated silently. Hmm, actually returning "" would make the grammar accept zero items even when min_items > 0. That's a correctness bug potentially. Let me think... In the original llama.cpp code, this is the same. Actually wait, let me check the original llama.cpp implementation:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Yes, this matches llama.cpp's actual code. So it's inherited behavior. Still worth noting as a review comment: when `max_items == 0` and `min_items > 0`, the schema is contradictory; returning "" silently accepts empty. Could warn.
+
+Also `max_items - 1` when `max_items == std::numeric_limits<int>::max()` — wait, they guard with `has_max ? max_items - 1 : max_items`, so that's fine.
+
+But there's a subtle issue: `min_items - 1` when `min_items == 0`? They guard: `min_items == 0 ? 0 : min_items - 1`. OK.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Uses `std::function` for recursion — fine but has overhead; could use a struct with a member function or a template. Minor.
+
+Potential bug: `decimals_left` default 16, and `less_decimals = std::max(decimals_left - 1, 1)`. When decimals_left reaches 1, less_decimals stays 1 — potential infinite recursion? Let's check: `build_min_max_int` with `has_min` and `min_value > 9` path calls `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)`. If min_s is like "100000000000000000" (18 digits), stoll of substr(1) = "0000000000000000" → 0. Then min_value == 0 path with top_level false → `more_digits(1, decimals_left)`. Hmm, decimals_left decreases each recursion by 1. Since int64 max has 19 digits, and decimals_left starts at 16... Actually wait, there's a mismatch: int64 can have up to 19 digits but decimals_left starts at 16. The recursion: each level strips one digit and decrements decimals_left. With min_value <= 9 path, it uses `more_digits(0, less_decimals)` etc. I don't think there's infinite recursion because min_value strictly decreases (stoll of substr(1) < min_value when min_value > 9). Actually stoll(min_s.substr(1)) removes the first digit, so the value strictly decreases. So recursion terminates.
+
+But there's a potential overflow: `std::stoll` can throw `std::out_of_range` if the substring is too long? substr(1) of a 19-digit number is 18 digits, max int64 is 9223372036854775807 (19 digits), 18-digit numbers fit in int64. OK.
+
+Hmm, but wait: `char c = '0' + min_value;` when min_value <= 9 — fine.
+
+One more: in the `has_min && has_max` negative-negative case: `build_min_max_int(-max_value, -min_value, ...)`. If min_value == INT64_MIN and max_value < 0... has_min would be false if min_value == INT64_MIN. Then it goes to has_max branch. OK.
+
+Edge: `min_value < 0 && max_value < 0` — negating

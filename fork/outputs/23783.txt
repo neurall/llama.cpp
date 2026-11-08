@@ -1,0 +1,41 @@
+run 23783 | rampool11-planner-simple | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.5 t/s | prompt 613.5 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 17:07:00
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## json-schema-to-grammar.cpp
+
+### 1. `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns an empty string, which would create an invalid grammar (empty rule). Actually in GBNF, an empty rule might match empty string. If min_items > 0 and max_items == 0, the schema is contradictory (can't have at least min but at most 0). Returning "" silently accepts empty. Hmm, this might be intentional or a subtle bug. Actually wait — if min_items > 0 and max_items == 0, the schema is unsatisfiable. Returning "" means the rule matches empty string, which is wrong but not catastrophic. Worth noting.
+
+Also `max_items - 1` when `max_items == std::numeric_limits<int>::max()` — wait, they guard with `has_max ? max_items - 1 : max_items`, so that's fine.
+
+But there's a subtle issue: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, ...)`. If min_items == 1, then inner min is 0, and the outer result is `(item (sep item)*)?`... wait no. Let me trace: item_rule + " " + build_repetition("(sep item)", 0, max-1). With min=0, max-1... if has_max and max_items == 1, then inner max = 0, so build_repetition returns "" — result is `item_rule ` with trailing space? Wait: `item_rule + " " + ""` = "item " with a trailing space. Hmm, that would produce `item ` followed by... then since min_items == 0? No, min_items == 1 in this case, so no `?` appended. Result: `"item "` — trailing space in grammar. Actually GBNF might tolerate trailing space in rule definition? The rule would be `name ::= item ` — trailing whitespace probably ignored by parser. Minor.
+
+Actually wait, if max_items == 1 and min_items == 1 with separator: result = item + " " + "" = "item ". Trailing space. Probably harmless but sloppy.
+
+### 2. `build_min_max_int`
+
+This is complex recursive regex-building for integer ranges. Let me look for bugs.
+
+- `std::function<void(const std::string_view &, const std::string_view &)> uniform_range` — uses `std::function` with recursion. OK.
+
+- In `uniform_range`, `digit_range(from[i], to[i] - 1)` — if `from[i] == to[i]`... wait, can that happen? At this point i < from.length() and i < to.length() and from[i] != to[i] (since the while loop advanced past common prefix). Actually the while loop stops when chars differ OR when one string ends. Since both are numeric strings of possibly different lengths... hmm, wait. uniform_range is called with from and to of the same length? Let's check: in the main flow, `uniform_range(min_s, string_repeat("9", digits))` — same length. And `uniform_range(min_s, max_s)` where at that point min_s and max_s have the same length (digits == max_digits after the loop). And in recursion: `uniform_range(from_sub, sub_nines)` — same length; `uniform_range(sub_zeros, to_sub)` — same length. So from[i] != to[i] guaranteed at that point, so `digit_range(from[i], to[i] - 1)` is fine, and `digit_range(from[i] + 1, to[i])` etc.
+
+Hmm wait, but what about `digit_range(from[i] + 1, to[i] - 1)` when `from[i] < to[i] - 1` — guarded. OK.
+
+- `more_digits` uses `std::numeric_limits<int>::max()` check for max_digits — but max_digits is int parameter. OK.
+
+- Potential issue: `build_min_max_int` with `decimals_left` — when decimals_left runs out... `less_decimals = std::max(decimals_left - 1, 1)`. Hmm, if decimals_left == 

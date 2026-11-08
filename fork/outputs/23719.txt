@@ -1,0 +1,31 @@
+run 23719 | rampool2 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.22 t/s | prompt 117.4 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 13:25:01
+
+<think>Let me analyze this code carefully. The user wants a code review of the source file(s). Actually, they've provided two files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated). Let me do a thorough code review of both, focusing primarily on the first file since it's complete, and noting the second is truncated.
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition`:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- If `max_items == 0` but `min_items > 0`, this returns empty string — that's a contradiction (min > max). The schema would be invalid, but silently returning "" may produce a grammar that matches empty. Actually in llama.cpp's original code, this is the same. Hmm, but worth noting: if min_items > 0 and max_items == 0, the result is "" which silently ignores the constraint. Could be worth flagging as a potential logic issue or at least an assertion.
+
+- `build_repetition` with separator: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items`. If max_items == 0 handled earlier. OK.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a free function since it doesn't capture anything... Actually `uniform_range` is recursive and calls itself; it captures `out`, `digit_range`, `more_digits` by reference. Using `std::function` is fine.
+- Potential issue: `decimals_left` default 16, and `less_decimals = std::max(decimals_left - 1, 1)`. When decimals_left reaches 1, less_decimals stays 1 — infinite recursion? Let's check: in the `has_min` branch with `min_value <= 9`: `more_digits(1, less_decimals)` — that's just output, no recursion. The recursion happens in the `else` branch: `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)`. Each recursion reduces decimals_left by 1 and reduces the number's length by 1 (since we strip first digit). Wait — `min_s.substr(1)` of e.g. "10" is "0", so min_value becomes 0, and then the `min_value == 0` branch with top_level=false outputs `more_digits(1, decimals_left)` — no recursion. So recursion depth is bounded by number of digits (max ~19 for int64). OK.
+
+- Hmm, wait: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. If `min_value == std::numeric_limits<int64_t>::min()`, then `-min_value` is UB (signed overflow). Let's check: in the `has_min && has_max` branch, `min_value < 0` case: `build_min_max_int(0, -min_value, ...)`. If min_value is INT64_MIN, `-min_value` overflows → UB. Is that reachable? `has_min` is true only if min_value != INT64_MIN. So min_value < 0 implies min_value > INT64_MIN, so `-min_value` is fine. In the `has_min` only branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — here min_value < 0 and has_min true, so min_value != INT64_MIN, so -min_value is representable. OK, safe.
+
+- But in `KIND_INTEGER` visit: `if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max())` → primitive. Otherwise calls `build_min_max_int(i.minimum, i.maximum, out)`. If both are set... fine. If only max set (min == INT64_MIN): goes to `has_max` branch. If max_value >= 0 and top_level: outputs `"-" [1-9] more_digits | ` then `build_min_max_int(0, max_value, ...)`. Hmm wait, that negative branch `"-" [1-9] {0,15}` allows any negative number with up to 16 digits — but the original JSON schema might have `minimum` unset but the number of digits... fine, it's a heuristic.
+
+- One potential bug: in `build_min_max_int`, `has_min

@@ -1,0 +1,115 @@
+run 23676 | up9_merged2 | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.92 t/s | prompt 483.1 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini | power 220+280 W | 2026-11-07 11:18:50
+
+ends_with(".gguf")) {
+        auto meta = common_gguf_meta_get(params.speculative.draft.mparams.path);
+        if (meta.find("dspark") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
+        } else if (meta.find("dflash") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH };
+        } else if (meta.find("eagle3") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 };
+        } else if (meta.find("mtp") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+        }
+    }
+
+    // handle preset
+    if (!plan.preset.url.empty()) {
+        auto preset_path = get_default_local_path(plan.preset.url);
+        common_download_task task;
+        task.url        = plan.preset.url;
+        task.local_path = preset_path;
+        task.opts       = opts;
+        task.on_done    = [&, preset_path]() {
+            params.preset = preset_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle model
+    if (!plan.model_files.empty()) {
+        add_tasks(plan.model_files, plan.primary, params.model);
+    }
+
+    // handle mmproj
+    if (!plan.mmproj_files.empty()) {
+        add_tasks(plan.mmproj_files, plan.mmproj_primary, params.mmproj);
+    }
+
+    // handle draft
+    if (!plan_spec.model_files.empty()) {
+        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
+    }
+
+    // handle mtp
+    if (!plan_spec.mtp.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.mtp.url;
+        task.local_path = plan_spec.mtp.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.speculative.draft.mtp.path = plan_spec.mtp.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle dflash
+    if (!plan_spec.dflash.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dflash.url;
+        task.local_path = plan_spec.dflash.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.speculative.draft.dflash.path = plan_spec.dflash.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle eagle3
+    if (!plan_spec.eagle3.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.eagle3.url;
+        task.local_path = plan_spec.eagle3.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.speculative.draft.eagle3.path = plan_spec.eagle3.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle dspark
+    if (!plan_spec.dspark.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dspark.url;
+        task.local_path = plan_spec.dspark.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            params.speculative.draft.dspark.path = plan_spec.dspark.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // run tasks
+    common_download_run(tasks);
+}
+
+//
+// common_params_parser_init
+//
+
+static void common_params_parser_init_impl(common_params & params, common_params_parser & parser, llama_example ex, const std::vector<common_arg> & options) {
+    for (const auto & opt : options) {
+        if (opt.is_exclude(ex)) continue;
+        parser.add_option(opt);
+    }
+}
+
+common_params_parser common_params_parser_init(common_params & params, llama_example ex, common_params_parser * parser, const std::vector<common_arg> * extra_options) {
+    if (parser == nullptr) {
+        parser = new common_params_parser();
+    }
+
+    common_params_parser_init_impl(params, *parser, ex, get_common_arg_defs());
+
+    if (extra_options != nullptr) {
+       

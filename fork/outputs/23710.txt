@@ -1,0 +1,24 @@
+run 23710 | up9_merged2 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.87 t/s | prompt 585.2 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 13:00:46
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`using json = common_json;`** - This is suspicious. `common_json` appears to be a class/struct type, and aliasing it as `json` is confusing. Then `json(prop_name).dump()` is used in `_build_object_rule` — this constructs a `common_json` from a string? That seems odd. Actually wait, looking at the code: `format_literal(json(prop_name).dump())`. If `common_json` is a wrapper around nlohmann::json, then `json(prop_name)` would construct one from a string. But the alias `json = common_json` shadows the typical nlohmann alias convention. This is confusing naming. Actually in llama.cpp, `common_json` is a struct that wraps nlohmann json with a `dump()` method. Hmm, but `json(prop_name)` — constructing a `common_json` from a string... Let me think. In actual llama.cpp code, this is `nlohmann::json(prop_name).dump()`. The alias here says `using json = common_json;` which would be wrong unless `common_json` has a constructor from string. Actually in real llama.cpp, `common_json` is defined in common.h as a struct with `nlohmann::ordered_json json_value;` and methods. Hmm, but the code here uses `json(prop_name).dump()`. If `common_json` doesn't have such a constructor, this wouldn't compile. This might be a modification. I should flag it as a potential issue: the alias `using json = common_json;` is misleading and possibly incorrect — if `common_json` is a wrapper struct, constructing it from a `std::string` may not compile or may not do what's intended. Worth flagging.
+
+2. **`build_repetition`**: 
+   - `has_max = max_items != std::numeric_limits<int>::max();` — fine.
+   - `if (max_items == 0) return "";` — returns empty string, which when embedded produces e.g. `"[" space  space "]"` — double space. Minor formatting issue. Also semantically, if max_items == 0 but min_items > 0, that's contradictory schema; returning empty silently accepts. Actually returning "" means the grammar would have an empty rule which might be invalid GBNF. Hmm, in GBNF an empty rule... Actually the rule would be like `foo ::= ` with empty content? No wait — build_repetition returns "" and it's embedded into a larger rule string, e.g. `"[" space " " space "]"`. That's valid but weird. But if min_items > 0 and max_items == 0, the schema is unsatisfiable; silently producing a grammar that matches zero items is wrong. Edge case worth noting.
+   - When `separator_rule` is non-empty and `min_items == 0 && max_items == 1`: handled by the earlier check (returns `item_rule + "?"`) — good, separator not needed for single item.
+   - For separator case with min_items == 1, max_items == 1: `build_repetition("(sep item)", 0, 0)` → since max_items == 0 returns "" → result is `item_rule + " " + ""` = `item_rule ` with trailing space. Minor cosmetic.
+   - Wait, actually for min_items=1, max_items=1 with separator: `build_repetition("(" + sep + " " + item + ")", min_items - 1 = 0, max_items - 1 = 0)` → inner call: max_items == 0 → returns "". So result = `item + " " + ""` = trailing space. Cosmetic bug.
+   - Also potential issue: `max_items - 1` when `max_items == std::numeric_limits<int>::max()`? No — guarded by `has_max ? max_items - 1 : max_items`. OK.
+   - Negative min_items? If min_items is negative (schema invalid), `min_items - 1` etc. Not validated. Minor.
+
+3. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could be a lambda with auto self-recursion via explicit function object. Minor.
+   - `decimals_left = 16` default; recursion decrements. When `decimals_left` reaches... `less_decimals = std::max(decimals_left - 1, 1)` — so it never goes below 1, meaning potential infinite recursion? Let's check: `build_min_max_int

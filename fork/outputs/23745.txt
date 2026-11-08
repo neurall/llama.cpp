@@ -1,0 +1,65 @@
+run 23745 | rampool7 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.26 t/s | prompt 1090.3 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 15:17:12
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and min=1, no max: returns `item_rule + "+"` - correct
+  - When separator is empty and min=0, no max: returns `item_rule + "*"` - correct
+  - When separator is empty with min/max: returns `{min,max}` - correct
+  - With separator: builds `item (sep item)*` pattern - looks correct
+  - When `min_items == 0` with separator: wraps in `()?` - correct
+
+### build_min_max_int function
+- This is a complex function for generating integer range rules.
+- The `uniform_range` lambda is recursive and handles digit-by-digit range matching.
+- Potential issue: `std::stoll` could throw if the substring is not a valid number, but since it's derived from `std::to_string(min_value)`, it should be safe.
+- The function handles negative ranges, positive ranges, and mixed ranges.
+- `decimals_left` parameter is used to limit recursion depth - good.
+
+### _add_rule function
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. This could potentially loop if there are many conflicts, but the while loop condition checks both existence and content match, so it should terminate.
+
+### _visit_pattern function
+- Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good rollback mechanism.
+- However, `_rules` is a `std::map` and the snapshot copies the entire map, which could be expensive for large schemas.
+
+### _pattern_to_rule function
+- Complex regex-to-grammar conversion.
+- The `transform` lambda is recursive (via `std::function`), handling nested groups.
+- `paren_depth` tracking for balanced parentheses - good.
+- `MAX_PATTERN_DEPTH` limit prevents stack overflow - good.
+- Character class parsing: handles escapes within `[]`.
+- Quantifier handling: `*`, `+`, `?`, `{n,m}`.
+- The literal accumulation logic is complex but seems correct.
+
+Potential issues:
+1. In the `{n,m}` handling, `std::stoi` could throw `std::out_of_range` for very large numbers, but it's caught by `std::logic_error` which is a base class of `std::out_of_range`. Wait, actually `std::out_of_range` derives from `std::logic_error`, so it would be caught. Good.
+
+2. The `sub_rule_ids` map is used to create unique rule names for repeated sub-expressions. The key is the sub-expression string, and the value is the rule name. This could potentially create name collisions if the same sub-expression appears in different contexts.
+
+3. In the literal accumulation loop, the condition for continuing to accumulate is complex:
+```cpp
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+```
+This tries to determine if the current character should be part of a literal. The logic seems to handle cases where the next character is a special character (which would need to be separated).
+
+### _not_strings function
+- Builds a trie-based rule for matching strings that are NOT in a given set.
+- The `rejects` string accumulates characters that should be rejected at each level.
+- Potential issue: if a character in `rejects` needs to be escaped (like `"` or `\`), it's not escaped. The `rejects` is placed inside `[...]` in the grammar, so characters like `"` and `\` would need escaping.
+
+Wait, looking more carefully:
+```cpp
+out << " | [^\"" << rejects << "] " << char_rule << "*";
+```
+The `rejects` is placed inside a character class `[^"..."]`. If any of the characters in `rejects` are `"` or `\`, they would need to be escaped. This could be a bug.
+
+Actually, looking at the trie construction, the characters come from `common_unicode_cpt_to_utf8(cpt)`, which produces UTF-8 strings. For ASCII characters like `"` and `\`, these would appear as-is. So

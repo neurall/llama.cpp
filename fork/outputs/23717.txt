@@ -1,0 +1,38 @@
+run 23717 | rampool2 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 13.29 t/s | prompt 360.7 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 13:19:59
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: if `max_items == 0` but `min_items > 0`, this returns empty string, which would produce an invalid grammar (empty rule). Actually in GBNF an empty rule might be problematic. Hmm, but this is probably intentional behavior matching the Python reference implementation. Actually wait — if min_items > 0 and max_items == 0, the schema is contradictory; returning "" means the rule matches empty. This could be a subtle bug but matches upstream llama.cpp behavior.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead.
+- `decimals_left = 16` default. There's a potential issue: `more_digits(0, decimals_left - 1)` when `decimals_left` is 1 → `more_digits(0, 0)` → outputs `[0-9]{0}` which matches empty string. Hmm, `{0}` in GBNF... Actually `[0-9]{0}` would match zero digits, that's fine semantically.
+- In `uniform_range`, `digit_range(from[i] + 1, to[i])` — char arithmetic; from[i] and to[i] are digit chars, so `from[i] + 1` is fine.
+- Potential issue: `build_min_max_int` with `min_value > max_value`? Not checked. If schema has minimum > maximum, undefined behavior / weird regex. Probably worth noting.
+- The recursion `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — if `min_value == std::numeric_limits<int64_t>::min()`, then `-min_value` is UB (signed overflow). Let me check: in the `has_min` branch, `if (min_value < 0)`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. If min_value is INT64_MIN, then `-min_value` overflows. But wait, has_min is `min_value != std::numeric_limits<int64_t>::min()`, so if min_value == INT64_MIN, has_min is false and we wouldn't enter the `has_min` branch... Actually the check `if (has_min)` guards the whole block, so min_value < 0 within that block implies min_value != INT64_MIN. OK so that's safe.
+
+But in the first branch: `if (min_value < 0 && max_value < 0)`: `build_min_max_int(-max_value, -min_value, ...)`. Here has_min && has_max both true, so min_value != INT64_MIN and max_value != INT64_MAX. `-max_value`: max_value < 0 and max_value != INT64_MIN? Wait, has_min means min_value != INT64_MIN; max_value could be INT64_MIN? No — has_max means max_value != INT64_MAX. max_value could be INT64_MIN though. If max_value == INT64_MIN and min_value < 0... then `-max_value` = -INT64_MIN overflows → UB. Hmm, but min_value <= max_value presumably, so if max_value == INT64_MIN then min_value == INT64_MIN which contradicts has_min. So if the caller respects min <= max, it's safe. But defensive check missing.
+
+Also `if (min_value < 0)`: `build_min_max_int(0, -min_value, ...)` — min_value != INT64_MIN guaranteed by has_min. Safe.
+
+3. `SPACE_RULE`: `"| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"` — starts with `|` which means empty alternative. That's intentional (space can be empty).
+
+4. `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` — static unordered_map with static initialization. Fine.
+
+5. `is_reserved_name` — uses a static lambda-initialized set. Fine. Note: iteration order over unordered_map is nondeterministic but only used for set insertion, so fine.
+
+6. `replacePattern` — manual regex replace loop. Note `match.position()` is relative to the beginning of the search range? Actually `match.position()` returns the position of the first character of the

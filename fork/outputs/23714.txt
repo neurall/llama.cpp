@@ -1,0 +1,25 @@
+run 23714 | rampool1 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.35 t/s | prompt 573.9 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 13:09:24
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - Wait, there's a subtle bug: `if (max_items == 0) return "";` — if `min_items > 0` and `max_items == 0`, this is contradictory (min > max), and returning empty string silently accepts invalid input. Actually returning "" means the rule matches empty, which would violate min_items. Hmm, but this might be intentional to handle impossible cases. Actually if min_items > 0 and max_items == 0, the schema is unsatisfiable; returning "" makes it satisfiable with empty. That's a semantic bug potentially. But maybe acceptable.
+   - In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and `min_items == 1`, then max_items - 1 = 0, and min_items - 1 = 0, so it returns "" — correct since one item with no separator. OK.
+   - Potential issue: when `min_items == 0 && max_items == 1` with separator — handled by the early return `item_rule + "?"` before separator check. Good.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `decimals_left = 16` default. The recursion `less_decimals = std::max(decimals_left - 1, 1)` — when decimals_left is 1, less_decimals stays 1, so it never terminates below 1? Let me check: `more_digits(0, decimals_left - 1)` with decimals_left=1 gives more_digits(0, 0) → `[0-9]{0}` which matches empty string. Hmm, `[0-9]{0}` matches empty — that's a bit odd but works for allowing no more digits.
+   - Actually wait, there's a potential infinite recursion issue? Let me trace: `build_min_max_int` with has_min and min_value > 9: it calls `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)`. If min_s is like "1000000000000000" (16 digits), substr(1) is "000000000000000" which stoll gives 0. Then min_value == 0 branch with top_level=false: `more_digits(1, decimals_left)` — no recursion. OK.
+   - What about `min_value <= 9` branch: no recursion. OK.
+   - The negative branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — wait, `-min_value` where min_value is negative... if min_value == INT64_MIN, then `-min_value` is UB (overflow). But has_min is false when min_value == INT64_MIN, so we'd be in the has_min branch only when min_value != INT64_MIN. Actually wait: in the `has_min && has_max` branch, `if (min_value < 0) { ... build_min_max_int(0, -min_value, ...) }` — min_value < 0 and min_value != INT64_MIN (since has_min), so -min_value is fine. In the `has_min` only branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — again min_value != INT64_MIN so fine.
+   - Hmm, but there's a subtle issue: in the has_min-only negative branch, it emits `"-" (...) | [0] | [1-9] ...` — the `[0]` alternative allows "0" but also "-0"? No wait, the "-" is only prefixed to the first alternative. OK.
+   - Actually, wait: `out << "\"-\" (...) | [0] | [1-9] "` — operator precedence in GBNF: alternation binds loosely, so this is `"-" (...) | [0] | [1-9] more_digits` — fine.
+   - One issue: in the `has_min && has_max` both-negative branch: `out << "\"-\" ("; build_min_max_int(-max_value, -min_value, ...)` — this swaps to positive range. Fine.

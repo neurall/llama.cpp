@@ -1,0 +1,22 @@
+run 23742 | rampool7 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.13 t/s | prompt 421.7 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 15:03:29
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` when `has_max` is true means `max_items >= 1`, so `max_items - 1 >= 0`. OK.
+   - Actually wait, if `min_items == 0 && max_items == 1` with separator... it returns `item_rule + "?"` — but with a separator rule, for 0 or 1 items, no separator is needed, so that's correct.
+   - Hmm, but what about `min_items == 1 && max_items == 1`? It goes to the general path: `item_rule + " " + build_repetition("(sep item)", 0, 0)` → inner returns "" (max_items == 0), so result is `item_rule + " "` — trailing space. Minor formatting issue, not a correctness bug since trailing space in GBNF sequence... Actually in GBNF, whitespace in a rule definition is ignored? No wait — in GBNF, spaces in the rule body are generally ignored by the parser (they're not part of the grammar). Actually in llama.cpp's GBNF format, whitespace between elements in a rule is ignored. So trailing space is harmless.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `uniform_range` captures `out` by reference — fine.
+   - Potential issue: `decimals_left` default 16, and `less_decimals = std::max(decimals_left - 1, 1)`. When `decimals_left` is 1, `less_decimals` is 1, so recursion doesn't terminate? Let's check: `build_min_max_int` with `has_min` and `min_value > 9` path calls `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)`. If `min_s` is like "10", then `stoll("0")` = 0, and `less_decimals` could keep being 1... Let's trace: `min_value = 10`, `decimals_left = 16`. `min_s = "10"`, `len = 2`, `c = '1'`. `c > '1'` false. `digit_range('1','1')`, then recursive call `build_min_max_int(0, INT64_MAX, out, 15, false)`. In that call, `has_min` true, `min_value == 0`, `top_level` false → `more_digits(1, 15)`. OK terminates.
+   - What about `min_value = 1000000000000000000` (1e18)? That's within int64 range (max ~9.2e18). `min_s` length 19. `c = '1'`, recursive call with `stoll("000000000000000000")` = 0, `less_decimals = 15`. Then `min_value == 0`, `top_level false` → `more_digits(1, 15)`. Hmm, but the actual number of remaining digits is 18, and we emit `[1] (0)` then `more_digits(1, 15)` — that matches `[1] 0 [0-9]{1,15}` which allows 2-16 digits total. But min_value is 1e18 which has 19 digits! Wait, that seems wrong... Actually wait, let me re-check. Hmm, `decimals_left` starts at 16, meaning numbers are limited to 16 digits? The `integral-part` rule is `[0] | [1-9] [0-9]{0,15}` — max 16 digits. But `build_min_max_int` is called with `decimals_left = 16` default. If `min_value` has 19 digits, the generated regex

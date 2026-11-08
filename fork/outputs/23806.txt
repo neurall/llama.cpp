@@ -1,0 +1,243 @@
+run 23806 | rampool11-planner-simple | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.81 t/s | prompt 1184.6 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 18:29:08
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each part systematically.
+
+**Part 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?`. But when `min_items > 0`, the separator repetition should start from `min_items - 1` (since the first item is already included). Let me check: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. This looks correct.
+
+2. In `build_min_max_int`, when `has_min && has_max` and both are negative: `build_min_max_int(-max_value, -min_value, ...)`. This is correct since we're negating both bounds.
+
+3. When `min_value < 0` but `max_value >= 0`: `build_min_max_int(0, -min_value, ...)` - wait, this should be `build_min_max_int(0, -min_value, ...)` for the negative part? No, the negative part should be from `min_value` to `-1`, which is equivalent to `0` to `-min_value` after negation. Actually wait: if min_value is -5 and max_value is 10, then negative numbers are -5 to -1, which after negation is 1 to 5. So `build_min_max_int(0, -min_value, ...)` would generate 0 to 5, but we want 1 to 5 (since 0 is not negative). Hmm, but the output is `"-" (...)` so it would generate `-"0"` through `-"5"`, which includes `-"0"` = `0`. That's wrong... but actually looking at the code more carefully, it says `build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true)` with `top_level=true`. When top_level is true and min is 0, it generates `[0] | [1-9] ...` which includes 0. So `-"0"` would be generated. But `-"0"` is just `0` which is not negative... Hmm, but actually `-"0"` as a string would be `"-0"` which is a valid JSON number representation. Actually wait, the output is `"-" (...)` so it would produce `"-0"` which is indeed a valid JSON number. So this might be intentional.
+
+Actually, let me re-read: `out << "\"-\" ("; build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true); out << ") | "; min_value = 0;`. So it generates `"-0"` through `"-5"` (for min_value=-5), then `| ` and continues with the non-negative part. This seems correct.
+
+4. In `_pattern_to_rule`, the `join_seq` function returns `std::make_pair(string_join(results, " "), false)`. But `to_rule` for a literal wraps it in quotes. So the joined result is a rule expression, not a literal. Marking it as `false` (not literal) is correct.
+
+5. In `_pattern_to_rule`, when handling `{` (curly brackets), after building the repetition, `seq.back().second = false`. This is correct since the result is a rule expression.
+
+6. In `_not_strings`, the function builds a rule for matching strings that are NOT in the given set. Let me check the logic... The trie visit function seems correct.
+
+7. In `_build_object_rule`, the `get_recursive_refs` function: when `first_is_optional` is false and `k == "*"`, it does `kv_rule_name + " " + comma_ref + "*"`. This means the first optional property can appear, and then any number of additional `"," kv` pairs. But wait, if `k == "*"`, then `comma_ref` is `(", " kv_rule_name)` and `comma_ref + "*"` means zero or more. So the result would be `kv_rule_name (" , " kv_rule_name)*`. This seems correct for the wildcard case.
+
+Actually, let me re-read: `res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "")`. So for `k == "*"`, it's `kv_rule_name (" , " kv_rule_name)*`. For non-wildcard, it's just `kv_rule_name`. Then if there are more keys, it appends ` " " + _add_rule(...)` for the rest. This seems correct.
+
+8. In `_visit_all_of`, the `add_component` function: for `KIND_ENUM`, it counts enum values. Then it checks if `p.second == schema.children.size()`. But `schema.children` includes any_of children too... Actually, looking at the loop: `for (const auto & child : schema.children)` - if child is `KIND_ANY_OF`, it iterates over its alternatives and calls `add_component` for each. So `schema.children.size()` is the number of direct children, not the total number of components. The enum counting uses `enum_values[...] += 1` for each enum value found in each component. So if there are 3 children and each has the same enum value, `p.second` would be 3, matching `schema.children.size()`. But if one child is `KIND_ANY_OF` with 2 alternatives, each contributing an enum value, then `p.second` could be 2 (from the any_of) + 1 (from another child) = 3, but `schema.children.size()` is 2 (the any_of child and the other child). So this would be wrong.
+
+Hmm, but actually the `add_component` for `KIND_ANY_OF` iterates over alternatives and calls `add_component` for each. So if there are 2 children: one is `KIND_ANY_OF` with 2 alternatives (both enums), and one is `KIND_ENUM`, then:
+- Child 1 (any_of): add_component for alt 0 (enum) -> enum_values[v] += 1, add_component for alt 1 (enum) -> enum_values[v] += 1
+- Child 2 (enum): add_component -> enum_values[v] += 1
+- Total: enum_values[v] = 3, schema.children.size() = 2
+
+So `p.second == schema.children.size()` would be `3 == 2` which is false. This seems like a bug... but maybe it's intentional? The idea might be that for the intersection to be valid, every child must contribute the value. But with any_of, the counting is different.
+
+Actually, I think the intent is: for the intersection to be valid, every *direct* child must have the value. For `KIND_ANY_OF` children, the value must appear in *every* alternative. So the counting should be: for each direct child, if it's an enum, count 1; if it's an any_of, count 1 only if the value appears in all alternatives.
+
+But the current code counts each alternative separately. So if any_of has 2 alternatives both containing "a", then "a" gets counted twice from that one child. This would make `p.second` potentially larger than `schema.children.size()`.
+
+Hmm, but actually, maybe the intent is different. Let me re-read... The comment says "enum_intersection". The idea is to find values that appear in ALL children. For any_of, the value must appear in ALL alternatives (since all_of means all must be satisfied). So if any_of has alternatives ["a", "b"] and another child has enum ["a", "c"], then the intersection would be "a" (appears in all alternatives of any_of AND in the other child).
+
+But the counting approach: for any_of with 2 alternatives, "a" appears in both, so count = 2. For the other child, "a" appears once, so count = 3. `schema.children.size()` = 2. So `3 != 2`, and "a" would not be included. This is a bug.
+
+Wait, but maybe the intent is that for any_of, we should only count 1 if the value appears in ALL alternatives. Let me think about this differently...
+
+Actually, I think the correct approach would be: for each direct child, check if the value appears in it. For any_of, the value must appear in all alternatives. So the count should be incremented by 1 per direct child, not per alternative.
+
+But the current code increments per alternative. So this is a bug.
+
+Hmm, but actually, maybe I'm overthinking this. Let me look at the code again:
+
+```cpp
+for (const auto & child : schema.children) {
+    if (child->kind() == common_chat_schema::KIND_ANY_OF) {
+        for (const auto & alt : as<common_chat_schema_any_of>(*child).children) {
+            add_component(*alt, false);
+        }
+    } else {
+        add_component(*child, true);
+    }
+}
+```
+
+For any_of, it iterates over alternatives and calls `add_component` for each. For enum, `add_component` does `enum_values[_generate_constant_rule(v)] += 1`.
+
+So if any_of has 2 alternatives both with enum ["a"], then "a" gets counted twice. If there's another child with enum ["a"], "a" gets counted a third time. `schema.children.size()` = 2. So `3 != 2`.
+
+This is indeed a bug. The fix would be to count per direct child, not per alternative.
+
+Actually wait, maybe the intent is different. Maybe for any_of, the value must appear in ALL alternatives, so we should count it as appearing in the any_of child only once if it appears in all alternatives. Let me think...
+
+For all_of with children [any_of([enum_a, enum_b]), enum_c]:
+- We want values that satisfy all children
+- any_of: value must be in {a, b}
+- enum_c: value must be in {c}
+- Intersection: {} (empty)
+
+For all_of with children [any_of([enum_a, enum_b]), enum_a]:
+- any_of: value must be in {a, b}
+- enum_a: value must be in {a}
+- Intersection: {a}
+
+With the current counting:
+- any_of alternatives: a gets +1, b gets +1
+- enum_a: a gets +1
+- Total: a=2, b=1
+- schema.children.size() = 2
+- a: 2 == 2 ✓, b: 1 != 2 ✗
+- Result: {a} ✓
+
+For all_of with children [any_of([enum_a, enum_b]), any_of([enum_a, enum_c])]:
+- any_of 1: value in {a, b}
+- any_of 2: value in {a, c}
+- Intersection: {a}
+
+With current counting:
+- any_of 1 alternatives: a +1, b +1
+- any_of 2 alternatives: a +1, c +1
+- Total: a=2, b=1, c=1
+- schema.children.size() = 2
+- a: 2 == 2 ✓, b: 1 != 2 ✗, c: 1 != 2 ✗
+- Result: {a} ✓
+
+For all_of with children [any_of([enum_a, enum_b]), any_of([enum_b, enum_c])]:
+- any_of 1: value in {a, b}
+- any_of 2: value in {b, c}
+- Intersection: {b}
+
+With current counting:
+- any_of 1: a +1, b +1
+- any_of 2: b +1, c +1
+- Total: a=1, b=2, c=1
+- schema.children.size() = 2
+- b: 2 == 2 ✓
+- Result: {b} ✓
+
+For all_of with children [any_of([enum_a, enum_b, enum_c]), enum_a]:
+- any_of: value in {a, b, c}
+- enum_a: value in {a}
+- Intersection: {a}
+
+With current counting:
+- any_of: a +1, b +1, c +1
+- enum_a: a +1
+- Total: a=2, b=1, c=1
+- schema.children.size() = 2
+- a: 2 == 2 ✓
+- Result: {a} ✓
+
+For all_of with children [any_of([enum_a, enum_b]), any_of([enum_a, enum_b]), enum_a]:
+- any_of 1: value in {a, b}
+- any_of 2: value in {a, b}
+- enum_a: value in {a}
+- Intersection: {a}
+
+With current counting:
+- any_of 1: a +1, b +1
+- any_of 2: a +1, b +1
+- enum_a: a +1
+- Total: a=3, b=2
+- schema.children.size() = 3
+- a: 3 == 3 ✓, b: 2 != 3 ✗
+- Result: {a} ✓
+
+Hmm, so far the counting seems to work correctly for these cases. Let me think of a case where it fails...
+
+For all_of with children [any_of([enum_a, enum_b]), any_of([enum_a, enum_b])]:
+- Intersection: {a, b}
+
+With current counting:
+- any_of 1: a +1, b +1
+- any_of 2: a +1, b +1
+- Total: a=2, b=2
+- schema.children.size() = 2
+- a: 2 == 2 ✓, b: 2 == 2 ✓
+- Result: {a, b} ✓
+
+For all_of with children [any_of([enum_a]), enum_a]:
+- any_of: value in {a}
+- enum_a: value in {a}
+- Intersection: {a}
+
+With current counting:
+- any_of: a +1
+- enum_a: a +1
+- Total: a=2
+- schema.children.size() = 2
+- a: 2 == 2 ✓
+- Result: {a} ✓
+
+For all_of with children [any_of([enum_a, enum_b]), any_of([enum_a]), enum_a]:
+- any_of 1: value in {a, b}
+- any_of 2: value in {a}
+- enum_a: value in {a}
+- Intersection: {a}
+
+With current counting:
+- any_of 1: a +1, b +1
+- any_of 2: a +1
+- enum_a: a +1
+- Total: a=3, b=1
+- schema.children.size() = 3
+- a: 3 == 3 ✓, b: 1 != 3 ✗
+- Result: {a} ✓
+
+Hmm, it seems to work. Let me think of a case where it fails...
+
+For all_of with children [any_of([enum_a, enum_b]), any_of([enum_a, enum_b]), any_of([enum_a, enum_b])]:
+- Intersection: {a, b}
+
+With current counting:
+- any_of 1: a +1, b +1
+- any_of 2: a +1, b +1
+- any_of 3: a +1, b +1
+- Total: a=3, b=3
+- schema.children.size() = 3
+- a: 3 == 3 ✓, b: 3 == 3 ✓
+- Result: {a, b} ✓
+
+For all_of with children [any_of([enum_a, enum_b]), any_of([enum_a, enum_b]), enum_a]:
+- Intersection: {a}
+
+With current counting:
+- any_of 1: a +1, b +1
+- any_of 2: a +1, b +1
+- enum_a: a +1
+- Total: a=3, b=2
+- schema.children.size() = 3
+- a: 3 == 3 ✓, b: 2 != 3 ✗
+- Result: {a} ✓
+
+OK so it seems like the counting works because for any_of, each alternative contributes 1, and for the value to be in the intersection, it needs to be in ALL alternatives of ALL any_of children AND in all enum children. So the count equals the total number of alternatives across all any_of children plus the number of enum children. And `schema.children.size()` is the number of direct children.
+
+Wait, that doesn't add up. Let me recalculate:
+
+For all_of with children [any_of([enum_a, enum_b]), enum_a]:
+- schema.children.size() = 2
+- Total alternatives: 2 (from any_of) + 1 (from enum) = 3
+- a count: 1 (from any_of alt 0) + 1 (from any_of alt 1) + 1 (from enum) = 3? No wait...
+
+Actually, `add_component` for enum does `enum_values[_generate_constant_rule(v)] += 1` for each value v in the enum. So for `any_of([enum_a, enum_b])`:
+- add_component(enum_a): enum_values["a"] += 1
+- add_component(enum_b): enum_values["b"] += 1
+
+For `enum_a`:
+- add_component(enum_a): enum_values["a"] += 1
+
+Total: a=2, b=1
+schema.children.size() = 2
+a: 2 == 2 ✓, b: 1 != 2 ✗
+Result: {a} ✓
+
+OK so the counting works because each direct child contributes exactly 1 to the count of values that appear in it (for enum children), and for any_of children, each alternative contributes 1. So for a value to be in the intersection, it needs to appear in every alternative of every any_of child AND in every enum child. The count would be: (number of alternatives across all any_of children that contain the value) + (number of enum children that contain the value).
+
+For this to equal `schema.children.size()`, we need: (number of alternatives containing the value) + (number of enum children containing the value) = number of direct children.
+
+But the number of alternatives is not necessarily equal to the number of any_of children. So this doesn't work in general.
+
+Example: all_of with children [any_of([enum_a, enum_b, enum_c]), enum_a]:
+- schema.children.size() = 2
+- a count: 1 (from any_of alt 0) + 1 (from enum) = 2
+- b count: 1 (from any_of alt 1) = 1
+- c count: 1 (from

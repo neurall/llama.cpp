@@ -1,0 +1,23 @@
+run 23787 | rampool12-planner-learned | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.25 t/s | prompt 438.1 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 17:15:51
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `max_items == 0` returns "" — but what if `min_items > 0`? That would be an inconsistent schema (min > max), and returning empty string silently accepts it. Actually returning "" means the rule matches empty... wait, no. If `max_items == 0` and `min_items > 0`, the schema is contradictory. Returning "" makes the grammar match nothing? Actually an empty rule in GBNF... hmm, an empty string rule would match the empty string. Actually in GBNF, an empty rule body might be invalid. Let me think. The rule would be `name ::= ` with empty content. That could produce invalid grammar. Minor edge case.
+   - In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we already returned. If `min_items == 0`, then repetition of (sep item) with min 0... then wrapped in `(...)?`. OK.
+   - Potential issue: when `min_items == 0 && max_items == 1` with a separator — handled by the early return `item_rule + "?"` which ignores the separator. That's correct since with max 1 item there's no separator needed.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could be a static helper function.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == INT64_MIN`, then `-min_value` overflows (UB for signed). Wait: in the `has_min && has_max` branch, `min_value < 0 && max_value < 0`: `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN`, negating it is UB. But wait, can `min_value == INT64_MIN` here? `has_min` is true only if `min_value != INT64_MIN`. So `min_value > INT64_MIN`, so `-min_value` is fine. And `-max_value`: `has_max` true means `max_value != INT64_MAX`, so fine. OK.
+   - In the `has_min` branch with `min_value < 0`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — here min is INT64_MIN (has_min false) and max is `-min_value`. Since `min_value != INT64_MIN` (has_min true), `-min_value` is fine. OK.
+   - `std::stoll(min_s.substr(1))` — could this throw? `min_s` is a decimal string of a positive number, so fine.
+   - The `uniform_range` lambda captures by reference and recurses via `std::function` — fine.
+   - Potential subtle bug: in `uniform_range`, when `from_sub == sub_zeros` branch: `digit_range(from[i], to[i] - 1)` — what if `from[i] == to[i]`? Then `to[i] - 1 < from[i]`, producing an invalid range like `[3-2]`. Can that happen? If `from[i] == to[i]` and `from_sub != sub_zeros`... hmm wait, in the `from_sub == sub_zeros` case: from is like X000... and to is X??? where to > from. If `to[i] == from[i]`, then `to_sub > from_sub` (since to > from and same prefix), and `from_sub == zeros` means `to_sub > zeros`, so `to_sub != sub_nines`? Not necessarily... wait if `to_sub == sub_nines` then the else branch: `out << "[" << from[i] << "] " ...` then `if (from[i] < to[i] - 1)` — false since equal. Then `if (!to_reached)`: `digit_range(to[i], to[i])` then `uniform_range(sub_zeros, to_sub)`. Hmm, but we already emitted `[from[i]] (uniform_range(from_sub, sub_nines))` — wait

@@ -1,0 +1,46 @@
+run 23661 | up9_merged2 | pf12k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 148.95 t/s | prompt 7765.7 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-07 10:31:50
+
+<think>
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The code appears to be part of a C++ project (likely Llama.cpp based on the naming conventions like `common_chat_schema_converter`, `LLAMA_EXAMPLE_*`, `ggml`, etc.).
+
+2.  **Analyze `common/json-schema-to-grammar.cpp`:**
+    *   **Purpose:** Converts JSON schemas to GBNF (Grammar Backus-Naur Form) or similar grammar rules for LLM prompting/constraint generation.
+    *   **Key Components:**
+        *   `build_repetition`: Handles repetition syntax (`*`, `+`, `?`, `{min,max}`).
+        *   `build_min_max_int`: Generates regex-like grammar for integer ranges. Complex logic for handling min/max, decimals, negative numbers.
+        *   `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`: Predefined grammar rules for JSON types.
+        *   `common_chat_schema_converter`: Main class that traverses a JSON schema and builds grammar rules.
+        *   `_visit_pattern`: Converts regex patterns to grammar rules. Handles anchors, groups, character classes, quantifiers, literals.
+        *   `_not_strings`: Generates a trie-based grammar to match strings *not* in a given list.
+        *   `_build_object_rule`: Handles JSON object properties, required/optional, additional properties.
+        *   `visit`: Main dispatch function for schema kinds.
+        *   `json_schema_to_grammar`: Entry points.
+    *   **Potential Issues/Improvements:**
+        *   *Complexity & Readability:* `build_min_max_int` is extremely complex and hard to follow. It uses nested lambdas and recursive calls. Could be simplified or refactored.
+        *   *Regex Handling:* `_visit_pattern` manually parses regex. It's fragile. Uses `std::regex` for validation but then manually parses. Could be more robust.
+        *   *Memory/Performance:* `_rules` is a `std::map`, but `_add_rule` uses linear search for duplicates. Could use `unordered_map` or better deduplication.
+        *   *Error Handling:* Throws exceptions but catches them in `_visit_pattern`. Warnings are printed to stderr. Could be more structured.
+        *   *Hardcoded Limits:* `MAX_PATTERN_DEPTH = 100`, `decimals_left = 16`. These are magic numbers.
+        *   *Trie Implementation:* `_not_strings` uses a trie but doesn't show the `common_trie` implementation. Assumes it works.
+        *   *String Joining/Formatting:* Uses `string_join`, `string_repeat`, `string_split` which are likely from `common.h`. Not shown, but assumed to exist.
+        *   *Recursive Calls:* `_build_object_rule` uses recursion for optional properties. Could lead to deep recursion or exponential rule generation for many optional properties.
+        *   *Grammar Syntax:* The output grammar uses spaces, `|`, `()`, `[]`, `{}`. It's a custom grammar format. Needs to be consistent.
+        *   *Missing Includes/Dependencies:* Uses `common_trie`, `common_unicode_cpt_to_utf8`, `string_join`, etc. from `common.h`.
+        *   *Thread Safety:* Not thread-safe (static maps, mutable state in converter).
+        *   *Edge Cases:* Empty patterns, unbalanced parentheses, unsupported escapes, negative numbers in ranges.
+
+3.  **Analyze `common/arg.cpp`:**
+    *   **Purpose:** Command-line argument parsing and handling for a CLI tool (likely Llama.cpp).
+    *   **Key Components:**
+        *   `common_arg` class with methods for setting examples, excludes, env vars, sampling, etc.
+        *   `get_common_arg_defs()`: Initializes common arguments.
+        *   `to_string()`: Formats arguments for help output.
+        *   `parse_tensor_buffer_overrides`: Parses tensor buffer overrides.
+        *   `clean_file_name`, `kv_cache_type_from_str`, `parse_bool_value`, etc.
+        *   Platform-specific includes (`WIN32_LEAN_AND_MEAN`, `windows.h`, etc.).
+    *   **Potential Issues/Improvements:**
+        *   *Platform Specifics:* Heavy use of `#ifdef _WIN32`, `#ifdef __linux__`, etc. Could be cleaner with standard headers or cross-platform abstractions.
+        *   *Magic Numbers:* `LLAMA_MAX_URL_LENGTH 2084`, `n_leading_spaces = 40`, `n_char_per_line_help = 70`.
+        *   *Memory

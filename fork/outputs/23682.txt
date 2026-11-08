@@ -1,0 +1,21 @@
+run 23682 | pinfix2 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.39 t/s | prompt 585.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-07 11:52:14
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` - potential bug with negative values**: When `min_items > 0` and separator is used, it computes `min_items - 1`. If `max_items` is set and `min_items == max_items`, then `max_items - 1` could be less than `min_items - 1`... Actually let me check: `build_repetition(item_rule, min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If `min_items == 1` and `max_items == 1`, then it becomes `build_repetition(..., 0, 0)` which returns "" — so the result would be `item_rule + " " + ""` = `item_rule + " "`. Hmm, that leaves a trailing space in the grammar. Actually wait, if max_items == 0, the inner call returns "", so result = `item_rule + " " + ""` = `item_rule + " "`. That trailing space might be harmless in GBNF but sloppy. Actually wait — if `max_items == 0` and `min_items == 0`, the outer function returns "" at the top. But if `min_items == 1, max_items == 1` with separator: inner call gets min=0, max=0 → returns "". So result = `item_rule + " "`. That's a bug — trailing space. Actually in GBNF, a trailing space in a rule... the space rule is defined, but a bare " " at the end of a rule would be a literal space? Actually in GBNF, spaces in rules are typically ignored except within quotes... Hmm, actually in llama.cpp's GBNF parser, whitespace outside of literals is ignored. So `item_rule + " "` would just be `item_rule`. So it's harmless but sloppy. Let me double check: `build_repetition` with separator: `auto result = item_rule + " " + build_repetition(...)`. If the inner returns "", result is `item_rule + " "`. In GBNF parsing, whitespace between tokens is ignored, so this is fine semantically. But it's still worth noting.
+
+   Also, if `min_items > max_items` (invalid input), no validation. E.g., min_items=5, max_items=3 → produces `{5,3}` or weird nested stuff. No validation of min <= max.
+
+2. **`build_min_max_int` uses `std::function` with recursion** — fine but could be a lambda with auto (C++14+). Minor.
+
+3. **`build_min_max_int` - `decimals_left` default 16**: The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN`, then `-min_value` overflows (UB). Let's check: `has_min = min_value != INT64_MIN`. In the `has_min && has_max` branch, if `min_value < 0 && max_value < 0`: calls `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN` and `max_value < 0`, then `-min_value` is UB (signed overflow). Hmm, but wait — can that happen? `min_value == INT64_MIN` means has_min is false, so we wouldn't enter the `has_min && has_max` branch. OK so in that branch, min_value != INT64_MIN, so `-min_value` is fine. But `-max_value`: if `max_value == INT64_MIN`? max_value < 0 and has_max means max_value != INT64_MAX. Could max_value == INT64_MIN? Then `-max_value` = INT64_MIN negated = UB. Hmm, `max_value == INT64_MIN` and `min_value < 0`... min_value <= max_value = INT64_MIN means min_value == INT64_MIN, which contradicts has_min. So in the both-set branch, max_value == INT64_MIN implies min_value == INT64_MIN which is excluded. OK.
+
+   In the `has_min` only branch: `min_value < 0` → `build_min_max_int(INT64_MIN, -min_value, ...)`. `-min_value` where min_value != INT64_MIN (since has_min). If min_value == INT64_MIN+1? Then -min_value = INT64_MAX... fine. OK.
+
+   In `has_max` only branch: `max_value >=

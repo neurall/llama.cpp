@@ -1,0 +1,44 @@
+run 23757 | rel_b14244 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.26 t/s | prompt 354.2 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-11-07 15:53:20
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: when `min_items > 0` and `max_items == 0`... returns "" which is fine.
+- When separator_rule is non-empty and `min_items == 0 && max_items == 1`: handled earlier by `item_rule + "?"`. OK.
+- Edge case: `min_items == 0, max_items == 0` returns "" — but in a grammar context, an empty rule might be problematic. Actually returning "" means the rule content is empty. Hmm, in GBNF an empty rule... Let me think. If max_items == 0, the repetition should match nothing. Returning "" as rule content — the rule would be `name ::= ` which might be invalid GBNF. Actually in the array case: `"[" space " space "]"` — the repetition is embedded inline, so empty string is fine there. OK.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead.
+- `decimals_left = 16` default.
+- Potential infinite recursion? Let's check: `build_min_max_int(min_value, max_value, out, decimals_left, top_level)`. In the `has_min && has_max` branch with both negative: calls with `-max_value, -min_value` — same decimals_left, top_level=true. Since both are now positive, no infinite recursion.
+- In `has_min` branch with `min_value < 0`: calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — has_min is false there (min is INT64_MIN), so it goes to has_max branch. OK.
+- In the `else` branch (min_value > 9): calls `build_min_max_int(std::stoll(min_s.substr(1)), ...)` with `less_decimals`. The recursion terminates because decimals_left decreases. But wait — `less_decimals = std::max(decimals_left - 1, 1)`. So decimals_left never goes below 1. Hmm, could there be infinite recursion? Let's trace: min_value = 1234567890123456789 (19 digits). decimals_left = 16. The recursion: `build_min_max_int(stoll("234567890123456789"), INT64_MAX, out, 15, false)`. min_value = 234567890123456789 > 9, len = 18, c = '2'. c > '1', so digit_range('1', '1')... wait top_level=false so range_start='0'. digit_range('0', '1'), more_digits(18, 15)... hmm, more_digits with min_digits=18 > max_digits=15? That would produce `[0-9]{18,15}` which is an invalid repetition! Let me check: `more_digits(len, less_decimals)` where len = min_s.length() = 18 and less_decimals = 15. That produces `{18,15}`. Hmm wait, let me re-read.
+
+Actually wait, let me re-check. In the `else` branch (min_value > 9):
+```cpp
+auto min_s = std::to_string(min_value);
+auto len = min_s.length();
+auto c = min_s[0];
+
+if (c > '1') {
+    digit_range(top_level ? '1' : '0', c - 1);
+    out << " ";
+    more_digits(len, less_decimals);
+    out << " | ";
+}
+```
+Hmm, `more_digits(len, less_decimals)` — len is the number of digits of min_value. If min_value has 18 digits and decimals_left is 15, then less_decimals = 14... wait `less_decimals = std::max(decimals_left - 1, 1)` so with decimals_left=15, less_decimals=14. So `more_digits(18, 14)` → `[0-9]{18,14}`. That's an invalid regex repetition (min > max). Hmm,

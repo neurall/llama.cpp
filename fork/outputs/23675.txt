@@ -1,0 +1,115 @@
+run 23675 | up9_merged2 | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 20.66 t/s | prompt 478.7 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini | power 220+280 W | 2026-11-07 11:16:39
+
+ends_with(".gguf")) {
+        auto meta = common_gguf_meta_get(params.speculative.draft.mparams.path);
+        if (meta.find("dspark") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK };
+        } else if (meta.find("dflash") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH };
+        } else if (meta.find("eagle3") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 };
+        } else if (meta.find("mtp") != meta.end()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+        }
+    }
+
+    // handle preset
+    if (!plan.preset.url.empty()) {
+        auto preset_path = get_default_local_path(plan.preset.url);
+        common_download_task task;
+        task.url        = plan.preset.url;
+        task.local_path = preset_path;
+        task.opts       = opts;
+        task.on_done    = [&, preset_path]() {
+            handler.found_preset = true;
+            handler.preset_path = preset_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle model
+    if (!plan.model_files.empty()) {
+        add_tasks(plan.model_files, plan.primary, params.model);
+    }
+
+    // handle mmproj
+    if (!plan.mmproj_files.empty()) {
+        add_tasks(plan.mmproj_files, plan.mmproj_primary, params.mmproj);
+    }
+
+    // handle draft
+    if (!plan_spec.model_files.empty()) {
+        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
+    }
+
+    // handle mtp
+    if (!plan_spec.mtp.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.mtp.url;
+        task.local_path = plan_spec.mtp.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            handler.found_mtp = true;
+            handler.mtp.path = plan_spec.mtp.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle dflash
+    if (!plan_spec.dflash.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dflash.url;
+        task.local_path = plan_spec.dflash.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            handler.found_mtp = true;
+            handler.mtp.path = plan_spec.dflash.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle eagle3
+    if (!plan_spec.eagle3.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.eagle3.url;
+        task.local_path = plan_spec.eagle3.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            handler.found_mtp = true;
+            handler.mtp.path = plan_spec.eagle3.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle dspark
+    if (!plan_spec.dspark.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.dspark.url;
+        task.local_path = plan_spec.dspark.local_path;
+        task.opts       = opts;
+        task.on_done    = [&]() {
+            handler.found_mtp = true;
+            handler.mtp.path = plan_spec.dspark.local_path;
+        };
+        tasks.push_back(task);
+    }
+
+    // handle mmproj
+    if (!plan.mmproj_files.empty()) {
+        add_tasks(plan.mmproj_files, plan.mmproj_primary, params.mmproj);
+    }
+
+    // handle model
+    if (!plan.model_files.empty()) {
+        add_tasks(plan.model_files, plan.primary, params.model);
+    }
+
+    // handle draft
+    if (!plan_spec.model_files.empty()) {
+        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
+    }
+
+    // handle mtp
+    if (!plan_spec.mtp.local_path.empty()) {
+        common_download_task task;
+        task.url        = plan_spec.mtp.url;

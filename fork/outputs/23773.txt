@@ -1,0 +1,25 @@
+run 23773 | rel_b14244 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.38 t/s | prompt 385.5 t/s | 1024 tokens | args: -np 1 -lm mmap --moe pin-budget=108447924224 | power 595 W | 2026-11-07 16:44:06
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - Wait, there's a subtle issue: `if (max_items == 0) return "";` — this returns empty string, which means the repetition matches nothing. But if `min_items > 0` and `max_items == 0`, that's a contradiction in the schema — returning empty rule silently accepts the contradiction. Actually returning "" means the rule matches empty string, which would violate min_items. Hmm, but this might be intentional to handle impossible schemas. Actually wait — if min_items > 0 and max_items == 0, the schema is unsatisfiable. Returning "" makes it satisfiable with empty. This could be a bug or intentional. Let me note it.
+   - Also `has_max` is computed as `max_items != std::numeric_limits<int>::max()` — but if max_items == 0, has_max would be true, but we return early. OK.
+   - In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if max_items == 1 and min_items == 1, then the inner repetition gets max_items = 0, min_items = 0, which returns "" — so result is `item_rule + " " + ""` = `item_rule + " "`. Hmm wait, that would be `item_rule` followed by empty string, giving `item_rule ` with trailing space. Actually let me check: `result = item_rule + " " + build_repetition(...)`. If inner returns "", result = `item_rule + " " + ""` = "item_rule " — trailing space in grammar. GBNF might tolerate trailing space? Actually in GBNF, whitespace in rule definitions... hmm, the grammar format used here seems to allow spaces between elements (e.g., `"{" space ( string ...`). Actually spaces in the rule text are just formatting; the actual matching elements are quoted strings and rule names. A trailing space would just be formatting. OK fine.
+   - But wait, if min_items == 1 and max_items == 1 with separator: result = item_rule + " " + "" then since min_items != 0, no "?" appended. So rule = `item_rule ` — fine.
+   - If min_items == 0 and max_items == 1: handled earlier by `item_rule + "?"`. Good.
+   - If min_items == 0, max_items == 2: inner gets min 0, max 1 → `(sep item)?` → result = `item (sep item)?` then wrapped in `(...)?` → `(item (sep item)?)?`. Correct.
+   - If min_items == 2, max_items == 2: inner gets min 1, max 1 → `(sep item){1,1}`? Wait, inner build_repetition with min=1, max=1, no separator: min_items == 1 && !has_max? has_max is true (max=1 != INT_MAX). So falls to `item_rule + "{" + "1" + "," + "1" + "}"` = `{1,1}`. That's valid but could be simplified. Minor.
+   - Actually wait, there's a potential issue: `{1,1}` — is that valid GBNF? Probably yes.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could use a helper struct or explicit recursion. Minor style.
+   - `decimals_left = 16` default — magic number, presumably matches `decimal-part` `[0-9]{1,16}` and `integral-part` `[0-9]{0,15}`. There's an implicit coupling: integral-part allows up to 16 digits total (1 + 15), decimal-part 16 digits. The default 16 here should be documented/linked.
+   - Potential bug: in `has_min && has_max` branch with negative handling: `if (min_value < 0 && max_value < 0)` — negates both. `build_min_max_int(-max_value, -min_value, ...)`. If min_value == INT64_MIN... wait, if min_value < 0 and max_value < 0, then min_value could be INT64_MIN. Then -min_value is UB (neg

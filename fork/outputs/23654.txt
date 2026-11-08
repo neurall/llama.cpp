@@ -1,0 +1,33 @@
+run 23654 | up9_tile6 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.91 t/s | prompt 489.8 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-07 09:47:35
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` - potential bug with negative min_items**: If `min_items` is negative... Actually let me check. In `build_repetition`, when `separator_rule` is non-empty, it calls `build_repetition(...)` with `min_items == 0 ? 0 : min_items - 1`. If `min_items` is negative (shouldn't happen normally), this could be an issue. Also `max_items - 1` when `max_items` is 0... wait, there's a check `if (max_items == 0) return "";` at the top. But if `max_items == 0` and separator is non-empty, we return "". OK.
+
+   Wait, actually there's a subtle bug: `if (max_items == 0) return "";` — but what if `min_items > 0` and `max_items == 0`? That's an invalid schema (min > max), and returning "" silently accepts it. Minor.
+
+2. **`build_min_max_int` uses `std::function` with recursion** — fine but has overhead. Also `uniform_range` lambda captures by reference recursively via std::function — OK.
+
+3. **In `build_min_max_int`, `more_digits`**: `out << "{"; out << min_digits; ...` — if `min_digits == 0`, it outputs `{0,...}`. Hmm, `[0-9]{0,16}` etc. That's fine.
+
+4. **Potential bug in `build_min_max_int`**: `auto less_decimals = std::max(decimals_left - 1, 1);` — if `decimals_left` is 1, `less_decimals` = 1, so it never decreases below 1 — infinite recursion risk? Let's see: `build_min_max_int` with `decimals_left = 16` default. In the `has_min` branch with `min_value > 9`, it calls `build_min_max_int(std::stoll(min_s.substr(1)), ..., out, less_decimals, false)`. Each recursive call reduces the number of digits by 1 (since we strip the first digit). Since min_value has at most 19 digits, recursion terminates. OK.
+
+   But wait — `std::stoll(min_s.substr(1))` — if `min_s` is "0..." no, min_value > 9 here so min_s has at least 2 digits. OK.
+
+5. **`_visit_pattern`**: `auto rules_snapshot = _rules;` copies the map, then on failure `_rules = std::move(rules_snapshot);`. This is a heavy copy for every pattern visit. Could use a different approach but it's a correctness safety mechanism. Note: `_rules` is a `std::map<std::string, std::string>` — copying all rules on each pattern is O(n) but acceptable.
+
+   However, there's a subtle bug: `_refs_being_resolved` is not saved/restored. If pattern parsing triggers ref resolution... actually pattern parsing doesn't visit schemas, so no refs. OK.
+
+   Another subtle issue: `_errors.push_back` for invalid pattern — the rule name returned is "" and callers do `_add_rule(rule_name, _visit_pattern(...))` — wait, let me check. In `visit()`: `case common_chat_schema::KIND_STRING: ... return _visit_pattern(str.pattern, rule_name);` — `_visit_pattern` itself calls `_add_rule(name, ...)`. On invalid pattern, it returns "" without adding a rule. Then `visit` returns "" — the caller (e.g., `_build_object_rule`) will use "" as a rule name, producing invalid grammar like `prop-kv ::= "..." space ":" space ` (empty). But then `check_errors()` throws, so the grammar is never used. OK, but the empty rule name could cause weird intermediate states. Since errors cause a throw, it's fine.
+
+6. **`_pattern_to_rule`**: 
+   - `paren_depth` check: `if (paren_depth > MAX_PATTERN_DEPTH)` — checked after increment. OK.
+   - The `{` handling: `while (i < length && sub_pattern[i] != '}')` — doesn't handle escaped `}` inside curly brackets, but that's rare.
+   - `std::stoi` can throw `std::out_of_range` which derives from `std::logic_error` — caught. OK.
+   - Bug: in the `{n}` handling, `if (nums.size() == 1) { min_times

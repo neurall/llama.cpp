@@ -1,0 +1,46 @@
+run 23789 | rampool12-planner-learned | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.35 t/s | prompt 463.4 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 17:19:32
+
+<think>Let me analyze this code carefully. The user has provided two source files from what appears to be the llama.cpp project: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which is cut off mid-function).
+
+Let me do a thorough code review of both files.
+
+**File 1: json-schema-to-grammar.cpp**
+
+Let me look for issues:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- If `max_items == 0` but `min_items > 0`, this returns empty string, which would be a contradiction (schema requires at least min_items but max is 0). This silently produces an empty rule. Actually wait — if max_items == 0 and min_items > 0, the schema is unsatisfiable. Returning "" means the rule matches empty string. Hmm, actually returning "" as a rule content... Let me think. In GBNF, an empty rule might be invalid or match empty. This could be a subtle bug but arguably the schema itself is contradictory. Worth noting.
+
+- Also `has_max` is computed before checking `max_items == 0`. Fine.
+
+- In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If `max_items == 1` and `min_items == 1` with separator: inner repetition gets min 0, max 0 → returns "" → result = item_rule + " " + "" = item_rule + " " — trailing space! Wait: `item_rule + " " + build_repetition(...)` where build_repetition returns "". So result would be `item_rule + " "` with a trailing space. Hmm, is a trailing space in a rule valid GBNF? Trailing whitespace in the rule definition is probably fine since it's just ignored by the parser? Actually in GBNF, whitespace in the rule is generally ignored except within literals. So `foo ::= bar ` with trailing space is probably fine. But wait, actually let me check: if min_items == 1 and max_items == 1, the repetition of the separator part should be 0 times, so the result should just be item_rule. The generated rule would be `item_rule ` (with trailing space). That's cosmetically odd but functionally OK if GBNF ignores whitespace. Actually wait, there's a subtlety: `result = "(" + result + ")?"` only if min_items == 0. For min_items == 1, max_items == 1: result = `item_rule ` — trailing space. Hmm.
+
+Actually wait, let me re-check: `build_repetition(item_rule, 1, 1, sep)`:
+- has_max = true (1 != INT_MAX)
+- max_items != 0
+- not (min==0 && max==1)
+- separator non-empty
+- result = item_rule + " " + build_repetition("(sep item)", 0, 0)
+  - inner: max_items == 0 → returns ""
+- result = item_rule + " " + "" = "item_rule "
+- min_items != 0, so no "?" appended.
+
+So the rule is `item_rule ` with trailing space. In GBNF parsing, trailing space in rule content... The llama.cpp GBNF parser ignores whitespace between elements, so this is harmless but sloppy. Actually hold on — is it harmless? If the rule ends with a space and then the caller appends more content like `space "]"`, then it's `item_rule  space "]"` — double space, still fine.
+
+Hmm, but actually there might be an issue: what if min_items == 0 and max_items == 0? Then returns "" early. OK.
+
+What about min_items > 0 and max_items == 0? Contradictory schema; returns "". The generated grammar would accept empty where items were required. Edge case, arguably schema's fault.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a free function since it's already a static function using recursion via itself. Actually it's declared as `std::function<void(const std::string_view &, const std::string_view &)> uniform_range = [&](...)`. It captures by reference. It's recursive. OK.
+- `decimals_left = 16` default. `less_decimals = std::max(decimals_left - 1, 1)`.
+- In the `has_min &&

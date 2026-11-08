@@ -1,0 +1,152 @@
+run 23924 | refuse-ceiling | pf64k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.33 t/s | prompt 322.3 t/s | 4096 tokens | args: -np 1 -np 1 -lm mmap --moe pin-budget=68719476736 | power 595 W | 2026-11-08 05:51:17
+
+<think>We need answer complete fixed version of source file. Need identify bugs. User provided huge source file with multiple files concatenated? They ask "Return complete fixed version of following source file: every line from first to last, with every bug fixed and each change marked by comment. Do not summarise..." The source includes multiple file sections: common/json-schema-to-grammar.cpp, common/arg.cpp, common/arg.h, common/build-info.h, common/chat-auto-parser-generator.cpp (truncated at end). Need fix bugs. Need infer intended bugs. This is likely benchmark where source has injected bugs? Need inspect carefully. Need produce full fixed file with comments marking changes. Need not skip unchanged parts. Need include all lines. Need fix every bug. Need identify bugs in provided code. It may be from llama.cpp. Need compare to actual upstream? We need reconstruct correct code. The source is concatenated multiple files. Need fix bugs in each. Need mark changes by comments. Need output complete fixed version. Need be careful.
+
+We need analyze code for bugs. There may be deliberate bugs inserted. Need find all. Let's inspect.
+
+First file json-schema-to-grammar.cpp. Potential bugs:
+- build_repetition separator logic? Let's verify. In upstream llama.cpp common/json-schema-to-grammar.cpp. I recall code. Need compare. There is function build_repetition. Let's recall actual upstream. It might have bug in separator handling: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items == 0 result = "(" + result + ")?"; This seems correct? For min_items=0 max=1 separator: item_rule + " " + build_repetition("(sep item)", 0, 0) -> item_rule + " " + "" = item_rule + " " then wrap optional -> "(item )?" maybe extra space. Upstream maybe uses `item_rule + " " + build_repetition(...)` and if min_items==0 result = "(" + result + ")?"; For max_items==1, has_max true, min_items==0 -> build_repetition(...,0,0) returns ""; result = item_rule + " " + "" = item_rule + " "; then optional -> "(item )?" includes trailing space. Is that intended? Maybe upstream has `result = item_rule + " " + build_repetition(...); if (min_items == 0) result = "(" + result + ")?";` yes. But for max_items==1 and min_items==0, earlier special case `if (min_items == 0 && max_items == 1) return item_rule + "?";` catches before separator? Actually that check occurs before separator empty check. It returns item_rule + "?" even with separator. For array with separator and min=0 max=1, should be `item_rule?`? But array grammar `"[" space ( value ("," space value)* )? space "]"`? For max 1, optional item no separator. `item_rule?` is correct. So no issue.
+
+- build_min_max_int: Need inspect. Potential bug: `auto less_decimals = std::max(decimals_left - 1, 1);` maybe should be `std::max(decimals_left - 1, 0)`? Let's recall upstream. In llama.cpp json-schema-to-grammar.cpp, build_min_max_int has `auto less_decimals = std::max(decimals_left - 1, 1);`? I think yes? Let's search memory. I have seen code:
+```
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) { ... };
+    auto more_digits = [&](int min_digits, int max_digits) { ... };
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range = ...
+    if (has_min && has_max) {
+        if (min_value < 0 && max_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(-max_value, -min_value, out, decimals_left, true);
+            out << ")";
+            return;
+        }
+        if (min_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(0, -min_value, out, decimals_left, true);
+            out << ") | ";
+            min_value = 0;
+        }
+        auto min_s = std::to_string(min_value);
+        auto max_s = std::to_string(max_value);
+        auto min_digits = min_s.length();
+        auto max_digits = max_s.length();
+        for (auto digits = min_digits; digits < max_digits; digits++) {
+            uniform_range(min_s, string_repeat("9", digits));
+            min_s = "1" + string_repeat("0", digits);
+            out << " | ";
+        }
+        uniform_range(min_s, max_s);
+        return;
+    }
+    auto less_decimals = std::max(decimals_left - 1, 1);
+    if (has_min) {
+        if (min_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false);
+            out << ") | [0] | [1-9] ";
+            more_digits(0, decimals_left - 1);
+        } else if (min_value == 0) {
+            if (top_level) {
+                out << "[0] | [1-9] ";
+                more_digits(0, less_decimals);
+            } else {
+                more_digits(1, decimals_left);
+            }
+        } else if (min_value <= 9) {
+            char c = '0' + min_value;
+            auto range_start = top_level ? '1' : '0';
+            if (c > range_start) {
+                digit_range(range_start, c - 1);
+                out << " ";
+                more_digits(1, less_decimals);
+                out << " | ";
+            }
+            digit_range(c, '9');
+            out << " ";
+            more_digits(0, less_decimals);
+        } else {
+            auto min_s = std::to_string(min_value);
+            auto len = min_s.length();
+            auto c = min_s[0];
+            if (c > '1') {
+                digit_range(top_level ? '1' : '0', c - 1);
+                out << " ";
+                more_digits(len, less_decimals);
+                out << " | ";
+            }
+            digit_range(c, c);
+            out << " (";
+            build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false);
+            out << ")";
+            if (c < '9') {
+                out << " | ";
+                digit_range(c + 1, '9');
+                out << " ";
+                more_digits(len - 1, less_decimals);
+            }
+        }
+        return;
+    }
+    if (has_max) {
+        if (max_value >= 0) {
+            if (top_level) {
+                out << "\"-\" [1-9] ";
+                more_digits(0, less_decimals);
+                out << " | ";
+            }
+            build_min_max_int(0, max_value, out, decimals_left, true);
+        } else {
+            out << "\"-\" (";
+            build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, false);
+            out << ")";
+        }
+        return;
+    }
+    throw std::runtime_error("At least one of min_value or max_value must be set");
+}
+```
+Potential bug: In has_max branch, if top_level, it outputs `"\"-\" [1-9] "` then more_digits(0, less_decimals); out << " | "; then build_min_max_int(0, max_value, out, decimals_left, true); But for max_value >=0, top_level true, this includes negative numbers? Wait if max_value >=0 and top_level, grammar should allow negative numbers? For integer with only max, min is -inf, so yes negative allowed. It outputs `"-" [1-9] ... | ` then positive range. But `[1-9]` followed by more_digits(0, less_decimals) means negative numbers with first digit 1-9 and up to less_decimals additional digits. But what about negative zero? JSON integer -0? Probably not. What about negative numbers with first digit 0? No. What about `-` followed by `[1-9]` and zero digits? more_digits(0, less_decimals) outputs `[0-9]{0,15}`? Let's see more_digits: out << "[0-9]"; if min_digits == max_digits && min_digits == 1 return; out << "{"; out << min_digits; if max_digits != min_digits { out << ","; if max_digits != max return max_digits; } out << "}"; For min_digits=0, max=15: outputs `[0-9]{0,15}`. So `"-" [1-9] [0-9]{0,15}` allows -1 to -999... But max_value positive, negative magnitude can be arbitrarily large? Since min is -inf, yes any negative integer. But max_value positive, negative numbers can be any magnitude. However grammar `"-" [1-9] [0-9]{0,15}` limits negative magnitude to 16 digits. But int64 min is -9223372036854775808 (19 digits). Wait decimals_left default 16. This function is for integer? It uses decimals_left=16. But int64 can have 19 digits. Hmm upstream maybe uses 16 because JSON schema integer? Let's check. In llama.cpp, build_min_max_int uses `decimals_left = 16` and `more_digits` max 16? But int64 max is 9223372036854775807 (19 digits). Why 16? Maybe because JSON schema integer values are limited to 16 digits? Actually JSON schema integer can be arbitrary? But llama uses int64. The function may be from upstream and has 16 decimals. Need not fix unless bug.
+
+Potential bug in `_visit_pattern`: `return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));` This adds rule name with content of primitive string? `_add_primitive` returns rule name (maybe "string" or "string-0"). Then `_add_rule(name, "string")`? Wait `_add_primitive("string", ...)` returns n = _add_rule("string", content). If name is e.g. "root", then `_add_rule(name, _add_primitive("string", ...))` sets root ::= string (the rule name). That is correct? It returns rule name. But if name is "root", `_add_rule("root", "string")` creates root ::= string. Good. But if name is reserved? Hmm.
+
+Potential bug in `_pattern_to_rule`: `auto rule = to_rule(transform()); if (paren_depth != 0) throw invalid_pattern... return _add_rule(name, "\"\\\"\" (" + rule + ") \"\\\"\"");` This wraps pattern in quotes. But transform returns literal_or_rule with second false? `to_rule` returns `is_literal ? "\"" + s + "\"" : s`. For literal, it adds quotes. Then final adds `"\"\\\"\" (" + rule + ") \"\\\"\""` i.e. `"\" (" + rule + ") "\""`? Wait `"\"\\\"\""` is a string literal representing `"\"`? Let's parse: C++ string `"\"\\\"\""`? Actually `"\"\\\"\""` characters: `"` then `\"`? Let's decode: `"\"\\\"\""` = `"` + `\"`? Hmm. In C++ string literal `"\"\\\"\""`:
+- starts with `"` (opening)
+- `\"` -> `"` char
+- `\\` -> `\` char
+- `\"` -> `"` char
+- `\"`? Wait let's count. The literal is `"\"\\\"\""`? It has opening quote, then `\"` (escaped quote), then `\\` (escaped backslash), then `\"` (escaped quote), then `\"`? Actually the text: `"\"\\\"\""` = characters: `"` (opening), `\"` -> `"`, `\\` -> `\`, `\"` -> `"`, `\"`? Let's write: `"` `\` `"` `\` `\` `"` `\` `"`? Hmm. In source: `return _add_rule(name, "\"\\\"\" (" + rule + ") \"\\\"\"");` The string literal `"\"\\\"\""` likely represents `"\"`? Let's use C++: `"\"\\\"\""`:
+- `\"` = `"`
+- `\\` = `\`
+- `\"` = `"`
+- `\"`? Wait there are four escaped quotes? Let's count characters in literal: `"` (start), `\` `"` (escaped quote), `\` `\` (escaped backslash), `\` `"` (escaped quote), `\` `"`? Actually the literal ends with `"`? The source has `"\"\\\"\""` = start quote, then `\"`, then `\\`, then `\"`, then `\"`? Let's copy: `"\"\\\"\""` has 8 chars? Let's index:
+1 `"` opening
+2 `\`
+3 `"`
+4 `\`
+5 `\`
+6 `"`
+7 `\`
+8 `"`
+9 `"`? Hmm no. Let's use Python mentally: string literal `"\"\\\"\""`:
+- `\"` -> `"`
+- `\\` -> `\`
+- `\"` -> `"`
+- `\"`? Wait after `\\` there is `\"` then `\"`? The text `\"\\\"\""` = `\"` + `\\` + `\"` + `\"`? Actually it is `\"` (2 chars), `\\` (2), `\"` (2), `\"`? The final `"` is closing? Let's parse: `"` start, `\"` (escaped quote), `\\` (escaped backslash), `\"` (escaped quote), `\"`? No, the sequence is `"\"\\\"\""`: after start quote: `\"` (quote), `\\` (backslash), `\"` (quote), `\"`? Wait there is `\"` before final `"`? The string ends with `\""`? Let's count: characters: `"` (start), `\` `"` (escaped quote), `\` `\` (escaped backslash), `\` `"` (escaped quote), `\` `"`? Actually the last two are `\"` then `"`? The literal is `"\"\\\"\""` = start `"`, then `\"`, then `\\`, then `\"`, then `\"`? Hmm.
+
+Maybe easier: In C++ to represent a string containing `"\"` (quote, backslash, quote?) The grammar rule for string is `"\"`? In GBNF, a literal quote is `"\\\""`? Actually GBNF string literal for JSON string starts with `"\"`? In PRIMITIVE_RULES string: `{"string", {"\"\\\"\" char* \"\\\"\"", {"char"}}}`. That string literal `"\"\\\"\""` represents `"\"`? Let's decode: `"\"\\\"\""` = `"` + `\"`? Wait in C++ `"\"\\\"\""`:
+- `\"` -> `"`
+- `\\` -> `\`
+- `\"` -> `"`
+- `\"`? The final `"` is closing. So content is `"` + `\` + `"`? That is `"\"`? Actually content: first escaped quote `"`, then escaped backslash `\`, then escaped quote `"`. So content is `"\"` (three chars: quote, backslash, quote). In GBNF, to match a literal `"` you write `\"`? The rule `"\"`? Hmm. The string rule content `"\"\\\"\" char* \"\\\"\""` likely means `"\"` (literal quote) then char* then `"\"` (literal quote). In GBNF, a literal `"` is represented as `\"` inside a quoted string? Actually GBNF literal syntax: `"..."` with escapes. To match a double quote, you write `"\""`? The content `"\"`? Let's not dwell.
+
+Potential bug in `_not_strings`: `if (trie.nodes[0].pattern < 0) { out << "?"; }` Maybe should be `if (trie.nodes[0].pattern < 0)`? Need know trie. In common/trie.h, `pattern` maybe index? Let's inspect? Not provided. Could be bug: `trie.nodes[0].pattern < 0` maybe should be `trie.nodes[0].pattern >= 0`? Let's recall upstream `_not_strings` code. I remember from llama.cpp:
+```
+std::string _not_strings(const std::vector<std::string> & strings) {
+    common_trie trie(strings);
+    std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+    std::ostringstream out;
+    out << "[\"] ( ";
+    std::function<void(size_t)> visit = [&

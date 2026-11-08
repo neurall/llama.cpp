@@ -1,0 +1,457 @@
+run 23889 | eqcalls-concat65k | pf64k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.48 t/s | prompt 628.0 t/s | 4096 tokens | args: -np 1 -np 1 | power 595 W | 2026-11-08 01:38:04
+
+<think>Let me analyze the source files provided. The user wants me to return the complete fixed version of the source files, with every bug fixed and each change marked by a comment. The files are:
+
+1. `common/json-schema-to-grammar.cpp`
+2. `common/arg.cpp`
+3. `common/arg.h`
+4. `common/build-info.h`
+5. `common/chat-auto-parser-generator.cpp` (truncated)
+
+Wait, the instruction says "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment."
+
+Hmm, "the following source file" - singular. But there are multiple files listed. Let me re-read.
+
+The prompt says "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment. Do not summarise, do not skip unchanged parts, do not stop early."
+
+Then multiple files are given. This is a common pattern in these tasks - the user provides multiple files and wants all of them fixed. But the instruction says "source file" singular... Actually, looking at the structure, there are 5 files. The last one is truncated ("auto tools_pa" - cut off mid-word).
+
+Given the ambiguity, I think the best approach is to fix all the files provided, since they're all part of "the following source" content. But the last file is truncated, so I can't fix it completely. I should probably focus on the files that are complete.
+
+Actually, let me think about this differently. This looks like a task where bugs have been intentionally introduced into the code, and I need to find and fix them. Let me look for bugs in each file.
+
+Let me examine `common/json-schema-to-grammar.cpp` first:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+This looks correct compared to the original llama.cpp code. Let me check the original:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+That matches. OK.
+
+`build_min_max_int`:
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) {
+        out << "[";
+        if (from == to) {
+            out << from;
+        } else {
+            out << from << "-" << to;
+        }
+        out << "]";
+    };
+    auto more_digits = [&](int min_digits, int max_digits) {
+        out << "[0-9]";
+        if (min_digits == max_digits && min_digits == 1) {
+            return;
+        }
+        out << "{";
+        out << min_digits;
+        if (max_digits != min_digits) {
+            out << ",";
+            if (max_digits != std::numeric_limits<int>::max()) {
+                out << max_digits;
+            }
+        }
+        out << "}";
+    };
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+        [&](const std::string_view & from, const std::string_view & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                    auto sub_zeros = string_repeat("0", sub_len);
+                    auto sub_nines = string_repeat("9", sub_len);
+
+                    auto to_reached = false;
+                    out << "(";
+                    if (from_sub == sub_zeros) {
+                        digit_range(from[i], to[i] - 1);
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    } else {
+                        out << "[" << from[i] << "] ";
+                        out << "(";
+                        uniform_range(from_sub, sub_nines);
+                        out << ")";
+                        if (from[i] < to[i] - 1) {
+                            out << " | ";
+                            if (to_sub == sub_nines) {
+                                digit_range(from[i] + 1, to[i]);
+                                to_reached = true;
+                            } else {
+                                digit_range(from[i] + 1, to[i] - 1);
+                            }
+                            out << " ";
+                            more_digits(sub_len, sub_len);
+                        }
+                    }
+                    if (!to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, to_sub);
+                    }
+                    out << ")";
+                } else {
+                    out << "[" << from[i] << "-" << to[i] << "]";
+                }
+            }
+        };
+
+    if (has_min && has_max) {
+        if (min_value < 0 && max_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+            out << ")";
+            return;
+        }
+
+        if (min_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+            out << ") | ";
+            min_value = 0;
+        }
+
+        auto min_s = std::to_string(min_value);
+        auto max_s = std::to_string(max_value);
+        auto min_digits = min_s.length();
+        auto max_digits = max_s.length();
+
+        for (auto digits = min_digits; digits < max_digits; digits++) {
+            uniform_range(min_s, string_repeat("9", digits));
+            min_s = "1" + string_repeat("0", digits);
+            out << " | ";
+        }
+        uniform_range(min_s, max_s);
+        return;
+    }
+    ...
+```
+
+This matches the original llama.cpp code. Let me check the rest:
+
+```cpp
+    auto less_decimals = std::max(decimals_left - 1, 1);
+
+    if (has_min) {
+        if (min_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+            out << ") | [0] | [1-9] ";
+            more_digits(0, decimals_left - 1);
+        } else if (min_value == 0) {
+            if (top_level) {
+                out << "[0] | [1-9] ";
+                more_digits(0, less_decimals);
+            } else {
+                more_digits(1, decimals_left);
+            }
+        } else if (min_value <= 9) {
+            char c = '0' + min_value;
+            auto range_start = top_level ? '1' : '0';
+            if (c > range_start) {
+                digit_range(range_start, c - 1);
+                out << " ";
+                more_digits(1, less_decimals);
+                out << " | ";
+            }
+            digit_range(c, '9');
+            out << " ";
+            more_digits(0, less_decimals);
+        } else {
+            auto min_s = std::to_string(min_value);
+            auto len = min_s.length();
+            auto c = min_s[0];
+
+            if (c > '1') {
+                digit_range(top_level ? '1' : '0', c - 1);
+                out << " ";
+                more_digits(len, less_decimals);
+                out << " | ";
+            }
+            digit_range(c, c);
+            out << " (";
+            build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, /* top_level= */ false);
+            out << ")";
+            if (c < '9') {
+                out << " | ";
+                digit_range(c + 1, '9');
+                out << " ";
+                more_digits(len - 1, less_decimals);
+            }
+        }
+        return;
+    }
+
+    if (has_max) {
+        if (max_value >= 0) {
+            if (top_level) {
+                out << "\"-\" [1-9] ";
+                more_digits(0, less_decimals);
+                out << " | ";
+            }
+            build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+        } else {
+            out << "\"-\" (";
+            build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+            out << ")";
+        }
+        return;
+    }
+
+    throw std::runtime_error("At least one of min_value or max_value must be set");
+}
+```
+
+This matches the original. OK.
+
+`SPACE_RULE`:
+```cpp
+const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";
+```
+
+Original: `const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";` — matches.
+
+PRIMITIVE_RULES: matches original.
+
+STRING_FORMAT_RULES: matches original.
+
+`is_reserved_name`: matches.
+
+Regexes:
+```cpp
+static std::regex INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+");
+static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");
+static std::regex GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]");
+```
+
+Original:
+```cpp
+static std::regex INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+");
+static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");
+static std::regex GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]");
+```
+
+Matches.
+
+```cpp
+static std::unordered_map<char, std::string> GRAMMAR_LITERAL_ESCAPES = {
+    {'\r', "\\r"}, {'\n', "\\n"}, {'"', "\\\""}, {'-', "\\-"}, {']', "\\]"}, {'\\', "\\\\"}
+};
+```
+
+Matches original.
+
+`MAX_PATTERN_DEPTH = 100` — original is 100. Matches.
+
+NON_LITERAL_SET and ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS — matches original.
+
+`replacePattern` — matches original.
+
+`format_literal` — matches original.
+
+`gbnf_escape_length` — this is a newer function; let me check against the actual llama.cpp code. In llama.cpp's json-schema-to-grammar.cpp (recent version), there's:
+
+```cpp
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+    if (pos + 1 >= pattern.length() || pattern[pos] != '\\') {
+        return 0;
+    }
+    size_t n_hex = 0;
+    switch (pattern[pos + 1]) {
+        case 'x': n_hex = 2; break;
+        case 'u': n_hex = 4; break;
+        case 'U': n_hex = 8; break;
+        // keep in sync with parse_char() in src/llama-grammar.cpp
+        case 't': case 'r': case 'n': case '\\': case '"': case '[': case ']': case '-':
+            return 2;
+        default:
+            return 0;
+    }
+    if (pos + 2 + n_hex > pattern.length()) {
+        return 0;
+    }
+    for (size_t i = pos + 2; i < pos + 2 + n_hex; i++) {
+        char h = pattern[i];
+        if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') || (h >= 'A' && h <= 'F'))) {
+            return 0;
+        }
+    }
+    return 2 + n_hex;
+}
+```
+
+Matches.
+
+Now the class `common_chat_schema_converter`. Let me check `_add_rule`:
+
+```cpp
+    std::string _add_rule(const std::string & name, const std::string & rule) {
+        std::string esc_name = regex_replace(name, INVALID_RULE_CHARS_RE, "-");
+        if (_rules.find(esc_name) == _rules.end() || _rules[esc_name] == rule) {
+            _rules[esc_name] = rule;
+            return esc_name;
+        }
+        int i = 0;
+        while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule) {
+            i++;
+        }
+        std::string key = esc_name + std::to_string(i);
+        _rules[key] = rule;
+        return key;
+    }
+```
+
+Original llama.cpp:
+```cpp
+    std::string _add_rule(const std::string & name, const std::string & rule) {
+        std::string esc_name = regex_replace(name, INVALID_RULE_CHARS_RE, "-");
+        if (_rules.find(esc_name) == _rules.end() || _rules[esc_name] == rule) {
+            _rules[esc_name] = rule;
+            return esc_name;
+        }
+        int i = 0;
+        while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule) {
+            i++;
+        }
+        std::string key = esc_name + std::to_string(i);
+        _rules[key] = rule;
+        return key;
+    }
+```
+
+Matches.
+
+`_generate_union_rule`:
+```cpp
+    std::string _generate_union_rule(const std::string & name, const std::vector<common_chat_schema_ptr> & alt_schemas) {
+        std::vector<std::string> rules;
+        rules.reserve(alt_schemas.size());
+        for (size_t i = 0; i < alt_schemas.size(); i++) {
+            rules.push_back(visit(*alt_schemas[i], name + (name.empty() ? "alternative-" : "-") + std::to_string(i)));
+        }
+        return string_join(rules, " | ");
+    }
+```
+
+Original:
+```cpp
+    std::string _generate_union_rule(const std::string & name, const std::vector<common_chat_schema_ptr> & alt_schemas) {
+        std::vector<std::string> rules;
+        rules.reserve(alt_schemas.size());
+        for (size_t i = 0; i < alt_schemas.size(); i++) {
+            rules.push_back(visit(*alt_schemas[i], name + (name.empty() ? "alternative-" : "-") + std::to_string(i)));
+        }
+        return string_join(rules, " | ");
+    }
+```
+
+Matches.
+
+`_visit_pattern`:
+```cpp
+    std::string _visit_pattern(const std::string & pattern, const std::string & name) {
+        auto rules_snapshot = _rules;
+        try {
+            return _pattern_to_rule(pattern, name);
+        } catch (const unsupported_pattern & err) {
+            // revert rules
+            _rules = std::move(rules_snapshot);
+            _warnings.push_back("pattern " + pattern + " is not supported (" + err.what() + "), accepting any string");
+            return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));
+        } catch (const invalid_pattern & err) {
+            _rules = std::move(rules_snapshot);
+            _errors.push_back("Invalid pattern " + pattern + ": " + err.what());
+            return "";
+        }
+    }
+```
+
+Original:
+```cpp
+    std::string _visit_pattern(const std::string & pattern, const std::string & name) {
+        auto rules_snapshot = _rules;
+        try {
+            return _pattern_to_rule(pattern, name);
+        } catch (const unsupported_pattern & err) {
+            // revert rules
+            _rules = std::move(rules_snapshot);
+            _warnings.push_back("pattern " + pattern + " is not supported (" + err.what() + "), accepting any string");
+            return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));
+        } catch (const invalid_pattern & err) {
+            _rules = std::move(rules_snapshot);
+            _errors.push_back("Invalid pattern " + pattern + ":

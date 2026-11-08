@@ -1,0 +1,193 @@
+run 23811 | rampool11-planner-simple | pf12k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 146.65 t/s | prompt 7821.5 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 18:40:21
+
+<think>
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Input:** A C++ source file (`common/json-schema-to-grammar.cpp` and `common/arg.cpp` concatenated, though the prompt says "the following source file", it seems to be two files merged or just one long file. I'll treat it as a single file or handle both sections as provided).
+   - **Task:** Return the complete fixed version of the source file. Every line must be included. Every bug fixed. Each change marked by a comment. Do not summarize, skip unchanged parts, or stop early.
+   - **Key Constraints:** "every line of it, from the first line to the last, with every bug fixed and each change marked by a comment."
+
+2.  **Identify Potential Bugs/Issues in the Code:**
+   I need to carefully scan the provided code for common C++ bugs, logical errors, syntax issues, or missing includes/definitions. Since I don't have the full context of the project, I'll focus on standard C++ pitfalls and obvious errors in the provided snippet.
+
+   Let's go through the code line by line (mentally or systematically):
+
+   *Headers & Includes:*
+   - `#include "json-schema-to-grammar.h"`
+   - `#include "common.h"`
+   - `#include "trie.h"`
+   - `#include "unicode.h"`
+   - Standard headers: `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>`
+   - `using json = common_json;`
+   - Looks fine.
+
+   *Function `build_repetition`:*
+   - Logic seems okay. Handles min/max, separators.
+   - Potential issue: `max_items == 0` returns `""`. If `min_items` is also 0, it's fine. But what if `min_items > 0` and `max_items == 0`? That's invalid schema, but code handles it by returning `""`. Probably fine.
+   - `min_items == 0 && max_items == 1` -> `item_rule + "?"`
+   - `min_items == 1 && !has_max` -> `item_rule + "+"`
+   - `min_items == 0 && !has_max` -> `item_rule + "*"`
+   - Otherwise: `{min,max}` or `{min,}`
+   - Separator logic: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`
+   - If `min_items == 0`, wraps in `()?`.
+   - Looks correct for regex-like repetition.
+
+   *Function `build_min_max_int`:*
+   - Handles `int64_t` ranges.
+   - `has_min`, `has_max` checks.
+   - `digit_range`, `more_digits` lambdas.
+   - `uniform_range` lambda: complex logic for generating regex ranges for strings.
+   - Potential bug: `auto sub_len = from.length() - i - 1;` -> if `i` is at the end, `sub_len` could be negative? Wait, `i` stops when `from[i] != to[i]` or end of string. If `i < from.length() && i < to.length()`, then `sub_len = from.length() - i - 1`. If `from.length() == i + 1`, `sub_len = 0`. That's handled.
+   - `string_repeat` is used but not defined in the snippet. I'll assume it's in `common.h`.
+   - `std::function<void(const std::string_view &, const std::string_view &)> uniform_range` -> `string_view` requires `<string_view>`. Missing include? I'll add it or assume it's there. Actually, `std::string_view` is C++17. I'll add `#include <string_view>` if needed, but the prompt says "fix bugs". I'll note it if missing, but usually it's fine.
+   - `build_min_max_int` logic for negative numbers: `if (min_value < 0 && max_value < 0) { out << "\"-\" ("; build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true); out << ")"; return; }` -> This swaps min/max correctly for absolute values.
+   - `if (min_value < 0) { out << "\"-\" ("; build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true); out << ") | "; min_value = 0; }` -> Correct.
+   - `auto less_decimals = std::max(decimals_left - 1, 1);` -> Correct.
+   - Logic seems solid.
+
+   *BuiltinRules & STRING_FORMAT_RULES:*
+   - Looks standard.
+
+   *`is_reserved_name`:*
+   - Uses a static lambda to initialize a set. Correct.
+
+   *Regexes & Escapes:*
+   - `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, etc.
+   - `GRAMMAR_LITERAL_ESCAPES` map.
+   - `replacePattern` function: uses `std::regex_search`. Correct.
+   - `format_literal`: escapes and wraps in quotes. Correct.
+
+   *`gbnf_escape_length`:*
+   - Checks for `\x`, `\u`, `\U`, etc.
+   - `case 't': case 'r': case 'n': case '\\': case '"': case '[': case ']': case '-': return 2;` -> Correct.
+   - Hex validation loop: `if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') || (h >= 'A' && h <= 'F'))) return 0;` -> Correct.
+
+   *`common_chat_schema_converter` class:*
+   - `_dotall`, `_rules`, `_refs_being_resolved`, `_errors`, `_warnings`.
+   - `as<T>` template: `static_cast<const T &>(node)`. Correct.
+   - `_add_rule`: handles naming collisions. Correct.
+   - `_generate_union_rule`: calls `visit`. Correct.
+   - `_visit_pattern`: handles regex to grammar conversion.
+     - `auto rules_snapshot = _rules;` -> Correct.
+     - `transform` lambda: parses regex.
+     - `get_dot`: returns `[\\U00000000-\\U0010FFFF]` or `[^\\x0A\\x0D]`. Correct.
+     - `join_seq`: merges literals. Correct.
+     - Parentheses handling: `if (c == '(') { i++; if (i < length && sub_pattern[i] == '?') { if (i + 1 < length && sub_pattern[i + 1] == ':') { i += 2; } else { throw unsupported_pattern("unsupported group syntax"); } } paren_depth++; ... seq.emplace_back("(" + to_rule(transform()) + ")", false); }` -> Wait, `transform()` is called recursively. But `transform` is a `std::function` defined inside `_pattern_to_rule`. Calling it recursively inside itself might cause issues if not careful, but it's defined as `std::function<literal_or_rule()> transform = [&]() -> literal_or_rule { ... while (i < length) ... return join_seq(); };`. This is a standard recursive lambda pattern. It should work.
+     - Character class `[...]`: handles escapes. Correct.
+     - `{...}` repetition: parses min/max. Correct.
+     - Literal handling: `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` set. Correct.
+     - `seq.emplace_back(literal, true);` -> Correct.
+     - `return _add_rule(name, "\"\\\"\" (" + rule + ") \"\\\"\"");` -> Wraps in quotes. Correct.
+   - `_not_strings`: Uses a trie to generate regex for strings not in a list. Complex but looks correct.
+   - `_resolve_ref`: Handles `$ref`. Correct.
+   - `_build_object_rule`: Handles JSON object schema. Complex but standard.
+   - `_add_primitive`: Resolves dependencies. Correct.
+   - `visit`: Switch on schema kind. Correct.
+   - `check_errors`, `format_grammar`: Correct.
+
+   *Functions at the end:*
+   - `json_schema_to_grammar(const common_json & schema, bool force_gbnf)`: Handles LLGUIDANCE. Correct.
+   - `json_schema_to_grammar(const common_chat_schema_document & schema)`: Correct.
+   - `build_grammar`: Correct.
+
+   *Second file: `common/arg.cpp`*
+   - Includes: `arg.h`, `build-info.h`, `chat.h`, `common.h`, `download.h`, `json-schema-to-grammar.h`, `json.h`, `llama.h`, `log.h`, `sampling.h`, `speculative.h`, `preset.h`.
+   - Windows includes: `#if defined(_WIN32) ... #include <windows.h> #include <shellapi.h>`. Correct.
+   - Standard includes: `<algorithm>`, `<cinttypes>` (typo! should be `<cstdint>`), `<climits>`, `<cmath>`, `<cstdarg>`, `<filesystem>`, `<fstream>`, `<list>`, `<numeric>`, `<regex>`, `<set>`, `<string>`, `<system_error>`, `<thread>`, `<vector>`.
+   - **Bug 1:** `#include <cinttypes>` -> Should be `#include <cstdint>`. I will fix this.
+   - `#ifndef __EMSCRIPTEN__ ... #include <linux/limits.h>` -> Linux usually uses `<limits.h>`. `linux/limits.h` is non-standard. I'll fix to `<limits.h>`.
+   - `#elif defined(_WIN32) #if !defined(PATH_MAX) #define PATH_MAX MAX_PATH #endif` -> `MAX_PATH` is in `<windows.h>`, but `PATH_MAX` is usually in `<limits.h>`. This is fine.
+   - `#define LLAMA_MAX_URL_LENGTH 2084` -> Fine.
+   - `using json = common_json; using namespace common_arg_utils;` -> Fine.
+   - `mmproj_examples` initializer list -> Fine.
+   - `read_file`: uses `std::istreambuf_iterator<char>`. Correct.
+   - `get_common_arg_defs`: static lambda. Correct.
+   - `common_arg` methods: `set_examples`, `set_excludes`, `set_env`, `set_sampling`, `set_spec`, `set_preset_only`, `in_example`, `is_exclude`, `get_value_from_env`, `has_value_from_env`.
+   - `get_value_from_env`: checks `LLAMA_ARG_NO_` env. Correct.
+   - `break_str_into_lines`: word splitting logic. Correct.
+   - `to_string`: formatting. Correct.
+   - `get_args`, `get_env`: Correct.
+   - `parse_tensor_buffer_overrides`: uses `ggml_backend_load_all()`, `buft_list`, `static std::list<std::string> buft_overrides`. Correct.
+   - `clean_file_name`: Correct.
+   - `handle_model_result`: struct. Correct.
+   - `kv_cache_types`, `kv_cache_type_from_str`, `get_all_kv_cache_types`: Correct.
+   - `parse_bool_value`: Correct.
+   - `arg_removed`: Correct.
+   - `get_default_local_path`: Correct.
+   - `spec_types_is_default`: Function declaration only? The snippet ends abruptly at `static bool spec_types_is_default(const common_params & params) {`. It's incomplete. I need to handle this. The prompt says "Return the complete fixed version... from the first line to the last". I will keep it as is but maybe add a closing brace or note it's incomplete? Actually, I should just output exactly what's there, but fix bugs. If it's cut off, I'll just output the cut-off line as is, or maybe add a placeholder comment? The prompt says "do not stop early". I'll just output the exact text provided, fixing bugs, and keep the incomplete function as is, or maybe complete it if it's obviously a typo? No, I'll stick to the provided text but fix the `#include <cinttypes>` and `<linux/limits.h>`.
+
+   Let's scan for other bugs:
+   - `#include <cinttypes>` -> definitely `cstdint`.
+   - `#include <linux/limits.h>` -> definitely `limits.h`.
+   - `string_replace_all` is used but not defined. Assume it's in `common.h`.
+   - `string_split` is used. Assume it's in `common.h`.
+   - `string_join` is used. Assume it's in `common.h`.
+   - `string_format` is used. Assume it's in `common.h`.
+   - `fs_get_cache_file` is used. Assume it's in `common.h`.
+   - `common_params`, `common_params_parser_init`, `common_params_model`, `common_arg`, `common_chat_schema`, etc. are assumed types.
+   - `ggml_backend_load_all()`, `ggml_backend_dev_count()`, etc. are assumed.
+   - `LLAMA_EXAMPLE_MTMD`, etc. are assumed.
+   - `common_json`, `common_chat_schema_document`, `common_grammar_builder`, `common_grammar_options` are assumed.
+
+   I will fix the obvious standard library include errors.
+   Also, check `#include <cinttypes>` -> `cstdint`.
+   Check `#include <linux/limits.h>` -> `limits.h`.
+   Check `#include <shellapi.h>` -> usually `<shellapi.h>` is fine, but sometimes `<shlwapi.h>`? I'll leave it as is, it's Windows-specific.
+   Check `#include <windows.h>` -> fine.
+   Check `#include <thread> // for hardware_concurrency` -> fine.
+   Check `#include <cinttypes>` -> fix to `cstdint`.
+   Check `#include <linux/limits.h>` -> fix to `limits.h`.
+   Check `#include <sys/syslimits.h>` -> usually `<limits.h>` or `<sys/limits.h>`. I'll fix to `<limits.h>`.
+   Check `#include <sys/limits.h>` -> fine.
+   Check `#include <linux/limits.h>` -> fix to `<limits.h>`.
+   Check `#include <sys/syslimits.h>` -> fix to `<limits.h>`.
+
+   Wait, the prompt says "every bug fixed and each change marked by a comment."
+   I will systematically go through the code and mark fixes.
+
+   Let's list potential fixes:
+   1. `#include <cinttypes>` -> `#include <cstdint>`
+   2. `#include <linux/limits.h>` -> `#include <limits.h>`
+   3. `#include <sys/syslimits.h>` -> `#include <limits.h>`
+   4. `#include <string_view>` might be needed for `std::string_view` in `uniform_range`, but it's C++17 and often included via other headers. I'll add it just in case, or leave it. Actually, `std::string_view` is in `<string_view>`. I'll add it.
+   5. `string_repeat` is used but not defined. I'll assume it's in `common.h`.
+   6. `build_min_max_int` uses `string_repeat`. I'll leave it.
+   7. `#include <cinttypes>` is definitely a typo.
+   8. `#include <linux/limits.h>` is non-standard.
+   9. `#include <sys/syslimits.h>` is non-standard.
+   10. The file ends abruptly with `static bool spec_types_is_default(const common_params & params) {`. I will keep it as is, but maybe add a closing brace if it's obviously cut off? The prompt says "from the first line to the last", so I'll just output exactly what's there, but fix the includes. I'll add a comment noting the truncation if needed, but I'll just output the code.
+
+   Let's carefully verify the `#include <cinttypes>` fix. It's a common typo for `cstdint`.
+   Let's verify `#include <linux/limits.h>`. Linux uses `<limits.h>`.
+   Let's verify `#include <sys/syslimits.h>`. Usually `<limits.h>`.
+   I will fix these three includes.
+
+   Are there any other bugs?
+   - `#include <shellapi.h>` -> Actually, it's `<shellapi.h>` in some Windows SDKs, but often `<shlwapi.h>`. I'll leave it.
+   - `#include <windows.h>` -> fine.
+   - `#include <thread> // for hardware_concurrency` -> fine.
+   - `#include <cinttypes>` -> fix.
+   - `#include <linux/limits.h>` -> fix.
+   - `#include <sys/syslimits.h>` -> fix.
+   - `#include <string_view>` -> I'll add it to be safe for `std::string_view`.
+   - `#include <functional>` is missing! `std::function` is used extensively. I'll add `#include <functional>`.
+   - `#include <regex>` is there.
+   - `#include <sstream>` is there.
+   - `#include <map>` is there.
+   - `#include <vector>` is there.
+   - `#include <unordered_map>` is there.
+   - `#include <unordered_set>` is there.
+   - `#include <algorithm>` is there.
+   - `#include <limits>` is there.
+   - `#include <string>` is there.
+
+   Let's check `#include <functional>` in the first file. It's missing. I'll add it.
+   In the second file, `#include <functional>` is also missing. I'll add it.
+
+   Also, `#include <cinttypes>` -> `cstdint`.
+   `#include <linux/limits.h>` -> `limits.h`.
+   `#include <sys/syslimits.h>` -> `limits.h`.
+
+   Let's scan for other potential issues:
+   - `static std::initializer_list<enum llama_example> mm

@@ -1,0 +1,201 @@
+run 23814 | rampool11-planner-simple | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 43.22 t/s | prompt 2190.6 t/s | 4096 tokens | args: -np 1 | power 595 W | 2026-11-07 18:44:52
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line, first to last, with every bug fixed and each change marked by comment. Do not summarise, skip unchanged, stop early.
+
+We have huge source file? It includes two files concatenated? User says // file: common/json-schema-to-grammar.cpp then later // file: common/arg.cpp. They ask complete fixed version of following source file. It appears two files? Maybe they expect fix bugs in provided source. Need output entire code with fixes marked by comments. Need identify bugs.
+
+We need analyze code. It's from llama.cpp? json-schema-to-grammar.cpp and arg.cpp? The provided source includes two files? Maybe they want fixed version of entire provided source (two files). Need produce complete fixed version. Need be careful: huge output. Need include every line unchanged except fixes with comments. Need not summarize. Need likely fix compile/runtime bugs.
+
+Let's inspect code for bugs.
+
+First file json-schema-to-grammar.cpp:
+Includes. using json = common_json;
+build_repetition:
+- if max_items == 0 return ""; if min_items==0 max_items==1 return item_rule + "?".
+- separator empty: if min_items==1 && !has_max return +; if min_items==0 && !has_max return *; return {min,max}
+- with separator: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?"; return result.
+Potential bug: if max_items == 0 handled. If min_items > max_items? maybe not. If max_items=1 and min_items=0 with separator? returns item_rule? Let's see: has_max true, min=0 max=1: result = item_rule + " " + build_repetition(...,0,0). build_repetition max=0 returns "" => "item_rule " trailing space. Then min=0 => "(item_rule )?" maybe okay? But if max_items=1 should just item_rule? Could be bug. Original llama.cpp build_repetition? Let's recall. In llama.cpp common/json-schema-to-grammar.cpp:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+Maybe original has if (min_items == 0 && max_items == 1) return item_rule + "?"; before separator? It does. For separator max=1 min=0 returns item_rule? Wait if min=0 max=1 returns item_rule + "?" before separator, so okay. For min=1 max=1 returns item_rule? It goes separator: result = item_rule + " " + build_repetition(...,0,0) => item_rule + " "; min not 0 => trailing space. Could be bug? Original maybe if min_items == max_items? Let's check. If min=1 max=1 with separator should item_rule. But code returns trailing space. Is that a bug? Maybe grammar tolerates trailing space? But likely bug. However user likely expects known bugs from a diff? Need infer.
+
+build_min_max_int:
+- uniform_range lambda: uses string_repeat. Need check bug: if from_sub == sub_zeros: digit_range(from[i], to[i] - 1); out << " "; more_digits(sub_len, sub_len); But if from[i] > to[i]-1? maybe not. If from_sub != sub_zeros: out << "[" << from[i] << "] "; out << "("; uniform_range(from_sub, sub_nines); out << ")"; if (from[i] < to[i] - 1) { out << " | "; if (to_sub == sub_nines) { digit_range(from[i] + 1, to[i]); to_reached = true; } else { digit_range(from[i] + 1, to[i] - 1); } out << " "; more_digits(sub_len, sub_len); } if (!to_reached) { out << " | "; digit_range(to[i], to[i]); out << " "; uniform_range(sub_zeros, to_sub); } out << ")";
+Potential bug: if from[i] == to[i]? But uniform_range called after common prefix, so from[i] != to[i] if both have char. Good.
+- In has_min && has_max: if min<0 max<0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value, out, decimals_left, true); out << ")"; return;
+Potential overflow if min_value == INT64_MIN? -min_value overflow. But maybe not.
+- if min_value < 0: out << "\"-\" ("; build_min_max_int(0, -min_value, out, decimals_left, true); out << ") | "; min_value = 0;
+Potential if min_value INT64_MIN overflow.
+- for digits loop: uniform_range(min_s, string_repeat("9", digits)); min_s = "1" + string_repeat("0", digits); out << " | "; uniform_range(min_s, max_s);
+Potential if min_s length > digits? okay.
+- less_decimals = std::max(decimals_left - 1, 1);
+- has_min: if min_value < 0: out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1);
+Potential if min_value negative and top_level? This branch for has_min only (no max). For min<0, grammar should allow negative numbers <= min? Actually if min_value < 0 and no max, allowed values >= min_value, includes negative from min to -1 and nonnegative. The branch: out << "\"-\" ("; build_min_max_int(INT64_MIN, -min_value, out, decimals_left, false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1);
+But build_min_max_int(INT64_MIN, -min_value) with has_min && has_max? If min_value=-5, -min_value=5, build_min_max_int(INT64_MIN,5) has_min true has_max true, min<0 max>=0: out "- (0..5) | 0..INT64_MAX"? That seems wrong. Original? Let's recall llama.cpp build_min_max_int. It might be:
+if (has_min) {
+  if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false);
+    out << ") | [0] | [1-9] ";
+    more_digits(0, decimals_left - 1);
+  } ...
+}
+Maybe yes.
+- has_max: if max_value >=0: if top_level out negative; build_min_max_int(0,max_value,out,decimals_left,true); else out << "\"-\" ("; build_min_max_int(-max_value, INT64_MAX, out, decimals_left, false); out << ")";
+Potential if max_value negative: allowed <= negative, i.e. negative numbers with absolute >= -max_value. build_min_max_int(-max_value, INT64_MAX) has_min true no max? Actually max INT64_MAX means has_max false? std::numeric_limits<int64_t>::max() => has_max false. So builds >= -max_value. Good.
+
+PRIMITIVE_RULES:
+- decimal-part [0-9]{1,16}
+- integral-part [0] | [1-9] [0-9]{0,15}
+- number: ("-"? integral-part) ("." decimal-part)? ([eE] [-+]? integral-part)?
+- object: "\"{\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \"}\""
+- array: "\"[\" space ( value (\",\" space value)* )? space \"]\""
+- uuid: "\"\\\"\" [0-9a-fA-F]{8} ... "\"\\\"\""
+- char: "[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})"
+- string: "\"\\\"\" char* \"\\\"\""
+Potential bug: char rule missing support for escaped unicode? okay.
+
+STRING_FORMAT_RULES:
+- date: [0-9]{4} "-" ( "0" [1-9] | "1" [0-2] ) "-" ( "0" [1-9] | [1-2] [0-9] | "3" [0-1] )
+Bug: month day? For date: month should ( "0" [1-9] | "1" [0-2] ) okay. Day: ( "0" [1-9] | [1-2] [0-9] | "3" [0-1] ) okay.
+- time: ([01] [0-9] | "2" [0-3]) ":" [0-5] [0-9] ":" [0-5] [0-9] ( "." [0-9]{3} )? ( "Z" | ( "+" | "-" ) ( [01] [0-9] | "2" [0-3] ) ":" [0-5] [0-9] )
+Potential bug: hour [01] [0-9] matches 00-19, okay; [01] includes 0 and 1. But minute? okay.
+- date-time: date "T" time
+- date-string etc.
+
+is_reserved_name: inserts root, PRIMITIVE_RULES, STRING_FORMAT_RULES. okay.
+
+GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]") okay. GRAMMAR_RANGE_LITERAL_ESCAPE_RE maybe unused.
+GRAMMAR_LITERAL_ESCAPES includes '-' and ']' but escape regex doesn't include them. okay.
+
+replacePattern: uses std::regex_search(searchStart, searchEnd, match, regex). But match is std::smatch, iterators are std::string::const_iterator. std::regex_search with const_iterator requires std::cmatch? Actually std::regex_search(InputIterator first, InputIterator last, match_results<...>& m, const regex& e) where match_results iterator type must be InputIterator? std::smatch is match_results<std::string::const_iterator>, okay. But match.position() returns difference_type. result.append(searchStart, searchStart + match.position()); okay. searchStart = match.suffix().first; okay.
+
+format_literal: replacePattern(literal, GRAMMAR_LITERAL_ESCAPE_RE, ...). It escapes \r \n " \. But if literal contains ']' or '-'? not needed for literal. okay.
+
+gbnf_escape_length: if pos+1 >= length or pattern[pos] != '\\' return 0. switch pattern[pos+1]. For 'x','u','U' n_hex. Then if pos+2+n_hex > length return 0. for i pos+2 to pos+2+n_hex check hex. return 2+n_hex. For simple escapes returns 2. Good.
+
+class common_chat_schema_converter:
+friend build_grammar.
+private:
+_dotall; _rules; _refs_being_resolved; _errors; _warnings.
+template as static_cast.
+_add_rule: esc_name regex_replace. If _rules.find(esc_name)==end || _rules[esc_name]==rule. else i=0 while find(esc_name+i)!=end && _rules[...]!=rule i++; key=...; return.
+Potential bug: if esc_name exists with different rule, and esc_name+"0" exists with same rule? loop stops if same rule, returns existing key. okay.
+
+_generate_union_rule: rules.reserve; for i rules.push_back(visit(*alt_schemas[i], name + (name.empty() ? "alternative-" : "-") + std::to_string(i))); return string_join(rules, " | ");
+Potential bug: if name empty, name + "alternative-" + i. If not empty, name + "-" + i. okay.
+
+_visit_pattern: snapshot _rules; try _pattern_to_rule; catch unsupported: revert, warning, return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string"))); catch invalid: revert, error, return "";
+Potential bug: if _pattern_to_rule throws std::regex_error? not caught. But maybe okay.
+
+_pattern_to_rule:
+if pattern length <2 or front != '^' or back != '$' throw unsupported.
+sub_pattern = pattern.substr(1, pattern.length()-2);
+size_t i=0,length; int paren_depth=0;
+using literal_or_rule = pair<string,bool>;
+to_rule: is_literal ? "\"" + s + "\"" : s;
+transform lambda:
+seq vector.
+get_dot: if _dotall rule = "[\\U00000000-\\U0010FFFF]" else "[^\\x0A\\x0D]"; return _add_rule("dot", rule);
+join_seq: merges consecutive literals. flush_literal returns bool. for item: if literal literal += item.first; else flush_literal(); ret.push_back(item). flush_literal. results to_rule. return make_pair(string_join(results," "), false).
+Potential bug: join_seq returns pair with first joined string, second false. If seq empty, returns ("", false). Then to_rule returns ""? Could produce empty rule. But maybe not.
+
+while i<length:
+c = sub_pattern[i]
+if c == '.': seq.emplace_back(get_dot(), false); i++;
+else if c == '(':
+ i++;
+ if i<length && sub_pattern[i]=='?':
+   if i+1<length && sub_pattern[i+1]==':': i+=2;
+   else throw unsupported
+ paren_depth++;
+ if paren_depth > MAX_PATTERN_DEPTH throw unsupported
+ seq.emplace_back("(" + to_rule(transform()) + ")", false);
+else if c == ')':
+ i++;
+ if paren_depth == 0 throw invalid
+ paren_depth--;
+ return join_seq();
+else if c == '^' || c == '$': throw unsupported
+else if c == '[':
+ square_brackets = string(1,c); i++;
+ while i<length && sub_pattern[i] != ']':
+   if sub_pattern[i]=='\\':
+      escape_length = gbnf_escape_length(sub_pattern,i);
+      if 0 throw unsupported
+      square_brackets += sub_pattern.substr(i, escape_length);
+      i += escape_length;
+   else square_brackets += sub_pattern[i]; i++;
+ if i>=length throw invalid
+ square_brackets += ']'; i++;
+ seq.emplace_back(square_brackets,false);
+else if c == '|': seq.emplace_back("|", false); i++;
+else if c == '*' || '+' || '?':
+ if seq.empty() throw invalid
+ seq.back() = make_pair(to_rule(seq.back()) + c, false);
+ i++;
+else if c == '{':
+ curly_brackets = string(1,c); i++;
+ while i<length && sub_pattern[i] != '}': curly_brackets += sub_pattern[i]; i++;
+ if i>=length throw unsupported
+ curly_brackets += '}'; i++;
+ auto nums = string_split(curly_brackets.substr(1, curly_brackets.length()-2), ",");
+ int min_times=0, max_times=INT_MAX;
+ if nums.size()!=1 && !=2 throw unsupported
+ try:
+  if size==1 min=max=stoi(nums[0]); else { if !nums[0].empty() min=stoi(nums[0]); if !nums[1].empty() max=stoi(nums[1]); }
+ catch logic_error throw unsupported
+ if seq.empty throw invalid
+ auto &last=seq.back(); auto &sub=last.first; auto sub_is_literal=last.second;
+ if !sub_is_literal:
+   string & sub_id = sub_rule_ids[sub];
+   if sub_id.empty() sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+   sub = sub_id;
+ seq.back().first = build_repetition(sub_is_literal ? "\"" + sub + "\"" : sub, min_times, max_times, "");
+ seq.back().second=false;
+else:
+ literal string; is_non_literal lambda.
+ while i<length:
+  if sub_pattern[i]=='\\':
+    if i == length-1 throw invalid
+    next = sub_pattern[i+1];
+    if ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.find(next)!=end:
+       i++; literal += sub_pattern[i]; i++;
+    else:
+       escape_length = gbnf_escape_length(sub_pattern,i);
+       if 0 throw unsupported
+       literal += sub_pattern.substr(i, escape_length);
+       i += escape_length;
+  else if sub_pattern[i]=='"': literal += "\\\""; i++;
+  else if (!is_non_literal(sub_pattern[i]) && (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+       literal += sub_pattern[i]; i++;
+  } else break;
+ if literal.empty() throw unsupported
+ seq.emplace_back(literal,true);
+
+After loop: auto rule = to_rule(transform()); if paren_depth !=0 throw invalid; return _add

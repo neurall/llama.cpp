@@ -1,0 +1,25 @@
+run 23819 | rampool13-variant-trials | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.78 t/s | prompt 601.0 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 19:02:47
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `max_items == 0`, returns "" — but what if `min_items > 0`? That would be an inconsistent schema (min > max), and returning empty string silently accepts it. Actually returning "" means the rule matches empty, which would fail if min_items > 0. Hmm, actually returning "" as a rule content would produce an empty rule which might be invalid GBNF. Let me think... If `max_items == 0` and `min_items == 0`, empty is correct. If `min_items > 0` and `max_items == 0`, the schema is contradictory; returning "" (empty rule) may produce invalid grammar output like `foo ::= ` — actually the rule would be `item_rule + ""`? No wait, it returns "" directly, so the rule content is empty. In GBNF, an empty rule might be a syntax error. This is an edge case worth noting.
+   - In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and `min_items == 1`, then inner call gets max_items = 0, returns "", so result is `item_rule + " " + ""` = `item_rule ` with trailing space. Hmm, that would produce `"[" space item_rule  space "]"` with a double space — probably harmless but sloppy. Actually wait: min_items=1, max_items=1: inner repetition gets min=0, max=0 → returns "". So result = item_rule + " " + "" = "item_rule ". Then since min_items != 0, no "?" appended. So the rule has a trailing space. GBNF parsers might tolerate trailing whitespace. Minor.
+   - Also potential issue: `max_items - 1` when `max_items` could be... has_max means max_items != INT_MAX, so max_items >= 1 here (since max_items == 0 was handled). OK.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could be a static helper function.
+   - `decimals_left = 16` default; recursion decrements.
+   - In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == INT64_MIN` and negative... wait, has_min means min_value != INT64_MIN. If min_value < 0 and max_value < 0, then -max_value and -min_value are positive, fine.
+   - If `min_value < 0` and `max_value >= 0`: emits `"-" (...) | ` then sets min_value = 0 and continues. OK.
+   - Potential overflow: `-min_value` when min_value == INT64_MIN — but has_min is false in that case, so we don't hit that. Actually wait: in the `has_min` only branch (no max): `if (min_value < 0) { out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...) }` — here min_value < 0 and has_min true, so min_value != INT64_MIN, so -min_value is fine (max is INT64_MAX = -INT64_MIN - 1, so -min_value <= INT64_MAX). OK.
+   - `std::stoll(min_s.substr(1))` — min_value > 9 here so substr(1) is at least one digit; stoll could overflow? min_value is int64, to_string gives all digits, substr(1) drops first digit, value < min_value so no overflow. OK.
+   - The `uniform_range` lambda captures by reference and recurses via std::function — fine.
+   - Edge: `digit_range(from[i], to[i] - 1)` — if from[i] == to[i]... can that happen? In uniform_range, after skipping common prefix, from[i] != to[i] (since loop stopped when they differ, or one ended). Actually the loop stops when `from[i] == to[i]` fails, so from[i] != to[i] at that point (if both

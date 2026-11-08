@@ -1,0 +1,44 @@
+run 23735 | rampool6 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.83 t/s | prompt 507.8 t/s | 1024 tokens | args: -np 1 --moe rampool=1 | power 595 W | 2026-11-07 14:40:31
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: when `min_items > 0` and `max_items == 0`... returns "" which is fine.
+- When separator_rule is non-empty and `min_items == 0`, `max_items == 1`: the code goes to the separator branch: `item_rule + " " + build_repetition(...)` with min 0, max 0 → inner returns "" → result = item_rule + " " → then wrapped in `(...)?`. Hmm, that produces `item_rule ?` effectively but with trailing space? Actually `result = item_rule + " " + ""` = `item_rule + " "`. Then `(item_rule )?`. That's a bit odd but works. Wait, actually for min_items == 0 && max_items == 1 with separator, the correct grammar would be `(item_rule)?`. The generated `(item_rule )?` is equivalent. OK.
+
+- Edge: `min_items == 1 && max_items == 1` with separator: inner repetition gets min 0, max 0 → "" → result = `item_rule ` → fine.
+
+- Edge: `min_items == 2, max_items == 3`: inner gets min 1, max 2 → `(sep item){1,2}` → fine.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a static helper.
+- `decimals_left = 16` default. There's a subtle issue: `more_digits(0, decimals_left - 1)` etc.
+- Potential bug: in the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN` and `max_value < 0`, then `-min_value` overflows (UB). Wait: has_min = min_value != INT64_MIN. If min_value == INT64_MIN and max_value < 0, then has_min is false, so we go to the `has_max` branch: `max_value < 0` → `out << "\"-\" ("; build_min_max_int(-max_value, INT64_MAX, ...)`. `-max_value` where max_value > INT64_MIN is fine. OK.
+- But in the has_min && has_max branch: min_value < 0 && max_value < 0: `-max_value` and `-min_value`. Since has_min means min_value != INT64_MIN, `-min_value` is safe. `-max_value`: max_value != INT64_MAX (has_max true), and max_value < 0 so -max_value > 0, safe.
+- `min_value < 0` (and max_value >= 0): `build_min_max_int(0, -min_value, ...)` — safe since min_value != INT64_MIN.
+- In the has_min-only branch: `min_value < 0`: `build_min_max_int(INT64_MIN, -min_value, ...)`. `-min_value` safe since min_value != INT64_MIN... wait, has_min means min_value != INT64_MIN, so yes safe.
+- `std::stoll(min_s.substr(1))` — min_s is a positive number string here (min_value > 9), so fine.
+
+- One potential issue: `more_digits` uses `std::numeric_limits<int>::max()` check for max_digits but max_digits is passed as int; `less_decimals` etc. Fine.
+
+- Recursion depth: `build_min_max_int` recurses on digits; bounded by number length (max ~19 digits) and decimals_left=16. Fine.
+
+3. `SPACE_RULE`: `"| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"` — note it starts with `|` which is intentional in llama.cpp grammars (empty alternative allowed). OK.
+
+4. `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` — static unordered_maps of BuiltinRule. Fine.
+
+5. `is_reserved_name` — uses a static local initialized from a lambda

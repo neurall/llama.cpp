@@ -1,0 +1,26 @@
+run 23741 | rampool7 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 14.86 t/s | prompt 326.0 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 14:58:05
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `min_items` is 0 and `max_items` is 1, the inner call gets min=0, max=0, which returns "" — then result = item_rule + " " and then wrapped in `(...)?`. Hmm, actually if min_items == 0 and max_items == 1 with separator: result = item_rule + " " + build_repetition("(sep item)", 0, 0) = item_rule + " " + "" = item_rule + " ", then result = "(" + item_rule + " )?" — that leaves a trailing space inside the parens: `(item )?`. Wait let me check: `result = item_rule + " " + build_repetition(...)` — if build_repetition returns "", result = item_rule + " " (with trailing space). Then `result = "(" + result + ")?"` = `(item )?`. That's a trailing space in the grammar which is harmless but sloppy. Actually wait, is it harmless? In GBNF, spaces are literal characters. Hmm, actually in this grammar format, spaces between tokens are just formatting whitespace and ignored by the parser? Let me think. In llama.cpp GBNF parsing, whitespace between symbols is ignored. So `(item )?` is fine. OK.
+
+   - Edge case: `min_items == 0 && max_items == 1` returns `item_rule + "?"` — but if item_rule is a rule name, that's fine.
+
+   - Potential bug: when `max_items == 0` returns "" — but if min_items > 0, that's contradictory (min > max). The JSON schema validation would reject that, but the grammar would allow anything. Actually returning "" means the rule matches empty string, which would be wrong if min_items > 0. But schema with min > max is invalid anyway.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `decimals_left = 16` default. The recursion `less_decimals = std::max(decimals_left - 1, 1)` — so it never goes below 1, meaning the depth is bounded... wait, actually `less_decimals = max(decimals_left - 1, 1)` means once decimals_left hits 1, it stays 1 forever. That could cause infinite recursion? Let's see: in the `min_value > 9` branch, it calls `build_min_max_int(std::stoll(min_s.substr(1)), ..., less_decimals, false)`. Each call reduces the number of digits by 1 (since min_s.substr(1) has one fewer digit), so recursion terminates based on digits, not decimals. OK.
+   - `std::stoll(min_s.substr(1))` — if min_s is like "10", substr(1) = "0", stoll = 0. Fine. But what if min_value has more than 16 digits? int64 max is 9223372036854775807 which is 19 digits. Hmm, `decimals_left` starts at 16. For a 19-digit number... the recursion would go 19 levels deep but decimals_left would clamp at 1. Is there a correctness issue? The `more_digits(0, decimals_left - 1)` calls with decimals_left=1 would give `more_digits(0, 0)` which outputs `[0-9]{0}` — hmm, `{0}` repetition. That's weird but maybe valid.
+   - Actually wait, there's a potential issue: `more_digits` with `min_digits == 0 && max_digits == 0` outputs `[0-9]{0}`. In GBNF, `{0}` might not be supported? Actually the grammar parser supports `{0}`? Not sure. Let me not go too deep.
+
+   - Potential bug in `uniform_range`: `digit_range(from[i], to[i] - 1)` — if `

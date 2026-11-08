@@ -1,0 +1,30 @@
+run 23780 | rampool11-planner-simple | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.87 t/s | prompt 596.0 t/s | 1024 tokens | args: -np 1 | power 595 W | 2026-11-07 17:00:26
+
+<think>Let me analyze this code carefully. The user has provided two source files from what appears to be the llama.cpp project: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which is cut off mid-function).
+
+Let me do a thorough code review of both files.
+
+**File 1: json-schema-to-grammar.cpp**
+
+Let me look for issues:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- If `max_items == 0` but `min_items > 0`, this returns empty string — that's a contradiction in the schema (min > max). It silently produces an empty rule. Might be worth noting.
+- When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, then `max_items - 1` is fine. But if `max_items` is 1 and separator... `build_repetition(..., min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `min_items == 1`, then inner min is 0, and inner max is 0 (if max_items == 1), so inner returns "" — result would be `item_rule + " " + ""` = `item_rule ` with trailing space. Hmm, actually let's check: `max_items == 1`, `min_items == 1`: inner call gets min 0, max 0 → returns "". So result = `item_rule + " " + ""` = "item_rule " — trailing space. That's a minor formatting bug in the grammar output (trailing whitespace in rule). Actually wait, does it matter? GBNF rules with trailing space... the rule text would be `foo ::= "a" ` — trailing space in the rule definition. GBNF parser might handle it, but it's sloppy. Actually let me double check: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, 0)` returns "" because max_items == 0. So result = item_rule + " " + "" = "item_rule ". Yes trailing space. Minor.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a free function since it's already a free static function. Actually it's recursive via std::function capture. It's already static free function, so it could just call itself directly without std::function. The std::function is used for `uniform_range` lambda which recurses. Since `build_min_max_int` is a free function, `uniform_range` could be a static helper function too. Minor style point.
+- `decimals_left` default 16, decrements. `less_decimals = std::max(decimals_left - 1, 1)`.
+- Potential issue: `std::stoll(min_s.substr(1))` — min_s is at most 19-20 digits for int64. `min_s.substr(1)` could overflow stoll? If min_value is e.g. 9999999999999999999... wait int64 max is 9223372036854775807 (19 digits). substr(1) of that is 223372036854775807 which fits. But what about min_value = 1000000000000000000? substr(1) = 0... fine. Actually the first digit path: min_value > 9, so min_s has ≥ 2 chars. substr(1) is at most 18 digits, fits in int64. OK.
+- In the `has_min && has_max` branch with negative handling: `build_min_max_int(-max_value, -min_value, ...)` — if min_value == INT64_MIN and max_value < 0, then -min_value overflows (UB). Wait: has_min means min_value != INT64_MIN. So min_value > INT64_MIN, so -min_value is fine. And -max_value: max_value < 0 so fine. OK.
+- In `has_min` branch: `min_value < 0` → `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. -min_value where min_value != INT64_MIN (since has_min). OK.
+- Hmm, but wait: in the has_min && has_max branch, if min_value < 0 and max_value >= 0: it emits `"-" (...) | ` then sets min_value = 0 and continues
