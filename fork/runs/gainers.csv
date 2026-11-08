@@ -1,7 +1,7 @@
 name,model,n,test,tokens,args,extra
-mimo-i,mimo,2,pfbest1k,1024,,
-mimo-io,mimo,2,edit4c,1024,,
-mimo-o,mimo,2,tetrisc,1024,,
+mimo-i,mimo,2,pfbest1k,1024,-nm 85,
+mimo-io,mimo,2,edit4c,1024,-nm 85,
+mimo-o,mimo,2,tetrisc,1024,-nm 85,
 qni4-i,qn_iq4xs,3,pfbest1k,1024,,
 qni4-io,qn_iq4xs,3,edit4c,1024,,
 qni4-o,qn_iq4xs,3,tetrisc,1024,,
