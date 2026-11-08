@@ -2235,13 +2235,35 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 // this also allows using partial offloading when the model size exceeds the metal buffer
                 //     size, but not the RAM size
                 void * addr = ml.mappings.at(idx)->addr();
+                // fork: a Vulkan buffer is one VkBuffer, capped by the device (2 GiB on a Radeon 780M) and the import needs page-aligned ends: a range is
+                // imported as overlapping page-aligned chunks; each overlaps the next by the largest tensor, so every tensor lies whole in one of them
+                const bool   vk_chunks = strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "Vulkan") == 0;
+                const size_t page      = 65536;   // covers minImportedHostPointerAlignment (4 KiB) and the Windows view granularity
+                const size_t map_end   = GGML_PAD(ml.mappings.at(idx)->size(), 4096);
+                const size_t chunk     = std::max(ggml_backend_buft_get_max_size(buft) / page * page, page);
 
                 for (const auto & range : ml.get_mapping_ranges(idx, ctx)) {
-                    ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + range.first, range.last - range.first, max_size);
-                    if (buf == nullptr) {
-                        throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
+                    if (!vk_chunks) {
+                        ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + range.first, range.last - range.first, max_size);
+                        if (buf == nullptr) {
+                            throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
+                        }
+                        bufs.emplace_back(buf);
+                        continue;
                     }
-                    bufs.emplace_back(buf);
+                    if (max_size + page >= chunk) {
+                        throw std::runtime_error(format("a %zu MiB tensor does not fit one %s import of %zu MiB", max_size >> 20, ggml_backend_buft_name(buft), chunk >> 20));
+                    }
+                    for (size_t s0 = range.first / page * page; ; ) {
+                        const size_t e0 = std::min(std::min(s0 + chunk, GGML_PAD(range.last, 4096)), map_end);
+                        ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + s0, e0 - s0, max_size);
+                        if (buf == nullptr) {
+                            throw std::runtime_error(format("unable to import %zu MiB of mapped weights into a %s buffer", (e0 - s0) >> 20, ggml_backend_buft_name(buft)));
+                        }
+                        bufs.emplace_back(buf);
+                        if (e0 >= range.last) { break; }
+                        s0 = (e0 - max_size) / page * page;   // the next chunk starts a largest tensor before this one ends
+                    }
                 }
             }
         } else {

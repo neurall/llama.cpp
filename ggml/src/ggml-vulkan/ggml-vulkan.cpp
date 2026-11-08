@@ -15589,7 +15589,10 @@ static void ggml_backend_vk_device_get_props(ggml_backend_dev_t dev, struct ggml
     props->caps = {
         /* .async                 = */ true,
         /* .host_buffer           = */ true,
-        /* .buffer_from_host_ptr  = */ false,
+        // fork: an iGPU reads the host RAM it shares in place (mapped weights imported, no copy into the device-local heap). Opt-in while measured:
+        // upstream keeps import off on AMD (amdgpu on Linux re-faults the imported pages on every submission); the Windows driver is not known yet.
+        // shortcut: environment switch GGML_VK_IGPU_HOST_IMPORT=1, make it a default per driver once measured
+        /* .buffer_from_host_ptr  = */ ctx->is_integrated_gpu && getenv("GGML_VK_IGPU_HOST_IMPORT") != nullptr && atoi(getenv("GGML_VK_IGPU_HOST_IMPORT")) != 0,
         /* .events                = */ true,
         /* .mmap_support          = */ !ctx->is_integrated_gpu,
     };
