@@ -66,6 +66,7 @@ struct rp_tensor {
     const void * key  = nullptr;
     int          fd   = -1, dfd = -1;   // the file; the same file opened O_DIRECT, -1: not possible here
     size_t       off  = 0, esz = 0;     // where element 0 lies, element bytes
+    size_t       pad  = 0;              // bytes a kernel reads past an element: its block is esz + pad and carries them (the next element's; zeros behind the last)
     int64_t      n    = 0;
     int          cls  = 0;
     int32_t      idx  = 0;
@@ -274,6 +275,19 @@ bool rp_start(rp_pool * p, rp_tensor & t, int64_t e) {
     return true;
 }
 
+// the read rp_start just queued is taken back: the lock has been held since, so no reader claimed it. The block goes to the free list (its evicted owner is gone: a rare loss).
+void rp_unstart(rp_pool * p, rp_tensor & t, int64_t e) {
+    rp_rec & r = t.rec[e];
+    rp_class & c = p->cls[t.cls];
+    for (auto it = p->demand.rbegin(); it != p->demand.rend(); ++it) {
+        if (it->t == &t && it->e == e) { p->demand.erase(std::next(it).base()); break; }
+    }
+    c.owner[r.slot] = rp_owner();
+    c.free.push_back((uint32_t) r.slot);
+    r.slot  = -1;
+    r.state = RP_OUT;
+}
+
 void rp_reader(rp_pool * p) {
     rp_thread_setup();
     const size_t bn = std::max<size_t>(p->rq, RP_SECTOR);
@@ -295,7 +309,9 @@ void rp_reader(rp_pool * p) {
         rp_class & c = p->cls[t.cls];
         char * dst = c.at((uint32_t) r.slot);   // the block is ours: its owner changes only under RP_IN
         // O_DIRECT: a buffered read leaves a second copy in the page cache, which then pushes out the slices the pool does not hold (rampool3, GLM 3.5 warm decode 13.0 -> 6.5 t/s)
-        const bool ok = bounce != nullptr && rp_read(p, t.dfd, t.fd, dst, t.esz, t.off + (uint64_t) j.e * t.esz, bounce, bn);
+        const size_t pad = j.e + 1 < t.n ? t.pad : 0;   // the next element's first bytes come along; behind the last element zeros
+        if (t.pad > pad) { memset(dst + t.esz, 0, t.pad); }
+        const bool ok = bounce != nullptr && rp_read(p, t.dfd, t.fd, dst, t.esz + pad, t.off + (uint64_t) j.e * t.esz, bounce, bn);
         {
             std::lock_guard<std::mutex> lk(p->mu);
             if (ok) {
@@ -319,20 +335,20 @@ void rp_reader(rp_pool * p) {
 
 extern "C" {
 
-void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n, size_t esz, int32_t kind) {
+void ggml_rampool_add_fork(const void * key, int fd, size_t file_off, int64_t n, size_t esz, size_t pad, int32_t kind) {
     if (g_rp == nullptr) { g_rp = new rp_pool(); }
     rp_pool * p = g_rp;
     auto t = std::make_unique<rp_tensor>();
-    t->key = key; t->fd = fd; t->off = file_off; t->n = n; t->esz = esz; t->idx = (int32_t) p->tensors.size();
+    t->key = key; t->fd = fd; t->off = file_off; t->n = n; t->esz = esz; t->pad = pad; t->idx = (int32_t) p->tensors.size();
     t->rec.resize((size_t) n);
     t->ptr.reset(new std::atomic<const char *>[(size_t) n]);
     for (int64_t e = 0; e < n; ++e) { t->ptr[e].store(nullptr, std::memory_order_relaxed); }
     int c = -1;
-    for (size_t i = 0; i < p->cls.size(); ++i) { if (p->cls[i].size == esz && p->cls[i].kind == kind) { c = (int) i; } }
+    for (size_t i = 0; i < p->cls.size(); ++i) { if (p->cls[i].size == esz + pad && p->cls[i].kind == kind) { c = (int) i; } }
     if (c < 0) {
         c = (int) p->cls.size();
         p->cls.emplace_back();
-        p->cls.back().size = esz;
+        p->cls.back().size = esz + pad;
         p->cls.back().kind = kind;
     }
     t->cls = c;
@@ -428,9 +444,11 @@ void ggml_rampool_fill_fork(void) {
         for (int64_t e = 0; e < t.n; ) {
             if (t.rec[e].slot < 0) { ++e; continue; }
             int64_t b = e + 1;
-            while (b < t.n && t.rec[b].slot == t.rec[e].slot + (b - e) && (uint32_t) t.rec[b].slot / c.per_chunk == (uint32_t) t.rec[e].slot / c.per_chunk) { ++b; }
-            uint64_t off = t.off + (uint64_t) e * t.esz, end = t.off + (uint64_t) b * t.esz;
+            while (t.pad == 0 && b < t.n && t.rec[b].slot == t.rec[e].slot + (b - e) && (uint32_t) t.rec[b].slot / c.per_chunk == (uint32_t) t.rec[e].slot / c.per_chunk) { ++b; }   // padded blocks: one element per range (file neighbours are esz apart, their blocks esz + pad)
+            const size_t pad = b < t.n ? t.pad : 0;   // the next element's first bytes come along; behind the last element zeros
+            uint64_t off = t.off + (uint64_t) e * t.esz, end = t.off + (uint64_t) b * t.esz + pad;
             char * dst = c.at((uint32_t) t.rec[e].slot);
+            if (t.pad > pad) { memset(dst + t.esz, 0, t.pad); }
             while (off < end) {
                 const uint64_t cut = std::min(end, (off / piece + 1) * piece);
                 jobs.push_back({ &t, dst, (size_t) (cut - off), off });
@@ -515,30 +533,47 @@ void ggml_rampool_graph_fork(void) {
     if (g_rp) { g_rp->graph.fetch_add(1, std::memory_order_relaxed); }
 }
 
-void ggml_rampool_need_fork(const void * key, const int32_t * ids, int n) {
-    rp_tensor * t = rp_find(key);
-    if (t == nullptr || n <= 0) { return; }
+void ggml_rampool_need_fork(const void * const * keys, int nk, const int32_t * ids, int n) {
     rp_pool * p = g_rp;
+    if (p == nullptr || n <= 0) { return; }
+    rp_tensor * ts[8];
+    int nt = 0;
+    for (int k = 0; k < nk && nt < 8; ++k) { if (rp_tensor * t = rp_find(keys[k])) { ts[nt++] = t; } }
+    if (nt == 0) { return; }
     const uint32_t g = p->graph.load(std::memory_order_relaxed);
     int reading = 0, started = 0, hit = 0, refused = 0;
     std::unique_lock<std::mutex> lk(p->mu);
+    // An element is in RAM in all of its tensors or in none: with one tensor out (its class found no colder victim while the others did) the caller takes the
+    // element as held and the CPU kernel reads the missing tensor through the mapping (DS 12k, build past-in-pool: all major faults in the down tensor's vec_dot,
+    // 1000/s). So one element's reads start together, and when one of them finds no block the ones started are taken back and the element stays out whole.
     for (int i = 0; i < n; ++i) {
         const int64_t e = ids[i];
-        if (e < 0 || e >= t->n) { continue; }
-        rp_rec & r = t->rec[e];
-        r.graph = g;
-        if (r.state == RP_IN) { hit++; continue; }
-        if (r.state == RP_READING) { reading++; continue; }
-        if (rp_start(p, *t, e)) { started++; reading++; } else { refused++; }
+        int begun[8]; int nb = 0, n_out = 0; bool fail = false;
+        for (int k = 0; k < nt; ++k) {
+            rp_tensor * t = ts[k];
+            if (e < 0 || e >= t->n) { continue; }
+            rp_rec & r = t->rec[e];
+            r.graph = g;
+            if (r.state == RP_IN) { hit++; continue; }
+            if (r.state == RP_READING) { reading++; continue; }
+            n_out++;
+            if (!fail && rp_start(p, *t, e)) { begun[nb++] = k; } else { fail = true; }
+        }
+        if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } refused += n_out; }
+        else { started += nb; reading += nb; }
     }
-    p->st_asked += (uint64_t) n; p->st_hit += (uint64_t) hit; p->st_cold += (uint64_t) started; p->st_refused += (uint64_t) refused;
+    p->st_asked += (uint64_t) n * nt; p->st_hit += (uint64_t) hit; p->st_cold += (uint64_t) started; p->st_refused += (uint64_t) refused;
     if (started > 0) { if (started > 1) { p->work_cv.notify_all(); } else { p->work_cv.notify_one(); } }
     if (reading > 0) {
         const int64_t t0 = rp_now_us();
-        int i = 0;
+        int k = 0, i = 0;
         p->done_cv.wait(lk, [&]() {
-            while (i < n && (ids[i] < 0 || ids[i] >= t->n || t->rec[ids[i]].state != RP_READING)) { ++i; }
-            return i == n;
+            for (; k < nt; ++k, i = 0) {
+                const rp_tensor * t = ts[k];
+                while (i < n && (ids[i] < 0 || ids[i] >= t->n || t->rec[ids[i]].state != RP_READING)) { ++i; }
+                if (i < n) { return false; }
+            }
+            return true;
         });
         const uint64_t w = (uint64_t) (rp_now_us() - t0);
         p->st_wait_us += w; p->wait_total_us += w;

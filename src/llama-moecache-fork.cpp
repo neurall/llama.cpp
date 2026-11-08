@@ -411,6 +411,7 @@ struct moe_cache {
     ggml_backend_buffer_type_t pin_buft = nullptr;
     bool                       rp_on = false;      // --moe rampool: the RAM pool holds the expert slices (ggml-rampool-fork.h)
     bool                       rp_evict = false;   // --moe rampool=2: the pool evicts and admits during the run; 1: the fill's set stays (ggml_rampool_evict_fork)
+    bool                       rp_filling = false; // the first fill runs: only then rp_heat ranks what a card holds after all others
     std::vector<ggml_backend_buffer_t> rp_bufs;    // its pinned chunks
     std::vector<ggml_backend_buffer_t> rp_pre;     // 512 MiB pieces pinned before the VRAM pool is sized, handed out as chunks by rp_alloc (rp_prepin)
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
@@ -1235,9 +1236,11 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     const auto it = mc->by_src.find((const ggml_tensor *) key);
     if (it == mc->by_src.end()) { return HUGE_VAL; }
     const layer_state & ls = mc->layers[it->second.first];
-    // a card holds it: with eviction, a RAM copy pays nothing. Without, the fill ranks it by heat too: prompt passes churn the cards, and a hot expert left out of the
-    // pool then comes back from the SSD (rampool3: 17 GiB of card-held slices out of the pool)
-    if (mc->rp_evict && (ls.expert_slot[e] >= 0 || ls.queued[e])) { return HUGE_VAL; }
+    // The fill with eviction on puts what a card holds after all others: the most unique content at the start (the pool admits them later when a card drops them). Eviction
+    // itself does not: a card holds an expert only for a while (GLM 3.5 12k decode: 31 VRAM evictions per token), and every eviction took such a block, so the expert came
+    // back from the SSD once the card dropped it (pinpool-default 2026-11-08: 15424 demand reads, 13.0 s waited in a 74 s decode, decode 13.7 against 14.7 without the
+    // pool). Without eviction the fill ranks card-held experts by heat too: a hot one left out would never come back (rampool3: 17 GiB of card-held slices out of the pool).
+    if (mc->rp_evict && mc->rp_filling && (ls.expert_slot[e] >= 0 || ls.queued[e])) { return HUGE_VAL; }
     return vis_next(mc, ls, (int32_t) e);
 }
 
@@ -7296,8 +7299,11 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
         for (int k = 0; k < 3; ++k) {
             const char * from = nullptr;
             if (ls.src_dfd[k] < 0 || ls.src_fd[k] < 0) { continue; }
-            if (expert_past(mc, ls, k, 0, ts[k], from) > 0) { n_past++; continue; }   // its matmul reads the next expert's bytes: they would not be behind its block
-            ggml_rampool_add_fork(ts[k], ls.src_fd[k], ls.src_offs[k], ts[k]->ne[2], ts[k]->nb[2], (int32_t) ts[k]->type);
+            // bytes its matmul reads past the slice (DS: 40 of 120 tensors): the block carries them, read along (the next expert's; zeros behind the last). Until
+            // 2026-11-08 these tensors stayed out of the pool and every read of them went to the mapping: DS 12k rampool=1 decode 16.2 against 20.9 t/s, 0.5 GB/s SSD
+            const size_t pb = expert_past(mc, ls, k, 0, ts[k], from);
+            n_past += pb > 0;
+            ggml_rampool_add_fork(ts[k], ls.src_fd[k], ls.src_offs[k], ts[k]->ne[2], ts[k]->nb[2], pb, (int32_t) ts[k]->type);
             n_t++; bytes += ggml_nbytes(ts[k]);
         }
     }
@@ -7320,7 +7326,9 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
     // shortcut: rampool=1 keeps the fill's set for the run (heat moves it between runs through the heat file); rampool=2 evicts by heat, slower on GLM 3.5 (pool churn, fork/docs/rampool.md)
     mc->rp_evict = atoi(rv) >= 2;
     ggml_rampool_evict_fork(mc->rp_evict);
+    mc->rp_filling = true;
     ggml_rampool_fill_fork();
+    mc->rp_filling = false;
     struct ggml_rampool_stats st;
     ggml_rampool_stats_fork(&st, true);
     for (auto & ls : mc->layers) {
@@ -7332,7 +7340,7 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
     size_t ringed = 0;
     for (const auto & ls : mc->layers) { for (size_t i = RP_VIS - 1; i < ls.vis.size(); i += RP_VIS) { ringed += ls.vis[i] != 0; } }
     LLAMA_LOG_WARN("moe-cache: rampool: %.1f of %.1f GiB expert slices in RAM (%.1f GiB filled, %d size classes, %zu tensors) = pin budget %.1f - pinned by the loader %.1f GiB, RAM available %.1f GiB, in %.1f s; "
-            "picked by heat (%s): %zu experts with a visit ring (clock %u), the rest by lifetime count; %zu tensors read past their slice stay on the old path\n",
+            "picked by heat (%s): %zu experts with a visit ring (clock %u), the rest by lifetime count; %zu tensors read past their slice (their blocks carry those bytes)\n",
             st.bytes / 1073741824.0, bytes / 1073741824.0, st.used / 1073741824.0, st.classes, n_t, budget / 1073741824.0, used / 1073741824.0, avail / 1073741824.0, (ggml_time_us() - t0) / 1e6,
             heat_from_file ? mc->heat_file.c_str() : "no heat file yet, the state's lifetime counts", ringed, mc->vis_now.load(), n_past);
     llama_moe_decision_fork("stage", "rampool fill", "");
@@ -8644,6 +8652,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     if (ls.rp_tab[k]) {   // --moe rampool: the pool's block (read in now if the pool admits it), held until the copy is done
                         if (const char * pc = ggml_rampool_take_fork(srcs[k], j.expert)) {
                             ggml_backend_tensor_set(dsts[k], pc, (size_t) j.slot*dsts[k]->nb[2], sz);
+                            const char * pc_from = nullptr;
+                            if (const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], pc_from)) {   // the block carries the bytes read past the slice
+                                ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
+                                ggml_backend_tensor_set(&z, pc + sz, 0, pb);
+                            }
                             ggml_rampool_drop_fork(srcs[k], j.expert);
                             continue;
                         }
@@ -9124,7 +9137,10 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
                     if (e >= 0 && e < (int32_t) l.expert_slot.size() && l.expert_slot[e] < 0 && std::find(need.begin(), need.end(), e) == need.end()) { need.push_back(e); }
                 }
             }
-            for (int k = 0; k < 3 && !need.empty(); ++k) { ggml_rampool_need_fork(k == 0 ? pub->up_src : k == 1 ? pub->gate_src : pub->down_src, need.data(), (int) need.size()); }
+            if (!need.empty()) {   // the three tensors in one call: their reads run together and the step waits once, not three times in a row
+                const void * keys[3] = { pub->up_src, pub->gate_src, pub->down_src };
+                ggml_rampool_need_fork(keys, 3, need.data(), (int) need.size());
+            }
             break;
         }
     }
@@ -9184,7 +9200,10 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // not at the RAM rate: its bytes count as the RAM-rate equivalent (user 2026-11-07: the planner is "crippled by ... assumptions"; GLM 3.5 decode sent 2531 of 5651
     // single misses to the CPU at 0.5-0.9 GB/s while the x16 link ran at 10%).
     const double rcm = mc->cpu_gbs_mapped > 0 ? mc->cpu_gbs_mapped * 1e3 : rc;
-    auto mapped = [&](int32_t e) { return ls.src_dfd[0] >= 0 && !(ls.pin_ptr[0] && ls.pin_ptr[0][e].load(std::memory_order_acquire)) && !(ls.rp_tab[0] && ls.rp_tab[0][e]); };
+    // held by the pool only when all three tensors are (the pool admits an expert whole since 2026-11-08; before, an expert with its down tensor out counted as held and the
+    // CPU kernel read that tensor through the mapping: DS 12k 1000 major faults/s)
+    auto in_pool = [&](int32_t e) { return ls.rp_tab[0] && ls.rp_tab[0][e] && ls.rp_tab[1] && ls.rp_tab[1][e] && ls.rp_tab[2] && ls.rp_tab[2][e]; };
+    auto mapped = [&](int32_t e) { return ls.src_dfd[0] >= 0 && !(ls.pin_ptr[0] && ls.pin_ptr[0][e].load(std::memory_order_acquire)) && !in_pool(e); };
     // bytes at the RAM rate that cost the same CPU time. With the pool on, the mapping is not a source (user 2026-11-08: no second copy in the page cache): an expert the pool does
     // not hold is uploaded, read O_DIRECT into the pinned ring (jit_direct_src), never computed from page faults, so its CPU cost is unbounded here and the sort puts it first
     auto cpu_eq = [&](int32_t e) { return mapped(e) && mc->rp_on ? 1e300 : (double) ntok[e] * S * (mapped(e) && rcm > 0 ? rc / rcm : 1.0); };
@@ -9321,7 +9340,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : dr ? dr : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
             if (pb) {
                 ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);
-                ggml_backend_tensor_set_async(be, &z, dr && past_next ? dr + sz : from, 0, pb);
+                ggml_backend_tensor_set_async(be, &z, rp ? rp + sz : dr && past_next ? dr + sz : from, 0, pb);   // the pool's block carries the past bytes
             }
             if (dr) { jit_direct_done(mc, be); }
         }
