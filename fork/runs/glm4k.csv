@@ -1,3 +1,4 @@
 name,model,n,test,tokens,args,extra
 glm30-4k,glm,2,pf4k1k,1024,,
 glm35-4k,glm35,2,pf4k1k,1024,,
+mimo-12k-3,mimo,3,pf12k1k,1024,,
