@@ -12607,6 +12607,10 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // equal to noise, rampool12 rows 23784-23789) and the cross-card traffic grows with the tokens (MiMo 12k 495 against 933 t/s, DS 12k 304 against 530)
         bool tonly[PP_PATHS];
         for (int p = 0; p < PP_PATHS; ++p) { tonly[p] = p == PP_MIX && g_pp_rls[p].n == 0 && n > PP_MIX_COLD; }
+        // The mix's freeze drops the uploads not started yet (llama_moe_cache_pp_freeze_fork, pp_settle), as the prompt chain's graph does: right after a start that is the hot set on its
+        // way, and the fast card stays cold for the session (2026-11-08 forced mix cells, Qwen3.8: 24% of the asked experts found on it against 44%, every pass slower than the stream).
+        // So no try of a mix not known here while uploads run; a known one keeps its mean.
+        if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
         for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);

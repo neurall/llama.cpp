@@ -167,6 +167,7 @@ R1b R1's bound is max(g_mb_auto, min(dec_max, 256)): g_mb_auto (experts / picks)
 The calculated crossover dec_max (in every CAL line) says thousands before a stream pass measured the compute, so it is capped at 256; a chain that ran competes on its mean at any size.
 
 R3b the mix competes on its mean up to 4096 tokens (PP_MIX_COLD): MiMo 418 tokens 3018 ms against 3834, 1016 tokens 3187 against 3907 (2026-11-08); Qwen3.8 IQ3 +18-47% at 1.5-4.5k; GLM 3.5 2.3k +10%. Past 4096 it stays a VOI trial: MiMo 12k 495 against 933 t/s, DS 12k 304 against 530.
+A mix not known here is no candidate while uploads are under way: its freeze drops the queued ones (pp_settle), right after a start the hot set (forced mix cells: 24% found on the fast card against 44%).
 
 R5b a call under GGML_OP_OFFLOAD_MIN_BATCH (32 tokens) streams nothing: its expert matmuls run on the CPU, so the stream family (stream, mix, k) is no candidate when a chain can run, and such a call never
 teaches the stream arms or the SSD rate. Measured 2026-11-08: the prompt's 4-token tail 1.1 s (GLM 3.5) and 1.7 s (DS) on that path, 0.5 and 0.3 s on the decode chain; the 2-token start-up call, priced against the
