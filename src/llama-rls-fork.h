@@ -220,7 +220,9 @@ static inline double rls_ei(double mu, double var, double b) {
 }
 // Known here: the model's parameter uncertainty at this phi is no larger than the noise (phi' P phi <= mu^2, i.e. var <= 2 s2 mu^2): the arm ran at
 // comparable features. A measured arm extrapolated far from where it ran is not known here (the split measured at 10k says little at 2k).
-static inline bool rls_known(const dsf_rls & r, double mu, double var) { return r.n > 0 && var <= 2.0 * r.s2 * mu * mu; }
+// Two samples at least (user 2026-11-08: "decisions on such noisy data? sample 2-3 times to denoise"): MiMo 64k warm let ONE sample of the decode chain
+// (a 137x miss of its calculation) stand as that arm's mean and posterior, and the next calls priced from it.
+static inline bool rls_known(const dsf_rls & r, double mu, double var) { return r.n > 1 && var <= 2.0 * r.s2 * mu * mu; }
 
 // The pick. Among the arms known here: the lowest mean (a learned estimate is never overruled: no tie margin, no veto). Any other arm (a prior, or a
 // model extrapolated far from where it ran) is a trial, run only when its stake pays: expected gain over the calls of this size so far against its

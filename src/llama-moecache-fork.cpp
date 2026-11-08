@@ -12329,10 +12329,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // cold pick - no logged class on Qwen3.6/3.8, GLM, MiMo has a chain win there (-97% to -308%), DeepSeek only below 3k. There they are a trial
         // against an arm known here, and a chain measured here (known) competes on its mean. (a448602c58 had dropped this as a ballpark; the
         // ballpark was the calculated dec_max, this is the measured one.)
-        bool any_known = false;
-        for (int p = 0; p < PP_PATHS; ++p) { any_known = any_known || (known[p] && p != PP_CHAIN && p != PP_DEC); }
         for (const int p : { PP_CHAIN, PP_DEC }) {
-            if (ok[p] && n > (double) g_mb_auto.load(std::memory_order_relaxed) && !known[p] && !any_known) { ok[p] = false; }
+            if (ok[p] && n > (double) g_mb_auto.load(std::memory_order_relaxed) && !known[p]) { ok[p] = false; }   // no trial past the measured crossover: MiMo 64k warm, a 16384-token decode chain trial calculated 8.6 s took 1170 s (the stream known, so the old test let it run)
         }
         // the stream's variants (mix, predictions k x1 .. x32) that never ran here are trials only, never a mean pick: their prior is the stream's (or the
         // stream's upload less a guess), so their means differ by noise and the pick flipped between them (rampool12 rows 23784-23789: k x8/16/32 in
