@@ -641,7 +641,23 @@ struct llama_mmap::impl {
         GGML_UNUSED(last);
     }
 
+    void * anon = nullptr;
+
+    // fork: AMD's Windows Vulkan driver imports only anonymous memory (a file view fails with ErrorInvalidExternalHandle)
+    bool to_anonymous() {
+        if (anon) { return true; }
+        void * p = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!p) { return false; }
+        memcpy(p, addr, size);
+        UnmapViewOfFile(addr);
+        CloseHandle(hMapping);
+        hMapping = nullptr;
+        addr = anon = p;
+        return true;
+    }
+
     ~impl() {
+        if (anon) { VirtualFree(anon, 0, MEM_RELEASE); }
         if (hMapping) {
             if (addr) {
                 if (!UnmapViewOfFile(addr)) {
@@ -685,6 +701,11 @@ size_t llama_mmap::size() const { return pimpl->size; }
 void * llama_mmap::addr() const { return pimpl->addr; }
 
 void llama_mmap::unmap_fragment(size_t first, size_t last) { pimpl->unmap_fragment(first, last); }
+#if defined(_WIN32)
+bool llama_mmap::to_anonymous() { return pimpl->to_anonymous(); }
+#else
+bool llama_mmap::to_anonymous() { return true; }   // POSIX drivers import file pages as they are
+#endif
 
 #if defined(_POSIX_MEMLOCK_RANGE) || defined(_WIN32)
 const bool llama_mmap::SUPPORTED  = true;

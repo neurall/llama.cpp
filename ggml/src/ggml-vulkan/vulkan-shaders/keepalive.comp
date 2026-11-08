@@ -1,0 +1,29 @@
+#version 450
+
+// fork: integrated-GPU keep-alive. One workgroup spins on its own low-priority queue so the GPU does not drop its clocks in the
+// short idle gaps of a graph split across devices (measured on a Radeon 780M: expert matvecs 2-2.6x slower when every layer
+// waits for another device). The loop result feeds a store that never happens, so the compiler cannot remove the loop.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) buffer D {uint data_d[];};
+
+layout (push_constant) uniform parameter { uint iters; } p;
+
+shared uint s;
+
+void main() {
+    if (gl_LocalInvocationIndex == 0) {
+        s = 0u;
+    }
+    barrier();
+    uint x = gl_LocalInvocationIndex + 1u;
+    for (uint i = 0u; i < p.iters; ++i) {
+        x = x * 1664525u + 1013904223u;
+    }
+    atomicAdd(s, x);
+    barrier();
+    if (gl_LocalInvocationIndex == 0 && s == 0x5eed1234u) {
+        data_d[0] = s;
+    }
+}

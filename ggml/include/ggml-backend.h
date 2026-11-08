@@ -210,6 +210,11 @@ extern "C" {
     GGML_API const char *                  ggml_backend_dev_description(ggml_backend_dev_t device);
     GGML_API void                          ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total);
     GGML_API enum ggml_backend_dev_type    ggml_backend_dev_type(ggml_backend_dev_t device);
+    // fork: a device that computes like a GPU: discrete or integrated (the iGPU of an APU shares the host RAM but is a GPU to the scheduler and the planners)
+    static inline bool ggml_backend_dev_is_gpu(ggml_backend_dev_t device) {
+        enum ggml_backend_dev_type t = ggml_backend_dev_type(device);
+        return t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU;
+    }
     GGML_API void                          ggml_backend_dev_get_props(ggml_backend_dev_t device, struct ggml_backend_dev_props * props);
     GGML_API ggml_backend_reg_t            ggml_backend_dev_backend_reg(ggml_backend_dev_t device);
     GGML_API ggml_backend_t                ggml_backend_dev_init(ggml_backend_dev_t device, const char * params);

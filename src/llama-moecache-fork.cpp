@@ -2,6 +2,7 @@
 #include "../ggml/src/ggml-read-fork.h"
 #include "../ggml/src/ggml-rampool-fork.h"
 #include "llama-moecache-fork.h"
+#include "llama-backend-fork.h"
 #include "llama-fork-hooks.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-moestate-fork.h"
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
+#include <climits>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
@@ -443,6 +445,8 @@ struct moe_cache {
 
     std::vector<ggml_context *>         ctxs;
     std::vector<ggml_backend_buffer_t>  bufs;
+    std::vector<ggml_backend_buffer_t>  miss_bufs;   // --moe miss-dev: the imports of the host weights
+    ggml_context *                      miss_ctx = nullptr;
 
     // async upload worker: slices are copied to the device off the decode
     // thread; the new table mapping is only published at a later step() once
@@ -645,6 +649,11 @@ bool file_location(const llama_model & model, const ggml_tensor * t, int * fd, s
 }
 
 static size_t mem_available_bytes() {
+#ifdef _WIN32
+    MEMORYSTATUSEX st = {};   // /proc/meminfo is Linux only: on Windows this returned 0 and every pinning path (rampool, pinr, preheat) refused
+    st.dwLength = sizeof(st);
+    return GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+#endif
     FILE * f = fopen("/proc/meminfo", "r");
     size_t kb = 0;
     char line[256];
@@ -1467,9 +1476,8 @@ void * cpu_proc_fork(const char * name) {   // the CPU backend's fork entry poin
     ggml_backend_reg_t reg = ggml_backend_reg_by_name("CPU");
     return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
 }
-void * cuda_obs_proc(const char * name) {
-    ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-    return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
+void * cuda_obs_proc(const char * name) {   // a process-wide hook from whichever backend has it (llama-backend-fork.h)
+    return llama_fork_proc(name);
 }
 
 void stock_obs_cb(const char * name, const struct ggml_tensor * ids, const struct ggml_tensor *, void *) {
@@ -1532,7 +1540,7 @@ static void uniq_host_obs(int il, const ggml_tensor * ids, const ggml_tensor * o
     std::lock_guard<std::mutex> lk(u.mtx);
     if (!u.host) {   // the cache started after uniqdump did (deferred setup): its observer counts from now on, the GPU counters stop
         u.host = true;
-        if (auto off = (void (*)(void)) cuda_obs_proc("ggml_backend_cuda_obs_full_off_fork")) { off(); }
+        if (auto off = (void (*)(void)) cuda_obs_proc("ggml_backend_fork_obs_full_off_fork")) { off(); }
         if (u.trace == 0) { if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0) { u.trace = atoi(tr); } }
         if (u.acts == 0)  { if (const char * ac = moe_opt("acts"); ac && atoi(ac) > 0) { u.acts = atoi(ac); } }
     }
@@ -1647,7 +1655,7 @@ static void uniq_flush(const char * label, bool answer) {
         u.hcnt.assign(now.size(), 0);
         if (std::all_of(now.begin(), now.end(), [](uint64_t c) { return c == 0; })) { return; }
     } else {
-        auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_cuda_obs_full_read_fork");
+        auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_fork_obs_full_read_fork");
         if (!rd || !rd(u.nl, u.ne, now.data())) { return; }
     }
     uniq_report(now, label);
@@ -1684,7 +1692,7 @@ static void uniq_trace_dump() {
             u.htrace[il].clear();
         }
     } else {
-        auto rd = (bool (*)(int, int32_t *, int16_t *)) cuda_obs_proc("ggml_backend_cuda_obs_trace_read_fork");
+        auto rd = (bool (*)(int, int32_t *, int16_t *)) cuda_obs_proc("ggml_backend_fork_obs_trace_read_fork");
         if (!rd || !rd(u.nl, n_tok.data(), ids.data())) { return; }
     }
     FILE * f = fopen((u.path + ".trace").c_str(), "a");
@@ -1742,15 +1750,19 @@ void llama_moe_uniq_start(const llama_model & model) {   // called for every mod
         g_uniq.hids.assign(g_uniq.nl, {});
         if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0 && g_uniq.host) { g_uniq.trace = atoi(tr); }
         if (const char * ac = moe_opt("acts"); ac && atoi(ac) > 0 && g_uniq.host) { g_uniq.acts = atoi(ac); }
-        if (auto in = g_uniq.host ? nullptr : (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_cuda_obs_full_init_fork")) {
-            const ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-            for (int d = 0; d < (int) ggml_backend_reg_dev_count(reg); ++d) { in(d, g_uniq.nl, g_uniq.ne); }
+        if (auto in = g_uniq.host ? nullptr : (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_fork_obs_full_init_fork")) {
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {   // every GPU whose backend has the hook
+                ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                if (ggml_backend_dev_is_gpu(d) && llama_fork_proc_dev(d, "ggml_backend_fork_obs_full_init_fork")) { in(llama_fork_dev_index(d), g_uniq.nl, g_uniq.ne); }
+            }
         }
         if (const char * tr = moe_opt("uniqtrace"); tr && atoi(tr) > 0 && !g_uniq.host) {
-            if (auto ti = (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_cuda_obs_trace_init_fork")) {
+            if (auto ti = (bool (*)(int, int, int)) cuda_obs_proc("ggml_backend_fork_obs_trace_init_fork")) {
                 g_uniq.trace = atoi(tr);
-                const ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-                for (int d = 0; d < (int) ggml_backend_reg_dev_count(reg); ++d) { ti(d, g_uniq.nl, g_uniq.trace); }
+                for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                    ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                    if (ggml_backend_dev_is_gpu(d) && llama_fork_proc_dev(d, "ggml_backend_fork_obs_trace_init_fork")) { ti(llama_fork_dev_index(d), g_uniq.nl, g_uniq.trace); }
+                }
             }
         }
     }
@@ -1785,7 +1797,7 @@ void llama_moe_observe_start(const llama_model & model) {
     g_heat.on = true;
     g_heat_live = true;
     ggml_set_moe_obs_callback(stock_obs_cb, nullptr);
-    if (auto fn = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+    if (auto fn = (void (*)(bool)) cuda_obs_proc("ggml_backend_fork_obs_enable")) {
         fn(true);   // GPU-resident layers count on the device, read back once in llama_moe_observe_save
     }
 }
@@ -1803,7 +1815,7 @@ void llama_moe_observe_step() {
     }
     g_heat_live = false;
     ggml_set_moe_obs_callback(nullptr, nullptr);
-    if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+    if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_fork_obs_enable")) {
         en(false);   // the device counters keep what they have; llama_moe_observe_save reads them
     }
 }
@@ -1818,10 +1830,10 @@ void llama_moe_observe_save() {
         }
         g_heat.on = false;
         ggml_set_moe_obs_callback(nullptr, nullptr);
-        if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_cuda_obs_enable")) {
+        if (auto en = (void (*)(bool)) cuda_obs_proc("ggml_backend_fork_obs_enable")) {
             en(false);
         }
-        if (auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_cuda_obs_read")) {
+        if (auto rd = (bool (*)(int, int, uint64_t *)) cuda_obs_proc("ggml_backend_fork_obs_read")) {
             const int nl = (int) g_heat.counts.size(), ne = (int) g_heat.counts[0].size();
             std::vector<uint64_t> gpu((size_t) nl*ne, 0);
             if (rd(nl, ne, gpu.data())) {
@@ -1875,6 +1887,7 @@ void llama_moe_observe_save() {
 }
 
 static double early_link_gbs(ggml_backend_dev_t d);   // pinned host to device GB/s, measured once per process (defined below, outside the anonymous namespace resource_probe sits in)
+static void miss_dev_setup(moe_cache * mc);   // defined below, next to it (--moe miss-dev)
 namespace {
 void set_table_entry(llama_moe_cache_layer_fork & pub, int32_t expert, int32_t slot_or_dummy);
 void page_hint(const moe_cache * mc, const layer_state & ls, int32_t expert, bool drop);
@@ -3384,7 +3397,7 @@ void resource_probe(moe_cache * mc) {
     if (!user_knobs().count("UPLOAD_WAIT")) { knobs().gate = 3; }
     // The link rates are the early benchmark's (early_link_gbs: measured once per process, the fastest of four copies), shared, not measured a second time; the loop above only had them alone for the CPU/links mix
     for (int k = 0; k < mc->n_links; ++k) {
-        if (const double e = early_link_gbs(mc->link_dev[k]); e > 0.0) { link_alone[k] = e; }
+        if (const double e = mc->link_dev[k] ? early_link_gbs(mc->link_dev[k]) : 0.0; e > 0.0) { link_alone[k] = e; }
     }
     std::string links, rs;
     for (int k = 0; k < mc->n_links; ++k) {
@@ -3950,11 +3963,21 @@ void upload_slice(ggml_tensor * dst_c, const ggml_tensor * src, int32_t expert, 
 // A worker that used it calls cuda_thread_sync() once before it reports the job done.
 typedef void (*cuda_set_nosync_t)(ggml_tensor *, const void *, size_t, size_t);
 cuda_set_nosync_t cuda_set_nosync() {
-    static const cuda_set_nosync_t f = (cuda_set_nosync_t) cuda_obs_proc("ggml_backend_cuda_set_tensor_nosync_fork");
+    static const cuda_set_nosync_t f = (cuda_set_nosync_t) cuda_obs_proc("ggml_backend_fork_set_tensor_nosync_fork");
     return f;
 }
+// the CUDA device index of a device, -1 when the device is not one of the CUDA backend's (Vulkan, HIP, CPU, ...): decided by the registry, not the name
+// the device's index inside its backend when that backend has the scratch hook (what the hook takes), else -1
+static int cuda_dev_index(ggml_backend_dev_t dev) {
+    return llama_fork_proc_dev(dev, "ggml_backend_fork_scratch_fork") ? llama_fork_dev_index(dev) : -1;
+}
+// the no-sync copy for a destination buffer: from the buffer's own backend (a cache layer on a backend without it uses the synchronous set)
+static cuda_set_nosync_t cuda_set_nosync_for(ggml_backend_buffer_t buf) {
+    if (!buf || ggml_backend_buffer_is_host(buf)) { return nullptr; }
+    return (cuda_set_nosync_t) llama_fork_proc_dev(ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf)), "ggml_backend_fork_set_tensor_nosync_fork");
+}
 void cuda_thread_sync() {
-    static void (* const f)() = (void (*)()) cuda_obs_proc("ggml_backend_cuda_thread_sync_fork");
+    static void (* const f)() = (void (*)()) cuda_obs_proc("ggml_backend_fork_thread_sync_fork");
     if (f) { f(); }
 }
 
@@ -4387,25 +4410,18 @@ GGML_API size_t ggml_backend_sched_node_max_dev(ggml_backend_sched_t sched, ggml
 static std::atomic<int64_t> g_scr_us{0}, g_scr_n{0}, g_scr_splits{0};
 static size_t node_scratch(void * user, struct ggml_tensor * const * nodes, int n) {
     using nodes_fn_t = size_t (*)(int, const ggml_tensor * const *, int);
-    static nodes_fn_t fn = [] {
-        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-        return reg ? (nodes_fn_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_nodes_scratch_fork") : nullptr;
-    }();
+    static nodes_fn_t fn = (nodes_fn_t) llama_fork_proc("ggml_backend_fork_nodes_scratch_fork");
     g_scr_splits++;
     return fn ? fn(*(const int *) user, nodes, n) : 0;
 }
 static size_t alias_scratch(const moe_cache::alias_pool & ap, ggml_backend_sched_t sched) {
-    const char * nm = ggml_backend_dev_name(ap.dev);
-    if (ap.cuda_dev < 0 && (!nm || strncmp(nm, "CUDA", 4) != 0)) {
+    if (ap.cuda_dev < 0 && cuda_dev_index(ap.dev) < 0) {
         return 0;
     }
     using copy_fn_t = size_t (*)(ggml_backend_t, ggml_backend_t, const ggml_tensor *, const ggml_tensor *);
-    static copy_fn_t copy_fn = [] {   // the inputs other cards copy from this one: a gappy view is gathered here first (ggml_backend_cuda_copy_scratch_fork)
-        ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-        return reg ? (copy_fn_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_copy_scratch_fork") : nullptr;
-    }();
+    static copy_fn_t copy_fn = (copy_fn_t) llama_fork_proc("ggml_backend_fork_copy_scratch_fork");   // the inputs other cards copy from this one: a gappy view is gathered here first
     const int64_t t0 = ggml_time_us();
-    int dev = ap.cuda_dev >= 0 ? ap.cuda_dev : atoi(nm + 4);
+    int dev = ap.cuda_dev >= 0 ? ap.cuda_dev : cuda_dev_index(ap.dev);
     const size_t need = ggml_backend_sched_node_max_dev(sched, ap.dev, node_scratch, copy_fn, &dev);
     g_scr_us += ggml_time_us() - t0;
     g_scr_n++;
@@ -4707,8 +4723,8 @@ void llama_moe_cache_kv_pool_expected_fork(bool on) {
     g_kv_pool_expected = on;
     // --moe fattn-kernel=vec|tile|mma: the kernel of decode-sized attention nodes, where it can run them (fork/docs/fork-knobs.md); values of BEST_FATTN_KERNEL_*
     static const int k = [] { const char * e = moe_opt("fattn-kernel"); return !e ? 0 : !strcmp(e, "vec") ? 100 : !strcmp(e, "tile") ? 200 : !strcmp(e, "mma") ? 400 : 0; }();
-    if (k) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_cuda_fattn_force_fork")) { fn(k); } }
-    if (const char * e = moe_opt("fattn-rows"); e && atoi(e) == 0) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_cuda_fattn_rows_fork")) { fn(0); } }   // a gather converts all of quantized K/V
+    if (k) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_fork_fattn_force_fork")) { fn(k); } }
+    if (const char * e = moe_opt("fattn-rows"); e && atoi(e) == 0) { if (auto fn = (void (*)(int)) cuda_obs_proc("ggml_backend_fork_fattn_rows_fork")) { fn(0); } }   // a gather converts all of quantized K/V
 }
 bool llama_moe_cache_kv_pool_expected_fork() { return g_kv_pool_expected.load(); }
 // The records a context registered while it expected an expert pool (the target): they belong to that pool's tail. The flag above is set by every context at its
@@ -6256,13 +6272,9 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // error with both numbers: an op whose scratch mirror is missing or wrong (GGML_CUDA_SCRATCH_CHECK=1 names it). Nothing is learned from it.
         // the region serves only the backend passed with it (ap_be): another context on the card (a DSpark draft between two target steps) takes its scratch
         // from the device pool, and its asks do not count in the high-water mark compared below
-        static size_t (*scratch_fn)(int, void *, size_t, ggml_backend_t) = [] {
-            ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-            return reg ? (size_t (*)(int, void *, size_t, ggml_backend_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_scratch_fork") : nullptr;
-        }();
+        static size_t (*scratch_fn)(int, void *, size_t, ggml_backend_t) = (size_t (*)(int, void *, size_t, ggml_backend_t)) llama_fork_proc("ggml_backend_fork_scratch_fork");
         if (ap.cuda_dev < 0 && scratch_fn) {
-            const char * nm = ggml_backend_dev_name(ap.dev);
-            if (nm && strncmp(nm, "CUDA", 4) == 0) { ap.cuda_dev = atoi(nm + 4); }
+            ap.cuda_dev = cuda_dev_index(ap.dev);
         }
         size_t scratch = 0;
         if (ap.cuda_dev >= 0) {
@@ -7813,7 +7825,7 @@ static const std::string & vram_driver() {
         }
 #endif
         if (v.empty()) {
-            if (auto fn = (int (*)(void)) cuda_obs_proc("ggml_backend_cuda_driver_version_fork")) { v = "api" + std::to_string(fn()); }
+            if (auto fn = (int (*)(void)) cuda_obs_proc("ggml_backend_fork_driver_version_fork")) { v = "api" + std::to_string(fn()); }
         }
         return v.empty() ? std::string("unknown") : v;
     }();
@@ -7911,9 +7923,8 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
 // instantiation), plus all that was still free (it was not enough). Stored right away: the retry may fail again and the next start must leave the room.
 void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes) {
     std::lock_guard<std::mutex> lk(g_vram_mtx);
-    const std::string name = "CUDA" + std::to_string(cuda_device);
-    for (auto & d : g_vram) {
-        if (name != ggml_backend_dev_name(d.dev)) { continue; }
+    for (auto & d : g_vram) {   // the device number is the backend's own (the OOM hook's), matched through the registry, not a name
+        if (llama_fork_dev_index(d.dev) != cuda_device || !llama_fork_proc_dev(d.dev, "ggml_backend_fork_last_oom_fork")) { continue; }
         size_t f = 0, t = 0;
         ggml_backend_dev_memory(d.dev, &f, &t);
         const int64_t outside = std::max<int64_t>(0, (int64_t) d.free_at_size - (int64_t) d.pool - (int64_t) f);
@@ -8194,11 +8205,72 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     total         += (size_t) nblk[c] * pl.cls[c].B;
                 }
                 total += 4096;   // MMQ reads whole 512-wide tiles: the end of the last tensor may be read past
-                ggml_backend_buffer_t pbuf = ggml_backend_buft_alloc_buffer(buft, total);
-                if (!pbuf) {
-                    LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (%.1f MiB) on %s - cache disabled\n", __func__, total / 1048576.0, ggml_backend_buft_name(buft));
-                    return false;
+                // One buffer when the backend takes it (CUDA: no limit). A backend with a buffer limit (Vulkan: 1 GiB blocks, 2 GiB on the Radeon 780M) gets one
+                // buffer per size class, each class cut to the limit: a class's blocks must stay one strided run (the kernels index them from one pointer).
+                // shortcut: the compute alias and the KV tail assume one buffer; they are off on those backends (common_moe_cache_auto_impl), lift when ported
+                const size_t max_b = ggml_backend_buft_get_max_size(buft);
+                const bool   split = total > max_b;
+                std::vector<ggml_backend_buffer_t> cbufs(pl.cls.size(), nullptr);
+                ggml_backend_buffer_t pbuf = nullptr;
+                if (split) {
+                    // a class past the limit is split into classes of fewer layers (each a buffer of its own) rather than cut: a layer belongs to one class
+                    {
+                        std::vector<pool_class> ncls;
+                        std::vector<int32_t>    nnblk;
+                        std::vector<size_t>     norder;
+                        for (size_t c : order) {
+                            const pool_class & oc = pl.cls[c];
+                            const int32_t cap   = (int32_t) ((max_b - 4096) / oc.B);
+                            const size_t  m     = oc.members.size();
+                            const size_t  parts = std::max<size_t>(1, std::min(m, cap > 0 ? ((size_t) nblk[c] + cap - 1) / cap : m));
+                            for (size_t q = 0; q < parts; ++q) {
+                                pool_class nc = oc;
+                                nc.members.assign(oc.members.begin() + q * m / parts, oc.members.begin() + (q + 1) * m / parts);
+                                nc.base = 0;
+                                for (size_t i : nc.members) { pl.lay_cls[i] = ncls.size(); }
+                                norder.push_back(ncls.size());
+                                nnblk.push_back((int32_t) ((size_t) nblk[c] * nc.members.size() / m));
+                                ncls.push_back(std::move(nc));
+                            }
+                            if (parts > 1) {
+                                LLAMA_LOG_WARN("moe-cache: size class of %.1f MiB blocks (%zu layers, %d blocks) split into %zu buffers: the %s buffer limit is %.0f MiB\n",
+                                        oc.B / 1048576.0, m, nblk[c], parts, ggml_backend_buft_name(buft), max_b / 1048576.0);
+                            }
+                        }
+                        pl.cls = std::move(ncls);
+                        nblk   = std::move(nnblk);
+                        order  = std::move(norder);
+                        cbufs.assign(pl.cls.size(), nullptr);
+                    }
+                    total = 0;
+                    for (size_t c : order) {
+                        const int32_t cap = (int32_t) ((max_b - 4096) / pl.cls[c].B);
+                        if (nblk[c] > cap) {
+                            LLAMA_LOG_WARN("moe-cache: size class of %.1f MiB blocks cut from %d to %d blocks: the %s buffer limit is %.0f MiB\n",
+                                    pl.cls[c].B / 1048576.0, nblk[c], cap, ggml_backend_buft_name(buft), max_b / 1048576.0);
+                            nblk[c] = cap;
+                        }
+                        pl.cls[c].base = 0;
+                        const size_t sz = (size_t) nblk[c] * pl.cls[c].B + 4096;
+                        cbufs[c] = nblk[c] > 0 ? ggml_backend_buft_alloc_buffer(buft, sz) : nullptr;
+                        if (!cbufs[c]) {
+                            LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (class of %.1f MiB) on %s - cache disabled\n", __func__, sz / 1048576.0, ggml_backend_buft_name(buft));
+                            for (auto * b : cbufs) { if (b) { ggml_backend_buffer_free(b); } }
+                            return false;
+                        }
+                        total += sz;
+                    }
+                    pbuf = cbufs[order[0]];
+                } else {
+                    pbuf = ggml_backend_buft_alloc_buffer(buft, total);
+                    if (!pbuf) {
+                        LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (%.1f MiB) on %s - cache disabled\n", __func__, total / 1048576.0, ggml_backend_buft_name(buft));
+                        return false;
+                    }
+                    for (auto & b : cbufs) { b = pbuf; }
                 }
+                std::vector<ggml_backend_buffer_t> ubufs;   // the distinct buffers
+                for (auto * b : cbufs) { if (std::find(ubufs.begin(), ubufs.end(), b) == ubufs.end()) { ubufs.push_back(b); } }
                 if (sz_dev == ggml_backend_buft_get_device(buft)) {   // the VRAM watch: free at sizing, the pool, and what the allocation itself took
                     size_t f_after = 0, t_after = 0;
                     ggml_backend_dev_memory(sz_dev, &f_after, &t_after);
@@ -8212,8 +8284,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     d.dev = sz_dev; d.free_at_size = sz_free; d.pool = total; d.stored_mb = sz_stored; d.from_cold = sz_from_cold; d.section = vram_section; d.key = vram_key(sz_dev, vram_cold);
                     g_vram.push_back(d);
                 }
-                ggml_backend_buffer_clear(pbuf, 0);
-                if (poison_on()) {   // expert blocks are 5 until an upload lands; the read-past tail stays 0
+                for (auto * b : ubufs) { ggml_backend_buffer_clear(b, 0); }
+                if (poison_on() && !split) {   // expert blocks are 5 until an upload lands; the read-past tail stays 0
                     moe_cache::alias_pool tmp; tmp.buf = pbuf;
                     pool_fill(tmp, 0, total - 4096, 5);
                 }
@@ -8223,10 +8295,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 if (led_on()) {   // CUDA graph captures and replays with their scratch range go into the ledger
                     typedef void (*graph_hook_t)(int, const void *, const char *, const void *, size_t);
                     typedef void (*set_graph_hook_t)(graph_hook_t);
-                    if (auto set = (set_graph_hook_t) cuda_obs_proc("ggml_backend_cuda_set_graph_hook_fork")) { set(led_cuda_graph_hook); }
+                    if (auto set = (set_graph_hook_t) cuda_obs_proc("ggml_backend_fork_set_graph_hook_fork")) { set(led_cuda_graph_hook); }
                 }
-                ggml_backend_buffer_set_usage(pbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-                uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(pbuf);
+                for (auto * b : ubufs) { ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS); }
                 const size_t pool0 = mc->pool.size();
                 std::string cls_txt;
                 for (size_t c = 0; c < pl.cls.size(); ++c) {
@@ -8252,8 +8323,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         t3[k]->ne[2]  = n;   // the class's blocks: the tables hold 0 .. n - 1 or -1 (uncached, skipped)
                         t3[k]->nb[2]  = cl.B;
                         t3[k]->nb[3]  = cl.B * (size_t) n;
-                        t3[k]->buffer = pbuf;
-                        t3[k]->data   = base + cl.base + cl.off[k];
+                        t3[k]->buffer = cbufs[ci];
+                        t3[k]->data   = (uint8_t *) ggml_backend_buffer_get_base(cbufs[ci]) + cl.base + cl.off[k];
                     }
                     ls->pub.n_slots = n;                      // the class's blocks; n marks "uncached" in the host tables (-1 in the device tables)
                     ls->pcls        = (int32_t) (pool0 + ci);
@@ -8278,14 +8349,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         sg.n    = nblk[c];
                         ap.segs.push_back(sg);
                         ap.span = sg.base + (size_t) sg.n * sg.B;
-                        if (!alias_all) { break; }
+                        if (!alias_all || split) { break; }
                     }
-                    ap.tail_end  = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    ap.tail_end  = split ? ap.span : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
                     mc->alias.push_back(ap);
                 }
-                mc->bufs.push_back(pbuf);
+                for (auto * b : ubufs) { mc->bufs.push_back(b); }
             }
             ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
             if (!buf) {
@@ -8798,7 +8869,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         if (ch == 0 || ch >= sz) {
                             // the source (pinned slice copy or the model's own mapping) stays put, so the copy can be queued without waiting for it: the
                             // job syncs once after its three tensors (nosync_used) instead of after each of them
-                            const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                            const cuda_set_nosync_t ns = cuda_set_nosync_for(dsts[k]->buffer);
                             if (ns) {
                                 const size_t doff = (size_t) j.slot*dsts[k]->nb[2];
                                 ns(dsts[k], pinned ? pinned : (const char *) srcs[k]->data + (size_t) j.expert*sz, doff, sz);
@@ -8818,7 +8889,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                                 mc->gate_wait_us += ggml_time_us() - tw;
                                 // the chunk source stays put as well (pinned copy or the model's mapping): queue the chunk, the job syncs once at its end.
                                 // The budget wait above still paces the chunks, which is all the per-chunk sync was good for here.
-                                const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                                const cuda_set_nosync_t ns = cuda_set_nosync_for(dsts[k]->buffer);
                                 if (ns) { ns(dsts[k], src + off, dst + off, std::min(ch, sz - off)); nosync_used = true; }
                                 else    { ggml_backend_tensor_set(dsts[k], src + off, dst + off, std::min(ch, sz - off)); }
                             }
@@ -8833,7 +8904,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     const char * from = nullptr;
                     if (const size_t pb = expert_past(mc, ls, k, j.expert, srcs[k], from)) {
                         ggml_tensor z = expert_past_view(dsts[k], (size_t) j.slot * dsts[k]->nb[2] + sz, pb);
-                        const cuda_set_nosync_t ns = ggml_backend_buffer_is_host(dsts[k]->buffer) ? nullptr : cuda_set_nosync();
+                        const cuda_set_nosync_t ns = cuda_set_nosync_for(dsts[k]->buffer);
                         if (ns) { ns(&z, from, 0, pb); nosync_used = true; }
                         else    { ggml_backend_tensor_set(&z, from, 0, pb); }
                     }
@@ -9124,17 +9195,16 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             // into the cache's use counts (its heat for the answer), as the host callback did when it was on (GGML_PF_COUNT), without its host cost.
             const char * pc = moe_opt("pf-count");
             if ((!pc || pc[0] != '0') && !mc->layers.empty() && mc->layers[0].pub.up_src) {
-                ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
                 typedef bool (*obs_init_t)(int, int, int);
-                obs_init_t init = reg ? (obs_init_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_obs_prompt_init_fork") : nullptr;
+                obs_init_t init = (obs_init_t) llama_fork_proc("ggml_backend_fork_obs_prompt_init_fork");
                 int n_layer = 0;
                 for (const auto & l : mc->layers) { n_layer = std::max(n_layer, l.pub.il + 1); }
                 const int n_expert = (int) mc->layers[0].pub.up_src->ne[2];
                 for (size_t i = 0; init && i < ggml_backend_dev_count(); ++i) {
                     ggml_backend_dev_t d = ggml_backend_dev_get(i);
-                    const char * nm = ggml_backend_dev_name(d);
-                    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && nm && strncmp(nm, "CUDA", 4) == 0) {
-                        mc->pf_count_on = init(atoi(nm + 4), n_layer, n_expert) || mc->pf_count_on;
+                    const int cd = cuda_dev_index(d);
+                    if (cd >= 0) {
+                        mc->pf_count_on = init(cd, n_layer, n_expert) || mc->pf_count_on;
                     }
                 }
                 mc->pf_count_layers  = n_layer;
@@ -9144,6 +9214,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         g_cache = mc;
         g_init_done = true;
 
+        miss_dev_setup(mc);
         LLAMA_LOG_WARN("%s: MoE expert cache enabled: %zu layers, slots/layer %d..%d, %d inserts/step, %.1f MiB device memory\n",
                 __func__, mc->layers.size(),
                 std::min_element(mc->layers.begin(), mc->layers.end(), [](auto & a, auto & b) { return a.pub.n_slots < b.pub.n_slots; })->pub.n_slots,
@@ -9529,6 +9600,17 @@ static void pp_settle(moe_cache * mc) {
 // graph build: 1, this layer of a prompt pass takes the prompt chain. The pass may use every distinct expert of the layer at once, so the blocks must hold that many (no quota: all
 // blocks of the class count, a past layer's are free to take); -1, a layer that cannot hold them stays on the prompt path, which streams its experts through the staging slots;
 // 0, not a prompt pass.
+// the links' backends, from the scheduler: before the first split callback (the first graph of a run) link_be is empty and the prompt chain was refused for that graph
+void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched) {
+    moe_cache * mc = g_cache;
+    if (!mc || !sched) { return; }
+    for (int k = 0; k < mc->n_links; ++k) {
+        for (int i = 0; !mc->link_be[k] && i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(b) == mc->link_dev[k]) { mc->link_be[k] = b; }
+        }
+    }
+}
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
     if (!mc || !pp_chain_allowed() || pub->jit_n > 0 || !experts_in_file_layout(pub)) {   // repacked: the chain has no CPU branch and its uploads copy ->data; the plain path keeps the CPU
@@ -9540,8 +9622,12 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
         if (&l.pub != pub) {
             continue;
         }
-        const int64_t want = std::min<int64_t>((int64_t) l.expert_slot.size(), n_tokens * n_used);
+        // --moe pp-off=F: F of the pairs stay off the card, so the pass needs at most (1 - F) of the experts' blocks (the least used ones are what stays off)
+        static const double off_f = [] { const char * e = moe_opt("pp-off"); return e ? atof(e) : 0.0; }();
+        const int64_t want = (int64_t) std::ceil((1.0 - off_f) * (double) std::min<int64_t>((int64_t) l.expert_slot.size(), n_tokens * n_used));
         if (!mc->link_be[l.link] || pp_blocks(mc, l) < want) {
+            static int n_log = 0;
+            if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt chain refused: layer %d has %lld blocks, wants %lld\n", pub->il, (long long) pp_blocks(mc, l), (long long) want); }
             return -1;
         }
         g_pp_want  = n_tokens * n_used;
@@ -9676,7 +9762,7 @@ bool llama_moe_cache_pp_short_fork() {
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
         for (auto & l : mc->layers) {
-            if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want)) {
+            if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want) && !moe_opt("pp-off")) {   // --moe pp-off: misses go to the miss device, the chain is not short of blocks
                 g_pp_short = true;
                 g_pp_built = false;
                 refused = format("prompt chain: layer %d keeps %lld blocks beside the graph, the pass may use %lld experts: the call is decided again without the chain",
@@ -9697,6 +9783,7 @@ bool llama_moe_cache_pp_short_fork() {
 // the misses of a chain layer, on the chain's stream, right behind its router (a graph custom op: the ids are on the host). The blocks: free ones, then the layers that already
 // ran and this layer's experts the pass does not use, then the layer furthest ahead: the same order as the JIT's prompt rule. An expert a slow layer or the hot set holds on to
 // is the last choice, never refused: nothing in a prompt may stop a miss.
+static std::atomic<int64_t> g_ppoff_pairs{0}, g_ppoff_dev{0}, g_ppoff_all{0};   // --moe pp-off: kept-off pairs, of them on the device, all pairs
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     GGML_ASSERT(mc != nullptr);
@@ -9731,10 +9818,11 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
         layer_state & ls = *lsp;
         const size_t  jli = (size_t) (&ls - mc->layers.data());
         std::vector<uint8_t> used(ls.expert_slot.size(), 0);
+        std::vector<int64_t> cnt(ls.expert_slot.size(), 0);
         for (int64_t t = 0; t < ids->ne[1]; ++t) {
             for (int64_t i = 0; i < ids->ne[0]; ++i) {
                 const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
-                if (e >= 0 && e < (int32_t) used.size()) { used[e] = 1; }
+                if (e >= 0 && e < (int32_t) used.size()) { used[e] = 1; cnt[e]++; }
             }
         }
         std::vector<int32_t> miss;
@@ -9742,6 +9830,28 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
         for (int32_t e = 0; e < (int32_t) used.size(); ++e) {
             n_visited += used[e] ? 1 : 0;
             if (used[e] && ls.expert_slot[e] < 0) { miss.push_back(e); }
+        }
+        // --moe pp-off=F[,pp-off-dev=R]: the misses with the fewest tokens (the most upload per token of work), up to F of the pass's expert-token pairs, stay on the
+        // host; of those the R most used (by pairs) run on the miss device (up_m), the rest on the CPU. The graph built the decode chain's shape for this (mc_ppk).
+        static const double off_f = [] { const char * e = moe_opt("pp-off"); return e ? atof(e) : 0.0; }();
+        static const double off_r = [] { const char * e = moe_opt("pp-off-dev"); return e ? atof(e) : 0.5; }();
+        if (off_f > 0.0) {
+            ls.pub.miss_on_dev.assign(used.size(), 0);
+            std::sort(miss.begin(), miss.end(), [&](int32_t a, int32_t b) { return cnt[a] < cnt[b]; });
+            const double budget = off_f * (double) (ids->ne[0] * ids->ne[1]);
+            double off = 0; size_t k = 0;
+            while (k < miss.size() && off + (double) cnt[miss[k]] <= budget + 1e-9) { off += (double) cnt[miss[k]]; ++k; }
+            if (ls.pub.up_m) {   // most used first onto the device, up to R of the kept pairs
+                double dev = 0;
+                for (size_t j = k; j-- > 0; ) {
+                    if (dev + (double) cnt[miss[j]] > off_r * off + 1e-9) { continue; }
+                    dev += (double) cnt[miss[j]];
+                    ls.pub.miss_on_dev[miss[j]] = 1;
+                }
+                g_ppoff_dev += (int64_t) dev;
+            }
+            g_ppoff_pairs += (int64_t) off; g_ppoff_all += ids->ne[0] * ids->ne[1];
+            miss.erase(miss.begin(), miss.begin() + (ptrdiff_t) k);
         }
         mc->n_jit_miss += miss.size();
         g_pjit_layers++;
@@ -9966,6 +10076,108 @@ double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev) {
 // Reserved at >= 1.25x (2 x16: 2x; x16 + x4: 1.22x, where the split measured slower); alpha then starts at 1 and the
 // tuner measures. LLAMA_PREFILL_SPLIT=<alpha> overrides (0: never).
 // pinned host -> device GB/s of a GPU: 64 MB copies, measured once per process (the layer placement asks at load, the prefill split later)
+// --moe miss-dev=NAME: the experts the cache does not hold are computed on this device (a GPU sharing the host memory) instead of on the CPU: every expert tensor is imported in
+// place, one buffer per tensor (no copy, the Vulkan import needs page-aligned ends). All or nothing: a refused import leaves the CPU chain as it was.
+// one miss chain (up, gate, activation, down of one expert for one token) round trip on a device, us: the median of 16, the input written and the output read like the real hop
+static double miss_chain_us(ggml_backend_dev_t dev, ggml_tensor * up, ggml_tensor * gate, ggml_tensor * down) {
+    ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
+    if (!be) { return -1.0; }
+    if (auto set = (void (*)(ggml_backend_t, int)) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(dev), "ggml_backend_set_n_threads")) {
+        set(be, std::max(1, (int) std::thread::hardware_concurrency() / 2));   // shortcut: half the hardware threads, not the decode's count; upgrade if the verdict is ever close
+    }
+    ggml_init_params ip = { 16 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_tensor * x   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, up->ne[0], 1, 1);
+    ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 8, 1);
+    ggml_tensor * u = ggml_mul_mat_id(ctx, up, x, ids), * g = ggml_mul_mat_id(ctx, gate, x, ids);
+    ggml_tensor * out = ggml_mul_mat_id(ctx, down, ggml_swiglu_split(ctx, g, u), ids);
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf, out);
+    double res = -1.0;
+    if (ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be)) {
+        std::vector<float>   xv(up->ne[0], 0.5f), yv(ggml_nelements(out));
+        const std::vector<int32_t> idv = { 16, -1, -1, -1, -1, -1, -1, -1 };   // one miss, as at a high hit rate
+        std::vector<double> t;
+        for (int i = 0; i < 16; ++i) {
+            const int64_t t0 = ggml_time_us();
+            ggml_backend_tensor_set(x, xv.data(), 0, ggml_nbytes(x));
+            ggml_backend_tensor_set(ids, idv.data(), 0, ggml_nbytes(ids));
+            if (ggml_backend_graph_compute(be, gf) != GGML_STATUS_SUCCESS) { t.clear(); break; }
+            ggml_backend_tensor_get(out, yv.data(), 0, ggml_nbytes(out));
+            t.push_back((double) (ggml_time_us() - t0));
+        }
+        if (!t.empty()) { std::sort(t.begin(), t.end()); res = t[t.size() / 2]; }
+        ggml_backend_buffer_free(buf);
+    }
+    ggml_free(ctx);
+    ggml_backend_free(be);
+    return res;
+}
+
+static void miss_dev_setup(moe_cache * mc) {
+    const char * name = moe_opt("miss-dev");
+    if (!name) { return; }
+    const bool autop = strcmp(name, "auto") == 0;
+    ggml_backend_dev_t dev = autop ? nullptr : ggml_backend_dev_by_name(name);
+    for (size_t i = 0; autop && !dev && i < ggml_backend_dev_count(); ++i) {   // a GPU sharing the host memory that can import it, whichever backend it is on
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        ggml_backend_dev_props pr;
+        ggml_backend_dev_get_props(d, &pr);
+        if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_IGPU && pr.caps.buffer_from_host_ptr) { dev = d; }
+    }
+    if (!dev) { return; }
+    name = ggml_backend_dev_name(dev);
+    ggml_backend_dev_props props;
+    ggml_backend_dev_get_props(dev, &props);
+    if (!props.caps.buffer_from_host_ptr) { LLAMA_LOG_WARN("moe-cache: miss-dev %s cannot import host memory: the misses stay on the CPU\n", name); return; }
+    ggml_init_params ip = { mc->layers.size() * 3 * ggml_tensor_overhead(), nullptr, true };
+    mc->miss_ctx = ggml_init(ip);
+    const size_t page = 65536;   // covers minImportedHostPointerAlignment (4 KiB) and the Windows view granularity
+    size_t bytes = 0;
+    auto import = [&](const ggml_tensor * t) -> ggml_tensor * {
+        if (!t || !t->data || !t->buffer || !ggml_backend_buffer_is_host(t->buffer)) { return nullptr; }
+        const uintptr_t s0 = (uintptr_t) t->data / page * page, e0 = GGML_PAD((uintptr_t) t->data + ggml_nbytes(t), 4096);
+        ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (void *) s0, e0 - s0, ggml_nbytes(t));
+        if (!buf) { return nullptr; }
+        mc->miss_bufs.push_back(buf);
+        ggml_tensor * m = ggml_new_tensor(mc->miss_ctx, t->type, GGML_MAX_DIMS, t->ne);
+        ggml_set_name(m, t->name);
+        if (ggml_backend_tensor_alloc(buf, m, (char *) ggml_backend_buffer_get_base(buf) + ((uintptr_t) t->data - s0)) != GGML_STATUS_SUCCESS) { return nullptr; }
+        bytes += e0 - s0;
+        return m;
+    };
+    bool ok = true;
+    const char * ml = moe_opt("miss-layers");   // --moe miss-layers=N: only the first N layers (the driver may not hold them all resident); the others stay on the CPU
+    int left = ml ? atoi(ml) : INT_MAX;
+    for (auto & l : mc->layers) {
+        if (left-- <= 0) { break; }
+        l.pub.up_m   = ok ? import(l.pub.up_src)   : nullptr;
+        l.pub.gate_m = l.pub.up_m   ? import(l.pub.gate_src) : nullptr;
+        l.pub.down_m = l.pub.gate_m ? import(l.pub.down_src) : nullptr;
+        ok = l.pub.down_m != nullptr;
+    }
+    if (!ok) {
+        for (auto & l : mc->layers) { l.pub.up_m = l.pub.gate_m = l.pub.down_m = nullptr; }
+        for (auto * b : mc->miss_bufs) { ggml_backend_buffer_free(b); }
+        mc->miss_bufs.clear();
+        LLAMA_LOG_WARN("moe-cache: miss-dev %s refused an import of the host weights: the misses stay on the CPU\n", name);
+        return;
+    }
+    if (autop) {   // the faster of the device and the CPU, measured with the real weights
+        const auto & p0 = mc->layers[0].pub;
+        ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        const double us_m = miss_chain_us(dev, p0.up_m, p0.gate_m, p0.down_m), us_c = cpu ? miss_chain_us(cpu, p0.up_src, p0.gate_src, p0.down_src) : -1.0;
+        LLAMA_LOG_WARN("moe-cache: one miss: %s %.0f us, CPU %.0f us: %s\n", name, us_m, us_c, us_m > 0 && us_c > 0 && us_m < us_c ? "misses on the device" : "misses stay on the CPU");
+        if (!(us_m > 0 && us_c > 0 && us_m < us_c)) {
+            for (auto & l : mc->layers) { l.pub.up_m = l.pub.gate_m = l.pub.down_m = nullptr; }
+            for (auto * b : mc->miss_bufs) { ggml_backend_buffer_free(b); }
+            mc->miss_bufs.clear();
+            return;
+        }
+    }
+    LLAMA_LOG_WARN("moe-cache: misses computed on %s: %.1f GiB of expert weights imported in %zu buffers\n", name, bytes / 1073741824.0, mc->miss_bufs.size());
+}
+
 static double early_link_gbs(ggml_backend_dev_t d) {
     for (const auto & e : g_early_gbs) {
         if (e.first == d) {
@@ -10120,7 +10332,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
         const double s0 = llama_moe_span_now_fork();
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t d = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
+            if (!ggml_backend_dev_is_gpu(d)) { continue; }
             const double g = early_link_gbs(d);
             const std::string key = format("h2d_gbs.%zu.%s", i, ggml_backend_dev_name(d));
             std::string old;
@@ -12226,10 +12438,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     if (mc && mc->pf_count_on) {
         // the prompt's expert use, counted on the cards: once per expert and prompt, as the host callback counted it (the cards are idle here: after synchronize)
         typedef bool (*obs_read_t)(int, int, uint8_t *);
-        static obs_read_t rd = [] {
-            ggml_backend_reg_t reg = ggml_backend_reg_by_name("CUDA");
-            return reg ? (obs_read_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_obs_prompt_read_fork") : (obs_read_t) nullptr;
-        }();
+        static obs_read_t rd = (obs_read_t) llama_fork_proc("ggml_backend_fork_obs_prompt_read_fork");
         std::vector<uint8_t> used((size_t) mc->pf_count_layers * mc->pf_count_experts, 0);
         std::vector<upload_job> swaps;
         const bool counted = rd && rd(mc->pf_count_layers, mc->pf_count_experts, used.data());
@@ -12936,6 +13145,10 @@ void llama_moe_cache_free_fork() {
             mc->n_steps, h, m, h + m ? 100.0*h/(h + m) : 0.0, mc->n_src_hit, mc->n_src_query, mc->n_adopted);
     LLAMA_LOG_WARN("moe-cache: staging lookups: %lld range calls, %lld experts asked, %lld found on the card, %lld found but still in flight, %lld asked of the wrong card\n",
             (long long) g_ac.where_calls.load(), (long long) g_ac.where_range.load(), (long long) g_ac.where_found.load(), (long long) g_ac.where_inflight.load(), (long long) g_ac.where_wrongdev.load());
+    if (g_ppoff_all > 0) {
+        LLAMA_LOG_WARN("moe-cache: pp-off: %.1f%% of the prompt's expert-token pairs kept off the card: %.1f%% on the miss device, %.1f%% on the CPU\n",
+                100.0*g_ppoff_pairs/g_ppoff_all, 100.0*g_ppoff_dev/g_ppoff_all, 100.0*(g_ppoff_pairs - g_ppoff_dev)/g_ppoff_all);
+    }
     alias_cost_log("at exit");
     // --moe layer-stats=1: how many cache slots each layer holds filled at the end of the run, and its hit rate (does a fixed per-layer share fill up evenly?)
     if (const char * e = moe_opt("layer-stats"); e && atoi(e) != 0) {
@@ -13003,6 +13216,8 @@ void llama_moe_cache_free_fork() {
     for (auto * b : mc->pin_chunks) { ggml_backend_buffer_free(b); }
     for (auto * b : mc->pbufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->pctxs) { ggml_free(c); }
+    for (auto * b : mc->miss_bufs) { ggml_backend_buffer_free(b); }
+    if (mc->miss_ctx) { ggml_free(mc->miss_ctx); }
     for (auto * b : mc->bufs) { ggml_backend_buffer_free(b); }
     for (auto * c : mc->ctxs) { ggml_free(c); }
     delete mc;

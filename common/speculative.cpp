@@ -29,7 +29,7 @@
 #define SPC_ERR(fmt, ...) LOG_ERR("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
 #define SPC_CNT(fmt, ...) LOG_CNT(""              fmt,               __VA_ARGS__)
 
-#define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
+#define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  1024   // fork: MiMo vs Qwen differ by 512 added tokens; the text check below is the real guard
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
 
 // Rebuild seq_id's draft sampler at the target's temperature: rejection weighs q against p, so
@@ -156,6 +156,9 @@ bool common_speculative_are_compatible(
         for (int i = SPEC_VOCAB_CHECK_START_TOKEN_ID; i < std::min(n_vocab_tgt, n_vocab_dft); ++i) {
             const char * token_text_tgt = llama_vocab_get_text(vocab_tgt, i);
             const char * token_text_dft = llama_vocab_get_text(vocab_dft, i);
+
+            // fork: the added tokens at the end of a vocab (tool tags, unused slots) differ between otherwise identical vocabs (MiMo, Qwen) and a draft does not depend on them
+            if (!(llama_vocab_get_attr(vocab_tgt, i) & LLAMA_TOKEN_ATTR_NORMAL) || !(llama_vocab_get_attr(vocab_dft, i) & LLAMA_TOKEN_ATTR_NORMAL)) { continue; }
 
             if (std::strcmp(token_text_tgt, token_text_dft) != 0) {
                 SPC_DBG("draft model vocab must match target model to use speculation but "

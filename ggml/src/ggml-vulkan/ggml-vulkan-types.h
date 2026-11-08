@@ -698,6 +698,23 @@ struct vk_device_struct {
     vk::DriverId driver_id;
     vk_device_architecture architecture;
     std::unique_ptr<vk_queue> compute_queue;
+    // fork: integrated-GPU keep-alive (GGML_VK_IGPU_KEEPALIVE=1): one spinning workgroup on a second, low-priority compute queue,
+    // re-submitted by every graph compute once the previous spin is done, so the GPU keeps its clocks between the bursts of a split graph
+    struct {
+        bool on = false;
+        vk::Queue queue;
+        vk::CommandPool pool;
+        vk::CommandBuffer cmd;
+        vk::Fence fence;
+        vk::ShaderModule module;
+        vk::DescriptorSetLayout dsl;
+        vk::DescriptorPool dpool;
+        vk::DescriptorSet set;
+        vk::PipelineLayout layout;
+        vk::Pipeline pipeline;
+        vk_buffer buf;
+        std::mutex mutex;
+    } keepalive;
     std::unique_ptr<vk_queue> transfer_queue;
     bool single_queue;
     bool support_async;

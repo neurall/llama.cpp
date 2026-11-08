@@ -119,6 +119,9 @@ struct llama_model_loader {
         std::set<std::string>                  tensors;
     } lazy;
 
+    // fork: buffers whose get_base is not the host memory they wrap (Vulkan host imports): buffer -> host address of its base
+    std::map<ggml_backend_buffer_t, const uint8_t *> host_origin;
+
     llama_files files;
     llama_ftype ftype;
     llama_fver  fver;

@@ -3988,7 +3988,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     if (k < 16 && slices_dev[k] == NULL) {
                         ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(s_backend->device);
                         slices_dev[k] = s_backend->device;
-                        slices_fn[k]  = reg ? (copy_slices_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_copy_slices_fork") : NULL;
+                        slices_fn[k]  = reg ? (copy_slices_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_fork_copy_slices_fork") : NULL;
                     }
                     copy_slices = k < 16 ? slices_fn[k] : NULL;
                 }
