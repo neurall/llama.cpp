@@ -5322,7 +5322,10 @@ def cmd_publish(a):
     br = _git(tree, "branch", "--show-current")
     for ref in [f"refs/heads/{br}:refs/heads/{br}"]:
         subprocess.run(["git", "-C", tree, "push", "neurall", ref], check=True)
-    _publish_db(here)
+    try:
+        _publish_db(here)
+    except subprocess.CalledProcessError:   # runs.db passed GitHub's 100 MB file limit (101 MB, 2026-11-08): the release itself does not wait for the history
+        print("publish: the runs-db push FAILED (runs.db too big for GitHub); continuing with the release", flush=True)
     if not a.name:
         return
     rev = _git(tree, "rev-parse", "HEAD"); h = rev[:9]
@@ -5360,6 +5363,37 @@ def set_latest_link(tree, link="/p/bw/latest"):
         print(f"latest link not set: {e}", flush=True)
 
 
+def build_progress(log, done, label):
+    """A progress bar of a build for the terminal, every 10 s until `done` is set: percent from the last "[ 47%]" (make) or "[123/456]" (ninja) line the build wrote to `log`, the object being compiled, and the
+    time left from the progress of the last 3 minutes (the early objects are ccache hits and the CUDA template instances are slow, so the average since the start is a poor guide; it is the fallback).
+    On a terminal the line is rewritten, in a file (nohup) every update is a line. (user 2026-11-08: "during builds show live % and est time remaining progressbar in status updated every 10s")"""
+    t0 = time.time(); hist = []; tty = sys.stdout.isatty()
+    def frac():
+        try:
+            with open(log, "rb") as f:
+                f.seek(0, 2); f.seek(max(0, f.tell() - 65536)); tail = f.read().decode("utf-8", "replace")
+        except OSError:
+            return None, ""
+        m = re.findall(r"\[\s*(\d+)%\]", tail); n = re.findall(r"\[(\d+)/(\d+)\]", tail)
+        obj = re.findall(r"Building \w+ object (\S+)", tail)
+        f_ = int(m[-1]) / 100 if m else int(n[-1][0]) / max(1, int(n[-1][1])) if n else None
+        return f_, os.path.basename(obj[-1])[:34] if obj else ""
+    def mmss(x):
+        return f"{int(x // 60):d}:{int(x % 60):02d}"
+    def loop():
+        while not done.wait(10):
+            f_, obj = frac()
+            if f_ is None:
+                continue
+            now = time.time(); el = now - t0; hist.append((now, f_)); hist[:] = [h for h in hist if now - h[0] <= 180]
+            rate = (f_ - hist[0][1]) / (now - hist[0][0]) if now - hist[0][0] >= 30 and f_ > hist[0][1] else f_ / el if f_ > 0 else 0
+            eta = (1 - f_) / rate if rate > 0 else None
+            bar = col("32;40", "█" * int(f_ * 20)) + col("2;37;40", "░" * (20 - int(f_ * 20)))
+            line = f"build {label} [{bar}] " + col(1, f"{f_ * 100:3.0f}%") + f"  {mmss(el)} elapsed, " + (f"~{mmss(eta)} left" if eta is not None else "? left") + f"  {obj}"
+            print(("\r\033[K" if tty else "") + line, end="" if tty else "\n", flush=True)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def cmd_build(a):
     r"""Builds, in containers (pc1) or on the W10 laptop (pc3), with ccache.
     default: dev build (the release container and flags, llama-server / llama-cli / llama-perplexity only) of a worktree as it is (--tree) or of a commit
@@ -5395,7 +5429,9 @@ def cmd_build(a):
             cmd = (f"cd /d N:\\llama.cpp && git fetch -q C:\\Users\\o\\{ref}.bundle {ref} && git checkout -q FETCH_HEAD && call N:\\llama.cpp\\release-out\\winbuild-rel.bat"
                    f" && (if not exist N:\\build mkdir N:\\build) && (if not exist N:\\build\\{name} mkdir N:\\build\\{name}) && xcopy /q /y /e N:\\build\\rel-cuda134-clang\\* N:\\build\\{name}\\"
                    f" & (copy /y N:\\build\\admit-pin-b12353-10d6c1e5c\\*140*.dll N:\\build\\{name}\\ >nul 2>&1) & echo PKG_OK {short}")   # the VC runtime DLLs of an old build, when it is still there: the release zip takes them from the b11214 zip anyway
+            _bp = threading.Event(); build_progress(log, _bp, name + " (pc3)")
             subprocess.run(ssh + [cmd], stdout=lf, stderr=subprocess.STDOUT)
+            _bp.set()
         os.remove(bundle)
         ok = f"PKG_OK {short}" in open(log).read() and "BUILD_OK" in open(log).read()   # PKG_OK is echoed even when the bat failed
         if ok and a.release:   # the zip the way every published Windows release was made (build-cuda-dl\bin + the VC runtime DLLs + LICENSE)
@@ -5456,7 +5492,9 @@ def cmd_build(a):
               "-v", f"{gitc}:{gitc}:ro", "llama-rel-el8", "bash", "-c", inner]
     t0 = time.time()
     with open(log, "w") as lf:
+        _bp = threading.Event(); build_progress(log, _bp, name)
         rc = subprocess.run(docker, stdout=lf, stderr=subprocess.STDOUT).returncode
+        _bp.set()
     del lk
     binp = os.path.join(B, "bin")
     if rc != 0 or not os.path.exists(os.path.join(binp, "llama-server")):
