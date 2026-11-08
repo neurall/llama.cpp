@@ -307,7 +307,8 @@ static void gs_dot(int nb, size_t xbytes, int q8_per_block, int tpb, int vdr, in
 // signs of 8 weights from the 7-bit field the GPU unpacks (the 8th is the parity), bit i = weight i
 static inline uint32_t gs_ksigns(uint32_t v) {
     v &= 0x7F;
-    return v | ((uint32_t) (__builtin_popcount(v) & 1) << 7);
+    uint32_t p = v; p ^= p >> 4; p ^= p >> 2; p ^= p >> 1;   // parity, portable to MSVC
+    return v | ((p & 1) << 7);
 }
 
 static inline int gs_dot4(const uint8_t * grid, uint32_t signs, const int8_t * q) {
