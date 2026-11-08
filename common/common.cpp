@@ -1320,7 +1320,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
     total = max = 0;
     n = 0;
     g_gpu_total_max = 0;
-    std::vector<std::string> ids;
+    std::vector<std::string> ids, seen;
     bool any_dgpu = sel.empty() && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr;
     for (ggml_backend_dev_t d : sel) { any_dgpu = any_dgpu || (d && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU); }   // -dev lists end with a nullptr
     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
@@ -1332,6 +1332,15 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
         if (!want) {
             continue;
         }
+        ggml_backend_dev_props props;
+        ggml_backend_dev_get_props(dev, &props);
+        // one card seen by two backends (4060 as CUDA0 and Vulkan1) counts once, as the model loader uses it once (13.9 GiB "free" on an 8 GiB card)
+        if (props.device_id && std::find(seen.begin(), seen.end(), std::string(props.device_id)) != seen.end()) {
+            continue;
+        }
+        if (props.device_id) {
+            seen.push_back(props.device_id);
+        }
         size_t free, tot;
         ggml_backend_dev_memory(dev, &free, &tot);
         // an integrated GPU's memory is system RAM: next to a discrete GPU it is no VRAM (780M + 4060: 22 GiB "free", a model of 11 GiB "fits" and got no expert cache)
@@ -1340,8 +1349,6 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
             max    = std::max(max, free);
             g_gpu_total_max = std::max(g_gpu_total_max, tot);
         }
-        ggml_backend_dev_props props;
-        ggml_backend_dev_get_props(dev, &props);
         ids.push_back(std::string(ggml_backend_dev_name(dev)) + "|" + (props.device_id ? props.device_id : "") + "|" + common_pci_slot(props.device_id) + "|" + std::to_string(tot >> 30));
         n++;
     }
