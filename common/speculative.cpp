@@ -158,7 +158,7 @@ bool common_speculative_are_compatible(
             const char * token_text_dft = llama_vocab_get_text(vocab_dft, i);
 
             // fork: the added tokens at the end of a vocab (tool tags, unused slots) differ between otherwise identical vocabs (MiMo, Qwen) and a draft does not depend on them
-            if (!token_text_tgt[0] || !token_text_dft[0] || llama_vocab_is_control(vocab_tgt, i) || llama_vocab_is_control(vocab_dft, i)) { continue; }
+            if (!(llama_vocab_get_attr(vocab_tgt, i) & LLAMA_TOKEN_ATTR_NORMAL) || !(llama_vocab_get_attr(vocab_dft, i) & LLAMA_TOKEN_ATTR_NORMAL)) { continue; }
 
             if (std::strcmp(token_text_tgt, token_text_dft) != 0) {
                 SPC_DBG("draft model vocab must match target model to use speculation but "
