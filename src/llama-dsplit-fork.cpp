@@ -2768,7 +2768,11 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     const bool aok[2] = { true, true };
     bool trial = false;
     const bool akn[2] = { known1, known2 };
-    const int choice = rls_voi_pick(am, av, aok, 2, (double) seen[n_tokens], &trial, akn, nullptr, true);   // the split is tried where its stake pays even before one card is known here
+    // the trial's stake: the passes left in this call. The count of passes of this size seen so far grew with every pass and forced a trial of the
+    // never-known one-card arm once per request (GLM 3.5 64k, 2026-11-08: a 25.9 s one-card pass at 36k cells against 11.9 s split, 10% of the prompt);
+    // what a trial learns pays over the passes still to come here, and the next request starts from the stored posterior (R4) anyway
+    (void) seen;
+    const int choice = rls_voi_pick(am, av, aok, 2, (double) std::max(1, np), &trial, akn, nullptr, true);   // the split is tried where its stake pays even before one card is known here
     // p_split, for the log only: the posterior probability that splitting this call beats one card
     const double p_split = rls_phi_cdf((am[0] - am[1]) / std::max(1e-9, std::sqrt(av[0] + av[1])));
     const double g_this = mu1_0 - mu2_0, g_pos = m1 - m2, d1_0 = mu1_0, d2_0 = mu2_0, f_d = f_mu;
