@@ -3240,8 +3240,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
             if (mb) {
                 auto on_m = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, mb); return t; };
-                ggml_tensor * up_m   = on_m(ggml_mul_mat_id(ctx0, mcache->up_m,   mc_inp, mc_miss_ids));
-                ggml_tensor * gate_m = on_m(ggml_mul_mat_id(ctx0, mcache->gate_m, mc_inp, mc_miss_ids));
+                ggml_tensor * up_m   = on_m(ggml_mul_mat_id(ctx0, mcache->up_m,   cur, mc_miss_ids));   // cur: the host copy made before the card's chain was queued, reading mc_inp here would wait for that chain
+                ggml_tensor * gate_m = on_m(ggml_mul_mat_id(ctx0, mcache->gate_m, cur, mc_miss_ids));
                 ggml_tensor * down_m = on_m(ggml_mul_mat_id(ctx0, mcache->down_m, on_m(mc_act(gate_m, up_m)), mc_miss_ids));
                 cb(down_m, "ffn_moe_miss_down", il);
                 down_g = ggml_add(ctx0, down_g, down_m);
