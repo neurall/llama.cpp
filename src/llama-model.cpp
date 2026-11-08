@@ -2196,6 +2196,22 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     //     across disjoint ranges of a file (see get_mapping_ranges)
     pimpl->ctxs_bufs.reserve(ml.ctx_map.size() * ml.files.size());
 
+    // fork: a Vulkan device that imports the mapped weights may need them in anonymous memory; swap before any context wraps the old view
+    for (auto & [ctx_key, ctx_ptr] : ml.ctx_map) {
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(ctx_key.buft);
+        ggml_backend_dev_props props;
+        if (!dev || ml.no_alloc || !ml.use_mmap || ggml_get_first_tensor(ctx_ptr.get()) == nullptr ||
+            strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "Vulkan") != 0) { continue; }
+        ggml_backend_dev_get_props(dev, &props);
+        if (!props.caps.buffer_from_host_ptr) { continue; }
+        for (auto & m : ml.mappings) {
+            if (m && !m->to_anonymous()) {
+                throw std::runtime_error("unable to copy the mapped weights into anonymous memory for the Vulkan import");
+            }
+        }
+        break;
+    }
+
     for (auto & [ctx_key, ctx_ptr] : ml.ctx_map) {
         ggml_backend_buffer_type_t buft = ctx_key.buft;
         ggml_context * ctx = ctx_ptr.get();
@@ -2235,10 +2251,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 //     from disk, MoE tensors kept on the CPU, etc) are left out and stay out of RAM
                 // this also allows using partial offloading when the model size exceeds the metal buffer
                 //     size, but not the RAM size
+                const bool   vk_chunks = strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "Vulkan") == 0;
                 void * addr = ml.mappings.at(idx)->addr();
                 // fork: a Vulkan buffer is one VkBuffer, capped by the device (2 GiB on a Radeon 780M) and the import needs page-aligned ends: a range is
                 // imported as overlapping page-aligned chunks; each overlaps the next by the largest tensor, so every tensor lies whole in one of them
-                const bool   vk_chunks = strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "Vulkan") == 0;
                 const size_t page      = 65536;   // covers minImportedHostPointerAlignment (4 KiB) and the Windows view granularity
                 const size_t map_end   = GGML_PAD(ml.mappings.at(idx)->size(), 4096);
                 const size_t chunk     = std::max(ggml_backend_buft_get_max_size(buft) / page * page, page);

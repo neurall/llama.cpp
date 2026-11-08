@@ -57,6 +57,8 @@ struct llama_mmap {
     void * addr() const;
 
     void unmap_fragment(size_t first, size_t last);
+    // fork: replace the file view by an anonymous copy at a new address (for drivers that cannot import file pages)
+    bool to_anonymous();
 
     static const bool SUPPORTED;
 
