@@ -61,7 +61,8 @@ void llama_moe_cache_prompt_call_fork(bool on);   // llama-moecache-fork.cpp
 void     llama_dsplit_note_limit_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the one-card pass limit of this call
 void     llama_dsplit_note_card_max_fork(uint32_t cap);   // src/llama-dsplit-fork.cpp: the context's card limit (what %limit is of)
 size_t   llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens);   // src/llama-moecache-fork.cpp: what a card's pool lends a prompt graph of n tokens
-size_t   llama_moe_cache_vram_margin_fork(ggml_backend_dev_t dev);                     // src/llama-moecache-fork.cpp: the VRAM margin a card keeps (the first micro-batch cap below)
+size_t   llama_moe_cache_vram_margin_fork(ggml_backend_dev_t dev);
+void     llama_moe_cache_alias_refused_fork(uint32_t n_tokens);                        // src/llama-moecache-fork.cpp: a graph that did not fit the lent blocks counts as a refusal                     // src/llama-moecache-fork.cpp: the VRAM margin a card keeps (the first micro-batch cap below)
 bool     llama_moe_cache_pp_short_fork();
 void     llama_moe_cache_pp_freeze_fork();
 void     llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens);
@@ -3600,6 +3601,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 res->reset();
                 continue;
             }
+            if (cparams.moe_cache && !moe_alias_bufs.empty() && ubatch.n_tokens > 64) { llama_moe_cache_alias_refused_fork(ubatch.n_tokens); }   // fork: decode runs the rest of the call in smaller passes
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
@@ -4616,7 +4618,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 return 1;
             }
         }
-        if (!res && status == GGML_STATUS_FAILED && memory && ubatch.n_tokens > 64 && llama_moe_cache_alias_err_fork()) {
+        if (!res && (status == GGML_STATUS_FAILED || status == GGML_STATUS_ALLOC_FAILED) && memory && ubatch.n_tokens > 64 && llama_moe_cache_alias_err_fork()) {   // a pool refusal, or a graph that outgrew the lent blocks (process_ubatch)
             // fork: the pool refused this pass (its graph and the KV do not fit): a smaller pass, the passes before it stay. Its graph never ran, so its cells go back, on a recurrent
             // hybrid too, and the rest of the call runs as a call of its own under the smaller limit. The server would halve the whole call instead, and could not take back
             // what already ran (Qwen3.6, a pass refused at 22016 cells: "inconsistent sequence positions"). Prompt calls only: outputs on the last token at most.

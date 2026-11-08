@@ -6177,6 +6177,11 @@ std::vector<llama_kv_tail_stat_fork> llama_moe_cache_kv_tail_stats_fork(bool res
 
 
 const char * llama_moe_cache_alias_err_fork() { return g_alias_err.empty() ? nullptr : g_alias_err.c_str(); }
+// llama_context::process_ubatch: the graph of a pass did not fit the blocks the pool lent (ggml_gallocr_reserve: "graph needs X MiB, the external buffer holds Y"); decode then
+// takes the smaller-pass path as for a refusal (DeepSeek 64k, 2026-11-08: a 16384-token pass at 73k cells needed 25.4 GiB against a 20.2 GiB lend and the request died with HTTP 500)
+void llama_moe_cache_alias_refused_fork(uint32_t n_tokens) {
+    if (g_alias_err.empty()) { g_alias_err = "the compute graph of a " + std::to_string(n_tokens) + "-token pass did not fit the blocks the pool lent (its attention grows with the cells)"; }
+}
 
 bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     g_alias_err.clear();
