@@ -352,10 +352,10 @@ static __device__ __forceinline__ uint32_t ggml_hip_perm(const uint32_t hi, cons
 #define cudaFuncGetAttributes       hipFuncGetAttributes
 #define cudaErrorNotReady           hipErrorNotReady
 #define cudaDriverGetVersion        hipDriverGetVersion
-// __ldcv (load, cache volatile): a volatile load per 4 bytes; pinned host memory a kernel reads over the link is not cached on AMD
+// __ldcv (load, cache volatile): non-temporal loads, so the GPU cache never serves an old line of a reused pinned block (a volatile load only stops
+// the compiler; idea from github.com/Sophia-Thickums/hip-moe). The builtin takes scalars only, so the 16-byte path is four 4-byte loads.
 static __device__ __forceinline__ uint4 __ldcv(const uint4 * p) {
-    const volatile unsigned int * q = (const volatile unsigned int *) p;
-    uint4 r; r.x = q[0]; r.y = q[1]; r.z = q[2]; r.w = q[3];
-    return r;
+    const unsigned int * q = reinterpret_cast<const unsigned int *>(p);
+    return make_uint4(__builtin_nontemporal_load(q + 0), __builtin_nontemporal_load(q + 1), __builtin_nontemporal_load(q + 2), __builtin_nontemporal_load(q + 3));
 }
-static __device__ __forceinline__ uint8_t __ldcv(const uint8_t * p) { return *(const volatile uint8_t *) p; }
+static __device__ __forceinline__ uint8_t __ldcv(const uint8_t * p) { return __builtin_nontemporal_load(p); }
