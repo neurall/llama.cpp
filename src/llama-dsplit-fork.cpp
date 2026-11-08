@@ -2803,9 +2803,9 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     // INV overrule (I1): the pick's mean is above the other's by both sigmas and it is no trial (a worse known)
     if (!trial && am[choice] > am[1 - choice] + std::sqrt(av[0]) + std::sqrt(av[1])) { dsplit_inv("overrule", format("picked %s at %.2f s against %.2f s", choice ? "split" : "one card", am[choice] / 1e6, am[1 - choice] / 1e6)); }
     const std::string pick_s = trial ? std::string("trial of the ") + (choice ? "split" : "one card") : std::string(choice ? "split" : "one card");
-    why = format("plan: pass of %lld tokens at %lldk cells, %d passes left: one card [%s] %.2f +- %.2f s, split %.2f +- %.2f s (n=%d, nis %.2f) + fill %.2f +- %.2f s (%s, n=%d); "
+    why = format("plan: pass of %lld tokens at %lldk cells, %d passes left, stake %.0f: one card [%s] %.2f +- %.2f s, split %.2f +- %.2f s (n=%d, nis %.2f) + fill %.2f +- %.2f s (%s, n=%d); "
                  "means one %.2f, split %.2f, fill %.2f, gain this pass %.2f, call %.2f%s: %s (p_split %.2f; ratio %.2f vs r 1.83, logged only)",
-            (long long) n_tokens, (long long) (pos0 / 1024), np, llama_moe_cache_pp_path_name_fork(path0).c_str(), mu1_0 / 1e6, std::sqrt(std::max(0.0, v1_0)) / 1e6,
+            (long long) n_tokens, (long long) (pos0 / 1024), np, stake, llama_moe_cache_pp_path_name_fork(path0).c_str(), mu1_0 / 1e6, std::sqrt(std::max(0.0, v1_0)) / 1e6,
             mu2_0 / 1e6, std::sqrt(std::max(0.0, v2_0)) / 1e6, g_rls_split.n, g_rls_split.nis, f_mu / 1e6, std::sqrt(std::max(0.0, f_v)) / 1e6,
             fill_est > 0.0 ? "owed" : "copies in place", g_rls_fill.n, d1_0 / 1e6, d2_0 / 1e6, f_d / 1e6, (mu1_0 - mu2_0) / 1e6, g_pos / 1e6,
             split_prior ? format(", split prior = max(upload %.2f s, one x %.2f) (never ran)", u_link0 / 1e6, ratio).c_str() : "", pick_s.c_str(), p_split, u_link0 > 0.0 ? std::max(u_link0, mu1_0) / u_link0 : 0.0);
