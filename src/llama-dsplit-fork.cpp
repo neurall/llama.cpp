@@ -2778,7 +2778,11 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     int seen_before = 0;
     if (pos0 != seen_pos0) { seen_pos0 = pos0; seen_before = seen[size_class]++; } else { seen_before = seen[size_class] - 1; }
     const double am[2] = { m1, m2 + f_mu }, av[2] = { v1s, v2s + f_v };
-    const bool aok[2] = { true, true };
+    // No trial of the split on a call its expert upload bounds (prior = U): the split shortens the compute only, so the trial cannot win there, and its sample
+    // teaches the split model an upload-bound time it then extrapolates (GLM 3.5 12k, both-splits 2026-11-08: the 2194-token first call, U 5.32 s, was the
+    // trial; the 10240-token call then saw split 17.0 +- 9.2 s against one card 6.0 and stayed one card, 648 against 821-839 t/s on the builds that split).
+    const bool upload_bound = split_prior && mu1_0 * ratio <= u_link0;
+    const bool aok[2] = { true, !upload_bound };
     bool trial = false;
     const bool akn[2] = { known1, known2 };
     // the trial's stake: the passes left in this call. The count of passes of this size seen so far grew with every pass and forced a trial of the
@@ -2811,7 +2815,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
             (long long) n_tokens, (long long) (pos0 / 1024), np, stake, llama_moe_cache_pp_path_name_fork(path0).c_str(), mu1_0 / 1e6, std::sqrt(std::max(0.0, v1_0)) / 1e6,
             mu2_0 / 1e6, std::sqrt(std::max(0.0, v2_0)) / 1e6, g_rls_split.n, g_rls_split.nis, f_mu / 1e6, std::sqrt(std::max(0.0, f_v)) / 1e6,
             fill_est > 0.0 ? "owed" : "copies in place", g_rls_fill.n, d1_0 / 1e6, d2_0 / 1e6, f_d / 1e6, (mu1_0 - mu2_0) / 1e6, g_pos / 1e6,
-            split_prior ? format(", split prior = max(upload %.2f s, one x %.2f) (never ran)", u_link0 / 1e6, ratio).c_str() : "", pick_s.c_str(), p_split, u_link0 > 0.0 ? std::max(u_link0, mu1_0) / u_link0 : 0.0);
+            split_prior ? format(", split prior = max(upload %.2f s, one x %.2f) (never ran%s)", u_link0 / 1e6, ratio, upload_bound ? ", upload-bound: no trial here" : "").c_str() : "", pick_s.c_str(), p_split, u_link0 > 0.0 ? std::max(u_link0, mu1_0) / u_link0 : 0.0);
     return choice;
 }
 // every prompt pass is timed: the pass decided last ends at the synchronize before the next prompt pass and at the end of its call (llama_context)
