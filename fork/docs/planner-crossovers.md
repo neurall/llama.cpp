@@ -161,6 +161,10 @@ without the last process's means loses. The cells are run with `-cs` (empty stat
 R5 the k arms (stream with k x picks ahead): never a cold candidate; a VOI trial on warm requests only; measured wins stand (DS 16k 31.4 vs 45.0 s,
 MiMo 16k 32.3 vs 35.0; GLM 3.5 10k lost 17.4 vs 16.9). k > 1 has never run: trials start at the lowest k.
 
+R5b a call under GGML_OP_OFFLOAD_MIN_BATCH (32 tokens) streams nothing: its expert matmuls run on the CPU, so the stream family (stream, mix, k) is no candidate when a chain can run, and such a call never
+teaches the stream arms or the SSD rate. Measured 2026-11-08: the prompt's 4-token tail 1.1 s (GLM 3.5) and 1.7 s (DS) on that path, 0.5 and 0.3 s on the decode chain; the 2-token start-up call, priced against the
+link rate before any stream ran (1.3 GB/s), left the stream's upload coefficient 17x low, and the first short prompt (15-33 tokens, GLM 3.5 and DS) then streamed cold: 12.5 s, against 2.4 s on ram-pool.
+
 R6 dense + expert split and expert-only: no cold candidate (section 1 of the previous revision: 5-12% on two models, no trigger); VOI trial only
 when the split is already the incumbent and a slower card has free VRAM; off everywhere the trial lost.
 

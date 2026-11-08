@@ -11707,6 +11707,7 @@ static double pp_pass_floor(double n) {
 // pass). This is what auto decides by (user 2026-11-01: per size, from measured values). The paths are told apart by the graph that ran, a forced path measures as well.
 // PP_RING: the stream, every expert staged on the fastest link's card. PP_MIX: the stream with the prompt mix. PP_DEC: the decode chain. PP_K + i: the stream with predicted staging, q2 up to 2^i x a token's picks.
 enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_PATHS = PP_K + 8 };
+static constexpr double PP_MIN_BATCH = 32.0;   // GGML_OP_OFFLOAD_MIN_BATCH's default: under it a pass's experts run on the CPU, whichever path was planned
 static struct { double n = 0.0, us = 0.0; } g_pp_took[PP_PATHS][32];
 static bool g_pp_no_chain[32] = {};   // per size: the chain's graph refused such a pass
 // ---- the learned planner (fork/docs/rampool.md "Robust planner design"; --moe split-model=0 keeps the per-size rules above for one release) ----
@@ -12260,7 +12261,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         const int learned = g_pp_pass_learned;
         g_pp_pass_learned = 0;
         // the SSD rate of the stream: the bytes the process read from storage over this call (only a stream pass, which reads the mapped experts; the chains read few)
-        if (g_pp_ssd_m > 0.0 && path != PP_DEC && path != PP_CHAIN && path != PP_DENSE) {
+        if (g_pp_ssd_m > 0.0 && path != PP_DEC && path != PP_CHAIN && path != PP_DENSE && (double) n_tokens >= PP_MIN_BATCH) {
             const unsigned long long rb = pp_self_read_bytes();
             if (rb > g_pp_rb0 + (1ull << 30)) {
                 const double g = g_pp_ssd_m / ((double) us * 1e3);   // mapped bytes through the pass per second: the page cache holds a part of them (DeepSeek 2026-11-03: 30 GB read of 110 GB mapped), so the bytes read alone would over-count
@@ -12276,7 +12277,9 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             if (path != PP_DENSE && g_pp_phi[path][1] > 0.0) {
                 dsf_rls & rp = pp_rls(path);
                 const double mu = g_pp_pmu[path], sd = std::sqrt(std::max(0.0, g_pp_var[path]));
-                const double nis = learned > 0 ? rp.nis : rls_update(rp, g_pp_phi[path], took);   // the passes taught the arm already (llama_moe_cache_pp_pass_learn_fork)
+                // (a tiny call on the stream family ran on the CPU: its time says nothing about a stream. The 2-token call at start, priced against the uncalibrated link rate, left the upload coefficient about 17x low)
+                const bool streamed = n1 >= PP_MIN_BATCH || path == PP_CHAIN || path == PP_DEC;
+                const double nis = learned > 0 || !streamed ? rp.nis : rls_update(rp, g_pp_phi[path], took);   // the passes taught the arm already (llama_moe_cache_pp_pass_learn_fork)
                 if (nis > 1.0) { g_pp_redraw = true; }   // the posterior moved more than it expected: the next call draws again
                 // stored only when determined and quiet (feedback_stored_values_policy): a next start begins from it as its prior
                 if (rp.storable()) { llama_dsplit_state_set_fork(("pp.rls." + std::to_string(path)).c_str(), rls_str(rp)); }
@@ -12567,6 +12570,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     {
         bool ok[PP_PATHS];
         for (int p = 0; p < PP_PATHS; ++p) { ok[p] = g_pp_phi[p][1] > 0.0; }
+        // a call under the GPU's smallest expert batch (GGML_OP_OFFLOAD_MIN_BATCH, 32 tokens) streams nothing: its expert matmuls run on the CPU, each expert read from the pool or the SSD. The prompt's
+        // 4-token tail (2026-11-08) took 1.1 s on GLM 3.5 and 1.7 s on DeepSeek that way, 0.5 and 0.3 s on the decode chain: about 10% of a 3k prompt. A chain whenever one can run.
+        if (n < PP_MIN_BATCH && (ok[PP_CHAIN] || ok[PP_DEC])) {
+            for (int p = 0; p < PP_PATHS; ++p) { if (p != PP_CHAIN && p != PP_DEC) { ok[p] = false; } }
+        }
         // deterministic: the lowest mean among the paths known here, a trial only where its stake pays over the calls of this size so far
         // (rls_voi_pick; planner-simple/learned, replacing the Thompson draws that lost rows 23768/23769)
         const double R = (double) ++g_pp_size_seen[(uint32_t) n];
