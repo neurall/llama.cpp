@@ -344,6 +344,12 @@ static __device__ __forceinline__ uint32_t ggml_hip_perm(const uint32_t hi, cons
 #define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
 #define cudaStreamIsCapturing       hipStreamIsCapturing
 #define cudaEventQuery              hipEventQuery
+#define cudaHostRegisterMapped      hipHostRegisterMapped
+#define cudaSetDeviceFlags          hipSetDeviceFlags
+#define cudaDeviceScheduleSpin      hipDeviceScheduleSpin
+#define cudaEventCreate             hipEventCreate
+#define cudaFuncAttributes          hipFuncAttributes
+#define cudaFuncGetAttributes       hipFuncGetAttributes
 #define cudaErrorNotReady           hipErrorNotReady
 #define cudaDriverGetVersion        hipDriverGetVersion
 // __ldcv (load, cache volatile): a volatile load per 4 bytes; pinned host memory a kernel reads over the link is not cached on AMD

@@ -2041,7 +2041,9 @@ static void common_auto_pin(common_params & params) {
         } else if (avail) {
             // the model does not fit pinned RAM: pin as much as the machine can spare, in tensor order, and map the rest. Never the whole model through mmap behind the
             // user's back. The budget is the reserved huge-page pool (memory nothing else can use) plus the available RAM minus a safety margin for the system.
-            size_t pool         = avail - common_ram_available(false);
+            // two reads of free RAM: if it grew in between (Windows has no pool term at all) the difference wrapped to 16 EiB and pinned everything (780M smoke 2026-11-08)
+            const size_t avail_np = common_ram_available(false);
+            size_t pool         = avail > avail_np ? avail - avail_np : 0;
             const size_t mem    = avail - pool;
             // pages that cache files of earlier loads hold in the pool are not free now but are evicted when this load needs them (ggml_cuda_hugefs_evict):
             // count the whole 1 GiB pool, else a warm cache file shrinks the budget, the next load gets another buffer size and key, and the two files evict each
