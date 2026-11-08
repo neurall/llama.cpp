@@ -158,15 +158,20 @@ static inline double rls_draw(dsf_rls & r, const double * phi, uint64_t seed, do
     return mu;
 }
 
-// "th0 th1 th2 th3 | P00 P11 P22 P33 | s2 n nis": the log line and the state file (diag(P) only: the prior a next start begins from)
+// "th0 th1 th2 th3 | P00 P11 P22 P33 | s2 n nis | P01 P02 P03 P12 P13 P23": the log line and the state file. The off-diagonals carry what the samples
+// pinned: one sample fixes the time at its own features to +-6% while every coefficient alone stays near its prior, so diag(P) alone predicted that same
+// call +-55% after a restart (GLM 3.5 4k split, n=1: 6.29 +- 3.49 s) and every start re-tried the arm it had measured (MiMo 12k one card +- 18.8 s on 12 s).
+// Older files without the last section load as diag(P); full precision because phi' P phi at a measured point is a small difference of large terms.
 static inline std::string rls_str(const dsf_rls & r) {
     std::string o;
     char b[64];
     for (int i = 0; i < r.k; ++i) { snprintf(b, sizeof b, "%s%.6g", i ? " " : "", r.th[i]); o += b; }
     o += " |";
-    for (int i = 0; i < r.k; ++i) { snprintf(b, sizeof b, " %.6g", r.P[i * 4 + i]); o += b; }
-    snprintf(b, sizeof b, " | %.6g %d %.3g", r.s2, r.n, r.nis);
-    return o + b;
+    for (int i = 0; i < r.k; ++i) { snprintf(b, sizeof b, " %.17g", r.P[i * 4 + i]); o += b; }
+    snprintf(b, sizeof b, " | %.6g %d %.3g |", r.s2, r.n, r.nis);
+    o += b;
+    for (int i = 0; i < r.k; ++i) { for (int j = i + 1; j < r.k; ++j) { snprintf(b, sizeof b, " %.17g", r.P[i * 4 + j]); o += b; } }
+    return o;
 }
 // back from rls_str (k must match)
 static inline bool rls_parse(dsf_rls & r, int k, const std::string & v) {
@@ -180,7 +185,16 @@ static inline bool rls_parse(dsf_rls & r, int k, const std::string & v) {
     // the samples behind the stored posterior count (capped at k + 1, so this start's samples still weigh): a loaded path with n = 0 was never
     // 'known here' and never a candidate against a trial, and a loaded split read as 'never ran' got the 0.96 x one-card prior back (R4 replay)
     c = e;
-    { char * e2 = nullptr; const long nn = strtol(c, &e2, 10); o.n = e2 != c && nn > 0 ? (int) std::min<long>(nn, k + 1) : 0; }
+    { char * e2 = nullptr; const long nn = strtol(c, &e2, 10); o.n = e2 != c && nn > 0 ? (int) std::min<long>(nn, k + 1) : 0; c = e2; }
+    strtod(c, &e);   // nis: a new start begins its own running mean
+    c = e;
+    while (*c == ' ') { ++c; }
+    if (*c == '|') {   // the off-diagonals (older files end before them: diag(P) only)
+        ++c;
+        double off[6]; int m = 0; bool ok = true;
+        for (int i = 0; i < k && ok; ++i) { for (int j = i + 1; j < k; ++j) { off[m++] = strtod(c, &e); if (e == c) { ok = false; break; } c = e; } }
+        for (int i = 0, t = 0; ok && i < k; ++i) { for (int j = i + 1; j < k; ++j, ++t) { o.P[i * 4 + j] = o.P[j * 4 + i] = off[t]; } }
+    }
     o.nis = 1.0; o.e2 = o.s2 * (double) o.n;
     r = o;
     return true;

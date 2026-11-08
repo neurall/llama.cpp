@@ -63,6 +63,23 @@ int main() {
         const bool ok = rls_parse(q, 4, rls_str(r[1]));
         check("state string round trip keeps th", ok && std::fabs(q.th[1] - r[1].th[1]) <= 1e-5 * std::fabs(r[1].th[1]), q.th[1] / r[1].th[1]);
     }
+    // a restart keeps what one sample pinned: the reloaded posterior predicts the measured call as narrow as before (diag(P) alone: about +-55%)
+    {
+        const double th0[4] = { 2e5, 300.0, 0.0, 1.0 }, fl[4] = { 1e5, 50.0, 0.001, 0.5 };
+        dsf_rls a; rls_init(a, 4, th0, fl);
+        const double phi[4] = { 1.0, 4497.0, 4497.0 * 2000.0, 2.0e6 };
+        rls_update(a, phi, 6.0e6);
+        double v0 = 0.0, v1 = 0.0;
+        rls_pred(a, phi, &v0);
+        dsf_rls q;
+        const bool ok = rls_parse(q, 4, rls_str(a));
+        rls_pred(q, phi, &v1);
+        check("one sample: the measured call is narrow (sd < 10%)", std::sqrt(v0) < 0.10 * 6.0e6, std::sqrt(v0) / 6.0e6);
+        check("restart: the reloaded posterior is as narrow there (within 1%)", ok && std::fabs(std::sqrt(v1) / std::sqrt(v0) - 1.0) < 0.01, std::sqrt(v1) / std::sqrt(v0));
+        dsf_rls d;   // an older state line (no off-diagonal section) still loads, as diag(P)
+        const std::string s = rls_str(a);
+        check("old format without off-diagonals loads", rls_parse(d, 4, s.substr(0, s.rfind('|'))) && d.P[1] == 0.0, d.P[1]);
+    }
     printf("%s\n", n_failed ? "FAILED" : "all passed");
     return n_failed ? 1 : 0;
 }
