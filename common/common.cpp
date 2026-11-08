@@ -1276,6 +1276,7 @@ static size_t common_model_expert_bytes(const std::string & path_model) {
 
 // free memory summed over GPUs, of the largest GPU, and the GPU count
 static std::string g_gpu_id;       // the GPUs' names and PCI bus ids, hashed: identifies the hardware (and the slot, so the link) in the placement record
+static bool   g_gpu_shared_only = false; // every GPU in use shares system RAM (integrated: 780M, Strix Halo): an expert cache would only copy RAM to RAM
 static size_t g_gpu_total_max = 0; // fallback identity when the backend has no PCI id; free VRAM is not used: it moves with every browser tab
 
 // the slot of a GPU, "x16g4": negotiated link width (idle cards keep their width, only the speed drops) and the highest speed the card and its parent port
@@ -1352,6 +1353,7 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
         ids.push_back(std::string(ggml_backend_dev_name(dev)) + "|" + (props.device_id ? props.device_id : "") + "|" + common_pci_slot(props.device_id) + "|" + std::to_string(tot >> 30));
         n++;
     }
+    g_gpu_shared_only = n > 0 && !any_dgpu;
     std::sort(ids.begin(), ids.end());   // the order the backend lists them in does not matter
     uint32_t h = 2166136261u;            // FNV-1a: the same on every platform, so a state file can move with its machine
     for (const auto & id : ids) { for (char c : id) { h = (h ^ (uint8_t) c) * 16777619u; } h *= 16777619u; }
@@ -2167,7 +2169,14 @@ static void common_moe_cache_auto_impl(common_params & params) {
     // --moe mode=cache is honored even when the model fits: the fit path returns before the placement is decided
     const char * forced_mode = llama_moe_get_opt("mode");
     const bool forced_cache = forced_mode && std::string(forced_mode) == "cache";
-    if (n_gpu == 0 || (model_size + reserve <= vram_free && !forced_cache)) {
+    // GPUs that share system RAM (integrated: Radeon 780M, Strix Halo): the expert cache would copy experts from RAM to the same RAM every miss. Stock
+    // placement instead: the weights stay where they are and what the GPU's share cannot hold runs on the CPU over the same memory (780M ROCm, Qwen3.6 35B:
+    // 7.8 t/s decode with the cache planned against Vulkan's 18.3 without one)
+    const bool shared_ram = g_gpu_shared_only && !forced_cache;
+    if (shared_ram) {
+        decide_fork("placement", "stock (shared-RAM GPU)", string_format("every GPU in use shares system RAM: no expert cache (it would copy RAM to RAM); %.1f GiB GPU share", vram_free / 1073741824.0));
+    }
+    if (n_gpu == 0 || shared_ram || (model_size + reserve <= vram_free && !forced_cache)) {
         COM_DBG("MoE model (%.1f GiB) fits free VRAM (%.1f GiB on %d GPUs), no expert cache\n",
             model_size / 1073741824.0, vram_free / 1073741824.0, n_gpu);
         if (n_gpu > 0 && common_autotune_on(params)) {
@@ -2176,7 +2185,7 @@ static void common_moe_cache_auto_impl(common_params & params) {
             params.n_batch  = std::max<uint32_t>(params.n_batch, 2 * ub);
             if (params.n_ctx > 0) { params.n_batch = std::min<uint32_t>(params.n_batch, std::max<uint32_t>(params.n_ctx, ub)); }
             params.n_ubatch = ub;
-            decide_fork("placement", "fits VRAM (stock)", string_format("model fits the free VRAM (%.1f GiB), no expert cache", vram_free / 1073741824.0));
+            if (!shared_ram) { decide_fork("placement", "fits VRAM (stock)", string_format("model fits the free VRAM (%.1f GiB), no expert cache", vram_free / 1073741824.0)); }
             decide_fork("ubatch", std::to_string(ub), "model fits the VRAM: largest pass up to min(context, 16384) whose compute buffer is at most half of the free VRAM");
             LOG_INF("%s: ubatch %u: the model fits the VRAM, no cache to weigh (the largest pass up to min(context, 16384) whose compute buffer takes at most half of the free VRAM)\n", __func__, ub);
         }
