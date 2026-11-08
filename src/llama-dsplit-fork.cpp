@@ -1864,11 +1864,10 @@ std::vector<double> dsplit_zw_shares(const std::vector<ggml_backend_dev_t> & dev
     if (g_zw.dev != dev) {   // the first pass, or the cards changed: start from the start-of-server measurements and the stored factor
         g_zw = dsplit_zw();
         g_zw.dev = dev;
-        // f = 1: equal chains, the helper's dense work as long as the expert card's own. The expert op of a layer needs every range, so a pass is per layer
-        // max(the cards' dense chains) + the experts: the wall is lowest when the chains are equal, and a short expert-card wait is cheaper than the helper
-        // idling (GLM 3.5 10400 tokens, rampool13: f 0.75 rising 5% a pass gave the x4 card 36-46% of the tokens over four passes, idle 7.5 s of 11.9 s;
-        // equal dense time per card is 49%). The step below still lowers f where the expert card waits above its floor.
-        g_zw.f.assign(dev.size(), 1.0);
+        // 0.75: measured (GLM 3.0 64k, 2026-11-08): a start of 1.0 with the drop below held off (chains under 105% of the window) kept the share at 0.52 and
+        // the expert card waiting 19-26% of every pass, 628 prompt tokens/s against 748 with this start and the drop at every wait. The expert card's wait is
+        // the pass's cost, the helper's idle time is free: the factor drifts down until the wait is near its floor.
+        g_zw.f.assign(dev.size(), 0.75);
         g_zw.hist.assign(dev.size(), {});
         std::vector<double> stored_k;   // the k an earlier run of this model on these cards measured: it replaces the start-of-server estimate
         std::string v;
@@ -1946,10 +1945,7 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
     std::string fx;
     for (size_t i = 0; i < x; ++i) {
         if (B.tok[i] <= 0) { continue; }   // no range this pass: its factor stays
-        // late only when its chain is longer than the window: with equal chains the expert card still waits per layer for the hand-off of the helper's range
-        // (GLM 3.5 64k, 2026-11-07: 16-37% of every pass with the chain at 96-102% of the window), and that wait no share removes - charged to the tokens it
-        // took f from 1.00 to 0.15 in 14 passes while the share climb held the share at 0.46 against it
-        const bool late = waited && window > 0.0 && chain[i] / window > 1.05 && chain[i] / window >= 0.9 * worst;
+        const bool late = waited && window > 0.0 && chain[i] / window >= 0.9 * worst;
         if (late) { g_zw.f[i] = std::max(0.05, g_zw.f[i] * 0.9); }
         else      { g_zw.f[i] = std::min(1.0, g_zw.f[i] * 1.05); }
         fx += format("%s %s %.2f -> %.2f%s", fx.empty() ? "" : ",", ggml_backend_dev_name(B.dev[i]), f0[i], g_zw.f[i], late ? " (waited for)" : "");
