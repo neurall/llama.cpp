@@ -168,16 +168,17 @@ bool rp_read(rp_pool * p, int dfd, int fd, char * dst, size_t n, uint64_t off, c
         if (pos < off || end < edge) {
             want = RP_SECTOR;   // a sector shared with a neighbour
         } else {
-            want = (size_t) ((end - pos) / RP_SECTOR * RP_SECTOR);
-            if (p->rq > 0) { want = std::min(want, p->rq / RP_SECTOR * RP_SECTOR); }
+            want = (size_t) ((end - pos) / RP_SECTOR * RP_SECTOR);   // the whole-sector middle in one go: sr_read splits it into the drive's measured shape (256 KiB blocks, 32 in flight)
         }
         const uint64_t u0 = std::max(pos, off), u1 = std::min(pos + want, end);   // the bytes of this request that belong to dst
         char * d = dst + (size_t) (u0 - off);
         const size_t ma = p->memal.load(std::memory_order_relaxed);
         const bool whole = u0 == pos && u1 == pos + want;
         const bool direct = whole && ((uintptr_t) d & (ma - 1)) == 0;
-        if (!direct) { want = std::min(want, bounce_n); }
-        ptrdiff_t r = sr_pread1(dfd, direct ? d : bounce, want, pos);
+        if (!direct) { want = std::min(want, std::min(bounce_n, p->rq > 0 ? p->rq / RP_SECTOR * RP_SECTOR : bounce_n)); }
+        // the platform's async engine (ggml-read-fork.h: kernel AIO, io_uring or overlapped I/O, the stored rd_blk_kb / rd_qd shape) for a whole-sector span straight into the block
+        // (user 2026-11-08: the pool reads through the one reader wrapper, at the measured shape, not 512 KiB preads); one read at a time only for the sectors shared with a neighbour
+        ptrdiff_t r = direct && want > RP_SECTOR ? (sr_read(dfd, d, pos, want, want) ? (ptrdiff_t) want : (ptrdiff_t) -1) : sr_pread1(dfd, direct ? d : bounce, want, pos);
         if (r < 0 && errno == EINVAL && direct) {   // this file system or device wants more alignment than dma_alignment says: the bounce buffer from now on
             p->memal.store(RP_SECTOR, std::memory_order_relaxed);
             continue;
@@ -479,8 +480,8 @@ void ggml_rampool_fill_fork(void) {
         }
     }
     const double s = std::max(1e-3, (rp_now_us() - t0) / 1e6);
-    GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, requests of %zu KiB%s), %llu of %llu slices a card holds also in RAM (the blocks left after all others)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
-            p->n_threads, p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card_in, (unsigned long long) n_card);
+    GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, the async engine at %zu KiB blocks x %d in flight, edge sectors in %zu KiB reads%s), %llu of %llu slices a card holds also in RAM (the blocks left after all others)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
+            p->n_threads, sr_blk() >> 10, sr_qd(), p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card_in, (unsigned long long) n_card);
     for (int i = 0; i < p->n_threads; ++i) { p->readers.emplace_back(rp_reader, p); }
 }
 
