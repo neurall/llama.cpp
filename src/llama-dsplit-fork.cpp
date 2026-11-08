@@ -1969,45 +1969,53 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
 // Then the pass is the judge, as in the comment above dsplit_bal: faster per token than the dense split alone (ref_v): kept, f_i x1.5 while the card still idles more than
 // 10% of the pass; slower: f_i halves; below 2% together the experts are abandoned (dense split alone) and tried again after 8 passes. Helper experts that do not
 // fit behind the copies are dropped by the veto below, which makes it wait 8 passes too.
-void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
+// The expert trial's state is one per request, not one per pass-size bucket: a 64k prompt alternates pass sizes (7424 / 5888 / 10144 on GLM 3.0), each
+// bucket saw every other pass, restarted its trial and the call's expert share stayed 0 (2026-11-08). The shares it sets go to every bucket's next pass.
+struct dsplit_xtrial { int phase = 2; int wait = 2; double ref_v = 0.0, exp_v = 0.0; std::vector<double> exp_f; };
+static dsplit_xtrial g_xt;
+static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
     const size_t n = B.dev.size();
     if (llama_dsplit_experts_mode_fork() != -1 || n < 2 || T <= 0 || B.f.size() != n || B.f_run.size() != n || B.xw.size() != n || B.v <= 0.0) { return; }
     const size_t x = n - 1;
     double fh = 0.0;
     for (size_t i = 0; i < x; ++i) { fh += B.f_run[i]; }   // the helpers' share of the experts in the pass just measured
-    const auto set_f = [&](const std::vector<double> & fi) {
-        double sum = 0.0;
-        for (size_t i = 0; i < x; ++i) { B.f[i] = fi[i]; sum += fi[i]; }
-        B.f[x] = 1.0 - sum;
+    const auto set_f = [&](const std::vector<double> & fi) {   // every bucket of these cards: the next pass runs with the shares whatever its size
+        for (auto & e : g_bal) {
+            dsplit_bal & C = e.second;
+            if (C.dev != B.dev || C.f.size() != n) { continue; }
+            double sum = 0.0;
+            for (size_t i = 0; i < x; ++i) { C.f[i] = fi[i]; sum += fi[i]; }
+            C.f[x] = 1.0 - sum;
+        }
     };
     std::string why;
     // The trial is paired (A B A B, fork/docs/planner-crossovers.md 4.3): a pass with experts on the helpers is judged against the dense-split-alone pass right
     // after it, not against a reference from earlier in the prompt. A long prompt's passes get slower per token as the context grows (GLM 3.0 64k, 2026-11-07:
     // 1173 against a 1197 reference "faster", 1205 against the same 1197 "slower", 1326 against 1415 "faster" - the reference aged, the verdict flipped every
     // pass and the share went 20 -> 9 -> 4 -> 2 -> 23 -> 12%). The reference pass costs half the trial's passes; it ends when the shares settle (phase 3).
-    if (fh <= 0.0 && B.phase == 5) {   // the reference pass of a pair: the verdict on the experts pass before it
-        B.ref_v = B.v;
-        std::vector<double> fi = B.exp_f;
+    if (fh <= 0.0 && g_xt.phase == 5) {   // the reference pass of a pair: the verdict on the experts pass before it
+        g_xt.ref_v = B.v;
+        std::vector<double> fi = g_xt.exp_f;
         fi.resize(x, 0.0);
-        const bool better = B.exp_v > 0.0 && B.exp_v < B.ref_v * 0.99;
+        const bool better = g_xt.exp_v > 0.0 && g_xt.exp_v < g_xt.ref_v * 0.99;
         double tot = 0.0;
         if (better) {
             bool idle = false;
             for (size_t i = 0; i < x; ++i) {
                 if (fi[i] > 0.0 && i < B.xw.size() && B.xw[i] > 0.10 * B.span) { fi[i] = std::min(1.0, fi[i] * 1.5); idle = true; }
             }
-            B.phase = idle ? 1 : 3;
-            if (!idle) { B.wait = 8; }
-            why = format("pair: experts %.1f against the dense split alone %.1f us/token, faster%s", B.exp_v, B.ref_v, idle ? ": more" : ": settled");
+            g_xt.phase = idle ? 1 : 3;
+            if (!idle) { g_xt.wait = 8; }
+            why = format("pair: experts %.1f against the dense split alone %.1f us/token, faster%s", g_xt.exp_v, g_xt.ref_v, idle ? ": more" : ": settled");
         } else {
             for (size_t i = 0; i < x; ++i) { fi[i] *= 0.5; }
-            B.phase = 1;
-            why = format("pair: experts %.1f against the dense split alone %.1f us/token, not faster: half", B.exp_v, B.ref_v);
+            g_xt.phase = 1;
+            why = format("pair: experts %.1f against the dense split alone %.1f us/token, not faster: half", g_xt.exp_v, g_xt.ref_v);
         }
         for (double v : fi) { tot += v; }
         if (tot < 0.02) {
             std::fill(fi.begin(), fi.end(), 0.0);
-            B.phase = 2; B.wait = 8;
+            g_xt.phase = 2; g_xt.wait = 8;
             why += ": abandoned, the dense split alone, a new try in 8 passes";
         }
         set_f(fi);
@@ -2015,9 +2023,9 @@ void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
         return;
     }
     if (fh <= 0.0) {   // measured: the dense split alone
-        B.ref_v = B.ref_v > 0.0 && B.phase == 2 ? 0.5 * (B.ref_v + B.v) : B.v;
-        B.phase = 2;
-        if (--B.wait > 0) { return; }
+        g_xt.ref_v = g_xt.ref_v > 0.0 && g_xt.phase == 2 ? 0.5 * (g_xt.ref_v + B.v) : B.v;
+        g_xt.phase = 2;
+        if (--g_xt.wait > 0) { return; }
         // The helpers can take experts over only where they idle: a helper that waits for the expert card has link and compute to spare, whatever the expert
         // card waits for (GLM 3.5 10400 tokens, rampool13: the x16 card was compute-bound, 3.7 s of experts with its 4.6 s upload hidden and 207 ms of
         // upload wait, so the old gate "the expert card waits over 5% for uploads" never opened while the x4 card waited 7.5 s of an 11.9 s pass; Qwen3.6-35B
@@ -2025,7 +2033,7 @@ void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
         double idle_max = 0.0;
         for (size_t i = 0; i < x; ++i) { if (B.tok[i] > 0 && i < B.xw.size()) { idle_max = std::max(idle_max, B.xw[i]); } }
         if (idle_max < 0.05 * B.span) {
-            B.wait = 8;
+            g_xt.wait = 8;
             LLAMA_LOG_WARN("split experts: none on the helpers: they waited at most %.0f ms of %.0f for the expert card (under 5%%), no idle time to take experts over\n", idle_max, B.span);
             return;
         }
@@ -2044,19 +2052,23 @@ void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
                     ggml_backend_dev_name(B.dev[i]), B.xw[i], extra, comp, upl, hand, 100.0 * fi[i]);
             any = any || fi[i] >= 0.02;
         }
-        if (!any) { B.wait = 8; LLAMA_LOG_WARN("split experts: the helpers keep none (%s)\n", calc.empty() ? "nothing measured on them" : calc.c_str()); return; }
+        if (!any) { g_xt.wait = 8; LLAMA_LOG_WARN("split experts: the helpers keep none (%s)\n", calc.empty() ? "nothing measured on them" : calc.c_str()); return; }
         set_f(fi);
-        B.phase = 1;
-        LLAMA_LOG_WARN("split experts: trial, reference %.1f us/token: %s\n", B.ref_v, calc.c_str());
+        g_xt.phase = 1;
+        LLAMA_LOG_WARN("split experts: trial, reference %.1f us/token: %s\n", g_xt.ref_v, calc.c_str());
         return;
     }
     // measured with experts on the helpers: settled shares (phase 3) stay; a trial pass is followed by its reference pass (phase 5), judged there
-    if (B.phase == 3 && --B.wait > 0) { return; }   // settled: a reference pass every 8th pass keeps the verdict current as the context grows
-    B.exp_v = B.v;
-    B.exp_f.assign(B.f_run.begin(), B.f_run.begin() + x);
+    if (g_xt.phase == 3 && --g_xt.wait > 0) { return; }   // settled: a reference pass every 8th pass keeps the verdict current as the context grows
+    g_xt.exp_v = B.v;
+    g_xt.exp_f.assign(B.f_run.begin(), B.f_run.begin() + x);
     set_f(std::vector<double>(x, 0.0));
-    B.phase = 5;
+    g_xt.phase = 5;
     LLAMA_LOG_WARN("split experts: pass with %.0f%% of the experts on the helpers took %.1f us/token; the next pass runs the dense split alone as its reference\n", 100.0 * fh, B.v);
+}
+void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
+    dsplit_expert_trial_impl(B, T);
+    for (auto & e : g_bal) { if (e.second.dev == B.dev) { e.second.phase = g_xt.phase; } }   // the balance line shows the trial's phase
 }
 // one measured split pass of bucket b: the step of the balance (under g_plan_mu)
 void dsplit_bal_step(int b) {
