@@ -6960,26 +6960,39 @@ static void ggml_cuda_scratch_check_end_fork(int device, const ggml_cgraph * cgr
     }
 }
 
-// fork diagnostics: GGML_CUDA_OP_PROFILE=N times every node (stream sync around each, graphs off) and prints the ops by share of
-// wall time every N graphs; a fused group counts as its first node. The sync adds launch latency, which is part of what it measures.
+// fork diagnostics: GGML_CUDA_OP_PROFILE=N times every node on the GPU (an event before each, graphs off, one wait per graph: no idle gaps
+// between kernels) and prints the ops by share of GPU time every N graphs, keyed by op, weight type and shape (m x k, columns n);
+// a fused group counts as its first node
 static const int g_op_prof_every = getenv("GGML_CUDA_OP_PROFILE") ? atoi(getenv("GGML_CUDA_OP_PROFILE")) : 0;
 struct ggml_cuda_op_prof {
     std::map<std::string, std::pair<double, int64_t>> t;   // op key -> (us, calls)
-    std::string cur;
-    std::chrono::steady_clock::time_point t0;
+    std::vector<cudaEvent_t> ev;
+    std::vector<std::string> lab;   // lab[k]: the node that runs between ev[k] and ev[k + 1]
     int graphs = 0;
-    void mark(cudaStream_t s, const ggml_tensor * next) {   // ends the running node, starts `next` (nullptr: end of graph)
-        CUDA_CHECK(cudaStreamSynchronize(s));
-        const auto now = std::chrono::steady_clock::now();
-        if (!cur.empty()) { auto & e = t[cur]; e.first += std::chrono::duration<double, std::micro>(now - t0).count(); e.second++; }
-        cur = next ? std::string(ggml_op_desc(next)) + " " + (next->src[0] ? ggml_type_name(next->src[0]->type) : "-") : "";
-        t0 = now;
-        if (!next && ++graphs % g_op_prof_every == 0) {
+    void mark(cudaStream_t s, const ggml_tensor * next) {   // starts `next`; nullptr ends the graph
+        if (ev.size() <= lab.size()) { cudaEvent_t e; CUDA_CHECK(cudaEventCreate(&e)); ev.push_back(e); }
+        CUDA_CHECK(cudaEventRecord(ev[lab.size()], s));
+        if (next) {
+            char key[160];
+            const ggml_tensor * a = next->src[0], * b = next->src[1];
+            snprintf(key, sizeof key, "%s %s m=%lld k=%lld n=%lld", ggml_op_desc(next), a ? ggml_type_name(a->type) : "-", a ? (long long) a->ne[1] : 0LL,
+                     a ? (long long) a->ne[0] : 0LL, b ? (long long) b->ne[1] : 0LL);
+            lab.push_back(key);
+            return;
+        }
+        CUDA_CHECK(cudaEventSynchronize(ev[lab.size()]));
+        for (size_t k = 0; k < lab.size(); ++k) {
+            float ms = 0.0f;
+            CUDA_CHECK(cudaEventElapsedTime(&ms, ev[k], ev[k + 1]));
+            auto & e = t[lab[k]]; e.first += 1e3 * ms; e.second++;
+        }
+        lab.clear();
+        if (++graphs % g_op_prof_every == 0) {
             std::vector<std::pair<double, std::string>> v; double tot = 0.0;
             for (auto & kv : t) { v.push_back({ kv.second.first, kv.first }); tot += kv.second.first; }
             std::sort(v.rbegin(), v.rend());
             GGML_LOG_WARN("op profile: %d graphs, %.1f ms per graph\n", g_op_prof_every, tot / 1e3 / g_op_prof_every);
-            for (size_t k = 0; k < v.size() && k < 16; k++) {
+            for (size_t k = 0; k < v.size() && k < 24; k++) {
                 const auto & e = t[v[k].second];
                 GGML_LOG_WARN("  %5.1f%%  %8.1f us/graph  %6.1f us/call  %s\n", 100.0 * v[k].first / tot, v[k].first / g_op_prof_every, v[k].first / e.second, v[k].second.c_str());
             }
@@ -7101,7 +7114,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (nodes_fused[i]) {
                     continue;
                 }
-                if (g_op_prof_every > 0 && !ggml_is_empty(node) && node->op != GGML_OP_NONE) { op_prof.mark(cuda_ctx->stream(), node); }
+                if (g_op_prof_every > 0 && !use_cuda_graph && !ggml_is_empty(node) && node->op != GGML_OP_NONE) { op_prof.mark(cuda_ctx->stream(), node); }
 #ifdef USE_CUDA_GRAPH
                 // fused nodes are skipped together, so a cut never splits a fusion
                 // a concurrent region must join before its capture can end
@@ -7209,7 +7222,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     try_launch_concurrent_event(node);
                }
             }
-            if (g_op_prof_every > 0) { op_prof.mark(cuda_ctx->stream(), nullptr); }
+            if (g_op_prof_every > 0 && !use_cuda_graph) { op_prof.mark(cuda_ctx->stream(), nullptr); }
         }
 
 #ifdef USE_CUDA_GRAPH
