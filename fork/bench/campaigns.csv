@@ -6900,3 +6900,5 @@ nf-mimo-64k-pf64k4k,2026-11-08 06:40:52,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-
 night-final-glm30-pf12k4k,2026-11-08 07:01:06,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds night-final variants v test pf12k n=2,,
 night-final-glm35-pf12k4k,2026-11-08 07:10:56,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds night-final variants v test pf12k n=2,,
 ei-cap-glm30-pf12k4k,2026-11-08 07:32:48,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds ei-cap variants v test pf12k n=2,,
+two-samples-mimo-i-pf8k1k,2026-11-08 08:05:14,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds two-samples variants v test pf8k n=2,,
+two-samples-mimo-i-pf8k1k,2026-11-08 08:21:46,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds two-samples variants v test pf8k n=2,,

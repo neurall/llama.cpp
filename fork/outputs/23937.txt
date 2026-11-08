@@ -1,0 +1,27 @@
+run 23937 | two-samples | pf8k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.53 t/s | prompt 1083.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-08 08:07:30
+
+<think>The user wants a code review of this C++ source file. Let me analyze it thoroughly.
+
+Let me go through the file systematically, looking for bugs, style issues, potential problems, and design concerns.
+
+Let me start by reading through the code carefully.
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` for the separator part. Let me trace through:
+     - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1)` — this gives `item_rule + " " + (sep item)*` or similar
+     - Then wraps in `(...)?` — so `item_rule + " " + (sep item)*` becomes `(item_rule + " " + (sep item)*)?`
+     - This seems correct for 0 or more items with separator.
+   - When `min_items == 1` and `has_max`, the separator case: `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max_items - 1)` — this gives `item (sep item)*` which is correct for 1 to max items.
+   - When `min_items > 1` with separator: `item_rule + " " + build_repetition("(" + sep + " " + item + ")", min_items - 1, max_items - 1)` — this gives `item (sep item){min-1,max-1}` which is correct.
+   - Looks generally correct.
+
+2. **`build_min_max_int` function:**
+   - This is complex. Let me look for issues.
+   - `uniform_range` lambda: uses `from[i]` and `to[i]` — these are `char` values. When `from[i]` is a digit character and `to[i]` is a digit character, `from[i] - 1` and `to[i] - 1` etc. are used for ranges. This seems fine for digit characters.
+   - The `to_reached` variable is declared inside the `if (sub_len > 0)` block but used across branches — it's initialized to `false` and set to `true` in one branch. This seems correct.
+   - `std::stoll(min_s.substr(1))` — this could throw if the substring is empty, but `min_s` has at least 2 characters in this branch (since `min_value > 9`), so `min_s.substr(1)` has at least 1 character. Actually wait, `min_value > 9` means `min_s` has at least 2 characters, so `min_s.substr(1)` has at least 1 character. OK.
+   - The `decimals_left` parameter is used to limit recursion depth. `less_decimals = std::max(decimals_left - 1, 1)` — this ensures at least 1. But the initial value is 16, so after 15 recursive calls it would be 1, and then `less_decimals` would be `max(0, 1) = 1`, so it would stay at 1 forever. This could lead to infinite recursion if the number is very long. Actually, `decimals_left` starts at 16 and each recursive call decrements it by 1 (with a floor of 1), so after 15 calls it's 1, and then `less_decimals = max(0, 1) = 1`, so it stays at 1. This means the recursion depth is bounded by the initial `decimals_left` value plus the number of digits. Actually, the recursion is on the digits of the number, so for a 16-digit number, it would recurse 15 times, and `decimals_left` would go from 16 to 1. For a 17-digit number, it would recurse 16 times, and `decimals_left` would go from 16 to 1 (staying at 1 after the 15th call). So the depth is bounded by `max(decimals_left, number_of_digits)`. This seems OK for practical purposes.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if the rule already exists with the same content, return the existing name. If it exists with different content, find a unique name by appending a number. This seems correct.
+   - However, there's a subtle issue: the loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` —
