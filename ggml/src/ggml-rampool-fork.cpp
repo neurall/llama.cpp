@@ -219,9 +219,10 @@ char * rp_bounce_new(size_t n) {
 #endif
 }
 
-// out of a graph's reach: not read by this graph or the one before it, and no reader outside a graph
-bool rp_evictable(const rp_pool * p, const rp_rec & r) {
-    return r.state == RP_IN && r.holds == 0 && r.graph + 1 < p->graph.load(std::memory_order_relaxed);
+// out of a graph's reach: not read by this graph or the one before it, and no reader outside a graph. force (a CPU kernel's demand): only this graph's are kept, the one
+// before it has been synchronised (the counter moves after the sync); DS 12k relcand: the 13.5k stream call asked for every block, so the tail's demand found none
+bool rp_evictable(const rp_pool * p, const rp_rec & r, bool force = false) {
+    return r.state == RP_IN && r.holds == 0 && r.graph + (force ? 0u : 1u) < p->graph.load(std::memory_order_relaxed);
 }
 
 // A block for an element of class c, -1: none. The caller holds the lock. A free block first; else of 64 sampled evictable blocks the one expected back last.
@@ -242,7 +243,7 @@ int32_t rp_take_block(rp_pool * p, rp_class & c, bool force) {
         const rp_owner o = c.owner[s];
         if (o.t < 0) { continue; }
         rp_tensor & t = *p->tensors[o.t];
-        if (!rp_evictable(p, t.rec[o.e])) { continue; }
+        if (!rp_evictable(p, t.rec[o.e], force)) { continue; }
         seen++;
         const double h = p->heat(t.key, o.e, p->ud);
         if (h > bh) { bh = h; best = (int32_t) s; }
@@ -592,7 +593,11 @@ const char * ggml_rampool_get_fork(const void * key, int64_t e) {
     const rp_rec & r = t->rec[e];
     // asked by this graph or the one before it: no eviction before the graph after next (the graph counter moves only between graphs). Without eviction a block in stays in, so
     // no stamp is needed: a prompt pass's CPU op (no need before it) reads the pool too, not the mapping (rampool3: first 1938-token pass 46.8 s vs 16.7 s without the pool)
-    if (g_rp->evict && r.graph + 1 < g_rp->graph.load(std::memory_order_relaxed)) { return nullptr; }
+    const uint32_t g = g_rp->graph.load(std::memory_order_relaxed);
+    if (g_rp->evict && r.graph + 1 < g) { return nullptr; }
+    // eviction off: a CPU kernel's read is stamped, so a forced demand in this graph (another thread, another expert) never takes the block it reads
+    // shortcut: no lock, so a demand that checked the stamp just before this store can still take the block; nanoseconds wide, forced demands only; a hazard flag if it shows
+    if (!g_rp->evict && r.graph != g) { __atomic_store_n(const_cast<uint32_t *>(&r.graph), g, __ATOMIC_SEQ_CST); }
     return t->ptr[e].load(std::memory_order_acquire);
 }
 
