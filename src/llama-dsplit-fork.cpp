@@ -1746,6 +1746,8 @@ long                            g_card_seen = 0;
 const char * dsplit_bal_phase(int p) {
     return p == 0 ? "balancing the token shares" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone" : p == 4 ? "one card" : p == 5 ? "reference pass of the expert trial" : "dense split with experts";
 }
+struct dsplit_xtrial { int phase = 2; int wait = 2; double ref_v = 0.0, exp_v = 0.0; std::vector<double> exp_f, f; };   // f: the helpers' expert shares in force (a new pass-size bucket starts from them)
+static dsplit_xtrial g_xt;
 dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) {
     auto it = g_bal.find(b);
     if (it != g_bal.end() && it->second.dev == dev) { return it->second; }
@@ -1756,6 +1758,11 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
     B.s.assign(n, n ? 1.0 / (double) n : 0.0);
     B.f.assign(n, 0.0);
     if (n) { B.f[n - 1] = 1.0; }
+    if (n >= 2 && g_xt.f.size() == n - 1) {   // the expert trial's shares in force: a pass of a size not seen before keeps them (2026-11-08: a fresh bucket ran at 0% and restarted the trial)
+        double sum = 0.0;
+        for (size_t i = 0; i + 1 < n; ++i) { B.f[i] = g_xt.f[i]; sum += g_xt.f[i]; }
+        B.f[n - 1] = 1.0 - sum;
+    }
     B.c.assign(n, 0.0); B.hop.assign(n, 0.0); B.k.assign(n, 0.0); B.d.assign(n, 0.0); B.m.assign(n, 0.0); B.wd.assign(n, 0.0); B.wm.assign(n, 0.0); B.wx.assign(n, 0.0); B.tok.assign(n, 0);
     B.s_run = B.s; B.f_run = B.f;
     B.phase = 2;   // the dense split alone: every expert on the expert card
@@ -1971,8 +1978,6 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
 // fit behind the copies are dropped by the veto below, which makes it wait 8 passes too.
 // The expert trial's state is one per request, not one per pass-size bucket: a 64k prompt alternates pass sizes (7424 / 5888 / 10144 on GLM 3.0), each
 // bucket saw every other pass, restarted its trial and the call's expert share stayed 0 (2026-11-08). The shares it sets go to every bucket's next pass.
-struct dsplit_xtrial { int phase = 2; int wait = 2; double ref_v = 0.0, exp_v = 0.0; std::vector<double> exp_f; };
-static dsplit_xtrial g_xt;
 static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
     const size_t n = B.dev.size();
     if (llama_dsplit_experts_mode_fork() != -1 || n < 2 || T <= 0 || B.f.size() != n || B.f_run.size() != n || B.xw.size() != n || B.v <= 0.0) { return; }
@@ -1980,6 +1985,7 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
     double fh = 0.0;
     for (size_t i = 0; i < x; ++i) { fh += B.f_run[i]; }   // the helpers' share of the experts in the pass just measured
     const auto set_f = [&](const std::vector<double> & fi) {   // every bucket of these cards: the next pass runs with the shares whatever its size
+        g_xt.f.assign(fi.begin(), fi.begin() + x);
         for (auto & e : g_bal) {
             dsplit_bal & C = e.second;
             if (C.dev != B.dev || C.f.size() != n) { continue; }
