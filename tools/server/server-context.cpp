@@ -4949,7 +4949,9 @@ private:
                             // 83 + 12384 + 4 tokens), but the plan moves between the batches of one prompt (the KV grows, the pool cap shrinks): on a small card the cut
                             // gave 10284 + 1472 + 1984 + 4 (5 passes, 3780 prompt t/s) where the upstream cut gives 7660 + 6080 + 4 (4 equal passes, 4020) (Qwen3.6-35B,
                             // 3 GiB free per card, 2026-10-22). The calls are planned into equal passes each (llama_moe_cache_prefill_ubatch_fork).
-                            const int checkpoint_offsets[] = {4 + n_ubatch, 4};
+                            // A prompt of two passes is cut in two equal halves: a pass costs at least its expert uploads whatever its tokens (GLM 3.0 12.4k: 2268 + 10144 tokens, the 2268-token pass 4.0-4.9 s of 14-15 s)
+                            const int n_todo = slot.task->n_tokens() - slot.stats.n_prompt_cached;
+                            const int checkpoint_offsets[] = {4 + (n_todo > 4 + n_ubatch && n_todo <= 4 + 2 * n_ubatch ? (n_todo - 4) / 2 : n_ubatch), 4};
 
                             bool should_break = false;
                             for (int offset : checkpoint_offsets) {
