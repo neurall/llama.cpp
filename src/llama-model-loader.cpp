@@ -1815,7 +1815,6 @@ bool llama_model_loader::load_all_data(
     std::map<int, int>    pr_dfd;      // buffered fd -> O_DIRECT fd
     std::map<int, size_t> pr_fsize;
     auto pr_direct = [&](int fd) -> int {
-        if (!phase_layout) { return -1; }
         auto it = pr_dfd.find(fd);
         if (it != pr_dfd.end()) { return it->second; }
         struct stat st;
@@ -2003,7 +2002,7 @@ bool llama_model_loader::load_all_data(
                     constexpr size_t chunk = 64u << 20;
                     {
                         std::lock_guard<std::mutex> lk(pr_mtx);
-                        const int dfd = pr_direct(file->file_id());
+                        const int dfd = phase_layout ? pr_direct(file->file_id()) : -1;
                         const size_t fsize = dfd >= 0 ? pr_fsize[file->file_id()] : 0;
                         const auto lit = pr_left.find(cur->buffer);
                         std::atomic<size_t> * left = lit == pr_left.end() ? nullptr : lit->second.get();
@@ -2103,7 +2102,15 @@ bool llama_model_loader::load_all_data(
                     }
                 } else {
                     // with direct IO read the aligned range around the tensor and use the data inside it, so no bounce buffer is needed
-                    const size_t align          = file->read_alignment();
+#if defined(__linux__)
+                    // fork: the universal reader here too (Vulkan and every GPU buffer without async uploads): O_DIRECT at the drive's depth into the staging buffer, not one buffered read
+                    const int    vdfd   = use_direct_io ? -1 : pr_direct(file->file_id());
+                    const size_t vfsize = vdfd >= 0 ? pr_fsize[file->file_id()] : 0;
+#else
+                    const int    vdfd   = -1;
+                    const size_t vfsize = 0;
+#endif
+                    const size_t align          = vdfd >= 0 ? direct_align() : file->read_alignment();
                     const size_t aligned_offset = weight->offs & ~(align - 1);
                     const size_t pad            = weight->offs - aligned_offset;
                     const size_t read_size      = (pad + n_size + align - 1) & ~(align - 1);
@@ -2116,8 +2123,10 @@ bool llama_model_loader::load_all_data(
                         read_buf.resize(buf_size);
                     }
                     uint8_t * read_dst = (uint8_t *) GGML_PAD((uintptr_t) read_buf.data(), align);
-                    file->seek(aligned_offset, SEEK_SET);
-                    file->read_raw_unsafe(read_dst, read_size);
+                    if (vdfd < 0 || !sr_read(vdfd, (char *) read_dst, aligned_offset, read_size, std::min(read_size, vfsize - aligned_offset))) {
+                        file->seek(aligned_offset, SEEK_SET);
+                        file->read_raw_unsafe(read_dst, vdfd >= 0 ? std::min(read_size, file->size() - aligned_offset) : read_size);
+                    }
 
                     const uint8_t * data = read_dst + pad;
                     ggml_backend_tensor_set(cur, data, 0, n_size);
