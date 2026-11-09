@@ -50,7 +50,10 @@ extern "C" void ggml_backend_set_alloc_phase_fn_fork(size_t (*fn)(const struct g
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
+
+void llama_dsplit_bench_fork(const llama_model & model);   // llama-dsplit-fork.cpp: matmul + attention latency per GPU, once per process
 
 // the largest pass a dense split can run (llama-dsplit-fork.cpp): the sliding-window caches need room for it
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);
@@ -2223,6 +2226,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // or on any way out of this function
     struct pin_defer_t { void (*f)(int); ~pin_defer_t() { if (f) { f(0); } } } pin_defer { ml.no_alloc ? nullptr : (void (*)(int)) llama_fork_proc("ggml_backend_fork_pin_defer") };
     if (pin_defer.f) { pin_defer.f(1); }
+    // fork: the split planner's matmul and attention timings per GPU (llama_dsplit_bench_fork) run on a thread of their own while the weights are read: they need the
+    // model's shapes and free VRAM, not its data (GLM 3.0: 3.9 s of a start, timed in the muted no_alloc context of the context-size probe until now, before any read).
+    // Joined on every way out of here; the first context waits on the planner's lock when they are still running.
+    struct bench_join_t { std::thread t; ~bench_join_t() { if (t.joinable()) { t.join(); } } } bench_join;
+    if (!ml.no_alloc) { bench_join.t = std::thread([this] { llama_dsplit_bench_fork(*this); }); }
 
     for (auto & [ctx_key, ctx_ptr] : ml.ctx_map) {
         ggml_backend_buffer_type_t buft = ctx_key.buft;
