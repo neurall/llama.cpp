@@ -5917,6 +5917,7 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
 
 bool llama_dsplit_in_pass_loop_fork();   // llama-context.cpp
 void llama_dsplit_single_dev_fork(ggml_backend_dev_t dev);   // llama-dsplit-fork.cpp
+bool llama_dsplit_single_pays_fork(const llama_model & model, int64_t n_tokens);   // llama-dsplit-fork.cpp
 
 bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     if (llama_kv_parts_on_fork()) { return false; }   // the attention already runs on several cards, its KV heads are on them (llama_kv_cache, --moe attn-split)
@@ -5932,7 +5933,7 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     // prompt tokens/s against 1132-1211: the x16 card then computes the 8 layers the x4 card ran, and its pool is 635 MiB smaller by the copies.
     static const bool one_range = [] { const char * e = llama_moe_get_opt("one-range"); return e && atoi(e) != 0; }();
     const int cur = llama_dsplit_cur_fork();
-    const bool single = cur == 0 && one_range;
+    const bool single = cur == 0 && one_range && llama_dsplit_single_pays_fork(model, n_tokens);
     llama_dsplit_single_dev_fork(nullptr);   // set below when this graph is a one-range pass: it reads the copies, so it goes behind them
     if (!sched || (cur != 1 && !single) || ubatch.n_seqs != 1 || cparams.n_rs_seq != 0 || n_tokens < std::max(min_tok, min_tokens)) {
         return false;

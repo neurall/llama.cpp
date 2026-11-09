@@ -3517,6 +3517,33 @@ llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer
 static ggml_backend_dev_t g_single_dev = nullptr;
 void llama_dsplit_single_dev_fork(ggml_backend_dev_t dev) { g_single_dev = dev; }
 
+// --moe one-range: is this pass worth one token range on the expert card? It saves the hand-offs of the layers the other cards own (the activations cross each such card's link in and
+// out, per token and layer) and pays the fill of this card's copies when they are not in place: worth it when the tokens' saving covers the fill. From link rates and bytes, no size
+// constant (GLM 3.0: 112 us per token against 650 ms: about 5.8k tokens; a 4k prompt lost 8-17%, 12k-60k gained 3-19%).
+bool llama_dsplit_single_pays_fork(const llama_model & model, int64_t n_tokens) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_sets.find(&model);
+    if (it == g_sets.end() || g_cards.size() < 2) { return false; }
+    ggml_backend_dev_t x = g_cards.back();
+    auto ct = it->second.copies.find(x);
+    if (ct == it->second.copies.end()) { return false; }
+    if (!ct->second.pooled || ct->second.valid) { return true; }   // nothing owed: the hand-offs are saved for free
+    const double act = (double) model.hparams.n_embd * sizeof(float);
+    double saved_us = 0.0, fill_us = 0.0;
+    for (ggml_backend_dev_t d : g_cards) {
+        if (d == x) { continue; }
+        const double g = dsplit_link_once(d);
+        if (g <= 0.0) { return false; }
+        int layers = 0;
+        for (int il = 0; il < (int) model.hparams.n_layer(); ++il) { if (model.dev_layer(il) == d) { ++layers; } }
+        saved_us += 2.0 * act * layers / (g * 1e3);
+        double b = 0.0;
+        for (const auto & pr : ct->second.pairs) { if (pr.first->buffer && ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pr.first->buffer)) == d) { b += (double) ggml_nbytes(pr.first); } }
+        fill_us += b / (g * 1e3);
+    }
+    return (double) n_tokens * saved_us >= fill_us;
+}
+
 // (after g_cur) the copies' bytes the graph being built keeps in front of it (see llama-dsplit-fork.h)
 size_t llama_dsplit_mirror_offset_fork(const llama_model & model, ggml_backend_dev_t dev, bool reserve) {
     std::lock_guard<std::mutex> lk(g_mu);
