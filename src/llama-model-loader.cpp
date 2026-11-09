@@ -1790,6 +1790,17 @@ bool llama_model_loader::load_all_data(
             *a += ggml_nbytes(t);
         }
     }
+    // the pins run on one thread of their own, fed as the buffers fill: a read thread that pinned the buffer it finished stopped reading for the ~0.9 s of the pin (GLM 3.0:
+    // the reads took 32.5-34.0 s instead of 28.8-30.0). What it has not reached when the reads end is left to the pin after the load (4 threads, ggml_backend_cuda_pin_defer).
+    std::mutex              pin_mtx;
+    std::condition_variable pin_cv;
+    std::deque<void *>      pin_q;
+    bool                    pin_stop = false;
+    std::thread             pin_th;
+    auto pin_later = [&](void * p) {
+        { std::lock_guard<std::mutex> lk(pin_mtx); pin_q.push_back(p); }
+        pin_cv.notify_one();
+    };
     // fork: with the phase layout (llama-model.cpp) a host tensor's address and file offset share the 4096 grid, so its chunks are read with O_DIRECT (kernel AIO, the drive's probed
     // shape) straight into pinned memory: one DMA from the SSD, no page cache copy and no DONTNEED. The chunk edges are 4096 multiples of the FILE offset, so the head block of a
     // chunk is only the first chunk's (it lands in the gap in front of the tensor) and the tail block only the last one's (the next tensor starts past the next 4096 boundary).
@@ -1847,7 +1858,7 @@ bool llama_model_loader::load_all_data(
                 const size_t total = end - beg, need = std::min(total, t.fsize - beg);
                 if (async_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) {
                     pr_direct_bytes += t.n;
-                    if (t.left && t.left->fetch_sub(t.n) == t.n) { pin_one(t.base); }   // the buffer's last read: pinned now
+                    if (t.left && t.left->fetch_sub(t.n) == t.n) { pin_later(t.base); }   // the buffer's last read: to the pin thread
                     continue;
                 }
             }
@@ -1863,7 +1874,7 @@ bool llama_model_loader::load_all_data(
                 if (pr_fail) { break; }
             }
             if (pin_budget > 0) { posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED); }   // the pinned hybrid: the file copy must not compete with the pinned part; a plain --no-mmap load keeps its page cache for the next start
-            if (!pr_fail && t.left && t.left->fetch_sub(t.n) == t.n) { pin_one(t.base); }
+            if (!pr_fail && t.left && t.left->fetch_sub(t.n) == t.n) { pin_later(t.base); }
         }
     };
     auto pr_finish = [&]() {
@@ -1874,6 +1885,9 @@ bool llama_model_loader::load_all_data(
         pr_cv.notify_all();
         for (auto & t : pr_threads) { t.join(); }
         pr_threads.clear();
+        { std::lock_guard<std::mutex> lk(pin_mtx); pin_stop = true; }   // the pin running ends, the queued ones stay deferred
+        pin_cv.notify_one();
+        if (pin_th.joinable()) { pin_th.join(); }
         for (auto & kv : pr_dfd) { if (kv.second >= 0) { close(kv.second); } }
         pr_dfd.clear();
         if (pr_direct_bytes.load() || pr_buffered_bytes.load()) {
@@ -1883,6 +1897,20 @@ bool llama_model_loader::load_all_data(
     // the threads end on every way out of this function (cancelled loading, an exception)
     // a way out before the normal end (cancelled, an exception) drops what is still queued: the caller frees the buffers next, reading them all first only delays that
     struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{[&]() { { std::lock_guard<std::mutex> lk(pr_mtx); pr_q.clear(); } pr_finish(); }};
+    if (pin_one && !pr_left.empty()) {   // started after the guard, which ends it on every way out
+        pin_th = std::thread([&] {
+            std::unique_lock<std::mutex> lk(pin_mtx);
+            for (;;) {
+                pin_cv.wait(lk, [&] { return pin_stop || !pin_q.empty(); });
+                if (pin_stop) { return; }
+                void * p = pin_q.front();
+                pin_q.pop_front();
+                lk.unlock();
+                pin_one(p);
+                lk.lock();
+            }
+        });
+    }
 #endif
     auto progress_now = [&]() -> float {
 #if defined(__linux__)

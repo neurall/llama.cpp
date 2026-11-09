@@ -2586,6 +2586,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MOE"));
     add_opt(common_arg(
+        {"--refresh-ssd"},
+        "rewrite every file of the model in place with its own bytes before loading it, so the SSD reads it at its fresh-data speed: data written long ago reads slower "
+        "on many SSDs (PC1: a model written two months before read at 5.4 GB/s, a fresh file at 7.2 GB/s on the same drive). Takes about the file size over the drive's "
+        "write speed; the content and the mtime stay the same (Linux; same as --moe refresh-ssd=1)",
+        [](common_params &) { llama_moe_set_opt("refresh-ssd", "1"); }
+    ).set_env("LLAMA_ARG_REFRESH_SSD"));
+    add_opt(common_arg(
         {"--fork"}, "on|off",
         "off = plain upstream behaviour: no expert cache, no self-tuning or measuring, no auto-pinned weights, no thread tuner, whatever other fork options say; "
         "on (default) = the fork's features (the expert cache where it measures faster, tuning, pinned weights)",
