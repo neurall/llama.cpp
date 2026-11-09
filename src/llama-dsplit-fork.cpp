@@ -1766,7 +1766,7 @@ long                            g_card_seen = 0;
 const char * dsplit_bal_phase(int p) {
     return p == 0 ? "balancing the token shares" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone" : p == 4 ? "one card" : p == 5 ? "reference pass of the expert trial" : "dense split with experts";
 }
-struct dsplit_xtrial { int phase = 2; int wait = 2; double ref_v = 0.0, exp_v = 0.0; std::vector<double> exp_f, f; };   // f: the helpers' expert shares in force (a new pass-size bucket starts from them)
+struct dsplit_xtrial { int phase = 2; int wait = 2; double ref_v = 0.0, exp_v = 0.0, exp_cm = -1.0; std::vector<double> exp_f, f; };   // f: the helpers' expert shares in force (a new pass-size bucket starts from them)
 static dsplit_xtrial g_xt;
 dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) {
     auto it = g_bal.find(b);
@@ -2021,6 +2021,9 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
     // pass and the share went 20 -> 9 -> 4 -> 2 -> 23 -> 12%). The reference pass costs half the trial's passes; it ends when the shares settle (phase 3).
     if (fh <= 0.0 && g_xt.phase == 5) {   // the reference pass of a pair: the verdict on the experts pass before it
         g_xt.ref_v = B.v;
+        // the pair's second pass may sit elsewhere in the context (a new request starts at 0 cells: the experts pass at 6k cells lost to a reference at 0k, and the share halved although it was 4% faster):
+        // the reference is taken to the experts pass's context with the attention cost per token and cell
+        if (g_xt.exp_cm >= 0.0 && g_dsf_ps.pos0 >= 0) { g_xt.ref_v += g_dsf_ps.att * (g_xt.exp_cm - ((double) g_dsf_ps.pos0 + 0.5 * (double) g_dsf_ps.T)); }
         std::vector<double> fi = g_xt.exp_f;
         fi.resize(x, 0.0);
         const bool better = g_xt.exp_v > 0.0 && g_xt.exp_v < g_xt.ref_v * 0.99;
@@ -2087,6 +2090,7 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
     // measured with experts on the helpers: settled shares (phase 3) stay; a trial pass is followed by its reference pass (phase 5), judged there
     if (g_xt.phase == 3 && --g_xt.wait > 0) { return; }   // settled: a reference pass every 8th pass keeps the verdict current as the context grows
     g_xt.exp_v = B.v;
+    g_xt.exp_cm = g_dsf_ps.pos0 >= 0 ? (double) g_dsf_ps.pos0 + 0.5 * (double) g_dsf_ps.T : -1.0;
     g_xt.exp_f.assign(B.f_run.begin(), B.f_run.begin() + x);
     set_f(std::vector<double>(x, 0.0));
     g_xt.phase = 5;
