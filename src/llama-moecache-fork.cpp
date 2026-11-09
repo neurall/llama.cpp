@@ -1033,6 +1033,7 @@ std::atomic<bool> g_rel_dead{false};   // policy r without router probabilities:
 // expert of any layer, g_topic_tmax) instead of the one map of every request ever served
 std::atomic<bool>     g_topic_on{false};
 std::atomic<bool>     g_topic_thinking{false};   // the request being served is thinking (between <think> and </think>): its answer's uses count in the thinking map
+static std::atomic<uint64_t> g_pjit_visited{0}, g_pjit_all{0};   // prompt chain: experts its routers picked / experts of those layers (the touched share of a pass)
 static std::atomic<uint64_t> g_pjit_miss{0}, g_pjit_up{0}, g_pjit_layers{0};   // prompt calls: missed experts seen by the JIT, uploaded, layer-steps
 static std::atomic<uint64_t> g_pjit_left_l[256], g_pjit_pool_l[256];   // per layer: misses left to the CPU in prompt calls; 1 if the layer uses the pool branch
 static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (llama_moe_cache_prompt_call_fork, set by llama_context::decode)
@@ -7585,6 +7586,7 @@ void llama_moe_request_end_fork(void) {
         std::string pl;
         for (int l = 0; l < 256; ++l) { const uint64_t v = g_pjit_left_l[l].exchange(0); if (v) { pl += tr_fmt(" L%d%s:%" PRIu64, l, g_pjit_pool_l[l].load() ? "p" : "", v); } }
         LLAMA_LOG_WARN("moe-cache: prompt calls: left to the CPU per layer (p: pool branch):%s\n", pl.c_str());
+        { const uint64_t vi = g_pjit_visited.exchange(0), al = g_pjit_all.exchange(0); if (al) { LLAMA_LOG_WARN("moe-cache: prompt chain: routers picked %.1f%% of the experts of a layer per pass\n", 100.0 * (double) vi / (double) al); } }
         LLAMA_LOG_WARN("moe-cache: prompt calls: %" PRIu64 " layer-steps, %" PRIu64 " missed experts, %" PRIu64 " uploaded, %" PRIu64 " left to the CPU (%.1f%%)\n", ly, ms, up, ms - std::min(ms, up), ms ? 100.0*(ms - std::min(ms, up))/ms : 0.0);
     }
     if (moe_cache * jc = g_cache; jc && (jc->jit_rd_n || jc->jit_map_n)) {   // this request's JIT uploads of mapped experts: how they were read
@@ -9992,6 +9994,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
         mc->n_jit_miss += miss.size();
         g_pjit_layers++;
         g_pjit_miss += miss.size();
+        g_pjit_visited += n_visited; g_pjit_all += used.size();
         if (!miss.empty()) {
             struct cand { double rank; int32_t slot, owner; };
             std::vector<cand> c;
