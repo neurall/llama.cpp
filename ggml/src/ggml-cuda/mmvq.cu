@@ -1121,7 +1121,7 @@ static int mmvq_tuned_nwarps(int device, ggml_type type, int table_nw, const std
             t_best = us[i];
         }
     }
-    GGML_LOG_INFO("mmvq tune: device %d %s k=%lld rows=%lld channels=%lld fusion=%lld: nwarps %d (table %d), us 1:%.1f 2:%.1f 4:%.1f 8:%.1f\n",
+    GGML_LOG_WARN("mmvq tune: device %d %s k=%lld rows=%lld channels=%lld fusion=%lld: nwarps %d (table %d), us 1:%.1f 2:%.1f 4:%.1f 8:%.1f\n",
                   device, ggml_type_name(type), (long long) shape[0], (long long) shape[1], (long long) shape[2], (long long) shape[3],
                   best, table_nw, us[0], us[1], us[2], us[3]);
     picked[key] = best;
