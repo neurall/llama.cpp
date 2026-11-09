@@ -1666,7 +1666,14 @@ bool llama_model_loader::load_all_data(
     }
 
     // Buffer size: balance between memory usage and I/O efficiency
-    const size_t buffer_size = alignment != 1 ? LLAMA_DIRECT_IO_BUFFER_SIZE + 2 * alignment : 1 * 1024 * 1024;
+    // fork: with the phase layout the GPU weights are read like the host ones, O_DIRECT at the drive's depth into 64 MiB staging buffers (GLM 3.0: 9 GB of GPU weights
+    // took ~4 s through the page cache in 1 MiB reads, one at a time, ~2.5 GB/s, and left 9 GB of page cache that kswapd reclaimed after the load)
+#if defined(__linux__)
+    const bool stage_direct = phase_layout && !use_direct_io;
+#else
+    const bool stage_direct = false;
+#endif
+    const size_t buffer_size = alignment != 1 || stage_direct ? LLAMA_DIRECT_IO_BUFFER_SIZE + 2 * std::max<size_t>(alignment, 4096) : 1 * 1024 * 1024;
 
     std::vector<ggml_backend_buffer_t> host_buffers;
     std::vector<ggml_backend_event_t> events;
@@ -2030,6 +2037,11 @@ bool llama_model_loader::load_all_data(
                 if (upload_backend) {
                     size_t offset = weight->offs;
                     alignment = file->read_alignment();
+#if defined(__linux__)
+                    const int    sdfd   = stage_direct ? pr_direct(file->file_id()) : -1;   // see buffer_size
+                    const size_t sfsize = sdfd >= 0 ? pr_fsize[file->file_id()] : 0;
+                    if (sdfd >= 0) { alignment = direct_align(); }
+#endif
                     size_t aligned_offset = offset & ~(alignment - 1);
                     size_t offset_from_alignment = offset - aligned_offset;
                     file->seek(aligned_offset, SEEK_SET);
@@ -2051,7 +2063,17 @@ bool llama_model_loader::load_all_data(
                         ggml_backend_event_synchronize(events[buffer_idx]);
 
                         // Read aligned chunk from file
+#if defined(__linux__)
+                        const size_t pos = aligned_offset + bytes_read;
+                        if (sdfd < 0) {
+                            file->read_raw_unsafe(reinterpret_cast<void *>(ptr_dest_aligned), read_size);
+                        } else if (!sr_read(sdfd, reinterpret_cast<char *>(ptr_dest_aligned), pos, read_size, std::min(read_size, sfsize - pos))) {
+                            file->seek(pos, SEEK_SET);   // the buffered way; the aligned tail of the file's last tensor can pass its end
+                            file->read_raw_unsafe(reinterpret_cast<void *>(ptr_dest_aligned), std::min(read_size, file->size() - pos));
+                        }
+#else
                         file->read_raw_unsafe(reinterpret_cast<void *>(ptr_dest_aligned), read_size);
+#endif
 
                         // Calculate actual data portion (excluding alignment padding)
                         uintptr_t ptr_data = ptr_dest_aligned;
