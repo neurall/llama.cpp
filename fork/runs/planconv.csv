@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+conv-12k,glm,4,pf12k,64,,
+or-4k-rule,glm,2,pf4k,64,--moe one-range=1,
+def-4k-rule,glm,2,pf4k,64,,
+conv-4k,glm,4,pf4k,64,,

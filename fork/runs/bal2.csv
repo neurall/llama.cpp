@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+pcp15,glm,2,pf30k,64,"--moe dense-split=1,split-experts=0,split-pieces=1,share-adj=0.15",
+pcp25,glm,2,pf30k,64,"--moe dense-split=1,split-experts=0,split-pieces=1,share-adj=0.25",

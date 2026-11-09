@@ -2607,3 +2607,43 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-09 13:09:12,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.418
 2026-11-09 13:12:04,release-0d0046e2e1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3672
 2026-11-09 13:12:04,release-0d0046e2e1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4201
+2026-11-09 19:50:00,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 19:50:00,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 19:50:00,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 19:50:00,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 19:51:24,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 19:51:24,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 19:51:24,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 19:51:24,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 19:53:16,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 19:53:16,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 19:53:16,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 19:53:16,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 19:54:59,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 19:54:59,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 19:54:59,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 19:54:59,asyncload1 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 20:03:51,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 20:03:51,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 20:03:51,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 20:03:51,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 20:05:15,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 20:05:15,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 20:05:15,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 20:05:15,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 20:07:00,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 20:07:00,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 20:07:00,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 20:07:00,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 20:08:22,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 20:08:22,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 20:08:22,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 20:08:22,asyncload2 -np 1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 22:23:23,eqpass1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 22:23:23,eqpass1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 22:23:23,eqpass1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 22:23:23,eqpass1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091
+2026-11-09 22:25:07,eqpass1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,1,1.3612
+2026-11-09 22:25:07,eqpass1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,2,1.4253
+2026-11-09 22:25:07,eqpass1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,3,1.5273
+2026-11-09 22:25:07,eqpass1 -np 1,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,pplb,4,1.6091

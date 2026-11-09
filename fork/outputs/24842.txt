@@ -1,0 +1,8 @@
+run 24842 | orrule1 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 43.12 t/s | prompt 2221.5 t/s | 64 tokens | args: -np 1 --moe dense-split=1,split-experts=0,pass-stats=1,pass-trace=2 | power 220+280 W | 2026-11-09 21:37:42
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_MTP | SPEC_TYPE_NGRAM_SET | SPEC_TYPE_NGRAM_MOD);
+}
+
+static bool is_diffusion_model(const common_params_model & model) {
+    if (model.hparams.empty()) {

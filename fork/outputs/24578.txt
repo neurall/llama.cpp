@@ -1,0 +1,6 @@
+run 24578 | rel1 | pf12k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 139.64 t/s | prompt 6465.6 t/s | 32 tokens | args: -np 1 | power 200+200 W | 2026-11-09 04:56:31
+
+    return params.spec_type == common_params::DEFAULT || params.spec_type == common_params::DEFAULT_SPEC;
+}
+
+static bool spec_types_is_default_or_none

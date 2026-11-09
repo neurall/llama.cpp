@@ -1,0 +1,13 @@
+run 24815 | onerange1 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.58 t/s | prompt 635.8 t/s | 64 tokens | args: -np 1 --moe one-range=1 | power 220+280 W | 2026-11-09 20:57:09
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            std::vector<literal_or_rule> alts;
+            bool in_alts = false;
+
+            auto flush

@@ -1,0 +1,9 @@
+run 24770 | oneexe | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.45 t/s | prompt 622.4 t/s | 64 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 18:44:43
+
+    return params.speculative_type == COMMON_SPEC_TYPE_NONE
+        || params.speculative_type == COMMON_SPEC_TYPE_MTP
+        || params.speculative_type == COMMON_SPEC_TYPE_DRAFT;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.speculative_type == COMMON_SPEC_TYPE_M

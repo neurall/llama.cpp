@@ -1,0 +1,13 @@
+run 24626 | rel15033 | edit4c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 151.54 t/s | prompt 6165.1 t/s | 128 tokens | args: -np 1 | power 220+280 W | 2026-11-09 08:41:14
+
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - The user provided a C++ file: `common/json-schema-to-grammar.cpp`
+   - The request is: "Delete the code in this file that is never used."
+   - I need to identify unused code/functions/variables in the provided snippet and remove them.
+
+2.  **Scan the Code for Unused Elements:**
+   Let's go through the code systematically:
+   - Includes: `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered
+---

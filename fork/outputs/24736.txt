@@ -1,0 +1,34 @@
+run 24736 | rel15051 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.14 t/s | prompt 685.9 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:28:43
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            std::vector<literal_or_rule> alternatives;
+            std::vector<literal_or_rule> current_alternative;
+            bool in_alternation = false;
+
+            auto flush_alternative = [&]() {
+                if (!current_alternative.empty()) {
+                    seq = std::move(current_alternative);
+                    current_alternative.clear();
+                    alternatives.push_back(join_seq());
+                }
+            };
+            auto flush_alternation = [&]() {
+                flush_alternative();
+                if (alternatives.size() == 1) {
+                    // only one alternative was actually used
+                    alternatives.clear();
+                } else if (alternatives.empty()) {
+                    throw invalid_pattern("empty alternation");
+                } else {
+                    std::vector<std::string> alt_rules;
+                    for (const auto & alt : alternatives) {
+                        alt_rules.push_back(to_rule(alt));
+                    }
+                    auto id = _add_rule(name + "-alternation-" + std::to_string(sub_rule_ids.size()), string_join(alt_rules, " | "));
+                    sub_rule_ids[name + "-alternation-"

@@ -1,0 +1,29 @@
+run 24737 | rel15051 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.62 t/s | prompt 680.9 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:29:56
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, const std::string & prefix) {
+                if (s.length() < prefix.length() + 1 || s[0] != '\\') {
+                    return false;
+                }
+                return s.compare(1, prefix.length(), prefix) == 0;
+            };
+
+            auto is_unescaped = [&](const std::string & s, const std::string & prefix) {
+                return s.length() == prefix.length() + 1 && s[0] == '\\' && s.compare(1, prefix.length(), prefix) == 0;
+            };
+
+            auto is_kbd = [&](const std::string & s) {
+                return starts_with_unescaped(s, "p{") || starts_with_unescaped(s, "P{");
+            };
+
+            auto is_property = [&](const std::string & s) {
+                return starts_with_unescaped(s, "p") || starts_with_unescaped(s, "P");
+            };
+
+            auto is_class = [&](const std::string &

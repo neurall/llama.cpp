@@ -1,0 +1,7 @@
+run 24803 | onerange1 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.71 t/s | prompt 706.1 t/s | 64 tokens | args: -np 1 --moe one-range=1 | power 220+280 W | 2026-11-09 20:38:31
+
+    return params.speculative.num_draft == 0 && params.speculative.num_predict == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool mmproj_types_is_default(const common_params & params) {
+    return params.mmproj.model.path.empty() && params.mmproj.model.url.empty() && params.mm

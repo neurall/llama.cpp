@@ -1,0 +1,22 @@
+run 24745 | rel15051 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.28 t/s | prompt 683.2 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:43:28
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, const std::string & prefix) {
+                if (s.length() < prefix.length() + 1 || s[0] != '\\') {
+                    return false;
+                }
+                return s.compare(1, prefix.length(), prefix) == 0;
+            };
+
+            auto is_unescaped = [&](const std::string & s, const std::string & prefix) {
+                return s.length() == prefix.length() + 1 && s[0] == '\\' && s.compare(1, prefix.length(), prefix) == 0;
+            };
+
+            auto is_escaped_to_literal = [&](const std::string & s) {
+                return s.length() == 2 && (s == "\\t" || s == "\\r" || s == "\\n" || s == "\\-" || s == "\\[" || s == "\\]" || s == "\\{" || s == "\\}" || s == "\\(" || s == "\\)" || s == "\\|" || s == "\\

@@ -1,0 +1,35 @@
+run 24742 | rel_b14244 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.21 t/s | prompt 694.7 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:38:38
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            std::vector<std::vector<literal_or_rule>> alternatives;
+            std::vector<literal_or_rule> current_alternative;
+            std::vector<std::vector<literal_or_rule>> current_alternative_stack;
+            std::vector<size_t> current_alternative_stack_depth;
+            std::vector<size_t> current_alternative_stack_depth_stack;
+
+            auto flush_current_alternative = [&]() {
+                if (current_alternative.empty()) {
+                    throw unsupported_pattern("empty alternative");
+                }
+                alternatives.push_back(current_alternative);
+                current_alternative.clear();
+                current_alternative_stack_depth = current_alternative_stack_depth_stack;
+                current_alternative_stack_depth_stack.clear();
+            };
+
+            auto flush_alternatives = [&]() {
+                flush_current_alternative();
+                if (alternatives.size() == 1) {
+                    throw unsupported_pattern("single alternative");
+                }
+                std::vector<std::string> alt_rules;
+                alt_rules.reserve(alternatives.size());
+                for (const auto & alt : alternatives) {
+                    seq = alt;
+                    alt_rules

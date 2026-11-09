@@ -1,0 +1,7 @@
+run 24721 | rel_b14244 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 15.23 t/s | prompt 693.2 t/s | 32 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:13:50
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string

@@ -1,0 +1,7 @@
+run 24845 | orrule1 | pf30k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.07 t/s | prompt 842.6 t/s | 64 tokens | args: -np 1 --moe dense-split=1,split-experts=0,share-adj=0 | power 220+280 W | 2026-11-09 21:40:09
+
+ [](const std::string & a, const std::string & b) {
+                    std::string ret = a + " , '" + (b == "\n" ? "\\n" : b) + "'";
+                    return ret;
+                }).c_str()),
+        [](common_params & params, const std::string &

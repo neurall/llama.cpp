@@ -1,0 +1,10 @@
+run 24844 | orrule1 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.13 t/s | prompt 1254.1 t/s | 64 tokens | args: -np 1 --moe dense-split=1,split-experts=0,pass-stats=1,pass-trace=2 | power 220+280 W | 2026-11-09 21:39:28
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_default(const common_params & params, const std::string & spec_type) {
+    return params.spec_types.empty() || (params.spec_types.size() == 1 && params.spec_types[0] == spec_type);
+}
+
+static bool spec_types_is_default

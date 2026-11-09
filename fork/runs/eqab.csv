@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+def-12k,glm,3,pf12k,64,,
+split-12k,glm,3,pf12k,64,"--moe dense-split=1,split-experts=0",

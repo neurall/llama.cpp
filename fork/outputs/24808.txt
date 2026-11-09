@@ -1,0 +1,8 @@
+run 24808 | onerange1 | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.56 t/s | prompt 805.1 t/s | 64 tokens | args: -np 1 --moe one-range=1 | power 220+280 W | 2026-11-09 20:47:40
+
+ params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+             params.speculative.ngram_simple.size_n = 4;
+             params.speculative.ngram_simple.size_m = 1;
+             params.speculative.ngram_simple.min_hits = 1;
+        }
+    ).set_examples({LLAMA

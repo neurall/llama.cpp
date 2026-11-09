@@ -1,0 +1,12 @@
+run 24711 | pinfill8 | t100 | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 1.32 t/s | prompt 0.5 t/s | 100 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 13:21:35
+
+
+
+<think>
+The user wants the smallest possible HTML Tetris game. I need to create a complete, playable Tetris game in a single HTML file with minimal code. Let me think about the essential elements:
+
+1. A canvas or grid to display the board
+2. Tetromino pieces (I, O, T, L, J, S, Z)
+3. Game logic: piece movement, rotation, collision detection, line clearing
+4. Controls: keyboard input
+5

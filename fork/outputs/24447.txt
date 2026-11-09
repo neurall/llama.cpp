@@ -1,0 +1,34 @@
+run 24447 | cv1 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 154.39 t/s | prompt 3919.1 t/s | 256 tokens | args: -np 1 | power 220+280 W | 2026-11-08 23:20:19
+
+ sampling_options.push_back(&opt);
+        } else if (opt.is_spec) {
+            spec_options.push_back(&opt);
+        } else if (opt.in_example(ctx_arg.ex)) {
+            specific_options.push_back(&opt);
+        } else {
+            common_options.push_back(&opt);
+        }
+    }
+
+    auto print_options = [](std::vector<common_arg *> & options) {
+        for (common_arg * opt : options) {
+            printf("%s", opt->to_string().c_str());
+        }
+    };
+
+    bool first = true;
+    auto print_section = [&](const char * header, std::vector<common_arg *> & options) {
+        if (options.empty()) {
+            return;
+        }
+        printf("%s----- %s -----\n\n", first ? "" : "\n\n", header);
+        first = false;
+        print_options(options);
+    };
+    print_section("common params",           common_options);
+    print_section("sampling params",         sampling_options);
+    print_section("speculative params",      spec_options);
+    print_section("example-specific params", specific_options);
+}
+
+static

@@ -1,0 +1,7 @@
+run 24869 | eqpass1 | pf30k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.11 t/s | prompt 834.4 t/s | 64 tokens | args: -np 1 --moe dense-split=1,split-experts=0,split-pieces=1,share-adj=0.25 | power 220+280 W | 2026-11-09 22:11:55
+
+ [](const std::string & a, const std::string & b) {
+                    std::string pattern = (b == "\n" ? "\\n" : b);
+                    return a + ", '" + pattern + "'";
+                }).c_str()),
+        [](common_params & params, const std::string & value)

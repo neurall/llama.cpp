@@ -1,0 +1,4 @@
+run 24575 | rel1 | pf12k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 351.32 t/s | prompt 15014.1 t/s | 32 tokens | args: -np 1 | power 200+200 W | 2026-11-09 04:54:50
+
+    return params.mmproj_type == common_params_model::MMPROJ_DEFAULT_TYPE
+           || params.mtp_type ==

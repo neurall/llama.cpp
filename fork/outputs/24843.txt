@@ -1,0 +1,6 @@
+run 24843 | orrule1 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 11.27 t/s | prompt 1183.9 t/s | 64 tokens | args: -np 1 --moe dense-split=1,split-experts=0,pass-stats=1,pass-trace=2 | power 220+280 W | 2026-11-09 21:38:18
+
+    return params.spec_types.empty() || params.spec_types == std::vector<std::string>{"draft", "speculative"};
+}
+
+static void handle_model_result(const common_params & params, const std::string & model_id, const std::string & model_url, const std::string & model_filename, handle_model_result

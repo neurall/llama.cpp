@@ -1,0 +1,36 @@
+run 24741 | rel_b14244 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.06 t/s | prompt 686.7 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:36:59
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            std::vector<std::vector<literal_or_rule>> alternatives;
+            std::vector<literal_or_rule> current_alternative;
+            std::vector<size_t> current_alternative_start_positions;
+            std::vector<size_t> current_alternative_start_paren_depths;
+
+            auto flush_current_alternative = [&]() {
+                if (current_alternative.empty()) {
+                    throw invalid_pattern("empty alternative");
+                }
+                alternatives.push_back(std::move(current_alternative));
+                current_alternative.clear();
+                current_alternative_start_positions.clear();
+                current_alternative_start_paren_depths.clear();
+            };
+
+            auto flush_alternatives = [&]() {
+                flush_current_alternative();
+                if (alternatives.size() == 1) {
+                    return join_seq();
+                }
+                std::vector<std::string> alt_rules;
+                for (const auto & alt : alternatives) {
+                    std::vector<std::string> alt_parts;
+                    for (const auto & item : alt) {
+                        alt_parts.push_back(to_rule(item));
+                    }
+                    alt_rules

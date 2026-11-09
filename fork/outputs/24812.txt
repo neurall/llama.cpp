@@ -1,0 +1,7 @@
+run 24812 | onerange1 | pf30k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.12 t/s | prompt 886.9 t/s | 64 tokens | args: -np 1 --moe one-range=1 | power 220+280 W | 2026-11-09 20:54:12
+
+ [](const std::string & a, const std::string & b) {
+                    std::string pattern = (b == "\n" ? "\\n" : b);
+                    return a + ", '" + pattern + "'";
+                }).c_str()),
+        [](common_params & params, const std::string & value)

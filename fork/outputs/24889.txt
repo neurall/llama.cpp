@@ -1,0 +1,9 @@
+run 24889 | horizon3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.14 t/s | prompt 667.4 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-11-09 23:06:05
+
+    return params.speculative.num_draft == 0 && params.speculative.num_predict == 0 && params.speculative.n_max == 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 5;
+    params.speculative.num_predict = 8;
+    params

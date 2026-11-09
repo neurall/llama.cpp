@@ -1,0 +1,29 @@
+run 24746 | rel15051 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.87 t/s | prompt 683.7 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:44:38
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, const std::string & prefix) {
+                if (s.length() < prefix.length() + 1 || s.substr(0, prefix.length()) != prefix) {
+                    return false;
+                }
+                return s[prefix.length()] != '\\';
+            };
+
+            auto starts_with = [&](const std::string & s, const std::string & prefix) {
+                return s.length() >= prefix.length() && s.substr(0, prefix.length()) == prefix;
+            };
+
+            auto is_unescaped = [&](const std::string & s, char c) {
+                return s.length() == 2 && s[0] == '\\' && s[1] == c;
+            };
+
+            auto is_escaped = [&](const std::string & s, char c) {
+                return s.length() == 3 && s[0] == '\\' && s[1] == '\\' && s[2] == c;
+            };
+
+            auto is_char_range = [&](const std::string

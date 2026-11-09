@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+off-12k-1,glm,2,pf12k,64,,
+on-12k-1,glm,2,pf12k,64,,--env LLAMA_ASYNC_LOAD=1
+off-12k-2,glm,2,pf12k,64,,
+on-12k-2,glm,2,pf12k,64,,--env LLAMA_ASYNC_LOAD=1
+off-ppl,glm,1,pplb,,,--env PERF_PPL_CHUNKS=4
+on-ppl,glm,1,pplb,,,--env PERF_PPL_CHUNKS=4 --env LLAMA_ASYNC_LOAD=1

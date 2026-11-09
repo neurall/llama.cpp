@@ -1,0 +1,12 @@
+run 24759 | pinfill8 | t100 | OLMoE-1B-7B-0924-IQ1_M.gguf | decode 2.71 t/s | prompt 0.2 t/s | 100 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 16:50:42
+
+
+
+
+I'm not sure if this is possible, but I'm sure it's possible to make a possible tetris game.
+
+I'm not sure if this is possible, but I'm sure it's possible to make a tetris game.
+
+I'm not sure if this is possible, but I'm sure it's possible to make a tetris game.
+
+I'm not sure if this is possible, but I'm sure it's possible to make a tetris

@@ -1,0 +1,17 @@
+run 24761 | oneexe | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.88 t/s | prompt 635.4 t/s | 128 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 17:45:46
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, const std::string & prefix) {
+                if (s.length() < prefix.length() + 1 || s[0] != '\\') {
+                    return false;
+                }
+                return s.compare(1, prefix.length(), prefix) == 0;
+            };
+
+            auto is_unescaped = [&](const std::string & s, const std::string

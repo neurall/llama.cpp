@@ -1,0 +1,33 @@
+run 24744 | rel15051 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.59 t/s | prompt 682.0 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:42:15
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, const std::string & prefix) {
+                if (s.length() < prefix.length() + 1 || s.substr(0, prefix.length()) != prefix) {
+                    return false;
+                }
+                return s[prefix.length()] != '\\';
+            };
+
+            auto starts_with = [&](const std::string & s, const std::string & prefix) {
+                return s.length() >= prefix.length() && s.substr(0, prefix.length()) == prefix;
+            };
+
+            auto ends_with = [&](const std::string & s, const std::string & suffix) {
+                return s.length() >= suffix.length() && s.substr(s.length() - suffix.length()) == suffix;
+            };
+
+            auto pop_if = [&](const std::string & prefix) -> bool {
+                if (starts_with_unescaped(sub_pattern.substr(i), prefix)) {
+                    i += prefix.length();
+                    return true;
+                }
+                return false;
+            };
+
+            auto pop = [&](const std::string &

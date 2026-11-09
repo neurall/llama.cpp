@@ -1,0 +1,190 @@
+run 24709 | pinfill9 | chat | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 509.46 t/s | prompt 242.4 t/s | 1500 tokens | args: -np 1 -np 1 --refresh-ssd | power 220+280 W | 2026-11-09 13:19:35
+
+
+---
+Creating a fully functional Tetris game from scratch in HTML, CSS, and JavaScript is quite involved and goes beyond a simple response. However, I can guide you through the basics of how to set up a simple Tetris game using HTML, CSS, and JavaScript. This will be a very basic version, lacking many features of a full Tetris game but serving as a starting point.
+
+### HTML
+
+First, create the structure of your game with HTML. This will include a canvas element where the Tetris pieces will be drawn.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tetris Game</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        canvas {
+            border: 1px solid #000;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+    <script src="tetris.js"></script>
+</body>
+</html>
+```
+
+### CSS
+
+Next, add some basic styling to center the canvas and give it a background color.
+
+```css
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    background-color: #f0f0f0;
+}
+
+canvas {
+    border: 1px solid #000;
+    width: 400px;
+    height: 400px;
+}
+```
+
+### JavaScript (Using `p5.js` for simplicity)
+
+Now, let's write the JavaScript code to handle the game logic, including moving, rotating, and dropping the Tetris pieces.
+
+```javascript
+let canvas = document.getElementById('gameCanvas');
+let ctx = canvas.getContext('2d');
+
+// Define the Tetris piece shapes
+const pieceShapes = [
+    [0, 0, 1, 1], // Left
+    [0, 1, 1, 0], // Right
+    [1, 1, 0, 1], // Top
+    [1, 0, 1, 1]  // Bottom
+];
+
+// Initialize the game state
+let grid = [];
+for (let row = 0; row < 40; row++) {
+    grid[row] = [];
+    for (let col = 0; col < 10; col++) {
+        grid[row][col] = 0;
+    }
+}
+
+// Function to draw the Tetris pieces
+function drawPiece(x, y, piece) {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, 2 * Math.PI);
+    ctx.fill();
+}
+
+// Function to move piece
+function movePiece(x, y) {
+    const piece = grid[y][x];
+    if (piece !== 0) {
+        const dx = x - piece[0];
+        const dy = y - piece[1];
+        const newX = piece[2] + dx;
+        const newY = piece[3] + dy;
+
+        if (newX >= 0 && newX < 10 && newY >= 0 && newY < 40) {
+            grid[newY][newX] = piece[4];
+        }
+    }
+}
+
+// Function to drop piece
+function dropPiece() {
+    const piece = grid[currentRow][currentCol];
+    if (piece !== 0) {
+        const newRow = currentRow + 1;
+        const newCol = currentCol + 1;
+
+        if (newRow < 40 && newCol < 10) {
+            grid[newRow][newCol] = 0;
+            setTimeout(dropPiece, 100); // Recycle the drop action
+        } else {
+            clearInterval(dropInterval); // Stop the current drop action
+            alert('Game Over!');
+        }
+    }
+}
+
+// Function to handle key presses
+function handleKeyPress(e) {
+    if (e.key === 'ArrowLeft' || e.key === 'Left') {
+        currentCol -= 1;
+    } else if (e.key === 'ArrowRight' || e.key === 'Right') {
+        currentCol += 1;
+    } else if (e.key === 'ArrowDown' || e.key === 'Down') {
+        currentRow += 1;
+    } else if (e.key === 'ArrowUp' || e.key === 'Up') {
+        currentRow -= 1;
+    }
+}
+
+// Function to update the game state
+function update() {
+    for (let row = 0; row < 40; row++) {
+        for (let col = 0; col < 10; col++) {
+            const piece = grid[row][col];
+            if (piece !== 0) {
+                movePiece(col, row);
+            }
+        }
+    }
+}
+
+// Function to render the game state
+function render() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (let row = 0; row < 40; row++) {
+        for (let col = 0; col < 10; col++) {
+            const piece = grid[row][col];
+            if (piece !== 0) {
+                drawPiece(col, row, piece);
+            }
+        }
+    }
+
+    ctx.restore();
+}
+
+// Initial game state
+currentRow = 0;
+currentCol = 0;
+
+// Start the game loop
+const dropInterval = setInterval(dropPiece, 100);
+
+// Event listener for the 'space' key to start the game
+document.addEventListener('keydown', handleKeyPress);
+
+// Event listener to stop the game when 'Esc' is pressed
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+        alert('Game Over!');
+        clearInterval(dropInterval);
+    }
+});
+
+// Update the game state every frame
+requestAnimationFrame(render);
+```
+
+### Notes:
+
+- This code provides a very basic Tetris game. It lacks features like scoring, falling

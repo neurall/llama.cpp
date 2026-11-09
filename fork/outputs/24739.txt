@@ -1,0 +1,45 @@
+run 24739 | rel_b14244 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.96 t/s | prompt 693.3 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:33:19
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            std::vector<std::vector<literal_or_rule>> alternatives;
+            std::vector<literal_or_rule> current_alternative;
+            auto flush_alternative = [&]() {
+                if (current_alternative.empty()) {
+                    throw invalid_pattern("empty alternative");
+                }
+                seq.clear();
+                for (const auto & item : current_alternative) {
+                    seq.push_back(item);
+                }
+                current_alternative.clear();
+                alternatives.push_back(join_seq());
+            };
+
+            while (i < length) {
+                char c = sub_pattern[i];
+                if (c == '(') {
+                    paren_depth++;
+                    i++;
+                    if (i < length && sub_pattern[i] == '?') {
+                        i++;
+                        if (i < length && sub_pattern[i] == ':') {
+                            i++;
+                            continue;
+                        }
+                        throw unsupported_pattern("unsupported non-capturing group");
+                    }
+                    continue;
+                }
+                if (c == ')') {
+                    paren_depth--;
+                    i++;
+                    continue;
+                }
+                if (c == '|') {
+                   

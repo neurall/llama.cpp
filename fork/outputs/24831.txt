@@ -1,0 +1,7 @@
+run 24831 | orrule1 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 | power 220+280 W | 2026-11-09 21:24:49
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0

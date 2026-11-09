@@ -1,0 +1,7 @@
+run 24653 | pinfill1 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.0 t/s | prompt 689.2 t/s | 32 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 10:07:28
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string

@@ -1,0 +1,3 @@
+run 24780 | asyncload1 | t100 | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 24.85 t/s | prompt 7.4 t/s | 100 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 19:42:52
+
+ code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write smallest html tetris game code write

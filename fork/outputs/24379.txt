@@ -1,0 +1,22 @@
+run 24379 | multibe | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 15.93 t/s | prompt 549.8 t/s | 1024 tokens | args: -np 1 --moe map-guard=1 | power 220+280 W | 2026-11-08 21:19:35
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` is safe. OK.
+   - Actually wait, if `min_items == 0 && max_items == 1` with a separator, the result would be `(item (sep item)?)?` — hmm, actually the code handles `min_items == 0 && max_items == 1` before the separator check: `if (min_items == 0 && max_items == 1) return item_rule + "?";` — this returns before considering the separator, which is correct behavior (a single item doesn't need a separator).
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — minor performance issue but acceptable.
+   - `uniform_range` lambda captures by reference recursively via `std::function`.
+   - Potential issue: `digit_range(from[i], to[i] - 1)` — if `from[i] == to[i]`... wait, can that happen? In `uniform_range`, after skipping common prefix, `i < from.length() && i < to.length()`, and since we skipped equal chars, `from[i] != to[i]`. Since `from <= to` (presumably), `from[i] < to[i]`. So `to[i] - 1 >= from[i]`. OK.
+   - In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == INT64_MIN` and `max_value < 0`, then `-min_value` overflows! `-INT64_MIN` is UB. Wait: `has_min = min_value != INT64_MIN`. If `min_value == INT64_MIN` and `max_value < 0`, then `has_min` is false, so we don't enter the `has_min && has_max` branch. OK, so in the `has_min && has_max` branch, `min_value != INT64_MIN`, so `-min_value` is fine. And `-max_value`: `max_value != INT64_MAX` since `has_max`. But wait, if `max_value == INT64_MIN`... then `-max_value == -INT64_MIN` which is UB (well, in practice it wraps to INT64_MIN). Hmm, but if `max_value == INT64_MIN` and `min_value < 0`... `has_max = max_value != INT64_MAX` is true. So we'd compute `-max_value` = UB. Actually `-INT64_MIN` in two's complement is `INT64_MIN` itself (with wraparound). So `build_min_max_int(-max_value, -min_value)` = `build_min_max_int(INT64_MIN, -min_value)` — which has `has_min = false`. That might actually work by accident? Hmm, but it's still UB formally. Actually wait — can `max_value == INT64_MIN` while `min_value <= max_value`? Then `min_value == INT64_MIN` too, and `has_min` is false. So the branch `has_min && has_max` requires `min_value != INT64_MIN`, and since `min_value <= max_value`, `max_value >= min_value > INT64_MIN`... wait no, `min_value != INT64_MIN` doesn't mean `max_value != INT64_MIN`. If `min_value = -5` and `max_value = INT64_MIN`? That's invalid input (min > max). Assuming valid input where `min_value <= max_value`, if `max_value == INT64_MIN` then `min_value == INT64_MIN` too, so `has_min` is false. So the branch is safe for valid inputs. OK.
+   - In the `min_value < 0` case within `has_min && has_max`: `build_min_max_int(0, -min_value, ...)` — `-min_value` where `min_value != INT64_MIN

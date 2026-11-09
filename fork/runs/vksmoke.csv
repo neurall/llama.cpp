@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+vk-q36-2k,qwen36,1,pf128k,256,"-dev Vulkan0",--clamp 2000 --vary --ctx 8192
+vk-qni3-2k,qwen38,1,pf128k,256,"-dev Vulkan0",--clamp 2000 --vary --ctx 8192
+cu-q36-2k,qwen36,1,pf128k,256,,--clamp 2000 --vary --ctx 8192

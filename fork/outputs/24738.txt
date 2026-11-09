@@ -1,0 +1,34 @@
+run 24738 | rel_b14244 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.62 t/s | prompt 690.6 t/s | 256 tokens | args: -np 1 -np 1 | power 220+280 W | 2026-11-09 15:31:37
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            std::vector<std::vector<literal_or_rule>> alternatives;
+            alternatives.emplace_back();
+            std::vector<literal_or_rule> * current = &alternatives.back();
+
+            auto flush_current = [&]() {
+                auto joined = join_seq();
+                current->clear();
+                current->push_back(joined);
+            };
+
+            auto flush_alternatives = [&]() {
+                flush_current();
+                if (alternatives.size() == 1) {
+                    return join_seq();
+                }
+                std::vector<std::string> results;
+                results.reserve(alternatives.size());
+                for (const auto & alt : alternatives) {
+                    results.push_back(to_rule(alt.back()));
+                }
+                return std::make_pair(string_join(results, " | "), false);
+            };
+
+            auto is_unescaped = [&](size_t pos, char c) {
+                return pos < length && sub_pattern[pos] == c && (pos == 0 || sub_pattern[pos - 1] != '\\' || gbnf_escape_length(sub_pattern, pos - 1) != 
