@@ -7977,7 +7977,9 @@ static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
     for (char & c : gpu) { if (!isalnum((unsigned char) c)) { c = '_'; } }
     const char * b = moe_opt("build-id");
     const std::string with = g_vram_others ? ".with" + std::to_string(g_vram_others >> 20) : "";   // a plain run keeps the key it always had
-    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + with + (cold ? ".cold" : ".warm"));
+    // LLAMA_ASYNC_LOAD sizes the pool before the card's first kernels and cuBLAS handle exist (182 MiB more free at sizing on GLM 3.0): a normal start's need is too small for it (cublasCreate failed)
+    const char * as = getenv("LLAMA_ASYNC_LOAD");
+    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + with + (as && atoi(as) != 0 ? ".async" : "") + (cold ? ".cold" : ".warm"));
 }
 
 // the margin a pool leaves on a card: --moe vram-reserve-mb / margin_mb if set, else the need an earlier session measured on this card, driver and build
