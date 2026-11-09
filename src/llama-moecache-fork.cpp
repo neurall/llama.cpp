@@ -3369,6 +3369,20 @@ void resource_probe(moe_cache * mc) {
     std::vector<double> link_alone, link_mixed, tmp;
     std::map<int, std::pair<double, double>> meas;   // reader threads -> (CPU alone, CPU + links)
     const int n_max = std::max(1, n_phys > 0 ? n_phys : (int) std::thread::hardware_concurrency());
+    // fork: the probe's three results (CPU RAM rate alone, with the links, threads that saturate it) are a near-static fact of this CPU and these cards: kept per CPU thread count
+    // and PCI addresses of the link cards, used again at later starts (0.8 s on PC1) unless --moe probe-remeasure=1 (stored-values policy: denoised, keyed by hardware)
+    std::string pkey = format("probe_cpu.%u", std::max(2u, std::thread::hardware_concurrency()));
+    for (int k = 0; k < mc->n_links; ++k) { pkey += "." + dev_pci_id(mc->link_dev[k], k); }
+    int n_sat = n_max;
+    bool probe_stored = false;
+    {
+        std::string pv; double s_cpu = 0, s_tot = 0; int s_sat = 0;
+        if (!moe_opt("probe-remeasure") && moe_state_get("machine", pkey, pv) && sscanf(pv.c_str(), "%lf %lf %d", &s_cpu, &s_tot, &s_sat) == 3 && s_cpu > 0 && s_tot > 0 && s_sat > 0) {
+            cpu_alone = s_cpu; total = s_tot; n_sat = s_sat; probe_stored = true;
+            link_alone.assign(mc->n_links, 0.0);
+        }
+    }
+    if (!probe_stored) {
     run(0, true, 0.15, cpu_alone, link_alone);
     cpu_alone = 0;
     auto measure = [&](int nt) {
@@ -3392,10 +3406,11 @@ void resource_probe(moe_cache * mc) {
         measure(mid);
         if (meas[mid].first >= 0.95 * cpu_alone) { hi = mid; } else { lo = mid; }
     }
-    int n_sat = n_max;
     for (const auto & m : meas) {
         if (m.second.first >= 0.95 * cpu_alone) { n_sat = m.first; break; }
     }
+    moe_state_set("machine", {{ pkey, format("%.3f %.3f %d", cpu_alone, total, n_sat) }});
+    }   // !probe_stored
     mc->cpu_sat_threads = n_sat;
     if (!moe_opt("cpu-ram-gbs")) { knobs().cpu_gbs = cpu_alone; }
     if (!moe_opt("ram-ceiling-gbs")) { knobs().ddr_gbs = std::max(cpu_alone, total); }
@@ -3439,7 +3454,7 @@ void resource_probe(moe_cache * mc) {
         for (const auto & m : meas) { rs += tr_fmt("%s%d:%.1f/%.1f", i++ ? " " : "", m.first, m.second.first, m.second.second); }
     }
     LLAMA_LOG_WARN("moe-cache: probe: links alone%s GB/s; CPU threads:GB/s alone/with links %s -> CPU %.1f GB/s "
-        "(saturated by %d threads), RAM budget %.1f GB/s\n", links.c_str(), rs.c_str(), cpu_alone, n_sat, knobs().ddr_gbs);
+        "(saturated by %d threads), RAM budget %.1f GB/s%s\n", links.c_str(), probe_stored ? "(stored)" : rs.c_str(), cpu_alone, n_sat, knobs().ddr_gbs, probe_stored ? " (stored)" : "");
     llama_moe_decision_fork("stage", "link and CPU speed probe", "");
 }
 
