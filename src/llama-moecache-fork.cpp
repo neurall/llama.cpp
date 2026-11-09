@@ -8064,7 +8064,6 @@ void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes) {
 LLAMA_API void llama_model_wait_loaded_fork(const struct llama_model * m);
 void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window,
                           int32_t predict, int32_t predict_train) {
-    llama_model_wait_loaded_fork(&model);   // fork: LLAMA_ASYNC_LOAD: the cache preloads and reads weight bytes
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     if (g_init_done) {
         LLAMA_LOG_WARN("moe-cache: another context already has the expert cache (it is one per process): this context runs without it\n");
@@ -8651,6 +8650,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     ls.pub.il, ls.pub.up_src->name, ls.pub.up_src->nb[2]);
         }
 
+        llama_model_wait_loaded_fork(&model);   // fork: LLAMA_ASYNC_LOAD: from here the cache reads and pins the host weights (the pool sizing and allocation above run under the reads)
         {
             size_t max_expert = 0;
             bool   any_file   = false;
