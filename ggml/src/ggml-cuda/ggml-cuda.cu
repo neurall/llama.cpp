@@ -7955,6 +7955,22 @@ bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size) {
 #endif // CUDART_VERSION >= 11010 || defined(GGML_USE_MUSA)
 }
 
+// fork: pins a range in place that already holds its data (the RAM pool's chunks: read from the SSD first, the read faulted their pages in, so this only pins them;
+// PC1 90 GiB read then pinned per GiB 16.8 s against 27.3 s populated and pinned first). Mapped and portable like the fork's other pinned host memory.
+static bool ggml_backend_cuda_pin_range_fork(void * p, size_t n) {
+    const cudaError_t err = cudaHostRegister(p, n, cudaHostRegisterPortable | cudaHostRegisterMapped);
+    if (err != cudaSuccess) {
+        (void) cudaGetLastError();
+        GGML_LOG_WARN("%s: %.1f MiB not pinned: %s\n", __func__, n / 1048576.0, cudaGetErrorString(err));
+        return false;
+    }
+    return true;
+}
+
+static void ggml_backend_cuda_unpin_range_fork(void * p) {
+    if (cudaHostUnregister(p) != cudaSuccess) { (void) cudaGetLastError(); }   // a range that was refused: nothing to undo
+}
+
 void ggml_backend_cuda_unregister_host_buffer(void * buffer) {
     if (!ggml_cuda_register_host_enabled()) {
         return;
@@ -9030,6 +9046,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
         return (void *)ggml_backend_cuda_unregister_host_buffer;
+    }
+    if (strcmp(name, "ggml_backend_cuda_pin_range_fork") == 0) {   // fork: the RAM pool pins its chunks after the fill (llama-moecache-fork.cpp, rp_pin_raw)
+        return (void *)ggml_backend_cuda_pin_range_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_unpin_range_fork") == 0) {
+        return (void *)ggml_backend_cuda_unpin_range_fork;
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;

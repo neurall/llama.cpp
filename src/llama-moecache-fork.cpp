@@ -419,6 +419,11 @@ struct moe_cache {
     bool                       rp_filling = false; // the first fill runs: only then rp_heat ranks what a card holds after all others
     std::vector<ggml_backend_buffer_t> rp_bufs;    // its pinned chunks
     std::vector<ggml_backend_buffer_t> rp_pre;     // 512 MiB pieces pinned before the VRAM pool is sized, handed out as chunks by rp_alloc (rp_prepin)
+    std::vector<std::pair<char *, size_t>> rp_raw; // chunks the fill reads into before they are pinned (rp_alloc), pinned in place after it (rp_pin_raw); size 0: not pinned
+    size_t                     rp_raw_bytes = 0;
+    size_t                     rp_vram_reserve = 0;   // VRAM the pin after the sizing will take on each card (rp_prepin measures one piece); the sizing leaves it free
+    bool (*rp_pin)(void *, size_t) = nullptr;      // the GPU backend's pin of a filled range (ggml_backend_cuda_pin_range_fork), nullptr: the pool pins before the fill as before
+    void (*rp_unpin)(void *) = nullptr;
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
     std::string                heat_file;          // <state dir>/<model>/globalhot.ini: the pool's heat, apart from the state file (whose values get reset or rolled back by policy)
     std::atomic<uint32_t>      vis_now{1};         // the heat clock: vis_base + decode steps
@@ -3290,9 +3295,10 @@ void resource_probe(moe_cache * mc) {
         // 60.5 against a possible 16+ t/s). The pieces pinned for the pool are populated RAM: the probe reads and DMAs from them instead, in slices of an expert's size.
         const size_t n = mc->layers[0].pub.up_src->nb[2];
         src.clear();
+        const size_t stride = mc->rp_pre.size() >= 8 ? 7 : 1;   // one piece (the pool pins after the fill, rp_prepin): all of its 1 GiB, far past any cache
         for (ggml_backend_buffer_t b : mc->rp_pre) {
             const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(b);
-            for (size_t o = 0, sz = ggml_backend_buffer_get_size(b); o + n <= sz; o += 7 * n) { src.push_back({ base + o, n }); }
+            for (size_t o = 0, sz = ggml_backend_buffer_get_size(b); o + n <= sz; o += stride * n) { src.push_back({ base + o, n }); }
         }
         LLAMA_LOG_WARN("moe-cache: resource probe: reads and DMAs from the pool's %zu pinned pieces (%zu slices of %.1f MiB), not from the mapped expert tensors\n", mc->rp_pre.size(), src.size(), n / 1048576.0);
     }
@@ -7254,7 +7260,16 @@ static void * rp_alloc(size_t bytes, void * ud) {
         return ggml_backend_buffer_get_base(b);
     }
     const size_t floor = (size_t) 6 << 30;   // the floor pin_alloc keeps: never push the system into swapping
-    if (mem_available_bytes() < bytes + floor) { return nullptr; }
+    if (mem_available_bytes() < mc->rp_raw_bytes + bytes + floor) { return nullptr; }   // the raw chunks below hold no page yet: their bytes still count as available
+#ifndef _WIN32
+    if (mc->rp_pin) {   // read first, pinned after (rp_pin_raw): the O_DIRECT read faults the pages in at the drive's speed, so no populate pass (90 GiB: 16.8 s against 27.3 s pinned first)
+        void * m = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (m == MAP_FAILED) { return nullptr; }
+        mc->rp_raw.push_back({ (char *) m, bytes });
+        mc->rp_raw_bytes += bytes;
+        return m;
+    }
+#endif
     ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, bytes);
     if (!b) { return nullptr; }
     char * base = (char *) ggml_backend_buffer_get_base(b);
@@ -7315,6 +7330,35 @@ static void rp_pre_free(moe_cache * mc) {   // pieces the pool did not take go b
     for (auto * b : mc->rp_pre) { ggml_backend_buffer_free(b); }
     mc->rp_pre.clear();
 }
+static void rp_raw_free(moe_cache * mc) {   // after ggml_rampool_close_fork: no reader left
+#ifndef _WIN32
+    for (auto & r : mc->rp_raw) {
+        if (r.second == 0) { continue; }
+        if (mc->rp_unpin) { mc->rp_unpin(r.first); }
+        munmap(r.first, r.second);
+    }
+#endif
+    mc->rp_raw.clear();
+    mc->rp_raw_bytes = 0;
+}
+// The chunks the fill read into, pinned in place: the read faulted their pages in, so the register only pins them. One that is refused stays pageable (its uploads go
+// through the driver's staging, slower but right).
+static void rp_pin_raw(moe_cache * mc) {
+    if (mc->rp_raw.empty()) { return; }
+    const int64_t t0 = ggml_time_us();
+    std::atomic<size_t> next{0}, refused{0};
+    auto work = [&] {
+        for (size_t i; (i = next++) < mc->rp_raw.size(); ) {
+            if (!mc->rp_pin(mc->rp_raw[i].first, mc->rp_raw[i].second)) { refused++; }
+        }
+    };
+    std::vector<std::thread> th;
+    for (int t = 1; t < 4; ++t) { th.emplace_back(work); }
+    work();
+    for (auto & t : th) { t.join(); }
+    LLAMA_LOG_WARN("moe-cache: rampool: %.1f GiB pinned after the fill in %.2f s on 4 threads (%zu chunks)%s\n", mc->rp_raw_bytes / 1073741824.0, (ggml_time_us() - t0) / 1e6,
+            mc->rp_raw.size(), refused.load() ? tr_fmt(", %zu refused: pageable", refused.load()).c_str() : "");
+}
 // Pinned host memory costs every card VRAM for its mapping (GLM 3.5, 101.9 GiB pinned: ~150 MiB per card). Pinned after the expert pool was sized, it ate the
 // margin and cuBLAS found no memory at the first prompt (2026-11-07). So the pool's bytes are pinned here, before the sizing, whose free VRAM then includes that cost.
 static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu) {
@@ -7326,6 +7370,41 @@ static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu) {
     if (want == 0) { return; }
     mc->pin_buft = ggml_backend_dev_host_buffer_type(gpu);
     const int64_t t0 = ggml_time_us();
+#ifndef _WIN32
+    ggml_backend_reg_t greg = ggml_backend_dev_backend_reg(gpu);
+    mc->rp_pin   = (bool (*)(void *, size_t)) ggml_backend_reg_get_proc_address(greg, "ggml_backend_cuda_pin_range_fork");
+    mc->rp_unpin = (void (*)(void *)) ggml_backend_reg_get_proc_address(greg, "ggml_backend_cuda_unpin_range_fork");
+    if (!mc->rp_unpin) { mc->rp_pin = nullptr; }
+    if (mc->rp_pin && want >= RP_PIECE) {
+        // The pool's chunks are pinned after the fill (rp_alloc, rp_pin_raw), so after the sizing: one piece is pinned here, and what it took of each card's VRAM
+        // (PC1: 2 MiB per GiB, a GPU page table entry per 4 KiB page) is left free at the sizing for every other GiB of the budget. shortcut: reserved for the
+        // whole budget, a pool that turns out smaller leaves the difference unused (2 MiB per GiB per card), a reserve from the fill's own plan if that shows.
+        std::vector<std::pair<ggml_backend_dev_t, size_t>> f0;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t d = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_backend_reg(d) != greg || ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_CPU) { continue; }
+            size_t f = 0, t = 0;
+            ggml_backend_dev_memory(d, &f, &t);
+            f0.push_back({ d, f });
+        }
+        ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, RP_PIECE);
+        if (b) {
+            size_t per = 0;
+            for (const auto & x : f0) {
+                size_t f = 0, t = 0;
+                ggml_backend_dev_memory(x.first, &f, &t);
+                per = std::max(per, x.second > f ? x.second - f : 0);
+            }
+            mc->rp_pre.push_back(b);
+            const size_t n_rest = want / RP_PIECE - 1 + 8;   // the classes' short last chunks are pinned on their own: a few more ranges than full pieces
+            mc->rp_vram_reserve = per * n_rest;
+            LLAMA_LOG_WARN("moe-cache: rampool: 1 GiB pinned before the VRAM sizing in %.2f s, it took %.1f MiB of each card's VRAM: %.0f MiB left free per card at the sizing "
+                    "for the pin after the fill (budget %.1f GiB)\n", (ggml_time_us() - t0) / 1e6, per / 1048576.0, mc->rp_vram_reserve / 1048576.0, want / 1073741824.0);
+            return;
+        }
+        mc->rp_pin = nullptr;   // no piece: the old way below (it stops at the first piece that fails too)
+    }
+#endif
     // one piece per full chunk, never more than the budget (left over ones are freed after the open). The pieces are populated and pinned on several threads:
     // one thread took 35 s for GLM 3.0's 101 GiB (0.2 s populate + 0.07 s register per GiB, before the first token); --moe pin-threads=N (default 4, 1 = the old serial loop).
     // shortcut: a piece that fails ends the run of pieces after it too (the prefix that got a buffer stays), a refused pin falls back to pageable inside the allocator as before.
@@ -7401,6 +7480,7 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
     if (!ggml_rampool_open_fork(want, rp_alloc, rp_heat, mc, mc->rd_threads)) {
         LLAMA_LOG_WARN("moe-cache: rampool: off (no pinned memory for it, %.1f GiB available)\n", avail / 1073741824.0);
         rp_pre_free(mc);
+        rp_raw_free(mc);
         return;
     }
     rp_pre_free(mc);
@@ -7410,6 +7490,7 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
     mc->rp_filling = true;
     ggml_rampool_fill_fork();
     mc->rp_filling = false;
+    rp_pin_raw(mc);   // before the tables below: nothing copies from the pool until then
     struct ggml_rampool_stats st;
     ggml_rampool_stats_fork(&st, true);
     for (auto & ls : mc->layers) {
@@ -8068,6 +8149,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
             size_t free = 0, total = 0;
             ggml_backend_dev_memory(dev, &free, &total);
+            free -= std::min(free, mc->rp_vram_reserve);   // the RAM pool's pin after the fill (rp_prepin): as if done, so the VRAM watch does not count it outside the pool either
             // what CUDA takes after the pool (vram_margin: set by the user, else measured by an earlier session, else 384 MiB)
             int64_t stored_mb = -1;
             bool from_cold = false;
@@ -13259,6 +13341,7 @@ void llama_moe_cache_free_fork() {
         mc->rp_on = false;
     }
     rp_pre_free(mc);
+    rp_raw_free(mc);
     if (mc->preheat_thr.joinable()) { mc->preheat_thr.join(); }
     if (mc->fast_thr.joinable()) { mc->fast_thr.join(); }
     { std::lock_guard<std::mutex> lk(g_vram_mtx); g_vram.clear(); }   // the watch entries of this cache: a re-init adds its own (stale ones were sampled and stored on)
