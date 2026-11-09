@@ -2834,7 +2834,9 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     // next one. Without it a stake of 1 never tries anything (EI x 1 >= EI + mu_t - mu_b only where the trial is already the lower mean), and every server
     // starts with seen_before 0: GLM 3.0 12k ran one card on every build since rampool11 against 782 t/s split on b14244 (prior one x 1.00 + fill, p_split 0.45-0.49)
     const double stake = np == 1 ? 2.0 + (double) seen_before : (double) std::max(1, np);
-    const int choice = rls_voi_pick(am, av, aok, 2, stake, &trial, akn, nullptr, true);   // the split is tried where its stake pays even before one card is known here
+    // the split is tried where its stake pays even before one card is known here. Only when one card has the lower mean: with the split already lower the same step ran the reverse trial,
+    // a whole first request on one card (first / second request, 200 W: GLM 3.0 12k 538 / 703 t/s, Qwen3.8 IQ4_XS 13.7k 1387 / 1782)
+    const int choice = rls_voi_pick(am, av, aok, 2, stake, &trial, akn, nullptr, am[1] >= am[0]);
     // p_split, for the log only: the posterior probability that splitting this call beats one card
     const double p_split = rls_phi_cdf((am[0] - am[1]) / std::max(1e-9, std::sqrt(av[0] + av[1])));
     const double g_this = mu1_0 - mu2_0, g_pos = m1 - m2, d1_0 = mu1_0, d2_0 = mu2_0, f_d = f_mu;
