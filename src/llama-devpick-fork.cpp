@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -24,7 +25,7 @@ std::string backend_tag(ggml_backend_dev_t dev) {
 
 // fastest of n runs of one q4_K 4096x4096 matrix times `cols` columns, in ms; < 0 when the device fails
 // the loop stops after budget_ms (one run at least); a first run over 1 s gives up (the default stays): this runs at the start of every first run of a build
-double time_matmul(ggml_backend_dev_t dev, int cols, int n, double budget_ms = 150) {
+double time_matmul_core(ggml_backend_dev_t dev, int cols, int n, double budget_ms) {
     ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
     if (!be) { return -1; }
     ggml_init_params ip = { ggml_tensor_overhead() * 8 + ggml_graph_overhead(), nullptr, true };
@@ -57,9 +58,20 @@ double time_matmul(ggml_backend_dev_t dev, int cols, int n, double budget_ms = 1
     return best;
 }
 
+double time_matmul(ggml_backend_dev_t dev, int cols, int n, double budget_ms = 150) {
+    try {
+        return time_matmul_core(dev, cols, n, budget_ms);
+    } catch (const std::exception & e) {
+        LLAMA_LOG_WARN("%s: %s: %s\n", __func__, ggml_backend_dev_name(dev), e.what());
+    } catch (...) {
+        LLAMA_LOG_WARN("%s: %s: unknown error\n", __func__, ggml_backend_dev_name(dev));
+    }
+    return -1;
+}
+
 } // namespace
 
-ggml_backend_dev_t llama_device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b) {
+static ggml_backend_dev_t device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b) {
     const char * env = getenv("LLAMA_DEVICE_PICK");
     if (env && !strcmp(env, "0")) { return a; }
     ggml_backend_dev_props pa;
@@ -82,13 +94,15 @@ ggml_backend_dev_t llama_device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b)
             }
         }
     }
+    bool   failed[2] = { false, false };
     double total[2] = { 0, 0 };   // ms of a typical request: 2000 prompt tokens and 128 generated
     std::vector<std::pair<std::string, std::string>> kv = { { "name", ggml_backend_dev_description(a) } };
     for (int i = 0; i < 2; ++i) {
-        const double p = time_matmul(devs[i], 512, 4), g = time_matmul(devs[i], 1, 16);
-        if (p < 0 || g < 0) {
-            LLAMA_LOG_WARN("%s: %s failed the timing pass, %s is kept\n", __func__, ggml_backend_dev_name(devs[i]), ggml_backend_dev_name(a));
-            return a;
+        const double p = time_matmul(devs[i], 512, 4), g = p < 0 ? -1 : time_matmul(devs[i], 1, 16);
+        if (p < 0 || g < 0) {   // this backend fails here: the other one is used (both failing keeps a); nothing is stored
+            LLAMA_LOG_WARN("%s: %s failed the timing pass\n", __func__, ggml_backend_dev_name(devs[i]));
+            failed[i] = true;
+            continue;
         }
         const std::string t = backend_tag(devs[i]);
         kv.push_back({ "1tok_p_time_" + t + bld, std::to_string(p / 512) });
@@ -97,6 +111,9 @@ ggml_backend_dev_t llama_device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b)
         LLAMA_LOG_WARN("%s: %s (%s) %s: %.4f ms per prompt token, %.3f ms per generated token\n", __func__, ggml_backend_dev_name(devs[i]),
                 ggml_backend_dev_description(devs[i]), t.c_str(), p / 512, g);
     }
+    if (failed[0] || failed[1]) {
+        return failed[0] && failed[1] ? a : failed[0] ? b : a;
+    }
     ggml_backend_dev_t pick = total[1] < total[0] ? b : a;
     kv.push_back({ "pick" + bld, backend_tag(pick) });
     moe_state_set(sec, kv);
@@ -104,4 +121,13 @@ ggml_backend_dev_t llama_device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b)
             backend_tag(pick).c_str(), std::min(total[0], total[1]), std::max(total[0], total[1]));
     LLAMA_LOG_WARN("%s: measured in %.0f ms\n", __func__, (ggml_time_us() - t_start) / 1000.0);
     return pick;
+}
+
+ggml_backend_dev_t llama_device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b) {
+    try {
+        return device_pick(a, b);
+    } catch (...) {   // a failing pair of backends must not stop the others (nor the load)
+        LLAMA_LOG_WARN("%s: %s kept after an error\n", __func__, ggml_backend_dev_name(a));
+        return a;
+    }
 }
