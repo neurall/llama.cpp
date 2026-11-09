@@ -3934,7 +3934,6 @@ static int fork_cuda_last_oom(int * device, size_t * bytes, double * fit) {   //
 }
 
 int llama_context::decode(const llama_batch_ext & batch_inp) {
-    const_cast<llama_model &>(model).wait_loaded();   // fork: LLAMA_ASYNC_LOAD
     moe_decoded = true;
     // fork (--moe split-pass, default 1; 2 = equal passes, 0 = the old pass, A/B; dense split forced; user 2026-10-24): a prompt pass of the dense split was cut by the ONE-card limit, so
     // with two cards each computed about half of what its buffers hold, for every upload of the experts. Here a call is run pass by pass, each pass sized
@@ -4100,6 +4099,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         // itself (user 2026-10-26: start from the most threads; too many costs little, too few a lot)
         sched_reserve(); // the compute graph now includes the cache chain
     }
+    const_cast<llama_model &>(model).wait_loaded();   // fork: LLAMA_ASYNC_LOAD: the cache start above runs under the reads as far as its own barrier allows, nothing from here on may
     if (g_dynkey.pending && cparams.moe_cache_started && !cparams.ctx_other) {   // fork (--moe dynhot): the key rows of the prompt's last pass to the MoE cache
         synchronize();
         std::vector<const float *> rows;
