@@ -7188,3 +7188,4 @@ touch1-tc-qn_iq4xs-512-pf12k,2026-11-10 00:34:55,bench /m/q/4/Qwen3.8-Flash-Next
 touch1-tc-qn_iq4xs-1024-pf12k,2026-11-10 00:36:33,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds touch1 variants v test pf12k n=1,,
 touch1-tc-qn_iq4xs-2048-pf12k,2026-11-10 00:38:01,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds touch1 variants v test pf12k n=1,,
 touch1-tc-qn_iq4xs-4096-pf12k,2026-11-10 00:39:21,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds touch1 variants v test pf12k n=1,,
+touch2-xo-glm-256-r-pf4k,2026-11-10 00:41:52,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch2 variants v test pf4k n=2,,

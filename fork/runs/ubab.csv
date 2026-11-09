@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+ub-glm-12k,glm,2,pf12k,64,,
+ub-qn_iq4xs-12k,qn_iq4xs,2,pf12k,64,,
+ub-mimo-12k,mimo,2,pf12k,64,,
+ub-ds-12k,ds,2,pf12k,64,,
