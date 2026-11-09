@@ -8084,6 +8084,51 @@ static bool ggml_cuda_device_integrated(int physical_id) {
     return v == 2;
 }
 
+#if defined(_WIN32) && defined(GGML_USE_HIP)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <dxgi1_4.h>
+#pragma comment(lib, "dxgi.lib")
+// fork: the HIP runtime on Windows reports an integrated GPU's memory wrong. Radeon 780M on 32 GiB of RAM: 12528 MiB total, free falls 2 MiB per MiB allocated
+// and reads 0 after 6 GiB, while 15 GiB really allocate; the fit then moved tensors to the CPU (Qwen3.6 35B decode 47.8-49.9 ms/token against 43.8-44.0 with
+// -fit off) and the prompt pass shrank to 512. Windows' own figures for the adapter are the real ones: what it may hold (dedicated plus shared memory, what
+// Vulkan reports for the same card) and this process's budget minus its use in both segments. False when no DXGI adapter has the device's LUID.
+static bool ggml_hip_win_igpu_memory(int physical_id, size_t * free, size_t * total) {
+    struct adapter { IDXGIAdapter3 * a = nullptr; size_t total = 0; };
+    static std::mutex mu;
+    static std::map<int, adapter> known;   // kept for the life of the process
+    std::lock_guard<std::mutex> lock(mu);
+    auto it = known.find(physical_id);
+    if (it == known.end()) {
+        adapter found;
+        cudaDeviceProp prop;
+        IDXGIFactory1 * fac = nullptr;
+        if (cudaGetDeviceProperties(&prop, physical_id) == cudaSuccess && SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **) &fac))) {
+            IDXGIAdapter1 * a = nullptr;
+            for (UINT i = 0; !found.a && fac->EnumAdapters1(i, &a) != DXGI_ERROR_NOT_FOUND; ++i) {
+                DXGI_ADAPTER_DESC1 d;
+                if (SUCCEEDED(a->GetDesc1(&d)) && memcmp(&d.AdapterLuid, prop.luid, sizeof(d.AdapterLuid)) == 0 &&
+                    SUCCEEDED(a->QueryInterface(__uuidof(IDXGIAdapter3), (void **) &found.a))) {
+                    found.total = d.DedicatedVideoMemory + d.SharedSystemMemory;
+                }
+                a->Release();
+            }
+            fac->Release();
+        }
+        it = known.emplace(physical_id, found).first;
+    }
+    DXGI_QUERY_VIDEO_MEMORY_INFO l, s;
+    if (!it->second.a || FAILED(it->second.a->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &l)) ||
+        FAILED(it->second.a->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &s))) {
+        return false;
+    }
+    *free  = (size_t) ((l.Budget > l.CurrentUsage ? l.Budget - l.CurrentUsage : 0) + (s.Budget > s.CurrentUsage ? s.Budget - s.CurrentUsage : 0));
+    *total = it->second.total;
+    return true;
+}
+#endif // defined(_WIN32) && defined(GGML_USE_HIP)
+
 static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *)dev->context;
     ggml_cuda_set_device(ctx->device);
@@ -8114,6 +8159,16 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
         }
     }
 #endif // defined(__linux__) && !defined(GGML_USE_HIP)
+
+#if defined(_WIN32) && defined(GGML_USE_HIP)
+    if (ggml_cuda_device_integrated(ggml_cuda_get_physical_device(ctx->device))) {
+        size_t f = 0, t = 0;
+        if (ggml_hip_win_igpu_memory(ggml_cuda_get_physical_device(ctx->device), &f, &t)) {
+            *free  = f;
+            *total = t;
+        }
+    }
+#endif // defined(_WIN32) && defined(GGML_USE_HIP)
 
     // virtual devices sharing one physical GPU share its memory pool; split it between them
     const int share_count = ggml_cuda_physical_device_share_count(ctx->device);
