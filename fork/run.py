@@ -2654,8 +2654,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             print(f"perplexity failed (exit {r.returncode}){'' if v is None else f' with -fitt {v}'}: raising -fitt", flush=True)
         s = re.search(r"([\d.]+) seconds per pass", log)
         ppl = re.findall(r"PPL = ([\d.]+)", log)
-        row = {"s_per_pass": float(s.group(1)) if s else None, "ppl": float(ppl[-1]) if ppl else None,
-               "tps": 1024 / float(s.group(1)) if s else None}
+        row = {"s_per_pass": float(s.group(1)) if s else None, "ppl": float(ppl[-1]) if ppl else None, "tps": ppl_rate(log)}
         _ld = re.findall(r"load time =\s*([\d.]+) ms", log)
         _modes = re.findall(r"prefill decision: .*?\bmode=(\S+)", log)   # which path every pass took: the planner may turn the split off after its first measurement
         if _modes:
@@ -4760,7 +4759,7 @@ def remote_run(m, build, test, args, env=None):
         out = remote_sh(m, cmd)
         sp_ = re.search(r"([\d.]+) seconds per pass", out)
         pp_ = re.findall(r"PPL = ([\d.]+)", out)
-        row = {"s_per_pass": float(sp_.group(1)), "tps": 1024 / float(sp_.group(1)), "ppl": float(pp_[-1]) if pp_ else None, "ok": 1, "args": args} if sp_ else {"ok": 0, "note": out[-200:], "args": args}
+        row = {"s_per_pass": float(sp_.group(1)), "tps": ppl_rate(out), "ppl": float(pp_[-1]) if pp_ else None, "ok": 1, "args": args} if sp_ else {"ok": 0, "note": out[-200:], "args": args}
         row.update(cache_stats(out))
         st = remote_sh(m, ("type " if win else "cat ") + stf + (" 2>nul" if win else " 2>/dev/null"))
         if st.strip():  # the run's statslog goes to stats.ini like a local run's
@@ -5134,6 +5133,21 @@ if os.environ.get("REGRESS_FAST") == "1":
     REGRESS_CELLS = [c for c in REGRESS_CELLS if not c[4]]
 
 
+def ppl_rate(log):
+    """llama-perplexity t/s from the passes after the first, timed by the log's own timestamps (M.SS.mmm.uuu): the first pass also carries the one-time setup a build runs
+    inside its first decode call (the RAM pool pins and fills 100 GiB there: GLM 3.0 read 9.5 against 23.5 t/s, 2026-11-09). The first pass alone when there is one pass or no timestamps."""
+    s = re.search(r"([\d.]+) seconds per pass", log)
+    if not s:
+        return None
+    a = re.search(r"^(\d+)\.(\d\d)\.(\d{3})\.(\d{3}) \w perplexity: [\d.]+ seconds per pass", log, re.M)
+    b = re.search(r"^(\d+)\.(\d\d)\.(\d{3})\.(\d{3}) \w Final estimate", log, re.M)
+    c = re.search(r"over (\d+) chunks, n_ctx=(\d+), batch_size=\d+, n_seq=(\d+)", log)
+    sec = lambda m: int(m[1]) * 60 + int(m[2]) + int(m[3]) / 1e3 + int(m[4]) / 1e6
+    if a and b and c and int(c[1]) // int(c[3]) > 1 and sec(b) > sec(a):
+        return (int(c[1]) // int(c[3]) - 1) * int(c[2]) * int(c[3]) / (sec(b) - sec(a))
+    return 1024 / float(s[1])
+
+
 def regress_label(d):
     """the name of a build directory in the run log: <branch>-<commit>[-<hash of the uncommitted diff>] from its BUILD_INFO, else the directory name"""
     p = os.path.join(d, "BUILD_INFO")
@@ -5489,6 +5503,7 @@ def cmd_build(a):
     gtd = "--gcc-install-dir=/opt/rh/gcc-toolset-15/root/usr/lib/gcc/x86_64-redhat-linux/15"
     inner = ("source /opt/rh/gcc-toolset-13/enable && git config --global --add safe.directory '*' && SLD='-static-libstdc++ -static-libgcc' && "
              f"cmake -S {W} -B {B} -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS={gtd} -DCMAKE_CXX_FLAGS={gtd} "
+             "-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache "   # without these the mounted ccache was never used: every new tree compiled all CUDA kernels (24 min)
              "-DCMAKE_CUDA_HOST_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DBUILD_SHARED_LIBS=ON "
              "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON "
              f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release or any(t.startswith('test-') for t in a.targets) else 'OFF'} -DLLAMA_BUILD_UI=OFF "
@@ -5506,7 +5521,11 @@ def cmd_build(a):
     open(idf, "w").write(str(iid))
     docker = ([] if a.release else ["nice", "-n", "19"]) + ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "CCACHE_DIR=/ccache",
               "-e", "CCACHE_MAXSIZE=100G", "-e", f"CCACHE_BASEDIR={W}", "-e", "CCACHE_NOHASHDIR=1", "-v", fcfg.path("ccache") + ":/ccache", "-v", f"{W}:{W}",
-              "-v", f"{gitc}:{gitc}:ro", "llama-rel-el8", "bash", "-c", inner]
+              "-v", f"{gitc}:{gitc}:ro"]
+    hc = "/p/bw/tools/ccache-host"   # the image's ccache 3.7.7 passes every .cu file through uncached ("unsupported source language"); the host's 4.9.1 with its own loader and libs caches nvcc
+    if os.path.exists(hc + "/wrap.sh"):
+        docker += ["-v", f"{hc}:/hostcc:ro", "-v", f"{hc}/wrap.sh:/usr/bin/ccache:ro"]
+    docker += ["llama-rel-el8", "bash", "-c", inner]
     t0 = time.time()
     with open(log, "w") as lf:
         _bp = threading.Event(); build_progress(log, _bp, name)
@@ -7367,7 +7386,7 @@ class ViewFilter:
         return "".join(out)
 
 
-def run_list_detached(name, argv):
+def run_list_detached(name, argv, cmd=None):
     """`run NAME ...` runs the list in a detached process (own session, output in a log) and shows that log: Ctrl-C only closes the view, the run goes on.
     `run NAME ...` again while one runs attaches instead of starting a second: the log is replayed from its start (the status block's cursor codes redraw
     the screen as it was) and followed. `run stop` stops it for real. A dry list (-n) and the detached process itself run inline."""
@@ -7399,7 +7418,7 @@ def run_list_detached(name, argv):
     else:
         log = f"{QDIR}/run-list-{time.strftime('%m%d-%H%M%S')}.log"
         with open(log, "ab") as lf:
-            p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "jobs", name] + list(argv), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
+            p = subprocess.Popen([sys.executable, os.path.abspath(__file__)] + (cmd or ["jobs", name] + list(argv)), stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
                                  env=dict(os.environ, RUN_DAEMON="1", PYTHONUNBUFFERED="1", COLUMNS=str(shutil.get_terminal_size((100, 24)).columns)), start_new_session=True)
             child = p
         json.dump({"pid": p.pid, "log": log}, open(RUN_LIVE, "w")); rec = {"pid": p.pid, "log": log}
@@ -11006,6 +11025,8 @@ if __name__ == "__main__":
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
     ns.add_argument("--gaps", type=int, default=0, help="list the N longest compute-stream waits per card with the kernels around them")
     if len(sys.argv) > 1 and (sys.argv[1] in ("-h", "--help") or sys.argv[1] == "run" and len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help")): run_list_help()
+    if len(sys.argv) > 2 and sys.argv[1] == "bg" and not os.environ.get("RUN_DAEMON"):   # `bg build NAME ...`: any run.py command as the detached run, so `run` attaches and `run stop` sees it (user 2026-11-09: "run attachable")
+        sys.exit(run_list_detached("bg " + " ".join(sys.argv[2:4]), [], cmd=sys.argv[2:]))
     if len(sys.argv) == 2 and sys.argv[1] == "run": sys.exit(run_list_detached(None, []))   # `jobs` alone: attach to the detached run, if any
     if len(sys.argv) > 3 and sys.argv[1] == "run" and "-c" in sys.argv[2:-1]:   # `run -c gainers ...` = `run gainers ...`: -c names the campaign list
         i = sys.argv.index("-c", 2); sys.argv[2:i + 2] = [sys.argv[i + 1]] + sys.argv[2:i]

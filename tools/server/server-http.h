@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -63,6 +64,23 @@ struct server_http_req {
         return def;
     }
 };
+
+// fork: live state for GET /status, written by the server loop and the loader, read by any thread, also while the model loads (the engine reports, run.py collects)
+struct server_live_status {
+    enum { LOADING = 0, IDLE = 1, PREFILL = 2, GEN = 3 };
+    std::atomic<int>     phase{LOADING};
+    std::atomic<float>   load_progress{0.0f};   // 0..1 of the stage named below
+    std::atomic<int64_t> t_start_us{0};         // request start (prompt processing begins)
+    std::atomic<int64_t> t_prompt_last_us{0};   // end of the last finished prompt batch; generation counts from here
+    std::atomic<int64_t> t_gen_last_us{0};      // last generated token
+    std::atomic<int64_t> n_prompt{0};           // prompt tokens finished
+    std::atomic<int64_t> n_prompt_total{0};     // prompt tokens of the request
+    std::atomic<int64_t> n_gen{0};
+    std::atomic<int64_t> n_requests{0};         // requests finished since the start
+    std::mutex           m;
+    std::string          stage;                 // the load stage (text_model, ...) while loading
+};
+extern server_live_status g_live_status;
 
 struct server_http_context {
     class Impl;

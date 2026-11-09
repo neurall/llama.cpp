@@ -51,9 +51,12 @@ server_http_context::~server_http_context() {
     }
 }
 
+server_live_status g_live_status;
+
 static void log_server_request(const httplib::Request & req, const httplib::Response & res) {
     // skip logging requests that are regularly sent, to avoid log spam
     if (req.path == "/health"
+        || req.path == "/status"
         || req.path == "/v1/health"
         || req.path == "/models"
         || req.path == "/v1/models"
@@ -253,6 +256,7 @@ bool server_http_context::init_listener(const common_params & params) {
         std::unordered_set<std::string> endpoints {
             "/health",
             "/v1/health",
+            "/status",
         };
         endpoints.insert(frontend_paths.begin(), frontend_paths.end());
         return endpoints;
@@ -309,6 +313,9 @@ bool server_http_context::init_listener(const common_params & params) {
         if (!is_ready.load()) {
             if (frontend_paths.count(req.path)) {
                 return true; // frontend asset, allow it to load and show "loading"
+            }
+            if (req.path == "/status") {
+                return true; // fork: reads only g_live_status, never the server context
             }
             // no endpoints are allowed to be accessed when the server is not ready
             // this is to prevent any data races or inconsistent states
