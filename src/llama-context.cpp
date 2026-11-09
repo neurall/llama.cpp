@@ -1469,8 +1469,6 @@ void llama_context::moe_mirror_fill() {
     std::string txt;
     size_t total = 0;
     ggml_backend_xstage_read_aux_fork(true);
-    struct fill_card { ggml_backend_dev_t dev; ggml_backend_t bd; std::vector<std::pair<ggml_tensor *, ggml_tensor *>> todo; size_t next = 0, bytes = 0; };
-    std::vector<fill_card> cards;
     for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
         const auto & ab = moe_alias_bufs[i];
         // a pass that does not split has its graph at the start of the pool, where the copies are: filling them now would overwrite that graph's tensors
@@ -1488,42 +1486,30 @@ void llama_context::moe_mirror_fill() {
         for (auto & be : backends) {
             if (ggml_backend_get_device(be.get()) == ab.dev) { bd = be.get(); }
         }
-        cards.push_back({ ab.dev, bd, std::move(todo) });
-    }
-    // issued alternating, the card behind in bytes first: a stream holds a limited number of queued operations, so one card's whole list issued first made the other's start only near its end
-    for (;;) {
-        fill_card * c = nullptr;
-        for (auto & x : cards) {
-            if (x.next < x.todo.size() && (c == nullptr || x.bytes < c->bytes)) { c = &x; }
-        }
-        if (c == nullptr) { break; }
-        const auto & pr = c->todo[c->next++];
-        ggml_backend_dev_t ds = pr.first->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pr.first->buffer)) : nullptr;
-        ggml_backend_t bs = nullptr;
-        for (auto & be : backends) {
-            if (ggml_backend_get_device(be.get()) == ds) { bs = be.get(); }
-        }
-        llama_moe_cache_ledger_fork(c->dev, "mirror", pr.second->data, ggml_nbytes(pr.second), pr.second->name);   // --moe ledger=1
-        if (bs != nullptr && c->bd != nullptr) {
-            ggml_backend_tensor_copy_async(bs, c->bd, pr.first, pr.second);
-        } else {
-            ggml_backend_tensor_copy(pr.first, pr.second);
-        }
-        // the card's link traffic of this prompt's first pass (the split pass report: from host memory, or from the card that holds the weight)
-        ggml_backend_sched_link_add_fork(c->dev, ds && ggml_backend_dev_is_gpu(ds) ? ds : nullptr, ggml_nbytes(pr.first));
-        c->bytes += ggml_nbytes(pr.first);
-    }
-    // the copy sits in pool blocks that held experts until now: the row padding behind a quantized copy holds their bytes, and the matmuls read
-    // past the last row there (a WEIGHTS buffer is not cleared at use): zeros behind it (see ggml_backend_tensor_zero_tail_fork). After every copy is issued:
-    // that write comes from pageable host memory and syncs its stream first, so between the copies it made the fill one tensor at a time (8.5 GB in 1.38 s)
-    for (auto & c : cards) {
-        if (c.bd != nullptr) {
-            for (const auto & pr : c.todo) {
-                if (ggml_is_quantized(pr.second->type)) { ggml_backend_tensor_zero_tail_fork(c.bd, pr.second); }
+        size_t bytes = 0;
+        for (const auto & pr : todo) {
+            ggml_backend_dev_t ds = pr.first->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pr.first->buffer)) : nullptr;
+            ggml_backend_t bs = nullptr;
+            for (auto & be : backends) {
+                if (ggml_backend_get_device(be.get()) == ds) { bs = be.get(); }
             }
+            llama_moe_cache_ledger_fork(ab.dev, "mirror", pr.second->data, ggml_nbytes(pr.second), pr.second->name);   // --moe ledger=1
+            if (bs != nullptr && bd != nullptr) {
+                ggml_backend_tensor_copy_async(bs, bd, pr.first, pr.second);
+            } else {
+                ggml_backend_tensor_copy(pr.first, pr.second);
+            }
+            // the copy sits in pool blocks that held experts until now: the row padding behind a quantized copy holds their bytes, and the matmuls read
+            // past the last row there (a WEIGHTS buffer is not cleared at use): zeros behind it (see ggml_backend_tensor_zero_tail_fork)
+            if (bd != nullptr && ggml_is_quantized(pr.second->type)) {
+                ggml_backend_tensor_zero_tail_fork(bd, pr.second);
+            }
+            // the card's link traffic of this prompt's first pass (the split pass report: from host memory, or from the card that holds the weight)
+            ggml_backend_sched_link_add_fork(ab.dev, ds && ggml_backend_dev_is_gpu(ds) ? ds : nullptr, ggml_nbytes(pr.first));
+            bytes += ggml_nbytes(pr.first);
         }
-        txt += format("%s%.1f MiB on %s", txt.empty() ? "" : ", ", c.bytes / 1048576.0, ggml_backend_dev_name(c.dev));
-        total += c.bytes;
+        txt += format("%s%.1f MiB on %s", txt.empty() ? "" : ", ", bytes / 1048576.0, ggml_backend_dev_name(ab.dev));
+        total += bytes;
     }
     ggml_backend_xstage_read_aux_fork(false);
     if (total == 0) {
