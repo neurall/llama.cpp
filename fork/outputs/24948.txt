@@ -1,0 +1,52 @@
+run 24948 | horizon3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.69 t/s | prompt 836.3 t/s | 512 tokens | args: -np 1 --moe mirror-pool=0 | power 200+200 W | 2026-11-10 00:12:20
+
+    // if the user has not set any spec types, we can use the default
+    return params.speculative.num_draft == params.speculative.num_draft_max
+        && params.speculative.num_draft_max == 16
+        && params.speculative.num_draft_min == 1
+        && params.speculative.num_gpu == 999
+        && params.speculative.accept_grammar == ""
+        && params.speculative.accept_per_position == ""
+        && params.speculative.accept_per_draft == ""
+        && params.speculative.accept_per_position_max == 0
+        && params.speculative.accept_per_draft_max == 0
+        && params.speculative.num_draft_min == 1
+        && params.speculative.num_draft_max == 16
+        && params.speculative.num_draft == 16
+        && params.speculative.num_gpu == 999
+        && params.speculative.accept_grammar == ""
+        && params.speculative.accept_per_position == ""
+        && params.speculative.accept_per_draft == ""
+        && params.speculative.accept_per_position_max == 0
+        && params.speculative.accept_per_draft_max == 0;
+}
+
+static bool spec_types_is_default(const common_params & params) {
+    return params.speculative.num_draft == params.speculative.num_draft_max
+        && params.speculative.num_draft_max == 16
+        && params.speculative.num_draft_min == 1
+        && params.speculative.num_gpu == 999
+        && params.speculative.accept_grammar == ""
+        && params.speculative.accept_per_position == ""
+        && params.speculative.accept_per_draft == ""
+        && params.speculative.accept_per_position_max == 0
+        && params.speculative.accept_per_draft_max == 0;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // if the user has not set any spec types, we can use the default
+    if (spec_types_is_default(params)) {
+        params.speculative.num_draft = 0;
+        params.speculative.num_draft_min = 1;
+        params.speculative.num_draft_max = 16;
+        params.speculative.num_gpu = 999;
+        params.speculative.accept_grammar = "";
+        params.speculative.accept_per_position = "";
+        params.speculative.accept_per_draft = "";
+        params.speculative.accept_per_position_max = 0;
+        params.speculative.accept_per_draft_max = 0;
+    }
+}
+
+common_models_handler::~common_models_handler() {
+    if (params.model_preset.empty

@@ -1,0 +1,63 @@
+run 24950 | horizon3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.6 t/s | prompt 580.0 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 00:15:25
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 5;
+    params.speculative.num_reuse = 256;
+    params.speculative.num_gpu = 0;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // check if we have a model in the cache
+    if (params.model.path.empty() && params.model.url.empty()) {
+        // check for model in cache
+        auto model_cache = fs_get_cache_list("models");
+        if (!model_cache.empty()) {
+            // find model with the highest modification time
+            std::string best_model;
+            std::time_t best_time = 0;
+            for (const auto & model : model_cache) {
+                auto ftime = fs_get_mtime(model);
+                if (ftime > best_time) {
+                    best_time = ftime;
+                    best_model = model;
+                }
+            }
+            if (!best_model.empty()) {
+                params.model.path = best_model;
+                LOG_INF("%s: using cached model: %s\n", __func__, params.model.path.c_str());
+            }
+        }
+    }
+}
+
+common_models_handler::~common_models_handler() {
+    if (params.model.path.empty() && params.model.url.empty()) {
+        throw std::runtime_error("error: no model path or URL was specified");
+    }
+}
+
+static std::string get_model_url(const std::string & model) {
+    if (string_starts_with(model, "hf://")) {
+        return model;
+    }
+    if (string_starts_with(model, "gguf://")) {
+        return model;
+    }
+    if (string_starts_with(model, "http://") || string_starts_with(model, "https://")) {
+        return model;
+    }
+    return "hf://" + model;
+}
+
+static std::string get_model_name(const std::string & model) {
+    auto url = get_model_url(model);
+    auto f = string_split<std::string>(url, '#').front();
+    f = string_split<std::string>(f, '?').front();
+    auto parts = string_split<std::string>(

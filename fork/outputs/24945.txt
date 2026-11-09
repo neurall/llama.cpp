@@ -1,0 +1,56 @@
+run 24945 | horizon3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.1 t/s | prompt 695.9 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 00:08:28
+
+    // if the user has not set any spec types, we can use the default
+    return params.speculative.num_draft == params.speculative.num_draft_max
+        && params.speculative.num_draft_max == 18
+        && params.speculative.num_draft_min == 4
+        && params.speculative.num_draft_min == 4;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft_max = 18;
+    params.speculative.num_draft_min = 4;
+}
+
+static void spec_types_check(common_params & params) {
+    if (params.speculative.num_draft_max < params.speculative.num_draft_min) {
+        throw std::runtime_error("error: num-draft-max must be >= num-draft-min\n");
+    }
+    if (params.speculative.num_draft < params.speculative.num_draft_min) {
+        params.speculative.num_draft = params.speculative.num_draft_min;
+    }
+    if (params.speculative.num_draft > params.speculative.num_draft_max) {
+        params.speculative.num_draft = params.speculative.num_draft_max;
+    }
+}
+
+static void spec_types_check(common_params & params, std::vector<common_params_speculative> & arr) {
+    if (arr.empty()) {
+        return;
+    }
+    if (spec_types_is_default(params)) {
+        spec_types_set_defaults(params);
+    }
+    spec_types_check(params);
+    for (auto & spec : arr) {
+        if (spec.num_draft_max < spec.num_draft_min) {
+            throw std::runtime_error("error: num-draft-max must be >= num-draft-min\n");
+        }
+        if (spec.num_draft < spec.num_draft_min) {
+            spec.num_draft = spec.num_draft_min;
+        }
+        if (spec.num_draft > spec.num_draft_max) {
+            spec.num_draft = spec.num_draft_max;
+        }
+    }
+}
+
+static void spec_types_check(common_params & params, std::vector<common_params_speculative> & arr, std::vector<common_params_speculative> & arr_p) {
+    spec_types_check(params, arr);
+    spec_types_check(params, arr_p);
+}
+
+static void spec_types_check(common_params & params, std::vector<common_params_speculative> & arr, std::vector<common_params_speculative> & arr_p, std::vector<common_params_speculative> & arr_n) {
+    spec_types_check(params, arr);
+    spec_types_check(params, arr_p);
+    spec_types_check(params,

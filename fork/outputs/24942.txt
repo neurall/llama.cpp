@@ -1,0 +1,10 @@
+run 24942 | horizon3 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.54 t/s | prompt 595.1 t/s | 64 tokens | args: -np 1 --moe pp-path=mix | power 200+200 W | 2026-11-10 00:05:09
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, const std::string & prefix) {

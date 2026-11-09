@@ -1,0 +1,47 @@
+run 24943 | horizon3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.7 t/s | prompt 602.7 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 00:05:50
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 8;
+    params.speculative.num_reuse = 256;
+    params.speculative.num_gpu = 99;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // check if the model is a preset
+    if (params.model.path.empty() && params.model.url.empty()) {
+        if (params.model_alias.empty()) {
+            throw std::runtime_error("error: no model found");
+        }
+        auto preset = common_preset_find(params.model_alias);
+        if (preset) {
+            params.model_alias = preset->model_alias;
+            params.model = preset->model;
+            params.mmproj = preset->mmproj;
+            params.mtp = preset->mtp;
+            params.preset = preset->preset;
+            params.preset->model_alias = params.model_alias;
+            params.preset->model = params.model;
+            params.preset->mmproj = params.mmproj;
+            params.preset->mtp = params.mtp;
+            params.preset->preset = params.preset;
+            params.preset->preset_path = preset->preset_path;
+            params.preset->preset_name = preset->preset_name;
+            params.preset->preset_url = preset->preset_url;
+            params.preset->preset_alias = preset->preset_alias;
+            params.preset->preset_alias_url = preset->preset_alias_url;
+            params.preset->preset_alias_path = preset->preset_alias_path;
+            params.preset->preset_alias_name = preset->preset_alias_name;
+            params.preset->preset_alias_alias = preset->preset_alias_alias;
+            params.preset->preset_alias_alias_url = preset->preset_alias_alias_url;
+            params.preset->preset_alias_alias_path = preset->preset_alias_alias_path;
+            params.preset->preset_alias_alias_name = preset->preset_alias_alias_name;
+            params.preset->preset_alias_alias_alias = preset->preset_alias_alias_alias;
+            params.preset->preset_alias_alias_alias_url = preset->preset_alias_alias_alias_url;
+            params.preset->preset_alias_alias

@@ -7175,3 +7175,6 @@ horizon3-pth-mix-pf12k,2026-11-09 23:58:16,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3
 horizon3-pth4-stream-pf4k,2026-11-10 00:00:27,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds horizon3 variants v test pf4k n=2,,
 horizon3-pth4-chain-pf4k,2026-11-10 00:02:13,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds horizon3 variants v test pf4k n=2,,
 horizon3-pth4-mix-pf4k,2026-11-10 00:04:02,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds horizon3 variants v test pf4k n=2,,
+horizon3-dec-def-pf12k,2026-11-10 00:05:49,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds horizon3 variants v test pf12k n=2,,
+horizon3-dec-mp0-pf12k,2026-11-10 00:09:42,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds horizon3 variants v test pf12k n=2,,
+horizon3-dec-x16-pf12k,2026-11-10 00:13:34,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds horizon3 variants v test pf12k n=2,,

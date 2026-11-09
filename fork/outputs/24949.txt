@@ -1,0 +1,41 @@
+run 24949 | horizon3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.63 t/s | prompt 581.9 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 00:13:35
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 8;
+    params.speculative.num_reuse = 256;
+    params.speculative.num_gpu = 80;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // check if the model is a preset
+    if (params.model.path.empty() && params.model.url.empty()) {
+        if (params.model_alias.empty()) {
+            throw std::runtime_error("error: model is required");
+        }
+        auto preset = common_preset_find(params.model_alias);
+        if (preset) {
+            params.model_alias = preset->name;
+            params.model.url = preset->url;
+            params.model.path = preset->path;
+            params.model.hf_repo = preset->hf_repo;
+            params.model.hf_file = preset->hf_file;
+            params.model.hf_repo_tag = preset->hf_repo_tag;
+            params.model.hf_repo_tag_file = preset->hf_repo_tag_file;
+            params.model.hf_repo_tag_file_url = preset->hf_repo_tag_file_url;
+            params.model.hf_repo_tag_file_path = preset->hf_repo_tag_file_path;
+            params.model.hf_repo_tag_file_name = preset->hf_repo_tag_file_name;
+            params.model.hf_repo_tag_file_alias = preset->hf_repo_tag_file_alias;
+            params.model.hf_repo_tag_file_alias_url = preset->hf_repo_tag_file_alias_url;
+            params.model.hf_repo_tag_file_alias_path = preset->hf_repo_tag_file_alias_path;
+            params.model.hf_repo_tag_file_alias_hf_repo = preset->hf_repo_tag_file_alias_hf_repo;
+            params.model.hf_repo_tag_file_alias_hf_file = preset->hf_repo_tag_file_alias_hf_file;
+            params.model.hf_repo_tag_file_alias_hf_repo_tag = preset->hf_repo_tag_file_alias_hf_repo_tag;
+            params.model.hf_repo_tag_file_alias_hf_repo_tag_file = preset->hf_repo_tag_file_alias_hf_repo_tag_file;
+            params.model.hf_repo_tag_file_alias_hf_repo_tag_file_url =
