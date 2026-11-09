@@ -1775,7 +1775,21 @@ bool llama_model_loader::load_all_data(
     // Weights that land in host memory (with a GPU: the pinned buffer) are read by a pool of threads in 64 MB chunks with pread: one thread reading tensor after tensor
     // reached ~1.5 GB/s of a 3+ GB/s NVMe. The pages just read are given back to the page cache right away (as the single-threaded path does), so the file copy never
     // competes with the weights for RAM. LLAMA_LOAD_THREADS=1 (or direct IO, mmap, tensor validation) keeps the sequential path.
-    struct par_read { int fd; size_t off; void * dst; size_t n; int dfd; size_t fsize; };   // dfd: the same file opened O_DIRECT (-1: buffered), fsize its size
+    // left: bytes of its buffer not read yet (pr_left), base: the buffer's start
+    struct par_read { int fd; size_t off; void * dst; size_t n; int dfd; size_t fsize; std::atomic<size_t> * left = nullptr; void * base = nullptr; };
+    // fork: a host buffer the GPU backend handed out unpinned (ggml_backend_cuda_pin_defer) is pinned the moment its last read lands, while the others still read (GLM 3.0:
+    // 100.5 GiB pinned in 6.3 s after the reads otherwise). Counted per buffer: the bytes of all its tensors, a superset of what is read, so a tensor never read here
+    // only leaves its buffer to the pin after the load; a buffer is never pinned while a read into it runs (a page that must leave a CMA block then cannot move).
+    void (*pin_one)(void *) = (void (*)(void *)) llama_fork_proc("ggml_backend_fork_pin_deferred_one");
+    std::map<ggml_backend_buffer_t, std::unique_ptr<std::atomic<size_t>>> pr_left;
+    if (pin_one) {
+        for (ggml_tensor * t : tensors) {
+            if (!t->buffer || !t->data || !ggml_backend_buffer_is_host(t->buffer)) { continue; }
+            auto & a = pr_left[t->buffer];
+            if (!a) { a = std::make_unique<std::atomic<size_t>>(0); }
+            *a += ggml_nbytes(t);
+        }
+    }
     // fork: with the phase layout (llama-model.cpp) a host tensor's address and file offset share the 4096 grid, so its chunks are read with O_DIRECT (kernel AIO, the drive's probed
     // shape) straight into pinned memory: one DMA from the SSD, no page cache copy and no DONTNEED. The chunk edges are 4096 multiples of the FILE offset, so the head block of a
     // chunk is only the first chunk's (it lands in the gap in front of the tensor) and the tail block only the last one's (the next tensor starts past the next 4096 boundary).
@@ -1831,7 +1845,11 @@ bool llama_model_loader::load_all_data(
             if (t.dfd >= 0 && (((uintptr_t) t.dst - t.off) & (direct_align() - 1)) == 0) {
                 const size_t a = direct_align(), beg = t.off & ~(a - 1), end = (t.off + t.n + a - 1) & ~(a - 1);
                 const size_t total = end - beg, need = std::min(total, t.fsize - beg);
-                if (async_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) { pr_direct_bytes += t.n; continue; }
+                if (async_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) {
+                    pr_direct_bytes += t.n;
+                    if (t.left && t.left->fetch_sub(t.n) == t.n) { pin_one(t.base); }   // the buffer's last read: pinned now
+                    continue;
+                }
             }
             pr_buffered_bytes += t.n;
             for (const sr_piece & p : sr_pieces(t.n)) {   // blocks with gaps, then the gaps (llama-spaced-read-fork.h): no two neighbouring reads in a row
@@ -1845,6 +1863,7 @@ bool llama_model_loader::load_all_data(
                 if (pr_fail) { break; }
             }
             if (pin_budget > 0) { posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED); }   // the pinned hybrid: the file copy must not compete with the pinned part; a plain --no-mmap load keeps its page cache for the next start
+            if (!pr_fail && t.left && t.left->fetch_sub(t.n) == t.n) { pin_one(t.base); }
         }
     };
     auto pr_finish = [&]() {
@@ -1949,9 +1968,12 @@ bool llama_model_loader::load_all_data(
                         std::lock_guard<std::mutex> lk(pr_mtx);
                         const int dfd = pr_direct(file->file_id());
                         const size_t fsize = dfd >= 0 ? pr_fsize[file->file_id()] : 0;
+                        const auto lit = pr_left.find(cur->buffer);
+                        std::atomic<size_t> * left = lit == pr_left.end() ? nullptr : lit->second.get();
+                        void * base = ggml_backend_buffer_get_base(cur->buffer);
                         for (size_t o = 0; o < n_size; ) {   // chunk edges on the file's 64 MiB grid (see par_read)
                             const size_t pos = (size_t) weight->offs + o, len = std::min((pos / chunk + 1) * chunk - pos, n_size - o);
-                            pr_q.push_back({ file->file_id(), pos, (char *) cur->data + o, len, dfd, fsize });
+                            pr_q.push_back({ file->file_id(), pos, (char *) cur->data + o, len, dfd, fsize, left, base });
                             o += len;
                         }
                     }
