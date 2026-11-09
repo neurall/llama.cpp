@@ -12562,6 +12562,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_rope(GGML_TYPE_F32, {256,  8, 512, 1}, 256, GGML_ROPE_TYPE_NEOX,   512, 1.0f, 0.0f, 1.0f, false, 0, true)); // gemma4 E2B sliding
     test_cases.emplace_back(new test_rope(GGML_TYPE_F32, {512,  8, 512, 1}, 128, GGML_ROPE_TYPE_NEOX,   512, 1.0f, 0.0f, 1.0f, true,  0, true)); // gemma4 E4B global
 
+    // conv input of the linear-attention / SSM layers: concat(state, transpose(x), 0) with x wider than one 32x32 tile
+    test_cases.emplace_back(new test_concat(GGML_TYPE_F32, {3, 100, 2, 1}, 77, 0, 16));
+    test_cases.emplace_back(new test_concat(GGML_TYPE_F32, {3, 64, 1, 1}, 512, 0, 16));
     for (int v : { 0, 1, 2, 3, 16 }) {
         for (int dim : { 0, 1, 2, 3, }) {
             test_cases.emplace_back(new test_concat(GGML_TYPE_F32, {11, 12, 13, 14}, 7, dim, v));

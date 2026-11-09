@@ -1,0 +1,58 @@
+#version 450
+
+#include "types.glsl"
+#include "generic_binary_head.glsl"
+
+// concat along dim 0 when src1 is a transposed view (contiguous along dim 1), the conv input of the linear-attention and SSM layers: a 32x32 tile of
+// dst through shared memory, read along i1 and written along i0 like copy_transpose.comp. concat.comp reads such a src1 a whole row apart per
+// invocation (Radeon 780M, Qwen3.6 35B, 2048-token pass: 0.6 s, and 5.3 s once RAM is fragmented)
+#define TILE_DIM 32
+layout(local_size_x = 32, local_size_y = 8, local_size_z = 1) in;
+
+shared D_TYPE sh[TILE_DIM][TILE_DIM + 1];
+
+void iter(uvec3 wg_id) {
+    const uint tid_col = gl_LocalInvocationID.x;
+    const uint tid_row = gl_LocalInvocationID.y;
+    const uint i2 = wg_id.z % p.ne22;
+    const uint i3 = wg_id.z / p.ne22;
+
+    [[unroll]] for (uint y = 0; y < 4; ++y) {
+        const uint i0 = wg_id.x * TILE_DIM + tid_row + 8 * y;
+        const uint i1 = wg_id.y * TILE_DIM + tid_col;
+        if (i0 < p.ne20 && i1 < p.ne21) {
+            if (i0 < p.ne00) {
+                sh[tid_row + 8 * y][tid_col] = D_TYPE(data_a[get_aoffset() + i3*p.nb03 + i2*p.nb02 + i1*p.nb01 + i0*p.nb00]);
+            } else {
+                sh[tid_row + 8 * y][tid_col] = D_TYPE(data_b[get_boffset() + i3*p.nb13 + i2*p.nb12 + i1*p.nb11 + (i0 - p.ne00)*p.nb10]);
+            }
+        }
+    }
+
+    barrier();
+
+    [[unroll]] for (uint y = 0; y < 4; ++y) {
+        const uint i0 = wg_id.x * TILE_DIM + tid_col;
+        const uint i1 = wg_id.y * TILE_DIM + tid_row + 8 * y;
+        if (i0 < p.ne20 && i1 < p.ne21) {
+            data_d[get_doffset() + i3*p.nb23 + i2*p.nb22 + i1*p.nb21 + i0*p.nb20] = sh[tid_col][tid_row + 8 * y];
+        }
+    }
+}
+
+#define CEIL_DIV(a, b) (((a) + (b) - 1) / (b))
+
+void main() {
+    bool need_barrier = false;
+    for (uint z = gl_WorkGroupID.z; z < p.ne22 * p.ne23; z += gl_NumWorkGroups.z) {
+        for (uint y = gl_WorkGroupID.y; y < CEIL_DIV(p.ne21, TILE_DIM); y += gl_NumWorkGroups.y) {
+            for (uint x = gl_WorkGroupID.x; x < CEIL_DIV(p.ne20, TILE_DIM); x += gl_NumWorkGroups.x) {
+                if (need_barrier) {
+                    barrier();
+                }
+                need_barrier = true;
+                iter(uvec3(x, y, z));
+            }
+        }
+    }
+}

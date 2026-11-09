@@ -204,11 +204,12 @@ static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml
             CUDA_CHECK(cudaMemcpyAsync((char *) dst->data,         src0->data, size0, cudaMemcpyDeviceToDevice, stream));
             CUDA_CHECK(cudaMemcpyAsync((char *) dst->data + size0, src1->data, size1, cudaMemcpyDeviceToDevice, stream));
         }
-    } else if (dim == 0 && src1->nb[1] == sizeof(T) && src1->nb[0] >= src1->ne[1]*sizeof(T) && dst->nb[0] == sizeof(T) &&
+    } else if (dim == 0 && src1->ne[0] >= 32 && src1->nb[1] == sizeof(T) && src1->nb[0] >= src1->ne[1]*sizeof(T) && dst->nb[0] == sizeof(T) &&
                (src1->ne[1] + 31)/32 <= 65535 && src1->ne[2]*src1->ne[3] <= 65535) {
         // fork: b is a transposed view, the conv input of the linear-attention and SSM layers (concat(state, transpose(x), 0)). The general kernel below reads
         // it one element per thread a whole row apart: Qwen3.6 35B on the 780M spent 2.8 s in it for one 2048-token pass against 0.3 s for four 512-token
         // passes, which made the larger pass slower. a's few columns go through the general kernel (ne0 = ne00 ends its loop before b), b through a tile.
+        // b narrower than one tile (a decode step: 1 column) stays on the general kernel, which reads it in order there.
         const dim3 grid_a(dst->ne[1], std::min<int64_t>(dst->ne[2], 65535), std::min<int64_t>(dst->ne[3], 65535));
         concat_non_cont<T, 0><<<grid_a, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(
             (const char *) src0->data, (const char *) src1->data, (char *) dst->data,
