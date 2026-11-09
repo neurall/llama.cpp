@@ -1921,6 +1921,31 @@ bool llama_model_loader::load_all_data(
         });
     }
 #endif
+#if defined(_WIN32)
+    // fork: Windows read pool: the host weights are read by a few threads, each tensor in 64 MiB chunks on the file's 64 MiB grid (as the Linux pool), every chunk by the overlapped
+    // reader at the drive's stored shape (2-4 buffered readers reached 2.4-2.9 GB/s against 1.4 for one on the test laptop). LLAMA_LOAD_THREADS=1 keeps the read inside the tensor.
+    struct win_job { int fd; char * dst; size_t beg, len, need; };
+    std::deque<win_job> wq; std::mutex wmtx; std::condition_variable wcv; std::vector<std::thread> wth; bool wstop = false; std::atomic<bool> wfail{false};
+    std::atomic<size_t> wpending{0};
+    int n_win_threads = 3;
+    if (const char * e = getenv("LLAMA_LOAD_THREADS")) { n_win_threads = std::max(1, atoi(e)); }
+    auto win_worker = [&]() {
+        for (;;) {
+            win_job j;
+            { std::unique_lock<std::mutex> lk(wmtx); wcv.wait(lk, [&] { return wstop || !wq.empty(); }); if (wq.empty()) { return; } j = wq.front(); wq.pop_front(); }
+            if (!sr_read(j.fd, j.dst, j.beg, j.len, j.need)) { wfail = true; }
+            wpending--;
+        }
+    };
+    auto win_finish = [&]() {   // waits for every queued chunk, ends the threads
+        while (wpending.load() > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+        { std::lock_guard<std::mutex> lk(wmtx); wstop = true; }
+        wcv.notify_all();
+        for (auto & t : wth) { t.join(); }
+        wth.clear();
+    };
+    struct win_guard_t { std::function<void()> f; ~win_guard_t() { f(); } } win_guard{[&]() { { std::lock_guard<std::mutex> lk(wmtx); wq.clear(); wpending = 0; } win_finish(); }};
+#endif
     auto progress_now = [&]() -> float {
 #if defined(__linux__)
         return (float) (size_done - (pr_queued_bytes - pr_direct_bytes.load() - pr_buffered_bytes.load())) / size_data;
@@ -2031,6 +2056,23 @@ bool llama_model_loader::load_all_data(
                     if (wd >= 0) {
                         const size_t beg = (size_t) weight->offs & ~(direct_align() - 1), pad = (size_t) weight->offs - beg;
                         const size_t len = (pad + n_size + direct_align() - 1) & ~(direct_align() - 1);
+                        if (n_win_threads > 1 && !check_tensors) {
+                            constexpr size_t chunk = 64u << 20;
+                            {
+                                std::lock_guard<std::mutex> lk(wmtx);
+                                for (size_t o = 0; o < n_size; ) {
+                                    const size_t pos = (size_t) weight->offs + o, cl = std::min((pos / chunk + 1) * chunk - pos, n_size - o);
+                                    const size_t cb = pos & ~(direct_align() - 1), ce = (pos + cl + direct_align() - 1) & ~(direct_align() - 1);
+                                    wq.push_back({ wd, (char *) cur->data + o - (pos - cb), cb, ce - cb, std::min(ce - cb, it->second.second - cb) });
+                                    wpending++;
+                                    o += cl;
+                                }
+                            }
+                            while ((int) wth.size() < n_win_threads) { wth.emplace_back(win_worker); }
+                            wcv.notify_all();
+                            size_done += n_size;
+                            continue;
+                        }
                         if (sr_read(wd, (char *) cur->data - pad, beg, len, std::min(len, it->second.second - beg))) {
                             if (check_tensors) {
                                 validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
@@ -2163,6 +2205,10 @@ bool llama_model_loader::load_all_data(
         size_done += n_size;
     }
 
+#if defined(_WIN32)
+    win_finish();
+    if (wfail) { throw std::runtime_error("failed to read tensor data from the model file"); }
+#endif
 #if defined(__linux__)
     while (progress_callback) {   // the reads run now: the bar moves with them and a cancel is honoured, as on the sequential path
         { std::lock_guard<std::mutex> lk(pr_mtx); if (pr_q.empty()) { break; } }
