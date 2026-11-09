@@ -23,7 +23,8 @@ std::string backend_tag(ggml_backend_dev_t dev) {
 }
 
 // fastest of n runs of one q4_K 4096x4096 matrix times `cols` columns, in ms; < 0 when the device fails
-double time_matmul(ggml_backend_dev_t dev, int cols, int n) {
+// the loop stops after budget_ms (one run at least); a first run over 1 s gives up (the default stays): this runs at the start of every first run of a build
+double time_matmul(ggml_backend_dev_t dev, int cols, int n, double budget_ms = 150) {
     ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
     if (!be) { return -1; }
     ggml_init_params ip = { ggml_tensor_overhead() * 8 + ggml_graph_overhead(), nullptr, true };
@@ -39,12 +40,14 @@ double time_matmul(ggml_backend_dev_t dev, int cols, int n) {
         std::vector<float>   xd(4096 * (size_t) cols, 0.01f);
         ggml_backend_tensor_set(w, wd.data(), 0, wd.size());
         ggml_backend_tensor_set(x, xd.data(), 0, xd.size() * sizeof(float));
-        for (int i = -2; i < n; ++i) {   // two warm-up runs (pipeline build, kernel tuning)
+        double spent = 0;
+        for (int i = -2; i < n && spent < budget_ms; ++i) {   // two warm-up runs (pipeline build, kernel tuning)
             const auto t0 = std::chrono::steady_clock::now();
             const bool ok = ggml_backend_graph_compute(be, gf) == GGML_STATUS_SUCCESS;
             ggml_backend_synchronize(be);
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            if (!ok) { best = -1; break; }
+            spent += ms;
+            if (!ok || (i == -2 && ms > 1000)) { best = -1; break; }
             if (i >= 0 && (best < 0 || ms < best)) { best = ms; }
         }
         ggml_backend_buffer_free(buf);
@@ -65,13 +68,14 @@ ggml_backend_dev_t llama_device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b)
     const std::string sec = std::string("gpu ") + pa.device_id;
     const std::string bld = std::string("_b") + std::to_string(LLAMA_BUILD_NUM);
     ggml_backend_dev_t devs[2] = { a, b };
+    const int64_t t_start = ggml_time_us();
 
     std::string v;
     const bool remeasure = env && !strcmp(env, "remeasure");
     if (!remeasure && moe_state_get(sec, "pick" + bld, v)) {
         for (ggml_backend_dev_t d : devs) {
             if (backend_tag(d) == v) {
-                LLAMA_LOG_INFO("%s: %s (%s) runs on %s (stored pick, %s)\n", __func__, ggml_backend_dev_name(d), ggml_backend_dev_description(d), v.c_str(), sec.c_str());
+                LLAMA_LOG_WARN("%s: %s (%s) runs on %s (stored pick, %s)\n", __func__, ggml_backend_dev_name(d), ggml_backend_dev_description(d), v.c_str(), sec.c_str());
                 return d;
             }
         }
@@ -88,13 +92,14 @@ ggml_backend_dev_t llama_device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b)
         kv.push_back({ "1tok_p_time_" + t + bld, std::to_string(p / 512) });
         kv.push_back({ "1tok_g_time_" + t + bld, std::to_string(g) });
         total[i] = p / 512 * 2000 + g * 128;
-        LLAMA_LOG_INFO("%s: %s (%s) %s: %.4f ms per prompt token, %.3f ms per generated token\n", __func__, ggml_backend_dev_name(devs[i]),
+        LLAMA_LOG_WARN("%s: %s (%s) %s: %.4f ms per prompt token, %.3f ms per generated token\n", __func__, ggml_backend_dev_name(devs[i]),
                 ggml_backend_dev_description(devs[i]), t.c_str(), p / 512, g);
     }
     ggml_backend_dev_t pick = total[1] < total[0] ? b : a;
     kv.push_back({ "pick" + bld, backend_tag(pick) });
     moe_state_set(sec, kv);
-    LLAMA_LOG_INFO("%s: %s runs on %s (request of 2000 + 128 tokens: %.0f against %.0f ms)\n", __func__, ggml_backend_dev_description(pick),
+    LLAMA_LOG_WARN("%s: %s runs on %s (request of 2000 + 128 tokens: %.0f against %.0f ms)\n", __func__, ggml_backend_dev_description(pick),
             backend_tag(pick).c_str(), std::min(total[0], total[1]), std::max(total[0], total[1]));
+    LLAMA_LOG_WARN("%s: measured in %.0f ms\n", __func__, (ggml_time_us() - t_start) / 1000.0);
     return pick;
 }

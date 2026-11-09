@@ -271,7 +271,7 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                             ggml_backend_dev_props p_new, p_old;
                             ggml_backend_dev_get_props(dev, &p_new);
                             ggml_backend_dev_get_props(igpus.back().dev, &p_old);
-                            LLAMA_LOG_INFO("%s: integrated %s id %s, %s id %s\n", __func__, ggml_backend_dev_name(igpus.back().dev), p_old.device_id ? p_old.device_id : "none", ggml_backend_dev_name(dev), p_new.device_id ? p_new.device_id : "none");
+                            LLAMA_LOG_WARN("%s: integrated %s id %s, %s id %s\n", __func__, ggml_backend_dev_name(igpus.back().dev), p_old.device_id ? p_old.device_id : "none", ggml_backend_dev_name(dev), p_new.device_id ? p_new.device_id : "none");
                             if (p_new.device_id && p_old.device_id && strcmp(p_new.device_id, p_old.device_id) == 0) {
                                 igpus.back() = {false, llama_device_pick(igpus.back().dev, dev)};
                                 break;
