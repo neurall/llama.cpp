@@ -5895,7 +5895,27 @@ SYS_CMD = ("D=$(mktemp); (nvidia-smi dmon -c 1 -s t > $D 2>/dev/null &); head -1
            "for i in 1 2 3; do o=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,power.draw,power.limit,temperature.gpu --format=csv,noheader,nounits 2>/dev/null); echo \"$o\" | grep -q 'N/A' || break; sleep 0.3; done; echo \"$o\"; echo '#'; "
            "for p in $(pgrep -x llama-server); do grep -E 'RssAnon|RssFile' /proc/$p/status; done; echo '#'; "
            "df -B1 --output=avail @ROOT 2>/dev/null | tail -1; echo '#'; "
-           "P=$(ss -ltnp 2>/dev/null | awk '/llama-server/{n=split($4,a,\":\"); print a[n]; exit}'); [ -n \"$P\" ] && curl -s --max-time 2 localhost:$P/moe/stats; echo; echo '#'; cat $D; rm -f $D")   # the engine's own numbers, from the port its server listens on (local or remote)
+           "P=$(ss -ltnp 2>/dev/null | awk '/llama-server/{n=split($4,a,\":\"); print a[n]; exit}'); [ -n \"$P\" ] && curl -s --max-time 2 localhost:$P/moe/stats; echo; echo '#'; cat $D; rm -f $D; "
+           "echo '#'; [ -n \"$P\" ] && curl -s --max-time 2 localhost:$P/status; echo")   # the engine's own numbers, from the port its server listens on (local or remote); /status also answers while the model loads
+
+
+def status_phase(raw):
+    """' | <phase> ...' from the server's GET /status (the engine's own phase and live speeds, user 2026-11-09: "server ... can count and report both live. run shall
+    just collect them"): loading with its stage, prefill with tokens done and t/s, gen with tokens, t/s and ms per token, idle with the requests done; '' for a
+    server without the route (stock, older builds) or no server"""
+    try:
+        s = json.loads(raw)
+        ph, pr, gn = s["phase"], s.get("prompt") or {}, s.get("gen") or {}
+    except (ValueError, KeyError, TypeError):
+        return ""
+    if ph == "loading":
+        ld = s.get("load") or {}
+        return " | " + col(33, f"loading {ld.get('stage', '')} {100 * (ld.get('progress') or 0):.0f}%")
+    if ph == "prefill":
+        return " | " + col(36, f"prefill {pr.get('n', 0)}/{pr.get('total', 0)} tok {pr.get('per_second', 0):.0f} t/s, {pr.get('ms', 0) / 1000:.1f} s")
+    if ph == "gen":
+        return " | " + col(32, f"gen {gn.get('n', 0)} tok {gn.get('per_second', 0):.1f} t/s {gn.get('ms_per_token', 0):.1f} ms/tok")
+    return " | " + col(37, f"idle, {s.get('requests_done', 0)} done")
 
 
 def cell_status(t0, expect, label, total=None):
@@ -5910,7 +5930,7 @@ def cell_status(t0, expect, label, total=None):
             sysi = hsh(SYS_CMD.replace("@ROOT", shlex.quote((HOST[0] or {}).get("root") or MODELS_DIR or QDIR)), 30).split("\n#\n") + ["", "", "", ""]
         if "MemTotal" in sysi[1]: SYS_LAST[0] = sysi
         elif SYS_LAST[0]: sysi = SYS_LAST[0]
-        else: sysi = ["cpu 0 0 0 0 0\ncpu 0 0 0 0 0", "MemTotal: 1 kB\nMemAvailable: 1 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB", "", "", "", "", ""]
+        else: sysi = ["cpu 0 0 0 0 0\ncpu 0 0 0 0 0", "MemTotal: 1 kB\nMemAvailable: 1 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB", "", "", "", "", "", ""]
         s0, s1 = [[int(x) for x in l.split()[1:]] for l in sysi[0].strip().split("\n")[:2]] if sysi[0].count("\n") else ([0] * 5, [0] * 5)
         busy = 100 * (1 - ((s1[3] + s1[4]) - (s0[3] + s0[4])) / max(sum(s1) - sum(s0), 1))
         m = {l.split(":")[0]: int(l.split()[1]) for l in sysi[1].split("\n") if ":" in l}
@@ -5936,6 +5956,7 @@ def cell_status(t0, expect, label, total=None):
             elif k == "RssFile": mm += int(v.split()[0]) / 2**20
         st = col(37, "cpu ") + level(busy, 50, 90, f"{busy:.0f}%") + col(37, " ram ") + level(ram / (m["MemTotal"] / 2**20), 0.7, 0.9, f"{ram:.0f}G") + " " + col(33, f"pin {pin:.0f}G") + " " + col(36, f"mm {mm:.0f}G") + " " + (col(31, f"swap {swap:.0f}M") if swap > 100 else col(37, f"swap {swap:.0f}M")) + (lambda fr: " " + level(1 - min(fr / 2**30 / 50, 1), 0.6, 0.9, f"disk {fr / 2**30:.0f}G free") if fr >= 0 else "")(int(sysi[4].strip() or -1) if sysi[4].strip().isdigit() else -1) + f" | {gpu}"   # stats first, the bars below
         if not HOST[0]: st += " " + col(35, host_io_line())
+        st += status_phase(sysi[7])
         eng = ""   # engine state line (GET /moe/stats): pass size, threads, context, cache hit rate, time per token, uploads against the probed link and RAM maximum
         try:
             es = json.loads(STATS_FINAL[0] or sysi[5]); sv = es.get("server") or {}; pr = es.get("prompt") or {}; tk = es.get("token_ms") or {}; bw = es.get("bandwidth") or {}; ht = es.get("hit") or {}
