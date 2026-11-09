@@ -13017,7 +13017,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     for (int p = 0; p < PP_PATHS; ++p) {
         if (g_pp_phi[p][1] <= 0.0) { continue; }
         dsf_rls & rp = pp_rls(p);
-        g_pp_pmu[p] = rls_pred(rp, g_pp_phi[p], &g_pp_var[p]);
+        // no path beats the compute itself: a few short samples extrapolated to a long call gave the chain -494459 ms (GLM, 4475 tokens, 2026-11-10), and a negative mean always won
+        g_pp_pmu[p] = std::max(g_pp_c_us > 0.0 ? g_pp_c_us * (double) n : 0.0, rls_pred(rp, g_pp_phi[p], &g_pp_var[p]));
         rls_draw(rp, g_pp_phi[p], rls_mix(g_pp_seed + (uint64_t) p), &g_pp_drw[p]);
     }
     {
