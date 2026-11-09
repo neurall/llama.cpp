@@ -12228,6 +12228,7 @@ static std::string pp_path_name(int p) {
 // prompt time so far, less what tries lost already: a small call soon, a big one after enough work to pay for it. A loss is taken back at the next call of that size (the measured times decide).
 // --moe pp-try=0: every size tries, as before.
 static double g_pp_total_us = 0.0, g_pp_lost_us = 0.0;
+static double g_pp_wait_us[32] = {}, g_pp_up_call = 0.0;   // per size: the least a prompt chain pass spent on top of its upload and compute, waiting for the router's ids (0 = no sample); the call's calculated upload
 static bool pp_try_ok(double known_us) {
     static const char * const o = moe_opt("pp-try");
     return (o && atoi(o) == 0) || known_us <= std::max(1e6, 0.05 * g_pp_total_us - g_pp_lost_us);
@@ -12236,6 +12237,15 @@ static int pp_bucket(double n) {
     int b = 0;
     while (b < 31 && n >= (double) (2ull << b)) { ++b; }
     return b;
+}
+// the router wait of a pass of n tokens: this size's, else the nearest size measured; 0 = never measured (the router is then assumed free, so it runs and gets measured)
+static double pp_wait_us(double n) {
+    const int b = pp_bucket(n);
+    for (int d = 0; d < 32; ++d) {
+        if (b - d >= 0 && g_pp_wait_us[b - d] > 0.0) { return g_pp_wait_us[b - d]; }
+        if (b + d < 32 && g_pp_wait_us[b + d] > 0.0) { return g_pp_wait_us[b + d]; }
+    }
+    return 0.0;
 }
 // the path's time at n tokens, through its measured points as pp_pass_us; 0 when it never ran near this size
 static double pp_took_us(int path, double n) {
@@ -12747,6 +12757,11 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             const double best = b >= 0 ? pp_took_us(b, n1) : 0.0;
             g_pp_total_us += (double) us;
             if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
+            if (path == PP_CHAIN && n1 >= PP_MIN_BATCH) {
+                double & w = g_pp_wait_us[pp_bucket(n1)];
+                const double got = std::max(1.0, took - g_pp_up_call - g_pp_c_us * n1);
+                w = w > 0.0 ? std::min(w, got) : got;
+            }
             const uint64_t pk = g_ppc_picked.exchange(0), pa = g_ppc_all.exchange(0), pm = g_ppc_miss.exchange(0);
             const std::string picks = pa ? format(", routers picked %.1f%% of the experts, %.1f%% of those uploaded", 100.0 * (double) pk / (double) pa, pk ? 100.0 * (double) pm / (double) pk : 0.0) : std::string();
             const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s, %.2f ms per token%s)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us, (double) us / 1e3 / std::max(1u, n_tokens), picks.c_str(),
@@ -13060,6 +13075,16 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // So no try of a mix not known here while uploads run; a known one keeps its mean.
         if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
         for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
+        // Router or full stream (user 2026-11-10): the compute is the same on both, so compare what differs: uploading every expert (one expert's upload x the experts) against waiting
+        // for the router's ids and uploading its picks. The stream as soon as it costs the same or less. --moe pp-switch=0: both compete on their means, as before.
+        static const bool pp_switch = [] { const char * e = moe_opt("pp-switch"); return !e || atoi(e) != 0; }();
+        g_pp_up_call = up;
+        if (pp_switch && ok[PP_RING] && ok[PP_CHAIN]) {
+            const double wait = pp_wait_us(n);
+            const bool stream = Ts <= up + wait;
+            ok[stream ? PP_CHAIN : PP_RING] = false;
+            llama_moe_stats_log_fork("DEC", format("prompt call of %.0f tokens: %s: full upload %.0f ms / (picks %.0f + router wait %.0f ms) = %.2f", n, stream ? "full stream" : "router", Ts / 1e3, up / 1e3, wait / 1e3, Ts / std::max(1.0, up + wait)).c_str());
+        }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
     }
