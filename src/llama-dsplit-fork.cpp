@@ -90,6 +90,8 @@ bool dsplit_pool_mode() {
     return !(e && atoi(e) == 0) && !(a && atoi(a) == 0) && !(p && atoi(p) == 0);
 }
 
+LLAMA_API bool llama_dsplit_pool_mode_fork() { return dsplit_pool_mode(); }   // llama-graph.cpp (ds_plan): --moe one-range needs copies that a one-card graph does not overwrite
+
 // the model's precision rules are keyed by the weight tensor: a copy takes the rule of its original
 void dsplit_copy_prec(llama_model & model, const ggml_tensor * src, ggml_tensor * dst) {
     // (llama_prec_policy: "this weight cannot take 4-bit activations"). Without it the copies of such weights ran with 4-bit activations on the other card
