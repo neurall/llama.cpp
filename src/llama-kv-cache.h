@@ -272,6 +272,11 @@ public:
     void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
     void set_input_kv_pos(ggml_tensor * dst, const llama_ubatch * ubatch) const;   // fork: each cell's position, INT32_MAX for an empty one (one stream)
 
+    // the causal mask of set_input_attn_mask with the given window in place of the cache's own, into F32 host memory
+    // [n_kv, n_tokens/n_stream, 1, n_stream] (ERNIE 5.5 DSA: the window cells of a full cache)
+    void set_input_attn_mask_f32(float * data, int64_t n_kv, int64_t n_stream, const llama_ubatch * ubatch,
+            uint32_t n_swa, llama_swa_type swa_type) const;
+
     // true if llama_kv_cell_ext holds information that has to survive a state save/restore
     bool has_cell_ext() const;
 
@@ -506,6 +511,9 @@ public:
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_relative_pos(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
     void set_input_kv_pos(ggml_tensor * dst, const llama_ubatch * ubatch) const;   // fork: each cell's position, INT32_MAX for an empty one (one stream)
+
+    void set_input_attn_mask_f32(float * data, int64_t n_kv, int64_t n_stream, const llama_ubatch * ubatch,
+            uint32_t n_swa, llama_swa_type swa_type) const;
 
     // see llama_kv_cache::get_prev_tokens()
     void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
