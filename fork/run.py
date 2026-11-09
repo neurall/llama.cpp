@@ -2619,6 +2619,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
     row = {}
     TAGBOX["v"] = test   # game4 and edit4 add their prompt below
     if test in ("ppl", "ppl3", "pplb", "pplc", "ppll"):
+        if kept_get(): kept_kill(); wait_vram_free()   # perplexity is its own process: a run list's kept server would hold the VRAM it needs (cudaMalloc failed at its first buffer)
         nb, nub = {"ppl": ("1", "1"), "ppl3": ("3", "3"), "pplb": ("1024", "1024"), "pplc": ("1024", "256"), "ppll": ("8192", "8192")}[test]   # ppll: long chunks (PERF_PPL_CTX, default 32768) of src_128k.cpp in prompt-sized passes: the attention of a chunk's later tokens reaches past the sparse gate   # pplb: 1024-token batches = the big-batch (prefill) path; pplc: the same batch in 256-token ubatches (4 ubatches per decode call)
         nub = os.environ.get("PERF_PPL_UB") or nub   # PERF_PPL_UB=N: the 1024 tokens of a chunk cut into N-token ubatches (how ppl moves with the number of cuts; stored in the note)
         ctx = os.environ.get("PERF_PPL_CTX", "32768" if test == "ppll" else "1024")   # the chunk length; ppll's own test name keeps its runs out of the README's pplb table
