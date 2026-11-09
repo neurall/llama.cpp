@@ -50,6 +50,7 @@ extern "C" void ggml_backend_set_alloc_phase_fn_fork(size_t (*fn)(const struct g
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -1455,6 +1456,8 @@ llama_model::llama_model(const llama_model_params & params) : params(params), pi
 }
 
 void llama_model::wait_loaded() {
+    static std::mutex mu;   // the decode thread and the cache's upload workers
+    std::lock_guard<std::mutex> lk(mu);
     if (load_thr.joinable()) { load_thr.join(); ml_keep.reset(); }
     if (!load_ok) { LLAMA_LOG_ERROR("%s: the asynchronous weight load failed\n", __func__); GGML_ABORT("asynchronous weight load failed"); }
 }

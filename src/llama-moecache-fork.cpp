@@ -121,6 +121,8 @@ void        llama_moe_stats_log_fork(const char * kind, const char * text);   //
 std::string llama_moe_stats_io_fork(int who);                                 // what the disk, the memory and the CPU did since this caller's last call
 bool        llama_moe_log_profile_fork(const char * name);                    // --moe log-profile
 
+LLAMA_API void llama_model_wait_loaded_fork(const struct llama_model * m);
+
 namespace {
 
 // --moe log=c (LLAMA_MOE_CACHE_TRACE=<prefix> moves the files): TRACE=<steps> (ctl file or env) records that many decode steps, after
@@ -3258,7 +3260,7 @@ void numa_probe(moe_cache * mc) {
 #endif
 }
 
-void resource_probe(moe_cache * mc) {
+void resource_probe(moe_cache * mc, const llama_model & model) {
     const char * pe = moe_opt("probe");
     if ((pe && pe[0] == '0') || mc->layers.empty()) {
         return;
@@ -3383,6 +3385,7 @@ void resource_probe(moe_cache * mc) {
         }
     }
     if (!probe_stored) {
+    llama_model_wait_loaded_fork(&model);   // fork: LLAMA_ASYNC_LOAD: the probe reads the weights' memory
     run(0, true, 0.15, cpu_alone, link_alone);
     cpu_alone = 0;
     auto measure = [&](int nt) {
@@ -8061,7 +8064,6 @@ void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes) {
     }
 }
 
-LLAMA_API void llama_model_wait_loaded_fork(const struct llama_model * m);
 void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32_t max_inserts, int32_t prefetch_slots, int32_t window,
                           int32_t predict, int32_t predict_train) {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
@@ -8650,7 +8652,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     ls.pub.il, ls.pub.up_src->name, ls.pub.up_src->nb[2]);
         }
 
-        llama_model_wait_loaded_fork(&model);   // fork: LLAMA_ASYNC_LOAD: from here the cache reads and pins the host weights (the pool sizing and allocation above run under the reads)
+        // fork: LLAMA_ASYNC_LOAD: the rest of the init needs no weight bytes on the default path, so it and the graph reserves after it run under the reads. What does read them waits
+        // itself: the upload workers (below), resource_probe when it measures, the predictor's routers; the rampool setup fills from them
+        if (const char * rv = moe_opt("rampool"); rv && atoi(rv) != 0) { llama_model_wait_loaded_fork(&model); }
         {
             size_t max_expert = 0;
             bool   any_file   = false;
@@ -8816,7 +8820,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         }
 
         for (size_t w = 0; w < mc->staging.size(); ++w)
-        mc->workers.emplace_back([mc, w]() {
+        mc->workers.emplace_back([mc, w, pm = &model]() {
+            llama_model_wait_loaded_fork(pm);   // fork: LLAMA_ASYNC_LOAD: every upload job reads the host weights
             unpin_helper();
             led_thread("up-w" + std::to_string(w));   // --moe ledger: this worker's lines say which upload thread wrote
             uint8_t * staging_ptr = mc->staging[w] ? (uint8_t *) ggml_backend_buffer_get_base(mc->staging[w]) : nullptr;
@@ -9117,7 +9122,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
         }
 #endif
-        resource_probe(mc);
+        resource_probe(mc, model);
         numa_probe(mc);
         if (const size_t n = profile_preload(mc, model)) {
             LLAMA_LOG_WARN("moe-cache: preloading %zu experts (usage profile)\n", n);
@@ -9174,6 +9179,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 const char * pf = moe_opt("predict-file");
                 mc->pred_file = pf ? (strcmp(pf, "0") == 0 ? "" : pf) : cache_file(model, "moe-pred-", "-a" + std::to_string(mc->pred_ahead));
             }
+            if (mc->pred_m > 0) { llama_model_wait_loaded_fork(&model); }   // fork: LLAMA_ASYNC_LOAD: the predictor copies the routers' weights
             const size_t nl = mc->layers.size();
             mc->pred_b.assign(nl, {});
             mc->last_pred.assign(nl, {});
