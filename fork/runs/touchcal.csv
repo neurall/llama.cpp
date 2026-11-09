@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+tc-glm-256,glm,1,pf12k,64,"-b 8192 -ub 256 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-glm-512,glm,1,pf12k,64,"-b 8192 -ub 512 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-glm-1024,glm,1,pf12k,64,"-b 8192 -ub 1024 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-glm-2048,glm,1,pf12k,64,"-b 8192 -ub 2048 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-glm-4096,glm,1,pf12k,64,"-b 8192 -ub 4096 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-qn_iq4xs-256,qn_iq4xs,1,pf12k,64,"-b 8192 -ub 256 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-qn_iq4xs-512,qn_iq4xs,1,pf12k,64,"-b 8192 -ub 512 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-qn_iq4xs-1024,qn_iq4xs,1,pf12k,64,"-b 8192 -ub 1024 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-qn_iq4xs-2048,qn_iq4xs,1,pf12k,64,"-b 8192 -ub 2048 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+tc-qn_iq4xs-4096,qn_iq4xs,1,pf12k,64,"-b 8192 -ub 4096 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1

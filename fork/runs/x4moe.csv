@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+x4m-10,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.10",
+x4m-15,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.15",
+x4m-20,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.20",
+x4m-25,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.25",
+x4m-30,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.30",
+x4m-20-s6,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.20,pf-slots=6",
+x4m-30-s6,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.30,pf-slots=6",

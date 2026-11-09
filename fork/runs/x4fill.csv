@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+mp0-dense,glm,2,pf12k,64,"--moe dense-split=1,split-experts=0,mirror-pool=0",
+mp0-moes,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,mirror-pool=0",
+mp0-def,glm,2,pf12k,64,--moe mirror-pool=0,
+x4m-15-s6,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.15,pf-slots=6",
+x4m-25-s6,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.25,pf-slots=6",
+x4m-40-s6,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.40,pf-slots=6",
+x4m-30-s9,glm,2,pf12k,64,"--moe dense-split=1,split-experts=1,split-slow-share=0.30,pf-slots=9",

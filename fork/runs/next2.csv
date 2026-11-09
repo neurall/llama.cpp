@@ -1,4 +1,19 @@
 name,model,n,test,tokens,args,extra
+pth-stream,glm,2,pf12k,64,--moe pp-path=stream,--env CUDA_VISIBLE_DEVICES=1
+pth-chain,glm,2,pf12k,64,--moe pp-path=chain,--env CUDA_VISIBLE_DEVICES=1
+pth-mix,glm,2,pf12k,64,--moe pp-path=mix,--env CUDA_VISIBLE_DEVICES=1
+pth4-stream,glm,2,pf4k,64,--moe pp-path=stream,--env CUDA_VISIBLE_DEVICES=1
+pth4-chain,glm,2,pf4k,64,--moe pp-path=chain,--env CUDA_VISIBLE_DEVICES=1
+pth4-mix,glm,2,pf4k,64,--moe pp-path=mix,--env CUDA_VISIBLE_DEVICES=1
+dec-def,glm,2,pf12k,512,,
+dec-mp0,glm,2,pf12k,512,--moe mirror-pool=0,
+dec-x16,glm,2,pf12k,512,,--env CUDA_VISIBLE_DEVICES=1
+dec-0,glm,2,pf12k,512,"--moe dense-split=1,split-experts=0",
+dec-10,glm,2,pf12k,512,"--moe dense-split=1,split-experts=1,split-slow-share=0.10",
+dec-15,glm,2,pf12k,512,"--moe dense-split=1,split-experts=1,split-slow-share=0.15",
+dec-20,glm,2,pf12k,512,"--moe dense-split=1,split-experts=1,split-slow-share=0.20",
+qni-mp0-12k,qn_iq4xs,2,pf12k,64,--moe mirror-pool=0,
+mimo-mp0-12k,mimo,2,pf12k,64,--moe mirror-pool=0,
 glm-def-12k,glm,2,pf12k,64,,
 glm-one-12k,glm,2,pf12k,64,--moe dense-split=one,
 glm-orange-12k,glm,2,pf12k,64,"--moe dense-split=one,one-range=1",
