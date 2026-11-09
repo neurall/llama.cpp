@@ -1840,7 +1840,9 @@ void llama_context::sched_reserve() {
                 gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
             }
             if (!gf && !moe_alias_bufs.empty()) {   // the graph does not fit in the lent blocks: the largest that does (computed), or the alias off
-                const uint32_t u = n_tokens > 512 ? fit_ub(n_tokens - 32) : 0;
+                // measure-only fits (fit_ub) can pass where the real reserve fails; every retry pins the host inputs again (GLM 3.0, mirror-pool=0: 3.7 s each, 11 steps of 32 tokens = 41 s of load)
+                // shortcut: a fixed 1/32 step gives up to 3% of the pass, replace with the real reserve's own shortfall when it reports one
+                const uint32_t u = n_tokens > 512 ? fit_ub(std::max<uint32_t>(512, n_tokens - std::max<uint32_t>(32, n_tokens / 32 / 32 * 32))) : 0;
                 if (u >= 512) {
                     cparams.n_ubatch = u;
                     sched_need_reserve = true;
