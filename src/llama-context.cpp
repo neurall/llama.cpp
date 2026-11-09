@@ -1457,7 +1457,6 @@ void llama_context::moe_mirror_offsets() {
 
 void llama_moe_cache_ledger_fork(ggml_backend_dev_t dev, const char * kind, const void * ptr, size_t bytes, const char * who);   // llama-moecache-fork.cpp (no header edit)
 extern "C" uint64_t ggml_cuda_xstage_pin_us_fork(void);   // ggml-backend.cpp (no header edit): staging-block pin time so far, never reset
-extern "C" void ggml_backend_xstage_read_aux_fork(bool on);   // ggml-backend.cpp (no header edit): the fill's reads beside the compute streams
 
 // --moe mirror-pool, after the pool lent this graph its blocks: copies that the region lost since they were last filled are copied in again from the cards
 // that hold the originals (card to card). The graph runs only after this on the receiving card's stream. Every card's copies are issued before anything waits
@@ -1468,7 +1467,6 @@ void llama_context::moe_mirror_fill() {
     const uint64_t pin0 = ggml_cuda_xstage_pin_us_fork();
     std::string txt;
     size_t total = 0;
-    ggml_backend_xstage_read_aux_fork(true);
     for (size_t i = 0; i < moe_alias_bufs.size(); ++i) {
         const auto & ab = moe_alias_bufs[i];
         // a pass that does not split has its graph at the start of the pool, where the copies are: filling them now would overwrite that graph's tensors
@@ -1511,7 +1509,6 @@ void llama_context::moe_mirror_fill() {
         txt += format("%s%.1f MiB on %s", txt.empty() ? "" : ", ", bytes / 1048576.0, ggml_backend_dev_name(ab.dev));
         total += bytes;
     }
-    ggml_backend_xstage_read_aux_fork(false);
     if (total == 0) {
         return;
     }

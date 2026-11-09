@@ -1027,15 +1027,6 @@ extern "C" {
 void     ggml_backend_xstage_pin_add_fork(uint64_t us) { g_xstage_pin_us.fetch_add(us, std::memory_order_relaxed); }
 uint64_t ggml_cuda_xstage_pin_us_fork(void) { return g_xstage_pin_us.load(std::memory_order_relaxed); }
 
-// fork: while set, a staged card-to-card copy reads on a stream of the source card's own, beside its compute stream (ggml_cuda_xstage_copy). Only moe_mirror_fill sets it. Same home as above.
-static std::atomic<bool> g_xstage_read_aux{false};
-extern "C" {
-    GGML_API void ggml_backend_xstage_read_aux_fork(bool on);
-    GGML_API bool ggml_backend_xstage_read_aux_on_fork(void);
-}
-void ggml_backend_xstage_read_aux_fork(bool on) { g_xstage_read_aux.store(on, std::memory_order_relaxed); }
-bool ggml_backend_xstage_read_aux_on_fork(void) { return g_xstage_read_aux.load(std::memory_order_relaxed); }
-
 static ggml_backend_split_cb_t g_split_cb = NULL;
 static void *                  g_split_ud = NULL;
 

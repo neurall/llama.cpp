@@ -4630,7 +4630,6 @@ static bool ggml_cuda_xstage_on() {
 }
 
 extern "C" GGML_API void ggml_backend_xstage_pin_add_fork(uint64_t us);   // ggml-backend.cpp (no header edit): pin time, read by moe_mirror_fill
-extern "C" GGML_API bool ggml_backend_xstage_read_aux_on_fork(void);      // ggml-backend.cpp (no header edit): the copy fill's reads run beside the compute stream
 
 // false: no pinned memory for the block (the caller falls back to the peer copy)
 static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_backend_cuda_context * ctx_dst, const void * src_data, void * dst_data, size_t n) {
@@ -4725,14 +4724,11 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
         }
     }
     ggml_cuda_set_device(ctx_src->device);
-    // the copy fill (weights, no producer to stay behind): its reads on a stream of their own, so a card reads its weights out while it writes the other card's in, both directions of
-    // its link at once (on the one compute stream they ran in turn: GLM 3.0 x16 + x4, 8.5 GB in 1.38 s, the rate of one direction of the x4 link)
-    cudaStream_t rs = ggml_backend_xstage_read_aux_on_fork() ? ctx_src->stream(ctx_src->device, GGML_CUDA_MAX_STREAMS - 1) : ctx_src->stream();
     if (e.used) {
-        CUDA_CHECK(cudaStreamWaitEvent(rs, e.h2d_done, 0));   // the previous user of this block has written it out
+        CUDA_CHECK(cudaStreamWaitEvent(ctx_src->stream(), e.h2d_done, 0));   // the previous user of this block has written it out
     }
-    CUDA_CHECK(cudaMemcpyAsync(e.host, src_data, n, cudaMemcpyDeviceToHost, rs));
-    CUDA_CHECK(cudaEventRecord(e.d2h_done, rs));
+    CUDA_CHECK(cudaMemcpyAsync(e.host, src_data, n, cudaMemcpyDeviceToHost, ctx_src->stream()));
+    CUDA_CHECK(cudaEventRecord(e.d2h_done, ctx_src->stream()));
     ggml_cuda_set_device(ctx_dst->device);
     CUDA_CHECK(cudaStreamWaitEvent(ctx_dst->stream(), e.d2h_done, 0));
     if (e.dev != nullptr) {
