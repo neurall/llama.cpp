@@ -7265,6 +7265,10 @@ static void * rp_alloc(size_t bytes, void * ud) {
     if (mc->rp_pin) {   // read first, pinned after (rp_pin_raw): the O_DIRECT read faults the pages in at the drive's speed, so no populate pass (90 GiB: 16.8 s against 27.3 s pinned first)
         void * m = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (m == MAP_FAILED) { return nullptr; }
+#ifdef MLOCK_ONFAULT
+        // locked as the fill's reads fault the pages in: none swapped out before the pin, and off the LRU list after it (pin-mlock)
+        if (const char * ml = moe_opt("pin-mlock"); !(ml && ml[0] == '0')) { (void) mlock2(m, bytes, MLOCK_ONFAULT); }
+#endif
         mc->rp_raw.push_back({ (char *) m, bytes });
         mc->rp_raw_bytes += bytes;
         return m;
@@ -8745,7 +8749,13 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         if (!t->buffer || ggml_backend_buffer_get_type(t->buffer) != pinned_buft || !seen.insert(t->buffer).second) { continue; }
                         const size_t n = ggml_backend_buffer_get_size(t->buffer);
                         const uintptr_t b0 = (uintptr_t) ggml_backend_buffer_get_base(t->buffer) & ~(uintptr_t) 4095;
+                        // on fault: a buffer the loader's deferred pin left locked that way (ggml_backend_cuda_pin_defer) has the same flags, so the kernel returns at
+                        // once (3.8 s for GLM 3.0's 100.5 GiB with a plain mlock, which walks every page again); the resident pages of any other buffer are locked as before
+#ifdef MLOCK_ONFAULT
+                        if (mlock2((void *) b0, n, MLOCK_ONFAULT) == 0) { locked += n; } else { failed += n; }
+#else
                         if (mlock((void *) b0, n) == 0) { locked += n; } else { failed += n; }
+#endif
                     }
                 }
                 LLAMA_LOG_WARN("moe-cache: pin-mlock: %.1f GiB of pinned weights locked in %.1f ms, %.1f GiB refused (RLIMIT_MEMLOCK)\n", locked / 1073741824.0, (ggml_time_us() - t_ml) / 1e3, failed / 1073741824.0);

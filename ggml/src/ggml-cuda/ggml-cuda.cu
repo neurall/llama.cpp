@@ -1957,7 +1957,8 @@ static std::map<void *, std::unique_ptr<ggml_cuda_reg_state>> g_cuda_reg;
 // the reads cost GLM 3.0's 100.5 GiB 49 s to ready; read first (the O_DIRECT read faults the pages in at the drive's speed) and pinned per buffer after,
 // the PC1 bench did 90 GiB in 16.8 s against 27.3 s. One registration per buffer, as before: a copy never straddles two.
 static std::atomic<bool> g_cuda_pin_defer{false};
-static std::vector<std::pair<char *, size_t>> g_cuda_deferred;   // under g_cuda_reg_mtx
+struct ggml_cuda_deferred_buf { char * p; size_t n; bool onfault; };   // onfault: its pages are locked as they fault in (mlock2 MLOCK_ONFAULT)
+static std::vector<ggml_cuda_deferred_buf> g_cuda_deferred;   // under g_cuda_reg_mtx
 
 static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t buffer) {
     std::unique_ptr<ggml_cuda_reg_state> st;
@@ -2257,7 +2258,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         st->base = ptr; st->size = size; st->chunk = size; st->map_len = size_r;   // done = 0: nothing registered, the free path only unmaps
         std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
         g_cuda_reg[ptr] = std::move(st);
-        g_cuda_deferred.push_back({ ptr, size });
+        g_cuda_deferred.push_back({ ptr, size, locked });
         fprintf(stderr, "%s: %.1f GiB handed out unpinned%s, pinned in place after the loader's reads\n", __func__, size / 1073741824.0, locked ? " (pages locked as they fault in)" : "");
         return ptr;
     }
@@ -2327,7 +2328,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
 static void ggml_backend_cuda_pin_defer(int on) {
     if (on) { g_cuda_pin_defer = true; return; }
     g_cuda_pin_defer = false;
-    std::vector<std::pair<char *, size_t>> todo;
+    std::vector<ggml_cuda_deferred_buf> todo;
     {
         std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
         todo.swap(g_cuda_deferred);
@@ -2337,7 +2338,7 @@ static void ggml_backend_cuda_pin_defer(int on) {
     std::atomic<size_t> next{0}, pinned{0}, refused{0};
     auto work = [&] {
         for (size_t i; (i = next++) < todo.size(); ) {
-            char * p = todo[i].first;
+            char * p = todo[i].p;
             auto st = std::make_unique<ggml_cuda_reg_state>();
             {
                 std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
@@ -2345,8 +2346,9 @@ static void ggml_backend_cuda_pin_defer(int on) {
                 if (it == g_cuda_reg.end()) { continue; }   // freed meanwhile
                 st->map_len = it->second->map_len;
             }
-            // prelock: mlock makes the fault-time lock whole (a page no read touched, between tensors, comes in now) and the register unlocks after it
-            if (ggml_cuda_register_chunked(p, todo[i].second, st, ggml_time_us(), [] {}, 0, true)) { pinned += todo[i].second; } else { refused++; }
+            // locked on fault: no lock pass before the register and none taken off after it, the pages stay on the unevictable list (what --moe pin-mlock wants,
+            // which then finds the range locked already and returns at once: 3.8 s for GLM 3.0's 100.5 GiB otherwise). Not locked (RLIMIT_MEMLOCK): the old prelock.
+            if (ggml_cuda_register_chunked(p, todo[i].n, st, ggml_time_us(), [] {}, 0, !todo[i].onfault)) { pinned += todo[i].n; } else { refused++; }
         }
     };
     std::vector<std::thread> th;
