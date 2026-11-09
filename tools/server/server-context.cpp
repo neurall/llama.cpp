@@ -853,9 +853,22 @@ struct server_slot {
         prompt.tokens.insert(spec_draft);
     }
 
+    // fork: this slot's request timing (the fields print_timing reads) into the live numbers of GET /status
+    void publish_live() const {
+        auto & L = g_live_status;
+        L.t_start_us       = stats.t_start;
+        L.t_prompt_last_us = stats.t_prompt_last;
+        L.t_gen_last_us    = stats.t_gen_last;
+        L.n_prompt         = (int64_t) stats.n_prompt_processed;
+        L.n_gen            = (int64_t) stats.n_gen;
+        L.n_prompt_total   = task ? (int64_t) task->n_tokens() : 0;
+    }
+
     void release() {
         if (is_processing()) {
             GGML_ASSERT(task);
+
+            publish_live();   // fork: the last token is counted after the loop's last publish, and reset() below clears the stats (/status read 31 of 32 tokens)
 
             SLT_INF(*this, "stop processing: n_tokens = %d, truncated = %d\n", prompt.n_tokens(), truncated);
 
@@ -1434,6 +1447,11 @@ private:
             }
             t_last = t_now;
         }
+        {
+            std::lock_guard<std::mutex> lk(g_live_status.m);   // fork: GET /status shows the stage and its progress while loading
+            g_live_status.stage = d->stage;
+        }
+        g_live_status.load_progress = progress;
         if (d->ctx->callback_state) {
             d->ctx->callback_state(SERVER_STATE_LOADING, {
                 {"stages", d->stages},
@@ -1901,6 +1919,7 @@ private:
         });
         queue_tasks.on_update_slots([this]() {
             update_slots();
+            publish_status();
         });
         queue_tasks.on_sleeping_state([this](bool sleeping) {
             handle_sleeping_state(sleeping);
@@ -3826,6 +3845,24 @@ private:
         return false;
     }
 
+    // fork: the live state behind GET /status, after every step of the loop and before each decode: the busy slot's phase and counters
+    // (a slot in its prompt first); with no busy slot the phase is idle and the last request's counters stay readable
+    void publish_status() {
+        const server_slot * s = nullptr;
+        for (const auto & sl : slots) {
+            if (sl.state == SLOT_STATE_IDLE) { continue; }
+            if (!s || (s->state == SLOT_STATE_GENERATING && sl.state != SLOT_STATE_GENERATING)) { s = &sl; }
+        }
+        auto & L = g_live_status;
+        if (!s) {
+            if (L.phase == server_live_status::PREFILL || L.phase == server_live_status::GEN) { L.n_requests++; }
+            L.phase = server_live_status::IDLE;
+            return;
+        }
+        s->publish_live();
+        L.phase = s->state == SLOT_STATE_GENERATING ? server_live_status::GEN : server_live_status::PREFILL;
+    }
+
     void update_slots() {
 #ifdef DEBUG_TIMINGS
         static int64_t t_prev = 0;
@@ -3878,6 +3915,7 @@ private:
             // the batch is half-built and not rendered, skip now to avoid UB
             return;
         }
+        publish_status();   // the phase this batch is in, before its decode (a long prompt pass shows as prefill while it runs)
 
         // note: TTS slots bypass the shared batch entirely
         try {
@@ -6147,6 +6185,31 @@ json server_routes::get_model_info() const {
 void server_routes::init_routes() {
     // IMPORTANT: all lambda functions must start with create_response()
     // this is to ensure that the server_res_generator can handle sleeping case correctly
+
+    this->get_status = [this](const server_http_req &) {
+        // reads only g_live_status (no task queue, no server context): it answers during the load and in the middle of a long prompt pass
+        auto res = create_response(true);
+        auto & L = g_live_status;
+        static const char * names[] = { "loading", "idle", "prefill", "gen" };
+        const int ph = L.phase;
+        const int64_t now = ggml_time_us(), t0 = L.t_start_us, tp = L.t_prompt_last_us, tg = L.t_gen_last_us, np = L.n_prompt, ng = L.n_gen;
+        json j = { {"phase", names[ph]}, {"requests_done", (int64_t) L.n_requests} };
+        if (ph == server_live_status::LOADING) {
+            std::lock_guard<std::mutex> lk(L.m);
+            j["load"] = { {"stage", L.stage}, {"progress", L.load_progress.load()} };
+        } else {
+            // the prompt counts finished batches; while it runs the time runs to now, so a long pass shows as falling t/s until it lands
+            const double p_ms = t0 > 0 ? ((ph == server_live_status::PREFILL ? now : tp) - t0) / 1e3 : 0.0;
+            j["prompt"] = { {"n", np}, {"total", (int64_t) L.n_prompt_total}, {"ms", p_ms}, {"per_second", p_ms > 0 ? np * 1e3 / p_ms : 0.0}, {"ms_per_token", np > 0 ? p_ms / np : 0.0} };
+            // the first token comes with the prompt's last batch, so the rate counts n-1 steps from the end of the prompt to the last token (as the request's timings)
+            const int64_t steps = ng > 0 ? ng - 1 : 0;
+            const double g_ms = tp > 0 && tg > tp ? (tg - tp) / 1e3 : 0.0;
+            j["gen"] = { {"n", ng}, {"ms", g_ms}, {"per_second", g_ms > 0 ? steps * 1e3 / g_ms : 0.0}, {"ms_per_token", steps > 0 ? g_ms / steps : 0.0},
+                         {"since_last_token_ms", ph == server_live_status::GEN && tg > 0 ? (now - tg) / 1e3 : 0.0} };
+        }
+        res->ok(j);
+        return res;
+    };
 
     this->get_health = [this](const server_http_req &) {
         // error and loading states are handled by middleware

@@ -176,6 +176,7 @@ static void server_register_routes(server_http_context & ctx_http, server_routes
     ctx_http.get ("/moe/params",               ex_wrapper(routes.get_live_params));
     ctx_http.post("/moe/params",               ex_wrapper(routes.post_live_params));
     ctx_http.get ("/moe/stats",                ex_wrapper(routes.get_moe_stats));
+    ctx_http.get ("/status",                   ex_wrapper(routes.get_status)); // fork, public: phase (loading/idle/prefill/gen) and live speeds, answers while loading
     ctx_http.get ("/models",                   ex_wrapper(routes.get_models));
     ctx_http.get ("/v1/models",                ex_wrapper(routes.get_models));
     ctx_http.post("/completion",               ex_wrapper(routes.post_completions)); // legacy
@@ -524,6 +525,7 @@ static int server_run_router(common_params & params, int argc, char ** argv, con
     routes.post_lora_adapters          = models_routes->proxy_post;
     routes.get_slots                   = models_routes->proxy_get;
     routes.post_slots                  = models_routes->proxy_post;
+    routes.get_status                  = models_routes->proxy_get;
 
     // custom routes for router
     routes.get_props                   = models_routes->get_router_props;
