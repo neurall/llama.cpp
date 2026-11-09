@@ -43,6 +43,7 @@
 #include <vector>
 
 #include "llama-rls-fork.h"   // the learned planner's estimator (one RLS per path)
+LLAMA_API void llama_model_wait_loaded_fork(const struct llama_model * m);
 
 void llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
 
@@ -203,6 +204,7 @@ void llama_dsplit_mirror_build_fork(llama_model & model) {
             return;
         }
         ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        llama_model_wait_loaded_fork(&model);   // fork: LLAMA_ASYNC_LOAD: the copies read the weights now
         const int64_t t0 = ggml_time_us();
         for (size_t i = 0; i < src.size(); ++i) {
             ggml_backend_tensor_copy(src[i], dst[i]);

@@ -1454,7 +1454,15 @@ llama_model::llama_model(const llama_model_params & params) : params(params), pi
     pimpl->has_tensor_overrides = params.tensor_buft_overrides && params.tensor_buft_overrides[0].pattern;
 }
 
+void llama_model::wait_loaded() {
+    if (load_thr.joinable()) { load_thr.join(); ml_keep.reset(); }
+    if (!load_ok) { LLAMA_LOG_ERROR("%s: the asynchronous weight load failed\n", __func__); GGML_ABORT("asynchronous weight load failed"); }
+}
+
+LLAMA_API void llama_model_wait_loaded_fork(const struct llama_model * m) { if (m) { const_cast<llama_model *>(m)->wait_loaded(); } }
+
 llama_model::~llama_model() {
+    if (load_thr.joinable()) { load_thr.join(); }
     llama_dsplit_mirror_free_fork(*this);
 #ifndef _WIN32
     for (int fd : exps_fds) {
@@ -2447,12 +2455,24 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     // load tensor data
+    const bool async_load = getenv("LLAMA_ASYNC_LOAD") && atoi(getenv("LLAMA_ASYNC_LOAD")) != 0 && ml_keep && !ml.use_mmap && !use_mlock && !ml.check_tensors && !ml.no_alloc;
+    if (async_load) {
+        // the thread owns the loader and the buffer lists; callers that read weight bytes wait (wait_loaded)
+        auto pd = pin_defer.f; pin_defer.f = nullptr;
+        load_thr = std::thread([this, pd, cb = std::move(ctx_bufs)]() mutable {
+            for (auto & [ctx, bufs] : cb) {
+                if (!ml_keep->load_all_data(ctx, bufs, nullptr, params.progress_callback, params.progress_callback_user_data)) { load_ok = false; break; }
+            }
+            if (pd) { pd(0); }   // before anything copies from the host weights
+        });
+    } else {
     for (auto & [ctx, bufs] : ctx_bufs) {
         if (!ml.load_all_data(ctx, bufs, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
             return false;
         }
     }
     if (pin_defer.f) { pin_defer.f(0); pin_defer.f = nullptr; }   // before anything copies from the host weights
+    }
 
 #ifndef _WIN32
     {

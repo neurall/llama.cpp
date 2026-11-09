@@ -3668,6 +3668,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 }
 
 int llama_context::encode(const llama_batch_ext & batch_inp) {
+    const_cast<llama_model &>(model).wait_loaded();   // fork: LLAMA_ASYNC_LOAD
     if (batch_inp.tokens.empty()) {
         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
         return -1;
@@ -3933,6 +3934,7 @@ static int fork_cuda_last_oom(int * device, size_t * bytes, double * fit) {   //
 }
 
 int llama_context::decode(const llama_batch_ext & batch_inp) {
+    const_cast<llama_model &>(model).wait_loaded();   // fork: LLAMA_ASYNC_LOAD
     moe_decoded = true;
     // fork (--moe split-pass, default 1; 2 = equal passes, 0 = the old pass, A/B; dense split forced; user 2026-10-24): a prompt pass of the dense split was cut by the ONE-card limit, so
     // with two cards each computed about half of what its buffers hold, for every upload of the experts. Here a call is run pass by pass, each pass sized

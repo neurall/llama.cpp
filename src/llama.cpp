@@ -418,8 +418,9 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
 static std::pair<int, llama_model *> llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
         const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
     try {
-        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
+        auto ml_sp = std::make_shared<llama_model_loader>(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
             params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides);
+        llama_model_loader & ml = *ml_sp;   // fork: shared so that LLAMA_ASYNC_LOAD's read thread can keep it alive past this function
 
         ml.lazy.mode = params.lazy_mode;
 
@@ -467,9 +468,11 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             return {0, model_ptr.release()};
         }
 
+        model->ml_keep = ml_sp;
         if (!model->load_tensors(ml)) {
             return {-2, nullptr};
         }
+        if (!model->load_thr.joinable()) { model->ml_keep.reset(); }
 
         return {0, model_ptr.release()};
     } catch (const std::exception & err) {

@@ -9,6 +9,7 @@
 
 #include <map>
 #include <memory>
+#include <thread>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -934,6 +935,13 @@ struct llama_model {
     // (0 for dense layers); the expert cache preloads the most-used experts when no local profile exists
     std::vector<uint32_t> moe_expert_usage;
     std::vector<int> exps_fds;
+
+    // fork: LLAMA_ASYNC_LOAD=1 (research, off): the weights are read by a thread while the caller goes on (context and graph reserve need shapes, not bytes);
+    // everything that reads weight bytes calls wait_loaded() first. ml_keep holds the loader the thread uses.
+    std::shared_ptr<llama_model_loader> ml_keep;
+    std::thread load_thr;
+    bool load_ok = true;
+    void wait_loaded();
 
     //Dense linear projections for SentenceTransformers models like embeddinggemma
     // For Sentence Transformers models structure see
