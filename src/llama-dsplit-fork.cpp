@@ -965,6 +965,8 @@ static void dsplit_bucket_save(int b) {
 
 double   llama_moe_cache_compute_att_us_fork();   // llama-moecache-fork.cpp: the attention part of the compute per token at the planned cells (declared here, no header edit)
 uint64_t llama_moe_cache_pp_cells_get_fork();     // the cells the planned call ends at
+static std::atomic<int64_t> g_request_cells_fork { 0 };   // the prompt end of the server's current request (0: not a server request)
+LLAMA_API void llama_dsplit_request_cells_fork(int64_t n) { g_request_cells_fork.store(n); }   // the server, at a request's first prompt call (declared there: no header edit)
 // the planner's numbers for the live balance (llama-splitplan-fork.h, dsb_card), set with every plan (under g_plan_mu): the bytes per token that cross between
 // a range's card and the expert card, there and back, over all layers with experts; and per attention layer the card that holds its KV cache and the bytes
 // of it that a range on another card reads (each pass)
@@ -2746,8 +2748,10 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     }
     const double fill_est = g_mirror_fill_us.load();   // the planner's fill estimate (us); 0: the copies are in place
     if (g_rls_fill.k == 0) { const double one = 1.0; rls_init(g_rls_fill, 1, &one, nullptr); }   // fill = 1 x the estimate, +- itself
-    const int64_t end = std::max<int64_t>((int64_t) llama_moe_cache_pp_cells_get_fork(), pos0 + n_tokens);
-    // planner-simple: two arms for the passes left in this call, one card (the moe-cache's pick, or g_rls_one) and the split plus the fill owed, by their
+    // the horizon is the rest of the request, not of this call: the server cuts a prompt into calls (two halves, a last pass), and a fill stays valid over all of them, so a call of one
+    // pass charged with the whole fill never split (GLM 3.0 12.4k, two 6206-token calls: one card on 5 of 6 passes, 726-763 t/s against 821-844 split)
+    const int64_t end = std::max<int64_t>({ (int64_t) llama_moe_cache_pp_cells_get_fork(), pos0 + n_tokens, g_request_cells_fork.load() });
+    // planner-simple: two arms for the passes left, one card (the moe-cache's pick, or g_rls_one) and the split plus the fill owed, by their
     // posterior means; a tie within the spread goes to the better known arm, a trial of the other only where it pays over the calls of this size so far
     // (rls_voi_pick). The split's prior before it ever ran on this build is the one-card mean x the measured split/one ratio (RLS_SPLIT_ONE_RATIO).
     double m1 = 0.0, v1s = 0.0, m2 = 0.0, v2s = 0.0;

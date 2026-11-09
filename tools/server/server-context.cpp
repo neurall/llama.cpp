@@ -47,6 +47,8 @@
 #include <windows.h>
 #endif
 
+LLAMA_API void llama_dsplit_request_cells_fork(int64_t n);   // llama-dsplit-fork.cpp (no header edit)
+
 constexpr int HTTP_POLLING_SECONDS = 1;
 
 // fork: the marker strings chat templates write around each message's content (role headers and footers, the generation prompt), longest first.
@@ -4728,6 +4730,7 @@ private:
                         }
 
                         slot.stats.n_prompt_cached    = n_past;
+                        llama_dsplit_request_cells_fork(slot.task->n_tokens());   // fork: the split planner's horizon
                         slot.stats.n_prompt_processed = 0;
 
                         metrics.add_prompt_cached(n_past);
