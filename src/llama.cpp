@@ -3,6 +3,7 @@
 #include "llama-impl.h"
 #include "llama-version.h"
 #include "llama-gpu-probe-fork.h"
+#include "llama-devpick-fork.h"
 
 #include "llama-chat.h"
 #include "llama-context.h"
@@ -265,15 +266,13 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                         // ref: https://github.com/ggml-org/llama.cpp/pull/23897
                         // ggml_backend_dev_backend_reg - allow devices of the same backend regardless if integrated
                         // ref: https://github.com/ggml-org/llama.cpp/pull/23897#issuecomment-5264222997
-                        // fork: an integrated AMD GPU seen by HIP and by Vulkan runs on Vulkan (Radeon 780M, Qwen3.6 35B: decode 9% faster, no kernel-shape
-                        // tuning at the first run, same answers every run); -dev ROCm0 still picks HIP
-                        if (!igpus.empty() && ggml_backend_dev_backend_reg(dev) != ggml_backend_dev_backend_reg(igpus.back().dev) &&
-                            ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)) == std::string("Vulkan")) {
+                        // fork: an integrated GPU seen by two backends (same PCI id) runs on the one that times faster here (llama-devpick-fork.cpp); -dev picks one
+                        if (!igpus.empty() && ggml_backend_dev_backend_reg(dev) != ggml_backend_dev_backend_reg(igpus.back().dev)) {
                             ggml_backend_dev_props p_new, p_old;
                             ggml_backend_dev_get_props(dev, &p_new);
                             ggml_backend_dev_get_props(igpus.back().dev, &p_old);
                             if (p_new.device_id && p_old.device_id && strcmp(p_new.device_id, p_old.device_id) == 0) {
-                                igpus.back() = {false, dev};
+                                igpus.back() = {false, llama_device_pick(igpus.back().dev, dev)};
                                 break;
                             }
                         }
