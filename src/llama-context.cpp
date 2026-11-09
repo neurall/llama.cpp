@@ -302,7 +302,7 @@ llama_context::llama_context(
     // TODO warning when creating llama_context with awkward ctx size that is not a power of 2,
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
-    llama_dsplit_bench_fork(model);   // fork: once per process, while the VRAM is still free (the KV cache and the expert pool come below)
+    if (!model.no_alloc()) { llama_dsplit_bench_fork(model); }   // fork: once per process, while the VRAM is still free (the KV cache and the expert pool come below); started under the weight reads (llama-model.cpp), a no_alloc probe context needs none of it
 
     t_start_us = model.t_start_us;
     t_load_us  = model.t_load_us;

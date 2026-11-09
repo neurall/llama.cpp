@@ -1760,6 +1760,8 @@ bool common_autotune_on(const common_params & params) {
 // ONE slope: two no_alloc contexts at 8192 and 32768 cells (micro-batch 2048, the size a prompt pass takes) give per card the bytes per cell; the cache VRAM left at 8192 cells
 // may lose AUTO_CTX_SHARE of itself to a longer context. c = 8192 + share * cache0 / slope, the smallest over the cards, rounded down to 256, between 8192 and the model's maximum.
 // Returns 0 when the probe fails (the caller keeps the fork's old default).
+void common_fit_last_dry_run_times(double & t_model, double & t_ctx);   // common/fit.cpp: the split of the last dry run
+
 static uint32_t common_auto_ctx(common_params & params) {
     const double   AUTO_CTX_SHARE = 0.30;
     const uint32_t C1 = 8192, C2 = 32768;
@@ -1775,6 +1777,9 @@ static uint32_t common_auto_ctx(common_params & params) {
         uint32_t ngl = 0, nskip = 0, nctx = 0, nexp = 0;
         try {
             const auto dmd = common_get_device_memory_data(params.model.path.c_str(), &mp, &cp, devs, ngl, nskip, nctx, nexp, GGML_LOG_LEVEL_ERROR);
+            double t_model = 0, t_ctx = 0;
+            common_fit_last_dry_run_times(t_model, t_ctx);
+            LOG_INF("%s: dry run at %u cells: model %.2f s, context %.2f s\n", __func__, cp.n_ctx, t_model, t_ctx);
             trained = nctx;
             for (size_t d = 0; d < devs.size() && d < dmd.size(); ++d) {   // the last entry of dmd is the host
                 const int64_t target = d < params.fit_params_target.size() ? (int64_t) params.fit_params_target[d] : 0;
@@ -2568,8 +2573,72 @@ void common_fit_apply(common_params & params, llama_model_params & mparams, llam
     if (kt_fit && atoi(kt_fit) != 0 && !(kg_fit && atoi(kg_fit) != 0)) { cparams.n_ctx = n_ctx_before_fit; }
 }
 
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/stat.h>
+#endif
+
+// --refresh-ssd (user 2026-11-09: "on server start refresh model files for max perf of that server run"): every file of the model is rewritten in place with its own bytes
+// before anything reads it. Data written long ago reads slower on many SSDs (charge drift, read retries): PC1's NVMe read GLM 3.0 (written two months before, 706 extents, so not
+// fragmentation) at 5.0-5.4 GB/s and a fresh file at 6.9-7.3 GB/s. The same bytes go back to the same offsets, so the content never changes and a run cut short leaves every
+// block old or new, both the same data; the mtime is put back. O_DIRECT both ways (no page cache copy of 100+ GB); the bytes past the last 4 KiB boundary stay as they are.
+static void common_refresh_ssd(const common_params & params) {
+    const char * on = llama_moe_get_opt("refresh-ssd");
+    if (!on || atoi(on) == 0 || params.model.path.empty()) { return; }
+#if defined(__linux__)
+    std::vector<std::string> files;
+    const std::string & p0 = params.model.path;
+    int no = 0, cnt = 0;
+    char prefix[PATH_MAX];
+    if (p0.size() > 20 && sscanf(p0.c_str() + p0.size() - 20, "-%5d-of-%5d.gguf", &no, &cnt) == 2 && cnt > 1 && no >= 1 &&
+        llama_split_prefix(prefix, sizeof prefix, p0.c_str(), no - 1, cnt) > 0) {   // a split model: every part
+        for (int i = 0; i < cnt; ++i) {
+            char sp[PATH_MAX];
+            if (llama_split_path(sp, sizeof sp, prefix, i, cnt) > 0) { files.push_back(sp); }
+        }
+    } else {
+        files.push_back(p0);
+    }
+    const size_t CH = 64ull << 20;
+    void * buf = nullptr;
+    if (posix_memalign(&buf, 4096, CH) != 0) { LOG_WRN("%s: --refresh-ssd: no 64 MiB buffer, nothing rewritten\n", __func__); return; }
+    for (const std::string & f : files) {
+        const int fd = open(f.c_str(), O_RDWR | O_DIRECT);
+        if (fd < 0) { LOG_WRN("%s: --refresh-ssd: %s not opened for O_DIRECT writing (%s), left as it is\n", __func__, f.c_str(), strerror(errno)); continue; }
+        struct stat st {};
+        if (fstat(fd, &st) != 0) { close(fd); continue; }
+        const size_t end = (size_t) st.st_size & ~(size_t) 4095;
+        LOG_WRN("%s: --refresh-ssd: %s: rewriting %.1f GB in place\n", __func__, f.c_str(), end / 1e9);
+        const int64_t t0 = ggml_time_us();
+        int64_t t_said = t0, t_rd = 0, t_wr = 0;
+        size_t off = 0;
+        const char * err = nullptr;
+        while (off < end) {
+            const size_t n = std::min(CH, end - off);
+            const int64_t a = ggml_time_us();
+            if (pread(fd, buf, n, (off_t) off) != (ssize_t) n) { err = "read"; break; }
+            const int64_t b = ggml_time_us();
+            if (pwrite(fd, buf, n, (off_t) off) != (ssize_t) n) { err = "write"; break; }
+            const int64_t c = ggml_time_us();
+            t_rd += b - a; t_wr += c - b; off += n;
+            if (c - t_said > 10000000) { t_said = c; LOG_INF("%s: --refresh-ssd: %.1f of %.1f GB, %.0f s\n", __func__, off / 1e9, end / 1e9, (c - t0) / 1e6); }
+        }
+        fdatasync(fd);
+        const struct timespec ts[2] = { st.st_atim, st.st_mtim };
+        futimens(fd, ts);   // the same content: the same time
+        close(fd);
+        LOG_WRN("%s: --refresh-ssd: %s: %.1f of %.1f GB rewritten in %.0f s; the old data read at %.2f GB/s, written at %.2f GB/s%s%s\n", __func__, f.c_str(), off / 1e9, end / 1e9,
+                (ggml_time_us() - t0) / 1e6, t_rd ? off / (t_rd / 1e6) / 1e9 : 0.0, t_wr ? off / (t_wr / 1e6) / 1e9 : 0.0, err ? "; stopped at a failed " : "", err ? err : "");
+    }
+    free(buf);
+#else
+    LOG_WRN("%s: --refresh-ssd: Linux only so far, nothing rewritten\n", __func__);
+#endif
+}
+
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
+    common_refresh_ssd(params);
     common_moe_cache_auto(params);
     common_spec_auto(params);
     // the decode thread search starts on every hardware thread, SMT siblings included, and steps down while a step is not slower

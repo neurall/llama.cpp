@@ -55,6 +55,10 @@ private:
     ggml_log_level min_level;
 };
 
+// fork: the last dry run's split, model (metadata, vocab, tensor layout) vs context (reserve graphs), for the start-up timing lines (common_auto_ctx)
+static double g_dry_t_model = 0.0, g_dry_t_ctx = 0.0;
+void common_fit_last_dry_run_times(double & t_model, double & t_ctx) { t_model = g_dry_t_model; t_ctx = g_dry_t_ctx; }
+
 static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
         const char * path_model,
         const llama_model_params * mparams,
@@ -71,16 +75,20 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
     mparams_copy.no_alloc  = true;
     mparams_copy.load_mode = LLAMA_LOAD_MODE_NONE;
 
+    const int64_t t0 = ggml_time_us();
     llama_model * model = llama_model_load_from_file(path_model, mparams_copy);
     if (model == nullptr) {
         throw std::runtime_error("failed to load model");
     }
+    const int64_t t1 = ggml_time_us();
 
     llama_context * ctx = llama_init_from_model(model, *cparams);
     if (ctx == nullptr) {
         llama_model_free(model);
         throw std::runtime_error("failed to create llama_context from model");
     }
+    g_dry_t_model = (t1 - t0) / 1e6;
+    g_dry_t_ctx   = (ggml_time_us() - t1) / 1e6;
 
     const size_t nd = llama_model_n_devices(model);
     std::vector<llama_device_memory_data> ret(nd + 1);

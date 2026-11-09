@@ -1666,7 +1666,14 @@ bool llama_model_loader::load_all_data(
     }
 
     // Buffer size: balance between memory usage and I/O efficiency
-    const size_t buffer_size = alignment != 1 ? LLAMA_DIRECT_IO_BUFFER_SIZE + 2 * alignment : 1 * 1024 * 1024;
+    // fork: with the phase layout the GPU weights are read like the host ones, O_DIRECT at the drive's depth into 64 MiB staging buffers (GLM 3.0: 9 GB of GPU weights
+    // took ~4 s through the page cache in 1 MiB reads, one at a time, ~2.5 GB/s, and left 9 GB of page cache that kswapd reclaimed after the load)
+#if defined(__linux__)
+    const bool stage_direct = phase_layout && !use_direct_io;
+#else
+    const bool stage_direct = false;
+#endif
+    const size_t buffer_size = alignment != 1 || stage_direct ? LLAMA_DIRECT_IO_BUFFER_SIZE + 2 * std::max<size_t>(alignment, 4096) : 1 * 1024 * 1024;
 
     std::vector<ggml_backend_buffer_t> host_buffers;
     std::vector<ggml_backend_event_t> events;
@@ -1775,7 +1782,33 @@ bool llama_model_loader::load_all_data(
     // Weights that land in host memory (with a GPU: the pinned buffer) are read by a pool of threads in 64 MB chunks with pread: one thread reading tensor after tensor
     // reached ~1.5 GB/s of a 3+ GB/s NVMe. The pages just read are given back to the page cache right away (as the single-threaded path does), so the file copy never
     // competes with the weights for RAM. LLAMA_LOAD_THREADS=1 (or direct IO, mmap, tensor validation) keeps the sequential path.
-    struct par_read { int fd; size_t off; void * dst; size_t n; int dfd; size_t fsize; };   // dfd: the same file opened O_DIRECT (-1: buffered), fsize its size
+    // left: bytes of its buffer not read yet (pr_left), base: the buffer's start
+    struct par_read { int fd; size_t off; void * dst; size_t n; int dfd; size_t fsize; std::atomic<size_t> * left = nullptr; void * base = nullptr; };
+    // fork: a host buffer the GPU backend handed out unpinned (ggml_backend_cuda_pin_defer) is pinned the moment its last read lands, while the others still read (GLM 3.0:
+    // 100.5 GiB pinned in 6.3 s after the reads otherwise). Counted per buffer: the bytes of all its tensors, a superset of what is read, so a tensor never read here
+    // only leaves its buffer to the pin after the load; a buffer is never pinned while a read into it runs (a page that must leave a CMA block then cannot move).
+    void (*pin_one)(void *) = (void (*)(void *)) llama_fork_proc("ggml_backend_fork_pin_deferred_one");
+    std::map<ggml_backend_buffer_t, std::unique_ptr<std::atomic<size_t>>> pr_left;
+    if (pin_one) {
+        for (ggml_tensor * t : tensors) {
+            if (!t->buffer || !t->data || !ggml_backend_buffer_is_host(t->buffer)) { continue; }
+            auto & a = pr_left[t->buffer];
+            if (!a) { a = std::make_unique<std::atomic<size_t>>(0); }
+            *a += ggml_nbytes(t);
+        }
+    }
+    // the pins run on two threads of their own, fed as the buffers fill: a read thread that pinned the buffer it finished stopped reading for the ~0.9 s of the pin (GLM 3.0:
+    // the reads took 32.5-34.0 s instead of 28.8-30.0); one pin thread (1.1 buffers/s against 1.3 read) left 4 of 28 to the end (2.3-3.1 s). What they have not reached when
+    // the reads end is left to the pin after the load (4 threads, ggml_backend_cuda_pin_defer).
+    std::mutex               pin_mtx;
+    std::condition_variable  pin_cv;
+    std::deque<void *>       pin_q;
+    bool                     pin_stop = false;
+    std::vector<std::thread> pin_th;
+    auto pin_later = [&](void * p) {
+        { std::lock_guard<std::mutex> lk(pin_mtx); pin_q.push_back(p); }
+        pin_cv.notify_one();
+    };
     // fork: with the phase layout (llama-model.cpp) a host tensor's address and file offset share the 4096 grid, so its chunks are read with O_DIRECT (kernel AIO, the drive's probed
     // shape) straight into pinned memory: one DMA from the SSD, no page cache copy and no DONTNEED. The chunk edges are 4096 multiples of the FILE offset, so the head block of a
     // chunk is only the first chunk's (it lands in the gap in front of the tensor) and the tail block only the last one's (the next tensor starts past the next 4096 boundary).
@@ -1831,7 +1864,11 @@ bool llama_model_loader::load_all_data(
             if (t.dfd >= 0 && (((uintptr_t) t.dst - t.off) & (direct_align() - 1)) == 0) {
                 const size_t a = direct_align(), beg = t.off & ~(a - 1), end = (t.off + t.n + a - 1) & ~(a - 1);
                 const size_t total = end - beg, need = std::min(total, t.fsize - beg);
-                if (async_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) { pr_direct_bytes += t.n; continue; }
+                if (async_read_range(t.dfd, (uint8_t *) t.dst - (t.off - beg), beg, total, need)) {
+                    pr_direct_bytes += t.n;
+                    if (t.left && t.left->fetch_sub(t.n) == t.n) { pin_later(t.base); }   // the buffer's last read: to the pin thread
+                    continue;
+                }
             }
             pr_buffered_bytes += t.n;
             for (const sr_piece & p : sr_pieces(t.n)) {   // blocks with gaps, then the gaps (llama-spaced-read-fork.h): no two neighbouring reads in a row
@@ -1845,6 +1882,7 @@ bool llama_model_loader::load_all_data(
                 if (pr_fail) { break; }
             }
             if (pin_budget > 0) { posix_fadvise(t.fd, (off_t) t.off, (off_t) t.n, POSIX_FADV_DONTNEED); }   // the pinned hybrid: the file copy must not compete with the pinned part; a plain --no-mmap load keeps its page cache for the next start
+            if (!pr_fail && t.left && t.left->fetch_sub(t.n) == t.n) { pin_later(t.base); }
         }
     };
     auto pr_finish = [&]() {
@@ -1855,6 +1893,10 @@ bool llama_model_loader::load_all_data(
         pr_cv.notify_all();
         for (auto & t : pr_threads) { t.join(); }
         pr_threads.clear();
+        { std::lock_guard<std::mutex> lk(pin_mtx); pin_stop = true; }   // the pins running end, the queued ones stay deferred
+        pin_cv.notify_all();
+        for (auto & t : pin_th) { t.join(); }
+        pin_th.clear();
         for (auto & kv : pr_dfd) { if (kv.second >= 0) { close(kv.second); } }
         pr_dfd.clear();
         if (pr_direct_bytes.load() || pr_buffered_bytes.load()) {
@@ -1864,6 +1906,20 @@ bool llama_model_loader::load_all_data(
     // the threads end on every way out of this function (cancelled loading, an exception)
     // a way out before the normal end (cancelled, an exception) drops what is still queued: the caller frees the buffers next, reading them all first only delays that
     struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{[&]() { { std::lock_guard<std::mutex> lk(pr_mtx); pr_q.clear(); } pr_finish(); }};
+    for (int i = 0; pin_one && !pr_left.empty() && i < 2; ++i) {   // started after the guard, which ends them on every way out
+        pin_th.emplace_back([&] {
+            std::unique_lock<std::mutex> lk(pin_mtx);
+            for (;;) {
+                pin_cv.wait(lk, [&] { return pin_stop || !pin_q.empty(); });
+                if (pin_stop) { return; }
+                void * p = pin_q.front();
+                pin_q.pop_front();
+                lk.unlock();
+                pin_one(p);
+                lk.lock();
+            }
+        });
+    }
 #endif
     auto progress_now = [&]() -> float {
 #if defined(__linux__)
@@ -1949,9 +2005,12 @@ bool llama_model_loader::load_all_data(
                         std::lock_guard<std::mutex> lk(pr_mtx);
                         const int dfd = pr_direct(file->file_id());
                         const size_t fsize = dfd >= 0 ? pr_fsize[file->file_id()] : 0;
+                        const auto lit = pr_left.find(cur->buffer);
+                        std::atomic<size_t> * left = lit == pr_left.end() ? nullptr : lit->second.get();
+                        void * base = ggml_backend_buffer_get_base(cur->buffer);
                         for (size_t o = 0; o < n_size; ) {   // chunk edges on the file's 64 MiB grid (see par_read)
                             const size_t pos = (size_t) weight->offs + o, len = std::min((pos / chunk + 1) * chunk - pos, n_size - o);
-                            pr_q.push_back({ file->file_id(), pos, (char *) cur->data + o, len, dfd, fsize });
+                            pr_q.push_back({ file->file_id(), pos, (char *) cur->data + o, len, dfd, fsize, left, base });
                             o += len;
                         }
                     }
@@ -1978,6 +2037,11 @@ bool llama_model_loader::load_all_data(
                 if (upload_backend) {
                     size_t offset = weight->offs;
                     alignment = file->read_alignment();
+#if defined(__linux__)
+                    const int    sdfd   = stage_direct ? pr_direct(file->file_id()) : -1;   // see buffer_size
+                    const size_t sfsize = sdfd >= 0 ? pr_fsize[file->file_id()] : 0;
+                    if (sdfd >= 0) { alignment = direct_align(); }
+#endif
                     size_t aligned_offset = offset & ~(alignment - 1);
                     size_t offset_from_alignment = offset - aligned_offset;
                     file->seek(aligned_offset, SEEK_SET);
@@ -1999,7 +2063,17 @@ bool llama_model_loader::load_all_data(
                         ggml_backend_event_synchronize(events[buffer_idx]);
 
                         // Read aligned chunk from file
+#if defined(__linux__)
+                        const size_t pos = aligned_offset + bytes_read;
+                        if (sdfd < 0) {
+                            file->read_raw_unsafe(reinterpret_cast<void *>(ptr_dest_aligned), read_size);
+                        } else if (!sr_read(sdfd, reinterpret_cast<char *>(ptr_dest_aligned), pos, read_size, std::min(read_size, sfsize - pos))) {
+                            file->seek(pos, SEEK_SET);   // the buffered way; the aligned tail of the file's last tensor can pass its end
+                            file->read_raw_unsafe(reinterpret_cast<void *>(ptr_dest_aligned), std::min(read_size, file->size() - pos));
+                        }
+#else
                         file->read_raw_unsafe(reinterpret_cast<void *>(ptr_dest_aligned), read_size);
+#endif
 
                         // Calculate actual data portion (excluding alignment padding)
                         uintptr_t ptr_data = ptr_dest_aligned;

@@ -104,6 +104,7 @@ static ggml_backend_dev_t device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b
     double total[2] = { 0, 0 };   // ms of a typical request: 2000 prompt tokens and 128 generated
     std::vector<std::pair<std::string, std::string>> kv = { { "name", ggml_backend_dev_description(a) } };
     for (int i = 0; i < 2; ++i) {
+        LLAMA_LOG_WARN("%s: timing %s (%s): q4_K 4096x4096, 512 columns and 1 column\n", __func__, ggml_backend_dev_name(devs[i]), ggml_backend_dev_description(devs[i]));
         const double p = time_matmul(devs[i], 512, 4), g = p < 0 ? -1 : time_matmul(devs[i], 1, 16);
         if (p < 0 || g < 0) {   // this backend fails here: the other one is used (both failing keeps a); nothing is stored
             LLAMA_LOG_WARN("%s: %s failed the timing pass\n", __func__, ggml_backend_dev_name(devs[i]));

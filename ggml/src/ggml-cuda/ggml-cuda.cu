@@ -1953,6 +1953,12 @@ struct ggml_cuda_reg_state {
 };
 static std::mutex g_cuda_reg_mtx;
 static std::map<void *, std::unique_ptr<ggml_cuda_reg_state>> g_cuda_reg;
+// fork: the loader's host weights pinned after its reads (llama-model.cpp, load_tensors; ggml_backend_cuda_pin_defer). Populating a buffer and pinning it before
+// the reads cost GLM 3.0's 100.5 GiB 49 s to ready; read first (the O_DIRECT read faults the pages in at the drive's speed) and pinned per buffer after,
+// the PC1 bench did 90 GiB in 16.8 s against 27.3 s. One registration per buffer, as before: a copy never straddles two.
+static std::atomic<bool> g_cuda_pin_defer{false};
+struct ggml_cuda_deferred_buf { char * p; size_t n; bool onfault; };   // onfault: its pages are locked as they fault in (mlock2 MLOCK_ONFAULT)
+static std::vector<ggml_cuda_deferred_buf> g_cuda_deferred;   // under g_cuda_reg_mtx
 
 static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t buffer) {
     std::unique_ptr<ggml_cuda_reg_state> st;
@@ -2241,6 +2247,21 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
     if (ptr > raw) { munmap(raw, (size_t) (ptr - raw)); }
     if (raw + size_r + gib > ptr + size_r) { munmap(ptr + size_r, (size_t) (raw + size_r + gib - (ptr + size_r))); }
     const size_t two_mb = 2u << 20;
+    // the loader's weights (ggml_backend_cuda_pin_defer): handed out unpopulated and unpinned, pinned in place after the reads. Reserved huge pages populate
+    // without faults (15 GiB/s), so a buffer they can cover keeps the path below.
+    if (g_cuda_pin_defer.load() && ggml_cuda_free_reserved_huge_bytes((size_t) 1 << 30) == 0 && ggml_cuda_free_reserved_huge_bytes(two_mb) == 0) {
+        bool locked = false;
+#ifdef MLOCK_ONFAULT
+        locked = mlock2(ptr, size, MLOCK_ONFAULT) == 0;   // each page locked as a read faults it in: nothing can be swapped out before the pin (see ggml_cuda_populate)
+#endif
+        auto st = std::make_unique<ggml_cuda_reg_state>();
+        st->base = ptr; st->size = size; st->chunk = size; st->map_len = size_r;   // done = 0: nothing registered, the free path only unmaps
+        std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+        g_cuda_reg[ptr] = std::move(st);
+        g_cuda_deferred.push_back({ ptr, size, locked });
+        fprintf(stderr, "%s: %.1f GiB handed out unpinned%s, pinned in place after the loader's reads\n", __func__, size / 1073741824.0, locked ? " (pages locked as they fault in)" : "");
+        return ptr;
+    }
     // 1. reserved huge pages (1 GiB first, then 2 MiB): taken whole from the pool, no compaction, no stall; the part before the first aligned
     //    address and whatever the pool cannot cover go to the paths below
     size_t head = 0, reserved = 0, rpage = 0;
@@ -2300,6 +2321,65 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         return nullptr;
     }
     return ptr;
+}
+
+// One deferred buffer pinned in place through ggml_cuda_register_chunked (its stall guard and refusal rules). A refused one stays pageable with its data
+// (copies slower, still right). Locked on fault: no lock pass before the register and none taken off after it, the pages stay on the unevictable list (what
+// --moe pin-mlock wants, which then finds the range locked already and returns at once: 3.8 s for GLM 3.0's 100.5 GiB otherwise). Not locked (RLIMIT_MEMLOCK):
+// the old prelock.
+static std::atomic<size_t> g_cuda_deferred_early_n{0}, g_cuda_deferred_early_b{0}, g_cuda_deferred_refused{0};
+static bool ggml_cuda_pin_deferred_buf(const ggml_cuda_deferred_buf & b) {
+    auto st = std::make_unique<ggml_cuda_reg_state>();
+    {
+        std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+        auto it = g_cuda_reg.find(b.p);
+        if (it == g_cuda_reg.end()) { return false; }   // freed meanwhile
+        st->map_len = it->second->map_len;
+    }
+    if (ggml_cuda_register_chunked(b.p, b.n, st, ggml_time_us(), [] {}, 0, !b.onfault)) { return true; }
+    g_cuda_deferred_refused++;
+    return false;
+}
+
+// the loader, on one read thread: the last read into this buffer has landed, it is pinned now while the other buffers still read
+static void ggml_backend_cuda_pin_deferred_one(void * p) {
+    ggml_cuda_deferred_buf b{};
+    {
+        std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+        auto it = std::find_if(g_cuda_deferred.begin(), g_cuda_deferred.end(), [p](const ggml_cuda_deferred_buf & x) { return x.p == p; });
+        if (it == g_cuda_deferred.end()) { return; }
+        b = *it;
+        g_cuda_deferred.erase(it);
+    }
+    if (ggml_cuda_pin_deferred_buf(b)) { g_cuda_deferred_early_n++; g_cuda_deferred_early_b += b.n; }
+}
+
+// on: big host buffers are handed out unpinned (ggml_cuda_host_malloc_registered); off: every such buffer not pinned yet (by ggml_backend_cuda_pin_deferred_one
+// during the reads) is pinned in place now, one registration each, on 4 threads
+static void ggml_backend_cuda_pin_defer(int on) {
+    if (on) { g_cuda_pin_defer = true; g_cuda_deferred_early_n = 0; g_cuda_deferred_early_b = 0; g_cuda_deferred_refused = 0; return; }
+    g_cuda_pin_defer = false;
+    std::vector<ggml_cuda_deferred_buf> todo;
+    {
+        std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+        todo.swap(g_cuda_deferred);
+    }
+    const int64_t t0 = ggml_time_us();
+    std::atomic<size_t> next{0}, pinned{0};
+    auto work = [&] {
+        for (size_t i; (i = next++) < todo.size(); ) {
+            if (ggml_cuda_pin_deferred_buf(todo[i])) { pinned += todo[i].n; }
+        }
+    };
+    std::vector<std::thread> th;
+    for (int t = 1; t < 4 && (size_t) t < todo.size(); ++t) { th.emplace_back(work); }
+    work();
+    for (auto & t : th) { t.join(); }
+    if (g_cuda_deferred_early_n.load() == 0 && todo.empty()) { return; }
+    char refused[64] = "";
+    if (g_cuda_deferred_refused.load()) { snprintf(refused, sizeof refused, ", %zu refused: pageable", g_cuda_deferred_refused.load()); }
+    fprintf(stderr, "ggml_cuda_host_malloc_registered: pinned in place: %zu buffers (%.1f GiB) as their reads ended, %zu (%.1f GiB) after the loader's reads in %.2f s%s\n",
+            g_cuda_deferred_early_n.load(), g_cuda_deferred_early_b.load() / 1073741824.0, todo.size(), pinned.load() / 1073741824.0, (ggml_time_us() - t0) / 1e6, refused);
 }
 #endif
 
@@ -7955,6 +8035,22 @@ bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size) {
 #endif // CUDART_VERSION >= 11010 || defined(GGML_USE_MUSA)
 }
 
+// fork: pins a range in place that already holds its data (the RAM pool's chunks: read from the SSD first, the read faulted their pages in, so this only pins them;
+// PC1 90 GiB read then pinned per GiB 16.8 s against 27.3 s populated and pinned first). Mapped and portable like the fork's other pinned host memory.
+static bool ggml_backend_cuda_pin_range_fork(void * p, size_t n) {
+    const cudaError_t err = cudaHostRegister(p, n, cudaHostRegisterPortable | cudaHostRegisterMapped);
+    if (err != cudaSuccess) {
+        (void) cudaGetLastError();
+        GGML_LOG_WARN("%s: %.1f MiB not pinned: %s\n", __func__, n / 1048576.0, cudaGetErrorString(err));
+        return false;
+    }
+    return true;
+}
+
+static void ggml_backend_cuda_unpin_range_fork(void * p) {
+    if (cudaHostUnregister(p) != cudaSuccess) { (void) cudaGetLastError(); }   // a range that was refused: nothing to undo
+}
+
 void ggml_backend_cuda_unregister_host_buffer(void * buffer) {
     if (!ggml_cuda_register_host_enabled()) {
         return;
@@ -9030,6 +9126,20 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
         return (void *)ggml_backend_cuda_unregister_host_buffer;
+    }
+#if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (strcmp(name, "ggml_backend_cuda_pin_defer") == 0) {   // fork: the loader's host weights pinned after its reads (llama-model.cpp)
+        return (void *)ggml_backend_cuda_pin_defer;
+    }
+    if (strcmp(name, "ggml_backend_cuda_pin_deferred_one") == 0) {   // fork: one of them as soon as its last read lands (llama-model-loader.cpp)
+        return (void *)ggml_backend_cuda_pin_deferred_one;
+    }
+#endif
+    if (strcmp(name, "ggml_backend_cuda_pin_range_fork") == 0) {   // fork: the RAM pool pins its chunks after the fill (llama-moecache-fork.cpp, rp_pin_raw)
+        return (void *)ggml_backend_cuda_pin_range_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_unpin_range_fork") == 0) {
+        return (void *)ggml_backend_cuda_unpin_range_fork;
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
