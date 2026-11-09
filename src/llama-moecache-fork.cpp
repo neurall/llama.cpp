@@ -13075,15 +13075,19 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // So no try of a mix not known here while uploads run; a known one keeps its mean.
         if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
         for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
-        // Router or full stream (user 2026-11-10): the compute is the same on both, so compare what differs: uploading every expert (one expert's upload x the experts) against waiting
-        // for the router's ids and uploading its picks. The stream as soon as it costs the same or less. --moe pp-switch=0: both compete on their means, as before.
+        // Router or full stream (user 2026-11-10): time per token of the path that ran here against the estimate of the other, and the stream as soon as it costs the same or less.
+        // A path measured at this size counts with its real time. The estimates: the router waits for its ids, uploads its picks and computes; the full stream uploads every expert
+        // (one expert's upload x the experts) while it computes, so it takes the longer of the two. No stored threshold. --moe pp-switch=0: both compete on their means, as before.
         static const bool pp_switch = [] { const char * e = moe_opt("pp-switch"); return !e || atoi(e) != 0; }();
         g_pp_up_call = up;
         if (pp_switch && ok[PP_RING] && ok[PP_CHAIN]) {
-            const double wait = pp_wait_us(n);
-            const bool stream = Ts <= up + wait;
+            const double wait = pp_wait_us(n), comp = g_pp_c_us * n;
+            const double ran_r = pp_took_us(PP_CHAIN, n), ran_s = pp_took_us(PP_RING, n);
+            const double t_r = ran_r > 0.0 ? ran_r : up + wait + comp, t_s = ran_s > 0.0 ? ran_s : std::max(Ts, comp);
+            const bool stream = t_s <= t_r;
             ok[stream ? PP_CHAIN : PP_RING] = false;
-            llama_moe_stats_log_fork("DEC", format("prompt call of %.0f tokens: %s: full upload %.0f ms / (picks %.0f + router wait %.0f ms) = %.2f", n, stream ? "full stream" : "router", Ts / 1e3, up / 1e3, wait / 1e3, Ts / std::max(1.0, up + wait)).c_str());
+            llama_moe_stats_log_fork("DEC", format("prompt call of %.0f tokens: %s: router %.3f ms per token (%s; picks %.0f, wait %.0f, compute %.0f ms), full stream %.3f ms per token (%s; upload %.0f ms)", n, stream ? "full stream" : "router",
+                    t_r / 1e3 / n, ran_r > 0.0 ? "measured" : "estimate", up / 1e3, wait / 1e3, comp / 1e3, t_s / 1e3 / n, ran_s > 0.0 ? "measured" : "estimate", Ts / 1e3).c_str());
         }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
