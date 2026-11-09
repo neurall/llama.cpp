@@ -10320,7 +10320,7 @@ static double early_link_gbs(ggml_backend_dev_t d) {
     return gbs;
 }
 
-#ifdef SR_HAVE_AIO
+#if defined(SR_HAVE_AIO) || defined(_WIN32)
 // The async engine's best shape on the model's drive: block size, gap and reads in flight (O_DIRECT, about 0.15 s per combination), measured once per drive and kept in [machine] as
 // rd_blk_kb.<dev>, rd_gap_kb.<dev>, rd_qd.<dev>; every reader starts from them (sr_blk, sr_gap, sr_qd in llama-spaced-read-fork.h). The smallest block within 7% of the best wins, as in
 // read_threads_probe, and ssd_max_gbs.<dev> is lifted when the engine beats the pread probe (user 2026-11-07: "find these vals if not present", "all our uploads as fast as optimal").
