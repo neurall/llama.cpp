@@ -2,6 +2,7 @@
 #include "llama-model-loader.h"
 #include "llama-backend-fork.h"
 #include "llama-moestate-fork.h"
+#include <map>
 
 #if defined(__linux__)
 #include <fcntl.h>
@@ -2018,6 +2019,28 @@ bool llama_model_loader::load_all_data(
                     size_done += n_size;
                     pr_queued_bytes += n_size;
                     continue;
+                }
+#endif
+#if defined(_WIN32)
+                // fork: Windows has no pool yet, but the universal reader (overlapped, the drive's stored depth/block) works inside one tensor: the experts are hundreds of MB each
+                if (phase_layout) {
+                    static std::map<int, std::pair<int, size_t>> wdfd;   // buffered fd -> (no-buffering fd, file size)
+                    auto it = wdfd.find(file->file_id());
+                    if (it == wdfd.end()) { const int d = open_direct_fd(file->file_id()); it = wdfd.emplace(file->file_id(), std::make_pair(d, d >= 0 ? file->size() : (size_t) 0)).first; }
+                    const int wd = it->second.first;
+                    if (wd >= 0) {
+                        const size_t beg = (size_t) weight->offs & ~(direct_align() - 1), pad = (size_t) weight->offs - beg;
+                        const size_t len = (pad + n_size + direct_align() - 1) & ~(direct_align() - 1);
+                        if (sr_read(wd, (char *) cur->data - pad, beg, len, std::min(len, it->second.second - beg))) {
+                            if (check_tensors) {
+                                validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
+                                    return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
+                                }));
+                            }
+                            size_done += n_size;
+                            continue;
+                        }
+                    }
                 }
 #endif
                 file->seek(weight->offs, SEEK_SET);
