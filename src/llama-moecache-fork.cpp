@@ -7326,18 +7326,37 @@ static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu) {
     if (want == 0) { return; }
     mc->pin_buft = ggml_backend_dev_host_buffer_type(gpu);
     const int64_t t0 = ggml_time_us();
-    size_t got = 0;
-    // one piece per full chunk, never more than the budget (left over ones are freed after the open)
-    while (got + RP_PIECE <= want && mem_available_bytes() >= RP_PIECE + ((size_t) 6 << 30)) {
-        ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, RP_PIECE);
-        if (!b) { break; }
+    // one piece per full chunk, never more than the budget (left over ones are freed after the open). The pieces are populated and pinned on several threads:
+    // one thread took 35 s for GLM 3.0's 101 GiB (0.2 s populate + 0.07 s register per GiB, before the first token); --moe pin-threads=N (default 4, 1 = the old serial loop).
+    // shortcut: a piece that fails ends the run of pieces after it too (the prefix that got a buffer stays), a refused pin falls back to pageable inside the allocator as before.
+    const char * ptv = moe_opt("pin-threads");
+    const int nthr = std::max(1, std::min(16, ptv ? atoi(ptv) : 4));
+    const size_t n_want = want / RP_PIECE;
+    std::vector<ggml_backend_buffer_t> got_b(n_want, nullptr);
+    std::atomic<size_t> next{0};
+    std::atomic<bool> stop{false};
+    auto worker = [&] {
+        for (size_t i; !stop && (i = next++) < n_want; ) {
+            if (mem_available_bytes() < RP_PIECE + ((size_t) 6 << 30)) { stop = true; break; }
+            ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, RP_PIECE);
+            if (!b) { stop = true; break; }
 #ifndef _WIN32
-        if (const char * ml = moe_opt("pin-mlock"); !(ml && ml[0] == '0')) { (void) mlock(ggml_backend_buffer_get_base(b), RP_PIECE); }
+            if (const char * ml = moe_opt("pin-mlock"); !(ml && ml[0] == '0')) { (void) mlock(ggml_backend_buffer_get_base(b), RP_PIECE); }
 #endif
-        mc->rp_pre.push_back(b);
+            got_b[i] = b;
+        }
+    };
+    std::vector<std::thread> th;
+    for (int t = 1; t < nthr; ++t) { th.emplace_back(worker); }
+    worker();
+    for (auto & t : th) { t.join(); }
+    size_t got = 0;
+    for (size_t i = 0; i < n_want; ++i) {
+        if (!got_b[i]) { for (size_t j = i + 1; j < n_want; ++j) { if (got_b[j]) { ggml_backend_buffer_free(got_b[j]); } } break; }
+        mc->rp_pre.push_back(got_b[i]);
         got += RP_PIECE;
     }
-    LLAMA_LOG_WARN("moe-cache: rampool: %.1f GiB pinned before the VRAM sizing in %.1f s (budget %.1f GiB)\n", got / 1073741824.0, (ggml_time_us() - t0) / 1e6, want / 1073741824.0);
+    LLAMA_LOG_WARN("moe-cache: rampool: %.1f GiB pinned before the VRAM sizing in %.1f s on %d threads (budget %.1f GiB)\n", got / 1073741824.0, (ggml_time_us() - t0) / 1e6, nthr, want / 1073741824.0);
 }
 static void rp_setup(moe_cache * mc, const llama_model & model) {
     const char * rv = moe_opt("rampool");
