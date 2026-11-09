@@ -2797,6 +2797,9 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         } else {
             mu2 = rls_pred(g_rls_split, phi, &v2);
         }
+        // the mirror of the split's prior: a split measured against a one card never measured, its bench figure counts neither the hand-offs nor the other card's layers
+        // (GLM 3.0 12k, first request: split 6.46 s measured, one card 4.90 +- 1.76 from the bench, picked, took 9.4 s)
+        if (!kn1 && n1 == 0 && !split_prior && mu2 / ratio > mu1) { mu1 = std::max(U, mu2 / ratio); v1 = mu1 * mu1 * RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG; }
         if (c == pos0) { u_link0 = U; }
         if (c == pos0) { mu1_0 = mu1; v1_0 = v1; mu2_0 = mu2; v2_0 = v2; path0 = pth; known1 = kn1; known2 = !split_prior && rls_known(g_rls_split, mu2, v2); }
         m1 += mu1; v1s += v1; m2 += mu2; v2s += v2;
