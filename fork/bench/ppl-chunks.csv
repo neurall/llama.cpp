@@ -2515,3 +2515,95 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-09 05:53:03,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1217
 2026-11-09 05:54:22,pre-hip-b10da77cb8 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1261
 2026-11-09 05:54:22,pre-hip-b10da77cb8 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.119
+2026-11-09 08:59:23,"pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9387
+2026-11-09 08:59:23,"pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9395
+2026-11-09 08:59:46,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9398
+2026-11-09 08:59:46,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9398
+2026-11-09 09:00:09,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9371
+2026-11-09 09:00:09,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9379
+2026-11-09 09:00:30,"pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9382
+2026-11-09 09:00:30,"pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9421
+2026-11-09 09:00:52,"pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9395
+2026-11-09 09:00:52,"pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9418
+2026-11-09 09:01:13,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9391
+2026-11-09 09:01:13,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9402
+2026-11-09 09:01:35,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9381
+2026-11-09 09:01:35,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9406
+2026-11-09 09:01:56,"pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9389
+2026-11-09 09:01:56,"pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9411
+2026-11-09 09:02:31,pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6614
+2026-11-09 09:02:31,pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5216
+2026-11-09 09:03:07,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6673
+2026-11-09 09:03:07,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5261
+2026-11-09 09:03:40,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6662
+2026-11-09 09:03:40,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5235
+2026-11-09 09:04:14,pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6691
+2026-11-09 09:04:14,pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5258
+2026-11-09 09:04:48,pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.666
+2026-11-09 09:04:48,pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5251
+2026-11-09 09:05:21,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6658
+2026-11-09 09:05:21,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5218
+2026-11-09 09:05:54,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6722
+2026-11-09 09:05:54,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5263
+2026-11-09 09:06:27,pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6719
+2026-11-09 09:06:27,pre-hip-0f5af56328 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.528
+2026-11-09 09:07:14,pre-hip-0f5af56328 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1282
+2026-11-09 09:07:14,pre-hip-0f5af56328 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1149
+2026-11-09 09:08:31,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1237
+2026-11-09 09:08:31,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1086
+2026-11-09 09:09:45,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1271
+2026-11-09 09:09:45,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1104
+2026-11-09 09:10:59,pre-hip-0f5af56328 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.126
+2026-11-09 09:10:59,pre-hip-0f5af56328 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1097
+2026-11-09 09:12:27,pre-hip-0f5af56328 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3663
+2026-11-09 09:12:27,pre-hip-0f5af56328 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4158
+2026-11-09 09:15:24,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3724
+2026-11-09 09:15:24,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4321
+2026-11-09 09:18:15,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.376
+2026-11-09 09:18:15,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4275
+2026-11-09 09:20:59,pre-hip-0f5af56328 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3768
+2026-11-09 09:20:59,pre-hip-0f5af56328 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4289
+2026-11-09 12:55:04,"release-0d0046e2e1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9387
+2026-11-09 12:55:04,"release-0d0046e2e1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9418
+2026-11-09 12:55:26,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9373
+2026-11-09 12:55:26,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9404
+2026-11-09 12:55:48,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9392
+2026-11-09 12:55:48,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9416
+2026-11-09 12:56:10,"release-0d0046e2e1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9388
+2026-11-09 12:56:10,"release-0d0046e2e1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9403
+2026-11-09 12:56:30,"release-0d0046e2e1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.942
+2026-11-09 12:56:30,"release-0d0046e2e1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9412
+2026-11-09 12:56:51,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9391
+2026-11-09 12:56:51,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9408
+2026-11-09 12:57:12,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9391
+2026-11-09 12:57:12,"mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9415
+2026-11-09 12:57:34,"release-0d0046e2e1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9379
+2026-11-09 12:57:34,"release-0d0046e2e1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.938
+2026-11-09 12:58:08,release-0d0046e2e1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6688
+2026-11-09 12:58:08,release-0d0046e2e1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5231
+2026-11-09 12:58:40,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6657
+2026-11-09 12:58:40,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5239
+2026-11-09 12:59:14,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6632
+2026-11-09 12:59:14,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5233
+2026-11-09 12:59:47,release-0d0046e2e1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6673
+2026-11-09 12:59:47,release-0d0046e2e1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.524
+2026-11-09 13:00:17,release-0d0046e2e1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6656
+2026-11-09 13:00:17,release-0d0046e2e1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5247
+2026-11-09 13:00:47,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6666
+2026-11-09 13:00:47,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5232
+2026-11-09 13:01:20,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6626
+2026-11-09 13:01:20,mmap-back-25e68892d1-b4497afe --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5234
+2026-11-09 13:01:53,release-0d0046e2e1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.663
+2026-11-09 13:01:53,release-0d0046e2e1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5232
+2026-11-09 13:02:37,release-0d0046e2e1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1283
+2026-11-09 13:02:37,release-0d0046e2e1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1141
+2026-11-09 13:03:39,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.126
+2026-11-09 13:03:39,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1098
+2026-11-09 13:04:55,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1307
+2026-11-09 13:04:55,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1103
+2026-11-09 13:06:09,release-0d0046e2e1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1283
+2026-11-09 13:06:09,release-0d0046e2e1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1091
+2026-11-09 13:09:12,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3738
+2026-11-09 13:09:12,mmap-back-25e68892d1-b4497afe --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.418
+2026-11-09 13:12:04,release-0d0046e2e1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3672
+2026-11-09 13:12:04,release-0d0046e2e1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4201

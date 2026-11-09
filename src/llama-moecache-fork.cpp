@@ -10334,15 +10334,35 @@ static void rd_shape_bench(const char * path, unsigned long long dev, const std:
     }
     const int dfd = open_direct(path);
     if (dfd < 0) { return; }
+#ifdef _WIN32
+    struct { long long st_size; } st;
+    st.st_size = _lseeki64(dfd, 0, SEEK_END);   // stat's 32-bit size fails on a model file
+    if (st.st_size < (1LL << 30)) { close(dfd); return; }
+#else
     struct stat st;
     if (fstat(dfd, &st) != 0 || st.st_size < ((off_t) 1 << 30)) { close(dfd); return; }
+#endif
+#ifdef _WIN32
+    const size_t range = (size_t) 64 << 20;   // Windows: the block size is what matters (256 KiB: 28 s cold load of 11.4 GB, 16 MiB: 12.7 s), so the blocks tried are big
+#else
+    const size_t range = (size_t) 32 << 20;
+#endif
     const double s0 = llama_moe_span_now_fork();
-    const size_t range = (size_t) 32 << 20, file_end = (size_t) st.st_size / 4096 * 4096;
+    const size_t file_end = (size_t) st.st_size / 4096 * 4096;
     void * buf = nullptr;
+#ifdef _WIN32
+    buf = _aligned_malloc(range, 4096);
+    if (!buf) { close(dfd); return; }
+#else
     if (posix_memalign(&buf, 4096, range) != 0) { close(dfd); return; }
+#endif
     struct combo { size_t blk, gap; int qd; double gbs; };
     std::vector<combo> cs;
+#ifdef _WIN32
+    for (int qd : { 8, 2 }) { for (size_t blk : { (size_t) 1 << 20, (size_t) 4 << 20, (size_t) 16 << 20 }) { cs.push_back({ blk, 0, qd, 0.0 }); } }
+#else
     for (int qd : { 32, 8 }) { for (size_t blk : { (size_t) 256 << 10, (size_t) 1 << 20 }) { for (size_t gap : { (size_t) 64 << 10, (size_t) 0 }) { cs.push_back({ blk, gap, qd, 0.0 }); } } }
+#endif
     size_t off = (size_t) st.st_size / 2 / 4096 * 4096;   // the middle of the file: read_threads_probe read the heads of its regions (O_DIRECT: the page cache is out, the drive's own cache is not)
     for (combo & c : cs) {
         const int64_t t0 = ggml_time_us(); size_t bytes = 0;
@@ -10353,7 +10373,12 @@ static void rd_shape_bench(const char * path, unsigned long long dev, const std:
         }
         c.gbs = bytes ? (double) bytes / ((double) (ggml_time_us() - t0) / 1e6) / 1e9 : 0.0;
     }
-    free(buf); close(dfd);
+#ifdef _WIN32
+    _aligned_free(buf);
+#else
+    free(buf);
+#endif
+    close(dfd);
     double best = 0.0;
     for (const combo & c : cs) { best = std::max(best, c.gbs); }
     if (best <= 0.0) { LLAMA_LOG_WARN("moe-cache: machine: SSD read shape: the async engine failed, the readers keep their defaults\n"); return; }
@@ -10438,6 +10463,11 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
 #ifdef SR_HAVE_AIO
         rd_shape_bench(model_path, (unsigned long long) st.st_dev, sec);
 #endif
+    }
+#else
+    {
+        struct _stat64 st;
+        if (_stat64(model_path, &st) == 0) { rd_shape_bench(model_path, (unsigned long long) st.st_dev, sec); }
     }
 #endif
     {   // RAM read: the pinned weights and the stream ring are read by the CPU and the DMA engines at this rate at most
