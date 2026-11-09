@@ -2219,6 +2219,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         break;
     }
 
+    // fork: big pinned host buffers are pinned after the reads, not before (ggml_backend_cuda_pin_defer): deferred from here, pinned once the data is in (below)
+    // or on any way out of this function
+    struct pin_defer_t { void (*f)(int); ~pin_defer_t() { if (f) { f(0); } } } pin_defer { ml.no_alloc ? nullptr : (void (*)(int)) llama_fork_proc("ggml_backend_fork_pin_defer") };
+    if (pin_defer.f) { pin_defer.f(1); }
+
     for (auto & [ctx_key, ctx_ptr] : ml.ctx_map) {
         ggml_backend_buffer_type_t buft = ctx_key.buft;
         ggml_context * ctx = ctx_ptr.get();
@@ -2439,6 +2444,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             return false;
         }
     }
+    if (pin_defer.f) { pin_defer.f(0); pin_defer.f = nullptr; }   // before anything copies from the host weights
 
 #ifndef _WIN32
     {
