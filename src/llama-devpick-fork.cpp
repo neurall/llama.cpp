@@ -64,8 +64,10 @@ ggml_backend_dev_t llama_device_pick(ggml_backend_dev_t a, ggml_backend_dev_t b)
     if (env && !strcmp(env, "0")) { return a; }
     ggml_backend_dev_props pa;
     ggml_backend_dev_get_props(a, &pa);
-    if (!pa.device_id) { return a; }
-    const std::string sec = std::string("gpu ") + pa.device_id;
+    ggml_backend_dev_props pb;
+    ggml_backend_dev_get_props(b, &pb);
+    const char * gid = pa.device_id ? pa.device_id : pb.device_id;   // else the description (a driver without a PCI id)
+    const std::string sec = std::string("gpu ") + (gid ? gid : ggml_backend_dev_description(a));
     const std::string bld = std::string("_b") + std::to_string(LLAMA_BUILD_NUM);
     ggml_backend_dev_t devs[2] = { a, b };
     const int64_t t_start = ggml_time_us();
