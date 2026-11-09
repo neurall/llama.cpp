@@ -13060,6 +13060,23 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // So no try of a mix not known here while uploads run; a known one keeps its mean.
         if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
         for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
+        // A full stream costs its whole upload at any pass size, so a trial at a small pass only confirms it loses (user 2026-11-10; GLM 256 tokens: router pass 3.8 s, the stream's upload
+        // alone 3.7-4.3 s). A pass takes at least its upload and its compute, both known before it runs: no trial when that floor cannot beat the best other path here, or when the
+        // stream already ran at this size and lost by more than its noise. A stream known here still competes on its mean.
+        if (ok[PP_RING] && !known[PP_RING]) {
+            double other = 0.0;
+            for (int p = 0; p < PP_PATHS; ++p) {
+                if (p == PP_RING || !ok[p]) { continue; }
+                const double t = known[p] ? g_pp_pmu[p] : pp_took_us(p, n);
+                if (t > 0.0 && (other <= 0.0 || t < other)) { other = t; }
+            }
+            const double margin = 1.0 + std::sqrt(std::max(0.0, g_pp_rls[PP_RING].s2));
+            const double floor_us = std::max(g_pp_phi[PP_RING][3], g_pp_c_us * n), ran = pp_took_us(PP_RING, n);
+            if (other > 0.0 && (ran > 0.0 ? ran > other * margin : floor_us * margin >= other)) {
+                ok[PP_RING] = false;
+                llama_moe_stats_log_fork("DEC", format("prompt call of %.0f tokens: no full stream trial: at least %.0f ms (ran: %.0f ms), best other path %.0f ms, margin x%.2f", n, floor_us / 1e3, ran / 1e3, other / 1e3, margin).c_str());
+            }
+        }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
     }
