@@ -33,6 +33,12 @@ double time_matmul_core(ggml_backend_dev_t dev, int cols, int n, double budget_m
     ggml_tensor * w = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_K, 4096, 4096);
     ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4096, cols);
     ggml_tensor * y = ggml_mul_mat(ctx, w, x);
+    if (!ggml_backend_dev_supports_op(dev, y)) {   // only what the backend lists for this device is timed
+        LLAMA_LOG_WARN("%s: %s does not list this matrix op\n", __func__, ggml_backend_dev_name(dev));
+        ggml_free(ctx);
+        ggml_backend_free(be);
+        return -1;
+    }
     ggml_cgraph * gf = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf, y);
     double best = -1;
