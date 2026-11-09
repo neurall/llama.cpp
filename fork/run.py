@@ -2654,8 +2654,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             print(f"perplexity failed (exit {r.returncode}){'' if v is None else f' with -fitt {v}'}: raising -fitt", flush=True)
         s = re.search(r"([\d.]+) seconds per pass", log)
         ppl = re.findall(r"PPL = ([\d.]+)", log)
-        row = {"s_per_pass": float(s.group(1)) if s else None, "ppl": float(ppl[-1]) if ppl else None,
-               "tps": 1024 / float(s.group(1)) if s else None}
+        row = {"s_per_pass": float(s.group(1)) if s else None, "ppl": float(ppl[-1]) if ppl else None, "tps": ppl_rate(log)}
         _ld = re.findall(r"load time =\s*([\d.]+) ms", log)
         _modes = re.findall(r"prefill decision: .*?\bmode=(\S+)", log)   # which path every pass took: the planner may turn the split off after its first measurement
         if _modes:
@@ -4760,7 +4759,7 @@ def remote_run(m, build, test, args, env=None):
         out = remote_sh(m, cmd)
         sp_ = re.search(r"([\d.]+) seconds per pass", out)
         pp_ = re.findall(r"PPL = ([\d.]+)", out)
-        row = {"s_per_pass": float(sp_.group(1)), "tps": 1024 / float(sp_.group(1)), "ppl": float(pp_[-1]) if pp_ else None, "ok": 1, "args": args} if sp_ else {"ok": 0, "note": out[-200:], "args": args}
+        row = {"s_per_pass": float(sp_.group(1)), "tps": ppl_rate(out), "ppl": float(pp_[-1]) if pp_ else None, "ok": 1, "args": args} if sp_ else {"ok": 0, "note": out[-200:], "args": args}
         row.update(cache_stats(out))
         st = remote_sh(m, ("type " if win else "cat ") + stf + (" 2>nul" if win else " 2>/dev/null"))
         if st.strip():  # the run's statslog goes to stats.ini like a local run's
@@ -5132,6 +5131,21 @@ REGRESS_CELLS = [(REGRESS_MODEL, REGRESS_ARGS, "1", None, False),
                  (fcfg.model("qn_iq4xs"), "--cpu-moe" + _T, None, 2, True)]   # IQ4_XS gainer
 if os.environ.get("REGRESS_FAST") == "1":
     REGRESS_CELLS = [c for c in REGRESS_CELLS if not c[4]]
+
+
+def ppl_rate(log):
+    """llama-perplexity t/s from the passes after the first, timed by the log's own timestamps (M.SS.mmm.uuu): the first pass also carries the one-time setup a build runs
+    inside its first decode call (the RAM pool pins and fills 100 GiB there: GLM 3.0 read 9.5 against 23.5 t/s, 2026-11-09). The first pass alone when there is one pass or no timestamps."""
+    s = re.search(r"([\d.]+) seconds per pass", log)
+    if not s:
+        return None
+    a = re.search(r"^(\d+)\.(\d\d)\.(\d{3})\.(\d{3}) \w perplexity: [\d.]+ seconds per pass", log, re.M)
+    b = re.search(r"^(\d+)\.(\d\d)\.(\d{3})\.(\d{3}) \w Final estimate", log, re.M)
+    c = re.search(r"over (\d+) chunks, n_ctx=(\d+), batch_size=\d+, n_seq=(\d+)", log)
+    sec = lambda m: int(m[1]) * 60 + int(m[2]) + int(m[3]) / 1e3 + int(m[4]) / 1e6
+    if a and b and c and int(c[1]) // int(c[3]) > 1 and sec(b) > sec(a):
+        return (int(c[1]) // int(c[3]) - 1) * int(c[2]) * int(c[3]) / (sec(b) - sec(a))
+    return 1024 / float(s[1])
 
 
 def regress_label(d):
