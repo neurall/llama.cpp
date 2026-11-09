@@ -3,6 +3,7 @@
 #include "llama-impl.h"
 #include "llama-version.h"
 #include "llama-gpu-probe-fork.h"
+#include "llama-devpick-fork.h"
 
 #include "llama-chat.h"
 #include "llama-context.h"
@@ -265,6 +266,19 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                         // ref: https://github.com/ggml-org/llama.cpp/pull/23897
                         // ggml_backend_dev_backend_reg - allow devices of the same backend regardless if integrated
                         // ref: https://github.com/ggml-org/llama.cpp/pull/23897#issuecomment-5264222997
+                        // fork: an integrated GPU seen by two backends (same PCI id) runs on the one that times faster here (llama-devpick-fork.cpp); -dev picks one
+                        if (!igpus.empty() && ggml_backend_dev_backend_reg(dev) != ggml_backend_dev_backend_reg(igpus.back().dev)) {
+                            ggml_backend_dev_props p_new, p_old;
+                            ggml_backend_dev_get_props(dev, &p_new);
+                            ggml_backend_dev_get_props(igpus.back().dev, &p_old);
+                            LLAMA_LOG_WARN("%s: integrated %s id %s, %s id %s\n", __func__, ggml_backend_dev_name(igpus.back().dev), p_old.device_id ? p_old.device_id : "none", ggml_backend_dev_name(dev), p_new.device_id ? p_new.device_id : "none");
+                            // the AMD Vulkan driver on Windows has no VK_EXT_pci_bus_info (no id): the same description then means the same integrated GPU
+                            if ((p_new.device_id && p_old.device_id) ? strcmp(p_new.device_id, p_old.device_id) == 0
+                                                                       : strcmp(ggml_backend_dev_description(dev), ggml_backend_dev_description(igpus.back().dev)) == 0) {
+                                igpus.back() = {false, llama_device_pick(igpus.back().dev, dev)};
+                                break;
+                            }
+                        }
                         if (igpus.empty() || ggml_backend_dev_backend_reg(dev) == ggml_backend_dev_backend_reg(igpus.back().dev)) {
                             igpus.push_back({false, dev});
                         }

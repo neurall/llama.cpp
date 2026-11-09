@@ -41,6 +41,7 @@ set(LLAMA_CORE_SOURCES
     llama-gpu-probe-fork.cpp
     llama-dsplit-fork.cpp
     llama-moestate-fork.cpp
+    llama-devpick-fork.cpp
     llama-quant.cpp
     llama-sampler.cpp
     llama-vocab.cpp
