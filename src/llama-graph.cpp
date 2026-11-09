@@ -5916,7 +5916,7 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
 // for the output head with ds_join(). Recurrent blocks hand their state from range to range in the builder (the state of a range is the start of the next).
 
 bool llama_dsplit_in_pass_loop_fork();   // llama-context.cpp
-LLAMA_API bool llama_dsplit_pool_mode_fork();   // llama-dsplit-fork.cpp
+void llama_dsplit_single_dev_fork(ggml_backend_dev_t dev);   // llama-dsplit-fork.cpp
 
 bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     if (llama_kv_parts_on_fork()) { return false; }   // the attention already runs on several cards, its KV heads are on them (llama_kv_cache, --moe attn-split)
@@ -5932,12 +5932,8 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     // prompt tokens/s against 1132-1211: the x16 card then computes the 8 layers the x4 card ran, and its pool is 635 MiB smaller by the copies.
     static const bool one_range = [] { const char * e = llama_moe_get_opt("one-range"); return e && atoi(e) != 0; }();
     const int cur = llama_dsplit_cur_fork();
-    // in pool mode the copies live at the start of the expert pool, exactly where a one-card pass has its graph (llama_context::moe_mirror_fill skips the fill then): one-range
-    // would read overwritten copies (GLM 3.0-bit: NaN logits, bug-log entry 0). Refused there, once said.
-    static const bool pool_mode = llama_dsplit_pool_mode_fork();
-    static bool said_one_range = false;
-    if (one_range && pool_mode && !said_one_range) { said_one_range = true; LLAMA_LOG_WARN("%s: --moe one-range=1 ignored: in pool mode a one-card pass has its graph where the dense-split copies are\n", __func__); }
-    const bool single = cur == 0 && one_range && !pool_mode;
+    const bool single = cur == 0 && one_range;
+    llama_dsplit_single_dev_fork(nullptr);   // set below when this graph is a one-range pass: it reads the copies, so it goes behind them
     if (!sched || (cur != 1 && !single) || ubatch.n_seqs != 1 || cparams.n_rs_seq != 0 || n_tokens < std::max(min_tok, min_tokens)) {
         return false;
     }
@@ -5959,6 +5955,7 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     }
     if (single) {
         ds_r.push_back({ be.back(), devs.back(), 0, n_tokens });
+        llama_dsplit_single_dev_fork(devs.back());
         return true;
     }
     // the token shares: the live balance's; --moe dense-split-share=X (tests) gives the first card X and the others the rest in equal parts

@@ -90,8 +90,6 @@ bool dsplit_pool_mode() {
     return !(e && atoi(e) == 0) && !(a && atoi(a) == 0) && !(p && atoi(p) == 0);
 }
 
-LLAMA_API bool llama_dsplit_pool_mode_fork() { return dsplit_pool_mode(); }   // llama-graph.cpp (ds_plan): --moe one-range needs copies that a one-card graph does not overwrite
-
 // the model's precision rules are keyed by the weight tensor: a copy takes the rule of its original
 void dsplit_copy_prec(llama_model & model, const ggml_tensor * src, ggml_tensor * dst) {
     // (llama_prec_policy: "this weight cannot take 4-bit activations"). Without it the copies of such weights ran with 4-bit activations on the other card
@@ -3514,11 +3512,16 @@ llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer
     return m;
 }
 
+// --moe one-range=1: the card of the graph being built when it is one token range (ds_plan): one card, but it reads its copies of the other cards' layers, so unlike
+// other one-card graphs it is placed behind them and they are filled (placed at the pool start it overwrote them: NaN logits on GLM 3.0-bit, bug-log entry 0)
+static ggml_backend_dev_t g_single_dev = nullptr;
+void llama_dsplit_single_dev_fork(ggml_backend_dev_t dev) { g_single_dev = dev; }
+
 // (after g_cur) the copies' bytes the graph being built keeps in front of it (see llama-dsplit-fork.h)
 size_t llama_dsplit_mirror_offset_fork(const llama_model & model, ggml_backend_dev_t dev, bool reserve) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
-    if (it == g_sets.end() || (!reserve && g_cur != 1)) {
+    if (it == g_sets.end() || (!reserve && g_cur != 1 && dev != g_single_dev)) {
         return 0;
     }
     auto ct = it->second.copies.find(dev);
