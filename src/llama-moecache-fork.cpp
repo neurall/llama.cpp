@@ -1033,6 +1033,7 @@ std::atomic<bool> g_rel_dead{false};   // policy r without router probabilities:
 // expert of any layer, g_topic_tmax) instead of the one map of every request ever served
 std::atomic<bool>     g_topic_on{false};
 std::atomic<bool>     g_topic_thinking{false};   // the request being served is thinking (between <think> and </think>): its answer's uses count in the thinking map
+static std::atomic<uint64_t> g_ppc_picked{0}, g_ppc_all{0}, g_ppc_miss{0};   // prompt chain, this call: experts its routers picked, experts of those layers, picks not in a block
 static std::atomic<uint64_t> g_pjit_miss{0}, g_pjit_up{0}, g_pjit_layers{0};   // prompt calls: missed experts seen by the JIT, uploaded, layer-steps
 static std::atomic<uint64_t> g_pjit_left_l[256], g_pjit_pool_l[256];   // per layer: misses left to the CPU in prompt calls; 1 if the layer uses the pool branch
 static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (llama_moe_cache_prompt_call_fork, set by llama_context::decode)
@@ -10008,6 +10009,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
         mc->n_jit_miss += miss.size();
         g_pjit_layers++;
         g_pjit_miss += miss.size();
+        g_ppc_picked += n_visited; g_ppc_all += used.size(); g_ppc_miss += miss.size();
         if (!miss.empty()) {
             struct cand { double rank; int32_t slot, owner; };
             std::vector<cand> c;
@@ -12745,7 +12747,9 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             const double best = b >= 0 ? pp_took_us(b, n1) : 0.0;
             g_pp_total_us += (double) us;
             if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
-            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s, %.2f ms per token)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us, (double) us / 1e3 / std::max(1u, n_tokens),
+            const uint64_t pk = g_ppc_picked.exchange(0), pa = g_ppc_all.exchange(0), pm = g_ppc_miss.exchange(0);
+            const std::string picks = pa ? format(", routers picked %.1f%% of the experts, %.1f%% of those uploaded", 100.0 * (double) pk / (double) pa, pk ? 100.0 * (double) pm / (double) pk : 0.0) : std::string();
+            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s, %.2f ms per token%s)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us, (double) us / 1e3 / std::max(1u, n_tokens), picks.c_str(),
                     (best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "") : std::string("; first of this size")).append(pr).c_str(),
                     llama_moe_stats_io_fork(0).c_str());
             llama_moe_stats_log_fork("DON", done.c_str());
