@@ -8327,6 +8327,22 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     if (sz_free > sz_margin + want) { extra = (int32_t) ((sz_free - sz_margin - want) / pl.cls[order[0]].B); }
                     nblk[order[0]] += extra;
                 }
+                // --moe pool-floor=1: every class can hold one whole layer's experts, paid by the class with the most layers. The prompt chain refuses a pass a class cannot hold
+                // (GLM 3.0, one card: "layer 3 has 111 blocks, wants 288"), so without this it never runs on such a model above a few dozen tokens.
+                // shortcut: off by default and tests only, it costs the big class decode hits; make it the default if the chain against stream rows pay for it
+                static const bool pool_floor = [] { const char * e = moe_opt("pool-floor"); return e && atoi(e) != 0; }();
+                if (pool_floor && !order.empty()) {
+                    const size_t  big = order[0];
+                    const int32_t big_E = (int32_t) ll[pl.cls[big].members[0]]->ffn_up_exps->ne[2];
+                    for (size_t c : order) {
+                        const int32_t E = (int32_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2];
+                        if (c == big || nblk[c] >= E) { continue; }
+                        const int32_t take = (int32_t) (((size_t) (E - nblk[c]) * pl.cls[c].B + pl.cls[big].B - 1) / pl.cls[big].B);
+                        if (nblk[big] - take < big_E) { LLAMA_LOG_WARN("moe-cache: pool-floor: no room for a %.2f MiB class of %d blocks\n", pl.cls[c].B / 1048576.0, E); continue; }
+                        nblk[big] -= take;
+                        nblk[c]    = E;
+                    }
+                }
                 for (size_t c : order) {
                     pl.cls[c].base = total;
                     total         += (size_t) nblk[c] * pl.cls[c].B;
