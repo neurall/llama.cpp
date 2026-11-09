@@ -147,6 +147,35 @@ static __global__ void __launch_bounds__(CUDA_CONCAT_BLOCK_SIZE)
     }
 }
 
+// dst[off0 + i0, i1, i2, i3] = src1[i0, i1, i2, i3] for a src1 that is contiguous along dim 1 (a transposed view): a 32x32 tile through shared memory reads
+// src1 along i1 and writes dst along i0, both coalesced
+template <typename T>
+static __global__ void concat_transposed_b(const char * __restrict__ src1, char * __restrict__ dst, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+        const uint64_t nb10, const uint64_t nb12, const uint64_t nb13, const uint64_t nb1, const uint64_t nb2, const uint64_t nb3, const int64_t off0) {
+    __shared__ T tile[32][33];
+    const int64_t i2 = blockIdx.z % ne12;
+    const int64_t i3 = blockIdx.z / ne12;
+    const int64_t a0 = (int64_t) blockIdx.x * 32;
+    const int64_t a1 = (int64_t) blockIdx.y * 32;
+    const char * s = src1 + i3*nb13 + i2*nb12;
+    char       * d = dst  + i3*nb3  + i2*nb2;
+    for (int j = threadIdx.y; j < 32; j += blockDim.y) {
+        const int64_t i0 = a0 + j;
+        const int64_t i1 = a1 + threadIdx.x;
+        if (i0 < ne10 && i1 < ne11) {
+            tile[j][threadIdx.x] = *(const T *) (s + i0*nb10 + i1*sizeof(T));
+        }
+    }
+    __syncthreads();
+    for (int j = threadIdx.y; j < 32; j += blockDim.y) {
+        const int64_t i0 = a0 + threadIdx.x;
+        const int64_t i1 = a1 + j;
+        if (i0 < ne10 && i1 < ne11) {
+            *(T *) (d + i1*nb1 + (off0 + i0)*sizeof(T)) = tile[threadIdx.x][j];
+        }
+    }
+}
+
 template <typename T>
 static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, int dim, cudaStream_t stream) {
     if (dim != 3 && ggml_is_contiguous_to_3(src0) && ggml_is_contiguous_to_3(src1)) {
@@ -175,6 +204,24 @@ static void concat_cuda(const ggml_tensor * src0, const ggml_tensor * src1, ggml
             CUDA_CHECK(cudaMemcpyAsync((char *) dst->data,         src0->data, size0, cudaMemcpyDeviceToDevice, stream));
             CUDA_CHECK(cudaMemcpyAsync((char *) dst->data + size0, src1->data, size1, cudaMemcpyDeviceToDevice, stream));
         }
+    } else if (dim == 0 && src1->nb[1] == sizeof(T) && src1->nb[0] >= src1->ne[1]*sizeof(T) && dst->nb[0] == sizeof(T) &&
+               (src1->ne[1] + 31)/32 <= 65535 && src1->ne[2]*src1->ne[3] <= 65535) {
+        // fork: b is a transposed view, the conv input of the linear-attention and SSM layers (concat(state, transpose(x), 0)). The general kernel below reads
+        // it one element per thread a whole row apart: Qwen3.6 35B on the 780M spent 2.8 s in it for one 2048-token pass against 0.3 s for four 512-token
+        // passes, which made the larger pass slower. a's few columns go through the general kernel (ne0 = ne00 ends its loop before b), b through a tile.
+        const dim3 grid_a(dst->ne[1], std::min<int64_t>(dst->ne[2], 65535), std::min<int64_t>(dst->ne[3], 65535));
+        concat_non_cont<T, 0><<<grid_a, CUDA_CONCAT_BLOCK_SIZE, 0, stream>>>(
+            (const char *) src0->data, (const char *) src1->data, (char *) dst->data,
+            src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3],
+            src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3],
+            src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3],
+            src1->nb[0], src1->nb[1], src1->nb[2], src1->nb[3],
+            src0->ne[0], dst->ne[1], dst->ne[2], dst->ne[3],
+            dst->nb[0], dst->nb[1], dst->nb[2], dst->nb[3]);
+        const dim3 grid_b((src1->ne[0] + 31)/32, (src1->ne[1] + 31)/32, src1->ne[2]*src1->ne[3]);
+        concat_transposed_b<T><<<grid_b, dim3(32, 8, 1), 0, stream>>>(
+            (const char *) src1->data, (char *) dst->data, src1->ne[0], src1->ne[1], src1->ne[2],
+            src1->nb[0], src1->nb[2], src1->nb[3], dst->nb[1], dst->nb[2], dst->nb[3], src0->ne[0]);
     } else {
         GGML_ASSERT(!ggml_is_quantized(src0->type));
 
