@@ -1790,13 +1790,14 @@ bool llama_model_loader::load_all_data(
             *a += ggml_nbytes(t);
         }
     }
-    // the pins run on one thread of their own, fed as the buffers fill: a read thread that pinned the buffer it finished stopped reading for the ~0.9 s of the pin (GLM 3.0:
-    // the reads took 32.5-34.0 s instead of 28.8-30.0). What it has not reached when the reads end is left to the pin after the load (4 threads, ggml_backend_cuda_pin_defer).
-    std::mutex              pin_mtx;
-    std::condition_variable pin_cv;
-    std::deque<void *>      pin_q;
-    bool                    pin_stop = false;
-    std::thread             pin_th;
+    // the pins run on two threads of their own, fed as the buffers fill: a read thread that pinned the buffer it finished stopped reading for the ~0.9 s of the pin (GLM 3.0:
+    // the reads took 32.5-34.0 s instead of 28.8-30.0); one pin thread (1.1 buffers/s against 1.3 read) left 4 of 28 to the end (2.3-3.1 s). What they have not reached when
+    // the reads end is left to the pin after the load (4 threads, ggml_backend_cuda_pin_defer).
+    std::mutex               pin_mtx;
+    std::condition_variable  pin_cv;
+    std::deque<void *>       pin_q;
+    bool                     pin_stop = false;
+    std::vector<std::thread> pin_th;
     auto pin_later = [&](void * p) {
         { std::lock_guard<std::mutex> lk(pin_mtx); pin_q.push_back(p); }
         pin_cv.notify_one();
@@ -1885,9 +1886,10 @@ bool llama_model_loader::load_all_data(
         pr_cv.notify_all();
         for (auto & t : pr_threads) { t.join(); }
         pr_threads.clear();
-        { std::lock_guard<std::mutex> lk(pin_mtx); pin_stop = true; }   // the pin running ends, the queued ones stay deferred
-        pin_cv.notify_one();
-        if (pin_th.joinable()) { pin_th.join(); }
+        { std::lock_guard<std::mutex> lk(pin_mtx); pin_stop = true; }   // the pins running end, the queued ones stay deferred
+        pin_cv.notify_all();
+        for (auto & t : pin_th) { t.join(); }
+        pin_th.clear();
         for (auto & kv : pr_dfd) { if (kv.second >= 0) { close(kv.second); } }
         pr_dfd.clear();
         if (pr_direct_bytes.load() || pr_buffered_bytes.load()) {
@@ -1897,8 +1899,8 @@ bool llama_model_loader::load_all_data(
     // the threads end on every way out of this function (cancelled loading, an exception)
     // a way out before the normal end (cancelled, an exception) drops what is still queued: the caller frees the buffers next, reading them all first only delays that
     struct pr_guard_t { std::function<void()> f; ~pr_guard_t() { f(); } } pr_guard{[&]() { { std::lock_guard<std::mutex> lk(pr_mtx); pr_q.clear(); } pr_finish(); }};
-    if (pin_one && !pr_left.empty()) {   // started after the guard, which ends it on every way out
-        pin_th = std::thread([&] {
+    for (int i = 0; pin_one && !pr_left.empty() && i < 2; ++i) {   // started after the guard, which ends them on every way out
+        pin_th.emplace_back([&] {
             std::unique_lock<std::mutex> lk(pin_mtx);
             for (;;) {
                 pin_cv.wait(lk, [&] { return pin_stop || !pin_q.empty(); });
