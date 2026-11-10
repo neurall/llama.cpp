@@ -1,4 +1,6 @@
-# llama.cpp: fork with multi gpu acceleration even for models bigger than total gpu mem
+# RocketLLama fork of llama.cpp with multi gpu acceleration even for models bigger than total gpu mem
+<img width="1145" height="389" alt="image" src="https://github.com/user-attachments/assets/f543ba8e-7611-47a5-ae76-7c939ffaa48e" />
+
 
 Status Update:23:10:2026. Right now multi gpu decode is supported all models multigpu dense split 
 prefill is implemented for glm and gives gains only from prompts 7k up on 2x3090 at least on my rig.
