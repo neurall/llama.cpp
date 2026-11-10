@@ -423,6 +423,10 @@ struct moe_cache {
     bool                       rp_on = false;      // --moe rampool: the RAM pool holds the expert slices (ggml-rampool-fork.h)
     bool                       rp_evict = false;   // --moe rampool=2: the pool evicts and admits during the run; 1: the fill's set stays (ggml_rampool_evict_fork)
     bool                       rp_filling = false; // the first fill runs: only then rp_heat ranks what a card holds after all others
+    // --moe fill=layers (user 2026-11-11: "fill from top to bottom in both vram and ram pools", "only as separate ssd only mode keeping prev modes as before"): on a
+    // model that reads experts from the SSD, the start fills each card's cache with whole layers from layer 0 on and the RAM pool continues with the next layers;
+    // a stream pass then reads the layers neither holds as whole tensors. Off by default; eviction during the run is unchanged
+    bool                       fill_layers = false;
     std::vector<ggml_backend_buffer_t> rp_bufs;    // its pinned chunks
     std::vector<ggml_backend_buffer_t> rp_pre;     // 512 MiB pieces pinned before the VRAM pool is sized, handed out as chunks by rp_alloc (rp_prepin)
     std::vector<std::pair<char *, size_t>> rp_raw; // chunks the fill reads into before they are pinned (rp_alloc), pinned in place after it (rp_pin_raw); size 0: not pinned
@@ -1351,12 +1355,6 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
     const double nxt = last + med;
     return std::min(by_count, nxt >= now ? nxt : now + (now - nxt));
 }
-// --moe fill=layers (user 2026-11-11: "fill from top to bottom in both vram and ram pools"): the start fills each card's cache with whole layers from layer 0 on, the
-// RAM pool continues with the next layers; a stream pass then reads the layers neither holds as whole tensors. Eviction during the run is unchanged
-static bool fill_layers() {
-    static const bool on = [] { const char * f = moe_opt("fill"); return f && strcmp(f, "layers") == 0; }();
-    return on;
-}
 static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
     const moe_cache * mc = (const moe_cache *) ud;
     const auto it = mc->by_src.find((const ggml_tensor *) key);
@@ -1367,7 +1365,7 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     // back from the SSD once the card dropped it (pinpool-default 2026-11-08: 15424 demand reads, 13.0 s waited in a 74 s decode, decode 13.7 against 14.7 without the
     // pool). Without eviction the fill ranks card-held experts by heat too: a hot one left out would never come back (rampool3: 17 GiB of card-held slices out of the pool).
     if (mc->rp_evict && mc->rp_filling && (ls.expert_slot[e] >= 0 || ls.queued[e])) { return HUGE_VAL; }
-    if (mc->rp_filling && fill_layers()) { return (double) it->second.first * 1e6 + (double) e; }   // --moe fill=layers: whole layers from layer 0 on, after what the cards took
+    if (mc->rp_filling && mc->fill_layers) { return (double) it->second.first * 1e6 + (double) e; }   // --moe fill=layers: whole layers from layer 0 on, after what the cards took
     return vis_next(mc, ls, (int32_t) e);
 }
 // --moe rampool admission (user 2026-11-10: "admission as vram has", "consider the last 10 revisits"): a newcomer that would evict a resident needs the VRAM cache's ADMIT uses
@@ -2187,7 +2185,12 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         }
         from = "GGUF moe_cache.expert_usage";
     }
-    if (!ok && !fill_layers()) {
+    if (const char * f = moe_opt("fill"); f && strcmp(f, "layers") == 0) {
+        mc->fill_layers = std::any_of(mc->layers.begin(), mc->layers.end(), [](const layer_state & ls) { return ls.src_dfd[0] >= 0 || ls.src_dfd[1] >= 0 || ls.src_dfd[2] >= 0; });
+        LLAMA_LOG_WARN("moe-cache: fill=layers %s\n", mc->fill_layers ? "on: whole layers from layer 0 on, the VRAM caches first, then the RAM pool"
+                                                                         : "ignored: no expert tensor reads from the SSD (a mode for SSD streaming only)");
+    }
+    if (!ok && !mc->fill_layers) {
         return 0;
     }
     if (ok) {
@@ -2208,7 +2211,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
             refresh_sticky(ls);
         }
-        if (fill_layers()) {   // the whole layer, hottest first, before any expert of the next one: heat in (-il, -il + 0.5]
+        if (mc->fill_layers) {   // the whole layer, hottest first, before any expert of the next one: heat in (-il, -il + 0.5]
             const double tot = (double) std::max<uint64_t>(1, std::accumulate(ls.glob_count.begin(), ls.glob_count.end(), (uint64_t) 0));
             for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) { picks.push_back({ 0.5 * (double) ls.glob_count[e] / tot - (double) il, il, e }); }
             continue;
