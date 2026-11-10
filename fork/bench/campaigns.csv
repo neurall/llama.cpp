@@ -7298,3 +7298,5 @@ touch7-dr-qni-breakout-breakoutc,2026-11-10 06:03:57,bench /m/q/4/Qwen3.8-Flash-
 touch8-dc-glm-scifi-scific,2026-11-10 06:09:54,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch8 variants v test scific n=1,,
 touch8-dc-glm-poem-poemc,2026-11-10 06:11:24,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch8 variants v test poemc n=1,,
 touch8-dc-mimo-scifi-scific,2026-11-10 06:13:02,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds touch8 variants v test scific n=1,,
+touch9-dc-glm-scifi-scific,2026-11-10 06:15:48,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch9 variants v test scific n=1,,
+touch9-dc-glm-poem-poemc,2026-11-10 06:17:18,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch9 variants v test poemc n=1,,
