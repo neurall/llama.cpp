@@ -2095,6 +2095,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     }
     mc->profile_ready.store(true, std::memory_order_release);
     std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
+    const bool fixed = [] { const char * e = moe_opt("fixed"); return e && atoi(e) != 0; }();   // --moe fixed=1: ordinary jobs the step waits for (repeatable runs)
     for (const auto & pk : picks) {
         auto & ls = mc->layers[pk.il];
         double best;
@@ -2107,6 +2108,9 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         ls.queued[pk.e]      = 1;
         upload_job pj { pk.il, pk.e, s };
         pj.t_queued = ggml_time_us();
+        // a background job (as the refill after a prompt): no step waits for the start-up fill. As ordinary jobs the first decode (the server's 2-token warm-up)
+        // waited for all of them: the slow card's layers are read last and its x4 link took 1.5-3.3 s more (GLM, MiMo, qni4 2026-11-10), the call itself 0.4 s
+        pj.bg = !fixed;
         mc->todo.push_back(pj);
         queued++;
     }
