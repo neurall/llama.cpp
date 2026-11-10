@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+s2-g-even,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,share-adj=0.15",--hog-ram 32
+s2-g-evenup,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,share-adj=0.15,ub-up=1",--hog-ram 32
+s2-m-even,mimo,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,swa-big=1,share-adj=0.15",--hog-ram 32
+s2-g-evenup2,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,share-adj=0.15,ub-up=1",--hog-ram 32
+s2-g-even2,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,share-adj=0.15",--hog-ram 32
+s2-m-even2,mimo,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,swa-big=1,share-adj=0.15",--hog-ram 32
