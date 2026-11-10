@@ -2804,9 +2804,13 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             lctx = llama_init_from_model(model, cparams);
             if (lctx) { lo = m; } else { bad = m; }
         }
-        if (!lctx && lo > 0) {   // the last try was too big: back to the largest that fit
+        // the last try was too big: back to the largest that fit. That size can fail on its second try (Kimi K3.1 2026-11-10: 7936 fit, 8064/8000/7968 did not,
+        // 7936 again did not and the whole fork went off: prompt 0.9 t/s through the mapping), so step down from it until one fits
+        for (int k = 0; !lctx && lo >= 128 && k < 8; ++k) {
             cparams.n_ubatch = lo;
             lctx = llama_init_from_model(model, cparams);
+            if (!lctx) { LOG_WRN("%s: context creation failed again at ubatch %u, the largest that fit before: trying %u\n", __func__, lo, lo * 15 / 16 / 32 * 32); }
+            lo = lo * 15 / 16 / 32 * 32;
         }
     }
     // still no room: offloading host-weight ops to the GPU needs a staging buffer the size of a weight tensor on top of the compute buffers, which
