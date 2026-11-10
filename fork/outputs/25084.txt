@@ -1,0 +1,180 @@
+run 25084 | touch7 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.43 t/s | prompt 888.4 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-10 04:06:04
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each part systematically.
+
+**Part 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?`. But when `min_items > 0`, the separator repetition should start from `min_items - 1` (since the first item is already included). Let me check: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. This looks correct.
+
+2. In `build_min_max_int`, let me check the `uniform_range` lambda. It handles digit-by-digit comparison. Looks complex but let me check for issues.
+
+3. In `_pattern_to_rule`, the handling of `{` curly brackets - when parsing `{n,m}`, it uses `string_split` on the content. Let me check if `string_split` handles empty strings correctly.
+
+4. In `_not_strings`, the `rejects` string is built by appending characters. But if a character is a special regex character (like `"`), it needs escaping. The `rejects` is used in `[^"rejects]` - so if `rejects` contains `"`, it would break the grammar. Wait, looking at the code: `out << " | [^\"" << rejects << "] " << char_rule << "*";` - the `rejects` is placed inside a character class after `[^"`. If `rejects` contains `"`, that's fine since `"` is already there. But if `rejects` contains `\`, that could be problematic. Actually, looking at the trie, the characters come from `common_unicode_cpt_to_utf8(cpt)` which gives UTF-8 characters. For ASCII characters like `\`, this would produce a single `\` character which would need escaping in the grammar. But this might be an existing issue rather than a bug.
+
+5. In `_build_object_rule`, the `get_recursive_refs` function - let me trace through the logic. When `first_is_optional` is false and `k == "*"`, it does `kv_rule_name + " " + comma_ref + "*"`. When `first_is_optional` is false and `k != "*"`, it does just `kv_rule_name`. When `first_is_optional` is true, it does `comma_ref + (k == "*" ? "*" : "?")`. This seems correct for optional properties.
+
+6. In `visit`, for `KIND_REF`: `return _add_rule(rule_name, _resolve_ref(as<common_chat_schema_ref>(schema)));` - `_resolve_ref` returns a rule name (string), and `_add_rule` adds a rule with that name. But `_add_rule` expects a rule body, not a rule name. So this would create a rule like `rule_name ::= ref_name` which is a reference to another rule. That seems correct.
+
+Wait, actually `_resolve_ref` returns `ref_name` which is a rule name. So `_add_rule(rule_name, ref_name)` creates `rule_name ::= ref_name`. That's a valid grammar rule that references `ref_name`. OK.
+
+7. In `visit`, for `KIND_ANY_OF`: `return _add_rule(rule_name, _generate_union_rule(name, as<common_chat_schema_any_of>(schema).children));` - `_generate_union_rule` returns a string joined with ` | `. But each alternative is visited with `name + (name.empty() ? "alternative-" : "-") + std::to_string(i)`. The result of `visit` is a rule name. So the union rule would be `rule_name ::= alt0 | alt1 | ...`. That seems correct.
+
+8. In `_visit_all_of`, the `enum_values` map counts occurrences. Then it checks `p.second == schema.children.size()`. But `schema.children` might include non-enum children. So if there are 3 children but only 2 are enums, an enum value appearing in both enums would have count 2, which equals `schema.children.size()` only if there are exactly 2 children. This seems like a potential logic issue but might be intentional.
+
+Actually wait - `add_component` is called for each child. For non-enum children, `enum_values` is not modified. So if there are 3 children (2 enums + 1 object), and an enum value appears in both enums, its count would be 2, but `schema.children.size()` is 3. So the intersection would be empty. This seems like a bug - it should compare against the number of enum children, not all children.
+
+Hmm, but actually looking at the logic more carefully: the `add_component` function is called for each child. For `KIND_ANY_OF` children, it iterates over alternatives. For other children, it calls `add_component(*child, true)`. The `enum_values` counter only increments for `KIND_ENUM` components. So if we have 3 children where 2 are enums and 1 is an object, the enum values would have count at most 2, but `schema.children.size()` is 3. So the intersection would be empty.
+
+This seems like a bug. The comparison should be against the number of enum children, not `schema.children.size()`.
+
+Wait, let me re-read. Actually, maybe the intent is that if ALL children are enums, then the intersection should be non-empty. If some children are not enums, then the intersection should be empty (because the non-enum children impose additional constraints). In that case, comparing against `schema.children.size()` is correct - if there are non-enum children, no enum value can appear in all children, so the intersection is empty.
+
+Hmm, but that's not quite right either. If there are 3 children: 2 enums and 1 object, and an enum value appears in both enums, its count is 2, which is less than 3, so it's excluded. But the object child doesn't contribute to enum_values at all. So the intersection is empty, which means we fall through to `_build_object_rule`. That seems correct - if there's an object child, we should build an object rule.
+
+Actually, I think the logic is: if all children are enums, then the intersection of enum values gives the valid values. If some children are not enums, the intersection will be empty (since non-enum children don't contribute to enum_values), and we fall through to building an object rule. This seems intentional.
+
+But wait - what if there are 3 children: 2 enums and 1 const? The const child doesn't contribute to enum_values either. So enum values would have count at most 2, less than 3, so intersection is empty. Then we'd build an object rule from properties (which would be empty since no object children). That would produce `"{" space "}"` which is wrong for a const/enum schema.
+
+Hmm, but this is about `allOf` which combines schemas. If one of them is a const, the result should be that const value. But the current code doesn't handle that.
+
+Actually, I think this might be a pre-existing design issue rather than a bug in this specific file. Let me focus on more clear-cut bugs.
+
+9. In `_visit_pattern`, when catching `unsupported_pattern`, it does:
+```cpp
+return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));
+```
+But `_add_primitive` already adds the rule and returns the rule name. So `_add_rule(name, rule_name)` creates `name ::= string_rule_name`. That seems correct.
+
+Wait, but `_add_primitive("string", ...)` returns the rule name for "string". Then `_add_rule(name, that_name)` creates `name ::= string`. That's correct.
+
+10. In `_pattern_to_rule`, the handling of `|` (alternation): `seq.emplace_back("|", false);` - this adds a pipe as a non-literal. Then in `join_seq`, it joins with spaces: `string_join(results, " ")`. So `a | b` would become `a | b` (with spaces around the pipe). That seems correct for GBNF.
+
+11. In `_pattern_to_rule`, the handling of `*`, `+`, `?`: `seq.back() = std::make_pair(to_rule(seq.back()) + c, false);` - this converts the last element to a rule (if it was a literal, wraps in quotes) and appends the quantifier. But `to_rule` for a literal returns `"literal"`, so `"abc"*` would be `"abc"*`. For a non-literal (rule name), it returns the rule name, so `rule_name*`. That seems correct.
+
+But wait - if the last element is already a rule (non-literal), `to_rule` returns it as-is. Then appending `*` gives `rule_name*`. That's correct.
+
+If the last element is a literal, `to_rule` wraps it: `"literal"`. Then appending `*` gives `"literal"*`. That's correct.
+
+12. In `_pattern_to_rule`, the `{` handling: after parsing the repetition, it does:
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+seq.back().second = false;
+```
+This looks correct.
+
+But there's a subtle issue: `sub_rule_ids[sub]` uses `sub` as the key. If `sub` is a rule name (non-literal), it's used as-is. If `sub` is a literal, it's also used as-is. The `sub_id` is created with `_add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub)`. But `sub_rule_ids.size()` is the size of the map, which grows as entries are added. This could lead to name collisions if the same sub-pattern appears multiple times... actually no, because `sub_rule_ids[sub]` would find the existing entry.
+
+Wait, but `sub_rule_ids.size()` is used as the index. If we have two different subs, the first gets index 0, the second gets index 1. But if the first sub appears again, it would find the existing entry (since `sub_rule_ids[sub]` would be non-empty). So this seems correct.
+
+Hmm, but there's a potential issue: `sub_rule_ids.size()` is called before the entry is added (well, `sub_rule_ids[sub]` creates the entry if it doesn't exist, so `size()` would be after creation). Actually, `std::string & sub_id = sub_rule_ids[sub];` creates the entry (default-constructed empty string). Then `if (sub_id.empty())` checks if it was just created. Then `sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);` - at this point, `sub_rule_ids.size()` includes the just-created entry. So if this is the first entry, size is 1, and the name would be `name-1`. If it's the second, size is 2, name would be `name-2`. This seems fine.
+
+13. In `_pattern_to_rule`, the handling of literal characters in the `else` branch:
+```cpp
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+    literal += sub_pattern[i];
+    i++;
+} else {
+    break;
+}
+```
+This condition is complex. It adds a character to the literal if:
+- The character is not a non-literal character (i.e., it's a regular character)
+- AND (it's the last character, OR the literal is empty so far, OR the next character is a dot, OR the next character is not a non-literal character)
+
+The `sub_pattern[i + 1] == '.'` condition seems odd. Why would a dot make the current character part of a literal? A dot is a non-literal character (it's in `NON_LITERAL_SET`). So if the next character is a dot, we'd add the current character to the literal, then on the next iteration, the dot would be handled by the `c == '.'` branch. That seems correct - we want to add regular characters before a dot to the literal.
+
+Wait, but `is_non_literal('.')` returns true (since `.` is in `NON_LITERAL_SET`). So `sub_pattern[i + 1] == '.'` is a special case that allows adding the current character even though the next character is a non-literal. This is because `.` is handled separately (as a dot rule), so we don't need to break before it.
+
+Actually, I think the condition is: add the current character to the literal if it's a regular character AND (we're at the end, OR the literal is empty, OR the next character is a dot (which is handled separately), OR the next character is also a regular character). The `literal.empty()` case is interesting - it means we always add at least one character even if the next character is a non-literal. This prevents infinite loops.
+
+Hmm, but if `literal.empty()` and the current character is a non-literal, we wouldn't reach this branch (because `!is_non_literal(sub_pattern[i])` would be false). So `literal.empty()` only matters when the current character is regular but the next is non-literal - we'd add it to the literal. That prevents an infinite loop where we keep checking the same character.
+
+OK, I think this logic is correct.
+
+14. In `_pattern_to_rule`, the handling of `"` in literals:
+```cpp
+} else if (sub_pattern[i] == '"') {
+    literal += "\\\"";
+    i++;
+}
+```
+This escapes quotes in literals. But wait, this is inside the `else` branch of the main loop, which is reached when the character is not `.`, `(`, `)`, `^`, `$`, `[`, `|`, `*`, `+`, `?`, `{`. So `"` would fall through to this branch. The condition `!is_non_literal('"')` - `"` is not in `NON_LITERAL_SET`, so it's true. Then the next condition checks... actually, `"` is handled by the `else if (sub_pattern[i] == '"')` branch before the general condition. So it's fine.
+
+Wait, let me re-read the structure:
+```cpp
+} else {
+    std::string literal;
+    auto is_non_literal = [&](char c) {
+        return NON_LITERAL_SET.find(c) != NON_LITERAL_SET.end();
+    };
+    while (i < length) {
+        if (sub_pattern[i] == '\\') {
+            // handle escape
+        } else if (sub_pattern[i] == '"') {
+            literal += "\\\"";
+            i++;
+        } else if (!is_non_literal(sub_pattern[i]) && ...) {
+            literal += sub_pattern[i];
+            i++;
+        } else {
+            break;
+        }
+    }
+    if (literal.empty()) {
+        throw unsupported_pattern(...);
+    }
+    seq.emplace_back(literal, true);
+}
+```
+
+OK so `"` is handled specially. But what about `]` and `}`? These are not in `NON_LITERAL_SET`... wait, `]` IS in `NON_LITERAL_SET`? Let me check: `NON_LITERAL_SET = {'|', '.', '(', ')', '[', ']', '{', '}', '*', '+', '?', '^', '$'}`. Yes, `]` and `}` are in the set. So they would cause a `break` in the literal loop, and if `literal.empty()`, throw `unsupported_pattern`. That's correct - stray `]` or `}` outside a character class should be an error.
+
+15. In `_pattern_to_rule`, the handling of `\\` in literals:
+```cpp
+if (sub_pattern[i] == '\\') {
+    if (i == length - 1) {
+        throw invalid_pattern("trailing backslash");
+    }
+    char next = sub_pattern[i + 1];
+    if (ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.find(next) != ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.end()) {
+        i++;
+        literal += sub_pattern[i];
+        i++;
+    } else {
+        auto escape_length = gbnf_escape_length(sub_pattern, i);
+        if (escape_length == 0) {
+            throw unsupported_pattern("unsupported escape: " + sub_pattern.substr(i, 2));
+        }
+        literal += sub_pattern.substr(i, escape_length);
+        i += escape_length;
+    }
+}
+```
+
+When the escaped character is in `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` (like `.`, `(`, etc.), it skips the backslash and adds just the character. So `\.` becomes `.` in the literal. That's correct - in GBNF, `.` inside a literal string doesn't need escaping.
+
+When the escaped character is not in that set (like `\n`, `\t`, etc.), it uses `gbnf_escape_length` to determine the escape length and adds the full escape sequence. So `\n` stays as `\n` in the literal. That's correct.
+
+But wait - what about `\"`? `"` is not in `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`. So it would go to the `gbnf_escape_length` path. `gbnf_escape_length` for `\"` - the switch case for `'"'` returns 2. So `\"` would be added as `\"` in the literal. But then the literal is wrapped in quotes: `"\"..."`. So `\"` inside a quoted literal would be `\"` which is correct for GBNF.
+
+Hmm, but what about `\\`? `\\` is not in `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`. `gbnf_escape_length` for `\\` - the switch case for `'\\'` returns 2. So `\\` stays as `\\`. In a quoted literal: `"...\\..."`. That's correct.
+
+What about `\"` in the pattern? The pattern is a regex, so `\"` means a literal quote character. In the literal, it should be `\"` (escaped quote). The code adds `\"` to the literal, then wraps in quotes: `"\"..."`. Wait, that would be `"\""` which is a quoted string containing an escaped quote. That's correct.
+
+Actually wait, there's a subtlety. The `"` handling in the literal loop:
+```cpp
+} else if (sub_pattern[i] == '"') {
+    literal += "\\\"";
+    i++;
+}
+```
+This handles unescaped `"` in the pattern. But `\"` in the pattern would be handled by the `\\` branch, which adds `\"` to the literal. So both paths produce `\"` in the literal. Then the literal is wrapped: `"\"

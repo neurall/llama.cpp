@@ -1,0 +1,93 @@
+run 25087 | touch7 | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 25.13 t/s | prompt 446.3 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-10 04:17:54
+
+<think>We need answer complete fixed version of source file. Need identify bugs and mark changes comments. We need output entire file from first line to last, every line, fixed, each change marked by comment. Need infer bugs in provided source. It's a C++ file combining json-schema-to-grammar.cpp and arg.cpp? The prompt says source file common/json-schema-to-grammar.cpp but includes arg.cpp content. Need return complete fixed version of following source file. Need fix bugs. Need inspect code carefully. Need produce full file with comments marking changes. Need not summarize. Need include all lines. Need determine bugs.
+
+We need analyze code. It appears from llama.cpp common/json-schema-to-grammar.cpp and common/arg.cpp concatenated? The file starts // file: common/json-schema-to-grammar.cpp then includes arg.cpp. Maybe source file is a combined snippet? Need fix all bugs in given source. Need identify compile errors, logic bugs.
+
+Let's parse. First part json-schema-to-grammar.cpp. Need check includes, functions. Potential bugs:
+- `build_repetition` with separator: `auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);` If max_items == 0 handled. If min_items==0 and max_items==1 handled. For separator and min_items=0, max_items maybe 1? handled earlier. For min_items=0, max_items>1: result = item_rule + " " + build_repetition("(sep item)", 0, max_items-1). Then if min_items==0 result = "(" + result + ")?"; This seems maybe wrong? Need compare original llama.cpp. Let's recall actual code. In llama.cpp common/json-schema-to-grammar.cpp, build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (max_items == 0) return "";
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) return item_rule + "+";
+        if (min_items == 0 && !has_max) return item_rule + "*";
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Maybe actual. Need check bug: For separator and min_items=0, max_items=2: result = item_rule + " " + build_repetition("(sep item)", 0, 1). Inner returns "(sep item)?" because min=0 max=1. Then result = item_rule + " " + "(sep item)?"; then wrap `(item_rule (sep item)?)?`? That allows empty and one item? Actually `(item_rule (sep item)?)?` allows empty or item_rule or item_rule sep item. Good. For min=1 max=2: result = item_rule + " " + build_repetition("(sep item)", 0, 1) = item_rule + " (sep item)?"; no wrap. Allows item_rule or item_rule sep item. Good. For min=2 max=2: result = item_rule + " " + build_repetition("(sep item)", 1, 1). Inner separator empty? Wait inner call has separator_rule empty? It passes item_rule = "(sep item)", min=1, max=1, separator_rule default empty. build_repetition with separator empty: max=1, min=1, has_max true. It returns item_rule + "{1,1}"? Actually code: if separator empty, min=1 !has_max false, min=0 false, return item_rule + "{" + min + "," + max + "}" = "(sep item){1,1}". Then result = item_rule + " " + "(sep item){1,1}". This allows item_rule sep item exactly once. Good. But maybe should use `{1}`? Not bug.
+
+Potential bug in `build_min_max_int`: Need inspect. It uses `std::function<void(const std::string_view &, const std::string_view &)> uniform_range = [&](...)`. It captures out. It uses `string_repeat` from common. Need include? common.h likely. It uses `std::stoll` etc. Potential bug: `auto sub_len = from.length() - i - 1;` If i < from.length() && i < to.length(), and from/to same length? For uniform_range called with min_s and max_s of same length? In loop digits from min_digits to max_digits, min_s length digits, string_repeat("9", digits) length digits. Then uniform_range(min_s, max_s) same length. In recursive calls, from_sub and to_sub same length? likely. But if from length != to length? In `uniform_range(min_s, string_repeat("9", digits))`, min_s length = digits? Wait min_s initially min_digits. For digits = min_digits; min_s length = min_digits, string_repeat("9", digits) length = digits = min_digits. Then after min_s = "1" + zeros(digits), length digits+1. Next loop digits increments. For digits = min_digits+1, min_s length = digits? Let's see: min_s = "1" + string_repeat("0", digits) where digits is previous loop value. If previous digits = min_digits, min_s length = min_digits+1. Next digits = min_digits+1, min_s length = min_digits+1 = digits. Good. So same length. In recursive build_min_max_int, min_s.substr(1) and max int max string length maybe different? `build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false);` Here min_value and max_value may have different digit lengths. build_min_max_int handles min/max with min_digits and max_digits. It loops digits from min_digits to max_digits. For digits < max_digits, uniform_range(min_s, string_repeat("9", digits)) where min_s length = min_digits, but digits may be > min_digits? Wait min_s is std::to_string(min_value) length min_digits. For digits = min_digits, same length. Then min_s = "1" + zeros(digits) length digits+1. Next digits = min_digits+1, min_s length = min_digits+1 = digits. So same. Good.
+
+Potential bug: `uniform_range` uses `from[i] - 1` when from[i] == '0'? In branch `if (from_sub == sub_zeros) { digit_range(from[i], to[i] - 1); ... }`. If from[i] == to[i]? But i is first differing char, so from[i] < to[i]. If from[i]='0', to[i]-1 could be '0'? If to[i]='1', digit_range('0','0') okay. If from[i]='0', to[i]='0' impossible. If from[i]='0', to[i]='1', digit_range('0','0') okay. If from[i]='0', to[i]='2', digit_range('0','1') okay. If from[i]='0', to[i]='0' no. If from[i]='1', to[i]-1='0'? But from[i] < to[i], so if from[i]='1', to[i] at least '2', to[i]-1 >= '1'. So okay. In branch `if (from[i] < to[i] - 1)` char comparison. If to[i]='0'? no. If from[i]='0', to[i]='1', from[i] < to[i]-1 => '0' < '0' false. Good. `digit_range(from[i] + 1, to[i])` if from[i]+1 > to[i]? only if from[i] < to[i]-1? Actually in else branch when to_sub != sub_nines, they do `digit_range(from[i] + 1, to[i] - 1);` if from[i] < to[i]-1. If from[i]+1 <= to[i]-1. Good. Then later `digit_range(to[i], to[i])`. Good.
+
+Potential bug: `build_min_max_int` for negative min and max: `build_min_max_int(-max_value, -min_value, out, decimals_left, true);` If max_value = INT64_MIN? But has_max true and max_value <0. -max_value can overflow if max_value == INT64_MIN. But max_value is int64_t; if max_value == std::numeric_limits<int64_t>::min(), then has_max? max_value != max? Actually max_value is maximum, could be INT64_MIN? If max_value <0 and max_value == INT64_MIN, -max_value overflow. But max_value is max bound, if max_value = INT64_MIN, then min_value <= max_value, both INT64_MIN. has_min true? min_value != INT64_MIN? If min_value = INT64_MIN, has_min false. But has_min && has_max? If min_value=INT64_MIN, has_min false. So not. If max_value=INT64_MIN and min_value<INT64_MIN impossible. So max_value > INT64_MIN if has_min? Actually min_value can be INT64_MIN, has_min false. So branch has_min && has_max requires min_value != INT64_MIN and max_value != INT64_MAX. max_value could be INT64_MIN? If max_value=INT64_MIN, then min_value <= max_value and min_value != INT64_MIN? impossible because min_value <= INT64_MIN and int64 min is INT64_MIN, so min_value=INT64_MIN, has_min false. So no overflow. For min_value<0 branch: `build_min_max_int(0, -min_value, ...)` if min_value=INT64_MIN, -min_value overflow. But has_min true? min_value != INT64_MIN? If min_value=INT64_MIN, has_min false. So no. For has_min and min_value<0: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` if min_value=INT64_MIN? has_min false. If min_value=-1, -min_value=1. Good. For has_max and max_value<0: `build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), ...)` if max_value=INT64_MIN? has_max true? max_value != INT64_MAX, yes. But max_value=INT64_MIN possible if only max set and no min? In has_max branch, max_value can be INT64_MIN. Then -max_value overflow. But if max_value=INT64_MIN, max_value <0, branch `out << "\"-\" ("; build_min_max_int(-max_value, INT64_MAX, ...)`. Overflow. Need fix? But max_value=INT64_MIN means maximum allowed integer is INT64_MIN, i.e., only INT64_MIN? But JSON schema maximum can be INT64_MIN. Need handle. Could use `-max_value` overflow. Need fix by using `std::numeric_limits<int64_t>::max()`? Actually to represent negative numbers with max_value negative: allowed range (-inf? if no min) to max_value. If max_value = -5, allowed integers <= -5. Grammar: `"-" (5 to INT64_MAX)`? Wait build_min_max_int(-max_value, INT64_MAX) generates positive numbers from 5 to max, then prefix "-" gives -5 to -max? Actually if max_value=-5, allowed <= -5, i.e., -5, -6, ... -inf. But build_min_max_int(5, INT64_MAX) generates 5..max, prefix "-" gives -5..-max. That includes -5, -6, ... -INT64_MAX, but not -INT64_MIN? It misses -INT64_MIN? Actually -INT64_MAX = -9223372036854775807, and -INT64_MIN = 9223372036854775808? Wait INT64_MIN = -9223372036854775808. Prefix "-" to positive 9223372036854775808 impossible because positive max is 9223372036854775807. So misses INT64_MIN. But if max_value=-5, allowed includes INT64_MIN. The grammar should include `"-" (5..INT64_MAX) | "-" INT64_MIN?` Hmm. Original code maybe has bug. Need check actual llama.cpp code. I recall build_min_max_int from llama.cpp. Let's search memory. It might be:
+```
+if (has_min && has_max) {
+    if (min_value < 0 && max_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, -min_value, out, decimals_left, true);
+        out << ")";
+        return;
+    }
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(0, -min_value, out, decimals_left, true);
+        out << ") | ";
+        min_value = 0;
+    }
+...
+}
+...
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, true);
+    } else {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, false);
+        out << ")";
+    }
+    return;
+}
+```
+This is actual? It may have overflow for INT64_MIN. But maybe not considered. Need fix all bugs. We need identify likely intentional bugs inserted. The prompt says "complete fixed version ... every bug fixed and each change marked by a comment." This is a code repair task. Need find bugs in provided source. Could be from a benchmark where source has bugs. Need fix them. Need output entire file with comments. Need not just compile; fix logic.
+
+Let's inspect entire code for obvious bugs.
+
+First part:
+- `static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_RULES = { ... }` uses `std::unordered_map` with initializer list. Fine.
+- `static std::unordered_map<std::string, BuiltinRule> STRING_FORMAT_RULES = { ... }` missing semicolon? It has `};` yes.
+- `static std::regex INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+");` fine.
+- `static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");` This regex string: `[\r\n\"\\\\]`? In C++ string, `\r` and `\n` are actual CR/LF? The regex pattern includes actual newline? `std::regex` can handle. It matches CR, LF, quote, backslash. Fine.
+- `static std::regex GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]");` This seems malformed? Let's parse: string literal `"[\r\n\"\\]\\-\\\\]"`. Characters: `[`, CR, LF, `"`, `\`, `]`, `\`, `-`, `\`, `\`, `]`? Actually `\\]` is backslash then `]`? Let's decode: `"[\r\n\"\\]\\-\\\\]"`:
+  - `[`
+  - `\r` -> CR
+  - `\n` -> LF
+  - `\"` -> `"`
+  - `\\` -> `\`
+  - `]`
+  - `\\` -> `\`
+  - `-`
+  - `\\\\` -> `\\` (two backslashes)
+  - `]`
+So regex pattern: `[CR LF " \ ] \ - \\ ]`? That is a character class containing CR, LF, quote, backslash, `]`, backslash, `-`, backslash, backslash? Wait inside character class, `]` after `\\`? The pattern string is `[ \r \n " \ ] \ - \\ ]`? Need parse regex: `[` starts class. Then `\r` (CR), `\n` (LF), `"` (quote), `\\` (escaped backslash), `]`? But `]` inside class must be escaped or first. Here after `\\` there is `]` which closes class prematurely? Let's write actual string: `[` + CR + LF + `"` + `\` + `]` + `\` + `-` + `\` + `\` + `]`. In regex, the first `]` after `\`? The `\` before `]`? Actually `\\]` in C++ string: `\\` -> backslash, then `]` -> `]`. So regex sees `\]`? Wait C++ string `"\\]"` yields characters `\` and `]`. In regex, `\]` is escaped `]`, so it does not close class. Let's decode carefully: `"[\r\n\"\\]\\-\\\\]"`:
+C++ escapes:
+- `[` literal
+- `\r` CR
+- `\n` LF
+- `\"` quote
+- `\\` backslash
+- `]` literal? Wait after `\\` there is `]`? The substring `\\]` is `\\` (backslash) then `]`. So characters: `[`, CR, LF, `"`, `\`, `]`, `

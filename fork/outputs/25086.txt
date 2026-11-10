@@ -1,0 +1,77 @@
+run 25086 | touch7 | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.54 t/s | prompt 400.5 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-10 04:13:09
+
+<think>We need answer complete fixed version of source file. Need identify bugs. We need output every line from first to last with fixes marked comments. Source includes two files concatenated? It says file common/json-schema-to-grammar.cpp then // file: common/arg.cpp. Need return complete fixed version of following source file: every line from first to last. Likely need fix bugs in entire provided source. Need inspect for bugs. Need produce full code with comments marking changes. Need not summarize. Need include all lines. Need determine intended bugs. This is likely from llama.cpp code. Need compare to actual upstream? We need fix bugs in source. Need identify all bugs. Let's analyze.
+
+We have two files: json-schema-to-grammar.cpp and arg.cpp. The source may contain deliberate bugs. Need fix every bug. Need mark each change by comment. Need output complete fixed version. Need be careful.
+
+Let's inspect json-schema-to-grammar.cpp.
+
+Potential bugs:
+- `build_repetition` separator logic. Let's verify. For separator_rule nonempty:
+```
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) result = "(" + result + ")?";
+return result;
+```
+If min_items=0, max_items=1? Earlier returns item_rule+"?" before separator. For separator and min=0 max=1, returns item_rule? maybe okay. For min=0 max=2: result = item_rule + " " + build_repetition("(sep item)", 0, 1) = item_rule + " " + "(sep item)?" then wrap? Actually min_items==0 -> result = "(" + result + ")?" => (item_rule (sep item)?)? This allows empty or item_rule optionally followed by sep item. But for array with min 0 max 2, should allow [] or [item] or [item, item]. Grammar: `( item (sep item)? )?` yes. For min=1 max=2: result = item + " " + build_repetition("(sep item)", 0, 1) = item + " " + "(sep item)?" => item (sep item)? good. For min=2 max=2: result = item + " " + build_repetition("(sep item)", 1, 1) = item + " " + "(sep item)"? build_repetition with min=1 max=1 separator empty returns item_rule + "{" + 1 + "," + 1 + "}"? Wait build_repetition for separator empty: if min=1 && !has_max false (has max true), min=0 false, returns item_rule + "{1,1}". So result = item + " " + "(sep item){1,1}" = item sep item. Good. For min=0 max=0 returns "" earlier. Good.
+
+- `build_min_max_int`: Need inspect. It uses `std::function` but includes <functional>? Not included. common.h may include. But source lacks <functional>? It uses std::function in json-schema-to-grammar.cpp. It includes algorithm, limits, map, regex, sstream, string, unordered_map, unordered_set, vector. No <functional>. But common.h likely includes. Could be bug? Maybe not.
+
+- `uniform_range` lambda: `auto sub_len = from.length() - i - 1;` If i < from.length() && i < to.length(), and from/to same length? For uniform range of numbers with same length? It assumes from and to same length? In build_min_max_int, uniform_range(min_s, string_repeat("9", digits)) where min_s length maybe digits? Let's check. For digits loop: min_digits to max_digits-1. min_s initially length min_digits. For digits = min_digits, string_repeat("9", digits) length digits. min_s length min_digits = digits. Good. Then min_s = "1" + zeros(digits) length digits+1. Next digits = min_digits+1, min_s length digits? yes. Finally uniform_range(min_s, max_s) where min_s length max_digits? After loop, min_s length max_digits, max_s length max_digits. Good. For negative? handled. For has_min only, calls build_min_max_int(std::stoll(min_s.substr(1)), max, ...). min_s.substr(1) length len-1. max int64 max length 19. uniform_range may have from length less than to length? In build_min_max_int with min_value positive >9 and max_value max int64. It calls build_min_max_int(min_s.substr(1), max, less_decimals, false). Here min_value maybe e.g. 123, max int64. min_s length 3, max_s length 19. Loop digits from 3 to 18: uniform_range(min_s, string_repeat("9", digits)). min_s length 3, to length 3 for digits=3. Then min_s = "1"+zeros(3) length 4. Next digits=4, min_s length 4, to length 4. Good. Finally uniform_range(min_s, max_s) where min_s length 19? After loop digits up to 18, min_s becomes "1"+zeros(18) length 19. max_s length 19. Good. So same length.
+
+But `uniform_range` logic may have bug: `auto sub_len = from.length() - i - 1;` If from and to differ at i, and lengths same. It computes sub_len = length - i - 1. Then `from_sub = from.substr(i + 1); to_sub = to.substr(i + 1);` length sub_len. Good. If sub_len > 0. It builds range. Need verify correctness. There may be bug in `to_reached` logic. Let's test uniform_range("123","199"). i=0? from[0]=1 to[0]=1, i=1. from[1]=2 to[1]=9. i=1. sub_len=3-1-1=1. from_sub="3", to_sub="9". sub_zeros="0", sub_nines="9". from_sub != sub_zeros. out << "[2] " << "("; uniform_range("3","9") -> i=0, from[0]=3 to[0]=9, sub_len=0 -> out << "[3-9]"; out << ")"; if from[i] < to[i]-1 (2<8) true: out << " | "; if to_sub == sub_nines? "9"=="9" true: digit_range(from[i]+1, to[i]) = [3-9]; to_reached=true; out << " "; more_digits(1,1) -> [0-9]? Wait more_digits(1,1) outputs "[0-9]" then if min_digits==max_digits && min_digits==1 return. So out "[3-9] [0-9]". Then if !to_reached false. out << ")". So result: "1" "[2] " "([3-9]) | [3-9] [0-9]" maybe. But uniform_range("123","199") should match 123-199. Let's parse: prefix "1", then [2] followed by ( [3-9] ) OR [3-9] [0-9]. That matches 123-129? Wait [2] [3-9] matches 123-129. [3-9][0-9] matches 130-199. Good. But first branch `uniform_range(from_sub, sub_nines)` for from_sub="3", sub_nines="9" gives [3-9]. Good. It also includes `more_digits(sub_len, sub_len)` after digit_range(from[i], to[i]-1) in from_sub==sub_zeros branch. For from_sub==sub_zeros, e.g. from="100", to="199". i=0? from[0]=1 to[0]=1 i=1. from[1]=0 to[1]=9. sub_len=1. from_sub="0", to_sub="9". from_sub==sub_zeros true. digit_range(from[i], to[i]-1) = [0-8]; out << " "; more_digits(1,1) -> [0-9]. Then !to_reached -> out << " | "; digit_range(to[i],to[i]) = [9]; out << " "; uniform_range(sub_zeros, to_sub) = uniform_range("0","9") -> [0-9]. So result: "1" "[0-8] [0-9] | [9] [0-9]" matches 100-189 and 190-199. Good.
+
+Potential bug: `uniform_range` uses `from.substr(0, i)` and `to.substr(0, i)` same. It outputs `"\"" << from.substr(0, i) << "\""` but if i>0. In grammar, literal should be escaped? It uses raw from/to digits, safe. Good.
+
+- `build_min_max_int` negative handling: For min_value < 0 && max_value < 0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value, out, decimals_left, true); out << ")"; return. This matches negative numbers. But if min_value = -5, max_value = -1, -max=1, -min=5 -> build 1..5. Good. If min_value = -5, max_value = 0? has_min && has_max, min<0, max not <0. It does:
+```
+if (min_value < 0) {
+ out << "\"-\" (";
+ build_min_max_int(0, -min_value, out, decimals_left, true);
+ out << ") | ";
+ min_value = 0;
+}
+```
+Then continues with min_value=0, max_value=0. min_s="0", max_s="0", min_digits=1 max_digits=1. for digits=1; digits<1 false. uniform_range("0","0") -> i=0? while from[0]==to[0] i=1. i>0 out << "\"0\""; i<from.length false. So out `"0"`. Combined: `"-" (0..5) | "0"`? Wait build_min_max_int(0,5) with top_level true: has_min && has_max, min=0 max=5. min_s="0", max_s="5", min_digits=1 max_digits=1. uniform_range("0","5") -> i=0, from[0]=0 to[0]=5, sub_len=0 -> out << "[0-5]". So `"-" ([0-5]) | "0"`? Actually build_min_max_int(0,5) outputs `[0-5]`? Let's see: has_min && has_max, min_value=0 max=5. min_s="0", max_s="5", min_digits=1 max_digits=1. for digits=1; digits<1 false. uniform_range("0","5") -> i=0, from[0]!=to[0], sub_len=0 -> out << "[" << from[i] << "-" << to[i] << "]"; so `[0-5]`. So combined `"-" ([0-5]) | "0"`? Wait out << "\"-\" ("; build... out << ") | "; min_value=0; then uniform_range(min_s,max_s) outputs `[0-5]`? Actually after min_value=0, max_value=5, min_s="0", max_s="5", min_digits=1 max_digits=1, uniform_range("0","5") outputs `[0-5]`. So final: `"-" ([0-5]) | [0-5]`? That seems wrong: It should match -5..5, i.e. negative -5..-1 and nonnegative 0..5. The code after setting min_value=0 continues and outputs `[0-5]` again, not `"0"`? Wait let's re-evaluate: In has_min && has_max block:
+```
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(0, -min_value, out, decimals_left, true);
+    out << ") | ";
+    min_value = 0;
+}
+auto min_s = std::to_string(min_value);
+auto max_s = std::to_string(max_value);
+...
+for (auto digits = min_digits; digits < max_digits; digits++) { ... }
+uniform_range(min_s, max_s);
+return;
+```
+So for min=-5 max=5: out `"-" (0..5) | ` then min_value=0, max=5, uniform_range("0","5") -> `[0-5]`. So final `"-" ([0-5]) | [0-5]`. That matches -5..-1 and 0..5. Good. But note `build_min_max_int(0, -min_value, out, decimals_left, true)` with top_level true for 0..5 outputs `[0-5]`? Wait build_min_max_int(0,5) with has_min && has_max: min_s="0", max_s="5", min_digits=1 max_digits=1, uniform_range("0","5") -> `[0-5]`. So `"-" ([0-5])` matches -0..-5? Actually `"-" [0-5]` matches "-0", "-1", ..., "-5". But "-0" is not valid integer? JSON allows -0? It is valid? JSON number can be -0. But integer grammar maybe allows -0. However for min=-5 max=5, negative range should be -5..-1, not -0. The code includes -0. Is that a bug? Let's check actual llama.cpp code. I recall build_min_max_int from llama.cpp. It handles negative min and max. For min<0 and max>=0, it does:
+```
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(0, -min_value, out, decimals_left, true);
+    out << ") | ";
+    min_value = 0;
+}
+```
+This indeed includes -0. But maybe grammar allows -0 and it's okay? JSON integer -0 is valid? JSON number grammar allows `-0`. But integer schema min -5 max 5 should allow -0? JSON Schema integer includes -0? In JSON, -0 is a number and integer? It is integer. So okay. But if min=-5 max=-1, negative block uses -max=1, -min=5 -> 1..5, so `"-" (1..5)` matches -1..-5. Good.
+
+Potential bug: `build_min_max_int` for has_min only with min_value < 0:
+```
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+This seems wrong? For min_value < 0 and no max, should match all integers >= min_value. Negative part: `"-" (min_int.. -min_value)`? Wait min_value = -5. Need negative numbers <= -5? Actually min_value=-5 means allowed integers >= -5. Negative allowed: -5, -4, -3, -2, -1. The code calls build_min_max_int(INT64_MIN, -min_value=5, top_level=false). That builds range INT64_MIN..5, which includes -5..5? Wait build_min_max_int(min=INT64_MIN, max=5) with min<0 max>=0: negative part `"-" (0..INT64_MAX?)`? Let's compute: min_value=INT64_MIN, max_value=5. has_min && has_max. min<0, max>=0. It does `out << "\"-\" ("; build_min_max_int(0, -min_value, ...)` but -min_value = -INT64_MIN overflows! Actually `-min_value` for INT64_MIN is UB/overflow. That's a bug. In code, for has_min only min_value<0, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. If min_value is INT64_MIN, -min_value overflows. But maybe min_value can be INT64_MIN? The condition has_min true if min_value != INT64_MIN. So min_value < 0 and has_min means min_value > INT64_MIN. So -min_value safe. But inside build_min_max_int(INT64_MIN, -min_value), min_value=INT64_MIN, max_value=-min_value positive. It will handle min<0 max>=0: `build_min_max_int(0, -min_value, ...)` where -min_value = -INT64_MIN overflow! Wait inside that call, min_value is INT64_MIN, so `-min_value` overflows. This is a bug. Let's examine actual code. In llama.cpp, build_min_max_int has special handling for min_value < 0 and max_value < 0, and min_value < 0. For min_value < 0:
+```
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(0, -min_value, out, decimals_left, true);
+    out << ") | ";
+    min_value = 0;
+}
+```
+If min_value = INT64_MIN, -min_value overflow. But has_min && has_max block only if both set. If min_value=INT64_MIN and max_value set, has_min false because min_value == INT64_MIN. So not in has_min && has_max. In has_min only block, min_value != INT64_MIN, so min_value > INT64_MIN. It calls build_min_max_int(INT64_MIN, -min_value). Inside that call, min_value=INT64_MIN, max_value=-min_value (positive). It enters has_min && has_max (since max_value != INT64_MAX? -min_value could be INT64_MAX if min_value=-1? Actually -(-1)=1. If min_value=-1, max=1. If min_value=-5, max=5. max not INT64_MAX unless min_value=-INT64_MAX? min_value > INT64_MIN

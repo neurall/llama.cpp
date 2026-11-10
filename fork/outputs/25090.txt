@@ -1,0 +1,189 @@
+run 25090 | touch7 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 48.16 t/s | prompt 1394.1 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-10 04:23:40
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line, first to last, with every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then code, then // file: common/arg.cpp then code. Need return complete fixed version of following source file? It includes two files? Need likely fix bugs in both? They ask source file singular but content has two file markers. Need output entire code with fixes and comments. Need analyze bugs. Need be careful: huge code. Need identify bugs and fix. Need mark each change by comment. Need not summarize. Need output complete fixed version from first line to last. Need likely include both files? They said following source file but includes two file comments. Could be multiple files in one prompt. Need return complete fixed version of the following source file: every line of it. Since includes two file markers, maybe need fix both files? We should output both file sections, fixed. Need ensure no missing parts. Need mark changes with comments. Need not skip unchanged parts. Need stop only at end. Need likely produce massive code. Need identify actual bugs.
+
+Let's inspect code. It seems from llama.cpp common/json-schema-to-grammar.cpp and common/arg.cpp. There may be intentional bugs introduced. Need find and fix.
+
+First file json-schema-to-grammar.cpp.
+
+Includes: common/json-schema-to-grammar.h, common.h, trie.h, unicode.h. OK.
+
+using json = common_json;
+
+build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Potential bug: if max_items == 0 and min_items >0? invalid. If max_items == 0 returns empty. If min_items=0 max_items=0 should maybe empty? OK. If min_items=0 max_items=1 returns item? OK. If min_items=1 max_items=1 no separator: returns item{1,1}? Actually has_max true, min_items=1 max=1, not special, returns item{1,1}. OK.
+With separator: result = item + " " + build_repetition("(sep item)", min_items==0?0:min_items-1, has_max?max_items-1:max_items). If min_items=0 max_items=1: earlier returns item? no separator? Actually if separator nonempty and min=0 max=1, early returns item_rule + "?" before separator handling. That matches optional item no separator. If min=1 max=1: result = item + build_repetition("(sep item)",0,0). build_repetition max=0 returns "" => item. OK. If min=0 max=2: result = item + build_repetition("(sep item)",0,1) => item + "(sep item)?" then wrap? min=0 result = (item (sep item)?)? OK. If max_items=0 and min_items=0 with separator? early returns empty. OK.
+Potential bug: if max_items < min_items? not handled. Not likely.
+
+build_min_max_int:
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = ...
+    auto more_digits = ...
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range = ...
+
+Potential bugs:
+- uniform_range uses string_repeat("0", sub_len) but string_repeat maybe expects int? OK.
+- In uniform_range, if from_sub == sub_zeros: digit_range(from[i], to[i] - 1); But if from[i] == to[i]? Could happen? uniform_range called with same length strings from <= to. If first differing char? i is common prefix length, so from[i] != to[i] if i < len. So from[i] < to[i]. digit_range(from[i], to[i]-1) valid if from[i] <= to[i]-1. OK.
+- If from_sub != sub_zeros: out << "[" << from[i] << "] "; out << "("; uniform_range(from_sub, sub_nines); out << ")"; if (from[i] < to[i] - 1) { ... if (to_sub == sub_nines) digit_range(from[i]+1, to[i]); else digit_range(from[i]+1, to[i]-1); out << " "; more_digits... } if (!to_reached) { out << " | "; digit_range(to[i], to[i]); out << " "; uniform_range(sub_zeros, to_sub); }
+Potential bug: if from[i] == to[i]-1 and to_sub != sub_nines, then no middle range, to_reached false, adds to branch. OK. If to_sub == sub_nines and from[i] < to[i]-1, to_reached true, no to branch. OK. If from[i] == to[i]-1 and to_sub == sub_nines? condition from[i] < to[i]-1 false, to_reached false, adds to branch digit_range(to[i],to[i]) uniform_range(sub_zeros, sub_nines). But middle range from[i]+1 to to[i]-1 empty; to branch covers to[i] with sub_zeros..sub_nines. OK.
+- uniform_range when sub_len == 0: out << "[" << from[i] << "-" << to[i] << "]"; OK.
+- If i == from.length() and i == to.length() (strings equal), outputs common prefix only. OK.
+
+has_min && has_max:
+if min<0 && max<0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value,...); out << ")"; return;
+Potential overflow if min_value == INT64_MIN? But has_min false if min == min. If min<0 and max<0, min not min? Could be min=-9223372036854775807, max=-1, -min ok. If min=INT64_MIN? has_min false, not here. OK.
+if min<0: out << "\"-\" ("; build_min_max_int(0, -min_value,...); out << ") | "; min_value=0;
+Potential if min_value == INT64_MIN? has_min false, not here. OK.
+Then min_s max_s. for digits min_digits to max_digits-1: uniform_range(min_s, string_repeat("9", digits)); min_s = "1" + string_repeat("0", digits); out << " | "; uniform_range(min_s, max_s);
+Potential bug: if min_digits > max_digits? invalid. If min_value=0 max_value=0: min_digits=1 max_digits=1, uniform_range("0","0") outputs [0]? uniform_range: i=1? from length 1, to length 1, while i<1 && from[0]==to[0] => i=1. if i>0 out << "\"0\"". if i<length false. So outputs "0" literal. OK.
+If min=0 max=9: uniform_range("0","9") i=0, sub_len=0, out [0-9]. OK.
+If min=10 max=99: min_digits=2 max_digits=2 uniform_range("10","99"): i=0, sub_len=1, from_sub="0" sub_zeros="0", digit_range('1','8'), more_digits(1,1), !to_reached => | [9] uniform_range("0","9") => [0-9]. OK.
+If min=100 max=999: from_sub="00" sub_zeros, digit_range('1','8'), more_digits(2,2), | [9] uniform_range("00","99") -> common? i=0? from "00" to "99": sub_len=1, from_sub="0" zeros, digit_range('0','8'), more_digits(1,1), | [9] uniform_range("0","9") -> [0-9]. OK.
+
+less_decimals = std::max(decimals_left - 1, 1);
+if has_min:
+ if min<0: out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1);
+Potential bug: more_digits(0, decimals_left - 1) if decimals_left=0? default 16, recursive less_decimals max 1. decimals_left could be 1? less_decimals=1. decimals_left-1=0. more_digits(0,0) outputs [0-9]{0,}? Let's inspect more_digits: out << "[0-9]"; if (min_digits == max_digits && min_digits == 1) return; out << "{"; out << min_digits; if (max_digits != min_digits) { out << ","; if (max_digits != INT_MAX) out << max_digits; } out << "}"; For 0,0 outputs [0-9]{0,0}. OK. But if decimals_left=0? less_decimals max 1, but top call decimals_left maybe? default 16. In recursive calls less_decimals. Could be 1. OK.
+But for min<0 unbounded max, grammar: negative numbers with magnitude >= min? Actually min negative, max unbounded positive. It outputs negative part: "-" (integers from min_abs to max?) | [0] | [1-9] more_digits(0, decimals_left-1). This allows positive numbers up to 10^decimals_left? But unbounded max should allow arbitrary length? In llama grammar decimal-part limited 16? Maybe decimals_left controls. OK.
+Potential bug: more_digits(0, decimals_left - 1) should be less_decimals? In min_value==0 top_level uses less_decimals. For min<0 maybe should use less_decimals? Original llama code? Let's recall. In llama.cpp json-schema-to-grammar.cpp build_min_max_int. I can recall original:
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+...
+    if (has_min) {
+        if (min_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+            out << ") | [0] | [1-9] ";
+            more_digits(0, decimals_left - 1);
+        } else if (min_value == 0) {
+            if (top_level) {
+                out << "[0] | [1-9] ";
+                more_digits(0, less_decimals);
+            } else {
+                more_digits(1, decimals_left);
+            }
+        } else if (min_value <= 9) {
+...
+        } else {
+...
+            if (c > '1') {
+                digit_range(top_level ? '1' : '0', c - 1);
+                out << " ";
+                more_digits(len, less_decimals);
+                out << " | ";
+            }
+            digit_range(c, c);
+            out << " (";
+            build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false);
+            out << ")";
+            if (c < '9') {
+                out << " | ";
+                digit_range(c + 1, '9');
+                out << " ";
+                more_digits(len - 1, less_decimals);
+            }
+        }
+        return;
+    }
+...
+}
+Maybe original has more_digits(0, decimals_left - 1) for min<0? Could be.
+
+Potential bug in has_max:
+if (max_value >= 0) {
+    if (top_level) {
+        out << "\"-\" [1-9] ";
+        more_digits(0, less_decimals);
+        out << " | ";
+    }
+    build_min_max_int(0, max_value, out, decimals_left, true);
+} else {
+    out << "\"-\" (";
+    build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, false);
+    out << ")";
+}
+Potential bug: if max_value >=0 and top_level, negative numbers unbounded? It outputs "-" [1-9] more_digits(0, less_decimals) | nonnegative <= max. But if max_value=0, negative allowed? For max=0, should allow negative numbers and zero, not positive. It outputs negative [1-9]... | build_min_max_int(0,0) => zero. OK. But negative magnitude limited to less_decimals? If max=0, should allow any negative integer? In grammar limited decimals. OK.
+Potential bug: if max_value >=0 and top_level, negative branch should maybe "\"-\" [1-9] " more_digits(0, decimals_left - 1) not less_decimals? Original? Let's recall original llama code: 
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    } else {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+        out << ")";
+    }
+    return;
+}
+Seems OK.
+
+Potential bug: missing #include <functional>? Code uses std::function but includes not <functional>. It includes algorithm, limits, map, regex, sstream, string, unordered_map, unordered_set, vector. std::function defined in <functional>. Could be included via other headers? common.h maybe. But bug? Need fix by adding #include <functional>. Also uses std::stoll, <string> OK. string_repeat, string_join from common.h.
+
+Potential bug: static std::regex INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+"); In regex, hyphen at end OK. GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]") OK. GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]") maybe OK.
+
+replacePattern:
+std::string::const_iterator searchStart(input.cbegin());
+while (std::regex_search(searchStart, searchEnd, match, regex)) {
+    result.append(searchStart, searchStart + match.position());
+    result.append(replacement(match));
+    searchStart = match.suffix().first;
+}
+Potential bug: match.position() returns difference_type relative to searchStart? For regex_search with iterators, match.position() returns position relative to first? Yes. searchStart + match.position() OK. But if match.position() is -1? no.
+Potential bug: if regex can match empty string, infinite loop. Not here.
+
+format_literal: uses GRAMMAR_LITERAL_ESCAPES.at(c). For char '\r','\n','"','\\' OK. But GRAMMAR_LITERAL_ESCAPES includes '-' and ']' too. OK.
+
+gbnf_escape_length:
+if (pos + 1 >= pattern.length() || pattern[pos] != '\\') return 0;
+size_t n_hex=0; switch pattern[pos+1] ... case 't'... return 2; default return 0;
+if (pos + 2 + n_hex > pattern.length()) return 0;
+for i pos+2 to pos+2+n_hex check hex. return 2+n_hex.
+Potential bug: if pos+1 >= length, OK. If pattern[pos] != '\\', return 0. For escape \x with only 1 hex? returns 0. OK.
+
+class common_chat_schema_converter:
+friend std::string build_grammar(...). OK.
+template <typename T> static const T & as(const common_chat_schema & node) { return static_cast<const T &>(node); } OK.
+
+_add_rule:
+std::string esc_name = regex_replace(name, INVALID_RULE_CHARS_RE, "-");
+if (_rules.find(esc_name) == _rules.end() || _rules[esc_name] == rule) { _rules[esc_name]=rule; return esc_name; }
+int i=0; while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule) i++; key=...; _rules[key]=rule; return key;
+OK.
+
+_generate_union_rule:
+rules.push_back(visit(*alt_schemas[i], name + (name.empty() ? "alternative-" : "-") + std::to_string(i)));
+If name empty, name + "alternative-" + i. If not, name + "-" + i. OK
