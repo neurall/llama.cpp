@@ -4,9 +4,11 @@
 #include "llama-kv-cache-dsv4.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -14,6 +16,9 @@
 // LLAMA_DSV41_SPARSE=0 disables the sparse attention path (see build_attention41)
 
 static constexpr int64_t DSV41_ENGRAM_DEAD = -1;
+
+bool llama_rowread_has_fork(const ggml_tensor * t);   // llama-rowread-fork.cpp: the table is read straight from the file (not through the mapping)
+bool llama_rowread_gather_fork(const ggml_tensor * t, const int32_t * rows, size_t n, uint8_t * dst);   // rows (sorted, unique) into dst; false: a read failed
 
 static bool dsv41_env_on(const char * name) {
     const char * v = getenv(name);
@@ -287,6 +292,7 @@ public:
     bool can_reuse(const llm_graph_params & params) override;
 
     std::vector<ggml_tensor *> engram_ids;
+    ggml_tensor * engram_tab  = nullptr;    // fork: this pass's Engram rows, each once, read from the file; the gathers index it (llama-rowread-fork.cpp)
     ggml_tensor * engram_keep = nullptr;    // 0 for embedding (image) tokens; only in mixed ubatches
     ggml_tensor * cand_pin = nullptr;
     bool cand_csa = false;
@@ -312,7 +318,27 @@ void llm_graph_input_dsv41::set_input(const llama_ubatch * ubatch) {
             model.engram_hash((int) e, *ubatch, prev, ids[e]);
             all.insert(all.end(), ids[e].begin(), ids[e].end());
         }
-        if (model.can_prefetch.count(model.per_layer_tok_embd)) {
+        if (engram_tab && engram_tab->buffer) {
+            // fork: the rows of this pass, each once and in file order, read straight from the file into the compact table; the ids become its row numbers
+            // (DS 12k-token request: 648k row reads, 307k distinct rows = 42 MiB, against 1.2 GiB of page cache through the mapping)
+            std::vector<int32_t> u(all);
+            std::sort(u.begin(), u.end());
+            u.erase(std::unique(u.begin(), u.end()), u.end());
+            GGML_ASSERT((int64_t) u.size() <= engram_tab->ne[1]);
+            const size_t rs = ggml_row_size(engram_tab->type, engram_tab->ne[0]);
+            const bool host = ggml_backend_buffer_is_host(engram_tab->buffer);
+            std::vector<uint8_t> tmp(host ? 0 : u.size()*rs);
+            uint8_t * dst = host ? (uint8_t *) engram_tab->data : tmp.data();
+            if (!llama_rowread_gather_fork(model.per_layer_tok_embd, u.data(), u.size(), dst)) {
+                static std::atomic<bool> warned{false};
+                if (!warned.exchange(true)) { LLAMA_LOG_WARN("%s: an Engram row read failed: this pass takes its rows from the mapping\n", __func__); }
+                for (size_t k = 0; k < u.size(); ++k) { memcpy(dst + k*rs, (const uint8_t *) model.per_layer_tok_embd->data + (size_t) u[k]*rs, rs); }
+            }
+            if (!host) { ggml_backend_tensor_set(engram_tab, tmp.data(), 0, u.size()*rs); }
+            for (auto & v : ids) {
+                for (auto & x : v) { x = (int32_t) (std::lower_bound(u.begin(), u.end(), x) - u.begin()); }
+            }
+        } else if (model.can_prefetch.count(model.per_layer_tok_embd)) {
             llama_prefetch_rows(model.per_layer_tok_embd, all.data(), all.size());
         }
         for (size_t e = 0; e < engram_ids.size(); ++e) {
@@ -355,6 +381,10 @@ bool llm_graph_input_dsv41::can_reuse(const llm_graph_params & params) {
     bool res = true;
     for (auto * t : engram_ids) {
         res &= t->ne[0] == (int64_t) model.hparams.ple_n_heads*params.ubatch.n_tokens;
+    }
+    res &= (engram_tab != nullptr) == (!engram_ids.empty() && llama_rowread_has_fork(model.per_layer_tok_embd));
+    if (engram_tab) {
+        res &= engram_tab->ne[1] == (int64_t) engram_ids.size()*model.hparams.ple_n_heads*params.ubatch.n_tokens;
     }
     res &= (engram_keep != nullptr) == (!engram_ids.empty() && params.ubatch.embd != nullptr);
     if (engram_keep) {
@@ -787,6 +817,14 @@ llama_model_deepseek41::graph::graph(const llm_graph_params & params) :
     // embedding input has no token ids: it skips Engram, like the reference's masked (image) positions
     // the gathers go right after the token embeddings, so they share the first graph split (the table stays on the host)
     std::vector<ggml_tensor *> engram_rows;
+    // fork: with the table read straight from the file the gathers index a compact table of this pass's rows (filled in set_input), not the mapped 103 GiB tensor
+    if (ubatch.token && hparams.ple_n_heads > 0 && llama_rowread_has_fork(model.per_layer_tok_embd)) {
+        int64_t n_e = 0;
+        for (int il = 0; il < n_layer; ++il) { n_e += hparams.is_ple(il) ? 1 : 0; }
+        inp41->engram_tab = ggml_new_tensor_2d(ctx0, model.per_layer_tok_embd->type, model.per_layer_tok_embd->ne[0], n_e*hparams.ple_n_heads*n_tokens);
+        ggml_set_name(inp41->engram_tab, "engram_tab");
+        ggml_set_input(inp41->engram_tab);
+    }
     for (int il = 0; ubatch.token && hparams.ple_n_heads > 0 && il < n_layer; ++il) {
         if (!hparams.is_ple(il)) {
             continue;
@@ -796,7 +834,7 @@ llama_model_deepseek41::graph::graph(const llm_graph_params & params) :
         ggml_set_input(ids);
         inp41->engram_ids.push_back(ids);
 
-        ggml_tensor * rows = ggml_get_rows(ctx0, model.per_layer_tok_embd, ids);
+        ggml_tensor * rows = ggml_get_rows(ctx0, inp41->engram_tab ? inp41->engram_tab : model.per_layer_tok_embd, ids);
         rows = ggml_reshape_2d(ctx0, rows, hparams.ple_head_dim*hparams.ple_n_heads, n_tokens);
         cb(rows, "engram_rows", il);
         ggml_build_forward_expand(gf, rows);

@@ -61,6 +61,7 @@ void llama_dsplit_bench_fork(const llama_model & model);   // llama-dsplit-fork.
 
 // the largest pass a dense split can run (llama-dsplit-fork.cpp): the sliding-window caches need room for it
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);
+bool     llama_rowread_add_fork(const ggml_tensor * t, int fd_file, uint64_t off);   // llama-rowread-fork.cpp: a lazy row table read as O_DIRECT pages, not through the mapping
 
 static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params & params) {
     switch (arch) {
@@ -2191,6 +2192,12 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         LLAMA_LOG_INFO("%s: enabling prefetch for '%s'\n", __func__, per_layer_tok_embd->name);
 
         can_prefetch.insert(per_layer_tok_embd);
+
+        // fork: DeepSeek V4.1's Engram rows straight from the file; its graph then gathers from a compact table of the pass's rows (llama-rowread-fork.cpp)
+        if (arch == LLM_ARCH_DEEPSEEK41 && !ml.no_alloc) {   // not the memory-fit pass: its tensors are freed
+            const llama_tensor_weight & w = ml.require_weight(ggml_get_name(per_layer_tok_embd));
+            llama_rowread_add_fork(per_layer_tok_embd, ml.files.at(w.idx)->file_id(), w.offs);
+        }
     }
 
     if (output && tok_embd &&

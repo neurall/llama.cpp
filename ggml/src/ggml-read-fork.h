@@ -201,6 +201,95 @@ static inline bool aio_read_range(int fd, uint8_t * buf, size_t beg, size_t tota
 }
 #endif
 
+// n pages of fd, page i of pg bytes at offs[i] (pg-aligned, pg = direct_align()) into buf + i*pg (buf pg-aligned): the gathers of lazy row tables (DeepSeek V4.1
+// Engram: 144-byte rows at random places of a 103 GiB table, a 12k-token pass reads about as many pages as rows). Kernel AIO, ONE thread, up to 128 reads in flight,
+// submitted in batches; a short read at the end of the file counts as read. False: no async engine here (the caller keeps its own path) or a read failed.
+// Windows: overlapped ReadFile, 32 in flight (win_read_range's pattern). False also when AIO is refused here or switched off (--moe read-aio=0): the caller keeps its own path.
+static inline bool sr_read_pages(int fd, const uint64_t * offs, size_t n, size_t pg, uint8_t * buf) {
+#ifdef SR_HAVE_AIO
+    constexpr int QD = 128;
+    if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
+    struct ctx_t { aio_context_t ctx = 0; ~ctx_t() { if (ctx) { syscall(SYS_io_destroy, ctx); } } };
+    thread_local ctx_t c;
+    if (!c.ctx && syscall(SYS_io_setup, QD, &c.ctx) != 0) { c.ctx = 0; return false; }
+    iocb cbs[QD]; iocb * ps[QD]; io_event ev[QD];
+    int free_slot[QD]; int n_free = QD;
+    for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
+    size_t next = 0; int infl = 0; bool bad = false;
+    while (next < n || infl > 0) {
+        long np = 0;
+        while (!bad && next < n && n_free > 0) {
+            const int k = free_slot[--n_free];
+            memset(&cbs[k], 0, sizeof(iocb));
+            cbs[k].aio_lio_opcode = IOCB_CMD_PREAD; cbs[k].aio_fildes = (uint32_t) fd;
+            cbs[k].aio_buf = (uint64_t) (uintptr_t) (buf + next*pg); cbs[k].aio_nbytes = pg; cbs[k].aio_offset = (int64_t) offs[next];
+            ps[np++] = &cbs[k]; ++next;
+        }
+        if (np > 0) {
+            const long s = syscall(SYS_io_submit, c.ctx, np, ps);
+            const long ok = s < 0 ? 0 : s;
+            for (long j = ok; j < np; ++j) { free_slot[n_free++] = (int) (ps[j] - cbs); }   // not taken: back to the free slots, read again
+            next -= (size_t) (np - ok);
+            infl += (int) ok;
+            if (ok == 0) { bad = true; }
+        }
+        if (infl == 0) { break; }
+        const long got = syscall(SYS_io_getevents, c.ctx, 1L, (long) QD, ev, (struct timespec *) nullptr);
+        if (got < 0) { if (errno == EINTR) { continue; } g_aio_ok.store(0); return false; }   // a lost context cannot be drained
+        for (long e = 0; e < got; ++e) {
+            const iocb * cb = (const iocb *) (uintptr_t) ev[e].obj;
+            if (ev[e].res <= 0) { bad = true; }
+            free_slot[n_free++] = (int) (cb - cbs); --infl;
+        }
+    }
+    return !bad;
+#elif defined(_WIN32)
+    constexpr int QD = 32;   // WaitForMultipleObjects takes up to 64 handles
+    if (!g_aio_ok.load(std::memory_order_relaxed)) { return false; }
+    const HANDLE h = (HANDLE) _get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) { return false; }
+    struct evs_t { HANDLE e[QD]; bool ok = true;
+        evs_t() { for (HANDLE & x : e) { x = CreateEventW(nullptr, TRUE, FALSE, nullptr); ok = ok && x; } }
+        ~evs_t() { for (HANDLE x : e) { if (x) { CloseHandle(x); } } } };
+    thread_local evs_t ev;
+    if (!ev.ok) { return false; }
+    OVERLAPPED ov[QD]; int act[QD]; HANDLE wh[QD]; int free_slot[QD]; int n_free = QD;
+    for (int i = 0; i < QD; ++i) { free_slot[i] = i; }
+    size_t next = 0; int infl = 0; bool bad = false;
+    auto done = [&](int k, BOOL ok, DWORD got) { if (!ok || got == 0) { bad = true; } free_slot[n_free++] = k; };   // 0 bytes: past the end, or failed
+    while (next < n || infl > 0) {
+        while (!bad && next < n && n_free > 0) {
+            const int k = free_slot[--n_free];
+            memset(&ov[k], 0, sizeof(OVERLAPPED));
+            ov[k].Offset = (DWORD) offs[next]; ov[k].OffsetHigh = (DWORD) (offs[next] >> 32); ov[k].hEvent = ev.e[k];
+            if (ReadFile(h, buf + next*pg, (DWORD) pg, nullptr, &ov[k])) {   // done already
+                DWORD got = 0; const BOOL ok = GetOverlappedResult(h, &ov[k], &got, FALSE); done(k, ok, got);
+            } else if (GetLastError() == ERROR_IO_PENDING) {
+                act[infl++] = k;
+            } else {
+                done(k, FALSE, 0);
+            }
+            ++next;
+        }
+        if (infl == 0) { if (bad || next >= n) { break; } continue; }
+        for (int i = 0; i < infl; ++i) { wh[i] = ev.e[act[i]]; }
+        const DWORD w = WaitForMultipleObjects((DWORD) infl, wh, FALSE, INFINITE);
+        if (w - WAIT_OBJECT_0 < (DWORD) infl) {
+            const int i = (int) (w - WAIT_OBJECT_0), k = act[i];
+            act[i] = act[--infl];
+            DWORD got = 0; const BOOL ok = GetOverlappedResult(h, &ov[k], &got, FALSE); done(k, ok, got);
+        } else {   // the wait itself failed: wait for each read on its own so no OVERLAPPED outlives this frame
+            for (int i = 0; i < infl; ++i) { DWORD got = 0; GetOverlappedResult(h, &ov[act[i]], &got, TRUE); free_slot[n_free++] = act[i]; }
+            infl = 0; bad = true;
+        }
+    }
+    return !bad;
+#else
+    (void) fd; (void) offs; (void) n; (void) pg; (void) buf;
+    return false;
+#endif
+}
+
 // io_uring by raw syscalls (no liburing), same contract and order as the AIO engine. --moe read-engine=uring (LLAMA_MOE_RD_ENGINE=uring); the default stays kernel AIO,
 // which is what the release image allows (Docker's default seccomp blocks io_uring).
 #if defined(SR_HAVE_AIO) && defined(SYS_io_uring_setup) && __has_include(<linux/io_uring.h>)
