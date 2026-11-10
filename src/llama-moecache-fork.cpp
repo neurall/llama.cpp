@@ -12074,7 +12074,14 @@ static std::mutex g_pp_mu;
 // 30 to 49 GB through the mapping in a 277-token call, 13.6 to 17.5 s at 2.1 to 2.9 GB/s, where the upload over the link alone said 4.5 s. g_pp_ssd_m: the bytes of the experts this call's stream
 // takes from tensors that are still mapped (set where the call is decided, used where it ends); g_pp_ssd_gbs: the mapped bytes per second the stream passes got through (read_bytes over 1 GiB says the SSD was read at all).
 static double              g_pp_ssd_m   = 0.0;
-static double              g_pp_ssd_gbs = 0.0;
+static std::atomic<double> g_pp_ssd_gbs{ 0.0 };   // atomic: the dense split's upload estimate reads it under its own lock, not g_pp_mu
+// The SSD's rate for a path that reads mapped experts: what a stream pass measured, else the loader's, else the machine benchmark's drive maximum (2026-11-07: GLM 3.5 planned every
+// call "from the SSD at 0.00 GB/s", both were 0 with the O_DIRECT loader). One rate for every path's price (2026-11-10: the mix and the dense split's upload had no SSD floor, the
+// stream and the decode chain had: DeepSeek 117 tokens, the mix priced 4.9 s and the split 4.75 s against 20.9 s for the stream, the call took 19.2 s).
+static double pp_ssd_rate_gbs() {
+    const double m = g_pp_ssd_gbs.load(), l = g_load_read_gbs.load();
+    return m > 0.0 ? m : l > 0.0 ? l : llama_moe_ssd_max_get_fork();
+}
 static unsigned long long  g_pp_rb0     = 0;
 // The decode chain's calculated time against what it took (user 2026-11-03: "it must be measured live as perf fluctuates and the cpu path can become slower ... when we remove mmap this algo will autoadapt"):
 // g_pp_de0 the calculation of the call being decided, g_pp_dec_ratio the moving average of took / calculated over the decode-chain calls so far (0 = none yet, read as 1). A faster memory path under the
@@ -12354,10 +12361,27 @@ static void pp_add(uint32_t n, uint32_t ub, double U, int k) {
     g_pp_xc   += (double) n * std::max(0.0, (double) g_pp_cells - 0.5 * (double) n);
 }
 
-// The experts a prompt pass streams to `dev`: every layer's expert bytes (E), and how many of those bytes this card's pool holds now (R), ready, not in flight.
-static void pp_expert_bytes(moe_cache * mc, ggml_backend_dev_t dev, double & E, double & R) {
+// One expert of this layer, as far as its tensors are not pinned (the mapping reads them from the file, the SSD behind it).
+static double pp_mapped_expert_bytes(const layer_state & l, ggml_backend_buffer_type_t pinned_buft) {
+    double Sm = 0.0;
+    for (int k = 0; k < 3; ++k) {
+        const ggml_tensor * t = k == 0 ? l.pub.up_src : k == 1 ? l.pub.gate_src : l.pub.down_src;
+        // a tensor in the card's pinned host buffer is resident (read straight into place, locked): it never comes off the SSD. Counting it as mapped priced
+        // GLM 3.0's 100.5 GiB of locked weights as SSD reads at 6.3 GB/s (stream 17.5 s, decode chain 19.7 s for a 100-token call) and only the mix escaped it
+        if (l.src_fd[k] < 0 || !t->buffer || (pinned_buft && ggml_backend_buffer_get_type(t->buffer) == pinned_buft)) { continue; }
+        const char * b = (const char *) ggml_backend_buffer_get_base(t->buffer);
+        if ((const char *) t->data >= b && (const char *) t->data < b + ggml_backend_buffer_get_size(t->buffer)) { Sm += (double) t->nb[2]; }
+    }
+    return Sm;
+}
+
+// The experts a prompt pass streams to `dev`: every layer's expert bytes (E), and how many of those bytes this card's pool holds now (R), ready, not in flight;
+// Mm (if asked): of the bytes it does not hold, the ones the SSD still has to deliver.
+static void pp_expert_bytes(moe_cache * mc, ggml_backend_dev_t dev, double & E, double & R, double * Mm = nullptr) {
     E = 0.0; R = 0.0;
+    if (Mm) { *Mm = 0.0; }
     std::lock_guard<std::mutex> lock(mc->mtx);
+    ggml_backend_buffer_type_t pinned_buft = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
     for (const auto & l : mc->layers) {
         if (!l.pub.up_src || !l.pub.gate_src || !l.pub.down_src) {
             continue;
@@ -12374,6 +12398,7 @@ static void pp_expert_bytes(moe_cache * mc, ggml_backend_dev_t dev, double & E, 
         }
         E += lb;
         R += lb * (double) std::min<int64_t>(held, n_exp) / (double) n_exp;
+        if (Mm) { *Mm += pp_mapped_expert_bytes(l, pinned_buft) * (double) (n_exp - std::min<int64_t>(held, n_exp)); }
     }
 }
 
@@ -12384,12 +12409,14 @@ static void pp_expert_bytes(moe_cache * mc, ggml_backend_dev_t dev, double & E, 
 double llama_moe_cache_pass_upload_ms_fork(uint32_t n_tokens, uint32_t n_used, uint32_t n_expert) {
     moe_cache * mc = g_cache;
     if (!mc || mc->n_links <= 0 || !mc->link_dev[0] || n_expert == 0 || n_tokens == 0) { return -1.0; }
-    double E = 0.0, R = 0.0;
-    pp_expert_bytes(mc, mc->link_dev[0], E, R);
+    double E = 0.0, R = 0.0, Mm = 0.0;
+    pp_expert_bytes(mc, mc->link_dev[0], E, R, &Mm);
     const double gbs = llama_moe_cache_link_gbs_fork(mc->link_dev[0]);
     if (gbs <= 0.0 || E <= 0.0) { return -1.0; }
     const double frac = 1.0 - std::pow(1.0 - std::min(1.0, (double) n_used / (double) n_expert), (double) n_tokens);
-    return frac * std::max(0.0, E - R) / (gbs * 1e6);
+    // the link is not the only limit: the bytes still mapped come off the SSD first (2026-11-10 DeepSeek 117 tokens: the split planned 4.75 s over the link, the call took 19.2 s at 2.1 GB/s)
+    const double ssd = pp_ssd_rate_gbs();
+    return frac * std::max(std::max(0.0, E - R) / (gbs * 1e6), ssd > 0.0 ? Mm / (ssd * 1e6) : 0.0);
 }
 
 
@@ -12888,6 +12915,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     std::vector<cost> v;
     double U = 0.0, Um = 0.0;   // the stream's upload, without and with the prompt mix
     double M = 0.0;             // of the stream's bytes, the ones read from the SSD: tensors still on the mapping
+    double Mm = 0.0;            // the same for the mix's bytes (the experts no card holds)
     double Uk[PP_PATHS - PP_K] = {}, Mk[PP_PATHS - PP_K] = {};   // the same two for predicted staging with 2^i x the picks: the experts the call's tokens rank that high (cold counts: nearly all of them)
     const double n = (double) std::min(n_tokens, ub_max);
     int n_expert = 0;
@@ -12911,15 +12939,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             const double S  = (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
             A += (double) mc->n_expert_used * S;
             const double rl = mc->gbs_link[l.link] * 1e3;
-            double Sm = 0.0;   // one expert of this layer, as far as its tensors are not pinned (the mapping reads them from the file)
-            for (int k = 0; k < 3; ++k) {
-                const ggml_tensor * t = k == 0 ? l.pub.up_src : k == 1 ? l.pub.gate_src : l.pub.down_src;
-                // a tensor in the card's pinned host buffer is resident (read straight into place, locked): it never comes off the SSD. Counting it as mapped priced
-                // GLM 3.0's 100.5 GiB of locked weights as SSD reads at 6.3 GB/s (stream 17.5 s, decode chain 19.7 s for a 100-token call) and only the mix escaped it
-                if (l.src_fd[k] < 0 || !t->buffer || (pinned_buft && ggml_backend_buffer_get_type(t->buffer) == pinned_buft)) { continue; }
-                const char * b = (const char *) ggml_backend_buffer_get_base(t->buffer);
-                if ((const char *) t->data >= b && (const char *) t->data < b + ggml_backend_buffer_get_size(t->buffer)) { Sm += (double) t->nb[2]; }
-            }
+            const double Sm = pp_mapped_expert_bytes(l, pinned_buft);   // one expert of this layer, as far as its tensors are not pinned (the mapping reads them from the file)
             double all = (double) l.glob_count.size();
             for (const auto x : l.glob_count) { all += (double) x; }
             for (size_t e = 0; e < l.expert_slot.size(); ++e) {
@@ -12932,7 +12952,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
                         Uk[i] += hit * S / r0; Mk[i] += hit * Sm;
                     }
                 }
-                if (r0 > 0 && !on_card) { Um += S / r0; }                    // the mix: computed on its home card if a card holds it
+                if (r0 > 0 && !on_card) { Um += S / r0; Mm += Sm; }          // the mix: computed on its home card if a card holds it
                 if (!on_card && rl > 0) {
                     v.push_back({ std::log1p(-std::min(1.0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all)), S / rl, rc > 0.0 ? S / rc : 0.0, Sm });
                 }
@@ -12966,8 +12986,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // The stream reads the experts no card holds: over the link, and from the SSD where their tensors are still mapped. Both run side by side (the reads fill the staging slots the link empties), so the
     // slower one is its time; the SSD's rate is what the stream passes read at so far, none before the first one.
     // a stream pass's own rate, until one ran: the loader's, else the machine benchmark's drive maximum (2026-11-07: GLM 3.5 planned every call "from the SSD at 0.00 GB/s", both were 0 with the O_DIRECT loader)
-    const double ssd_rate = g_pp_ssd_gbs > 0.0 ? g_pp_ssd_gbs : g_load_read_gbs.load() > 0.0 ? g_load_read_gbs.load() : llama_moe_ssd_max_get_fork();
+    const double ssd_rate = pp_ssd_rate_gbs();
     const double Ts = ssd_rate > 0.0 ? std::max(U, M / (ssd_rate * 1e3)) : U;
+    const double Tm = ssd_rate > 0.0 ? std::max(Um, Mm / (ssd_rate * 1e3)) : Um;   // the mix reads the same mapped bytes from the SSD, less the experts a card holds
     g_pp_ssd_m = M;
     g_pp_rb0 = pp_self_read_bytes();
     const double de0 = up + cpu > 0.0 ? up * cpu / (up + cpu) : 0.0;
@@ -13023,15 +13044,15 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     auto cand = [&](int p, double Up) { g_pp_phi[p][0] = 1.0; g_pp_phi[p][1] = n; g_pp_phi[p][2] = n * g_pp_a_us * cells_mid; g_pp_phi[p][3] = Up; };
     // U per path: the stream's bound by its link and by the SSD reads (Ts; the design names U, Ts is U wherever the experts are not mapped), the mix's
     // upload, the misses the prompt chain uploads behind the router, the decode chain's misses plus its 4-token chunk reads, the predictions the stream's
-    cand(PP_RING, Ts);
-    if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, Um); }
-    // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
-    // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed)
-    if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, up); }
-    // the decode chain's misses also wait for the SSD where their tensors are still mapped (planner-rules.md C1/R3: rp=1 cold 2k took 43-86 s against
+    // the chains' misses also wait for the SSD where their tensors are still mapped (planner-rules.md C1/R3: rp=1 cold 2k took 43-86 s against
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
     double ssd_miss = 0.0;
     if (ssd_rate > 0.0) { for (const auto & x : v) { ssd_miss += (1.0 - std::exp(n * x.l1p)) * x.sm / (ssd_rate * 1e3); } }
+    cand(PP_RING, Ts);
+    if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, Tm); }
+    // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
+    // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed). The prompt chain's uploads wait for the same SSD reads.
+    if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, std::max(up, ssd_miss)); }
     // its calculated time (uploads and CPU side by side, the chunks, the learned ratios), not its uploads alone: the uploads alone priced a 100-token GLM call at 4.8 s, the
     // calculation said 1.6 s, it took 2.1 s, and the stream (3.3 s) won every such call (2026-11-10, two cards)
     if (cpu_known) { cand(PP_DEC, de_at(n, de0) + ssd_miss); }
