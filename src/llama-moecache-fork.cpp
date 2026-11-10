@@ -728,9 +728,27 @@ static void ram_sample() {
     size_t cur = g_ram_low.load(std::memory_order_relaxed);
     while (a < cur && !g_ram_low.compare_exchange_weak(cur, a, std::memory_order_relaxed)) {}
 }
+// bytes the kernel swapped out since boot (/proc/vmstat pswpout, pages): reclaim pushing pages out is pressure whatever MemAvailable says (user 2026-11-02: "unpin the
+// last step when pressure shows (swap-in, cache starved)"); 0 where there is no such count
+static uint64_t vm_swapped_out() {
+    uint64_t v = 0;
+#ifdef __linux__
+    if (FILE * f = fopen("/proc/vmstat", "r")) {
+        char line[128];
+        while (fgets(line, sizeof line, f)) { if (sscanf(line, "pswpout %" SCNu64, &v) == 1) { break; } }
+        fclose(f);
+    }
+    v *= (uint64_t) sysconf(_SC_PAGE_SIZE);
+#endif
+    return v;
+}
+static std::atomic<uint64_t> g_swp_last{0};   // vm_swapped_out() at the last resize (or the pool's start)
 static void ram_watch_start() {
     static std::once_flag once;
-    std::call_once(once, [] { std::thread([] { for (;;) { ram_sample(); std::this_thread::sleep_for(std::chrono::milliseconds(250)); } }).detach(); });
+    std::call_once(once, [] {
+        g_swp_last.store(vm_swapped_out());
+        std::thread([] { for (;;) { ram_sample(); std::this_thread::sleep_for(std::chrono::milliseconds(250)); } }).detach();
+    });
 }
 
 // the pinned copy of expert e's slice of tensor k, or nullptr. Made on the SECOND upload of the expert (the first only marks it: an expert that is never evicted and uploaded again gains
@@ -8134,7 +8152,8 @@ static std::mutex g_vram_mtx;
 // a request and the idle time before it) against the floor (ram_floor_bytes): below it chunks go back at once, the least-read class's last chunk first; above it half of
 // what is left over is added, as empty blocks the misses fill (a few requests converge without overshooting, each shows the next where it stands). The start stays as it
 // was (common_auto_pin): a first request no session measured yet runs with the room it always had. Every GiB pinned takes each card's page tables (rp_vram_per, 2 MiB on
-// PC1): a growth never takes a card's lowest free VRAM of this session below the safety the margin keeps over its need.
+// PC1): a growth never takes a card's lowest free VRAM of this session below the safety the margin keeps over its need. Swap-out since the last resize (more than a
+// thousandth of the pool) is pressure too: what this session grew goes back first, as much as was swapped out, and nothing is added.
 static std::atomic<bool> g_rp_growing{false};   // a grow pins on its own thread: until it ends no resize starts and the teardown waits
 static void rp_resize(moe_cache * mc) {
     // rampool=1 keeps the fill's set: a block taken away would send its misses to the mapping. A grow still pinning: the next request's end looks again
@@ -8143,14 +8162,20 @@ static void rp_resize(moe_cache * mc) {
     ggml_rampool_stats st0;
     ggml_rampool_stats_fork(&st0, false);
     const double G = 1073741824.0;
-    if (low < floor) {
+    // swapped out since the last resize, more than a thousandth of the pool: the last growth goes back (at most what this session added), and no new one
+    const uint64_t swp = vm_swapped_out(), swp_b = swp - std::min(swp, g_swp_last.exchange(swp));
+    static size_t grown = 0;   // what the grows of this session added, less what went back
+    const size_t swap_back = swp_b > st0.bytes / 1024 ? std::min<size_t>(grown, (size_t) swp_b) : 0;
+    if (low < floor || swap_back > 0) {
         // no graph runs between requests and every copy out of the pool outside one holds its block (take/drop): the last two graphs' elements may go too. Without this a
         // chunk never went: of its ~170 blocks one was nearly always read by the last two tokens (DS: ~2900 of ~17000 blocks)
         ggml_rampool_graph_fork();
         ggml_rampool_graph_fork();
-        const size_t freed = ggml_rampool_shrink_fork(floor - low, rp_chunk_free);
-        const std::string line = tr_fmt("resize: %.2f GiB given back of %.2f GiB asked: RAM available fell to %.2f GiB since the last resize, floor %.2f GiB; pool %.1f GiB",
-                freed / G, (floor - low) / G, low / G, floor / G, (st0.bytes - std::min<uint64_t>(st0.bytes, freed)) / G);
+        const size_t ask = std::max(low < floor ? floor - low : 0, swap_back);
+        const size_t freed = ggml_rampool_shrink_fork(ask, rp_chunk_free);
+        grown -= std::min(grown, freed);
+        const std::string line = tr_fmt("resize: %.2f GiB given back of %.2f GiB asked: RAM available fell to %.2f GiB since the last resize, floor %.2f GiB, %.2f GiB swapped out; pool %.1f GiB",
+                freed / G, ask / G, low / G, floor / G, swp_b / G, (st0.bytes - std::min<uint64_t>(st0.bytes, freed)) / G);
         llama_moe_stats_log_fork("RPL", line.c_str());
         LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
         return;
@@ -8171,10 +8196,11 @@ static void rp_resize(moe_cache * mc) {
     // pinning takes ~0.3 s per GiB (PC1, rp_prepin): on a thread of its own, the next request does not wait for it. Its chunks join under the pool's lock (readers
     // outside it index a chunk vector that never moves); rp_bufs is touched by nothing else meanwhile: a shrink waits for it (above), the teardown too
     g_rp_growing.store(true);
-    std::thread([mc, want, low, floor, vram_cap, pool0 = st0.bytes]() {
+    std::thread([mc, want, low, floor, vram_cap, pool0 = st0.bytes, gp = &grown]() {
         const double G = 1073741824.0;
         const int64_t t0 = ggml_time_us();
         const size_t added = ggml_rampool_grow_fork(want, rp_grow_alloc);
+        *gp += added;   // read by the next resize only once g_rp_growing is false again
         if (added > 0) {
             std::lock_guard<std::mutex> lk(g_vram_mtx);
             const size_t cost = (size_t) ((double) std::max<size_t>(mc->rp_vram_per, ((size_t) 1 << 30) / 4096 * 8) * ((double) added / G));
