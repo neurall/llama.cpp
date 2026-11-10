@@ -12732,7 +12732,8 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 dsf_rls & rp = pp_rls(path);
                 const double mu = g_pp_pmu[path], sd = std::sqrt(std::max(0.0, g_pp_var[path]));
                 // (a tiny call on the stream family ran on the CPU: its time says nothing about a stream. The 2-token call at start, priced against the uncalibrated link rate, left the upload coefficient about 17x low)
-                const bool streamed = n1 >= PP_MIN_BATCH || path == PP_CHAIN || path == PP_DEC;
+                // nor does a tiny decode-chain call teach its arm: the 2-token start call (cold kernels, 420 ms) put a 100-token GLM call at 13.9 s and the stream won it (2026-11-10)
+                const bool streamed = n1 >= PP_MIN_BATCH || path == PP_CHAIN;
                 const double nis = learned > 0 || !streamed ? rp.nis : rls_update(rp, g_pp_phi[path], took);   // the passes taught the arm already (llama_moe_cache_pp_pass_learn_fork)
                 if (nis > 1.0) { g_pp_redraw = true; }   // the posterior moved more than it expected: the next call draws again
                 // stored only when determined and quiet (feedback_stored_values_policy): a next start begins from it as its prior
