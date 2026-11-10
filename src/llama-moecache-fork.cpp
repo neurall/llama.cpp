@@ -13053,24 +13053,24 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // the chains' misses also wait for the SSD where their tensors are still mapped (planner-rules.md C1/R3: rp=1 cold 2k took 43-86 s against
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
     const double ssd_miss = ssd_rate > 0.0 ? miss_ssd_bytes / (ssd_rate * 1e3) : 0.0;
-    pp_metrics m;
-    m.n = n; m.comp_us_tok = g_pp_c_us; m.ssd_gbs = ssd_rate;
-    m.U = U; m.M = M; m.Um = Um; m.Mm = Mm; m.up = up; m.cpu = cpu; m.ssd_miss = ssd_miss;
-    m.wait_us = pp_wait_us(n); m.chunk_us = chunk_at(n); m.dec_f = dec_f; m.dec_r = dec_r; m.dec_kc = g_pp_dec_kc;
-    m.Uk = Uk; m.Mk = Mk;
-    cand(PP_RING, estimate_fullstream_upload_time(m));
-    if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(m)); }
+    pp_metrics pm;
+    pm.n = n; pm.comp_us_tok = g_pp_c_us; pm.ssd_gbs = ssd_rate;
+    pm.U = U; pm.M = M; pm.Um = Um; pm.Mm = Mm; pm.up = up; pm.cpu = cpu; pm.ssd_miss = ssd_miss;
+    pm.wait_us = pp_wait_us(n); pm.chunk_us = chunk_at(n); pm.dec_f = dec_f; pm.dec_r = dec_r; pm.dec_kc = g_pp_dec_kc;
+    pm.Uk = Uk; pm.Mk = Mk;
+    cand(PP_RING, estimate_fullstream_upload_time(pm));
+    if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(pm)); }
     // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
     // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed). The prompt chain's uploads wait for the same SSD reads.
-    if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, estimate_moe_miss_ongpu_time(m)); }
+    if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, estimate_moe_miss_ongpu_time(pm)); }
     // its calculated time (uploads and CPU side by side, the chunks, the learned ratios), not its uploads alone: the uploads alone priced a 100-token GLM call at 4.8 s, the
     // calculation said 1.6 s, it took 2.1 s, and the stream (3.3 s) won every such call (2026-11-10, two cards)
-    if (cpu_known) { cand(PP_DEC, estimate_decodechain_time(m)); }
+    if (cpu_known) { cand(PP_DEC, estimate_decodechain_time(pm)); }
     // a prediction of 2^i x the picks uploads what the call's tokens rank that high (the same SSD rule as Ts), not the whole layer: the stream's upload at a
     // long prompt where every expert is touched, a fraction at a short one. x PP_K_LATE: what the forced sweep shows it pays beyond that (late fixes, the ranking nodes).
     // Was the stream's upload x (1 - 2^i x picks / experts), upside down: k x32 cost nothing, the planner tried it first (rows 2026-11-08: 57 k x32 picks against 5 k x1).
     for (int i = 0; k_auto && PP_K + i < PP_PATHS && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) {
-        cand(PP_K + i, estimate_predictor_upload_time(m, i, PP_K_LATE));
+        cand(PP_K + i, estimate_predictor_upload_time(pm, i, PP_K_LATE));
     }
     int best_mu = -1;
     for (int p = 0; p < PP_PATHS; ++p) {
@@ -13128,7 +13128,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             const double wait = pp_wait_us(n), comp = g_pp_c_us * n;
             const double ran_r = pp_took_us(PP_CHAIN, n), ran_s = pp_took_us(PP_RING, n);
             // both carry the SSD now (it was left out while the SSD term counted locked and pool weights as file reads: 93 GB of GLM's at 6.3 GB/s, 14.8 s against a 3.9 s upload)
-            const double t_r = ran_r > 0.0 ? ran_r : estimate_router_time_per_token(m) * n, t_s = ran_s > 0.0 ? ran_s : estimate_fullstream_time_per_token(m) * n;
+            const double t_r = ran_r > 0.0 ? ran_r : estimate_router_time_per_token(pm) * n, t_s = ran_s > 0.0 ? ran_s : estimate_fullstream_time_per_token(pm) * n;
             const bool stream = t_s <= t_r;
             ok[stream ? PP_CHAIN : PP_RING] = false;
             llama_moe_stats_log_fork("DEC", format("prompt call of %.0f tokens: %s: router %.3f ms per token (%s; picks %.0f, wait %.0f, compute %.0f ms), full stream %.3f ms per token (%s; upload %.0f ms)", n, stream ? "full stream" : "router",
