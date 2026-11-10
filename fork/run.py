@@ -5889,11 +5889,12 @@ def col(code, text):
 
 
 def speed_txt(t, p=None, stock=False, width=0):
-    """`12.85 t/s pp 169.4`: the number in the bright shade of its colour (decode light blue, prompt bright green), its label in the plain shade; stock's own numbers one shade down"""
+    """`decode 12.85 t/s  prompt 169.4 t/s`: each number after its own label (user 2026-11-10: "0.62 t/s pp 10.1 t/s" read as a prompt speed of 0.62), the number in the
+    bright shade of its colour (decode light blue, prompt bright green), its label in the plain shade; stock's own numbers one shade down"""
     nb, lb = (94, 36) if stock else ("1;94", 96)   # bright and readable on a dark terminal: decode number blue, its label cyan; prompt number green, its label yellow
     nb2, lb2 = (92, 33) if stock else ("1;92", 93)
-    out = col(nb, f"{t:{width}.2f}") + " " + col(lb, "t/s")
-    if p is not None: out += " " + col(lb2, "pp") + " " + col(nb2, f"{p:{(width + 1) if width else 0}.1f}")
+    out = col(lb, "decode") + " " + col(nb, f"{t:{width}.2f}") + " " + col(lb, "t/s")
+    if p is not None: out += "  " + col(lb2, "prompt") + " " + col(nb2, f"{p:{(width + 1) if width else 0}.1f}") + " " + col(lb2, "t/s")
     return out
 
 
@@ -6525,7 +6526,7 @@ def trace_lines(width=40):
 
 
 def result_lines(res):
-    return "\n".join(f"    run {i}: " + speed_txt(t, p, width=7) + col(92, " t/s") + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "") for i, (t, p) in enumerate(res, 1))   # prompt in/out of the cell after each run
+    return "\n".join(f"    run {i}: " + speed_txt(t, p, width=7) + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "") for i, (t, p) in enumerate(res, 1))   # prompt in/out of the cell after each run
 
 
 PRELUDE = [0, 0]   # lines of a remote list's start (old servers stopped, disk check) and of its transfer bars still on screen: erased when the transfers are done
@@ -7068,7 +7069,7 @@ def stock_gain(peek, res, build=None):
     t = max(x[0] for x in res); p = max(x[1] for x in res)
     STOCK_REC[0] = dict(t=float(r[0]), p=float(r[1]) if r[1] else None, ob=own_build_no(build), od=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, build, "llama-server")))), sb=int(r[3]) if r[3] else (re.search(r"b(\d+)", r[2]) or [0, "?"])[1], sd=str(r[4])[:10], sid=r[5])
     gc = lambda x, good, text: col(good if x >= 1 else "1;91", text)   # the ratio itself bold white (bold red below 1.00); its label keeps the metric's colour (decode blue, prompt green)
-    return "  " + col(90, "|") + " " + speed_txt(float(r[0]), float(r[1]) if r[1] else None, stock=True) + gc(t / float(r[0]), "1;97", f"  x{t / float(r[0]):.2f}") + col(96, " t/s") + (gc(p / float(r[1]), "1;97", f"  x{p / float(r[1]):.2f}") + col(93, " pp") if r[1] else "") + "  " + col(90, "(") + col(94, f"b{own_build_no(build)}") + " " + col(33, time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, build, "llama-server"))))) + col(90, " vs ") + col(36, f"b{int(r[3]) if r[3] else (re.search(r'b(\d+)', r[2]) or [0, '?'])[1]}") + " " + col(33, str(r[4])[:10]) + col(90, ")")
+    return "  " + col(90, "|") + " " + speed_txt(float(r[0]), float(r[1]) if r[1] else None, stock=True) + col(96, "  decode") + gc(t / float(r[0]), "1;97", f" x{t / float(r[0]):.2f}") + (col(93, "  prompt") + gc(p / float(r[1]), "1;97", f" x{p / float(r[1]):.2f}") if r[1] else "") + "  " + col(90, "(") + col(94, f"b{own_build_no(build)}") + " " + col(33, time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, build, "llama-server"))))) + col(90, " vs ") + col(36, f"b{int(r[3]) if r[3] else (re.search(r'b(\d+)', r[2]) or [0, '?'])[1]}") + " " + col(33, str(r[4])[:10]) + col(90, ")")
 
 
 def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=None, peek=None):
