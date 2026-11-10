@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+lf-glm,glm,1,scific,256,,
+lf-mimo,mimo,1,scific,256,,
+lf-qni4,qn_iq4xs,1,scific,256,,
+lf-ds,ds,1,scific,256,,

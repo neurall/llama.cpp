@@ -33,6 +33,8 @@
 #include <future>
 #include <mutex>
 #include <thread>
+
+LLAMA_API void llama_moe_host_pending_fork(const void * base, bool pending);   // fork: llama-moecache-fork.cpp (no shared header)
 #include <regex>
 #include <unordered_set>
 
@@ -1916,6 +1918,7 @@ bool llama_model_loader::load_all_data(
                 pin_q.pop_front();
                 lk.unlock();
                 pin_one(p);
+                llama_moe_host_pending_fork(p, false);   // read and pinned: the expert cache may upload from it (llama-moecache-fork.cpp)
                 lk.lock();
             }
         });

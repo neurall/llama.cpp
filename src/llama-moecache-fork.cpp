@@ -208,6 +208,7 @@ struct layer_state {
     std::vector<int32_t>  pending;       // uncached ids observed since last step (dedup, obs order)
 
     std::vector<bool>     slot_in_flight; // slot has an upload pending
+    bool                  src_ready = true; // its expert sources are read (llama_moe_host_pending_fork); kept by layer_src_ready under wmtx
     std::vector<uint32_t> expert_count;   // expert id -> uses, halved every LLAMA_MOE_CACHE_HALVE_EVERY steps
     std::vector<uint32_t> win_count;      // expert id -> uses in the last 64 tokens
     std::vector<uint64_t> expert_last;    // expert id -> clock of its last use (policy lru)
@@ -464,6 +465,7 @@ struct moe_cache {
     std::mutex               wmtx;
     std::condition_variable  wcv;
     std::deque<upload_job>   todo;
+    uint32_t                 hpend_seen = ~0u;   // g_hpend_gen the layers' src_ready were last set at (wmtx)
     std::vector<int>         worker_link; // worker -> upload link it serves (layer_state::link), -1: all
     int                      n_links = 1; // GPUs holding cache layers
     ggml_backend_dev_t       link_dev[MAX_LINKS] = {}; // the GPU behind each link
@@ -2114,6 +2116,40 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
 moe_cache * g_cache = nullptr;
 std::mutex g_init_mtx;
 bool g_init_done = false;
+
+// fork: host buffers an asynchronous load still reads (LLAMA_ASYNC_LOAD): the model registers them before its read thread starts, the loader's pin
+// thread clears each one once its last read landed and it is pinned, the read thread clears the rest at its end. An upload worker takes no job whose
+// expert sources sit in one. Until 2026-11-10 the workers waited for the whole read, so the start-up fill (profile_preload, ~40 GB on GLM 3.0) began
+// when it ended and the first call (the seq_rm probe at load) waited for all of it: GLM 3.0 2.7 s, MiMo 3.1 s on the x4 card's link.
+static std::mutex                g_hpend_mtx;
+static std::vector<const void *> g_hpend;           // bases of those buffers
+static std::atomic<uint32_t>     g_hpend_gen{0};    // bumped on every change, before g_hpend_n
+static std::atomic<size_t>       g_hpend_n{0};
+}  // namespace (reopened below)
+LLAMA_API void llama_moe_host_pending_fork(const void * base, bool pending) {
+    std::lock_guard<std::mutex> lk(g_hpend_mtx);
+    const auto it = std::find(g_hpend.begin(), g_hpend.end(), base);
+    if (pending == (it != g_hpend.end())) { return; }
+    if (pending) { g_hpend.push_back(base); } else { g_hpend.erase(it); }
+    g_hpend_gen.fetch_add(1, std::memory_order_release);
+    g_hpend_n.store(g_hpend.size(), std::memory_order_release);
+}
+namespace {
+// mc->wmtx held: the layer's up/gate/down sources are read (none sits in a pending buffer)
+static bool layer_src_ready(moe_cache * mc, size_t li) {
+    const uint32_t g = g_hpend_gen.load(std::memory_order_acquire);
+    if (mc->hpend_seen != g) {
+        mc->hpend_seen = g;
+        std::lock_guard<std::mutex> lk(g_hpend_mtx);
+        for (auto & ls : mc->layers) {
+            ls.src_ready = true;
+            for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
+                if (t && t->buffer && std::find(g_hpend.begin(), g_hpend.end(), (const void *) ggml_backend_buffer_get_base(t->buffer)) != g_hpend.end()) { ls.src_ready = false; }
+            }
+        }
+    }
+    return mc->layers[li].src_ready;
+}
 
 int parse_layer_from_name(const char * name) {
     // "blk.<il>.ffn_gate_exps.weight"
@@ -8842,8 +8878,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         }
 
         for (size_t w = 0; w < mc->staging.size(); ++w)
-        mc->workers.emplace_back([mc, w, pm = &model]() {
-            llama_model_wait_loaded_fork(pm);   // fork: LLAMA_ASYNC_LOAD: every upload job reads the host weights
+        mc->workers.emplace_back([mc, w]() {
+            // fork: LLAMA_ASYNC_LOAD: no wait for the whole read, a job waits for its own layer's buffers (layer_src_ready)
             unpin_helper();
             led_thread("up-w" + std::to_string(w));   // --moe ledger: this worker's lines say which upload thread wrote
             uint8_t * staging_ptr = mc->staging[w] ? (uint8_t *) ggml_backend_buffer_get_base(mc->staging[w]) : nullptr;
@@ -8860,6 +8896,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             if (link >= 0 && mc->layers[it->layer_idx].link != link) {
                                 continue;
                             }
+                            if (!layer_src_ready(mc, it->layer_idx)) {
+                                continue;   // its weights are still being read
+                            }
                             if (!it->bg) {
                                 return it;
                             }
@@ -8869,7 +8908,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                         return bg;
                     };
-                    mc->wcv.wait(lk, [mc, &mine]() { return mc->stop || mine() != mc->todo.end(); });
+                    for (;;) {
+                        const bool reading = g_hpend_n.load(std::memory_order_acquire) > 0;   // read before mine(): a load that ends after it is seen next round
+                        if (mc->stop || mine() != mc->todo.end()) { break; }
+                        // nobody notifies when a buffer's read lands: looked at again every 20 ms while a load reads
+                        if (reading) { mc->wcv.wait_for(lk, std::chrono::milliseconds(20)); } else { mc->wcv.wait(lk); }
+                    }
                     if (mc->stop) {
                         return;
                     }

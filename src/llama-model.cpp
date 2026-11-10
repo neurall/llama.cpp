@@ -15,6 +15,7 @@ bool g_async_load_fork = false;   // fork: this process loads its weights on a t
 #include "llama-cparams.h"
 #include "llama-model-loader.h"
 extern "C" void ggml_backend_set_alloc_phase_fn_fork(size_t (*fn)(const struct ggml_tensor *, void *), void * user_data);   // fork: ggml-backend.cpp, phase layout for O_DIRECT loads (no shared header)
+LLAMA_API void llama_moe_host_pending_fork(const void * base, bool pending);   // fork: llama-moecache-fork.cpp (no shared header)
 #include "llama-moecache-fork.h"
 #include "llama-gpu-probe-fork.h"
 #include "llama-dsplit-fork.h"
@@ -2473,11 +2474,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     if (async_load) {
         // the thread owns the loader and the buffer lists; callers that read weight bytes wait (wait_loaded)
         auto pd = pin_defer.f; pin_defer.f = nullptr;
+        // the expert cache's upload workers take nothing from a host buffer until its read is over (the loader's pin thread or the end below clears it)
+        for (auto & [ctx, bufs] : ctx_bufs) { for (ggml_backend_buffer_t buf : bufs) { if (ggml_backend_buffer_is_host(buf)) { llama_moe_host_pending_fork(ggml_backend_buffer_get_base(buf), true); } } }
         load_thr = std::thread([this, pd, cb = std::move(ctx_bufs)]() mutable {
             for (auto & [ctx, bufs] : cb) {
                 if (!ml_keep->load_all_data(ctx, bufs, nullptr, params.progress_callback, params.progress_callback_user_data)) { load_ok = false; break; }
             }
             if (pd) { pd(0); }   // before anything copies from the host weights
+            if (load_ok) { for (auto & [ctx, bufs] : cb) { for (ggml_backend_buffer_t buf : bufs) { llama_moe_host_pending_fork(ggml_backend_buffer_get_base(buf), false); } } }   // a failed read keeps them closed (wait_loaded aborts)
             // the mappings go to the model only now: this thread reads lazy tensors through them (Qwen3.8-Flash-Next IQ4_XS segfaulted in llama_mmap::addr() when the main thread moved them first)
             for (auto & mapping : ml_keep->mappings) { pimpl->mappings.emplace_back(std::move(mapping)); }
         });
