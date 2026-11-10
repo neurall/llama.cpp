@@ -9,3 +9,5 @@ dc-qn_iq4xs-scifi,qn_iq4xs,1,scific,256,,
 dc-qn_iq4xs-poem,qn_iq4xs,1,poemc,256,,
 dc-glm-12k,glm,2,pf12k,64,,
 dc-ds-12k,ds,2,pf12k,64,,
+dq-qni-512,qn_iq4xs,2,pf12k,64,-b 8192 -ub 512,--env CUDA_VISIBLE_DEVICES=1
+dq-qni-1024,qn_iq4xs,2,pf12k,64,-b 8192 -ub 1024,--env CUDA_VISIBLE_DEVICES=1
