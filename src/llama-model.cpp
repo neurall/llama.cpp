@@ -2483,6 +2483,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 if (b && std::find(pend.begin(), pend.end(), b) == pend.end()) { pend.push_back(b); llama_moe_host_pending_fork(b, true); }
             }
         }
+        if (pd) { pd(2); }   // the weights' buffers are allocated: what is allocated from here on (the context's graph buffers) holds no weights
         load_thr = std::thread([this, pd, pend, cb = std::move(ctx_bufs)]() mutable {
             for (auto & [ctx, bufs] : cb) {
                 if (!ml_keep->load_all_data(ctx, bufs, nullptr, params.progress_callback, params.progress_callback_user_data)) { load_ok = false; break; }

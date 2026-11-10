@@ -1956,8 +1956,9 @@ static std::map<void *, std::unique_ptr<ggml_cuda_reg_state>> g_cuda_reg;
 // fork: the loader's host weights pinned after its reads (llama-model.cpp, load_tensors; ggml_backend_cuda_pin_defer). Populating a buffer and pinning it before
 // the reads cost GLM 3.0's 100.5 GiB 49 s to ready; read first (the O_DIRECT read faults the pages in at the drive's speed) and pinned per buffer after,
 // the PC1 bench did 90 GiB in 16.8 s against 27.3 s. One registration per buffer, as before: a copy never straddles two.
-static std::atomic<bool> g_cuda_pin_defer{false};
-struct ggml_cuda_deferred_buf { char * p; size_t n; bool onfault; };   // onfault: its pages are locked as they fault in (mlock2 MLOCK_ONFAULT)
+// 1: the loader allocates its weights; 2: they are allocated, what comes now (the contexts' graph buffers) is deferred too, but holds no weights
+static std::atomic<int> g_cuda_pin_defer{0};
+struct ggml_cuda_deferred_buf { char * p; size_t n; bool onfault; bool weights; };   // onfault: its pages are locked as they fault in (mlock2 MLOCK_ONFAULT)
 static std::vector<ggml_cuda_deferred_buf> g_cuda_deferred;   // under g_cuda_reg_mtx
 
 static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t buffer) {
@@ -1969,6 +1970,7 @@ static void ggml_backend_cuda_host_buffer_free_registered(ggml_backend_buffer_t 
             st = std::move(it->second);
             g_cuda_reg.erase(it);
         }
+        g_cuda_deferred.erase(std::remove_if(g_cuda_deferred.begin(), g_cuda_deferred.end(), [&](const ggml_cuda_deferred_buf & b) { return b.p == (char *) buffer->context; }), g_cuda_deferred.end());
     }
     if (st) {
         if (st->th.joinable()) { st->th.join(); }
@@ -2258,7 +2260,7 @@ static void * ggml_cuda_host_malloc_registered(size_t size) {
         st->base = ptr; st->size = size; st->chunk = size; st->map_len = size_r;   // done = 0: nothing registered, the free path only unmaps
         std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
         g_cuda_reg[ptr] = std::move(st);
-        g_cuda_deferred.push_back({ ptr, size, locked });
+        g_cuda_deferred.push_back({ ptr, size, locked, g_cuda_pin_defer.load() == 1 });
         fprintf(stderr, "%s: %.1f GiB handed out unpinned%s, pinned in place after the loader's reads\n", __func__, size / 1073741824.0, locked ? " (pages locked as they fault in)" : "");
         return ptr;
     }
@@ -2356,9 +2358,28 @@ static void ggml_backend_cuda_pin_deferred_one(void * p) {
 
 // on: big host buffers are handed out unpinned (ggml_cuda_host_malloc_registered); off: every such buffer not pinned yet (by ggml_backend_cuda_pin_deferred_one
 // during the reads) is pinned in place now, one registration each, on 4 threads
+// 2: the loader's weight buffers are allocated (the async read starts), later ones are deferred as holding no weights; 3: a context is built and waits for
+// the reads: the deferred buffers that hold no weights (its graph buffers, final now) are pinned on this thread while the reads still run. They have no read
+// to wait for: qni4's 26.8 GiB pass buffer was pinned after the reads, 5.2 s of a 20.9 s start.
 static void ggml_backend_cuda_pin_defer(int on) {
-    if (on) { g_cuda_pin_defer = true; g_cuda_deferred_early_n = 0; g_cuda_deferred_early_b = 0; g_cuda_deferred_refused = 0; return; }
-    g_cuda_pin_defer = false;
+    if (on == 1) { g_cuda_pin_defer = 1; g_cuda_deferred_early_n = 0; g_cuda_deferred_early_b = 0; g_cuda_deferred_refused = 0; return; }
+    if (on == 2) { if (g_cuda_pin_defer.load() == 1) { g_cuda_pin_defer = 2; } return; }
+    if (on == 3) {
+        std::vector<ggml_cuda_deferred_buf> mine;
+        {
+            std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);
+            for (auto it = g_cuda_deferred.begin(); it != g_cuda_deferred.end(); ) {
+                if (it->weights) { ++it; } else { mine.push_back(*it); it = g_cuda_deferred.erase(it); }
+            }
+        }
+        if (mine.empty()) { return; }
+        const int64_t t0 = ggml_time_us();
+        size_t pinned = 0;
+        for (const auto & b : mine) { if (ggml_cuda_pin_deferred_buf(b)) { pinned += b.n; } }
+        fprintf(stderr, "ggml_cuda_host_malloc_registered: %zu buffers without weights (%.1f GiB) pinned in place while the weights read, in %.2f s\n", mine.size(), pinned / 1073741824.0, (ggml_time_us() - t0) / 1e6);
+        return;
+    }
+    g_cuda_pin_defer = 0;
     std::vector<ggml_cuda_deferred_buf> todo;
     {
         std::lock_guard<std::mutex> lk(g_cuda_reg_mtx);

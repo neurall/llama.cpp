@@ -4101,6 +4101,12 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         // itself (user 2026-10-26: start from the most threads; too many costs little, too few a lot)
         sched_reserve(); // the compute graph now includes the cache chain
     }
+    // fork: LLAMA_ASYNC_LOAD: the graph buffers reserved above are final; pinned now, under the reads, not after them (ggml_backend_cuda_pin_defer).
+    // The first decode only: the load has ended once it returns from wait_loaded, and the end of the load pins whatever is still deferred.
+    static std::atomic<bool> graph_pinned{false};
+    if (!graph_pinned.exchange(true)) {
+        if (auto pin_defer = (void (*)(int)) llama_fork_proc("ggml_backend_fork_pin_defer")) { pin_defer(3); }
+    }
     const_cast<llama_model &>(model).wait_loaded();   // fork: LLAMA_ASYNC_LOAD: the cache start above runs under the reads as far as its own barrier allows, nothing from here on may
     if (g_dynkey.pending && cparams.moe_cache_started && !cparams.ctx_other) {   // fork (--moe dynhot): the key rows of the prompt's last pass to the MoE cache
         synchronize();
