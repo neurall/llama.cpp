@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+dc-ds-12k,ds,2,pf12k,64,,
+dc-ds-scifi,ds,1,scific,256,,
