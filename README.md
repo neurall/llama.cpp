@@ -1,7 +1,8 @@
 # Rocket LLama 
 <img width="1145" height="389" alt="image" src="https://github.com/user-attachments/assets/f543ba8e-7611-47a5-ae76-7c939ffaa48e" />
 
-# A bit experimental, slightly faster ...
+# A bit experimental, slightly faster ... 
+up to 20x faster prefill and 2.4x decode on big models 
 
 Fork of llama.cpp with multi gpu acceleration even for models bigger than total gpu mem. 
 But even on single 5090 20x pp and 2x t gains 
@@ -9,8 +10,7 @@ But even on single 5090 20x pp and 2x t gains
 
 
 In other words tha gains you see bellow are not from multigpu yet just from more efficient vram mmgmt
-ie the same 20x speedup in mimo is happening on single 5090 too. In a sense its good news so people with one gpu will have fun too ;)
-And that multigpu fun is just starting too. For glm 2nd gpu is adding +30%  on pp so far
+ie the same 20x speedup in mimo is happening on single 5090 too.
 
 For MoE models larger than VRAM: every expert stays in system RAM, and all VRAM left
 after the KV cache becomes a live cache of the experts actually being used. The GPUs
