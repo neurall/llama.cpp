@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+k31-adm,k31,2,pf1k,100,,
+k31-all,k31,2,pf1k,100,--moe rp-admit=0,
+k31-adm2,k31,2,pf1k,100,,
+k31-all2,k31,2,pf1k,100,--moe rp-admit=0,
