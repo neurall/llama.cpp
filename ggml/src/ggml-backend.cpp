@@ -23,7 +23,6 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
-#include <deque>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -2714,36 +2713,6 @@ static int ggml_backend_sched_rd_slot(struct sched_rd_ring * R) {
 }
 // fork: an expert tensor in the RAM pool (--moe rampool=1, ggml-rampool-fork.h): the experts the pool holds go straight from their pinned blocks (runs that lie behind each other
 // in the pool as one copy), the rest and the bytes past the last whole expert from the file.
-extern "C" {   // ggml-rampool-fork.cpp (declared here, no header edit)
-    GGML_API bool         ggml_rampool_ring_on_fork(void);
-    GGML_API const char * ggml_rampool_ring_take_fork(const void * key, int64_t e, bool * ring);
-    GGML_API void         ggml_rampool_ring_done_fork(const void * key, const int64_t * es, int n);
-}
-// fork: the prompt ring's blocks an upload copied from (--moe ring=1, ggml_rampool_ring_plan_fork) go back to the ring once the copy left them: an event after the copies,
-// the oldest pending one waited for when more than two are pending (the cards copy faster than the SSD reads, so it has mostly fired), all at the end of the call.
-struct ring_hold_entry { ggml_backend_event_t ev; ggml_backend_t backend; const struct ggml_tensor * key; std::vector<int64_t> es; };
-static std::deque<ring_hold_entry> g_ring_holds;
-static std::mutex                  g_ring_mu;
-static void ggml_backend_ring_give_back(ring_hold_entry & h) {
-    if (h.ev) { ggml_backend_event_synchronize(h.ev); ggml_backend_event_free(h.ev); } else { ggml_backend_synchronize(h.backend); }
-    ggml_rampool_ring_done_fork(h.key, h.es.data(), (int) h.es.size());
-}
-static void ggml_backend_ring_hold(ggml_backend_t backend, const struct ggml_tensor * key, std::vector<int64_t> es) {
-    ring_hold_entry h = { ggml_backend_event_new(ggml_backend_get_device(backend)), backend, key, std::move(es) };
-    if (h.ev) { ggml_backend_event_record(h.ev, backend); }
-    std::lock_guard<std::mutex> lk(g_ring_mu);
-    g_ring_holds.push_back(std::move(h));
-    while (g_ring_holds.size() > 2) {
-        ggml_backend_ring_give_back(g_ring_holds.front());
-        g_ring_holds.pop_front();
-    }
-}
-extern "C" GGML_API void ggml_backend_ring_flush_fork(void);
-void ggml_backend_ring_flush_fork(void) {
-    std::lock_guard<std::mutex> lk(g_ring_mu);
-    for (auto & h : g_ring_holds) { ggml_backend_ring_give_back(h); }
-    g_ring_holds.clear();
-}
 // --moe side-reads=1: the file runs read side by side, packed into half the ring per round, the probe's reader count at a time. Off by default: on DeepSeek 12k it gave nothing
 // (424 / 456 t/s against 455 / 515; reads were 10 s of a 30 s pass, 23.6 GB in 6600 reads at 2.4 GB/s). Back for Kimi K3.1, whose 995-token pass is 80.8 s of reads in about 90 s:
 // 351 GB in 87557 runs of about 4 MB at 4.35 GB/s, one at a time, on a drive that gives 6.25 at queue depth 8 (2026-11-10).
@@ -2755,14 +2724,7 @@ static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_ba
     }
     const int64_t e0 = (int64_t) (off / esz), ne = (int64_t) (n / esz);
     std::vector<const char *> ps((size_t) ne);
-    const bool ring = ggml_rampool_ring_on_fork();   // --moe ring=1: the prompt ring read these ahead; its blocks go back once the copies below left them
-    std::vector<int64_t> held;
-    for (int64_t i = 0; i < ne; ++i) {
-        if (!ring) { ps[i] = ggml_rampool_use_fork(input, e0 + i); continue; }
-        bool rg = false;
-        ps[i] = ggml_rampool_ring_take_fork(input, e0 + i, &rg);
-        if (rg) { held.push_back(e0 + i); }
-    }
+    for (int64_t i = 0; i < ne; ++i) { ps[i] = ggml_rampool_use_fork(input, e0 + i); }
     const bool side = g_moe_read_threads.load() > 1;
     struct file_run { size_t off, n; int slot; size_t pos; const void * got; };
     std::vector<file_run> fr;
@@ -2838,7 +2800,6 @@ static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_ba
         }
         k = k1;
     }
-    if (!held.empty()) { ggml_backend_ring_hold(backend, input, std::move(held)); }
 }
 
 // fork: [off, off + n) of a host weight into its copy on the card, on this backend's stream. Weights the expert cache can read direct (--moe read-direct: they stayed mapped) go from
