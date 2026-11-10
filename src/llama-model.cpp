@@ -2478,6 +2478,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 if (!ml_keep->load_all_data(ctx, bufs, nullptr, params.progress_callback, params.progress_callback_user_data)) { load_ok = false; break; }
             }
             if (pd) { pd(0); }   // before anything copies from the host weights
+            // the mappings go to the model only now: this thread reads lazy tensors through them (Qwen3.8-Flash-Next IQ4_XS segfaulted in llama_mmap::addr() when the main thread moved them first)
+            for (auto & mapping : ml_keep->mappings) { pimpl->mappings.emplace_back(std::move(mapping)); }
         });
     } else {
     for (auto & [ctx, bufs] : ctx_bufs) {
@@ -2507,7 +2509,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 #endif
 
-    if (use_mmap_buffer) {
+    if (use_mmap_buffer && !async_load) {   // fork: an asynchronous load hands them over at the end of its thread
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
         }
