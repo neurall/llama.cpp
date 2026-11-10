@@ -1370,16 +1370,18 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
 // from exactly those pages, so for the decision to pin they are available RAM (a 100 GiB pool left 21 GiB "available" and a 109 GiB model fell back to mmap)
 // the RAM of the machine, huge pages included; 0 when unknown
 static size_t common_ram_total() {
+    size_t t = 0;
 #if defined(_WIN32)
     MEMORYSTATUSEX st = {};
     st.dwLength = sizeof(st);
-    return GlobalMemoryStatusEx(&st) ? (size_t) st.ullTotalPhys : 0;
+    t = GlobalMemoryStatusEx(&st) ? (size_t) st.ullTotalPhys : 0;
 #elif defined(__linux__)
     const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
-    return pages > 0 && page > 0 ? (size_t) pages * (size_t) page : 0;
-#else
-    return 0;
+    t = pages > 0 && page > 0 ? (size_t) pages * (size_t) page : 0;
 #endif
+    // --moe sim-ram: what the hog holds is not the simulated machine's RAM (a 32 GiB run kept PC1's 125.8 GiB margins and freeze guard, 2026-11-10)
+    if (const char * h = llama_moe_get_opt("sim-ram-held")) { t -= std::min(t, (size_t) strtoull(h, nullptr, 10)); }
+    return t;
 }
 
 static size_t common_ram_available(bool with_pool = false) {
@@ -1979,6 +1981,7 @@ static void common_hog(void) {
                 for (size_t o = 0; o < n; o += 4096) { ((volatile char *) p)[o] = 1; }
                 mlock(p, n);
                 ram_hog = p;
+                llama_moe_set_opt("sim-ram-held", std::to_string(n).c_str());   // the simulated machine is this much smaller: common_ram_total and the loader's freeze guard take it off
                 LOG_WRN("sim-ram: holds %.2f GiB, about %.2f GiB left\n", n / 1073741824.0, keep / 1073741824.0);
             }
         }
@@ -1995,6 +1998,7 @@ static void common_hog(void) {
                 for (size_t o = 0; o < n; o += 4096) { ((volatile char *) p)[o] = 1; }
                 VirtualLock(p, n);
                 ram_hog = p;
+                llama_moe_set_opt("sim-ram-held", std::to_string(n).c_str());   // the simulated machine is this much smaller: common_ram_total and the loader's freeze guard take it off
                 LOG_WRN("sim-ram: holds %.2f GiB, about %.2f GiB left\n", n / 1073741824.0, keep / 1073741824.0);
             }
         }

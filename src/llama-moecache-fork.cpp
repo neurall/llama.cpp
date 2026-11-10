@@ -8158,6 +8158,7 @@ static std::atomic<bool> g_rp_growing{false};   // a grow pins on its own thread
 static void rp_resize(moe_cache * mc) {
     // rampool=1 keeps the fill's set: a block taken away would send its misses to the mapping. A grow still pinning: the next request's end looks again
     if (mc == nullptr || !mc->rp_on || !mc->rp_evict || g_rp_growing.load()) { return; }
+    if (const char * g = moe_opt("rp-grow"); g && atoi(g) == 0) { return; }   // --moe rp-grow=0: the pool keeps its start size (an A/B on one binary)
     const size_t low = std::min(ram_avail_bytes(), g_ram_low.exchange(SIZE_MAX)), floor = ram_floor_bytes();
     ggml_rampool_stats st0;
     ggml_rampool_stats_fork(&st0, false);
