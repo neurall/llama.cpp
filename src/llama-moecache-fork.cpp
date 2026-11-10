@@ -1309,7 +1309,8 @@ std::string profile_path(const llama_model & model) {
 }
 
 // --moe rampool heat (user 2026-11-07): per expert a fixed ring of its last RP_VIS decode-step stamps. Expected next use = last stamp + mean gap between the stamps; one stamp: now + its
-// age; past due: now + how long overdue. Never seen: after every seen expert, by the lifetime count. A card holds it: HUGE_VAL (a RAM copy pays nothing).
+// age; past due: now + how long overdue. Never seen: after every seen expert, by the lifetime count. A card holds it: HUGE_VAL (a RAM copy pays nothing). The gap is the median of
+// the ring's gaps since 2026-11-10 (the mean before).
 // Ten stamps (user 2026-11-08: "consider last 10 stored revisits and evict rare visitors first, not just by global hot count"): a rare visitor's mean gap is long, so it is
 // expected back last and leaves the pool first; the lifetime count only orders the never-seen. A heat file written with a narrower ring keeps its stamps (rp_heat_load).
 // Not built yet (user 2026-11-08, "keep note"): beside the step stamps, the last 10 request ids an expert served. An expert hot inside one request but absent from the
@@ -1329,11 +1330,23 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
     const uint32_t * v = ls.vis.empty() ? nullptr : ls.vis.data() + (size_t) e * RP_VIS;
     int n = 0;
     while (v && n < RP_VIS && v[RP_VIS - 1 - n] != 0) { ++n; }
-    if (n == 0) { return 1e15 + 1e12 / (1.0 + (double) (ls.heat_cnt.empty() ? ls.glob_count[e] : ls.heat_cnt[e])); }
+    const double cnt = (double) (ls.heat_cnt.empty() ? ls.glob_count[e] : ls.heat_cnt[e]);
+    if (n == 0) { return 1e15 + 1e12 / (1.0 + cnt); }
+    // its count (user 2026-11-10: "evict the longest first and lowest counts"): heat-clock steps per visit, from now. The sooner of this and the ring's estimate counts, so an
+    // expert leaves first only when both its last visits and its count say it is rare
+    const double by_count = now + now / (1.0 + cnt);
     const double last = (double) v[RP_VIS - 1];
-    if (n == 1) { return now + (now - last); }
-    const double nxt = last + (last - (double) v[RP_VIS - n]) / (n - 1);
-    return nxt >= now ? nxt : now + (now - nxt);
+    if (n == 1) { return std::min(by_count, now + (now - last)); }
+    // the median of its last n-1 gaps (user 2026-11-10: "from the last 10 revisits pick the median"): one long pause does not make a regular visitor look rare, nor one
+    // burst a rare one look regular (the mean did both)
+    uint32_t g[RP_VIS - 1];
+    const int m = n - 1;
+    for (int i = 0; i < m; ++i) { g[i] = v[RP_VIS - 1 - i] - v[RP_VIS - 2 - i]; }
+    std::nth_element(g, g + m / 2, g + m);
+    double med = g[m / 2];
+    if (m % 2 == 0) { med = (med + *std::max_element(g, g + m / 2)) / 2; }
+    const double nxt = last + med;
+    return std::min(by_count, nxt >= now ? nxt : now + (now - nxt));
 }
 static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
     const moe_cache * mc = (const moe_cache *) ud;
@@ -1346,6 +1359,16 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     // pool). Without eviction the fill ranks card-held experts by heat too: a hot one left out would never come back (rampool3: 17 GiB of card-held slices out of the pool).
     if (mc->rp_evict && mc->rp_filling && (ls.expert_slot[e] >= 0 || ls.queued[e])) { return HUGE_VAL; }
     return vis_next(mc, ls, (int32_t) e);
+}
+// --moe rampool admission (user 2026-11-10: "admission as vram has", "consider the last 10 revisits"): a newcomer that would evict a resident needs the VRAM cache's ADMIT uses
+// in the last 64 tokens, and its expected next use (median gap of its last RP_VIS visits) before the victim's. A declined one goes on probation (ggml-rampool-fork.cpp
+// rp_take_block). Same thread and lock as rp_heat: racy reads of plain ints, never mc->mtx.
+static bool rp_admit(const void * key, int64_t e, double victim, void * ud) {
+    const moe_cache * mc = (const moe_cache *) ud;
+    const auto it = mc->by_src.find((const ggml_tensor *) key);
+    if (it == mc->by_src.end()) { return true; }
+    const layer_state & ls = mc->layers[it->second.first];
+    return (double) ls.win_count[e] >= knobs().admit && vis_next(mc, ls, (int32_t) e) < victim;
 }
 
 // The heat file (user 2026-11-07: expert heat in its own file, not mixed with tuning values): <state dir>/<model>/globalhot.ini, lines clock=N, hot.<layer>=uses..., vis.<layer>=stamps...
@@ -1407,12 +1430,9 @@ static bool rp_heat_load(moe_cache * mc) {
     return true;
 }
 
-void profile_save(const moe_cache * mc) {
-    if (mc->profile.empty() || mc->n_steps < 64) { // too little use to be worth keeping
-        return;
-    }
-    // raw lifetime activation counts per expert (the cache normalizes by the layer max when scoring); a layer is halved
-    // while its max exceeds 2^31, which keeps the ratios. One line per layer: hot.<layer> = c0 c1 c2 ...
+// raw lifetime activation counts per expert (the cache normalizes by the layer max when scoring); a layer is halved
+// while its max exceeds 2^31, which keeps the ratios. One line per layer: hot.<layer> = c0 c1 c2 ...
+static std::vector<std::pair<std::string, std::string>> hot_kv(const moe_cache * mc) {
     std::vector<std::pair<std::string, std::string>> kv;
     for (size_t il = 0; il < mc->layers.size(); ++il) {
         const auto & ls = mc->layers[il];
@@ -1426,6 +1446,22 @@ void profile_save(const moe_cache * mc) {
         }
         kv.emplace_back("hot." + std::to_string(parse_layer_from_name(ls.pub.up_src->name)), v);   // real layer: dense layers are not cache layers
     }
+    return kv;
+}
+
+// the hot map and the pool's heat, every 10 s of decode (user 2026-11-10): a restart or a crash starts from what the run learned, not from its last clean exit. The run.* history
+// stays at exit only (profile_save): one line per run. The caller is the step, under mc->mtx: the router callback that counts runs on the same thread.
+static void hot_save(const moe_cache * mc) {
+    if (mc->n_steps < 64) { return; }
+    if (!mc->profile.empty()) { moe_state_set(mc->profile, hot_kv(mc)); }
+    rp_heat_save(mc);
+}
+
+void profile_save(const moe_cache * mc) {
+    if (mc->profile.empty() || mc->n_steps < 64) { // too little use to be worth keeping
+        return;
+    }
+    std::vector<std::pair<std::string, std::string>> kv = hot_kv(mc);
     rp_heat_save(mc);
     // what this run did, per name the last 9 runs: run.<name> = <median> <last> | <oldest> ... <newest> (hit rate of the cache, evictions, uploads and
     // uploaded MiB per step, share of the prefill's experts found in the cache)
@@ -7747,6 +7783,8 @@ static void rp_raw_free(moe_cache * mc) {   // after ggml_rampool_close_fork: no
 extern "C" GGML_API void ggml_rampool_on_chunk_fork(void (*cb)(void * chunk, void * ud));   // ggml-rampool-fork.cpp, declared here: no header edit
 extern "C" GGML_API size_t ggml_rampool_grow_fork(size_t bytes, ggml_rampool_alloc_t alloc);
 extern "C" GGML_API size_t ggml_rampool_shrink_fork(size_t bytes, void (*free_chunk)(void * chunk, void * ud));
+extern "C" GGML_API void ggml_rampool_admit_fork(bool (*admit)(const void * key, int64_t e, double victim, void * ud));
+extern "C" GGML_API void ggml_rampool_admit_stats_fork(uint64_t * admitted, uint64_t * declined, bool reset);
 // a chunk rp_resize adds between requests: pinned at once (no fill read lands in it, misses fill it)
 static void * rp_grow_alloc(size_t bytes, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
@@ -8022,9 +8060,11 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
         return;
     }
     rp_pre_free(mc);
-    // shortcut: rampool=1 keeps the fill's set for the run (heat moves it between runs through the heat file); rampool=2 evicts by heat, slower on GLM 3.5 (pool churn, fork/docs/rampool.md)
+    // rampool=2 (the default, common.cpp): the pool evicts by heat during the run, a newcomer only by the admission rule (rp_admit; --moe rp-admit=0: every miss evicts, the
+    // A/B arm: GLM 3.5 pool churn, fork/docs/rampool.md; Kimi K3.1 834k reads in 432 tokens). rampool=1 keeps the fill's set for the run (heat moves it between runs, heat file)
     mc->rp_evict = atoi(rv) >= 2;
     ggml_rampool_evict_fork(mc->rp_evict);
+    if (const char * ra = moe_opt("rp-admit"); !ra || atoi(ra) != 0) { ggml_rampool_admit_fork(rp_admit); }
     mc->rp_filling = true;
     rp_pinner pp;
     rp_pin_start(mc, pp);
@@ -8089,9 +8129,11 @@ static void rp_log(const char * when) {
     struct ggml_rampool_stats st;
     ggml_rampool_stats_fork(&st, true);
     const double a = (double) std::max<uint64_t>(1, st.asked), pp = (double) std::max<uint64_t>(1, st.pp_hit + st.pp_miss);
-    const std::string line = format("%s: misses %llu, from RAM %.1f%%, from SSD %.1f%% (read into the pool %llu, refused %llu, %.2f GiB read, waited %.1f ms), evicted %llu; prompt copies from RAM %.1f%% (%llu of %llu); pool %.1f of %.1f GiB used",
+    uint64_t adm = 0, dec = 0;
+    ggml_rampool_admit_stats_fork(&adm, &dec, true);
+    const std::string line = format("%s: misses %llu, from RAM %.1f%%, from SSD %.1f%% (read into the pool %llu, refused %llu, %.2f GiB read, waited %.1f ms), evicted %llu (admitted %llu, on probation %llu); prompt copies from RAM %.1f%% (%llu of %llu); pool %.1f of %.1f GiB used",
             when, (unsigned long long) st.asked, 100.0 * st.hit / a, 100.0 * (st.cold + st.refused) / a, (unsigned long long) st.cold, (unsigned long long) st.refused, st.cold_bytes / 1073741824.0,
-            st.wait_us / 1e3, (unsigned long long) st.evicted, 100.0 * st.pp_hit / pp, (unsigned long long) st.pp_hit, (unsigned long long) (st.pp_hit + st.pp_miss), st.used / 1073741824.0, st.bytes / 1073741824.0);
+            st.wait_us / 1e3, (unsigned long long) st.evicted, (unsigned long long) adm, (unsigned long long) dec, 100.0 * st.pp_hit / pp, (unsigned long long) st.pp_hit, (unsigned long long) (st.pp_hit + st.pp_miss), st.used / 1073741824.0, st.bytes / 1073741824.0);
     llama_moe_stats_log_fork("RPL", line.c_str());
     LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
 }
@@ -11943,6 +11985,8 @@ void llama_moe_cache_step_fork() {
         mc->vis_now.store(mc->vis_base + 1 + (uint32_t) mc->n_steps, std::memory_order_relaxed);
         ggml_rampool_graph_fork();
     }
+    static int64_t hot_saved_us = ggml_time_us();
+    if (const int64_t now = ggml_time_us(); now - hot_saved_us >= 10000000) { hot_saved_us = now; hot_save(mc); }
     if (!mc->ctl.empty() && mc->n_steps % 16 == 0) {
         ctl_poll(mc);
     }

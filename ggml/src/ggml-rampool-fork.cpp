@@ -61,6 +61,7 @@ struct rp_rec {
     uint16_t holds   = 0;       // readers outside a graph (ggml_rampool_take_fork)
     uint8_t  state   = RP_OUT;
     bool     claimed = false;   // a reader has it (the queue can hold a second job for it)
+    bool     prob    = false;   // on probation: it came in without passing the admission rule (rp_take_block), asked again in a later graph it stays (rp_promote)
 };
 
 struct rp_tensor {
@@ -88,6 +89,7 @@ struct rp_class {
     std::vector<uint32_t> free;         // blocks without an owner (a stack)
     uint32_t sample = 0;                // where the next eviction sample starts
     uint64_t cold   = 0;                // bytes this class read from the file since the last resize: where a new chunk pays most
+    std::deque<uint32_t> prob;          // probation blocks, oldest first: a declined newcomer takes the oldest one nobody reads
     char * at(uint32_t s) const { return chunks[s / per_chunk] + (size_t) (s % per_chunk) * size; }
 };
 
@@ -114,6 +116,8 @@ struct rp_pool {
 
     std::atomic<uint64_t> st_asked{0}, st_hit{0}, st_cold{0}, st_refused{0}, st_evicted{0}, st_cold_b{0}, st_wait_us{0}, st_pp_hit{0}, st_pp_miss{0};
     std::atomic<uint64_t> wait_total_us{0};   // st_wait_us without the per-request reset (ggml_rampool_wait_us_fork)
+    bool (*admit)(const void * key, int64_t e, double victim, void * ud) = nullptr;   // ggml_rampool_admit_fork: may element e evict a block expected back at `victim`
+    std::atomic<uint64_t> st_admitted{0}, st_declined{0};
     uint64_t pool_bytes = 0;
 };
 
@@ -227,8 +231,24 @@ bool rp_evictable(const rp_pool * p, const rp_rec & r, bool force = false) {
     return r.state == RP_IN && r.holds == 0 && r.graph + (force ? 0u : 1u) < p->graph.load(std::memory_order_relaxed);
 }
 
-// A block for an element of class c, -1: none. The caller holds the lock. A free block first; else of 64 sampled evictable blocks the one expected back last.
-int32_t rp_take_block(rp_pool * p, rp_class & c, bool force) {
+// block s of class c leaves its element. The caller holds the lock.
+void rp_drop_owner(rp_pool * p, rp_class & c, uint32_t s) {
+    const rp_owner o = c.owner[s];
+    rp_tensor & t = *p->tensors[o.t];
+    t.ptr[o.e].store(nullptr, std::memory_order_release);
+    t.rec[o.e].slot  = -1;
+    t.rec[o.e].state = RP_OUT;
+    c.owner[s] = rp_owner();
+    p->st_evicted++;
+}
+
+// A block for element ne of tensor nt (class c), -1: none. The caller holds the lock. A free block first. Else the victim: of 64 sampled evictable blocks the one expected
+// back last. With an admission rule (ggml_rampool_admit_fork, the VRAM cache's: uses in the last 64 tokens, expected back before the victim) a newcomer that fails it is on
+// probation: it takes the oldest probation block nobody reads, so a one-off miss pushes out another one-off miss, not a resident that keeps coming back. Without such a
+// block a CPU demand (cpu: its kernel reads the bytes from the pool) still takes the victim; an upload is refused and reads the file into its own buffer.
+// Kimi K3.1 12k decode, every miss admitted (2026-11-10): 834k reads and 834k evictions in 432 tokens (1708 GiB), the pool served 21% of the misses.
+int32_t rp_take_block(rp_pool * p, rp_class & c, bool force, bool cpu, const rp_tensor & nt, int64_t ne, bool & prob) {
+    prob = false;
     if (!c.free.empty()) {
         const uint32_t s = c.free.back();
         c.free.pop_back();
@@ -251,29 +271,51 @@ int32_t rp_take_block(rp_pool * p, rp_class & c, bool force) {
         if (h > bh) { bh = h; best = (int32_t) s; }
     }
     c.sample = (c.sample + 1) % n;
+    if (p->admit != nullptr) {
+        if (best >= 0 && p->admit(nt.key, ne, bh, p->ud)) {
+            p->st_admitted++;
+        } else {
+            prob = true;
+            p->st_declined++;
+            while (!c.prob.empty()) {
+                const uint32_t s = c.prob.front();
+                if (s >= c.owner.size() || c.owner[s].t < 0) { c.prob.pop_front(); continue; }   // gone since: a shrink, the sampled rule, a failed read
+                const rp_owner o = c.owner[s];
+                const rp_rec & r = p->tensors[o.t]->rec[o.e];
+                if (!r.prob || r.slot != (int32_t) s) { c.prob.pop_front(); continue; }   // asked again since (promoted), or the block changed hands
+                if (!rp_evictable(p, r, force)) { break; }   // the oldest is still read: the newer ones were asked later
+                c.prob.pop_front();
+                rp_drop_owner(p, c, s);
+                return (int32_t) s;
+            }
+            if (!cpu) { return -1; }
+        }
+    }
     if (best < 0) { return -1; }
-    const rp_owner o = c.owner[best];
-    rp_tensor & t = *p->tensors[o.t];
-    t.ptr[o.e].store(nullptr, std::memory_order_release);
-    t.rec[o.e].slot  = -1;
-    t.rec[o.e].state = RP_OUT;
-    c.owner[best] = rp_owner();
-    p->st_evicted++;
+    rp_drop_owner(p, c, (uint32_t) best);
     return best;
+}
+
+// asked again in a later graph than the one that read it in: off probation (the block stays when probation is evicted). The caller holds the lock.
+void rp_promote(rp_rec & r, uint32_t last_graph, uint32_t g) {
+    if (r.prob && last_graph != g) { r.prob = false; }
 }
 
 // element e leaves for a block and a reader. The caller holds the lock. false: no block (refused). force: a block is taken from the fill's set even with eviction
 // off (a CPU kernel's demand: the only other source is the mapping, ggml_rampool_demand_fork)
-bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false) {
+bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false, bool cpu = false) {
     if (!force && p->heat(t.key, e, p->ud) == HUGE_VAL) { return false; }   // a card holds it (the fill): a RAM copy pays nothing
     rp_class & c = p->cls[t.cls];
     rp_rec & r = t.rec[e];
-    const int32_t s = rp_take_block(p, c, force);
+    bool prob = false;
+    const int32_t s = rp_take_block(p, c, force, cpu, t, e, prob);
     if (s < 0) { return false; }
     r.slot    = s;
     r.state   = RP_READING;
     r.claimed = false;
+    r.prob    = prob;
     c.owner[s] = { t.idx, (int32_t) e };
+    if (prob) { c.prob.push_back((uint32_t) s); }
     p->demand.push_back({ &t, e });
     return true;
 }
@@ -557,6 +599,16 @@ void ggml_rampool_evict_fork(bool on) {
     if (g_rp) { g_rp->evict = on; }
 }
 
+// declared where they are used (llama-moecache-fork.cpp): no header edit
+GGML_API void ggml_rampool_admit_fork(bool (*admit)(const void * key, int64_t e, double victim, void * ud)) {
+    if (g_rp) { std::lock_guard<std::mutex> lk(g_rp->mu); g_rp->admit = admit; }
+}
+GGML_API void ggml_rampool_admit_stats_fork(uint64_t * admitted, uint64_t * declined, bool reset) {
+    *admitted = g_rp ? g_rp->st_admitted.load() : 0;
+    *declined = g_rp ? g_rp->st_declined.load() : 0;
+    if (reset && g_rp) { g_rp->st_admitted = 0; g_rp->st_declined = 0; }
+}
+
 void ggml_rampool_graph_fork(void) {
     if (g_rp) { g_rp->graph.fetch_add(1, std::memory_order_relaxed); }
 }
@@ -587,11 +639,12 @@ static void rp_need(const void * const * keys, int nk, const int32_t * ids, int 
             rp_tensor * t = ts[k];
             if (e < 0 || e >= t->n) { continue; }
             rp_rec & r = t->rec[e];
+            const uint32_t g0 = r.graph;
             r.graph = g;
-            if (r.state == RP_IN) { hit++; continue; }
+            if (r.state == RP_IN) { rp_promote(r, g0, g); hit++; continue; }
             if (r.state == RP_READING) { reading++; continue; }
             n_out++;
-            if (!fail && rp_start(p, *t, e, force)) { begun[nb++] = k; } else { fail = true; }
+            if (!fail && rp_start(p, *t, e, force, true)) { begun[nb++] = k; } else { fail = true; }
         }
         if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } refused += n_out; }
         else { started += nb; reading += nb; }
@@ -635,7 +688,9 @@ const char * ggml_rampool_use_fork(const void * key, int64_t e) {
     std::lock_guard<std::mutex> lk(p->mu);
     rp_rec & r = t->rec[e];
     if (r.state != RP_IN) { p->st_pp_miss++; return nullptr; }
-    r.graph = p->graph.load(std::memory_order_relaxed);
+    const uint32_t g = p->graph.load(std::memory_order_relaxed);
+    rp_promote(r, r.graph, g);
+    r.graph = g;
     p->st_pp_hit++;
     return t->ptr[e].load(std::memory_order_relaxed);
 }
@@ -648,7 +703,7 @@ const char * ggml_rampool_take_fork(const void * key, int64_t e) {
     std::unique_lock<std::mutex> lk(p->mu);
     r.holds++;
     p->st_asked++;
-    if (r.state == RP_IN) { p->st_hit++; return t->ptr[e].load(std::memory_order_relaxed); }
+    if (r.state == RP_IN) { rp_promote(r, r.graph, p->graph.load(std::memory_order_relaxed)); p->st_hit++; return t->ptr[e].load(std::memory_order_relaxed); }
     if (r.state == RP_OUT) {
         if (!rp_start(p, *t, e)) {
             r.holds--;
