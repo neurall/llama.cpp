@@ -1,0 +1,22 @@
+name,model,n,test,tokens,args,extra
+xo-qni-256-r,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 256 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-256-s,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 256 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-512-r,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 512 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-512-s,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 512 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-1024-r,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 1024 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-1024-s,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 1024 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-128-r,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 128 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-128-s,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 128 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-64-r,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 64 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-64-s,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 64 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xa-qni-64,qn_iq4xs,2,pf4k,64,-b 8192 -ub 64 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xa-qni-256,qn_iq4xs,2,pf4k,64,-b 8192 -ub 256 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xa-qni-1024,qn_iq4xs,2,pf12k,64,-b 8192 -ub 1024 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xd-qni-64,qn_iq4xs,2,pf4k,64,-b 8192 -ub 64,--env CUDA_VISIBLE_DEVICES=1
+xd-qni-256,qn_iq4xs,2,pf4k,64,-b 8192 -ub 256,--env CUDA_VISIBLE_DEVICES=1
+dr-qni-tetris,qn_iq4xs,1,tetrisc,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-scifi,qn_iq4xs,1,scific,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-poem,qn_iq4xs,1,poemc,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-snake,qn_iq4xs,1,snakec,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-scifi2,qn_iq4xs,1,scifi2c,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-breakout,qn_iq4xs,1,breakoutc,1024,"--moe state=/tmp/runstate/decreal/qni.ini",

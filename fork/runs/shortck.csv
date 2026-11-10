@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+sc-glm-tetris,glm,1,tetrisc,256,"--moe state=/tmp/runstate/shortck/glm.ini",
+sc-glm-scifi,glm,1,scific,256,"--moe state=/tmp/runstate/shortck/glm.ini",
+sc-glm-poem,glm,1,poemc,256,"--moe state=/tmp/runstate/shortck/glm.ini",
