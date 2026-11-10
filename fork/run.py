@@ -5964,6 +5964,33 @@ def fork_off():
     return FORK_OFF["v"]
 
 
+LAST_PAS = {"key": None, "pos": 0, "line": ""}
+def last_pass_line():
+    """the running server's last prompt pass (its stats log PAS line), compact, for the live block: shown for every call, one pass or many (user 2026-11-10:
+    a one-pass call showed no pass at all). Reads only what the log grew by since the last look."""
+    f = f"/tmp/perf-{CELL_BUILD[0]}{LOGTAG}.stats.log" if CELL_BUILD[0] else None
+    if not f: return ""
+    try:
+        st = os.stat(f)
+        if LAST_PAS["key"] != (f, st.st_ino) or st.st_size < LAST_PAS["pos"]: LAST_PAS.update(key=(f, st.st_ino), pos=0, line="")   # a new server's log
+        if st.st_size > LAST_PAS["pos"]:
+            with open(f, "rb") as fh:
+                fh.seek(LAST_PAS["pos"]); data = fh.read()
+            cut = data.rfind(b"\n") + 1   # whole lines; a half-written one waits for the next look
+            LAST_PAS["pos"] += cut
+            for l in data[:cut].decode(errors="replace").splitlines():
+                if " PAS " in l: LAST_PAS["line"] = l.split(" PAS ", 1)[1]
+    except OSError: pass
+    t = LAST_PAS["line"]
+    m = re.match(r"prompt pass (\d+/\d+): (\d+) tokens in ([\d.]+) s \(([\d.]+) t/s\)", t)
+    if not m: return t[:LIVE_W - 1]
+    per = re.findall(r"(cpu|upload|stream) ([\d.]+) MiB", t)
+    links = re.findall(r"(link\d) [\d.]+ MiB \(([\d.]+) GB/s\)", t)
+    cache = re.search(r"experts from cache (\d+)%", t)
+    return (f"last pass {m[1]}: {m[2]} tok in {m[3]} s, {m[4]} t/s" + (f", cache {cache[1]}%" if cache else "") + "; per tok MiB: "
+            + " ".join(f"{k} {float(v):.1f}" for k, v in per) + "; " + " ".join(f"{k} {v} GB/s" for k, v in links))[:LIVE_W - 1]
+
+
 def cell_status(t0, expect, label, total=None):
     """One status line: label, elapsed, progress bar against the expected time, CPU %, RAM GiB, pin (anon) and mm (file-backed) GiB of the server, swap MiB, per GPU util % and memory GiB."""
     def cpu():
@@ -6059,6 +6086,7 @@ def cell_status(t0, expect, label, total=None):
             mode.append(col(32, f"dense split ON {sp.get('devs', '')}") if sp.get("prefill") == 1 else col(33, "dense split off (one card)") if sp.get("prefill") == 0 else col(90, "dense split n/a"))
             mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
             eng = eng + "\n" + "  ".join(mode) + "\n" + kv_line()
+            if (lp := last_pass_line()): eng += "\n" + col(90, lp)
             if sp.get("why"): eng += "\n" + col(90, sp["why"])   # own line: beside the mode it passed the screen width, the wrapped line broke the redraw (cpu row repeated, user 2026-10-25)
             if CELL_REF[0] and (best := best_ref(*CELL_REF[0])):   # live speeds against the best earlier run of this model, test and power limits (runs.db)
                 bpp, bpb, btg, btb = best
