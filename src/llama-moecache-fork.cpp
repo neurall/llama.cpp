@@ -12209,16 +12209,22 @@ static void pp_inv(const char * name, const std::string & text) {
 // a path's estimator, initialised at its first use: th0 = (0, compute per token measured, attention per token and cell measured, upload coefficient 1)
 // (both 0 until a stream pass measured them: a zero prior gets its uncertainty from the first call, rls_prime); a stored posterior of this build replaces it
 static std::string pp_path_name(int p);
+static double g_pp_c_chain = 0.0;                 // compute per token bounded by the prompt chain before a stream pass measured it: a chain pass's time past its upload, the least seen (us)
+static double g_pp_rls_c[PP_PATHS] = {};          // the compute per token an arm's prior was built from
+// compute per token, the best known: the stream's measured, else the chain's bound, else the card's weight read rate over a token's expert bytes
+static double pp_c_guess() { return g_pp_c_us > 0.0 ? g_pp_c_us : g_pp_c_chain > 0.0 ? g_pp_c_chain : g_pp_ctok_prior; }
 static dsf_rls & pp_rls(int p) {
     dsf_rls & r = g_pp_rls[p];
-    if (r.k == 0) {
+    const double c = pp_c_guess();
+    // an arm that never ran is built again when the compute known moves: built once from the load-time weight read rate, the stream's prior said 2728 ms
+    // for a 512-token OLMoE pass that takes 138, the chain (measured on the first call) always had the lower mean and the stream never ran (touch18 tiny rows)
+    if (r.k == 0 || (r.n == 0 && !g_pp_rls_own[p] && c != g_pp_rls_c[p])) {
         // Every prior coefficient from a measured rate, never 0: a zero prior got its uncertainty from the first call that showed its feature, and a 2-token
-        // call at 1 cell made the per-token and per-cell coefficients 10 s wide (rampool9 first run: +- 21000 s on a 2k call). Compute per token: the
-        // stream's measured, else the card's weight read rate over a token's expert bytes; attention: the feature is the measured attention time
-        // (n x a x cells, the moe-cache's fit), its coefficient 1 +- 1 like the upload's.
-        const double c = g_pp_c_us > 0.0 ? g_pp_c_us : g_pp_ctok_prior;
+        // call at 1 cell made the per-token and per-cell coefficients 10 s wide (rampool9 first run: +- 21000 s on a 2k call). Compute per token: pp_c_guess;
+        // attention: the feature is the measured attention time (n x a x cells, the moe-cache's fit), its coefficient 1 +- 1 like the upload's.
         const double th0[4] = { 0.0, c, 1.0, 1.0 }, fl[4] = { 64.0 * c, 0.0, 0.0, 0.0 };   // fixed part: one 64-token pass (the least managed pass)
         rls_init(r, 4, th0, fl);
+        g_pp_rls_c[p] = c;
     }
     if (!g_pp_rls_loaded[p] && r.n == 0) {
         std::string v;
@@ -12757,13 +12763,15 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     std::lock_guard<std::mutex> lk(g_pp_mu);
     // a split pass (two cards) says nothing about one card, and a report that is not of the planned calls (an unplanned prompt) neither: the totals start again
     const double chain_up = g_pp_up_us.exchange(0.0);
-    if (mc && us > 0 && n_tokens > 0 && llama_dsplit_cur_fork() != 1 && !g_pp_dec_built) { pp_pass_add(n_tokens, g_pp_built ? std::max(0.0, (double) us - chain_up) : (double) us, g_pp_built); }
-    if (mc && us > 0 && n_tokens > 1) {   // a call of P passes: one pass of its size
-        const int path = pp_cur_path();
-        // a call whose passes were not counted here (the chains, a fixed -ub): the passes of the size its decision was made for. Without it such a call read as one
-        // pass (OLMoE 2761 tokens on the prompt chain: "predicted 197 ms per pass, took 1105"), so neither its time per size nor the router's wait was ever learned
-        const double phi_n = path >= 0 && path < PP_PATHS ? g_pp_phi[path][1] : 0.0;
-        const double P = n_tokens == g_pp_n && g_pp_P > 0 ? (double) g_pp_P : phi_n >= 1.0 && (double) n_tokens > phi_n ? std::ceil((double) n_tokens / phi_n) : 1.0;
+    // a call of P passes: one pass of its size. A call whose passes were not counted here (the chains, a fixed -ub): the passes of the size its decision was made for.
+    // Without it such a call read as one pass (OLMoE 2761 tokens on the prompt chain: "predicted 197 ms per pass, took 1105"), so neither its time per size nor the router's wait was ever learned
+    const int path = pp_cur_path();
+    const double phi_n = path >= 0 && path < PP_PATHS ? g_pp_phi[path][1] : 0.0;
+    const double P = n_tokens == g_pp_n && g_pp_P > 0 ? (double) g_pp_P : phi_n >= 1.0 && (double) n_tokens > phi_n ? std::ceil((double) n_tokens / phi_n) : 1.0;
+    if (mc && us > 0 && n_tokens > 0 && llama_dsplit_cur_fork() != 1 && !g_pp_dec_built) {
+        pp_pass_add((uint32_t) std::lround((double) n_tokens / P), (g_pp_built ? std::max(0.0, (double) us - chain_up) : (double) us) / P, g_pp_built);
+    }
+    if (mc && us > 0 && n_tokens > 1) {
         const int learned = g_pp_pass_learned;
         g_pp_pass_learned = 0;
         // the SSD rate of the stream: the bytes the process read from storage over this call (only a stream pass, which reads the mapped experts; the chains read few)
@@ -12810,10 +12818,18 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             const double best = b >= 0 ? pp_took_us(b, n1) : 0.0;
             g_pp_total_us += (double) us;
             if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
-            if (path == PP_CHAIN && n1 >= PP_MIN_BATCH && std::fabs(g_pp_phi[path][1] - n1) <= 32.0) {   // only when the sample's pass is the one its upload was calculated for (a fixed -ub cuts a call into passes the planner does not count)
-                double & w = g_pp_wait_us[pp_bucket(n1)];
-                const double got = std::max(1.0, took - g_pp_up_call - g_pp_c_us * n1);
-                w = w > 0.0 ? std::min(w, got) : got;
+            // only when the sample's pass is the one its upload was calculated for (a fixed -ub cuts a call into passes the planner does not count); the call's
+            // last pass is shorter, so the passes average below the decided size: the band of llama_moe_cache_pp_pass_learn_fork (it was 32 tokens, and
+            // OLMoE's 2761 tokens in 6 passes of 512, 460 on average, never taught the wait)
+            if (path == PP_CHAIN && n1 >= PP_MIN_BATCH && n1 >= 0.8 * phi_n && n1 <= 1.25 * phi_n) {
+                const double rest = std::max(1.0, took - g_pp_up_call);   // the pass past its upload: the router's wait and the compute
+                if (g_pp_c_us > 0.0) {
+                    double & w = g_pp_wait_us[pp_bucket(n1)];
+                    const double got = std::max(1.0, rest - g_pp_c_us * n1);
+                    w = w > 0.0 ? std::min(w, got) : got;
+                } else {   // no stream measured the compute yet: the rest bounds it (as a wait it would be counted twice once a stream measures the compute)
+                    g_pp_c_chain = g_pp_c_chain > 0.0 ? std::min(g_pp_c_chain, rest / n1) : rest / n1;
+                }
             }
             const uint64_t pk = g_ppc_picked.exchange(0), pa = g_ppc_all.exchange(0), pm = g_ppc_miss.exchange(0);
             const std::string picks = pa ? format(", routers picked %.1f%% of the experts, %.1f%% of those uploaded", 100.0 * (double) pk / (double) pa, pk ? 100.0 * (double) pm / (double) pk : 0.0) : std::string();
@@ -13082,7 +13098,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
     const double ssd_miss = ssd_rate > 0.0 ? miss_ssd_bytes / (ssd_rate * 1e3) : 0.0;
     pp_metrics pm;
-    pm.n = n; pm.comp_us_tok = g_pp_c_us; pm.ssd_gbs = ssd_rate;
+    pm.n = n; pm.comp_us_tok = g_pp_c_us > 0.0 ? g_pp_c_us : g_pp_c_chain; pm.ssd_gbs = ssd_rate;   // the chain's bound until a stream measures it (not the load-time read rate: 20x high on OLMoE)
     pm.U = U; pm.M = M; pm.Um = Um; pm.Mm = Mm; pm.up = up; pm.cpu = cpu; pm.ssd_miss = ssd_miss;
     pm.wait_us = pp_wait_us(n); pm.chunk_us = chunk_at(n); pm.dec_f = dec_f; pm.dec_r = dec_r; pm.dec_kc = g_pp_dec_kc;
     pm.Uk = Uk; pm.Mk = Mk;
@@ -13153,7 +13169,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         static const bool pp_switch = [] { const char * e = moe_opt("pp-switch"); return !e || atoi(e) != 0; }();
         g_pp_up_call = up;
         if (pp_switch && ok[PP_RING] && ok[PP_CHAIN]) {
-            const double wait = pp_wait_us(n), comp = g_pp_c_us * n;
+            const double wait = pp_wait_us(n), comp = pm.comp_us_tok * n;
             const double ran_r = pp_took_us(PP_CHAIN, n), ran_s = pp_took_us(PP_RING, n);
             // both carry the SSD now (it was left out while the SSD term counted locked and pool weights as file reads: 93 GB of GLM's at 6.3 GB/s, 14.8 s against a 3.9 s upload)
             const double t_r = ran_r > 0.0 ? ran_r : estimate_router_time_per_token(pm) * n, t_s = ran_s > 0.0 ? ran_s : estimate_fullstream_time_per_token(pm) * n;
