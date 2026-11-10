@@ -2672,8 +2672,11 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     } else if (params.load_pin_budget > 0) {
         LOG_INF("%s: weights pinned as far as they reach: the model does not fit pinned RAM, up to %.1f GiB pinned (in tensor order), the rest mapped (mmap / page cache)\n", __func__,
             params.load_pin_budget / 1073741824.0);
-    } else {
+    } else if (params.load_mode == LLAMA_LOAD_MODE_MMAP || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK) {
         LOG_INF("%s: weights NOT pinned: mmap / page cache (load mode %s)\n", __func__, llama_load_mode_name(params.load_mode));
+    } else {   // said "mmap / page cache" for load mode none too, where no weight byte comes from a mapping
+        LOG_INF("%s: weights read by the loader into its own host buffers, no mmap (load mode %s); the loader pins them (see its 'host weights read' and 'pinned in place' lines)\n",
+            __func__, llama_load_mode_name(params.load_mode));
     }
 
     pimpl->model.reset(model);
