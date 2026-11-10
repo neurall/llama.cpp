@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+eng-on-12k-1,ds,2,pf12k1k,1024,,
+eng-off-12k-1,ds,2,pf12k1k,1024,,--env LLAMA_ROWREAD=0
+eng-on-12k-2,ds,2,pf12k1k,1024,,
+eng-off-12k-2,ds,2,pf12k1k,1024,,--env LLAMA_ROWREAD=0
+eng-on-short,ds,1,scific,256,,
+eng-off-short,ds,1,scific,256,,--env LLAMA_ROWREAD=0
