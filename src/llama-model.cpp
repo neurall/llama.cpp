@@ -2489,7 +2489,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         if (ml_keep->lazy.any()) {
             for (auto & [ctx, bufs] : ctx_bufs) {
                 for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
-                    const llama_tensor_weight * w = !t->data && ml_keep->lazy.has(t) ? ml_keep->get_weight(ggml_get_name(t)) : nullptr;
+                    const auto * w = !t->data && ml_keep->lazy.has(t) ? ml_keep->get_weight(ggml_get_name(t)) : nullptr;
                     if (!w || w->idx >= ml_keep->mappings.size() || !ml_keep->mappings[w->idx]) { continue; }
                     uint8_t * data = (uint8_t *) ml_keep->mappings[w->idx]->addr() + w->offs;
                     const size_t n = ggml_nbytes(t);
