@@ -1196,6 +1196,12 @@ def cmd_memwatch(a):
 DETACH = [False]      # server_run sets it while it starts a server to keep: no die-with-parent, own session
 
 
+def alive_or_raise(pid):
+    """os.kill(pid, 0) that also counts a zombie as gone: with PID 1 stuck in D nothing reaps an orphan (2026-11-10: a killed run's pid kept `run` attaching to its old log)"""
+    os.kill(pid, 0)
+    if PidProc(pid).poll() is not None: raise ProcessLookupError(pid)
+
+
 class PidProc:
     """Handle on a server an earlier run.py process started (the kept server): the parts of Popen that stop() and the samplers use."""
     def __init__(self, pid): self.pid = pid
@@ -7363,7 +7369,7 @@ def cmd_status(a):
     """`run.py status [LIST [run options]]`: what the running list is doing, in the table `run LIST -nrt` prints: the cells done today (t/s, pp, stock, gains), the one running now, the
     cells queued next (with the time each is expected to take) and the queue daemon's waiting tasks. With no LIST: the list that runs now, else the last one that ran. Starts and touches nothing."""
     last = os.path.join(QDIR, "run-list-last.json")
-    try: j = json.load(open(RUN_LIVE)); os.kill(j["pid"], 0); live = True
+    try: j = json.load(open(RUN_LIVE)); alive_or_raise(j["pid"]); live = True
     except (OSError, ValueError, KeyError): live = False
     lists = sorted(os.path.basename(f)[:-4] for f in glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "*.csv")))
     if a.list and a.list not in lists: sys.exit(f"status: no list {a.list!r}; lists: {' '.join(lists)}")
@@ -7450,7 +7456,7 @@ def run_list_detached(name, argv, cmd=None):
     if "-n" in argv or "--dry" in argv: return run_list(name, argv)
     def alive():
         try:
-            rec = json.load(open(RUN_LIVE)); os.kill(rec["pid"], 0)
+            rec = json.load(open(RUN_LIVE)); alive_or_raise(rec["pid"])
             return rec
         except (OSError, ValueError, KeyError): return None
     rec = alive(); child = None
@@ -7493,7 +7499,7 @@ def run_list_detached(name, argv, cmd=None):
                 if chunk: show(chunk); continue
                 try:
                     if child and child.poll() is not None: raise OSError   # our own child: a finished one is a zombie that kill(0) still finds
-                    os.kill(rec["pid"], 0)
+                    alive_or_raise(rec["pid"])
                 except OSError:
                     chunk = f.read()   # the last lines written before it ended
                     if chunk: show(chunk)
@@ -7514,7 +7520,7 @@ def run_list_detached(name, argv, cmd=None):
                 for _ in range(240):   # the stop takes a while (cell, server, pool): wait until the run is gone
                     try:
                         if child and child.poll() is not None: break   # our own child: a finished one is a zombie that kill(0) still finds (the wait ran the full 2 min)
-                        os.kill(rec["pid"], 0)
+                        alive_or_raise(rec["pid"])
                     except OSError: break
                     time.sleep(0.5)
             except KeyboardInterrupt:
