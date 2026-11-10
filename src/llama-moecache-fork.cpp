@@ -2117,25 +2117,28 @@ moe_cache * g_cache = nullptr;
 std::mutex g_init_mtx;
 bool g_init_done = false;
 
-// fork: host buffers an asynchronous load still reads (LLAMA_ASYNC_LOAD): the model registers them before its read thread starts, the loader's pin
-// thread clears each one once its last read landed and it is pinned, the read thread clears the rest at its end. An upload worker takes no job whose
-// expert sources sit in one. Until 2026-11-10 the workers waited for the whole read, so the start-up fill (profile_preload, ~40 GB on GLM 3.0) began
-// when it ended and the first call (the seq_rm probe at load) waited for all of it: GLM 3.0 2.7 s, MiMo 3.1 s on the x4 card's link.
+// fork: host buffers an asynchronous load still reads (LLAMA_ASYNC_LOAD): the model registers its tensors' buffers before its read thread starts, the
+// loader's pin thread marks each one read once its last read landed and it is pinned, the read thread marks the rest at its end. While any load reads, a
+// worker takes only jobs whose expert sources sit in buffers marked read: a buffer the registration missed waits for the end of the load, as before,
+// instead of being uploaded unread. Until 2026-11-10 the workers waited for the whole read, so the start-up fill (profile_preload, ~40 GB on GLM 3.0)
+// began when it ended and the first call (the seq_rm probe at load) waited for all of it: GLM 3.0 2.7 s, MiMo 3.1 s on the x4 card's link.
 static std::mutex                g_hpend_mtx;
-static std::vector<const void *> g_hpend;           // bases of those buffers
+static std::vector<const void *> g_hpend;           // bases of the buffers being read
+static std::vector<const void *> g_hread;           // bases of the buffers marked read (a registration drops its base from here: a reused address)
 static std::atomic<uint32_t>     g_hpend_gen{0};    // bumped on every change, before g_hpend_n
 static std::atomic<size_t>       g_hpend_n{0};
 }  // namespace (reopened below)
 LLAMA_API void llama_moe_host_pending_fork(const void * base, bool pending) {
     std::lock_guard<std::mutex> lk(g_hpend_mtx);
-    const auto it = std::find(g_hpend.begin(), g_hpend.end(), base);
-    if (pending == (it != g_hpend.end())) { return; }
-    if (pending) { g_hpend.push_back(base); } else { g_hpend.erase(it); }
+    auto & from = pending ? g_hread : g_hpend;
+    auto & to   = pending ? g_hpend : g_hread;
+    if (const auto it = std::find(from.begin(), from.end(), base); it != from.end()) { from.erase(it); }
+    if (std::find(to.begin(), to.end(), base) == to.end()) { to.push_back(base); }
     g_hpend_gen.fetch_add(1, std::memory_order_release);
     g_hpend_n.store(g_hpend.size(), std::memory_order_release);
 }
 namespace {
-// mc->wmtx held: the layer's up/gate/down sources are read (none sits in a pending buffer)
+// mc->wmtx held: the layer's up/gate/down sources are read: no load reads, or each sits in a buffer marked read (never one only left unregistered)
 static bool layer_src_ready(moe_cache * mc, size_t li) {
     const uint32_t g = g_hpend_gen.load(std::memory_order_acquire);
     if (mc->hpend_seen != g) {
@@ -2144,7 +2147,9 @@ static bool layer_src_ready(moe_cache * mc, size_t li) {
         for (auto & ls : mc->layers) {
             ls.src_ready = true;
             for (const ggml_tensor * t : { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src }) {
-                if (t && t->buffer && std::find(g_hpend.begin(), g_hpend.end(), (const void *) ggml_backend_buffer_get_base(t->buffer)) != g_hpend.end()) { ls.src_ready = false; }
+                if (!t) { continue; }
+                const void * b = t->buffer ? ggml_backend_buffer_get_base(t->buffer) : nullptr;
+                if (!g_hpend.empty() && (!b || std::find(g_hread.begin(), g_hread.end(), b) == g_hread.end())) { ls.src_ready = false; }
             }
         }
     }

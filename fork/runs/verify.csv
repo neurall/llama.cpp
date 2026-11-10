@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+vf-qni4,qn_iq4xs,1,scific,8,--moe verify=2,
+vf-mimo,mimo,1,scific,8,--moe verify=2,
+vf-glm,glm,1,scific,8,--moe verify=2,
