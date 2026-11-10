@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+rd-base,glm,1,scific,8,,
+rd-blk1m,glm,1,scific,8,,--env LLAMA_MOE_RD_BLK_KB=1024
+rd-qd64,glm,1,scific,8,,--env LLAMA_MOE_RD_QD=64
+rd-t16,glm,1,scific,8,,--env LLAMA_LOAD_THREADS=16
+rd-t4,glm,1,scific,8,,--env LLAMA_LOAD_THREADS=4
+rd-base2,glm,1,scific,8,,
+rd-ds-t4,ds,1,scific,8,--moe read-threads=4,
+rd-ds-t8,ds,1,scific,8,--moe read-threads=8,
+rd-ds-t12,ds,1,scific,8,--moe read-threads=12,
+rd-ds-t4b,ds,1,scific,8,--moe read-threads=4,
