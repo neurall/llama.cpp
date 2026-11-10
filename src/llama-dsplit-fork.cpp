@@ -1208,6 +1208,7 @@ static void dsplit_sparse_bench(const llama_model & model, ggml_backend_dev_t d,
     const int64_t C[4] = { 4096, 8192, 16384, 32768 };
     double td[4], ts[4];
     int64_t nsel_last = 0;
+    int kn = 0;   // lengths measured: the first where the gather wins ends it, the gate needs no longer one (DS: wins at 4k, the 8k-32k timings took 0.8 s per card)
     for (int k = 0; k < 4; ++k) {
         const int64_t n_pool = C[k] / kpool;
         const int64_t n_sel  = kpool * std::min<int64_t>(n_pool, (int64_t) hp.indexer_top_k / kpool) + (hp.indexer_kpool_select_tail ? kpool - 1 : 0);
@@ -1251,10 +1252,12 @@ static void dsplit_sparse_bench(const llama_model & model, ggml_backend_dev_t d,
         }
         ggml_free(ctx);
         if (!buf) { BENCH_LOG("split planner: sparse attention gate on %s not measured (no buffer at %lld cells)\n", ggml_backend_dev_name(d), (long long) C[k]); return; }
+        kn = k + 1;
+        if (ts[k] < td[k]) { break; }
     }
     // the gate: where the gather starts to win, interpolated between the two lengths around the change (0: it never won up to 32k cells)
     int32_t gate = 0;
-    for (int k = 0; k < 4 && gate == 0; ++k) {
+    for (int k = 0; k < kn && gate == 0; ++k) {
         if (ts[k] >= td[k]) { continue; }
         if (k == 0) { gate = (int32_t) C[0]; break; }
         const double a = td[k - 1] - ts[k - 1], b = td[k] - ts[k];   // a <= 0 < b
@@ -1265,10 +1268,12 @@ static void dsplit_sparse_bench(const llama_model & model, ggml_backend_dev_t d,
     int32_t mx = 0;
     for (int32_t v : g_sparse_min_card) { all = all && v > 0; mx = std::max(mx, v); }
     g_sparse_min = all ? mx : 0;
-    BENCH_LOG("split planner: sparse attention gate on %s (selection %lld cells, %lld query heads, K %lld V %lld%s, %lld tokens): masked / gather %.0f/%.0f, %.0f/%.0f, "
-                   "%.0f/%.0f, %.0f/%.0f us at 4k/8k/16k/32k cells: the gather from %s (the gate now: %d cells)\n", ggml_backend_dev_name(d), (long long) nsel_last,
-            (long long) nh, (long long) hsk, (long long) hsv, mla ? ", MLA" : "", (long long) ATT_T, td[0], ts[0], td[1], ts[1], td[2], ts[2], td[3], ts[3],
-            gate > 0 ? (std::to_string(gate) + " cells").c_str() : "never up to 32k (the kernel's own rule stays)", g_sparse_min);
+    static const char * const CK[4] = { "4k", "8k", "16k", "32k" };
+    std::string tm;
+    for (int k = 0; k < kn; ++k) { tm += std::to_string((long long) td[k]) + "/" + std::to_string((long long) ts[k]) + " us at " + CK[k] + (k + 1 < kn ? ", " : ""); }
+    BENCH_LOG("split planner: sparse attention gate on %s (selection %lld cells, %lld query heads, K %lld V %lld%s, %lld tokens): masked / gather %s cells: the gather from %s "
+                   "(the gate now: %d cells)\n", ggml_backend_dev_name(d), (long long) nsel_last, (long long) nh, (long long) hsk, (long long) hsv, mla ? ", MLA" : "",
+            (long long) ATT_T, tm.c_str(), gate > 0 ? (std::to_string(gate) + " cells").c_str() : "never up to 32k (the kernel's own rule stays)", g_sparse_min);
 }
 
 static void dsplit_att_bench(const llama_model & model, ggml_backend_dev_t d, ggml_backend_t be) {
