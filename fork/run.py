@@ -5947,6 +5947,23 @@ def status_phase(raw):
     return " | " + col(37, f"idle, {s.get('requests_done', 0)} done")
 
 
+FORK_OFF = {"key": None, "pos": 0, "v": False}
+def fork_off():
+    """the running server's log says the fork turned itself off (no context at any size: --moe cache=0, experts through the mapping): shown red on the
+    status lines (user 2026-11-10, Kimi K3.1 ran 18 min that way unnoticed). Reads only what the log grew by since the last look."""
+    f = globals().get("WATCH_LOG")
+    if not f: return False
+    try:
+        st = os.stat(f)
+        if FORK_OFF["key"] != (f, st.st_ino) or st.st_size < FORK_OFF["pos"]: FORK_OFF.update(key=(f, st.st_ino), pos=0, v=False)   # a new server's log
+        if not FORK_OFF["v"]:
+            with open(f, "rb") as fh:
+                fh.seek(max(0, FORK_OFF["pos"] - 64)); data = fh.read(); FORK_OFF["pos"] = st.st_size
+            FORK_OFF["v"] = b"starting over with the fork off" in data
+    except OSError: pass
+    return FORK_OFF["v"]
+
+
 def cell_status(t0, expect, label, total=None):
     """One status line: label, elapsed, progress bar against the expected time, CPU %, RAM GiB, pin (anon) and mm (file-backed) GiB of the server, swap MiB, per GPU util % and memory GiB."""
     def cpu():
@@ -5983,7 +6000,7 @@ def cell_status(t0, expect, label, total=None):
             except ValueError: continue
             if k == "RssAnon": pin += int(v.split()[0]) / 2**20
             elif k == "RssFile": mm += int(v.split()[0]) / 2**20
-        st = col(37, "cpu ") + level(busy, 50, 90, f"{busy:.0f}%") + col(37, " ram ") + level(ram / (m["MemTotal"] / 2**20), 0.7, 0.9, f"{ram:.0f}G") + " " + col(33, f"pin {pin:.0f}G") + " " + col(36, f"mm {mm:.0f}G") + " " + (col(31, f"swap {swap:.0f}M") if swap > 100 else col(37, f"swap {swap:.0f}M")) + (lambda fr: " " + level(1 - min(fr / 2**30 / 50, 1), 0.6, 0.9, f"disk {fr / 2**30:.0f}G free") if fr >= 0 else "")(int(sysi[4].strip() or -1) if sysi[4].strip().isdigit() else -1) + f" | {gpu}"   # stats first, the bars below
+        st = col(37, "cpu ") + level(busy, 50, 90, f"{busy:.0f}%") + col(37, " ram ") + level(ram / (m["MemTotal"] / 2**20), 0.7, 0.9, f"{ram:.0f}G") + " " + col(33, f"pin {pin:.0f}G") + " " + (col(31, f"mm {mm:.0f}G") if fork_off() or mm > m["MemTotal"] / 2**20 / 20 else col(36, f"mm {mm:.0f}G")) + (col("1;31", " FORK OFF") if fork_off() else "") + " " + (col(31, f"swap {swap:.0f}M") if swap > 100 else col(37, f"swap {swap:.0f}M")) + (lambda fr: " " + level(1 - min(fr / 2**30 / 50, 1), 0.6, 0.9, f"disk {fr / 2**30:.0f}G free") if fr >= 0 else "")(int(sysi[4].strip() or -1) if sysi[4].strip().isdigit() else -1) + f" | {gpu}"   # stats first, the bars below
         if not HOST[0]: st += " " + col(35, host_io_line())
         st += status_phase(sysi[7])
         eng = ""   # engine state line (GET /moe/stats): pass size, threads, context, cache hit rate, time per token, uploads against the probed link and RAM maximum
@@ -6038,7 +6055,7 @@ def cell_status(t0, expect, label, total=None):
             pgpus = sp.get("prefill_gpus", 0) if sp.get("prefill") == 1 else 1
             ncache = bw.get("gpus") if bw else sp.get("gpus")
             up = sum(1 for l in links if l.get("gbs", 0) > 0.05)
-            mode = [col(32, "moe cache") if bw else col(33, "stock placement")]
+            mode = [col("1;31", "FORK OFF: no context fit, experts through the mapping (--moe cache=0)") if fork_off() else col(32, "moe cache") if bw else col(33, "stock placement")]
             mode.append(col(32, f"dense split ON {sp.get('devs', '')}") if sp.get("prefill") == 1 else col(33, "dense split off (one card)") if sp.get("prefill") == 0 else col(90, "dense split n/a"))
             mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
             eng = eng + "\n" + "  ".join(mode) + "\n" + kv_line()
