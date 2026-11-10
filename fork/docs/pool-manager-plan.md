@@ -56,6 +56,23 @@ Trigger: DeepSeek 4.1 + DSpark draft, every repeat request broke after ~256 toke
 | access log for debug and fix-validation runs | one global log, one line per access: time, host thread, GPU stream, who (upload worker, graph and node, zone move, pad zero, keep-hot, draft graph), what (expert L/e, KV rows, graph tensor, scratch, staging), GPU, pool, offset, bytes, start or done, read or write. GPU work carries GPU event times (a host start/done is only when it was queued). Replays log the address ranges their capture recorded, so stale addresses show. Written to a file and flushed every few seconds (default 2) so a crash or kill keeps it; on for debug cells and fix-validation cells, off for speed A/B cells. A checker flags any write that overlaps another actor's read or write of the same bytes in time, and any access outside the owner's region at that moment. |
 | easy to trace and to find the culprit | every region carries its owner, the call site that asked for it and the serial of the commit that last changed it; poison fills carry the same serial, so bad bytes lead back to a commit. A ring of the last few hundred commits is always kept in memory (cheap) and dumped with the region map on any failed check or abort, so the dump already holds the culprit. A failed check prints the region, the owner it expected, the owner it found, the graph, and the last commits that touched that range. The ledger, the pool dump, the live pool page and the fuzz test all read the manager's own map. |
 
+## Pool guard: one check for every access (user, 2026-11-10)
+
+Trigger: CUDA's `init_tensor` zeroed the row padding behind quantized graph tensors placed in the pool before the lend (qni4 216/408 B, DS 66/74 B
+windows in cached experts; fix f6dbde5665). That write came from ggml itself, not from our code, so the ledger never saw it.
+
+| piece | what | today |
+|---|---|---|
+| one check function | `pool_access(ptr, len, op, who)`: every read, write, move and resize of pool bytes goes through it; it holds the pool map (regions, owners) and the read/write locks. `--moe guard=1` logs a VIOLATION with both owners, `guard=2` aborts at the first | `pool_map(ap)` region map and block owners; checks only in ledger mode and only on our own writers |
+| ggml-internal writes | hooks at `ggml_backend_tensor_set/_async`, `tensor_memset`, `tensor_copy/_async`, CUDA `init_tensor` padding memset, the mmq/mmvq run-time padding clears | unchecked |
+| DMA notify | the host tells the pool when it starts a DMA into pool bytes (offset, len, start time, who) and when it ends (stop time). DMAs run async: the lock ends at completion (stream event or callback), not when the call returns. An in-flight DMA is a write lock: a lend, eviction or zone move over it, a kernel touching it, or another DMA into it is a violation | ledger up-start/up-done lines for expert uploads only, no live table |
+| kernel probe (debug) | before each split runs, every node's read and write ranges (quantized over-read up to the padded size, run-time padding clears) are checked against the map and the locks; MUL_MAT_ID weight reads per used expert (ids read back in debug mode) | none |
+
+Order: the check function with the ggml-internal hooks first (test: placing graphs through the pool buffer again must make the guard name CUDA's
+init_tensor writes into expert blocks on qni4; the fixed placement must log none), then the DMA lock table at every host DMA site (upload workers,
+keep-hot, KV moves, mirror fill, staging fills, row tables, zero restores), then the kernel probe, then the ledger's own checks folded into the same
+function. Off by default: one pointer test per call.
+
 ## Speed rules
 
 - Nothing added per token when the debugger is off.

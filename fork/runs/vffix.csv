@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+vfx-qni4-a,qn_iq4xs,1,scific,8,--moe verify=2,
+vfx-ds-a,ds,1,scific,8,--moe verify=2,
+vfx-qni4-b,qn_iq4xs,1,scific,8,--moe verify=2,
+vfx-ds-b,ds,1,scific,8,--moe verify=2,
+vfx-glm,glm,1,scific,8,--moe verify=2,
+vfx-mimo,mimo,1,scific,8,--moe verify=2,
