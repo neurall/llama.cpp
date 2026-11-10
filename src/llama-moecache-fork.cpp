@@ -4281,10 +4281,6 @@ static int read_threads_probe(const std::map<int, int> & fds, const std::string 
 // The scheduler's prompt uploads (ggml_backend_sched_upload_weight): the same read as read_direct in 1 MiB blocks on several threads. Threads start per chunk, as pin_prefetch_run does per tensor.
 // ponytail: 7 thread starts per 32 MiB, about 2% of a core at 5 GB/s; a pool if that ever shows.
 static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * ud) {
-#ifdef _WIN32
-    GGML_UNUSED(weight); GGML_UNUSED(off); GGML_UNUSED(n); GGML_UNUSED(dst); GGML_UNUSED(cap); GGML_UNUSED(ud);
-    return nullptr;
-#else
     moe_cache * mc = (moe_cache *) ud;
     const auto it = mc->rd_src.find(weight);
     if (it == mc->rd_src.end() || it->second.first < 0) { return nullptr; }
@@ -4311,7 +4307,7 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
             const size_t pi = next.fetch_add(1);
             if (pi >= pcs.size() || fail.load(std::memory_order_relaxed)) { return; }
             const size_t o = pcs[pi].off, want = pcs[pi].n;
-            const ssize_t r = pread(dfd, buf + o, want, (off_t) (beg + o));
+            const int64_t r = sr_pread1(dfd, buf + o, want, beg + o);   // ggml-read-fork.h: pread, on Windows an overlapped ReadFile
             if (r < 0 || ((size_t) r < want && o + (size_t) r < need)) { fail.store(true); return; }   // short only past the end of the file
         }
     };
@@ -4325,7 +4321,6 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     if (total >= ((size_t) 4 << 20) && !fail.load()) { rd_note(0, total, ggml_time_us() - t_pool0); }
 #endif
     return fail.load() ? nullptr : (const void *) (buf + (file_off - beg));
-#endif
 }
 
 extern "C" {
@@ -8861,7 +8856,6 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             }
             // --moe read-direct=1: the expert tensors that did not fit the pin budget are read from their file past the page cache (read_direct)
             size_t rd_mapped = 0;
-#ifndef _WIN32
             if (const char * rd = moe_opt("read-direct"); !(rd && rd[0] == '0') && gpu && !mc->staging[0]) {   // default on (user 2026-11-02, with pin-mlock: DS prompt 263 -> 341 t/s); =0 switches it off
                 ggml_backend_buffer_type_t pinned_buft = ggml_backend_dev_host_buffer_type(gpu);
                 for (auto & ls2 : mc->layers) {
@@ -8894,6 +8888,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     for (size_t w = 0; w < mc->staging.size(); ++w) { mc->rd_staging.push_back(ggml_backend_buft_alloc_buffer(pinned_buft, mc->rd_size)); }
                 }
             }
+#ifndef _WIN32
             // --moe pin-mlock=1: pinned weights are locked as well. A pinned page cannot be evicted, but it stays on the LRU list: reclaim scans it again and again
             // (DeepSeek at 88 GiB pinned: 95 GiB on the inactive anon list, up to 8 M pages/s scanned) and each refault of the page cache pushes more of that pressure onto real anon pages.
             if (const char * ml = moe_opt("pin-mlock"); !(ml && ml[0] == '0') && gpu) {   // default on; =0 switches it off
