@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+dc-ds-scifi,ds,1,scific,256,,
+dcf-ds-scifi,ds,1,scific,256,--moe pp-path=dec,
+dc-ds-poem,ds,1,poemc,256,,
+dc-glm-scifi,glm,1,scific,256,,
+dc-mimo-scifi,mimo,1,scific,256,,
