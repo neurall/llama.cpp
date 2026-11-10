@@ -50,6 +50,65 @@ int main() {
     if (!(estimate_router_time_per_token(a) < estimate_fullstream_time_per_token(a))) { printf("FAIL short pass: router must win\n"); g_fail++; }
     if (!(estimate_fullstream_time_per_token(b) < estimate_router_time_per_token(b))) { printf("FAIL long pass: stream must win\n"); g_fail++; }
 
+    // ---- simulated machines: no model, no card. A DeepSeek-sized model (60 layers x 256 experts of 8.6 MB = 132 GB, 8 picked) on machines made of numbers ----
+    pp_model ds; ds.layers = 60; ds.experts = 256; ds.used = 8; ds.expert_bytes = 8.6e6;
+    pp_machine pc; pc.ssd_gbs = 3.0; pc.cpu_gbs = 40.0; pc.ram_gb = 101.0; pc.link_gbs = { 26.0, 6.4 }; pc.vram_gb = { 4.0, 4.0 }; pc.comp_us_tok = { 1500.0, 1500.0 }; pc.router_wait_us_layer = 3000.0;
+    const double lim = 16384.0;
+    auto check = [&](const char * what, bool ok) { if (!ok) { printf("FAIL sim: %s\n", what); g_fail++; } };
+    printf("crossover router -> full stream, tokens per pass (0: stream always, %.0f: never)\n", lim + 1.0);
+    printf("%-34s %8s\n", "machine", "tokens");
+    auto row = [&](const char * name, const pp_machine & hw) { const double x = pp_crossover_tokens(hw, ds, lim); printf("%-34s %8.0f\n", name, x); return x; };
+    const double x_pc = row("two cards, 101 GB RAM, SSD 3 GB/s", pc);
+    // a slower SSD makes every streamed byte dearer: the router keeps winning up to a larger pass (never the other way)
+    double prev = x_pc;
+    for (const double ssd : { 2.0, 1.0, 0.5 }) {
+        pp_machine hw = pc; hw.ssd_gbs = ssd;
+        char nm[64]; snprintf(nm, sizeof nm, "  SSD %.1f GB/s", ssd);
+        const double x = row(nm, hw);
+        check("a slower SSD never moves the crossover down", x >= prev);
+        prev = x;
+    }
+    // less RAM puts more of the model on the SSD: the same direction (the small-RAM machines users have)
+    prev = x_pc;
+    for (const double ram : { 64.0, 32.0, 16.0, 8.0 }) {
+        pp_machine hw = pc; hw.ram_gb = ram;
+        char nm[64]; snprintf(nm, sizeof nm, "  RAM %.0f GB", ram);
+        const double x = row(nm, hw);
+        check("less RAM never moves the crossover down", x >= prev);
+        prev = x;
+    }
+    // a faster link makes the stream cheaper: the crossover never moves up (all in RAM, so the link is the limit)
+    pp_machine ramful = pc; ramful.ram_gb = 200.0;
+    prev = row("all experts in RAM, link 6.4 GB/s", [&] { pp_machine hw = ramful; hw.link_gbs = { 6.4 }; hw.vram_gb = { 4.0 }; return hw; }());
+    for (const double l : { 13.0, 26.0, 52.0 }) {
+        pp_machine hw = ramful; hw.link_gbs = { l }; hw.vram_gb = { 4.0 };
+        char nm[64]; snprintf(nm, sizeof nm, "  link %.0f GB/s", l);
+        const double x = row(nm, hw);
+        check("a faster link never moves the crossover up", x <= prev);
+        prev = x;
+    }
+    // a slower card hides more upload under its compute: the stream is never dearer for it
+    {
+        pp_machine slow = ramful; slow.comp_us_tok = { 6000.0 };
+        check("a slower card never moves the crossover up", row("all in RAM, card 4x slower", slow) <= row("all in RAM", ramful));
+    }
+    // everything on the cards: nothing to upload, both paths are the compute, plus the router's wait
+    {
+        pp_machine big = pc; big.vram_gb = { 140.0 }; big.link_gbs = { 26.0 };   // one card: the stream computes on the fastest card, what a second card holds it still uploads
+        const pp_metrics mb = pp_metrics_for(big, ds, 512.0);
+        near("model on the cards: the stream is the compute", estimate_fullstream_time_per_token(mb), 1500.0);
+        near("model on the cards: no misses", estimate_moe_miss_ongpu_time(mb), 0.0);
+        check("model on the cards: the stream from the first token", pp_crossover_tokens(big, ds, lim) == 0.0);
+    }
+    // more card memory never makes any path slower
+    for (const double n : { 64.0, 1024.0, 8192.0 }) {
+        pp_machine a4 = pc, a16 = pc; a16.vram_gb = { 16.0, 16.0 };
+        const pp_metrics m4 = pp_metrics_for(a4, ds, n), m16 = pp_metrics_for(a16, ds, n);
+        check("more card memory: stream not slower", estimate_fullstream_time_per_token(m16) <= estimate_fullstream_time_per_token(m4));
+        check("more card memory: router not slower", estimate_router_time_per_token(m16) <= estimate_router_time_per_token(m4));
+        check("more card memory: decode chain not slower", estimate_decodechain_time_per_token(m16) <= estimate_decodechain_time_per_token(m4));
+    }
+
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

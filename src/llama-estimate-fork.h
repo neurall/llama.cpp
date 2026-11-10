@@ -1,6 +1,8 @@
 #pragma once
 // The prompt planner's strategy estimators. Pure functions: no globals, no locks, no logging, so each one is unit tested alone (tests/test-estimate-fork.cpp).
 #include <algorithm>
+#include <cmath>
+#include <vector>
 
 // ---- strategy estimators (user 2026-11-10: "all our strategy deciders implemented as properly named functions taking all key metrics and returning new estimated time per token,
 // so planner can combine more strategies working in parallel") ----
@@ -42,3 +44,54 @@ static inline double estimate_decodechain_time_per_token(const pp_metrics & m) {
 // Predictor: 2^i x the picks uploaded ahead of the routers, what the tokens rank that high; late_factor is what the late fixes and the ranking nodes cost on top (PP_K_LATE).
 static inline double estimate_predictor_upload_time(const pp_metrics & m, int i, double late_factor) { return late_factor * std::max(m.Uk[i], pp_ssd_us(m, m.Mk[i])); }
 static inline double estimate_predictor_time_per_token(const pp_metrics & m, int i, double late_factor) { return std::max(estimate_predictor_upload_time(m, i, late_factor), m.comp_us_tok * m.n) / m.n; }
+
+// ---- a machine and a model as numbers (user 2026-11-10: tune on unit tests without a model: simulated SSD, memory and PCIe rates, card count, card memory, compute speed) ----
+// pp_metrics_for builds a pass's metrics from them the way llama_moe_cache_pp_decide_fork builds them from the loaded model, with every expert equally hot: the experts fill
+// the cards' expert memory (the fastest link first), then the RAM, the rest stays on the SSD. tests/test-estimate-fork.cpp sweeps machines with it.
+// shortcut: uniform heat and one link rate for the uploads; pp_decide's per-expert loop (heat, per-layer links) moves here when the dense split's estimators do.
+struct pp_machine {
+    double ssd_gbs = 0.0;                 // SSD read rate
+    double cpu_gbs = 0.0;                 // the CPU's read rate over expert weights
+    double ram_gb  = 0.0;                 // RAM that holds expert slices (the pinned pool)
+    std::vector<double> link_gbs;         // per card, the fastest first: PCIe upload rate
+    std::vector<double> vram_gb;          // per card: memory left for experts
+    std::vector<double> comp_us_tok;      // per card: one token's compute, all layers
+    double router_wait_us_layer = 0.0;    // what one layer's router ids cost a router pass
+};
+struct pp_model {
+    int    layers = 0, experts = 0, used = 0;   // experts per layer, picked per token
+    double expert_bytes = 0.0;
+};
+static inline pp_metrics pp_metrics_for(const pp_machine & hw, const pp_model & md, double n) {
+    pp_metrics m;
+    const double total = (double) md.layers * md.experts * md.expert_bytes;
+    double left = total, on0 = 0.0, on_cards = 0.0;
+    for (size_t i = 0; i < hw.vram_gb.size(); ++i) {
+        const double h = std::min(left, hw.vram_gb[i] * 1e9);
+        if (i == 0) { on0 = h; }
+        on_cards += h; left -= h;
+    }
+    const double in_ram = std::min(left, hw.ram_gb * 1e9), on_ssd = left - in_ram;
+    const double link = hw.link_gbs.empty() ? 0.0 : hw.link_gbs[0] * 1e3;   // bytes per us
+    const double touched = 1.0 - std::pow(1.0 - (double) md.used / (double) md.experts, n);   // the share of a layer's experts a pass of n tokens asks for
+    m.n = n;
+    m.comp_us_tok = hw.comp_us_tok.empty() ? 0.0 : hw.comp_us_tok[0];
+    m.ssd_gbs = hw.ssd_gbs;
+    if (link > 0.0) {
+        m.U  = (total - on0) / link;      m.M  = on_ssd;
+        m.Um = (total - on_cards) / link; m.Mm = on_ssd;
+        m.up = touched * (total - on_cards) / link;
+    }
+    m.ssd_miss = pp_ssd_us(m, touched * on_ssd);
+    if (hw.cpu_gbs > 0.0) { m.cpu = n * md.used * md.layers * md.expert_bytes * (1.0 - on_cards / total) / (hw.cpu_gbs * 1e3); }
+    m.wait_us = hw.router_wait_us_layer * md.layers;
+    return m;
+}
+// The pass size from which the full stream costs no more per token than the router path: the crossover the planner switches at. 0: the stream from the first token, limit + 1: never.
+static inline double pp_crossover_tokens(const pp_machine & hw, const pp_model & md, double limit) {
+    for (double n = 1.0; n <= limit; n = std::floor(n * 1.25) + 1.0) {
+        const pp_metrics m = pp_metrics_for(hw, md, n);
+        if (estimate_fullstream_time_per_token(m) <= estimate_router_time_per_token(m)) { return n == 1.0 ? 0.0 : n; }
+    }
+    return limit + 1.0;
+}
