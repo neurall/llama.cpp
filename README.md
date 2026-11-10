@@ -1,9 +1,8 @@
-# RocketLLama fork of llama.cpp with multi gpu acceleration even for models bigger than total gpu mem
+# RocketLLama 
 <img width="1145" height="389" alt="image" src="https://github.com/user-attachments/assets/f543ba8e-7611-47a5-ae76-7c939ffaa48e" />
+# fork of llama.cpp with multi gpu acceleration even for models bigger than total gpu mem. but even on single 5090 20x pp and 2x t gains 
 
 
-Status Update:23:10:2026. Right now multi gpu decode is supported all models multigpu dense split 
-prefill is implemented for glm and gives gains only from prompts 7k up on 2x3090 at least on my rig.
 
 In other words tha gains you see bellow are not from multigpu yet just from more efficient vram mmgmt
 ie the same 20x speedup in mimo is happening on single 5090 too. In a sense its good news so people with one gpu will have fun too ;)
