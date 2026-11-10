@@ -4020,6 +4020,8 @@ void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
     }
 }
 
+extern "C" GGML_API void ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n);   // ggml-rampool-fork.cpp, no header edit
+extern "C" GGML_API void ggml_rampool_ahead_stats_fork(uint64_t * started, uint64_t * used, bool reset);
 void pred_loop(moe_cache * mc) {
     unpin_helper();
     std::vector<float>   lg;
@@ -4037,6 +4039,32 @@ void pred_loop(moe_cache * mc) {
         }
         const int64_t t_pop = ggml_time_us();
         const int64_t ne = (int64_t) mc->layers[r.li + 1].expert_slot.size();
+        if (mc->rp_on) {
+            // the RAM pool on: the predictions start the SSD reads of the next layers' experts into the pool, queued behind the demand reads, and the step waits
+            // only for what its own layer still lacks (user 2026-11-10: read layer after layer, nonstop). No uploads: their bytes would have to be in RAM first.
+            for (int64_t k = 0; k < r.n_blk && r.li + 1 + k < mc->layers.size(); ++k) {
+                const auto & ls = mc->layers[r.li + 1 + k];
+                if (!ls.rp_tab[0]) { continue; }
+                const auto & b = mc->pred_b[r.li + 1 + k];
+                const int32_t m = std::min<int32_t>(mc->pred_m, (int32_t) ne);
+                std::vector<int32_t> ahead;
+                lg.resize(ne);
+                idx.resize(ne);
+                for (int64_t t = 0; t < r.n_tok; ++t) {
+                    const float * src = r.x.data() + (t*r.n_blk + k)*ne;
+                    for (int32_t e = 0; e < ne; ++e) { lg[e] = b.empty() ? src[e] : 1.0f/(1.0f + expf(-src[e])) + b[e]; idx[e] = e; }
+                    std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c]; });
+                    for (int32_t j = 0; j < m; ++j) {
+                        if (ls.expert_slot[idx[j]] < 0 && std::find(ahead.begin(), ahead.end(), idx[j]) == ahead.end()) { ahead.push_back(idx[j]); }
+                    }
+                }
+                if (!ahead.empty()) {
+                    const void * keys[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+                    ggml_rampool_ahead_fork(keys, 3, ahead.data(), (int) ahead.size());
+                }
+            }
+            continue;
+        }
         // candidates per predicted layer, nearest first
         std::vector<std::vector<int32_t>> cands(r.n_blk);
         std::vector<std::vector<float>>   cscore(r.n_blk); // the candidates' predictor scores
@@ -8131,9 +8159,11 @@ static void rp_log(const char * when) {
     const double a = (double) std::max<uint64_t>(1, st.asked), pp = (double) std::max<uint64_t>(1, st.pp_hit + st.pp_miss);
     uint64_t adm = 0, dec = 0;
     ggml_rampool_admit_stats_fork(&adm, &dec, true);
-    const std::string line = format("%s: misses %llu, from RAM %.1f%%, from SSD %.1f%% (read into the pool %llu, refused %llu, %.2f GiB read, waited %.1f ms), evicted %llu (admitted %llu, on probation %llu); prompt copies from RAM %.1f%% (%llu of %llu); pool %.1f of %.1f GiB used",
+    uint64_t ra = 0, ru = 0;
+    ggml_rampool_ahead_stats_fork(&ra, &ru, true);
+    const std::string line = format("%s: misses %llu, from RAM %.1f%%, from SSD %.1f%% (read into the pool %llu, refused %llu, %.2f GiB read, waited %.1f ms), evicted %llu (admitted %llu, on probation %llu), read ahead %llu (asked for %llu); prompt copies from RAM %.1f%% (%llu of %llu); pool %.1f of %.1f GiB used",
             when, (unsigned long long) st.asked, 100.0 * st.hit / a, 100.0 * (st.cold + st.refused) / a, (unsigned long long) st.cold, (unsigned long long) st.refused, st.cold_bytes / 1073741824.0,
-            st.wait_us / 1e3, (unsigned long long) st.evicted, (unsigned long long) adm, (unsigned long long) dec, 100.0 * st.pp_hit / pp, (unsigned long long) st.pp_hit, (unsigned long long) (st.pp_hit + st.pp_miss), st.used / 1073741824.0, st.bytes / 1073741824.0);
+            st.wait_us / 1e3, (unsigned long long) st.evicted, (unsigned long long) adm, (unsigned long long) dec, (unsigned long long) ra, (unsigned long long) ru, 100.0 * st.pp_hit / pp, (unsigned long long) st.pp_hit, (unsigned long long) (st.pp_hit + st.pp_miss), st.used / 1073741824.0, st.bytes / 1073741824.0);
     llama_moe_stats_log_fork("RPL", line.c_str());
     LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
 }

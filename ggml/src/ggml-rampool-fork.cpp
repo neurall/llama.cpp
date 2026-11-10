@@ -62,6 +62,7 @@ struct rp_rec {
     uint8_t  state   = RP_OUT;
     bool     claimed = false;   // a reader has it (the queue can hold a second job for it)
     bool     prob    = false;   // on probation: it came in without passing the admission rule (rp_take_block), asked again in a later graph it stays (rp_promote)
+    bool     ahead   = false;   // read ahead for a predicted later layer (ggml_rampool_ahead_fork), not asked for yet
 };
 
 struct rp_tensor {
@@ -107,6 +108,7 @@ struct rp_pool {
     std::mutex              mu;         // tables, queue and records; held for microseconds
     std::condition_variable work_cv, done_cv;
     std::deque<rp_job>      demand;     // what callers wait for
+    std::deque<rp_job>      pf;         // reads ahead for predicted later layers: a reader takes one only when no demand waits
     std::vector<std::thread> readers;
     bool                    stop = false;
     std::atomic<uint32_t>   graph{ 2 };
@@ -118,6 +120,7 @@ struct rp_pool {
     std::atomic<uint64_t> wait_total_us{0};   // st_wait_us without the per-request reset (ggml_rampool_wait_us_fork)
     bool (*admit)(const void * key, int64_t e, double victim, void * ud) = nullptr;   // ggml_rampool_admit_fork: may element e evict a block expected back at `victim`
     std::atomic<uint64_t> st_admitted{0}, st_declined{0};
+    std::atomic<uint64_t> st_ahead{0}, st_ahead_used{0};   // reads ahead started; of those, asked for before their block left
     uint64_t pool_bytes = 0;
 };
 
@@ -238,6 +241,7 @@ void rp_drop_owner(rp_pool * p, rp_class & c, uint32_t s) {
     t.ptr[o.e].store(nullptr, std::memory_order_release);
     t.rec[o.e].slot  = -1;
     t.rec[o.e].state = RP_OUT;
+    t.rec[o.e].ahead = false;   // read ahead and never asked for: a wasted read
     c.owner[s] = rp_owner();
     p->st_evicted++;
 }
@@ -303,7 +307,7 @@ void rp_promote(rp_rec & r, uint32_t last_graph, uint32_t g) {
 
 // element e leaves for a block and a reader. The caller holds the lock. false: no block (refused). force: a block is taken from the fill's set even with eviction
 // off (a CPU kernel's demand: the only other source is the mapping, ggml_rampool_demand_fork)
-bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false, bool cpu = false) {
+bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false, bool cpu = false, bool ahead = false) {
     if (!force && p->heat(t.key, e, p->ud) == HUGE_VAL) { return false; }   // a card holds it (the fill): a RAM copy pays nothing
     rp_class & c = p->cls[t.cls];
     rp_rec & r = t.rec[e];
@@ -314,9 +318,10 @@ bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false, bool cp
     r.state   = RP_READING;
     r.claimed = false;
     r.prob    = prob;
+    r.ahead   = ahead;
     c.owner[s] = { t.idx, (int32_t) e };
     if (prob) { c.prob.push_back((uint32_t) s); }
-    p->demand.push_back({ &t, e });
+    (ahead ? p->pf : p->demand).push_back({ &t, e });
     return true;
 }
 
@@ -324,9 +329,11 @@ bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false, bool cp
 void rp_unstart(rp_pool * p, rp_tensor & t, int64_t e) {
     rp_rec & r = t.rec[e];
     rp_class & c = p->cls[t.cls];
-    for (auto it = p->demand.rbegin(); it != p->demand.rend(); ++it) {
-        if (it->t == &t && it->e == e) { p->demand.erase(std::next(it).base()); break; }
+    auto & q = r.ahead ? p->pf : p->demand;
+    for (auto it = q.rbegin(); it != q.rend(); ++it) {
+        if (it->t == &t && it->e == e) { q.erase(std::next(it).base()); break; }
     }
+    r.ahead = false;
     c.owner[r.slot] = rp_owner();
     c.free.push_back((uint32_t) r.slot);
     r.slot  = -1;
@@ -341,10 +348,11 @@ void rp_reader(rp_pool * p) {
         rp_job j;
         {
             std::unique_lock<std::mutex> lk(p->mu);
-            p->work_cv.wait(lk, [p]() { return p->stop || !p->demand.empty(); });
+            p->work_cv.wait(lk, [p]() { return p->stop || !p->demand.empty() || !p->pf.empty(); });
             if (p->stop) { break; }
-            j = p->demand.front();
-            p->demand.pop_front();
+            auto & q = p->demand.empty() ? p->pf : p->demand;
+            j = q.front();
+            q.pop_front();
             rp_rec & r = j.t->rec[j.e];
             if (r.state != RP_READING || r.claimed) { continue; }
             r.claimed = true;
@@ -609,6 +617,40 @@ GGML_API void ggml_rampool_admit_stats_fork(uint64_t * admitted, uint64_t * decl
     if (reset && g_rp) { g_rp->st_admitted = 0; g_rp->st_declined = 0; }
 }
 
+// Reads ahead for a later layer the predictor expects (--moe pred-top): queued behind every demand, no wait (user 2026-11-10: the SSD reads layer after layer, nonstop;
+// the step waits only for what its own layer still lacks). A block only as the admission allows (else a probation block), never a resident's for a guess; an element
+// starts in all of its tensors or in none, as in rp_need.
+GGML_API void ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n) {
+    rp_pool * p = g_rp;
+    if (p == nullptr || n <= 0 || !p->evict) { return; }
+    rp_tensor * ts[8];
+    int nt = 0;
+    for (int k = 0; k < nk && nt < 8; ++k) { if (rp_tensor * t = rp_find(keys[k])) { ts[nt++] = t; } }
+    if (nt == 0) { return; }
+    const uint32_t g = p->graph.load(std::memory_order_relaxed);
+    int started = 0;
+    std::lock_guard<std::mutex> lk(p->mu);
+    for (int i = 0; i < n; ++i) {
+        const int64_t e = ids[i];
+        int begun[8]; int nb = 0; bool fail = false;
+        for (int k = 0; k < nt && !fail; ++k) {
+            rp_tensor * t = ts[k];
+            if (e < 0 || e >= t->n || t->rec[e].state != RP_OUT) { continue; }
+            if (rp_start(p, *t, e, false, false, true)) { t->rec[e].graph = g; begun[nb++] = k; } else { fail = true; }   // stamped: not evicted before its layer asks
+        }
+        if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } }
+        else { started += nb; }
+    }
+    p->st_ahead += (uint64_t) started;
+    if (started > 0) { p->work_cv.notify_all(); }
+}
+
+GGML_API void ggml_rampool_ahead_stats_fork(uint64_t * started, uint64_t * used, bool reset) {
+    *started = g_rp ? g_rp->st_ahead.load() : 0;
+    *used    = g_rp ? g_rp->st_ahead_used.load() : 0;
+    if (reset && g_rp) { g_rp->st_ahead = 0; g_rp->st_ahead_used = 0; }
+}
+
 void ggml_rampool_graph_fork(void) {
     if (g_rp) { g_rp->graph.fetch_add(1, std::memory_order_relaxed); }
 }
@@ -627,7 +669,7 @@ static void rp_need(const void * const * keys, int nk, const int32_t * ids, int 
     for (int k = 0; k < nk && nt < 8; ++k) { if (rp_tensor * t = rp_find(keys[k])) { ts[nt++] = t; } }
     if (nt == 0) { return; }
     const uint32_t g = p->graph.load(std::memory_order_relaxed);
-    int reading = 0, started = 0, hit = 0, refused = 0;
+    int reading = 0, started = 0, hit = 0, refused = 0, bumped = 0;
     std::unique_lock<std::mutex> lk(p->mu);
     // An element is in RAM in all of its tensors or in none: with one tensor out (its class found no colder victim while the others did) the caller takes the
     // element as held and the CPU kernel reads the missing tensor through the mapping (DS 12k, build past-in-pool: all major faults in the down tensor's vec_dot,
@@ -641,8 +683,14 @@ static void rp_need(const void * const * keys, int nk, const int32_t * ids, int 
             rp_rec & r = t->rec[e];
             const uint32_t g0 = r.graph;
             r.graph = g;
+            const bool was_ahead = r.ahead;
+            if (was_ahead) { r.ahead = false; p->st_ahead_used++; }
             if (r.state == RP_IN) { rp_promote(r, g0, g); hit++; continue; }
-            if (r.state == RP_READING) { reading++; continue; }
+            if (r.state == RP_READING) {   // a read ahead still queued behind other reads ahead goes into the demand queue too: the first reader to come claims it
+                reading++;
+                if (was_ahead && !r.claimed) { p->demand.push_back({ t, e }); bumped++; }
+                continue;
+            }
             n_out++;
             if (!fail && rp_start(p, *t, e, force, true)) { begun[nb++] = k; } else { fail = true; }
         }
@@ -650,7 +698,7 @@ static void rp_need(const void * const * keys, int nk, const int32_t * ids, int 
         else { started += nb; reading += nb; }
     }
     p->st_asked += (uint64_t) n * nt; p->st_hit += (uint64_t) hit; p->st_cold += (uint64_t) started; p->st_refused += (uint64_t) refused;
-    if (started > 0) { if (started > 1) { p->work_cv.notify_all(); } else { p->work_cv.notify_one(); } }
+    if (started + bumped > 0) { if (started + bumped > 1) { p->work_cv.notify_all(); } else { p->work_cv.notify_one(); } }
     if (reading > 0) {
         const int64_t t0 = rp_now_us();
         int k = 0, i = 0;
@@ -711,6 +759,11 @@ const char * ggml_rampool_take_fork(const void * key, int64_t e) {
             return nullptr;
         }
         p->st_cold++;
+        p->work_cv.notify_one();
+    } else if (r.state == RP_READING && r.ahead && !r.claimed) {   // a read ahead still queued: into the demand queue too (rp_need does the same)
+        r.ahead = false;
+        p->st_ahead_used++;
+        p->demand.push_back({ t, e });
         p->work_cv.notify_one();
     }
     const int64_t t0 = rp_now_us();
