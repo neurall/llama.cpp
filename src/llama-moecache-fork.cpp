@@ -10496,7 +10496,8 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
         const std::string fkey = format("ssd_fill_pct.%llu", (unsigned long long) st.st_dev);
         struct statvfs fs;
         const int fill = statvfs(model_path, &fs) == 0 && fs.f_blocks > 0 ? (int) (100.0 - 100.0 * (double) fs.f_bavail / (double) fs.f_blocks) : -1;
-        const bool fill_moved = fill >= 0 && (!moe_state_get(sec, fkey, v) || std::abs(atoi(v.c_str()) - fill) >= 5);
+        const char * fresh = llama_moe_get_opt("refresh-ssd");   // a file just rewritten reads at another rate: measure again
+        const bool fill_moved = (fresh && atoi(fresh) > 0) || (fill >= 0 && (!moe_state_get(sec, fkey, v) || std::abs(atoi(v.c_str()) - fill) >= 5));
         if (!fill_moved && moe_state_get(sec, key, v) && atof(v.c_str()) > 0.0 && moe_state_get(sec, format("read_threads.%u", hw), v) && atoi(v.c_str()) > 0) {
             g_early_rd_threads = atoi(v.c_str());
             moe_state_get(sec, key, v);

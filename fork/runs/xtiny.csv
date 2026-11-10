@@ -1,13 +1,13 @@
 name,model,n,test,tokens,args,extra
-xt-62-auto,olmoe,2,poemc,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
-xt-62-chain,olmoe,2,poemc,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xt-62-stream,olmoe,2,poemc,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xt-62-dec,olmoe,2,poemc,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=dec",--env CUDA_VISIBLE_DEVICES=1
-xt-117-auto,olmoe,2,scific,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
-xt-117-chain,olmoe,2,scific,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xt-117-stream,olmoe,2,scific,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xt-117-dec,olmoe,2,scific,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=dec",--env CUDA_VISIBLE_DEVICES=1
-xt-2k-auto,olmoe,2,pf2k,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
-xt-2k-chain,olmoe,2,pf2k,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xt-2k-stream,olmoe,2,pf2k,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xt-2k-dec,olmoe,2,pf2k,16,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=dec",--env CUDA_VISIBLE_DEVICES=1
+xt-62-auto,olmoe,2,poemc,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xt-62-chain,olmoe,2,poemc,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xt-62-stream,olmoe,2,poemc,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xt-62-dec,olmoe,2,poemc,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=dec",--env CUDA_VISIBLE_DEVICES=1
+xt-117-auto,olmoe,2,scific,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xt-117-chain,olmoe,2,scific,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xt-117-stream,olmoe,2,scific,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xt-117-dec,olmoe,2,scific,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=dec",--env CUDA_VISIBLE_DEVICES=1
+xt-2k-auto,olmoe,2,pf2k,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xt-2k-chain,olmoe,2,pf2k,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xt-2k-stream,olmoe,2,pf2k,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xt-2k-dec,olmoe,2,pf2k,16,"--refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=dec",--env CUDA_VISIBLE_DEVICES=1
