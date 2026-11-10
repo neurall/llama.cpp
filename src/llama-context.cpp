@@ -82,6 +82,8 @@ void     llama_dsplit_note_fill_fork(double ms, double pin_ms);   // the fill's 
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);   // llama-dsplit-fork.cpp: the largest dense-split pass (sliding-window cells)        // src/llama-moecache-fork.cpp: the largest pass every pool can lend for
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
+extern "C" void ggml_backend_sched_upload_weight_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy,
+                                                      size_t off, size_t n);   // ggml-backend.cpp: a host expert weight to its card from the RAM pool, else O_DIRECT; the mapping only if a read fails
 extern "C" void ggml_backend_sched_link_add_fork(ggml_backend_dev_t dst, ggml_backend_dev_t src, uint64_t n);   // the same for any input: src NULL = host memory
 bool     llama_kv_parts_on_fork();   // llama-kv-cache.cpp: the attention runs on several cards now (--moe attn-split)
 bool     llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * note, size_t note_size);   // llama-moecache-fork.cpp: the KV rows move
@@ -5606,7 +5608,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
                 continue;
             }
             if (next < e) {
-                ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + next*expert_size, next*expert_size, (e - next)*expert_size);
+                ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, next*expert_size, (e - next)*expert_size);
                 ggml_backend_sched_upload_add_fork(ggml_backend_get_device(backend), (uint64_t) (e - next)*expert_size);
             }
             e   += n;
@@ -5616,7 +5618,8 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         // copy a bit extra to ensure there are no NaNs in the padding of the last expert, this is necessary for MMQ in the CUDA backend
         const size_t offset  = next*expert_size;
         const size_t padding = last < n_expert - 1 ? std::min<size_t>(expert_size, 512) : 0;
-        ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + offset, offset, (last - first + 1)*expert_size + padding);
+        // fork: from the RAM pool or O_DIRECT, never src->data where the experts stayed mapped (DeepSeek: map-guard caught this read, 2026-11-10)
+        ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, offset, (last - first + 1)*expert_size + padding);
         ggml_backend_sched_upload_add_fork(ggml_backend_get_device(backend), (uint64_t) (last - first + 1)*expert_size);
         if (last == n_expert - 1) {
             ggml_backend_tensor_zero_tail_fork(backend, dst);   // fork: the last expert has no neighbour: zeros in the tensor's own row padding (see ggml-backend.cpp)
@@ -5669,7 +5672,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
             // keep the MMQ padding rule: the unused neighbour must not hold NaNs
             if (id < n_expert - 1 && !st.used[id + 1]) {
                 const size_t off = (size_t) (id + 1)*expert_size;
-                ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + off, off, std::min<size_t>(expert_size, 512));
+                ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, off, std::min<size_t>(expert_size, 512));
             }
             continue;
         }

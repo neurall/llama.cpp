@@ -2744,6 +2744,14 @@ static void ggml_backend_sched_upload_weight_file(ggml_backend_sched_t sched, gg
     }
 }
 
+// fork: the same upload for llama_context's copy callback (sched_copy_experts: the experts a chain or predicted pass uses that no card holds). It uploaded from
+// input->data, the file mapping where the experts stayed mapped (DeepSeek, --moe map-guard 2026-11-10: blk.0.ffn_gate_exps read through the mapping by cudaMemcpyAsync
+// in a 117-token decode chain call and in the stream with predicted staging; page cache next to the RAM pool and 3-5 MiB of readahead per page fault).
+extern "C" GGML_API void ggml_backend_sched_upload_weight_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n);
+void ggml_backend_sched_upload_weight_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n) {
+    ggml_backend_sched_upload_weight(sched, backend, input, input_cpy, off, n);
+}
+
 // NVTX ranges (GGML_NVTX=1): the scheduler thread names what it is doing, Nsight Systems shows it with the CUDA calls it contains. Function pointers from the CUDA backend.
 static void (*g_nvtx_push)(const char *) = NULL;
 static void (*g_nvtx_pop)(void) = NULL;
