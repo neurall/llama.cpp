@@ -1,11 +1,11 @@
 # Sim replay data (user 2026-11-10: "record new sim replay ds from mimo glm and qni and 35b so we dont need big runs anymore, except for final confirm runs";
 # "runsim mimo 60k4k replay and report planner efficiency ... if crossover opportunities were missed or bad choices picked or too soon or too late without
 # running big model"; "make sure simrec can resume and collect just whats missing if interrupted"; "storage and query src is stats.db").
-#   run.py simrec [MODEL ...] [SIZE ...] [-b BUILD] [run options]   the rows of fork/runs/simrec.csv (one per model, prompt size and strategy: auto and each forced
+#   run.py sim rec [MODEL ...] [SIZE ...] [-b BUILD] [run options]   the rows of fork/runs/simrec.csv (one per model, prompt size and strategy: auto and each forced
 #       path) through `run.py run simrec`, so every run is a normal row in runs.db and its stats.log lands in stats.db. Only the rows stats.db does not hold
 #       complete for BUILD run: an interrupted recording resumes with what is missing. Each cell starts from an empty learned state (-cs): a forced row never
 #       teaches the auto row what it measured.
-#   run.py runsim MODEL SIZE [-b BUILD]   replays them from stats.db alone (no model, no card)
+#   run.py sim MODEL SIZE [-b BUILD]   (also `sim run MODEL SIZE`) replays them from stats.db alone (no model, no card)
 #   python3 -I fork/simrec.py test        the verdict rules' self-check
 import collections, csv, json, os, re, sqlite3, statistics as st, sys
 
@@ -75,16 +75,16 @@ def simrec_cmd(argv, resolve_build, run_list_detached):
     build = resolve_build(build)
     rows, bad = select(list_rows(), words)
     if bad:
-        sys.exit(f"simrec: {', '.join(bad)} names no model or size of {LIST}")
+        sys.exit(f"sim rec: {', '.join(bad)} names no model or size of {LIST}")
     con = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
     done, part = complete_cells(con, build, rows)
     con.close()
-    print(f"simrec on {build}: {len(rows)} rows, {len(done)} complete in stats.db, {len(part)} to run")
+    print(f"sim rec on {build}: {len(rows)} rows, {len(done)} complete in stats.db, {len(part)} to run")
     for r in rows:
         print(f"  {r['name']:28} " + (f"complete (stats {done[r['name']]})" if r['name'] in done else f"to run ({part[r['name']][0]} of {part[r['name']][1]} requests recorded)"))
     if not part:
         ms, zs = sorted({r['m'] for r in rows}), sorted({r['size'] for r in rows})
-        print(f"nothing missing: run.py runsim {ms[0] if len(ms) == 1 else 'MODEL'} {zs[0] if len(zs) == 1 else 'SIZE'} -b {build}")
+        print(f"nothing missing: run.py sim {ms[0] if len(ms) == 1 else 'MODEL'} {zs[0] if len(zs) == 1 else 'SIZE'} -b {build}")
         return 0
     # -r 0: each row's own request count (the list's n); -cs: every cell from an empty learned state of its own
     extra = [] if '-cs' in argv or '--clean-state' in argv else ['-cs']
@@ -151,20 +151,20 @@ def runsim_cmd(argv):
     rows, bad = select(list_rows(), words)
     ms, zs = {r['m'] for r in rows}, {r['size'] for r in rows}
     if bad or len(ms) != 1 or len(zs) != 1:
-        sys.exit(f"usage: run.py runsim MODEL SIZE [-b BUILD]  (one model of {sorted({r['m'] for r in list_rows()})}, one size of {sorted({r['size'] for r in list_rows()})})")
+        sys.exit(f"usage: run.py sim MODEL SIZE [-b BUILD]  (one model of {sorted({r['m'] for r in list_rows()})}, one size of {sorted({r['size'] for r in list_rows()})})")
     m, z = ms.pop(), zs.pop()
     con = sqlite3.connect(f'file:{DB}?mode=ro', uri=True)
     if not build:   # the newest recording of this model and size
         r = con.execute("SELECT build FROM stats WHERE tag LIKE ? ORDER BY rowid DESC LIMIT 1", (f'%-sr-{m}-auto-{z}',)).fetchone()
         if not r:
-            sys.exit(f"runsim: no auto row of {m} {z} in {DB}: run.py simrec {m} {z} -b BUILD")
+            sys.exit(f"sim: no auto row of {m} {z} in {DB}: run.py sim rec {m} {z} -b BUILD")
         build = r[0]
     done, part = complete_cells(con, build, rows)
-    print(f"runsim {m} {z} on {build}, from {DB} (no model run)")
+    print(f"sim {m} {z} on {build}, from {DB} (no model run)")
     if part:
-        print(f"  not complete (run.py simrec {m} {z} -b {build} records them): " + ', '.join(f"{n} ({k} of {w})" for n, (k, w) in part.items()))
+        print(f"  not complete (run.py sim rec {m} {z} -b {build} records them): " + ', '.join(f"{n} ({k} of {w})" for n, (k, w) in part.items()))
     if 'auto' not in {r['strat'] for r in rows if r['name'] in done}:
-        sys.exit("runsim: the auto row is not complete: nothing to replay")
+        sys.exit("sim: the auto row is not complete: nothing to replay")
     cells, tots = {}, {}
     for r in rows:
         if r['name'] in done:
@@ -277,4 +277,4 @@ if __name__ == '__main__':
     if sys.argv[1:2] == ['test']:
         selftest()
     else:
-        print(__doc__ or 'run.py simrec / run.py runsim')
+        print('run.py sim rec [MODEL] [SIZE] -b BUILD / run.py sim MODEL SIZE [-b BUILD]')
