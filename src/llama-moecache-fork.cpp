@@ -12759,8 +12759,11 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     const double chain_up = g_pp_up_us.exchange(0.0);
     if (mc && us > 0 && n_tokens > 0 && llama_dsplit_cur_fork() != 1 && !g_pp_dec_built) { pp_pass_add(n_tokens, g_pp_built ? std::max(0.0, (double) us - chain_up) : (double) us, g_pp_built); }
     if (mc && us > 0 && n_tokens > 1) {   // a call of P passes: one pass of its size
-        const double P = n_tokens == g_pp_n && g_pp_P > 0 ? (double) g_pp_P : 1.0;
         const int path = pp_cur_path();
+        // a call whose passes were not counted here (the chains, a fixed -ub): the passes of the size its decision was made for. Without it such a call read as one
+        // pass (OLMoE 2761 tokens on the prompt chain: "predicted 197 ms per pass, took 1105"), so neither its time per size nor the router's wait was ever learned
+        const double phi_n = path >= 0 && path < PP_PATHS ? g_pp_phi[path][1] : 0.0;
+        const double P = n_tokens == g_pp_n && g_pp_P > 0 ? (double) g_pp_P : phi_n >= 1.0 && (double) n_tokens > phi_n ? std::ceil((double) n_tokens / phi_n) : 1.0;
         const int learned = g_pp_pass_learned;
         g_pp_pass_learned = 0;
         // the SSD rate of the stream: the bytes the process read from storage over this call (only a stream pass, which reads the mapped experts; the chains read few)
@@ -12857,6 +12860,8 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                     const double rest = std::max(0.0, took - d0 * g_pp_dec_ratio - ch * g_pp_dec_kc);
                     g_pp_dec_f = g_pp_dec_f < 0.0 ? rest : std::min(g_pp_dec_f, rest);
                 }
+                // kept between starts: a server otherwise began every time at the calculated chunks (OLMoE 58 tokens: 418 ms calculated, 97 taken, on every start)
+                llama_dsplit_state_set_fork("pp.dec", format("%.4f %.4f %.1f", g_pp_dec_ratio, g_pp_dec_kc, g_pp_dec_f));
             }
         }
     }
@@ -13023,6 +13028,18 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         for (const auto & x : v) { u += (1.0 - std::exp(nn * x.l1p)) * x.us; c -= std::expm1(x.l1p) * nn * x.cu; }
         return u + c > 0.0 ? u * c / (u + c) : 0.0;
     };
+    {   // the decode chain's learned parts of an earlier start (asked until the section answers or this start learned its own)
+        static bool dec_loaded = false;
+        std::string sv;
+        double r0 = 0.0, k0 = 0.0, f0 = 0.0;
+        if (!dec_loaded && g_pp_dec_ratio == 0.0 && g_pp_dec_kc == 1.0 && g_pp_dec_f < 0.0 && llama_dsplit_state_get_fork("pp.dec", sv)) {
+            dec_loaded = true;
+            if (sscanf(sv.c_str(), "%lf %lf %lf", &r0, &k0, &f0) == 3 && k0 >= 0.05 && k0 <= 64.0 && r0 >= 0.0 && r0 <= 8.0) {
+                g_pp_dec_ratio = r0; g_pp_dec_kc = k0; g_pp_dec_f = f0;
+                LLAMA_LOG_WARN("moe-cache: stored decode chain parts loaded: misses x%.2f, chunks x%.2f, fixed %.0f ms\n", r0 > 0.0 ? r0 : 1.0, k0, std::max(0.0, f0) / 1e3);
+            }
+        }
+    }
     const double dec_r = g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0, dec_f = std::max(0.0, g_pp_dec_f);
     auto de_at = [&](double nn, double d0) { return dec_f + d0 * dec_r + std::max(chunk_at(nn) * g_pp_dec_kc, comp_at(nn)); };
     auto ot_at = [&](double nn) { return std::max(Ts, comp_at(nn)); };
