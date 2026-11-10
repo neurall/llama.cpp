@@ -4,11 +4,9 @@
 #include "llama-kv-cache-dsv4.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstdlib>
-#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -18,7 +16,7 @@
 static constexpr int64_t DSV41_ENGRAM_DEAD = -1;
 
 bool llama_rowread_has_fork(const ggml_tensor * t);   // llama-rowread-fork.cpp: the table is read straight from the file (not through the mapping)
-bool llama_rowread_gather_fork(const ggml_tensor * t, const int32_t * rows, size_t n, uint8_t * dst);   // rows (sorted, unique) into dst; false: a read failed
+std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor * tab, const int32_t * ids, size_t n);   // the pass's distinct rows into tab, returned ascending
 
 static bool dsv41_env_on(const char * name) {
     const char * v = getenv(name);
@@ -321,20 +319,7 @@ void llm_graph_input_dsv41::set_input(const llama_ubatch * ubatch) {
         if (engram_tab && engram_tab->buffer) {
             // fork: the rows of this pass, each once and in file order, read straight from the file into the compact table; the ids become its row numbers
             // (DS 12k-token request: 648k row reads, 307k distinct rows = 42 MiB, against 1.2 GiB of page cache through the mapping)
-            std::vector<int32_t> u(all);
-            std::sort(u.begin(), u.end());
-            u.erase(std::unique(u.begin(), u.end()), u.end());
-            GGML_ASSERT((int64_t) u.size() <= engram_tab->ne[1]);
-            const size_t rs = ggml_row_size(engram_tab->type, engram_tab->ne[0]);
-            const bool host = ggml_backend_buffer_is_host(engram_tab->buffer);
-            std::vector<uint8_t> tmp(host ? 0 : u.size()*rs);
-            uint8_t * dst = host ? (uint8_t *) engram_tab->data : tmp.data();
-            if (!llama_rowread_gather_fork(model.per_layer_tok_embd, u.data(), u.size(), dst)) {
-                static std::atomic<bool> warned{false};
-                if (!warned.exchange(true)) { LLAMA_LOG_WARN("%s: an Engram row read failed: this pass takes its rows from the mapping\n", __func__); }
-                for (size_t k = 0; k < u.size(); ++k) { memcpy(dst + k*rs, (const uint8_t *) model.per_layer_tok_embd->data + (size_t) u[k]*rs, rs); }
-            }
-            if (!host) { ggml_backend_tensor_set(engram_tab, tmp.data(), 0, u.size()*rs); }
+            const std::vector<int32_t> u = llama_rowread_fill_fork(model.per_layer_tok_embd, engram_tab, all.data(), all.size());
             for (auto & v : ids) {
                 for (auto & x : v) { x = (int32_t) (std::lower_bound(u.begin(), u.end(), x) - u.begin()); }
             }

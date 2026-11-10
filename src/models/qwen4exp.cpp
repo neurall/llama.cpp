@@ -1723,6 +1723,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, co
 //   mixed_n = (t[p]*m[0]) ^ ... ^ (t[p-n+1]*m[n-1]);  row = mixed_n % vocab[h] + offset[h]
 // The hash runs host-side because ggml has no int64 and no xor. EOS resets the window.
 
+bool llama_rowread_has_fork(const ggml_tensor * t);   // llama-rowread-fork.cpp: the table is read straight from the file (not through the mapping)
+std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor * tab, const int32_t * ids, size_t n);   // the pass's distinct rows into tab, returned ascending
+
 class llm_graph_input_qwen4exp_ple : public llm_graph_input_i {
 public:
     llm_graph_input_qwen4exp_ple(const llama_model & model,
@@ -1733,10 +1736,12 @@ public:
 
     bool can_reuse(const llm_graph_params & params) override {
         mctx = static_cast<const llama_memory_hybrid_idx_context *>(params.mctx)->get_attn();
-        return rows->ne[0] == (int64_t) model.hparams.ple_n_heads * params.ubatch.n_tokens;
+        return rows->ne[0] == (int64_t) model.hparams.ple_n_heads * params.ubatch.n_tokens &&
+               (tab != nullptr) == llama_rowread_has_fork(model.per_layer_tok_embd);
     }
 
     ggml_tensor * rows = nullptr;   // I32 [ple_n_heads * n_tokens]
+    ggml_tensor * tab  = nullptr;   // fork: this pass's PLE rows, each once, read from the file; the gather indexes it (llama-rowread-fork.cpp)
 
     const llama_model & model;
 
@@ -1811,8 +1816,11 @@ void llm_graph_input_qwen4exp_ple::set_input(const llama_ubatch * ubatch) {
     {
         ggml_tensor * ple = model.per_layer_tok_embd;
 
-        const bool prefetch = model.can_prefetch.count(ple);
-        if (prefetch) {
+        if (tab && tab->buffer) {
+            // fork: the pass's distinct rows straight from the file into the compact table; the ids become its row numbers
+            const std::vector<int32_t> u = llama_rowread_fill_fork(ple, tab, idx.data(), idx.size());
+            for (auto & x : idx) { x = (int32_t) (std::lower_bound(u.begin(), u.end(), x) - u.begin()); }
+        } else if (model.can_prefetch.count(ple)) {
             llama_prefetch_rows(ple, idx.data(), idx.size());
         }
     }
@@ -1861,10 +1869,17 @@ ggml_tensor * llama_model_qwen4exp::graph::build_inp_ple(
     ple_inp->rows = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_heads * n_tokens);
     ggml_set_input(ple_inp->rows);
     ggml_tensor * rows = ple_inp->rows;
+    // fork: with the table read straight from the file the gather indexes a compact table of this pass's rows (filled in set_input), not the mapping
+    if (llama_rowread_has_fork(model.per_layer_tok_embd)) {
+        ple_inp->tab = ggml_new_tensor_2d(ctx0, model.per_layer_tok_embd->type, model.per_layer_tok_embd->ne[0], n_heads * n_tokens);
+        ggml_set_name(ple_inp->tab, "ple_tab");
+        ggml_set_input(ple_inp->tab);
+    }
+    ggml_tensor * tab = ple_inp->tab;
     res->add_input(std::move(ple_inp));
 
     // gather then flatten the heads: get_rows lays the head dimension out slowest, as the reference does
-    ggml_tensor * emb = ggml_get_rows(ctx0, model.per_layer_tok_embd, rows);
+    ggml_tensor * emb = ggml_get_rows(ctx0, tab ? tab : model.per_layer_tok_embd, rows);
     emb = ggml_reshape_2d(ctx0, emb, hparams.ple_head_dim * n_heads, n_tokens);
     cb(emb, "ple_embd", -1);
 

@@ -11,8 +11,10 @@
 #include "../ggml/src/ggml-read-fork.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -65,7 +67,7 @@ bool llama_rowread_has_fork(const ggml_tensor * t) {
 }
 
 // rows (sorted, unique) of t into dst, row i at dst + i*row size. False: no source or a read failed (dst incomplete).
-bool llama_rowread_gather_fork(const ggml_tensor * t, const int32_t * rows, size_t n, uint8_t * dst) {
+static bool rowread_gather(const ggml_tensor * t, const int32_t * rows, size_t n, uint8_t * dst) {
     row_src s;
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -76,22 +78,22 @@ bool llama_rowread_gather_fork(const ggml_tensor * t, const int32_t * rows, size
     const size_t rs = ggml_row_size(t->type, t->ne[0]);
     const uint64_t pg = direct_align();
     constexpr size_t MAXP = 16384;   // pages per batch: 64 MiB of bounce buffer
+    GGML_ASSERT(rs <= (MAXP - 1)*pg);
     thread_local uint8_t * buf = nullptr;
     if (!buf) { buf = page_alloc(MAXP*pg); if (!buf) { return false; } }   // one per gathering thread, kept
     std::vector<uint64_t> pages;
     pages.reserve(MAXP);
     size_t i0 = 0;
     while (i0 < n) {
-        // the rows of this batch and their pages, in file order; a row across a page boundary takes both pages (adjacent in the buffer, as in the file)
+        // the rows of this batch and their pages, in file order; a row's pages sit next to each other in the buffer as in the file (a page two rows share, once)
         pages.clear();
         size_t i1 = i0;
         while (i1 < n) {
             const uint64_t o = s.off + (uint64_t) rows[i1]*rs;
             const uint64_t a = o / pg * pg, b = (o + rs - 1) / pg * pg;
-            const size_t add = (pages.empty() || pages.back() != a ? 1 : 0) + (b != a ? 1 : 0);
+            const size_t add = (size_t) ((b - a) / pg) + 1 - (!pages.empty() && pages.back() == a ? 1 : 0);
             if (pages.size() + add > MAXP) { break; }
-            if (pages.empty() || pages.back() != a) { pages.push_back(a); }
-            if (b != a) { pages.push_back(b); }
+            for (uint64_t q = a; q <= b; q += pg) { if (pages.empty() || pages.back() < q) { pages.push_back(q); } }
             ++i1;
         }
         if (!sr_read_pages(s.fd, pages.data(), pages.size(), pg, buf)) { return false; }
@@ -105,4 +107,25 @@ bool llama_rowread_gather_fork(const ggml_tensor * t, const int32_t * rows, size
         i0 = i1;
     }
     return true;
+}
+
+// A pass's rows for a graph that gathers from `tab` (an input of the pass: t's row size, at least as many rows as ids) instead of the mapped t: each distinct row
+// among ids[0..n) once, ascending, read from the file (a failed read: from the mapping, logged once). Returns them: row k of tab holds row u[k] of t, so a caller
+// maps its ids to tab's rows with lower_bound.
+std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor * tab, const int32_t * ids, size_t n) {
+    std::vector<int32_t> u(ids, ids + n);
+    std::sort(u.begin(), u.end());
+    u.erase(std::unique(u.begin(), u.end()), u.end());
+    GGML_ASSERT((int64_t) u.size() <= tab->ne[1]);
+    const size_t rs = ggml_row_size(tab->type, tab->ne[0]);
+    const bool host = ggml_backend_buffer_is_host(tab->buffer);
+    std::vector<uint8_t> tmp(host ? 0 : u.size()*rs);
+    uint8_t * dst = host ? (uint8_t *) tab->data : tmp.data();
+    if (!rowread_gather(t, u.data(), u.size(), dst)) {
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true)) { LLAMA_LOG_WARN("%s: a row read of %s failed: this pass takes its rows from the mapping\n", __func__, ggml_get_name(t)); }
+        for (size_t k = 0; k < u.size(); ++k) { memcpy(dst + k*rs, (const uint8_t *) t->data + (size_t) u[k]*rs, rs); }
+    }
+    if (!host) { ggml_backend_tensor_set(tab, tmp.data(), 0, u.size()*rs); }
+    return u;
 }
