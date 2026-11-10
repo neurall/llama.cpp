@@ -7518,6 +7518,9 @@ static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu) {
                 ggml_backend_dev_memory(x.first, &f, &t);
                 per = std::max(per, x.second > f ? x.second - f : 0);
             }
+            // the driver takes page-table memory in 2 MiB steps, so one piece reads 0 or 2 MiB: a 0 left no reserve, the pin under the fill then took ~214 MiB of each
+            // card and the first pass ran out of memory (DS 2026-11-10, 3 of 42 starts read 0: restart at micro-batch 2048, +40 s). Never below one 8 B entry per 4 KiB page.
+            per = std::max(per, RP_PIECE / 4096 * 8);
             mc->rp_pre.push_back(b);
             const size_t n_rest = want / RP_PIECE - 1 + 8;   // the classes' short last chunks are pinned on their own: a few more ranges than full pieces
             mc->rp_vram_reserve = per * n_rest;
