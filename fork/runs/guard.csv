@@ -2,3 +2,4 @@ name,model,n,test,tokens,args,extra
 glm35-12k-guard,glm35,2,pf12k1k,1024,--moe map-guard=1,
 ds-12k-guard,ds,2,pf12k1k,1024,--moe map-guard=1,
 lf-ds-guard,ds,1,scific,256,--moe map-guard=1,
+ds-k1-guard,ds,1,scific,256,"--moe map-guard=1,pp-path=stream,pp-k=1",
