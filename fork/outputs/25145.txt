@@ -1,0 +1,71 @@
+run 25145 | touch7 | breakoutc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.4 t/s | prompt 44.3 t/s | 1024 tokens | args: -np 1 --moe state=/tmp/runstate/decreal/qni.ini | power 200+200 W | 2026-11-10 06:03:58
+
+The user wants the smallest HTML breakout game. "Smallest" — so minimal code. But I also want it to be a genuinely satisfying little artifact. There's a real tension here: they asked for smallest, and that's the explicit request, so code size is the goal.
+
+Let me write a compact but working breakout in a single HTML file. Keep it genuinely small but playable. I'll aim for something like ~600-900 bytes minified-ish but readable-ish.
+
+Let me write it:
+
+```html
+<canvas id=c width=480 height=320></canvas>
+<script>
+// game
+</script>
+```
+
+Let me craft carefully.
+
+```js
+c=document.all.c,x=c.getContext`2d`,W=480,H=320
+p=200 // paddle x
+b=[240,250,3,-4] // ball
+B=[] // bricks
+for(i=0;i<56;i++)B[i]=[i%14*34+2,(i/14|0)*14+30,0|!B[i-14]] // hmm
+```
+
+Let me do a clean minimal version.
+
+```html
+<canvas id=c width=480 height=320></canvas>
+<script>
+B=c.width,x=c.getContext`2d`,p=200,X=240,Y=250,d=3,e=-4,r=[],s=0
+for(i=0;i<70;i++)r[i]=[i%14*34+2,(i/14|0)*14+30,9]
+onmousemove=v=>p=v.offsetX-30
+setInterval(_=>{
+ x.fillStyle="#000";x.fillRect(0,0,B,320)
+ X+=d;Y+=e
+ if(X<6||X>B-6)d=-d
+ if(Y<6)e=-e
+ if(Y>310){if(X<p||X>p+60){r.map(b=>b[2]=9);s=0;X=240;Y=250;d=3;e=-4}else e=-e}
+ if(Y>288&&Y<300&&X>p&&X<p+60)d=(X-p-30)/5,e=-Math.abs(e)
+ r.map(b=>{if(b[2]&&X>b[0]&&X<b[0]+32&&Y>b[1]&&Y<b[1]+12){b[2]=0;e=-e;s+=9}})
+ x.fillStyle="#0ff";x.fillRect(p,290,60,10)
+ x.fillRect(X-4,Y-4,8,8)
+ r.map((b,i)=>{x.fillStyle="hsl("+i*23+",99%,55%)";b[2]&&x.fillRect(b[0],b[1],32,12)})
+},16)
+</script>
+```
+
+That's decent. Let me refine for correctness and add a bit of polish while keeping it small. The user asked for smallest, so I'll keep it tight but I can add a tiny bit of color (already have hsl).
+
+Let me check brick layout: 14 per row, 34 spacing, 32 width, starting at 2 → 14*34 = 476 + 2 = 478, fits in 480. Rows: 5 rows of 14 = 70 bricks, y = (i/14|0)*14+30 → rows at 30,44,58,72,86. Ball radius 4.
+
+Paddle at y=290, height 10. Ball collision check Y>288&&Y<300 — ok.
+
+Bottom: Y>310 → lose. But paddle is at 290-300, so ball bounces before 310. Good.
+
+`r.map(b=>b[2]=9)` resets bricks on loss.
+
+Also need to handle win? Optional. Keep small.
+
+Let me also make it work with touch and keyboard? Adds bytes. Maybe just mouse.
+
+Actually let me make it slightly nicer: add `touchmove`. Small addition.
+
+Let me also ensure `onmousemove` offsetX works — attached to document? Better attach to canvas. `c.onmousemove=e=>p=e.offsetX-30`. Using `e` conflicts with my vy variable `e`. Rename vy to `v`.
+
+Let me rewrite with clean short names:
+
+```html
+<
+---
