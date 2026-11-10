@@ -1,0 +1,11 @@
+run 25121 | touch7 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 44.05 t/s | prompt 513.1 t/s | 64 tokens | args: -np 1 -b 8192 -ub 1024 --moe pp-path=stream,pool-floor=1 | power 200+200 W | 2026-11-10 05:34:43
+
+    return params.speculative.types.all == (
+        llama_speculative_types{LLAMA_SPEC_TYPE_NONE}.all);
+}
+
+static bool handle_model_impl(
+    const std::string & model_url,
+    std::string & model_path,
+    common_params_model & mmproj,
+    common

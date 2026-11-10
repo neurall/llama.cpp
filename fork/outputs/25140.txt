@@ -1,0 +1,79 @@
+run 25140 | touch7 | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.65 t/s | prompt 46.8 t/s | 965 tokens | args: -np 1 --moe state=/tmp/runstate/decreal/qni.ini | power 200+200 W | 2026-11-10 05:55:49
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris. "Smallest" — they want minimal code. But I don't want to just dump a bare 400-byte blob with no care. I can make a tiny single-file Tetris that's genuinely playable and looks decent, with as little code as possible. Let me aim for something impressively dense but readable-ish, and still polished visually.
+
+Let me write a compact Tetris:
+
+```html
+<canvas id=c width=260 height=520></canvas>
+```
+
+Actually let's do a genuinely small one. Classic minified Tetris in ~500 bytes:
+
+```js
+const B="01023456789AB"... 
+```
+
+The famous tiny Tetris uses a string of hex digits encoding the shapes.
+
+Let me write it carefully.
+
+Approach: 10x20 board, canvas 300x600 (cell 30). Pieces defined by rotation via matrix rotation. Use a compact encoding.
+
+Compact approach with SRS-ish:
+
+```js
+const S=[0x0F00,0x2222,0x0660,0x0E20,0x0C60,0x06C0,0x0264]; // 4x4 bitmasks? 
+```
+
+Hmm, simpler: use the classic trick with a string:
+
+```js
+T="0,1,2,3;..." 
+```
+
+Let me use the well-known minimal approach: each tetromino as a 4-bit-per-row 16-bit number in a 4x4 grid, rotate by bit rotation.
+
+Actually the smallest known trick:
+```js
+for(i=0;i<7;i++)S[i]=(1<<i*4)|(1<<(i*4+1))... 
+```
+
+Let me just do the classic:
+
+```js
+// shapes as 4x4 bitmaps encoded in hex, rotate by transposing rows
+```
+
+Alternative minimal: use the "offset table" trick:
+```js
+const P = [
+ [],[[1,1],[1,1]],           // O
+ [[0,1,0],[1,1,1],[0,0,0]], // T
+ ...
+]
+```
+That's readable but longer.
+
+Let me do the bitmask rotation approach — it's elegant and short.
+
+Represent piece as 16-bit int, 4x4 grid, bit (y*4+x). Rotate CW: newbit(y*4+x) = oldbit((3-x)*4+y).
+
+```js
+r=p=>{let n=0;for(i=0;i<16;i++)n|=(p>>(3-i%4)*4+~~(i/4)&1)<<i;return n}
+```
+
+Hmm let me verify: index i = y*4+x. We want n[y][x] = p[3-x][y], i.e. bit index (3-x)*4 + y.
+
+So `n |= ((p >> ((3-x)*4+y)) & 1) << (y*4+x)`. With i = y*4+x: y = i>>2, x = i&3. So index = (3-(i&3))*4 + (i>>2).
+
+```js
+R=p=>{for(i=0,n=0;i<16;i++)n|=(p>>(3-(i&3)<<2|i>>2)&1)<<i;return n}
+```
+`(3-(i&3))<<2 | i>>2` — since (3-(i&3)) is 0..3, <<2 gives multiples of 4, OR with i>>2 (0..3) = same as +. Good.
+
+Shapes (4x4 bitmaps, bit y*4+x):
+- I: row1 = 1111 → bits 4,5,6,7 → 0x00F0
+- O: bits 5,6,9,10 → 0x0660
+- T: row0: 0,1,0 → bits 1; row1: 1,1,1 → bits 4,5,6 → 0x0072 → 0b0000000001110010 = 0x
+---

@@ -1,0 +1,12 @@
+run 25124 | touch7 | pf4k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 29.19 t/s | prompt 67.1 t/s | 64 tokens | args: -np 1 -b 8192 -ub 128 --moe pp-path=stream,pool-floor=1 | power 200+200 W | 2026-11-10 05:37:33
+
+
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            while (i < length) {
+                // check for strings of literal characters
+                size_t

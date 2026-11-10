@@ -1,0 +1,57 @@
+run 25143 | touch7 | snakec | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 46.49 t/s | prompt 43.8 t/s | 1024 tokens | args: -np 1 --moe state=/tmp/runstate/decreal/qni.ini | power 200+200 W | 2026-11-10 06:00:39
+
+The user wants the smallest HTML snake game. "Smallest" — so minimal code. But I still want it to feel crafted. The ask is explicitly "smallest html snake game" — so I should honor that: tiny, single file, compact code.
+
+There's a tension: my instinct is to build something rich, but the user asked for smallest. I should deliver a genuinely small snake game — but I can make it *charming* small. Crisp, dense, one-liner-ish. Maybe deliver the ultra-min version plus a slightly nicer tiny version? No — keep it focused. Deliver the smallest playable snake in one HTML file, well-formatted enough to read, with brief notes.
+
+Let me write compact snake:
+
+```html
+<canvas id=c width=320 height=320 onload="for(s=x=y=d=a=b=l=0,q=[],X=()=>{x=(x+d[0]+80)%80;y=(y+d[1]+80)%80;p=q.filter(v=>v[0]-x||v[1]-y)[0]?0:1;for(s=p?s+1:0,l=q[0];q.unshift([x,y]);q.length>s;q.pop());a=9+9*Math.random()|0;b=9+9*Math.random|0;for(;q[0]&&a==l[0]&&b==l[1];)a=9+9*Math.random()|0,b=9+9*Math.random|0;for(g=c.getContext`2d`,g.fillStyle='#000',g.fillRect(0,0,320,320),g.fillStyle='#0f0',q.map(v=>g.fillRect(v[0]*4,v[1]*4,3,3)),g.fillStyle='#f00',g.fillRect(a*4,b*4,3,3),setTimeout(X,120)})" onkeydown="k=event.key;d={ArrowUp:[0,-1],ArrowDown:[0,1],ArrowLeft:[-1,0],ArrowRight:[1,0]}[k]||d"
+```
+
+Hmm, this is getting messy. Let me write it more carefully but still small.
+
+Approach: 20x20 grid of 16px cells on a 320x320 canvas.
+
+```html
+<canvas id=c width=320 height=320 tabindex=0></canvas>
+<script>
+c=c.getContext`2d`,s=[9,9],d=[1,0],f=[3,3],t=0
+onkeydown=e=>{k='ArrowUp ArrowRight ArrowDown ArrowLeft'.split(' ').indexOf(e.key);if(k>-1)d=[[0,-1],[1,0],[0,1],[-1,0]][k]}
+setInterval(()=>{
+ x=(s[0]+d[0]+20)%20,y=(s[1]+d[1]+20)%20
+ if(s.some(v=>v[0]-x||v[1]-y))s=[s[0]]  // hit self
+ ...
+},120)
+```
+
+Let me be careful and produce something that actually works.
+
+Minimal working version:
+
+```html
+<canvas id=C width=320 height=320></canvas>
+<script>
+p=[];d=[1,0];f=[5,5];s=0
+setInterval(_=>{
+ h=[(p[0][0]+d[0]+20)%20,(p[0][1]+d[1]+20)%20]
+ if(p.some(v=>v+''==h))p=[h]           // self collision -> reset length
+ p.unshift(h)
+ if(h+''==f){s++;for(f=[Math.random()*20|0,Math.random()*20|0];p.some(v=>v+''==f););}
+ p.length>s+1&&p.pop()
+ C.getContext`2d`... 
+},120)
+</script>
+```
+
+Careful: `v+''==h` for arrays: [1,2]+'' === "1,2". Works.
+
+But `p=[h]` after unshift... order matters. Let's restructure:
+
+```js
+h=[(p[0][0]+d[0]+20)%20,(p[0][1]+d[1]+20)%20]
+dead = p.some(v=>v+''==h)
+if(dead) p=[h]  // hmm but h is head; need p=[[9,9]] reset and d=[1,0]
+else { p.unshift(h); if(h+''==f){s++;place
+---

@@ -1,0 +1,8 @@
+run 25118 | touch7 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 38.95 t/s | prompt 472.1 t/s | 64 tokens | args: -np 1 -b 8192 -ub 1024 --moe pp-path=chain,pool-floor=1 | power 200+200 W | 2026-11-10 05:31:32
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_MTP | SPEC_TYPE_NGRAM_SIM | SPEC_TYPE_NGRAM_MAP);
+}
+
+static bool is_default_model(const common_params_model & model) {
+    return model.path.empty() && model.url.empty()
