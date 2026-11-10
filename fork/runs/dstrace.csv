@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+tr-ds-12k,ds,1,pf12k,64,"--moe pass-stats=1,pass-trace=2",

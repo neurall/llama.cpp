@@ -3,6 +3,7 @@
 # pass size and its ceiling in force; vals holds the event's numbers as JSON. run.py fills it with every cell (runlog.insert_stats); the replay and the
 # simulator read it instead of the text logs (fork/replay_score.py).
 #   python3 -I fork/ppev.py load        every stats row of stats.db not in ppev yet (the model from the cell's server log, else from table runs)
+#   python3 -I fork/ppev.py reload      all of them again (after a parser change)
 import json, os, re, sqlite3, sys, zlib
 
 DB = '/p/bw/data/stats.db'   # next to runs.db, local only (run.py runlog STATS_DB)
@@ -124,7 +125,7 @@ def events(text):
                      'sched_read_ms': f(r'(\d+) ms of the scheduler thread', s), 'read_wait_ms': f(r'(\d+) ms more waiting', s), 'ram_avail_gib': f(r'avail ([\d.]+) GiB', s)}
                 done += int(n)
                 tot = sum(v[k] or 0.0 for k in ('ram_pool_gb', 'host_gb', 'file_gb'))
-                yield (t, max(req, 0), call, ev, path, n, pos, ub, ub_max, plen, pct(), v['picked_pct'], v['uploaded_pct'], round(100.0 * (v['file_gb'] or 0.0) / tot, 2) if tot > 0 else None, v)
+                yield (t, req, call, ev, path, n, pos, ub, ub_max, plen, pct(), v['picked_pct'], v['uploaded_pct'], round(100.0 * (v['file_gb'] or 0.0) / tot, 2) if tot > 0 else None, v)
                 call += 1
                 continue
         elif ev == 'DON' and s.startswith('split pass of'):
@@ -132,11 +133,12 @@ def events(text):
             v = {'pred_s': f(r'predicted ([\d.]+) \+-', s), 'took_s': f(r'took ([\d.]+)', s), 'fill_s': f(r'fill wall ([\d.]+) s', s)}
         elif ev == 'PRE':
             v = dict(re.findall(r'(\w+)=("[^"]*"|\S+)', s)); n = f(r'prompt_tokens=(\d+)', s); path = v.get('mode', '')
-        elif ev == 'PHA' and 'prefill -> decode' in s:
-            v = {'tokens': f(r'decode: (\d+) tokens', s), 'sec': f(r'tokens ([\d.]+) s', s), 'tps': f(r'([\d.]+) t/s', s)}
+        elif ev == 'PHA' and ('prefill -> decode' in s or 'decode -> idle' in s):   # the request's prompt totals (path prefill), its answer's (path decode)
+            path = 'prefill' if 'prefill -> decode' in s else 'decode'
+            v = {'tokens': f(r'(?:decode|idle): (\d+) tokens', s), 'sec': f(r'tokens ([\d.]+) s', s), 'tps': f(r'([\d.]+) t/s', s)}
         else:
             continue
-        yield (t, max(req, 0), call, ev, path, n, pos, ub, ub_max, plen, pct(), None, None, None, v)
+        yield (t, req, call, ev, path, n, pos, ub, ub_max, plen, pct(), None, None, None, v)   # req -1: before the first request (the start-up's warm-up call)
     # the cell's conditions, one row: what every time in it was measured under (2026-11-10: GLM 12k 871 t/s at 268-279 W on the x16 card, 585 at the night's 200 W cap)
     v = {}
     for g, xs in sorted(smp.items()):
@@ -190,7 +192,10 @@ def load(db=DB):
 
 
 if __name__ == '__main__':
-    if sys.argv[1:2] == ['load']:
-        load(sys.argv[2] if len(sys.argv) > 2 else DB)
+    if sys.argv[1:2] in (['load'], ['reload']):
+        db = sys.argv[2] if len(sys.argv) > 2 else DB
+        if sys.argv[1] == 'reload':   # every cell parsed again (after a parser change)
+            c = sqlite3.connect(db); c.execute('DROP TABLE IF EXISTS ppev'); c.commit(); c.close()
+        load(db)
     else:
         print(__doc__ if __doc__ else 'usage: ppev.py load [db]')

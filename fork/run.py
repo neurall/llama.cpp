@@ -11054,6 +11054,9 @@ if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "run": sys.exit(run_list_detached(None, []))   # `jobs` alone: attach to the detached run, if any
     if len(sys.argv) > 3 and sys.argv[1] == "run" and "-c" in sys.argv[2:-1]:   # `run -c gainers ...` = `run gainers ...`: -c names the campaign list
         i = sys.argv.index("-c", 2); sys.argv[2:i + 2] = [sys.argv[i + 1]] + sys.argv[2:i]
+    if len(sys.argv) > 1 and sys.argv[1] in ("simrec", "runsim"):   # sim replay data (fork/simrec.py): record the truth list's missing rows / replay them from stats.db
+        import simrec
+        sys.exit(simrec.simrec_cmd(sys.argv[2:], resolve_build, run_list_detached) if sys.argv[1] == "simrec" else simrec.runsim_cmd(sys.argv[2:]))
     if len(sys.argv) > 2 and sys.argv[1] == "run" and os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", sys.argv[2] + ".csv")):
         sys.exit(run_list_detached(sys.argv[2], sys.argv[3:]))   # `run gainers [--build B] [--only TEXT] [--dry]`: the cells of fork/runs/gainers.csv
     a = ap.parse_args()
