@@ -1,3 +1,4 @@
 name,model,n,test,tokens,args,extra
 k31ra-on,k31,2,pf1k,100,"--moe pred-top=16,predict-ahead=2",
 k31ra-off,k31,2,pf1k,100,,
+k31sr-on,k31,2,pf1k,100,"--moe side-reads=1",
