@@ -1,4 +1,5 @@
 name,model,n,test,tokens,args,extra
+or-glm-4k,glm,2,pf4k,256,"--moe dense-split=one,one-range=1",
 sd-glm-scifi-dec,glm,1,scific,256,--moe pp-path=dec,
 sd-glm-scifi-def,glm,1,scific,256,,
 sd-glm-poem-dec,glm,1,poemc,256,--moe pp-path=dec,
