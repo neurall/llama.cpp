@@ -1,0 +1,6 @@
+run 25243 | touch17 | poemc | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 92.21 t/s | prompt 478.1 t/s | 16 tokens | args: -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain | power 220+280 W | 2026-11-10 08:51:43
+
+
+---
+Write a poem about a person you admire, using the first person.
+<

@@ -1,0 +1,5 @@
+run 25277 | touch18 | scific | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 95.02 t/s | prompt 966.8 t/s | 16 tokens | args: -np 1 --refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream | power 220+280 W | 2026-11-10 09:06:04
+
+
+---
+Write a science-fiction short story of about 900 words. The crew of a
