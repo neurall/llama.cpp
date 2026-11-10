@@ -81,11 +81,13 @@ struct rp_class {
     size_t   size  = 0;
     int32_t  kind  = 0;
     uint64_t elems = 0;                 // elements of this class in the model
-    uint32_t n_slots = 0, per_chunk = 0;
-    std::vector<char *>   chunks;
+    uint32_t n_slots = 0, per_chunk = 0;   // n_slots: blocks that exist (block numbers behind a short chunk do not)
+    std::vector<char *>   chunks;       // capacity reserved at open for every chunk the class can get: a reader's at() outside the lock never sees it move (ggml_rampool_grow_fork)
+    std::vector<uint32_t> chunk_n;      // blocks of each chunk: per_chunk, a short one less
     std::vector<rp_owner> owner;        // block -> element
     std::vector<uint32_t> free;         // blocks without an owner (a stack)
     uint32_t sample = 0;                // where the next eviction sample starts
+    uint64_t cold   = 0;                // bytes this class read from the file since the last resize: where a new chunk pays most
     char * at(uint32_t s) const { return chunks[s / per_chunk] + (size_t) (s % per_chunk) * size; }
 };
 
@@ -319,6 +321,7 @@ void rp_reader(rp_pool * p) {
                 t.ptr[j.e].store(dst, std::memory_order_release);
                 r.state = RP_IN;
                 p->st_cold_b += t.esz;
+                c.cold += t.esz;
             } else {
                 GGML_LOG_WARN("rampool: a read of %zu bytes at %llu failed: %s\n", t.esz, (unsigned long long) (t.off + (uint64_t) j.e * t.esz), strerror(errno));
                 c.owner[r.slot] = rp_owner();
@@ -376,6 +379,7 @@ bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampo
         // fits the caller's 1 GiB prepinned piece, which the CUDA host allocator pins through its fast path (>= 1 GiB: populate + register, not cudaMallocHost)
         c.per_chunk = (uint32_t) std::max<uint64_t>(1, std::min<uint64_t>(std::max<uint64_t>(want, 1), (((size_t) 1 << 30) - c.size) / c.size));
         if (share < 1.0) { want -= std::min(want, (want + c.per_chunk - 1) / c.per_chunk); }   // the extra block of every chunk counts against the share: the pool never pins more than `bytes`
+        c.chunks.reserve((size_t) ((c.elems + c.per_chunk - 1) / c.per_chunk) + 2);
         uint64_t got = 0;
         while (got < want) {
             const uint64_t k = std::min<uint64_t>(c.per_chunk, want - got);   // the last chunk only as big as what is left
@@ -384,6 +388,7 @@ bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampo
             if (m == nullptr) { GGML_LOG_WARN("rampool: no more pinned memory at class %zu bytes, %llu of %llu blocks\n", c.size, (unsigned long long) got, (unsigned long long) want); break; }
             memset(m + (size_t) k * c.size, 0, c.size);
             c.chunks.push_back(m);
+            c.chunk_n.push_back((uint32_t) k);
             got += k;
         }
         c.n_slots = (uint32_t) std::min(got, c.elems);
@@ -669,6 +674,102 @@ void ggml_rampool_drop_fork(const void * key, int64_t e) {
     t->rec[e].holds--;
 }
 
+// The pool's size follows the RAM the system leaves (llama-moecache-fork.cpp rp_resize, between requests; user 2026-11-02: grow while the floor holds, give back when pressure
+// shows). A class's pressure: bytes it read from the file since the last resize per byte it holds.
+static double rp_pressure(const rp_class & c) { return (double) c.cold / (double) std::max<uint64_t>(c.size, (uint64_t) c.n_slots * c.size); }
+
+GGML_API size_t ggml_rampool_grow_fork(size_t bytes, ggml_rampool_alloc_t alloc) {   // declared where it is used (llama-moecache-fork.cpp), no header edit
+    rp_pool * p = g_rp;
+    if (p == nullptr || alloc == nullptr) { return 0; }
+    size_t added = 0;
+    std::vector<uint8_t> done(p->cls.size(), 0);   // one chunk per class and call: the next request shows where reads still go
+    for (;;) {
+        int best = -1;
+        {
+            std::lock_guard<std::mutex> lk(p->mu);
+            for (size_t i = 0; i < p->cls.size(); ++i) {
+                const rp_class & c = p->cls[i];
+                if (done[i] || c.cold == 0 || c.n_slots >= c.elems) { continue; }
+                if (best < 0 || rp_pressure(c) > rp_pressure(p->cls[best])) { best = (int) i; }
+            }
+        }
+        if (best < 0) { break; }
+        done[best] = 1;
+        rp_class & c = p->cls[best];
+        if (c.chunks.empty()) {   // the open gave it nothing: chunks of up to 1 GiB, as there (no block exists, no reader can look at the vector)
+            c.per_chunk = (uint32_t) std::max<size_t>(1, (((size_t) 1 << 30) - c.size) / c.size);
+            c.chunks.reserve((size_t) ((c.elems + c.per_chunk - 1) / c.per_chunk) + 2);
+        }
+        const uint64_t k = std::min<uint64_t>({ (uint64_t) c.per_chunk, c.elems - c.n_slots, (uint64_t) ((bytes - added) / c.size) });
+        if (k == 0 || c.chunks.size() >= c.chunks.capacity()) { continue; }
+        char * m = (char *) alloc((size_t) k * c.size + c.size, p->ud);   // one block more, as at open: what is read past the last block stays inside the range
+        if (m == nullptr) { break; }
+        memset(m + (size_t) k * c.size, 0, c.size);
+        {
+            std::lock_guard<std::mutex> lk(p->mu);
+            const uint32_t base = (uint32_t) c.chunks.size() * c.per_chunk;
+            c.chunks.push_back(m);
+            c.chunk_n.push_back((uint32_t) k);
+            c.owner.resize((size_t) base + k);
+            for (uint32_t s = (uint32_t) k; s > 0; --s) { c.free.push_back(base + s - 1); }   // empty: the next misses of the class land here before anything is evicted
+            c.n_slots += (uint32_t) k;
+            p->pool_bytes += k * c.size;
+        }
+        added += (size_t) k * c.size;
+    }
+    std::lock_guard<std::mutex> lk(p->mu);
+    for (auto & c : p->cls) { c.cold = 0; }
+    return added;
+}
+
+GGML_API size_t ggml_rampool_shrink_fork(size_t bytes, void (*free_chunk)(void * chunk, void * ud)) {
+    rp_pool * p = g_rp;
+    if (p == nullptr || free_chunk == nullptr || bytes == 0) { return 0; }
+    size_t freed = 0;
+    std::vector<char *> gone;
+    {
+        std::lock_guard<std::mutex> lk(p->mu);
+        std::vector<uint8_t> skip(p->cls.size(), 0);
+        while (freed < bytes) {
+            int best = -1;
+            for (size_t i = 0; i < p->cls.size(); ++i) {
+                const rp_class & c = p->cls[i];
+                if (skip[i] || c.chunks.empty()) { continue; }
+                if (best < 0 || rp_pressure(c) < rp_pressure(p->cls[best])) { best = (int) i; }
+            }
+            if (best < 0) { break; }
+            rp_class & c = p->cls[best];
+            const uint32_t base = (uint32_t) (c.chunks.size() - 1) * c.per_chunk, k = c.chunk_n.back();
+            bool ok = true;
+            for (uint32_t s = base; s < base + k && ok; ++s) {   // the last chunk goes whole or not at all: no block of it read by this graph or the one before, held or being read
+                const rp_owner o = c.owner[s];
+                ok = o.t < 0 || rp_evictable(p, p->tensors[o.t]->rec[o.e]);
+            }
+            if (!ok) { skip[best] = 1; continue; }
+            for (uint32_t s = base; s < base + k; ++s) {
+                const rp_owner o = c.owner[s];
+                if (o.t < 0) { continue; }
+                rp_tensor & t = *p->tensors[o.t];
+                t.ptr[o.e].store(nullptr, std::memory_order_release);
+                t.rec[o.e].slot  = -1;
+                t.rec[o.e].state = RP_OUT;
+                p->st_evicted++;
+            }
+            c.free.erase(std::remove_if(c.free.begin(), c.free.end(), [base](uint32_t s) { return s >= base; }), c.free.end());
+            c.owner.resize(base);
+            c.n_slots -= k;
+            p->pool_bytes -= (uint64_t) k * c.size;
+            gone.push_back(c.chunks.back());
+            c.chunks.pop_back();
+            c.chunk_n.pop_back();
+            freed += (size_t) k * c.size;
+        }
+        for (auto & c : p->cls) { c.cold = 0; }
+    }
+    for (char * m : gone) { free_chunk(m, p->ud); }   // outside the lock: an unpin syncs the driver
+    return freed;
+}
+
 uint64_t ggml_rampool_wait_us_fork(void) {
     return g_rp ? g_rp->wait_total_us.load(std::memory_order_relaxed) : 0;
 }
@@ -682,7 +783,7 @@ void ggml_rampool_stats_fork(struct ggml_rampool_stats * s, bool reset) {
     s->bytes = p->pool_bytes; s->classes = (int) p->cls.size();
     {
         std::lock_guard<std::mutex> lk(p->mu);
-        for (const auto & c : p->cls) { s->used += (uint64_t) (c.owner.size() - c.free.size()) * c.size; }
+        for (const auto & c : p->cls) { s->used += (uint64_t) (c.n_slots - c.free.size()) * c.size; }
     }
     if (reset) {
         p->st_asked = 0; p->st_hit = 0; p->st_cold = 0; p->st_refused = 0; p->st_evicted = 0; p->st_cold_b = 0; p->st_wait_us = 0; p->st_pp_hit = 0; p->st_pp_miss = 0;

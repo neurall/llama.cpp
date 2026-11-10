@@ -8174,6 +8174,7 @@ def cmd_cell(a):
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
     fix_build = any(os.path.basename(b.rstrip("/")).startswith("fix_") for b in re.split(r"[,\s]+", str(a.builds or "")) if b)
+    env.setdefault("LLAMA_RAM_FLOOR_GB", f"{float(os.environ.get('PERF_GUARD_AVAIL_GB') or 3.0) + 0.5:.1f}")   # the RAM pool grows between requests down to this floor: half a GiB above the line memwatch kills at
     env.setdefault("PERF_LEDGER", "1" if fix_build else "0")   # fix builds (fix_*) keep the ledger on: a fix-validation run records who wrote what when (user 2026-10-28); the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v

@@ -428,6 +428,7 @@ struct moe_cache {
     std::vector<std::pair<char *, size_t>> rp_raw; // chunks the fill reads into before they are pinned (rp_alloc), pinned in place after it (rp_pin_raw); size 0: not pinned
     size_t                     rp_raw_bytes = 0;
     size_t                     rp_vram_reserve = 0;   // VRAM the pin after the sizing will take on each card (rp_prepin measures one piece); the sizing leaves it free
+    size_t                     rp_vram_per = 0;       // of it, what one GiB pinned takes on each card (the page tables): the price of a chunk rp_resize adds
     bool (*rp_pin)(void *, size_t) = nullptr;      // the GPU backend's pin of a filled range (ggml_backend_cuda_pin_range_fork), nullptr: the pool pins before the fill as before
     void (*rp_unpin)(void *) = nullptr;
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
@@ -674,6 +675,62 @@ static size_t mem_available_bytes() {
     }
     if (f) { fclose(f); }
     return kb * 1024;
+}
+
+// MemAvailable, or less where a container's limit (cgroup v2 memory.max - memory.current) leaves less: pinned pages count against that limit too
+static size_t ram_avail_bytes() {
+    size_t a = mem_available_bytes();
+#ifdef __linux__
+    char mx[32] = {};
+    unsigned long long cur = 0;
+    FILE * fm = fopen("/sys/fs/cgroup/memory.max", "r");
+    FILE * fc = fopen("/sys/fs/cgroup/memory.current", "r");
+    if (fm && fc && fscanf(fm, "%31s", mx) == 1 && strcmp(mx, "max") != 0 && fscanf(fc, "%llu", &cur) == 1) {
+        const unsigned long long lim = strtoull(mx, nullptr, 10);
+        a = std::min<size_t>(a, lim > cur ? (size_t) (lim - cur) : 0);
+    }
+    if (fm) { fclose(fm); }
+    if (fc) { fclose(fc); }
+#endif
+    return a;
+}
+
+// The RAM the system must keep free: the kernel's high watermarks (below them kswapd reclaims and anonymous pages start to swap; PC1: 0.3 GiB), on Windows its
+// low-memory signal (32 MiB per 4 GiB of RAM, 64 MiB at most), and at least LLAMA_RAM_FLOOR_GB when a supervisor kills below a line of its own (run.py's memory guard).
+// Replaces the fixed floors of the pool path (6 GiB in rp_alloc; user 2026-11-10: "we cant just ignore usable 1.8g on machines with 4-8 ram").
+static size_t ram_floor_bytes() {
+    static const size_t floor = [] {
+        size_t b = 0;
+#if defined(__linux__)
+        if (FILE * z = fopen("/proc/zoneinfo", "r")) {
+            char line[256];
+            size_t pages = 0, v = 0;
+            while (fgets(line, sizeof line, z)) { if (sscanf(line, " high %zu", &v) == 1) { pages += v; } }
+            fclose(z);
+            b = pages * (size_t) sysconf(_SC_PAGE_SIZE);
+        }
+#elif defined(_WIN32)
+        MEMORYSTATUSEX st = {};
+        st.dwLength = sizeof(st);
+        if (GlobalMemoryStatusEx(&st)) { b = std::min<size_t>((size_t) 64 << 20, (size_t) (st.ullTotalPhys >> 32) * ((size_t) 32 << 20)); }
+#endif
+        if (const char * e = getenv("LLAMA_RAM_FLOOR_GB")) { b = std::max(b, (size_t) (atof(e) * 1073741824.0)); }
+        return b;
+    }();
+    return floor;
+}
+
+// The least RAM available since the pool last resized (rp_resize), sampled 4 times a second by a thread of its own: another program's short burst shows too (run.py's
+// live view took 4-5 GiB for 2 s every few minutes on PC1, 2026-11-10); a read of /proc/meminfo costs about 30 us
+static std::atomic<size_t> g_ram_low{SIZE_MAX};
+static void ram_sample() {
+    const size_t a = ram_avail_bytes();
+    size_t cur = g_ram_low.load(std::memory_order_relaxed);
+    while (a < cur && !g_ram_low.compare_exchange_weak(cur, a, std::memory_order_relaxed)) {}
+}
+static void ram_watch_start() {
+    static std::once_flag once;
+    std::call_once(once, [] { std::thread([] { for (;;) { ram_sample(); std::this_thread::sleep_for(std::chrono::milliseconds(250)); } }).detach(); });
 }
 
 // the pinned copy of expert e's slice of tensor k, or nullptr. Made on the SECOND upload of the expert (the first only marks it: an expert that is never evicted and uploaded again gains
@@ -7331,8 +7388,7 @@ static void * rp_alloc(size_t bytes, void * ud) {
         mc->rp_bufs.push_back(b);
         return ggml_backend_buffer_get_base(b);
     }
-    const size_t floor = (size_t) 6 << 30;   // the floor pin_alloc keeps: never push the system into swapping
-    if (mem_available_bytes() < mc->rp_raw_bytes + bytes + floor) { return nullptr; }   // the raw chunks below hold no page yet: their bytes still count as available
+    if (ram_avail_bytes() < mc->rp_raw_bytes + bytes + ram_floor_bytes()) { return nullptr; }   // the raw chunks below hold no page yet: their bytes still count as available
 #ifndef _WIN32
     if (mc->rp_pin) {   // read first, pinned after (rp_pin_raw): the O_DIRECT read faults the pages in at the drive's speed, so no populate pass (90 GiB: 16.8 s against 27.3 s pinned first)
         void * m = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -7418,6 +7474,38 @@ static void rp_raw_free(moe_cache * mc) {   // after ggml_rampool_close_fork: no
     mc->rp_raw_bytes = 0;
 }
 extern "C" GGML_API void ggml_rampool_on_chunk_fork(void (*cb)(void * chunk, void * ud));   // ggml-rampool-fork.cpp, declared here: no header edit
+extern "C" GGML_API size_t ggml_rampool_grow_fork(size_t bytes, ggml_rampool_alloc_t alloc);
+extern "C" GGML_API size_t ggml_rampool_shrink_fork(size_t bytes, void (*free_chunk)(void * chunk, void * ud));
+// a chunk rp_resize adds between requests: pinned at once (no fill read lands in it, misses fill it)
+static void * rp_grow_alloc(size_t bytes, void * ud) {
+    moe_cache * mc = (moe_cache *) ud;
+    if (ram_avail_bytes() < bytes + ram_floor_bytes()) { return nullptr; }
+    ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(mc->pin_buft, bytes);
+    if (!b) { return nullptr; }
+    char * base = (char *) ggml_backend_buffer_get_base(b);
+#ifndef _WIN32
+    if (const char * ml = moe_opt("pin-mlock"); !(ml && ml[0] == '0')) { (void) mlock((void *) ((uintptr_t) base & ~(uintptr_t) 4095), bytes); }   // as rp_alloc's
+#endif
+    mc->rp_bufs.push_back(b);
+    return base;
+}
+// a chunk the pool gave back (ggml_rampool_shrink_fork), whichever way it came: a pinned buffer (rp_alloc's, a prepinned piece, rp_grow_alloc's) or a raw range pinned in place
+static void rp_chunk_free(void * chunk, void * ud) {
+    moe_cache * mc = (moe_cache *) ud;
+    for (auto it = mc->rp_bufs.begin(); it != mc->rp_bufs.end(); ++it) {
+        if (ggml_backend_buffer_get_base(*it) == chunk) { ggml_backend_buffer_free(*it); mc->rp_bufs.erase(it); return; }
+    }
+#ifndef _WIN32
+    for (auto & r : mc->rp_raw) {
+        if (r.first != (char *) chunk || r.second == 0) { continue; }
+        if (mc->rp_unpin) { mc->rp_unpin(r.first); }
+        munmap(r.first, r.second);
+        mc->rp_raw_bytes -= r.second;
+        r.second = 0;   // rp_raw_free passes it by
+        return;
+    }
+#endif
+}
 // The chunks the fill read into, pinned in place: the read faulted their pages in, so the register only pins them. 4 threads pin each chunk as its last fill read lands
 // (ggml_rampool_on_chunk_fork), under the rest of the fill; what is left (a chunk no fill read touched) after it. One that is refused stays pageable (its uploads go
 // through the driver's staging, slower but right). DS 100.3 GiB: 7.69 s on 4 threads after the fill before.
@@ -7528,6 +7616,7 @@ static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu) {
             mc->rp_pre.push_back(b);
             const size_t n_rest = want / RP_PIECE - 1 + 8;   // the classes' short last chunks are pinned on their own: a few more ranges than full pieces
             mc->rp_vram_reserve = per * n_rest;
+            mc->rp_vram_per = per;
             LLAMA_LOG_WARN("moe-cache: rampool: 1 GiB pinned before the VRAM sizing in %.2f s, it took %.1f MiB of each card's VRAM: %.0f MiB left free per card at the sizing "
                     "for the pin after the fill (budget %.1f GiB)\n", (ggml_time_us() - t0) / 1e6, per / 1048576.0, mc->rp_vram_reserve / 1048576.0, want / 1073741824.0);
             return;
@@ -7631,6 +7720,7 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
     }
     if (auto set = (void (*)(const void * (*)(const ggml_tensor *, int64_t))) cpu_proc_fork("ggml_backend_cpu_set_expert_ptr_hook")) { set(rp_cpu_ptr); }
     mc->rp_on = true;
+    ram_watch_start();   // rp_resize's measure, from the first request on
     // --moe map-guard=1 (user 2026-11-08: "we have no control over individual moes in [the mapping] and can't evict ... shall read/prefetch intelligently instead of faults"): the
     // expert tensors' mapping pages become unreadable, so a reader left on the mapping stops the server at once instead of faulting the SSD in silence. A test mode for the
     // sane and gate lists: with rampool=0 the mapping is the source on purpose. Whole pages inside each tensor only: an edge page may hold a neighbour the loader still reads.
@@ -7686,9 +7776,11 @@ static void rp_log(const char * when) {
     LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
 }
 
+static void rp_resize(moe_cache * mc);   // below, by the VRAM watch it reads
 void llama_moe_request_end_fork(void) {
     llama_moe_stats_log_fork("REQ", "end");
     rp_log("request");
+    rp_resize(g_cache);
     g_warm.store(true);
     if (g_pjit_layers.load() > 0) {   // prompt calls of this request: what the JIT saw and did (uploads against CPU-computed misses)
         const uint64_t ms = g_pjit_miss.exchange(0), up = g_pjit_up.exchange(0), ly = g_pjit_layers.exchange(0);
@@ -8036,6 +8128,69 @@ struct vram_dev_t {
 };
 static std::vector<vram_dev_t> g_vram;
 static std::mutex g_vram_mtx;
+
+// The RAM pool follows the RAM the system leaves, between requests (user 2026-11-02: "grow while the floor holds, unpin the last step when pressure shows"; 2026-11-10: the RAM
+// the mapping's page cache took is the pool's now, "we cant just ignore usable 1.8g on machines with 4-8 ram"). The least RAM available since the last resize (ram_sample,
+// a request and the idle time before it) against the floor (ram_floor_bytes): below it chunks go back at once, the least-read class's last chunk first; above it half of
+// what is left over is added, as empty blocks the misses fill (a few requests converge without overshooting, each shows the next where it stands). The start stays as it
+// was (common_auto_pin): a first request no session measured yet runs with the room it always had. Every GiB pinned takes each card's page tables (rp_vram_per, 2 MiB on
+// PC1): a growth never takes a card's lowest free VRAM of this session below the safety the margin keeps over its need.
+static std::atomic<bool> g_rp_growing{false};   // a grow pins on its own thread: until it ends no resize starts and the teardown waits
+static void rp_resize(moe_cache * mc) {
+    // rampool=1 keeps the fill's set: a block taken away would send its misses to the mapping. A grow still pinning: the next request's end looks again
+    if (mc == nullptr || !mc->rp_on || !mc->rp_evict || g_rp_growing.load()) { return; }
+    const size_t low = std::min(ram_avail_bytes(), g_ram_low.exchange(SIZE_MAX)), floor = ram_floor_bytes();
+    ggml_rampool_stats st0;
+    ggml_rampool_stats_fork(&st0, false);
+    const double G = 1073741824.0;
+    if (low < floor) {
+        // no graph runs between requests and every copy out of the pool outside one holds its block (take/drop): the last two graphs' elements may go too. Without this a
+        // chunk never went: of its ~170 blocks one was nearly always read by the last two tokens (DS: ~2900 of ~17000 blocks)
+        ggml_rampool_graph_fork();
+        ggml_rampool_graph_fork();
+        const size_t freed = ggml_rampool_shrink_fork(floor - low, rp_chunk_free);
+        const std::string line = tr_fmt("resize: %.2f GiB given back of %.2f GiB asked: RAM available fell to %.2f GiB since the last resize, floor %.2f GiB; pool %.1f GiB",
+                freed / G, (floor - low) / G, low / G, floor / G, (st0.bytes - std::min<uint64_t>(st0.bytes, freed)) / G);
+        llama_moe_stats_log_fork("RPL", line.c_str());
+        LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
+        return;
+    }
+    size_t want = (low - floor) / 2;
+    size_t vram_cap = SIZE_MAX;
+    {
+        std::lock_guard<std::mutex> lk(g_vram_mtx);
+        const size_t per = std::max<size_t>(mc->rp_vram_per, ((size_t) 1 << 30) / 4096 * 8);   // never below one 8 B entry per 4 KiB page
+        for (const auto & d : g_vram) {
+            const size_t keep = (size_t) std::max<int64_t>(64, d.peak_mb / 8) << 20;   // the safety vram_margin adds to a stored need
+            const size_t room = d.low != SIZE_MAX && d.low > keep ? d.low - keep : 0;
+            vram_cap = std::min(vram_cap, room / per * ((size_t) 1 << 30));
+        }
+    }
+    want = std::min(want, vram_cap);
+    if (want == 0) { return; }
+    // pinning takes ~0.3 s per GiB (PC1, rp_prepin): on a thread of its own, the next request does not wait for it. Its chunks join under the pool's lock (readers
+    // outside it index a chunk vector that never moves); rp_bufs is touched by nothing else meanwhile: a shrink waits for it (above), the teardown too
+    g_rp_growing.store(true);
+    std::thread([mc, want, low, floor, vram_cap, pool0 = st0.bytes]() {
+        const double G = 1073741824.0;
+        const int64_t t0 = ggml_time_us();
+        const size_t added = ggml_rampool_grow_fork(want, rp_grow_alloc);
+        if (added > 0) {
+            std::lock_guard<std::mutex> lk(g_vram_mtx);
+            const size_t cost = (size_t) ((double) std::max<size_t>(mc->rp_vram_per, ((size_t) 1 << 30) / 4096 * 8) * ((double) added / G));
+            for (auto & d : g_vram) {   // the page tables are no need outside the pool: the watch's figure and the room above stay right
+                d.free_at_size -= std::min(d.free_at_size, cost);
+                if (d.low != SIZE_MAX) { d.low -= std::min(d.low, cost); }
+            }
+        }
+        const std::string line = tr_fmt("resize: %.2f GiB added of %.2f GiB asked in %.2f s: RAM available at least %.2f GiB since the last resize, floor %.2f GiB, half the rest%s; pool %.1f GiB",
+                added / G, want / G, (ggml_time_us() - t0) / 1e6, low / G, floor / G, vram_cap != SIZE_MAX && vram_cap < (low - floor) / 2 ? tr_fmt(", the cards' VRAM allows %.1f", vram_cap / G).c_str() : "",
+                (pool0 + added) / G);
+        llama_moe_stats_log_fork("RPL", line.c_str());
+        LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
+        g_rp_growing.store(false);
+    }).detach();
+}
 
 // the NVIDIA driver: the kernel module's version on Linux, else the CUDA driver API version the backend reports
 static const std::string & vram_driver() {
@@ -13661,6 +13816,7 @@ void llama_moe_cache_free_fork() {
     if (mc->rp_on) {   // the readers stop before their chunks go; the CPU kernels go back to the weights' own pointers
         rp_log("exit");
         if (auto set = (void (*)(const void * (*)(const ggml_tensor *, int64_t))) cpu_proc_fork("ggml_backend_cpu_set_expert_ptr_hook")) { set(nullptr); }
+        while (g_rp_growing.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }   // a grow between requests still pinning (rp_resize)
         ggml_rampool_close_fork();
         for (auto * b : mc->rp_bufs) { ggml_backend_buffer_free(b); }
         mc->rp_bufs.clear();
