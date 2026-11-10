@@ -1,0 +1,10 @@
+run 25193 | touch7 | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 19.72 t/s | prompt 523.0 t/s | 64 tokens | args: -np 1 | power 220+280 W | 2026-11-10 07:28:54
+
+    return params.speculative_types.empty() || params.speculative_types == std::vector<std::string>{"default"};
+}
+
+static bool spec_types_is_ngram(const common_params & params) {
+    return params.speculative_types == std::vector<std::string>{"ngram"};
+}
+
+static bool
