@@ -52,6 +52,7 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <fcntl.h>
+#include <sys/statvfs.h>
 #include <sys/stat.h>
 #if defined(__linux__) && __has_include(<linux/aio_abi.h>)
 #include <linux/aio_abi.h>
@@ -10490,7 +10491,13 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
     if (stat(model_path, &st) == 0) {
         const std::string key = format("ssd_max_gbs.%llu", (unsigned long long) st.st_dev);
         const double s0 = llama_moe_span_now_fork();
-        if (moe_state_get(sec, key, v) && atof(v.c_str()) > 0.0 && moe_state_get(sec, format("read_threads.%u", hw), v) && atoi(v.c_str()) > 0) {
+        // a drive reads slower as it fills (user 2026-11-10: "remeasure baseline max model read speed occasionally"): the stored maximum holds for the fill it was measured at,
+        // 5 points of fill later it is measured again
+        const std::string fkey = format("ssd_fill_pct.%llu", (unsigned long long) st.st_dev);
+        struct statvfs fs;
+        const int fill = statvfs(model_path, &fs) == 0 && fs.f_blocks > 0 ? (int) (100.0 - 100.0 * (double) fs.f_bavail / (double) fs.f_blocks) : -1;
+        const bool fill_moved = fill >= 0 && (!moe_state_get(sec, fkey, v) || std::abs(atoi(v.c_str()) - fill) >= 5);
+        if (!fill_moved && moe_state_get(sec, key, v) && atof(v.c_str()) > 0.0 && moe_state_get(sec, format("read_threads.%u", hw), v) && atoi(v.c_str()) > 0) {
             g_early_rd_threads = atoi(v.c_str());
             moe_state_get(sec, key, v);
             llama_moe_ssd_max_fork(atof(v.c_str()));
@@ -10502,6 +10509,8 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
                 g_early_rd_threads = read_threads_probe(fds, sec, /*measure =*/ true);   // this drive is new to the state: measured, not another drive's stored answer; stores read_threads.<hw> and ssd_max_gbs.<hw>
                 close(dfd);
                 if (moe_state_get(sec, format("ssd_max_gbs.%u", hw), v)) { moe_state_set(sec, {{ key, v }}); }   // read_threads_probe keys the maximum by threads; the early bench by drive
+                if (fill >= 0) { moe_state_set(sec, {{ fkey, std::to_string(fill) }}); }
+                LLAMA_LOG_WARN("moe-cache: machine: SSD maximum measured %.2f GB/s at %d%% full\n", llama_moe_ssd_max_get_fork(), fill);
                 llama_moe_span_fork("machine benchmark: SSD maximum (O_DIRECT, best thread count)", s0, llama_moe_span_now_fork(), 0, "SSD probe");
             }
         }
@@ -12094,7 +12103,7 @@ static double              g_pp_dec_ratio = 0.0;
 // (the calculation had no compute) made the next 4-token call read "decode chain to 0 tokens, 4424 ms calculated" and leave the decode chain where it is the fastest.
 // The time is now three parts, each learned from the calls it dominates (llama_moe_cache_pp_decide_fork): the misses x g_pp_dec_ratio (calls where the misses
 // dominate), the 4-token chunks' weight reads x g_pp_dec_kc (calls where the chunks dominate), and a fixed part per pass g_pp_dec_f (the least any call left over).
-static double              g_pp_dec_kc    = 1.0;    // measured over calculated chunk reads, never under 1 (the read rate is the fastest the card reads)
+static double              g_pp_dec_kc    = 1.0;    // measured over calculated chunk reads (0.05 to 64)
 static double              g_pp_dec_f     = -1.0;   // the decode chain's fixed part per pass (us), -1 = no call measured yet
 static double              g_pp_dec_chunk = 0.0;    // the call being decided: its chunks' calculated weight reads (us)
 static unsigned long long pp_self_read_bytes() {
@@ -12838,7 +12847,8 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 const double took = (double) us / P, d0 = g_pp_de0, ch = g_pp_dec_chunk;
                 const double r = g_pp_dec_ratio > 0.0 ? g_pp_dec_ratio : 1.0, f = std::max(0.0, g_pp_dec_f);
                 if (ch > 0.0 && ch * g_pp_dec_kc >= d0 * r) {   // the chunks dominate: only they learn (a fixed part from such a call would lock small calls out)
-                    const double q = std::max(1.0, (took - f - d0 * r) / ch);
+                    // (no floor of 1: the card's weight read rate is a load-time matmul timing, 95 to 20762 GB/s in the logs of 2026-11-10; OLMoE 118 tokens: 702 ms calculated, the whole call took 132)
+                    const double q = std::max(0.05, (took - f - d0 * r) / ch);
                     g_pp_dec_kc = std::min(64.0, 0.7 * g_pp_dec_kc + 0.3 * q);
                 } else {   // the misses dominate: they learn, and the fixed part is the least such a call left over
                     const double q = std::max(0.25, std::min(8.0, (took - f - ch * g_pp_dec_kc) / d0));
