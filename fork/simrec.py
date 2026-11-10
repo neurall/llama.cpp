@@ -12,6 +12,7 @@ import collections, csv, json, os, re, sqlite3, statistics as st, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIST = os.path.join(HERE, 'runs', 'simrec.csv')
 DB = '/p/bw/data/stats.db'
+RUNS_DB = '/p/bw/data/runs.db'   # run.py's row log: the power limit each row ran under
 NOISE = 0.05   # paths closer than 5% are a tie: running either one loses nothing
 
 
@@ -179,10 +180,19 @@ def runsim_cmd(argv):
             g = json.loads(c[0]) if c else {}
             pw[r['strat']] = (g.get('g1') or {}).get('busy_w_p50')
     con.close()
-    ws = [w for w in pw.values() if w]
-    print(f"  rows: " + ', '.join(f"{s} (x16 card {pw[s] or '?'} W busy)" for s in cells))
-    if ws and max(ws) >= 190 and max(ws) > 1.1 * min(ws):   # near a cap the busy power is the cap: a spread means rows ran under different caps (a light model's spread is its load)
-        print(f"  WARNING: busy power differs over 10% between rows ({min(ws)}-{max(ws)} W) near the cap: rows ran under different power limits, the times are not alike")
+    # the power limit each row ran under (runs.db pl, set by run.py): busy draw is no proof, a link-bound path draws less under the same cap
+    pls = {}
+    try:
+        rcon = sqlite3.connect(RUNS_DB)
+        for r in rows:
+            if r['name'] in done:
+                pls[r['strat']] = sorted({p for (p,) in rcon.execute("SELECT DISTINCT pl FROM runs WHERE campaign LIKE ?", (f"{build}-{r['name']}-%",)) if p})
+        rcon.close()
+    except sqlite3.Error:
+        pass
+    print(f"  rows: " + ', '.join(f"{s} ({'/'.join(pls.get(s) or ['?'])} W, x16 card {pw[s] or '?'} W busy)" for s in cells))
+    if len({p for v in pls.values() for p in v}) > 1:
+        print(f"  WARNING: rows ran under different power limits ({', '.join(sorted({p for v in pls.values() for p in v}))} W): the times are not alike")
 
     # truth per call: (req, call, tokens) -> path -> ms, from every row (forced ones and auto's own), the path its DON names
     truth = collections.defaultdict(lambda: collections.defaultdict(list))
