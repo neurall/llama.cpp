@@ -3927,6 +3927,8 @@ static ggml_tensor expert_past_view(const ggml_tensor * dst, size_t off, size_t 
 // batch. Keep the ones this prompt uses more than what is cached: they are copied device-to-device
 // into a slot (no extra PCIe traffic) and published at the next step. Up to LLAMA_MOE_CACHE_ADOPT
 // (default 1.0) of a layer's slots per batch; only layers whose cache is on `dev`.
+static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * ud);
+
 bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
                 void ** data, ggml_backend_buffer_t * buffer, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
@@ -3989,7 +3991,17 @@ bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t 
         const char * from = nullptr;
         if (const size_t pb = expert_past(mc, ls, kind, expert, weight, from)) {
             ggml_tensor z = expert_past_view(c, (size_t) slot*c->nb[2] + (size_t) weight->nb[2], pb);
-            ggml_backend_tensor_set(&z, from, 0, pb);
+            // fork: the next expert's bytes from the pool's block (it carries them) or an O_DIRECT read, not the mapping (DS forced stream k x1: map-guard caught this read, 2026-11-10)
+            const size_t sz = (size_t) weight->nb[2];
+            const bool past_next = from == (const char *) weight->data + (size_t) (expert + 1)*sz;
+            const char * rp = past_next && mc->rp_on ? ggml_rampool_use_fork(weight, expert) : nullptr;
+            const void * rd = nullptr;
+            thread_local std::vector<uint8_t> rbuf;
+            if (past_next && !rp) {
+                rbuf.resize(pb + 3*direct_align());
+                rd = moe_read_fn(weight, (size_t) (expert + 1)*sz, pb, rbuf.data(), rbuf.size(), mc);
+            }
+            ggml_backend_tensor_set(&z, rp ? rp + sz : rd ? (const char *) rd : from, 0, pb);
         }
     }
     return true;
