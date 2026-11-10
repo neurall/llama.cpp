@@ -26,6 +26,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <thread>
 #include <vector>
 #include <string>
 
@@ -949,12 +950,15 @@ void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * use
 // fork: where a prompt pass's weight uploads come from and what the scheduler thread waits for (read by the expert cache for its call record): bytes from the RAM pool's pinned
 // blocks, from host memory, from the file; the file reads, the time they held the thread, the time it waited for a ring slot's last upload
 static std::atomic<uint64_t> g_up_stat[6];   // pool bytes, host bytes, file bytes, file reads, read us, slot wait us
+static std::atomic<int>      g_moe_read_threads{1};   // --moe side-reads: the scattered file runs of a pool tensor read that many at a time (the probe's reader count); 1 = one run at a time
 extern "C" {
     GGML_API void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset);
+    GGML_API void ggml_backend_set_moe_read_threads_fork(int n);
 }
 void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset) {
     for (int i = 0; i < 6; i++) { out6[i] = reset ? g_up_stat[i].exchange(0) : g_up_stat[i].load(); }
 }
+void ggml_backend_set_moe_read_threads_fork(int n) { g_moe_read_threads.store(n < 1 ? 1 : n); }
 static ggml_backend_moe_where_fn_t g_moe_where_fn = NULL;
 static void *                      g_moe_where_ud = NULL;
 extern "C" {
@@ -2709,8 +2713,9 @@ static int ggml_backend_sched_rd_slot(struct sched_rd_ring * R) {
 }
 // fork: an expert tensor in the RAM pool (--moe rampool=1, ggml-rampool-fork.h): the experts the pool holds go straight from their pinned blocks (runs that lie behind each other
 // in the pool as one copy), the rest and the bytes past the last whole expert from the file.
-// (2026-11-10: the file runs read side by side, packed into half the ring per round, gave nothing: DeepSeek 12k 424 / 456 t/s against 455 / 515. The runs are 3.6 MB on average and
-// the read function already takes them on the probe's thread count; the counters below showed 23.6 GB in 6600 reads at 2.4 GB/s, 10 s of a 30 s pass on this thread.)
+// --moe side-reads=1: the file runs read side by side, packed into half the ring per round, the probe's reader count at a time. Off by default: on DeepSeek 12k it gave nothing
+// (424 / 456 t/s against 455 / 515; reads were 10 s of a 30 s pass, 23.6 GB in 6600 reads at 2.4 GB/s). Back for Kimi K3.1, whose 995-token pass is 80.8 s of reads in about 90 s:
+// 351 GB in 87557 runs of about 4 MB at 4.35 GB/s, one at a time, on a drive that gives 6.25 at queue depth 8 (2026-11-10).
 static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n) {
     const size_t esz = input->nb[2];
     if (esz == 0 || off % esz != 0 || n < esz || ggml_rampool_table_fork(input) == NULL) {
@@ -2720,6 +2725,9 @@ static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_ba
     const int64_t e0 = (int64_t) (off / esz), ne = (int64_t) (n / esz);
     std::vector<const char *> ps((size_t) ne);
     for (int64_t i = 0; i < ne; ++i) { ps[i] = ggml_rampool_use_fork(input, e0 + i); }
+    const bool side = g_moe_read_threads.load() > 1;
+    struct file_run { size_t off, n; int slot; size_t pos; const void * got; };
+    std::vector<file_run> fr;
     for (int64_t i = 0; i < ne; ) {
         int64_t j = i + 1;
         if (ps[i]) {
@@ -2728,11 +2736,70 @@ static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_ba
             g_up_stat[0] += (uint64_t) (j - i) * esz;
         } else {
             while (j < ne && !ps[j]) { ++j; }
-            ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, (size_t) (e0 + i) * esz, (size_t) (j - i) * esz);
+            if (side) { fr.push_back({ (size_t) (e0 + i) * esz, (size_t) (j - i) * esz, -1, 0, NULL }); }
+            else { ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, (size_t) (e0 + i) * esz, (size_t) (j - i) * esz); }
         }
         i = j;
     }
-    if (n > (size_t) ne * esz) { ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, off + (size_t) ne * esz, n - (size_t) ne * esz); }
+    if (n > (size_t) ne * esz) {
+        if (side) { fr.push_back({ off + (size_t) ne * esz, n - (size_t) ne * esz, -1, 0, NULL }); }
+        else { ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, off + (size_t) ne * esz, n - (size_t) ne * esz); }
+    }
+    const size_t slack = 3*4096;   // as GGML_SCHED_RD_SLOT: the block grid on both sides of a read and the alignment of its start
+    struct sched_rd_ring * R = fr.size() > 1 ? ggml_backend_sched_rd_ring(sched, backend, input) : NULL;
+    for (size_t k = 0; k < fr.size(); ) {
+        // one round: the next runs that fit half the ring, several to a chunk
+        size_t k1 = k;
+        int n_slots = 0, slot = -1;
+        size_t pos = GGML_SCHED_RD_SLOT;
+        while (R && k1 < fr.size() && fr[k1].n <= GGML_SCHED_RD_CHUNK) {
+            const size_t need = ((fr[k1].n + 4095) & ~(size_t) 4095) + slack;
+            if (pos + need > GGML_SCHED_RD_SLOT) {
+                if (n_slots == GGML_SCHED_RD_CHUNKS/2) { break; }
+                slot = ggml_backend_sched_rd_slot(R);
+                if (slot < 0) { break; }
+                n_slots++; pos = 0;
+            }
+            fr[k1].slot = slot; fr[k1].pos = pos;
+            pos += need; k1++;
+        }
+        if (k1 - k < 2) {   // a long run, a single one, or no ring: the chunked read
+            ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, fr[k].off, fr[k].n);
+            if (k1 > k) { R->used[fr[k].slot] = false; }
+            k++;
+            continue;
+        }
+        const int64_t t0 = ggml_time_us();
+        std::atomic<size_t> next{k};
+        char * base = (char *) ggml_backend_buffer_get_base(R->buf);
+        auto work = [&]() {
+            for (;;) {
+                const size_t q = next.fetch_add(1);
+                if (q >= k1) { return; }
+                fr[q].got = g_moe_read_fn(input, fr[q].off, fr[q].n, base + (size_t) fr[q].slot*GGML_SCHED_RD_SLOT + fr[q].pos, ((fr[q].n + 4095) & ~(size_t) 4095) + slack, g_moe_read_ud);
+            }
+        };
+        const int n_th = (int) std::min<size_t>((size_t) g_moe_read_threads.load(), k1 - k);
+        std::vector<std::thread> th;
+        th.reserve((size_t) n_th);
+        for (int t = 1; t < n_th; t++) { th.emplace_back(work); }
+        work();
+        for (auto & x : th) { x.join(); }
+        g_up_stat[4] += (uint64_t) (ggml_time_us() - t0);
+        for (size_t q = k; q < k1; q++) {
+            if (fr[q].got) {
+                ggml_backend_tensor_set_async(backend, input_cpy, fr[q].got, fr[q].off, fr[q].n);
+                g_up_stat[2] += fr[q].n; g_up_stat[3] += 1;
+            } else {
+                ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, fr[q].off, fr[q].n);
+            }
+            if (q + 1 == k1 || fr[q + 1].slot != fr[q].slot) {   // the chunk's last copy: its event frees the chunk
+                ggml_backend_event_record(R->ev[fr[q].slot], backend);
+                R->used[fr[q].slot] = true;
+            }
+        }
+        k = k1;
+    }
 }
 
 // fork: [off, off + n) of a host weight into its copy on the card, on this backend's stream. Weights the expert cache can read direct (--moe read-direct: they stayed mapped) go from
