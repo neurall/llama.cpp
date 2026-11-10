@@ -474,7 +474,13 @@ void ggml_rampool_fill_fork(void) {
     }
     std::vector<range> spaced;
     spaced.reserve(jobs.size());
-    for (int pass = 0; pass < 2; ++pass) { for (size_t i = pass; i < jobs.size(); i += 2) { spaced.push_back(jobs[i]); } }
+    // spaced in 16 segments of the file, each on its own: chunks complete through the whole fill and their pins run under it. One spacing over the whole
+    // list completed every chunk in its second half, the pin threads fell behind (DS: 2.4 s of pins after the fill)
+    const size_t seg = std::max<size_t>(2, (jobs.size() + 15) / 16);
+    for (size_t s0 = 0; s0 < jobs.size(); s0 += seg) {
+        const size_t s1 = std::min(jobs.size(), s0 + seg);
+        for (size_t pass = 0; pass < 2; ++pass) { for (size_t i = s0 + pass; i < s1; i += 2) { spaced.push_back(jobs[i]); } }
+    }
     std::atomic<size_t> next{ 0 };
     std::atomic<uint64_t> bad{ 0 };
     auto work = [&]() {
