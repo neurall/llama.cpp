@@ -1,4 +1,8 @@
 name,model,n,test,tokens,args,extra
+sd-glm-scifi-dec,glm,1,scific,256,--moe pp-path=dec,
+sd-glm-scifi-def,glm,1,scific,256,,
+sd-glm-poem-dec,glm,1,poemc,256,--moe pp-path=dec,
+sd-glm-poem-def,glm,1,poemc,256,,
 xo-qni-256-r,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 256 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
 xo-qni-256-s,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 256 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
 xo-qni-512-r,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 512 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
