@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+rpg-ds-short,ds,3,scific,256,,
+rpg-ds-12k,ds,2,pf12k1k,1024,,
+rpg-glm-r32,glm,3,scific,256,,--hog-ram 32
+rpg-mimo-r32,mimo,3,scific,256,,--hog-ram 32
