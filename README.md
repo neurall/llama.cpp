@@ -1,7 +1,10 @@
 # Rocket LLama 
 <img width="1145" height="389" alt="image" src="https://github.com/user-attachments/assets/f543ba8e-7611-47a5-ae76-7c939ffaa48e" />
 
-# A fork of llama.cpp with multi gpu acceleration even for models bigger than total gpu mem. but even on single 5090 20x pp and 2x t gains 
+# A bit experimental, slightly faster ...
+
+Fork of llama.cpp with multi gpu acceleration even for models bigger than total gpu mem. 
+But even on single 5090 20x pp and 2x t gains 
 
 
 
