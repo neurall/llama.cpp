@@ -1,0 +1,19 @@
+name,model,n,test,tokens,args,extra
+s-g-5050,glm35,2,pf64k4k,64,--moe dense-split=1,--hog-ram 32
+s-g-5050b,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1",--hog-ram 32
+s-g-max,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2",--hog-ram 32
+s-g-maxup,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,ub-up=1",--hog-ram 32
+s-g-auto,glm35,2,pf64k4k,64,,--hog-ram 32
+s-m-5050,mimo,2,pf64k4k,64,--moe dense-split=1,--hog-ram 32
+s-m-5050b,mimo,2,pf64k4k,64,"-b 131072 --moe dense-split=1",--hog-ram 32
+s-m-max,mimo,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,swa-big=1",--hog-ram 32
+s-m-auto,mimo,2,pf64k4k,64,,--hog-ram 32
+s-g-auto2,glm35,2,pf64k4k,64,,--hog-ram 32
+s-g-maxup2,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,ub-up=1",--hog-ram 32
+s-g-max2,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2",--hog-ram 32
+s-g-5050b2,glm35,2,pf64k4k,64,"-b 131072 --moe dense-split=1",--hog-ram 32
+s-g-5050-2,glm35,2,pf64k4k,64,--moe dense-split=1,--hog-ram 32
+s-m-auto2,mimo,2,pf64k4k,64,,--hog-ram 32
+s-m-max2,mimo,2,pf64k4k,64,"-b 131072 --moe dense-split=1,split-pass=2,swa-big=1",--hog-ram 32
+s-m-5050b2,mimo,2,pf64k4k,64,"-b 131072 --moe dense-split=1",--hog-ram 32
+s-m-5050-2,mimo,2,pf64k4k,64,--moe dense-split=1,--hog-ram 32
