@@ -2820,7 +2820,9 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     // No trial of the split on a call its expert upload bounds (prior = U): the split shortens the compute only, so the trial cannot win there, and its sample
     // teaches the split model an upload-bound time it then extrapolates (GLM 3.5 12k, both-splits 2026-11-08: the 2194-token first call, U 5.32 s, was the
     // trial; the 10240-token call then saw split 17.0 +- 9.2 s against one card 6.0 and stayed one card, 648 against 821-839 t/s on the builds that split).
-    const bool upload_bound = split_prior && mu1_0 * ratio <= u_link0;
+    // and no trial where even a perfect split saves less than the fill it owes: it can only shorten the compute above the upload (GLM 3.0, 100-token prompt: one card 3.99 s,
+    // upload 3.76 s, fill 0.74 s; the trial ran the split with the fill, 5.8 s against about 4)
+    const bool upload_bound = split_prior && (mu1_0 * ratio <= u_link0 || (mu1_0 - u_link0) * (double) std::max(1, np) <= f_mu);
     const bool aok[2] = { true, !upload_bound };
     bool trial = false;
     const bool akn[2] = { known1, known2 };
