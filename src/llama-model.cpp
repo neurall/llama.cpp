@@ -1,4 +1,6 @@
 #include "llama-model.h"
+
+bool g_async_load_fork = false;   // fork: this process loads its weights on a thread (the VRAM need is kept apart, llama-moecache-fork.cpp)
 #include "llama-backend-fork.h"
 
 #ifndef _WIN32
@@ -2458,7 +2460,16 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     // load tensor data
-    const bool async_load = getenv("LLAMA_ASYNC_LOAD") && atoi(getenv("LLAMA_ASYNC_LOAD")) != 0 && ml_keep && !ml.use_mmap && !use_mlock && !ml.check_tensors && !ml.no_alloc;
+    // fork: LLAMA_ASYNC_LOAD=0/1 forces it; by default on for MoE models on CUDA under Linux, where it was measured (GLM 3.0: load 1.4-4.5 s shorter, same answers and perplexity)
+    // shortcut: Windows, Vulkan, HIP and non-MoE models keep the serial load until tested there
+    const char * async_env = getenv("LLAMA_ASYNC_LOAD");
+#if defined(__linux__)
+    const bool async_auto = hparams.n_expert > 0 && n_devices() > 0 && strncmp(ggml_backend_dev_name(devices[0].dev), "CUDA", 4) == 0;
+#else
+    const bool async_auto = false;
+#endif
+    const bool async_load = (async_env ? atoi(async_env) != 0 : async_auto) && ml_keep && !ml.use_mmap && !use_mlock && !ml.check_tensors && !ml.no_alloc;
+    g_async_load_fork = async_load;
     if (async_load) {
         // the thread owns the loader and the buffer lists; callers that read weight bytes wait (wait_loaded)
         auto pd = pin_defer.f; pin_defer.f = nullptr;
