@@ -178,8 +178,8 @@ def runsim_cmd(argv):
     con.close()
     ws = [w for w in pw.values() if w]
     print(f"  rows: " + ', '.join(f"{s} (x16 card {pw[s] or '?'} W busy)" for s in cells))
-    if ws and max(ws) > 1.1 * min(ws):
-        print(f"  WARNING: busy power differs over 10% between rows ({min(ws)}-{max(ws)} W): the times are not alike")
+    if ws and max(ws) >= 190 and max(ws) > 1.1 * min(ws):   # near a cap the busy power is the cap: a spread means rows ran under different caps (a light model's spread is its load)
+        print(f"  WARNING: busy power differs over 10% between rows ({min(ws)}-{max(ws)} W) near the cap: rows ran under different power limits, the times are not alike")
 
     # truth per call: (req, call, tokens) -> path -> ms, from every row (forced ones and auto's own), the path its DON names
     truth = collections.defaultdict(lambda: collections.defaultdict(list))
