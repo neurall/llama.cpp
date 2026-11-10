@@ -109,6 +109,35 @@ int main() {
         check("more card memory: decode chain not slower", estimate_decodechain_time_per_token(m16) <= estimate_decodechain_time_per_token(m4));
     }
 
+    // uneven picks: the cold experts are touched late, so the router keeps winning longer (the real models are far from uniform)
+    prev = x_pc;
+    for (const double skew : { 0.5, 1.0, 1.5 }) {
+        pp_model hot = ds; hot.heat_skew = skew;
+        const double x = pp_crossover_tokens(pc, hot, lim);
+        printf("  heat skew %.1f                      %8.0f\n", skew, x);
+        check("uneven picks never move the crossover down", x >= prev);
+        prev = x;
+    }
+
+    // ---- estimate against measured (PC1, 2026-11-10 rows; printed, not asserted: where the estimators are off is the planner's weakness list) ----
+    {
+        pp_machine pc1 = pc; pc1.vram_gb = { 1.2, 1.2 };   // a first request: 6% of the cache blocks hold an expert
+        pp_model dsk = ds; dsk.heat_skew = 1.0;
+        struct row_t { const char * what; double n; int path; double measured_s; };   // path 0 stream, 1 router, 2 decode chain
+        const row_t rows[] = {
+            { "DeepSeek 117 tokens, stream",        117.0,   0, 20.0 },
+            { "DeepSeek 117 tokens, decode chain",  117.0,   2,  2.2 },
+            { "DeepSeek 62 tokens, decode chain",    62.0,   2,  1.6 },
+            { "DeepSeek 13489 tokens, stream",    13489.0,   0, 27.5 },
+        };
+        printf("%-36s %10s %10s %7s\n", "call", "est (s)", "meas (s)", "ratio");
+        for (const auto & r : rows) {
+            const pp_metrics mm = pp_metrics_for(pc1, dsk, r.n);
+            const double est = (r.path == 0 ? estimate_fullstream_time_per_token(mm) : r.path == 1 ? estimate_router_time_per_token(mm) : estimate_decodechain_time_per_token(mm)) * r.n / 1e6;
+            printf("%-36s %10.1f %10.1f %7.2f%s\n", r.what, est, r.measured_s, est / r.measured_s, est / r.measured_s > 1.5 || est / r.measured_s < 0.67 ? "  OFF" : "");
+        }
+    }
+
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

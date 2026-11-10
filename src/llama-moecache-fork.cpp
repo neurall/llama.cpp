@@ -12928,12 +12928,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     }
     const double R_read = llama_dsplit_read_rate_fork(mc->link_dev[0]);   // before any lock: it takes the split planner's (which calls into the cache under it)
     double A = 0.0;   // the expert bytes one token reads, all layers: what the decode chain's chunks read again for every token
-    struct cost { double l1p, us, cu, sm; };   // + sm: its bytes still read from the file (mapped, not pinned), for the decode chain's SSD term   // log(1 - its share of the picks), its upload over its layer's link, the CPU's time for one token routed to it
-    std::vector<cost> v;
-    double U = 0.0, Um = 0.0;   // the stream's upload, without and with the prompt mix
-    double M = 0.0;             // of the stream's bytes, the ones read from the SSD: tensors still on the mapping
-    double Mm = 0.0;            // the same for the mix's bytes (the experts no card holds)
-    double Uk[PP_PATHS - PP_K] = {}, Mk[PP_PATHS - PP_K] = {};   // the same two for predicted staging with 2^i x the picks: the experts the call's tokens rank that high (cold counts: nearly all of them)
+    pp_sums sums((size_t) (PP_PATHS - PP_K));   // llama-estimate-fork.h: every expert added below, the same sums a simulated machine fills
+    std::vector<pp_miss> & v = sums.miss;      // the experts no card holds
+    double & U = sums.U, & Um = sums.Um;       // the stream's upload, without and with the prompt mix
+    double & M = sums.M, & Mm = sums.Mm;       // of those bytes, the ones only the SSD has
+    double * const Uk = sums.Uk.data(), * const Mk = sums.Mk.data();   // the same two for predicted staging with 2^i x the picks
     const double n = (double) std::min(n_tokens, ub_max);
     int n_expert = 0;
     bool has_slower = false;
@@ -12961,27 +12960,14 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             for (size_t e = 0; e < l.expert_slot.size(); ++e) {
                 const bool on_card = l.expert_slot[e] >= 0;
                 const double Sm = pp_mapped_expert_bytes(l, pinned_buft, (int64_t) e);   // what the SSD delivers of it: nothing where it is pinned or in the RAM pool
-                if (r0 > 0 && !(on_card && l.link == 0)) {   // the fastest link's card holds it: copied there, else it streams
-                    U += S / r0; M += Sm;
-                    const double p1 = (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all;   // its share of one token's picks
-                    for (int i = 0; i < PP_PATHS - PP_K; ++i) {
-                        const double hit = 1.0 - std::exp(n * std::log1p(-std::min(1.0, p1 * (double) (1 << i))));
-                        Uk[i] += hit * S / r0; Mk[i] += hit * Sm;
-                    }
-                }
-                if (r0 > 0 && !on_card) { Um += S / r0; Mm += Sm; }          // the mix: computed on its home card if a card holds it
-                if (!on_card && rl > 0) {
-                    v.push_back({ std::log1p(-std::min(1.0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all)), S / rl, rc > 0.0 ? S / rc : 0.0, Sm });
-                }
+                // its share of one token's picks: k (count + 1) / (all counts + experts), so a model nobody ran yet counts as uniform
+                pp_sums_add(sums, n, S, Sm, on_card, l.link == 0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all, r0, rl, rc);
             }
         }
     }
     std::lock_guard<std::mutex> lk(g_pp_mu);
-    double up = 0.0, cpu = 0.0;   // what the call's misses cost uploaded (once per expert it touches) and on the CPU (once per token routed to them)
-    for (const auto & x : v) {
-        up  += (1.0 - std::exp(n * x.l1p)) * x.us;
-        cpu -= std::expm1(x.l1p) * n * x.cu;
-    }
+    double up = 0.0, cpu = 0.0, miss_ssd_bytes = 0.0;   // what the call's misses cost uploaded (once per expert it touches) and on the CPU (once per token routed to them); their bytes only the SSD has
+    pp_sums_misses(sums, n, up, cpu, miss_ssd_bytes);
     const char * why = "";
     // A chain pass drops the uploads that have not started (pp_settle). Right after a start those are the hot set on its way, the slower link last: the first 2-token call threw away most of what
     // the x4 card was to hold, its blocks stayed reserved and counted as full (Qwen3.8: 17% of the asked experts on the fast card, 31% without the chain, a fifth more bytes per pass).
@@ -13062,8 +13048,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // upload, the misses the prompt chain uploads behind the router, the decode chain's misses plus its 4-token chunk reads, the predictions the stream's
     // the chains' misses also wait for the SSD where their tensors are still mapped (planner-rules.md C1/R3: rp=1 cold 2k took 43-86 s against
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
-    double ssd_miss = 0.0;
-    if (ssd_rate > 0.0) { for (const auto & x : v) { ssd_miss += (1.0 - std::exp(n * x.l1p)) * x.sm / (ssd_rate * 1e3); } }
+    const double ssd_miss = ssd_rate > 0.0 ? miss_ssd_bytes / (ssd_rate * 1e3) : 0.0;
     pp_metrics m;
     m.n = n; m.comp_us_tok = g_pp_c_us; m.ssd_gbs = ssd_rate;
     m.U = U; m.M = M; m.Um = Um; m.Mm = Mm; m.up = up; m.cpu = cpu; m.ssd_miss = ssd_miss;
