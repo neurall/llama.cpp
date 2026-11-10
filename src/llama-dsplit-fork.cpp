@@ -2104,7 +2104,12 @@ void dsplit_expert_trial(dsplit_bal & B, int64_t T) {
 void dsplit_bal_step(int b) {
     dsplit_card_stat st[16]; long gen = 0;
     const int nst = ggml_backend_sched_card_stats(st, 16, &gen);
-    if (nst < 1 || gen == g_card_seen || g_rng_dev.empty() || g_rng_dev.size() != g_rng_tok.size()) { return; }
+    if (gen == g_card_seen) { return; }   // this pass was read already
+    // a pass without its balance line hid where DeepSeek's 12k pass spent 18 of 30 s (2026-11-10: no line in any DeepSeek log, three silent returns here): each one says why
+    if (nst < 1 || g_rng_dev.empty() || g_rng_dev.size() != g_rng_tok.size()) {
+        LLAMA_LOG_WARN("split balance: no line for this pass: %d cards with stats, %zu cards in the range, %zu token counts\n", nst, g_rng_dev.size(), g_rng_tok.size());
+        return;
+    }
     g_card_seen = gen;
     const size_t n = g_rng_dev.size();
     std::vector<const dsplit_card_stat *> cs(n, nullptr);
@@ -2116,12 +2121,18 @@ void dsplit_bal_step(int b) {
     int64_t t_first = 0, t_last = 0;
     for (size_t i = 0; i < n; ++i) {
         if (g_rng_tok[i] <= 0) { continue; }
-        if (!cs[i] || cs[i]->dense_us <= 0) { return; }   // a card with tokens and no dense time: not this pass's measurement
+        if (!cs[i] || cs[i]->dense_us <= 0) {   // a card with tokens and no dense time: not this pass's measurement
+            LLAMA_LOG_WARN("split balance: no line for this pass: card %zu of the range has %lld tokens and %s\n", i, (long long) g_rng_tok[i], cs[i] ? "no dense time" : "no stats");
+            return;
+        }
         T += g_rng_tok[i];
         t_first = t_first == 0 ? cs[i]->first_us : std::min(t_first, cs[i]->first_us);
         t_last  = std::max(t_last, cs[i]->last_us);
     }
-    if (T <= 0 || t_last <= t_first) { return; }
+    if (T <= 0 || t_last <= t_first) {
+        LLAMA_LOG_WARN("split balance: no line for this pass: %lld tokens, first split at %lld us, last at %lld\n", (long long) T, (long long) t_first, (long long) t_last);
+        return;
+    }
     dsplit_bal & B = dsplit_bal_get(b, g_rng_dev);
     g_bal_last = b;
     g_bal_t_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -2214,6 +2225,7 @@ void dsplit_pass_step_locked() {   // under g_plan_mu: the balance step of the s
     int64_t n = 0;
     for (int64_t t : g_rng_tok) { n += t; }
     if (n > 0) { dsplit_bal_step(dsplit_bucket_of(n)); }
+    else { LLAMA_LOG_WARN("split balance: no line for this pass: no token counts for its cards (%zu cards in the range)\n", g_rng_tok.size()); }
 }
 }  // namespace
 
