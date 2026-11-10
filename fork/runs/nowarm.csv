@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+nw-glm-warm,glm,1,scific,256,,
+nw-glm-nowarm,glm,1,scific,256,--no-warmup,
+nw-mimo-warm,mimo,1,scific,256,,
+nw-mimo-nowarm,mimo,1,scific,256,--no-warmup,
+nw-ds-warm,ds,1,scific,256,,
+nw-ds-nowarm,ds,1,scific,256,--no-warmup,

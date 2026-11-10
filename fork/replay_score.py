@@ -39,7 +39,8 @@ def parse(path):
             m = re.match(r'prompt call of (\d+) tokens: (.+?) took (\d+) ms', s)
             if not m:
                 continue
-            calls.append(dict(req=max(req, 0), idx=idx, n=int(m.group(1)), path=PATHS.get(m.group(2), m.group(2)), took=float(m.group(3)), means=means, est=est))
+            # req -1: a call before the first request (the warm-up), never keyed with request 0's calls
+            calls.append(dict(req=req, idx=idx, n=int(m.group(1)), path=PATHS.get(m.group(2), m.group(2)), took=float(m.group(3)), means=means, est=est))
             idx += 1; means = {}; est = {}
     return calls
 
@@ -60,14 +61,12 @@ def main():
         print(f'{"group":16} {"req":>3} {"call":>4} {"tokens":>6}  {"best path":10} {"best (ms)":>9}  {"auto ran":10} {"auto (ms)":>9} {"auto/best":>9}  {"planner mean of":>15} {"its truth (ms)":>14}  per path (ms)')
         for g, rows in sorted(groups.items()):
             truth = collections.defaultdict(lambda: collections.defaultdict(list))   # (req, idx) -> path -> took
-            sizes = {}
             for strat, calls in rows.items():
                 for c in calls:
-                    truth[(c['req'], c['idx'])][c['path']].append(c['took'])
-                    sizes[(c['req'], c['idx'])] = c['n']
+                    truth[(c['req'], c['idx'], c['n'])][c['path']].append(c['took'])   # tokens in the key: rows of a group may have run another prompt
             tot_auto = tot_best = 0.0
             for c in rows.get('auto', []):
-                k = (c['req'], c['idx'])
+                k = (c['req'], c['idx'], c['n'])
                 per = {p: st.median(v) for p, v in truth[k].items()}
                 bp = min(per, key=per.get)
                 tot_auto += c['took']; tot_best += per[bp]
