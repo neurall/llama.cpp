@@ -26,6 +26,25 @@ def forced_of(args):
     o = dict(re.findall(r'(pp-path|pp-k|dense-split)=([\w.]+)', args or ''))
     return ','.join(f'{k}={v}' for k, v in sorted(o.items()))
 
+# One row per prompt call (DON), the numbers the simulator and the planner ask for most (user 2026-11-10: "easy fast lookup of info that is key for sim and planner"):
+# the call, what ran and what it took, what the planner saw before it (CAL: uploads, misses, CPU, SSD rate, compute; PLN: its mean for the path that ran and the
+# path it picked; DEC: router and stream estimates), and the cell's power on the x16 card (CEL). ms_tok = took / tokens.
+VIEW = """CREATE VIEW IF NOT EXISTS ppcall AS SELECT d.stat_id, d.build, d.model, d.prompt, d.forced, d.tag, d.req, d.call, d.path, d.n, d.ub, d.ub_max, d.prompt_len,
+  d.pp_pct, d.moe_used_pct, d.picked_up_pct, d.up_ssd_pct,
+  json_extract(d.vals, '$.took_ms') AS took_ms, json_extract(d.vals, '$.took_ms') / d.n AS ms_tok, json_extract(d.vals, '$.pass_took_ms') AS pass_ms,
+  json_extract(d.vals, '$.pred_ms') AS pred_pass_ms, json_extract(d.vals, '$.best_path') AS best_known_path, json_extract(d.vals, '$.best_ms') AS best_known_ms,
+  json_extract(d.vals, '$.host_gb') AS host_gb, json_extract(d.vals, '$.file_gb') AS file_gb, json_extract(d.vals, '$.ram_pool_gb') AS ram_pool_gb,
+  json_extract(d.vals, '$.sched_read_ms') AS sched_read_ms, json_extract(d.vals, '$.ram_avail_gib') AS ram_avail_gib,
+  (SELECT c.path FROM ppev c WHERE c.stat_id = d.stat_id AND c.req = d.req AND c.call = d.call AND c.ev = 'CAL' ORDER BY c.t LIMIT 1) AS cal_pick,
+  (SELECT json_extract(c.vals, '$.why') FROM ppev c WHERE c.stat_id = d.stat_id AND c.req = d.req AND c.call = d.call AND c.ev = 'CAL' ORDER BY c.t LIMIT 1) AS why,
+  (SELECT c.vals FROM ppev c WHERE c.stat_id = d.stat_id AND c.req = d.req AND c.call = d.call AND c.ev = 'CAL' ORDER BY c.t LIMIT 1) AS cal,
+  (SELECT json_extract(c.vals, '$.' || d.path || '[0]') FROM ppev c WHERE c.stat_id = d.stat_id AND c.req = d.req AND c.call = d.call AND c.ev = 'PLN' ORDER BY c.t LIMIT 1) AS plan_mean_ms,
+  (SELECT c.vals FROM ppev c WHERE c.stat_id = d.stat_id AND c.req = d.req AND c.call = d.call AND c.ev = 'PLN' ORDER BY c.t LIMIT 1) AS plan,
+  (SELECT c.vals FROM ppev c WHERE c.stat_id = d.stat_id AND c.req = d.req AND c.call = d.call AND c.ev = 'DEC' AND c.path != '' ORDER BY c.t LIMIT 1) AS switch,
+  (SELECT json_extract(e.vals, '$.g1.busy_w_p50') FROM ppev e WHERE e.stat_id = d.stat_id AND e.ev = 'CEL') AS g1_busy_w,
+  (SELECT json_extract(e.vals, '$.g0.busy_w_p50') FROM ppev e WHERE e.stat_id = d.stat_id AND e.ev = 'CEL') AS g0_busy_w
+FROM ppev d WHERE d.ev = 'DON'"""
+
 
 def path_of(s):
     s = s.strip()
@@ -43,6 +62,7 @@ def events(text):
     """(t, req, call, ev, path, n, pos, ub, ub_max, prompt_len, pp_pct, moe_used_pct, picked_up_pct, up_ssd_pct, vals) per event line"""
     req, call, plen, ub, ub_max, done = -1, 0, 0, 0, 0, 0
     pct = lambda: round(100.0 * done / plen, 2) if plen else None
+    smp, t_end = {}, 0.0   # per card: (watts, MHz) of the busy samples (util > 80%), for the cell's CEL row
     for line in text.splitlines():
         p = line.split(None, 4)
         if len(p) < 5 or p[0].startswith('#'):
@@ -53,6 +73,12 @@ def events(text):
             continue
         ev, s = p[3], p[4]
         path, n, pos, v = '', None, None, {}
+        t_end = t
+        if ev == 'SMP':
+            m = re.match(r'(g\d+) util (\d+)% .*? (\d+) W (\d+) MHz', s)
+            if m and int(m.group(2)) > 80:
+                smp.setdefault(m.group(1), []).append((int(m.group(3)), int(m.group(4))))
+            continue
         if ev == 'REQ' and s.startswith('begin'):
             req += 1; call = 0; done = 0; plen = int(f(r'begin: (\d+) prompt tokens', s) or 0)
         elif ev == 'DEC' and s.startswith('ubatch = '):
@@ -111,12 +137,20 @@ def events(text):
         else:
             continue
         yield (t, max(req, 0), call, ev, path, n, pos, ub, ub_max, plen, pct(), None, None, None, v)
+    # the cell's conditions, one row: what every time in it was measured under (2026-11-10: GLM 12k 871 t/s at 268-279 W on the x16 card, 585 at the night's 200 W cap)
+    v = {}
+    for g, xs in sorted(smp.items()):
+        w, mhz = sorted(x[0] for x in xs), sorted(x[1] for x in xs)
+        v[g] = {'busy_w_p50': w[len(w) // 2], 'busy_w_max': w[-1], 'busy_mhz_p50': mhz[len(mhz) // 2], 'busy_samples': len(xs)}
+    yield (t_end, max(req, 0), call, 'CEL', '', None, None, ub, ub_max, plen, None, None, None, None, v)
 
 
 def insert(con, stat_id, build, model_file, tag, test, args, text):
     con.execute(SCHEMA)
     con.execute('CREATE INDEX IF NOT EXISTS ppev_cell ON ppev (stat_id)')
     con.execute('CREATE INDEX IF NOT EXISTS ppev_mp ON ppev (model, prompt, ev)')
+    con.execute('CREATE INDEX IF NOT EXISTS ppev_call ON ppev (stat_id, req, call, ev)')
+    con.execute(VIEW)
     mf = os.path.basename(model_file or '')
     head = (stat_id, build, short_model(mf) if mf else '', test, forced_of(args), mf, tag)
     rows = [head + (t, rq, cl, ev, pa, None if n is None else int(n), None if pos is None else int(pos), ub, ubm, pl, pp, mu, pu, us, json.dumps(v, separators=(',', ':')))
@@ -144,6 +178,7 @@ def model_of(con, tag, build, test, ts):
 def load(db=DB):
     con = sqlite3.connect(db)
     con.execute(SCHEMA)
+    con.execute('DELETE FROM ppev WHERE stat_id NOT IN (SELECT stat_id FROM ppev WHERE ev = \'CEL\')')   # parsed before the CEL row existed: parse again
     done = {r[0] for r in con.execute('SELECT DISTINCT stat_id FROM ppev')}
     k = 0
     for sid, ts, build, test, tag, args, blob in con.execute('SELECT rowid, ts, build, test, tag, args, log FROM stats').fetchall():
