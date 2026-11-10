@@ -13025,7 +13025,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
     double ssd_miss = 0.0;
     if (ssd_rate > 0.0) { for (const auto & x : v) { ssd_miss += (1.0 - std::exp(n * x.l1p)) * x.sm / (ssd_rate * 1e3); } }
-    if (cpu_known) { cand(PP_DEC, up + chunk_at(n) + ssd_miss); }
+    // its calculated time (uploads and CPU side by side, the chunks, the learned ratios), not its uploads alone: the uploads alone priced a 100-token GLM call at 4.8 s, the
+    // calculation said 1.6 s, it took 2.1 s, and the stream (3.3 s) won every such call (2026-11-10, two cards)
+    if (cpu_known) { cand(PP_DEC, de_at(n, de0) + ssd_miss); }
     // a prediction of 2^i x the picks uploads what the call's tokens rank that high (the same SSD rule as Ts), not the whole layer: the stream's upload at a
     // long prompt where every expert is touched, a fraction at a short one. x PP_K_LATE: what the forced sweep shows it pays beyond that (late fixes, the ranking nodes).
     // Was the stream's upload x (1 - 2^i x picks / experts), upside down: k x32 cost nothing, the planner tried it first (rows 2026-11-08: 57 k x32 picks against 5 k x1).
