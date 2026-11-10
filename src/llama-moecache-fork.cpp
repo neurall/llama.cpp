@@ -12608,7 +12608,7 @@ static bool cpu_gpu_shape_on() {
 }
 
 extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t dev, double gbs); }   // ggml-backend.cpp (declared there, no shared header)
-// --moe ring=1 (ring-layers=N, default 0 = the whole pool, wraps from pass to pass, stops only at a block the running layer still holds): the experts of a prompt call read layer after layer ahead into RAM pool blocks (ggml_rampool_ring_plan_fork)
+// --moe ring=1 (ring-layers=N, default 2; 0 = the whole pool): the experts of a prompt call read layer after layer ahead into RAM pool blocks (ggml_rampool_ring_plan_fork)
 // while the uploads take them, the call's passes one after another, so the ring wraps from the last layer to the next pass's first and stops only at the layer whose
 // uploads still hold its oldest block. A block goes back once its copy to the card is done; the resident (hot) blocks stay for decode. User 2026-11-10: "rampool must become
 // nonstop loaded ring buffer in ssd stream mode"; k31 995 tokens before it: 351 GB read one run at a time at 4.35 GB/s, 80.8 s of a 90 s pass.
@@ -12621,7 +12621,7 @@ static bool g_ring_call = false;
 static void ring_begin(uint32_t n_tokens, uint32_t ub) {
     static const char * on = moe_opt("ring");
     if (!on || on[0] == '0' || !g_cache || !g_cache->rp_on || !g_prompt_call.load(std::memory_order_relaxed) || n_tokens < 64 || ub == 0) { return; }
-    static const int layers = [] { const char * v = moe_opt("ring-layers"); return v ? atoi(v) : 0; }();
+    static const int layers = [] { const char * v = moe_opt("ring-layers"); return v ? atoi(v) : 2; }();
     std::vector<const void *> keys;
     for (const auto & ls : g_cache->layers) {
         if (!ls.pub.up_src || !ls.pub.gate_src || !ls.pub.down_src) { continue; }
