@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+k31ub-auto,k31,1,pf12k,32,,
+k31ub-max,k31,1,pf12k,32,"-b 131072 --moe dense-split=1,split-pass=2,ub-up=1",
+k31ub-call,k31,1,pf12k,32,-b 131072,
+k31ub-max2,k31,1,pf12k,32,"-b 131072 --moe dense-split=1,split-pass=2,ub-up=1",
+k31ub-auto2,k31,1,pf12k,32,,
+k31ub-call2,k31,1,pf12k,32,-b 131072,
