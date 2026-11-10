@@ -1,0 +1,25 @@
+run 25105 | touch7 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.21 t/s | prompt 585.6 t/s | 256 tokens | args: -np 1 --moe dense-split=one,one-range=1 | power 200+200 W | 2026-11-10 05:14:53
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, char c) {
+                return s.length() > 0 && s[0] == c && (s.length() == 1 || gbnf_escape_length(s, 0) == 0);
+            };
+            auto ends_with_unescaped = [&](const std::string & s, char c) {
+                return s.length() > 0 && s[s.length() - 1] == c && (s.length() == 1 || gbnf_escape_length(s, s.length() - 2) == 0);
+            };
+
+            auto is_unescaped = [&](const std::string & s, char c) {
+                return s.length() == 1 && s[0] == c;
+            };
+
+            auto is_char_range = [&](const std::string & s) {
+                if (s.length() == 1) {
+                    return true;
+                }
+                if (s.length() > 1 && s[0] == '\\' && gbnf_escape

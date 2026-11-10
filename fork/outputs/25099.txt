@@ -1,0 +1,130 @@
+run 25099 | oneexe | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 23.96 t/s | prompt 430.7 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-10 05:02:56
+
+<think>We need answer complete fixed version of source file. Need identify bugs. We need output every line from first to last, fixed, each change marked by comment. Source includes two files concatenated? It says file common/json-schema-to-grammar.cpp then includes // file: common/arg.cpp. Need return complete fixed version of following source file: every line from first to last. Likely need fix bugs in entire provided source. Need inspect for bugs. Need produce full code with comments marking changes. Need not summarize. Need include all lines. Need determine intended bugs. This is likely from llama.cpp code. Need compare to actual upstream? We need fix bugs in source. Need identify errors.
+
+Let's parse. First file json-schema-to-grammar.cpp. Potential bugs:
+- build_repetition separator logic? Need check.
+- build_min_max_int has issues.
+- PRIMITIVE_RULES uuid content has escaped quotes weird: {"uuid", {"\"\\\"\" [0-9a-fA-F]{8} ... \"\\\"\"", {}}}. In GBNF, string literal for quote should be "\""? Let's inspect. In actual llama.cpp json-schema-to-grammar.cpp. I recall code. Need compare.
+
+Let's search memory. llama.cpp common/json-schema-to-grammar.cpp. There is function build_repetition. Actual code:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+Looks okay? For min_items=0 max=1 separator: result = item_rule + " " + build_repetition("(sep item)", 0, 0) = item_rule + " " + "" = item_rule + " " trailing space? Then result = "(item )?" maybe bug. Actual upstream maybe handles max_items==1? Let's check. If separator and min=0 max=1, should item_rule? The code returns item_rule + " " + build_repetition(...,0,0) = item_rule + " " then wraps "(item )?" -> matches item with trailing space? Hmm. Maybe actual code has if (max_items == 1) return item_rule;? Need inspect.
+
+Let's recall actual llama.cpp code from memory. I have seen json-schema-to-grammar.cpp. build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+Maybe actual. But for min=0 max=1 with separator, result = item_rule + " " + build_repetition("(sep item)",0,0) = item_rule + " " + "" = item_rule + " "; then "(item )?" includes trailing space. Is that intended? For array with min_items=0 max_items=1, grammar should `"[" space ( item )? space "]"`? Actually build_repetition called with separator "\",\" space". If max=1, should item_rule only, no separator. The code returns `(item_rule )?` with trailing space inside optional. That would allow item followed by space? But then outer adds space before "]"; could be wrong. Maybe actual code has special case `if (max_items == 1) return item_rule;`? Let's search memory. I recall from llama.cpp:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+Maybe no bug? Let's test min=0 max=1 separator: result = item_rule + " " + build_repetition("(sep item)",0,0). build_repetition max=0 returns "". result = item_rule + " ". Then min=0 wraps `(item_rule )?`. This optional includes trailing space. But outer array rule: `"[" space ` + repetition + ` space "]"`. If repetition = `(item )?`, then grammar: `"[" space (item )? space "]"`. For empty array: space then optional absent then space -> two spaces? Actually `space` rule matches optional whitespace? SPACE_RULE = `| " " | "\n"{1,2} [ \t]{0,20}`. It can match empty? It starts with `|`? In GBNF, `|` at beginning? SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}" maybe means empty alternative? Actually rule content `| " " | ...` starts with `|` which is invalid? Wait GBNF alternation syntax: `|` at beginning? In llama grammar, SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"? I recall actual SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}" maybe means empty alternative? In GBNF, `|` can be at start? Hmm.
+
+Maybe bug in SPACE_RULE: should be `"| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"`? Actually in llama.cpp, SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"? Let's recall. In grammar, `space ::= | " " | "\n"{1,2} [ \t]{0,20}`. The leading `|` means empty alternative? GBNF supports alternation with empty? Maybe yes.
+
+Need identify all bugs. The prompt likely from a benchmark where source has injected bugs. Need fix them. We need compare to actual upstream. The source includes two files: json-schema-to-grammar.cpp and arg.cpp. The arg.cpp is truncated at end: `static bool spec_types_is_default(const common_params & params) {` and then file ends. The prompt says complete fixed version of following source file: every line from first to last. But source ends mid-function. Maybe we need include as is? It says complete fixed version of following source file. The provided source includes incomplete arg.cpp? It ends at `static bool spec_types_is_default(const common_params & params) {` with no closing. That is a bug? We need fix? But cannot invent rest? Maybe the source file is intentionally truncated? The instruction says every line from first to last. We must return complete fixed version of the source file as given. If it ends mid-function, we need maybe close it? But "complete fixed version" implies fix bugs, not complete missing code? Hmm.
+
+Maybe the source is from a code repair task where bugs are inserted. Need output entire file with fixes. The file includes two concatenated files? It says `// file: common/json-schema-to-grammar.cpp` then later `// file: common/arg.cpp`. It might be a combined source file with two files. The last line is incomplete. Could be because the prompt truncated? But we must return complete fixed version of following source file: every line from first to last. We should include all lines as provided, fixing bugs. If last line incomplete, maybe we need add closing brace? But that would be adding lines not in original. The instruction says every line from first to last, with every bug fixed. If a function is incomplete, that's a bug; we can add closing brace and maybe return? But we don't know body. Could be the source file actually ends there because it's a snippet? The prompt says "source file" singular but includes two file markers. Maybe they concatenated two files and the second is truncated due to prompt? We need handle.
+
+Let's inspect arg.cpp for bugs. It includes many functions. Need compare to actual llama.cpp common/arg.cpp. I can recall some. The provided code likely has injected bugs. Need find them.
+
+Let's list potential bugs in arg.cpp:
+- `common_arg::has_value_from_env() const` returns `env != nullptr && std::getenv(env);` This is bool conversion of char* okay. But missing `!= nullptr`? It returns pointer converted to bool. Fine.
+- `common_arg::to_string()` uses `(&line == &help_lines.front())` comparing addresses of loop variable reference to front. This is bug: `&line` is address of reference variable? In range-for, `const auto & line` is reference to element; `&line` equals address of element. `&help_lines.front()` address of first element. So works? Actually `line` is reference to element, `&line` is address of element. So okay. But if help_lines empty, `&help_lines.front()` UB. But help_lines may be empty if help empty? Could be. Actual code uses `line == help_lines.front()`? Let's recall. In llama.cpp, `for (const auto & line : help_lines) { ss << (&line == &help_lines.front() ? "" : leading_spaces) << line << "\n"; }` I think actual code uses `&line == &help_lines.front()`? Maybe yes.
+- `parse_tensor_buffer_overrides`: static std::list<std::string> buft_overrides; push_back tensor_name; overrides.push_back({buft_overrides.back().c_str(), ...}); This stores pointer to string in list. But list reallocation? std::list nodes stable, so c_str pointer remains valid as long as string not modified. But static list accumulates across calls; okay. However `buft_overrides.back().c_str()` pointer to string in list; list push_back may not invalidate existing. Fine.
+- `get_default_local_path`: `fs_get_cache_file(string_split<std::string>(f, '/').back());` If f empty? Maybe.
+- `spec_types_is_default` incomplete.
+
+Need know actual upstream arg.cpp. Let's search memory. I have seen llama.cpp common/arg.cpp. It has functions:
+static bool spec_types_is_default(const common_params & params) {
+    return params.speculative.types.empty() || params.speculative.types == std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT};
+}
+Maybe. But not enough.
+
+Maybe the task is from "fix bugs in source file" where bugs are marked? We need identify all. Could be many subtle bugs. Need compare to actual upstream. Let's try reconstruct actual llama.cpp files from memory or infer.
+
+First file json-schema-to-grammar.cpp. Let's compare to actual upstream. I can recall from llama.cpp source. There is a known bug in `_visit_pattern` catch: `return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));` This is wrong: `_add_primitive` returns rule name, then `_add_rule(name, rule_name)` creates rule `name ::= string`? Actually `_add_primitive("string", ...)` returns name "string" (or escaped). Then `_add_rule(name, "string")` sets rule to reference to string. That's okay? But if name is "root", `_add_rule("root", "string")` means root ::= string. But `_add_primitive` already added string. Fine. However actual code might be `return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));` yes.
+
+Potential bug: `_visit_pattern` catch unsupported: `_rules = std::move(rules_snapshot);` But `rules_snapshot` is a copy of `_rules` before try. If `_pattern_to_rule` added rules, revert. Good. But `_add_rule(name, _add_primitive("string", ...))` after revert: `_add_primitive` may add string rule. Then `_add_rule(name, "string")`. Good.
+
+Potential bug: `_pattern_to_rule` uses `std::string sub_pattern = pattern.substr(1, pattern.length() - 2);` If pattern length <2 handled. Good.
+- `to_rule` lambda: `return is_literal ? "\"" + s + "\"" : s;` But if literal contains escaped characters? It may already have escapes. For literal from regex, they build literal with `\\\"` for quote, and escapes. Then to_rule wraps in quotes. But if literal contains `\"`? It will be `"\\\""`? Need check. In `_pattern_to_rule`, when c == '"' they do `literal += "\\\"";` (backslash quote). Then to_rule wraps: `"\"" + literal + "\""` -> `"\\\""`? Actually literal = `\"` (two chars backslash quote). Wrapping gives `"\"`? Let's compute: `"\"" + "\\\"" + "\""` = `"\\\""`? The string is quote, backslash, quote, quote? Hmm. In GBNF, to represent a literal quote inside string, need `\"`? The rule content for string literal is `"..."`; inside, quote escaped as `\"`. So literal should be `\"` and wrapping yields `"\"`? Wait if literal = `\"` (backslash + quote), then `"\"" + literal + "\""` = `"` + `\` + `"` + `"` = `"\"`? That is quote, backslash, quote, quote? Actually characters: first `"`, then `\`, then `"`, then `"`. That is `"\"`? Let's write: `"` + `\` + `"` + `"` = `"\"`? The last two quotes: one is the escaped quote, one is closing quote. So string content is `"\"`? In GBNF, a string literal starts with `"`, then `\"` represents quote, then closing `"`. So `"\"` is correct: characters: opening quote, backslash, quote, closing quote. Yes.
+
+- In `_pattern_to_rule`, for `c == '['`, they collect square_brackets including escapes. But they don't escape `]`? They stop at `]`. If character class contains `]` escaped, handled. If contains `-`? They keep. Good.
+- For `c == '{'`, they parse curly brackets. They use `string_split(curly_brackets.substr(1, curly_brackets.length() - 2), ",");` If curly_brackets is `{2,3}`, substr(1, len-2) = "2,3". Good. If `{2}` -> "2". If `{,3}` -> ",3" split gives ["", "3"]? string_split may drop empty? Need check. They handle empty. If `{2,}` -> ["2",""]? Good.
+- They use `std::stoi` but catch `std::logic_error`; `std::stoi` throws `std::invalid_argument` and `std::out_of_range`, both derive from `std::logic_error`? `std::invalid_argument` derives from `std::logic_error`; `std::out_of_range` derives from `std::logic_error`. Yes.
+- They don't validate min_times <= max_times. If min > max, build_repetition may produce invalid? Could be bug. Actual code maybe checks? Let's recall. In actual llama.cpp, they have:
+if (min_times > max_times) {
+    throw

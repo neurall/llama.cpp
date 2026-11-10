@@ -1,0 +1,122 @@
+run 25098 | oneexe | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 25.32 t/s | prompt 394.4 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-10 04:58:31
+
+<think>We need answer complete fixed version of source file. Need identify bugs. We have two files concatenated? User says source file common/json-schema-to-grammar.cpp but includes arg.cpp too? They ask complete fixed version of following source file every line first to last. The provided text includes json-schema-to-grammar.cpp then // file: common/arg.cpp and partial arg.cpp ending at "static bool spec_types_is_default(const common_params & params) {". Need return complete fixed version of entire provided source? It seems they pasted two files, second truncated. Need fix bugs in both? Need infer expected. We need produce full fixed version with comments marking changes. Need not summarize. Need include all lines. Need fix bugs. Need analyze code for bugs.
+
+We need determine likely task from benchmark: "Return complete fixed version of following source file: every line ... with every bug fixed and each change marked by a comment." They provide source file maybe intentionally has bugs. Need fix all bugs. Need output entire file. Need include comments for changes. Need not skip unchanged parts. Need maybe only fix json-schema-to-grammar.cpp? But they included arg.cpp too. The first line says // file: common/json-schema-to-grammar.cpp. Then after code, // file: common/arg.cpp. Could be two files concatenated accidentally? The instruction says source file singular. Maybe they expect fix both? Need decide.
+
+Let's inspect code for bugs. Need identify all bugs in json-schema-to-grammar.cpp and arg.cpp partial. We need produce fixed version. Need mark changes by comments. Need ensure compiles.
+
+Let's analyze json-schema-to-grammar.cpp thoroughly.
+
+Includes:
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+...
+using json = common_json;
+
+Potential missing includes: <functional>, <stdexcept>, <cstdio>? It uses std::function, std::runtime_error, std::invalid_argument, fprintf. common.h may include. But fixed version should add <functional>, <stdexcept>, <cstdio>? Need mark.
+
+build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Bug? For separator repetition, if min_items=0 and max_items=1? It returns item_rule + "?" earlier, but with separator? For array min_items=0 max_items=1, should be optional item, no separator. That's okay. For min_items=0 max_items=0 returns "". For separator and min_items=0, result = item_rule + " " + build_repetition("(sep item)", 0, max-1). If max_items=1, earlier returns item_rule+"?" before separator branch, so no separator. If max_items>1, result = item_rule + " " + repetition of (sep item) min 0 max max-1. Then wraps optional. This grammar for zero items: optional of item followed by zero or more sep item. But if min_items=0, max_items=2, result = (item_rule + " " + build_repetition("(sep item)",0,1))? = (item_rule + " " + "(sep item)?")? = (item_rule (sep item)?)? This allows item alone or item sep item. Good. But if min_items=0 and max_items=1, returns item_rule? no separator. Good.
+
+Potential bug: build_repetition with separator and min_items=1, max_items=1: earlier min_items==0? no. separator branch: result = item_rule + " " + build_repetition("(sep item)", 0, 0) = item_rule + " " + "" = item_rule + " ". Trailing space. Should return item_rule. Bug. Need fix. For min_items=1 max_items=1 with separator, should just item_rule. The code returns item_rule + " " because build_repetition max_items-1=0 returns "". Need handle. Also for min_items=1 max_items=2: result = item_rule + " " + build_repetition("(sep item)",0,1) = item_rule + " " + "(sep item)?" = item_rule (sep item)?; okay. For min_items=1 max_items=1 should item_rule. Need fix.
+
+Also for separator and min_items=0 max_items=1 earlier returns item_rule+"?" but if separator? okay.
+
+Potential bug: build_repetition with separator and min_items=0 max_items=0 returns "" earlier. Good.
+
+build_min_max_int:
+Need inspect for bugs. It builds grammar for integer range. There may be logic errors.
+
+Function signature int64_t min_value, max_value, decimals_left=16, top_level=true. It uses std::function, string_repeat, string_view. Need include <functional>, <string_view>? common.h maybe.
+
+digit_range lambda: out << "["; if from==to out << from; else out << from << "-" << to; out << "]"; okay.
+
+more_digits: out << "[0-9]"; if min_digits == max_digits && min_digits == 1 return; out << "{"; out << min_digits; if max_digits != min_digits { out << ","; if max_digits != max return max; } out << "}"; Bug: if min_digits == max_digits and min_digits != 1, it outputs "[0-9]{n}"? It outputs "{n}" because max_digits == min_digits, no comma. That's valid GBNF? In GBNF repetition syntax `{n}` maybe valid? In llama grammar, `{n}` means exactly n? I think yes. But if min_digits=0, max_digits=0? It outputs "[0-9]{0}"? Maybe okay. But if min_digits=0 and max_digits=1, outputs "[0-9]{0,1}"? It outputs min=0, max=1 != min, comma, max=1 -> "{0,1}". Good. If min_digits=0 max_digits=0, outputs "[0-9]{0}"? But more_digits(0,0) maybe should return empty? Let's see usage. In build_min_max_int, more_digits(0, less_decimals) for min_value==0 top_level: out << "[0] | [1-9] " << more_digits(0, less_decimals). If less_decimals maybe 15. more_digits(0,15) outputs "[0-9]{0,15}" which allows zero digits after first digit? Actually after [1-9], more_digits(0,15) allows 0 to 15 additional digits. Good. If less_decimals=1, more_digits(0,1) outputs "[0-9]{0,1}". Good. If more_digits(0,0) outputs "[0-9]{0}"? That would be zero digits, but maybe should be empty. In some calls more_digits(0, less_decimals) where less_decimals = max(decimals_left-1,1) so at least 1. more_digits(0, decimals_left-1) with decimals_left maybe 1 -> 0? In has_min min_value<0: more_digits(0, decimals_left - 1). If decimals_left=1, more_digits(0,0) outputs "[0-9]{0}" which is weird but maybe valid? It should be empty. Need fix more_digits to return empty if max_digits==0? Let's analyze.
+
+uniform_range lambda:
+std::function<void(const std::string_view &, const std::string_view &)> uniform_range = [&](from,to) {
+    size_t i=0;
+    while (i < from.length() && i < to.length() && from[i]==to[i]) i++;
+    if (i>0) out << "\"" << from.substr(0,i) << "\"";
+    if (i < from.length() && i < to.length()) {
+        if (i>0) out << " ";
+        auto sub_len = from.length() - i - 1;
+        if (sub_len > 0) {
+            auto from_sub = from.substr(i+1);
+            auto to_sub = to.substr(i+1);
+            auto sub_zeros = string_repeat("0", sub_len);
+            auto sub_nines = string_repeat("9", sub_len);
+
+            auto to_reached = false;
+            out << "(";
+            if (from_sub == sub_zeros) {
+                digit_range(from[i], to[i] - 1);
+                out << " ";
+                more_digits(sub_len, sub_len);
+            } else {
+                out << "[" << from[i] << "] ";
+                out << "(";
+                uniform_range(from_sub, sub_nines);
+                out << ")";
+                if (from[i] < to[i] - 1) {
+                    out << " | ";
+                    if (to_sub == sub_nines) {
+                        digit_range(from[i] + 1, to[i]);
+                        to_reached = true;
+                    } else {
+                        digit_range(from[i] + 1, to[i] - 1);
+                    }
+                    out << " ";
+                    more_digits(sub_len, sub_len);
+                }
+            }
+            if (!to_reached) {
+                out << " | ";
+                digit_range(to[i], to[i]);
+                out << " ";
+                uniform_range(sub_zeros, to_sub);
+            }
+            out << ")";
+        } else {
+            out << "[" << from[i] << "-" << to[i] << "]";
+        }
+    }
+};
+
+Potential bug: In uniform_range, when from_sub == sub_zeros, it does digit_range(from[i], to[i] - 1); out << " "; more_digits(sub_len, sub_len); This handles from digit less than to digit with lower suffix all zeros. But if from[i] == to[i]? Then digit_range(from[i], to[i]-1) invalid if to[i]-1 < from[i]. But condition from_sub == sub_zeros and i < lengths. If from[i] == to[i], then from_sub == sub_zeros and to_sub? Since from and to share prefix up to i, and from_sub zeros. If from[i]==to[i], then to_sub must be >= from_sub? Actually to_sub could be zeros too if to == from? But i is first differing char, so from[i] != to[i]. So from[i] < to[i]. Thus to[i]-1 >= from[i]. Good.
+
+But if from_sub == sub_zeros and to[i] - 1 == from[i]? digit_range(from[i], from[i]) okay. Then more_digits(sub_len, sub_len) exactly sub_len digits. This represents from[i] followed by any sub_len digits? Wait from_sub == zeros, to_sub maybe not zeros. The branch: digit_range(from[i], to[i]-1) and more_digits(sub_len, sub_len). This allows from[i] with any sub_len digits, but should only allow from[i] followed by sub_len digits from 0 to 9? Actually if from_sub == zeros, then numbers with first digit from[i] and suffix >= zeros and < to[i]?? Let's test from=100, to=199. i=0? from[0]=1, to[0]=1 equal, i=1? from[1]=0, to[1]=9 differ. sub_len = 3-1-1=1. from_sub = from.substr(2)="0"; to_sub="9"; sub_zeros="0"; sub_nines="9". from_sub == sub_zeros. digit_range(from[1]=0, to[1]-1=8) -> [0-8]; more_digits(1,1) -> [0-9]{1}. This allows 10-89? Wait from=100 to=199. Prefix "1". Then [0-8][0-9] gives 100-189. Then !to_reached -> | [9] uniform_range("0","9") -> [9][0-9] gives 190-199. Combined 100-199. Good. But branch [0-8][0-9] includes 100-189. Good.
+
+If from_sub != sub_zeros: e.g. from=150, to=199. i=1? from[1]=5, to[1]=9 differ. sub_len=1. from_sub="0", to_sub="9". from_sub == sub_zeros actually yes. So branch. If from=151, to=199: i=1? from[1]=5, to[1]=9 differ. sub_len=1. from_sub="1", to_sub="9". from_sub != zeros. out << "[5] " << "(" uniform_range("1","9") ")" -> [5] ( [1-9] )? Wait uniform_range("1","9") with i=0, from[0]=1,to[0]=9 differ, sub_len=0 -> [1-9]. So [5][1-9] gives 151-159? Actually [5] followed by [1-9] gives 51? Wait prefix "1" already output? Let's trace: from=151, to=199. i=1 (prefix "1"). sub_len = 3-1-1=1. from_sub = from.substr(2)="1"; to_sub="9". out << "[" << from[i] << "] " -> [5]. Then uniform_range("1","9") -> [1-9]. So [5][1-9] gives 51? But prefix "1" was output before: out << "\"1\"" at i>0. So "1" [5] [1-9] = 151-159. Good. Then if from[i] < to[i]-1 (5<8) -> out << " | "; to_sub == sub_nines? to_sub="9" == sub_nines "9" yes -> digit_range(from[i]+1=6, to[i]=9) -> [6-9]; to_reached=true; out << " " << more_digits(1,1) -> [0-9]{1}. This gives 160-199. Combined 151-199. Good. If to_sub != sub_nines, e.g. from=151, to=189. i=1, from[1]=5,to[1]=8, sub_len=1, from_sub="1", to_sub="9"? Wait to=189, to_sub=9? Actually to.substr(2)="9"? 189 digits: 1 8 9, i=1, sub_len=1, to_sub=to.substr(2)="9". sub_nines="9", so to_sub==sub_nines. Hmm. If to=185, to_sub="5". from=151,to=185. i=1, from[1]=5,to[1]=8, sub_len=1, from_sub="1", to_sub="5". from_sub != zeros. out [5] (uniform_range("1","5")) -> [5][1-5] = 151-155. from[i] < to[i]-1 (5<7) -> out | digit_range(6,7) -> [6-7]; out more_digits(1,1) -> [0-9]{1} gives 160-179. !to_reached -> out | digit_range(to[i]=8,8) -> [8]; uniform_range(sub_zeros="0", to_sub="5") -> [0-5] gives 180-185. Combined 151-185. Good.
+
+Potential bug: uniform_range when i == from.length() or i == to.length()? It only enters if i < both. If from is prefix of to? e.g. from="1", to="10". i=1? from.length=1, to.length=2. while i<1 and i<2 and from[0]==to[0] -> i=1. Then i < from.length() false, so no output after prefix. It outputs "\"1\"" only. But range 1 to 10 should include 1 and 10? Actually uniform_range used for min_s to max_s with same digit length? In build_min_max_int, min_s and max_s may have different lengths? They loop digits from min_digits to max_digits-1, then uniform_range(min_s, max_s) where min_s updated to "1" + zeros of digits, max_s length max_digits. At final, min_s length == max_digits? Let's see: min_digits initial length of min_value. For digits = min_digits; digits < max_digits; digits++: uniform_range(min_s, string_repeat("9", digits)); min_s = "1" + string_repeat("0", digits); out << " | "; After loop, min_s length = digits+1? If min_digits=1, max_digits=2: digits=1: uniform_range(min_s length1, "9" length1); min_s="1"+"0" length2. Then uniform_range(min_s length2, max_s length2). So same length. If min_digits=2, max_digits=3: digits=2: uniform_range(min_s length2, "99" length2); min_s="1"+"00" length3. Then uniform_range length3. So same length. Good. In has_min branch, uniform_range maybe called with from_sub and sub_nines same length. In has_max branch build_min_max_int(0,max) etc. So likely same length. But uniform_range could be called with from_sub

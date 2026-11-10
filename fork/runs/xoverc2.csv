@@ -1,13 +1,1 @@
 name,model,n,test,tokens,args,extra
-xo-glm-2048-r,glm,2,pf12k,64,"-b 8192 -ub 2048 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-glm-2048-s,glm,2,pf12k,64,"-b 8192 -ub 2048 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-glm-4096-r,glm,2,pf60k,64,"-b 8192 -ub 4096 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-glm-4096-s,glm,2,pf60k,64,"-b 8192 -ub 4096 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-glm-7232-r,glm,2,pf60k,64,"-b 8192 -ub 7232 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-glm-7232-s,glm,2,pf60k,64,"-b 8192 -ub 7232 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-qni-2048-r,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 2048 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-qni-2048-s,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 2048 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-qni-4096-r,qn_iq4xs,2,pf60k,64,"-b 8192 -ub 4096 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-qni-4096-s,qn_iq4xs,2,pf60k,64,"-b 8192 -ub 4096 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-qni-16384-r,qn_iq4xs,2,pf60k,64,"-b 16384 -ub 16384 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
-xo-qni-16384-s,qn_iq4xs,2,pf60k,64,"-b 16384 -ub 16384 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1

@@ -7266,3 +7266,8 @@ touch7-qni4-pf12k4k,2026-11-10 04:23:39,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_X
 oneexe-glm30-pf12k4k,2026-11-10 04:28:31,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds oneexe variants v test pf12k n=2,,
 oneexe-glm35-pf12k4k,2026-11-10 04:38:09,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds oneexe variants v test pf12k n=2,,
 oneexe-mimo-pf12k4k,2026-11-10 04:51:07,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds oneexe variants v test pf12k n=2,,
+oneexe-ds-pf12k4k,2026-11-10 04:58:29,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds oneexe variants v test pf12k n=2,,
+oneexe-q35-pf12k4k,2026-11-10 05:06:47,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds oneexe variants v test pf12k n=2,,
+oneexe-qni4-pf12k4k,2026-11-10 05:08:51,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds oneexe variants v test pf12k n=2,,
+touch7-or-glm-4k-pf4k,2026-11-10 05:13:38,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch7 variants v test pf4k n=2,,
+touch7-sd-glm-scifi-dec-scific,2026-11-10 05:15:40,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch7 variants v test scific n=1,,

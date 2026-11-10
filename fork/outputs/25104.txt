@@ -1,0 +1,35 @@
+run 25104 | touch7 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.36 t/s | prompt 534.5 t/s | 256 tokens | args: -np 1 --moe dense-split=one,one-range=1 | power 200+200 W | 2026-11-10 05:13:44
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, char c) {
+                if (s.length() < 2 || s[0] != '\\') {
+                    return s.length() > 0 && s[0] == c;
+                }
+                return false;
+            };
+            auto starts_with = [&](const std::string & s, const std::string & prefix) {
+                return s.compare(0, prefix.length(), prefix) == 0;
+            };
+
+            auto pop_escaped = [&](char c) {
+                if (i < length && sub_pattern[i] == '\\' && i + 1 < length && sub_pattern[i + 1] == c) {
+                    i += 2;
+                    return true;
+                }
+                return false;
+            };
+            auto pop_char = [&](char c) {
+                if (i < length && sub_pattern[i] == c) {
+                    i++;
+                    return true;
+                }
+                return false;
+            };
+
+            auto pop_repetitions = [&](int min_reps, int
