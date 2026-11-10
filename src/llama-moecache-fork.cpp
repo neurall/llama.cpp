@@ -13060,7 +13060,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // cold pick - no logged class on Qwen3.6/3.8, GLM, MiMo has a chain win there (-97% to -308%), DeepSeek only below 3k. There they are a trial
         // against an arm known here, and a chain measured here (known) competes on its mean. (a448602c58 had dropped this as a ballpark; the
         // ballpark was the calculated dec_max, this is the measured one.)
+        static const bool pp_switch_r1 = [] { const char * e = moe_opt("pp-switch"); return !e || atoi(e) != 0; }();
         for (const int p : { PP_CHAIN, PP_DEC }) {
+            // the router path has no CPU side to run away with (the 1170 s below was the decode chain): with the switch on, time per token decides it at any size
+            // (Qwen3.8-Flash-Next IQ4_XS, 512-token passes: router 2.9-3.0 ms per token against the stream's 3.6-3.8, never tried past 256 under this rule)
+            if (p == PP_CHAIN && pp_switch_r1) { continue; }
             // (g_mb_auto = experts / picks is 32 on these models, and the chains win well past it. Forced sweep 2026-10-31, t/s, cache / stream: MiMo 100 tokens 59/28, 200 64/55, 300 62/82; GLM 3.0 56/27, 62/54, 60/80;
             // DeepSeek 200 53/13, 500 52/27, 1000 57/57. So up to the calculated crossover dec_max, at most 256 tokens: dec_max alone says thousands before a stream pass measured the compute, and a chain loses there; a chain that ran competes on its mean at any size)
             // shortcut: 256 is the sweep's crossover on MiMo and GLM, not computed (DeepSeek's is near 1000); use dec_max alone once it is built from a measured compute and link rate
