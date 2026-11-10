@@ -12893,6 +12893,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     int n_expert = 0;
     bool has_slower = false;
     bool cpu_known = false;   // the CPU's read rate is measured: without it the decode chain's time cannot be calculated, and no prompt call takes it
+    bool chain_fits = true;   // every layer has the blocks a prompt chain pass of this size takes (the graph's own check, llama_moe_cache_pp_chain_fork)
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
         const double r0 = mc->gbs_link[0] * 1e3;   // bytes / us
@@ -12905,6 +12906,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             }
             n_expert = std::max(n_expert, (int) l.expert_slot.size());
             has_slower = has_slower || l.link > 0;
+            // a chain the graph then refuses falls to the decode chain's CPU side: DeepSeek, 62-token call, chain calculated 2.1 s, ran 18.5 s that way (2026-11-10)
+            if (chain_fits && (!mc->link_be[l.link] || pp_blocks(mc, const_cast<layer_state &>(l)) < std::min<int64_t>((int64_t) l.expert_slot.size(), (int64_t) std::ceil(n) * (int64_t) mc->n_expert_used))) { chain_fits = false; }
             const double S  = (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
             A += (double) mc->n_expert_used * S;
             const double rl = mc->gbs_link[l.link] * 1e3;
@@ -13024,7 +13027,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, Um); }
     // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
     // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed)
-    if (!busy && (uint32_t) n < g_pp_chain_refused) { cand(PP_CHAIN, up); }
+    if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, up); }
     // the decode chain's misses also wait for the SSD where their tensors are still mapped (planner-rules.md C1/R3: rp=1 cold 2k took 43-86 s against
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
     double ssd_miss = 0.0;
