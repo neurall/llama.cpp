@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <mutex>
 #include <numeric>
+#include <thread>
 #include <vector>
 
 static inline size_t poolx_up(size_t x, size_t a) { return (x + a - 1) / a * a; }
@@ -145,7 +146,7 @@ template <class P> static const char * poolx_gate_kind(const P & ap, size_t lo, 
 // Fixed tables, no heap at run time: at most one entry per upload worker plus the decode thread (use), one per mover (moving).
 template <class K> struct poolx_ranges {
     static constexpr int USE_MAX = 256, MOVE_MAX = 8;
-    struct ent { K ap; size_t lo, hi; bool w; int64_t t0 = 0; };   // t0: when it entered (a DMA's start; it leaves when the copy is done)
+    struct ent { K ap; size_t lo, hi; bool w; int64_t t0 = 0; std::thread::id tid; };   // t0: when it entered (a DMA's start; it leaves when the copy is done); tid: who entered
     struct tab { ent e[USE_MAX]; int n = 0; void drop(int i) { e[i] = e[--n]; } };
     std::mutex mu; std::condition_variable cv;
     tab use, moving;
@@ -203,13 +204,15 @@ template <class K> struct poolx_ranges {
     int writers(K ap, size_t lo, size_t hi, ent * out, int max) {
         std::lock_guard<std::mutex> lk(mu);
         int n = 0;
-        for (int i = 0; i < use.n; ++i) { if (use.e[i].w && ovl(use.e[i], ap, lo, hi)) { if (n < max) { out[n] = use.e[i]; } n++; } }
+        const std::thread::id me = std::this_thread::get_id();   // the caller's own entry is the copy it is making now (one thread, one stream: ordered), not a race
+        for (int i = 0; i < use.n; ++i) { if (use.e[i].w && use.e[i].tid != me && ovl(use.e[i], ap, lo, hi)) { if (n < max) { out[n] = use.e[i]; } n++; } }
         return n;
     }
 private:
     static void add(tab & t, const ent & u, int cap) {
         if (t.n >= cap) { std::abort(); }   // "pool range table full"
         t.e[t.n] = u;
+        t.e[t.n].tid = std::this_thread::get_id();
         t.e[t.n++].t0 = now_us();
     }
 };
