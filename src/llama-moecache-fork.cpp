@@ -12608,7 +12608,41 @@ static bool cpu_gpu_shape_on() {
 }
 
 extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t dev, double gbs); }   // ggml-backend.cpp (declared there, no shared header)
+// --moe ring=1 (ring-layers=N, default 2; 0 = the whole pool): the experts of a prompt call read layer after layer ahead into RAM pool blocks (ggml_rampool_ring_plan_fork)
+// while the uploads take them, the call's passes one after another, so the ring wraps from the last layer to the next pass's first and stops only at the layer whose
+// uploads still hold its oldest block. A block goes back once its copy to the card is done; the resident (hot) blocks stay for decode. User 2026-11-10: "rampool must become
+// nonstop loaded ring buffer in ssd stream mode"; k31 995 tokens before it: 351 GB read one run at a time at 4.35 GB/s, 80.8 s of a 90 s pass.
+extern "C" {
+    GGML_API void ggml_rampool_ring_plan_fork(const void * const * keys, int nk, int keys_per_layer, int n_passes, int ring_layers);
+    GGML_API void ggml_rampool_ring_end_fork(uint64_t * out6);
+    GGML_API void ggml_backend_ring_flush_fork(void);   // ggml-backend.cpp
+}
+static bool g_ring_call = false;
+static void ring_begin(uint32_t n_tokens, uint32_t ub) {
+    static const char * on = moe_opt("ring");
+    if (!on || on[0] == '0' || !g_cache || !g_cache->rp_on || !g_prompt_call.load(std::memory_order_relaxed) || n_tokens < 64 || ub == 0) { return; }
+    static const int layers = [] { const char * v = moe_opt("ring-layers"); return v ? atoi(v) : 2; }();
+    std::vector<const void *> keys;
+    for (const auto & ls : g_cache->layers) {
+        if (!ls.pub.up_src || !ls.pub.gate_src || !ls.pub.down_src) { continue; }
+        keys.push_back(ls.pub.gate_src); keys.push_back(ls.pub.up_src); keys.push_back(ls.pub.down_src);
+    }
+    if (keys.empty()) { return; }
+    ggml_rampool_ring_plan_fork(keys.data(), (int) keys.size(), 3, (int) ((n_tokens + ub - 1) / ub), layers);
+    g_ring_call = true;
+}
+static void ring_end() {
+    if (!g_ring_call) { return; }
+    g_ring_call = false;
+    ggml_backend_ring_flush_fork();
+    uint64_t st[6];
+    ggml_rampool_ring_end_fork(st);
+    LLAMA_LOG_WARN("moe-cache: prompt ring: %llu reads ahead, %llu taken by uploads, uploads waited %.1f s for reads, the ring stopped %llu times at a held block, "
+                   "took %llu blocks from the resident set, %llu elements out of the pool at their upload (read from the file)\n",
+                   (unsigned long long) st[0], (unsigned long long) st[1], st[2] / 1e6, (unsigned long long) st[3], (unsigned long long) st[4], (unsigned long long) st[5]);
+}
 void llama_moe_cache_prompt_call_fork(bool on) {
+    if (!on) { ring_end(); }
     g_prompt_call.store(on, std::memory_order_relaxed);
     g_pp_dec = false;
     if (on) { g_pp_short = false; } else { ggml_backend_pred_set_fork(0.0); }
@@ -13975,7 +14009,9 @@ double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, doubl
 bool llama_moe_cache_pp_planned_fork() { std::lock_guard<std::mutex> lk(g_pp_mu); for (const auto & f : g_pp_phi) { if (f[1] > 0.0) { return true; } } return false; }
 // the pass size the call runs with, once the context has decided it (planner-rules.md C19/C21: pp_decide runs before the pass planner and its
 // features were for min(call, limit)); the candidates keep their pick and draws, the features follow the pass that runs
+static void ring_begin(uint32_t n_tokens, uint32_t ub);
 void llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub) {
+    ring_begin(n_tokens, ub);   // once per call, with the pass size that runs
     std::lock_guard<std::mutex> lk(g_pp_mu);
     const double n = (double) std::min(n_tokens, std::max<uint32_t>(1, ub));
     for (auto & f : g_pp_phi) {
