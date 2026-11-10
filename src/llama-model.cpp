@@ -2195,7 +2195,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
         // fork: DeepSeek V4.1's Engram and qwen4exp's PLE rows straight from the file; their graphs then gather from a compact table of the pass's rows (llama-rowread-fork.cpp)
         if ((arch == LLM_ARCH_DEEPSEEK41 || arch == LLM_ARCH_QWEN4EXP) && !ml.no_alloc) {   // not the memory-fit pass: its tensors are freed
-            const llama_tensor_weight & w = ml.require_weight(ggml_get_name(per_layer_tok_embd));
+            const auto & w = ml.require_weight(ggml_get_name(per_layer_tok_embd));   // the loader's nested weight type
             llama_rowread_add_fork(per_layer_tok_embd, ml.files.at(w.idx)->file_id(), w.offs);
         }
     }

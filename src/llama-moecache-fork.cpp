@@ -2142,6 +2142,8 @@ LLAMA_API void llama_moe_host_pending_fork(const void * base, bool pending) {
     g_hpend_gen.fetch_add(1, std::memory_order_release);
     g_hpend_n.store(g_hpend.size(), std::memory_order_release);
 }
+// defined below, outside the anonymous namespace (the adopt path reads the bytes past a slice through it): declared here so both name one function
+static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * ud);
 namespace {
 // mc->wmtx held: the layer's up/gate/down sources are read: no load reads, or each sits in a buffer marked read (never one only left unregistered)
 static bool layer_src_ready(moe_cache * mc, size_t li) {
@@ -3927,7 +3929,6 @@ static ggml_tensor expert_past_view(const ggml_tensor * dst, size_t off, size_t 
 // batch. Keep the ones this prompt uses more than what is cached: they are copied device-to-device
 // into a slot (no extra PCIe traffic) and published at the next step. Up to LLAMA_MOE_CACHE_ADOPT
 // (default 1.0) of a layer's slots per batch; only layers whose cache is on `dev`.
-static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n, void * dst, size_t cap, void * ud);
 
 bool moe_fill_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_dev_t dev,
                 void ** data, ggml_backend_buffer_t * buffer, void * ud) {
