@@ -4149,6 +4149,8 @@ static void moe_split_cb(ggml_backend_t backend, void * ud) {
 extern "C" {
     typedef const void * (*ggml_backend_moe_read_fn_t)(const ggml_tensor *, size_t, size_t, void *, size_t, void *);
     GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there too, no shared header)
+    GGML_API void ggml_backend_set_moe_read_threads_fork(int n);                // the probe's reader count, for the scattered file runs of a pool tensor
+    GGML_API void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset);  // pool bytes, host bytes, file bytes, file reads, read us, slot wait us
 }
 // The O_DIRECT read thread count from the machine, not a constant (user 2026-11-02: "8 t is nice on epyc but hardly on 3600"): 1 MiB blocks on n threads for 0.2 s each, n = 1, 2, 4, 8 and
 // 16 up to the hardware threads / 2; the smallest n within 7% of the best bandwidth wins, so a drive that one or two threads fill leaves the other cores to compute.
@@ -9332,6 +9334,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         }
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
         ggml_backend_set_moe_read_fn_fork(mc->rd_src.empty() ? nullptr : moe_read_fn, mc);
+        ggml_backend_set_moe_read_threads_fork(mc->rd_threads);
         ggml_set_moe_phase_callback(moe_phase_cb, mc);
         {
             const char * e = moe_opt("prefill-d2d");
@@ -12802,9 +12805,14 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             }
             const uint64_t pk = g_ppc_picked.exchange(0), pa = g_ppc_all.exchange(0), pm = g_ppc_miss.exchange(0);
             const std::string picks = pa ? format(", routers picked %.1f%% of the experts, %.1f%% of those uploaded", 100.0 * (double) pk / (double) pa, pk ? 100.0 * (double) pm / (double) pk : 0.0) : std::string();
-            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s, %.2f ms per token%s)%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us, (double) us / 1e3 / std::max(1u, n_tokens), picks.c_str(),
+            // where the stream's weight uploads came from and what the scheduler thread waited for (ggml_backend_sched_upload_weight): a pass bound by its file reads shows here
+            uint64_t ups[6] = { 0 };
+            ggml_backend_upload_stats_fork(ups, true);
+            const std::string upl = ups[0] + ups[1] + ups[2] == 0 ? std::string() : format("; weight uploads: RAM pool %.1f GB, host %.1f GB, file %.1f GB in %llu reads (%.2f GB/s while reading: %.0f ms of the scheduler thread, %.0f ms more waiting for a read chunk)",
+                    ups[0] / 1e9, ups[1] / 1e9, ups[2] / 1e9, (unsigned long long) ups[3], ups[4] ? (double) ups[2] / ((double) ups[4] * 1e3) : 0.0, ups[4] / 1e3, ups[5] / 1e3);
+            const std::string done = format("prompt call of %u tokens: %s took %.0f ms (%.0f t/s, %.2f ms per token%s)%s%s; %s", n_tokens, pp_path_name(path).c_str(), (double) us / 1e3, (double) n_tokens * 1e6 / (double) us, (double) us / 1e3 / std::max(1u, n_tokens), picks.c_str(),
                     (best > 0.0 ? format("; best known here %s %.0f ms, %.2f x%s", pp_path_name(b).c_str(), best / 1e3, took / best, took > 1.3 * best ? ", SLOW" : "") : std::string("; first of this size")).append(pr).c_str(),
-                    llama_moe_stats_io_fork(0).c_str());
+                    upl.c_str(), llama_moe_stats_io_fork(0).c_str());
             llama_moe_stats_log_fork("DON", done.c_str());
             { const double t1 = llama_moe_span_now_fork(); llama_moe_span_fork(format("prompt call: %s, %u tokens", pp_path_name(path).c_str(), n_tokens).c_str(), t1 - (double) us / 1e6, t1, 0, ""); }
         }
