@@ -1142,6 +1142,9 @@ static bool              g_pp_obs   = false;     // the observer is called by th
 static int64_t           g_pp_want  = 0;         // tokens x experts per token of the pass being built: the most blocks a layer of it can use
 static std::atomic<int64_t> g_pp_mb{0};          // this prompt call: the largest pass the prompt chain takes (llama_moe_cache_pp_decide_fork)
 static bool              g_pp_mix_graph = false; // the graph being built has layers on the prompt mix (llama_moe_cache_pp_mix_fork)
+static std::atomic<bool> g_pp_cstream_call{false};   // this prompt call streams into the cache's own blocks (--moe pp-path=cstream): the graph reads every expert through the tables, no staging
+static bool              g_pp_cstream_graph = false; // the graph being built has such layers (llama_moe_cache_pp_chain_fork returned 2)
+static bool              g_pp_cstream_built = false; // the same for the graph that runs: its experts go into blocks before it (llama_moe_cache_pp_freeze_fork)
 static bool              g_pp_mix_built = false; // the same for the graph that runs: the staging fill leaves out what such a layer's home card holds
 static std::atomic<double>  g_pp_up_us{0.0};     // upload time of the misses of the prompt chain's passes since the last report: the pass's time without it is its compute
 std::atomic<bool>     g_topic_answer{false};     // its prompt is over (its key came): from here on its uses are the answer's (a short prompt runs as decode steps too)
@@ -10450,6 +10453,18 @@ void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched) {
 }
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
+    if (mc && g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed)) {   // 2: the stream into the cache's blocks (cstream_fill)
+        if (pub->jit_n > 0 || !experts_in_file_layout(pub)) { return -1; }
+        std::lock_guard<std::mutex> lock(mc->mtx);
+        for (const auto & l : mc->layers) {
+            if (&l.pub == pub) {
+                if (!mc->link_be[l.link]) { return -1; }   // the first graph of a run: no backend to upload with yet
+                g_pp_cstream_graph = true;
+                return 2;
+            }
+        }
+        return -1;
+    }
     if (!mc || !pp_chain_allowed() || pub->jit_n > 0 || !experts_in_file_layout(pub)) {   // repacked: the chain has no CPU branch and its uploads copy ->data; the plain path keeps the CPU
         return 0;
     }
@@ -10504,10 +10519,86 @@ ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork 
     return nullptr;
 }
 
+// --moe pp-path=cstream, step 1: before a graph of a cstream call runs, every expert of its layers goes into a free block of the layer's class and the tables are published;
+// the graph reads them through the tables (no staging copy of a layer). A pass whose experts do not all fit the free blocks stops here: step 2 brings them in layer by layer.
+static void cstream_fill(moe_cache * mc) {
+    std::vector<std::pair<size_t, std::vector<int32_t>>> todo;   // layer, its experts out of the cache
+    {
+        std::lock_guard<std::mutex> lock(mc->mtx);
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            const layer_state & ls = mc->layers[li];
+            if (!ls.pub.up_c || ls.pub.jit_n > 0 || !experts_in_file_layout(&ls.pub) || !mc->link_be[ls.link]) { continue; }
+            std::vector<int32_t> miss;
+            for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) { if (ls.expert_slot[e] < 0) { miss.push_back(e); } }
+            if (!miss.empty()) { todo.emplace_back(li, std::move(miss)); }
+        }
+    }
+    if (todo.empty()) { return; }
+    if (mc->rp_on) {   // into the RAM pool first, without the cache's lock (the reads take ms): the uploads below are DMAs from its pinned blocks
+        for (const auto & t : todo) {
+            const auto & pub = mc->layers[t.first].pub;
+            const void * keys[3] = { pub.up_src, pub.gate_src, pub.down_src };
+            ggml_rampool_need_fork(keys, 3, t.second.data(), (int) t.second.size());
+        }
+    }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    std::vector<ggml_backend_t> bes;
+    size_t n_up = 0;
+    for (const auto & t : todo) {
+        layer_state & ls = mc->layers[t.first];
+        const llama_moe_cache_layer_fork * pub = &ls.pub;
+        std::vector<int32_t> free_b;
+        if (ls.pcls >= 0) {
+            const auto & ps = mc->pool[ls.pcls];
+            for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) { if (ps.owner[b] == -1) { free_b.push_back(b); } }
+        } else {
+            for (int32_t b = 0; b < pub->n_slots; ++b) { if (ls.slot_expert[b] < 0 && !ls.slot_in_flight[b] && !ls.is_stream[b]) { free_b.push_back(b); } }
+        }
+        if (free_b.size() < t.second.size()) {
+            GGML_ABORT("moe-cache: cstream: layer %d needs %zu blocks for its experts, %zu are free (step 1 needs every expert of the pass in a block)", pub->il, t.second.size(), free_b.size());
+        }
+        ggml_backend_t be = mc->link_be[ls.link];
+        if (std::find(bes.begin(), bes.end(), be) == bes.end()) { bes.push_back(be); }
+        const ggml_tensor * srcs[3] = { pub->up_src, pub->gate_src, pub->down_src };
+        ggml_tensor *       dsts[3] = { pub->up_c,   pub->gate_c,   pub->down_c   };
+        for (size_t i = 0; i < t.second.size(); ++i) {
+            const int32_t id = t.second[i], slot = free_b[i];
+            pool_take(mc, t.first, slot);
+            led_upload(mc, "cstream-up", t.first, id, slot, false);
+            for (int k = 0; k < 3; ++k) {
+                const size_t sz = srcs[k]->nb[2];
+                const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;   // the pool's pinned block carries the past bytes too
+                ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
+                const char * from = nullptr;
+                if (const size_t pb = expert_past(mc, ls, k, id, srcs[k], from)) {
+                    ggml_tensor z = expert_past_view(dsts[k], (size_t) slot*dsts[k]->nb[2] + sz, pb);
+                    ggml_backend_tensor_set_async(be, &z, rp ? rp + sz : from, 0, pb);
+                }
+            }
+            ls.slot_expert[slot]   = id;
+            ls.expert_slot[id]     = slot;
+            ls.slot_last_use[slot] = ++mc->clock;
+            set_table_entry(ls.pub, id, slot);
+            ls.cached_since[id] = mc->n_steps + 1;
+            ls.up_hits[id] = 0;
+        }
+        n_up += t.second.size();
+    }
+    for (ggml_backend_t be : bes) { ggml_backend_synchronize(be); }   // the pool's blocks may be read again once the copies left them
+    static int n_log = 0;
+    if (n_log++ < 4) { LLAMA_LOG_WARN("moe-cache: cstream: %zu experts of %zu layers uploaded into free blocks before the pass\n", n_up, todo.size()); }
+}
+
 // Right before a graph runs (behind its lend): the tables of a mix graph are what the two chains split the experts by, the home card's by the device table, the ring's staging
 // by the host table. Nothing may change either during the pass, so both start from the same state: the uploads on their way land, the rest of the decode step's are dropped.
 void llama_moe_cache_pp_freeze_fork() {
     moe_cache * mc = g_cache;
+    if (mc && g_pp_cstream_built) {
+        pp_settle(mc);
+        cstream_fill(mc);
+        flush_tables();
+        return;
+    }
     if (!mc || !g_pp_mix_built) {
         return;
     }
@@ -12609,6 +12700,7 @@ static bool cpu_gpu_shape_on() {
 
 extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t dev, double gbs); }   // ggml-backend.cpp (declared there, no shared header)
 void llama_moe_cache_prompt_call_fork(bool on) {
+    if (!on) { g_pp_cstream_call = false; }
     g_prompt_call.store(on, std::memory_order_relaxed);
     g_pp_dec = false;
     if (on) { g_pp_short = false; } else { ggml_backend_pred_set_fork(0.0); }
@@ -13898,7 +13990,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
     if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
     g_pp_dec = dec;
-    g_pp_mb = chain || dec ? ub_max : 0;
+    const bool cstream = force && strcmp(force, "cstream") == 0;   // test path: the stream into the cache's blocks, step 1 (every expert of the pass must fit them)
+    g_pp_cstream_call = cstream;
+    g_pp_mb = chain || dec || cstream ? ub_max : 0;
     const char * why_mix = "";
     mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && !dec && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
     g_pp_mix_call = mix;
@@ -14280,7 +14374,8 @@ bool llama_moe_cache_graph_reusable_fork() {
     return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built && starved == g_starved_built &&
            g_kv_epoch.load() == g_kv_epoch_built &&   // a moved KV zone: the old graph's views point at the old place
            g_lend_epoch.load() == g_lend_epoch_built &&   // a graph placed elsewhere in the pool since: the old graph's tensors sit at the old place
-           (!g_pp_built || pp_chain_allowed()) && g_pp_dec_built == g_pp_dec.load(std::memory_order_relaxed) && (!g_pp_mix_built || pp_mix_allowed()) && g_pp_k_built == (ggml_backend_pred_get_fork() > 0.0) && g_pp_mix_call_built == g_pp_mix_call.load(std::memory_order_relaxed);       // a graph of the prompt chain has no CPU chain: only a prompt call may run it
+           (!g_pp_built || pp_chain_allowed()) && g_pp_dec_built == g_pp_dec.load(std::memory_order_relaxed) && (!g_pp_mix_built || pp_mix_allowed()) && g_pp_k_built == (ggml_backend_pred_get_fork() > 0.0) && g_pp_mix_call_built == g_pp_mix_call.load(std::memory_order_relaxed) &&
+           g_pp_cstream_built == (g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed));       // a graph of the prompt chain has no CPU chain: only a prompt call may run it
 }
 
 int32_t llama_moe_cache_cpu_sat_threads_fork() {
@@ -14302,6 +14397,8 @@ void llama_moe_cache_graph_built_fork() {
     g_pp_graph = false;
     g_pp_mix_built = g_pp_mix_graph;
     g_pp_mix_graph = false;
+    g_pp_cstream_built = g_pp_cstream_graph;
+    g_pp_cstream_graph = false;
 }
 
 namespace {

@@ -2975,6 +2975,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     const llama_moe_cache_layer_fork * mcache = nullptr;
     bool mc_ppk = false;                // the prompt upload with misses kept on the host (--moe pp-off)
     bool mc_pp = false;                 // the prompt chain: this pass's experts run on the GPU alone, see llama_moe_cache_pp_upload_fork
+    bool mc_cstream = false;            // --moe pp-path=cstream: the stream into the cache's blocks, every expert in its block before the pass (llama_moe_cache_pp_freeze_fork)
     ggml_tensor * mc_ids_all = nullptr; // LLAMA_MOE_DEFER: full ids (router observation) and the deferred ids
     ggml_tensor * mc_ids_def = nullptr;
     ggml_tensor * mc_w_host  = nullptr;
@@ -2995,6 +2996,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // a prompt call: the prompt chain, or the prompt path for a layer whose blocks cannot hold the pass (a dense split keeps its own path)
         const int pp = mcache && moe_ranges.empty() ? llama_moe_cache_pp_chain_fork(mcache, n_tokens, n_expert_used) : 0;
         mc_pp  = pp > 0;
+        mc_cstream = pp == 2;
         mcache = pp < 0 ? nullptr : mcache;
         // --moe pp-off=F: the prompt upload leaves the least-used misses (F of the pass's expert-token pairs) on the host: they run on the miss device and the CPU
         // (pp-off-dev), next to the card's chain, which then has the decode chain's shape
@@ -3035,6 +3037,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 cpu_backend = b;
             }
         }
+        if (mc_cstream) { cpu_backend = nullptr; }   // the experts are in their blocks before the pass: no CPU split, no host sync per layer
         mc_cpu_backend = mc_mix_b ? nullptr : cpu_backend;   // the mix runs on the GPUs alone
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
         if (pw && pw->buffer && mcache->pred_on && !mc_pp && !mc_mix_b) {
