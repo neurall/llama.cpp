@@ -1119,7 +1119,11 @@ def cmd_memwatch(a):
     """run.py memwatch PID LOG: a server's memory while it lives, so a frozen machine leaves its cause behind, and the guard that stops the server before the machine freezes.
     Every 2 s a sample; every 10 s to q5h/watch-DATE.log with an fsync, every sample once memory runs short, so the last seconds are on the disk. New lines of the server's log go
     to q5h/watch-server-DATE.log the same way (its own file lies in /tmp, which a boot empties). The guard kills the server when MemAvailable stays under --min-avail GiB, or swap-out
-    stays over 25000 pages/s with memory pressure over 30: with 101 GiB pinned the rest of a 125 GiB box thrashes for half an hour before the kernel's OOM killer acts."""
+    stays over 25000 pages/s with memory pressure over 30, or full memory pressure stays over 40: with 101 GiB pinned the rest of a 125 GiB box thrashes for half an hour before the kernel's OOM killer acts.
+    2026-11-10 sr-glm16-grow froze PC1 for 90 min at full pressure 97 with 6 GiB available and a few thousand pages/s swapped out (no rule fired), and the watcher itself hung in an fsync behind
+    the stuck journal: it now locks its own pages, kills before it writes, and writes from a thread it never waits for."""
+    try: __import__("ctypes").CDLL(None).mlockall(3)   # MCL_CURRENT | MCL_FUTURE: the watcher's pages stay in RAM when the machine thrashes
+    except (OSError, AttributeError): pass
     def meminfo():
         m = {}
         for l in open("/proc/meminfo"):
@@ -1127,7 +1131,9 @@ def cmd_memwatch(a):
             m[k] = int(v.split()[0]) / 1048576.0
         return m
     def vm():
-        return {l.split()[0]: int(l.split()[1]) for l in open("/proc/vmstat") if l.startswith(("pswpout", "pgmajfault"))}
+        d = {l.split()[0]: int(l.split()[1]) for l in open("/proc/vmstat") if l.startswith(("pswpout", "pgmajfault", "allocstall", "compact_stall"))}
+        d["allocstall"] = sum(v for k, v in d.items() if k.startswith("allocstall_"))   # direct reclaim, all zones
+        return d
     def proc():
         try:
             d = {}
@@ -1139,12 +1145,18 @@ def cmd_memwatch(a):
             return None
     out = lambda: os.path.join(QDIR, time.strftime("watch-%F.log"))
     t_prev, v_prev, pos, buf, last_flush, bad = time.time(), vm(), 0, [], time.time(), 0
-    def flush():
-        nonlocal buf, last_flush, pos
+    th = [None]
+    def flush(wait=False):
+        nonlocal buf, last_flush
+        if not wait and th[0] is not None and th[0].is_alive(): return   # an fsync still blocked (a stuck journal): the lines wait in buf, the guard never waits on the disk
+        lines, buf, last_flush = buf, [], time.time()
+        th[0] = threading.Thread(target=write, args=(lines,), daemon=True); th[0].start()
+        if wait: th[0].join(30)
+    def write(lines):
+        nonlocal pos
         try:
             with open(out(), "a") as f:
-                f.write("".join(buf)); f.flush(); os.fsync(f.fileno())
-            buf, last_flush = [], time.time()
+                f.write("".join(lines)); f.flush(); os.fsync(f.fileno())
             with open(a.log, "rb") as sl:   # the server's new lines
                 sl.seek(pos); new = sl.read(); pos += len(new)
             if new:
@@ -1155,26 +1167,27 @@ def cmd_memwatch(a):
     while True:
         p = proc()
         if p is None:
-            buf.append(time.strftime("%T ") + f"server {a.pid} gone\n"); flush()
+            buf.append(time.strftime("%T ") + f"server {a.pid} gone\n"); flush(wait=True)
             return
         m, v = meminfo(), vm()
         now = time.time(); dt = max(now - t_prev, 0.1)
         so, mf = (v.get("pswpout", 0) - v_prev.get("pswpout", 0)) / dt, (v.get("pgmajfault", 0) - v_prev.get("pgmajfault", 0)) / dt
+        rs, cs = (v.get("allocstall", 0) - v_prev.get("allocstall", 0)) / dt, (v.get("compact_stall", 0) - v_prev.get("compact_stall", 0)) / dt
         t_prev, v_prev = now, v
         try: psi = re.findall(r"avg10=([\d.]+)", open("/proc/pressure/memory").read())
         except OSError: psi = ["0", "0"]
         some, full = float(psi[0]), float(psi[1]) if len(psi) > 1 else 0.0
         avail, swap = m.get("MemAvailable", 0), m.get("SwapTotal", 0) - m.get("SwapFree", 0)
         buf.append(time.strftime("%T ") + f"avail {avail:.1f} free {m.get('MemFree', 0):.1f} cached {m.get('Cached', 0):.1f} anon {m.get('AnonPages', 0):.1f} mlock {m.get('Mlocked', 0):.1f} "
-                   f"dirty {m.get('Dirty', 0):.2f} swap {swap:.2f} GiB, swap-out {so:.0f} major {mf:.0f} /s, psi {some:.1f} {full:.1f}; server rss {p.get('VmRSS', 0):.1f} anon {p.get('RssAnon', 0):.1f} "
+                   f"dirty {m.get('Dirty', 0):.2f} swap {swap:.2f} GiB, swap-out {so:.0f} major {mf:.0f} reclaim {rs:.0f} compact {cs:.0f} /s, psi {some:.1f} {full:.1f}; server rss {p.get('VmRSS', 0):.1f} anon {p.get('RssAnon', 0):.1f} "
                    f"file {p.get('RssFile', 0):.1f} locked {p.get('VmLck', 0) + p.get('VmPin', 0):.1f} swapped {p.get('VmSwap', 0):.2f} GiB\n")
         short = avail < 2 * a.min_avail or some > 5 or swap > 1 or so > 1000
-        bad = bad + 1 if avail < a.min_avail or (so > 25000 and some > 30) else 0
+        bad = bad + 1 if avail < a.min_avail or (so > 25000 and some > 30) or full > 40 else 0
         if bad >= 2:
-            buf.append(time.strftime("%T ") + f"GUARD: server {a.pid} killed, MemAvailable {avail:.1f} GiB, swap-out {so:.0f} pages/s, memory pressure {some:.1f}\n")
-            flush()
-            try: os.kill(a.pid, signal.SIGKILL)
+            try: os.kill(a.pid, signal.SIGKILL)   # first: the write below may block on a stuck journal
             except OSError: pass
+            buf.append(time.strftime("%T ") + f"GUARD: server {a.pid} killed, MemAvailable {avail:.1f} GiB, swap-out {so:.0f} pages/s, memory pressure {some:.1f}, full {full:.1f}\n")
+            flush(wait=True)
             return
         if short or now - last_flush >= 10: flush()
         time.sleep(2)
@@ -1974,7 +1987,9 @@ def _server_start_once(build, env, args):
     with open(logf, "w") as lf:
         p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
                              + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=None if DETACH[0] else _die_with_parent, start_new_session=DETACH[0])
-    subprocess.Popen([sys.executable, os.path.abspath(__file__), "memwatch", str(p.pid), logf], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "memwatch", str(p.pid), logf]
+                     + (["--min-avail", "1"] if any("sim-ram=" in str(x) for x in args) else []),   # a simulated small machine runs near its end on purpose: the pressure rules guard it (3 GiB killed 8 GiB cells at pressure 0)
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     t0 = last = time.time()
     size = 0
     while True:
