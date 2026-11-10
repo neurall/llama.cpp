@@ -1,0 +1,11 @@
+run 25049 | touch5 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.37 t/s | prompt 62.7 t/s | 64 tokens | args: -np 1 -b 8192 -ub 256 | power 200+200 W | 2026-11-10 03:01:33
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return literal_or_rule{string_join(results, " "), false};
+            };
+
+            std::vector<std::vector<literal_or_rule>> alternatives;
+            std::vector<literal_or_rule>

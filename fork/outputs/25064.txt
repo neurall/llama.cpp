@@ -1,0 +1,50 @@
+run 25064 | touch5 | snakec | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.24 t/s | prompt 9.9 t/s | 1024 tokens | args: -np 1 --moe state=/tmp/runstate/decreal/glm.ini | power 200+200 W | 2026-11-10 03:18:00
+
+The user wants the smallest HTML snake game. This is a classic "code golf" style request — they want minimal code, not a fancy designed experience. So my usual taste for rich, polished, memorable design should be tempered here: the explicit request is "smallest", so I should honor that intent and produce a genuinely tiny, single-file HTML snake game. The user's explicit request for minimalism overrides my default preference for elaborate presentation.
+
+Let me think about how to write the smallest possible snake game in a single HTML file.
+
+Classic minimal snake approaches:
+- Canvas + keyboard input + game loop
+- Grid-based movement, snake as array of segments
+- Food spawns at random empty cell
+- Collision with self or walls = game over
+- Score display
+
+To make it truly small, I can use tricks:
+- No DOCTYPE needed? Actually browsers render in quirks mode without DOCTYPE, but canvas still works. Many golfed snake examples omit DOCTYPE. But I should probably include `<!DOCTYPE html>` for correctness... though "smallest" suggests golfing. Hmm. The user asked for "smallest html snake game" — I'll aim for genuinely minimal but still readable-ish. Actually, let me golf it hard but keep it functional and correct. I can skip DOCTYPE — canvas works fine in quirks mode. But to be safe and proper, maybe include it. The size difference is 16 bytes. For "smallest", golfing matters. Let me think about what matters: the user wants the smallest. I'll write a heavily golfed version but still explain it.
+
+Let me draft a minimal snake:
+
+```html
+<!DOCTYPE html><canvas id=c width=300 height=300><script>
+...
+```
+
+Actually canvas doesn't need closing tag? `<canvas>` requires closing tag `</canvas>` in HTML parsing... Actually canvas content model: it's not a void element, so it needs `</canvas>` unless empty... In HTML parsing, `<canvas id=c width=300 height=300>` followed by `<script>` — the parser will treat script as child of canvas? Canvas can contain fallback content. Hmm, script inside canvas... Actually the script element would be parsed as a child of canvas, and scripts execute regardless of location. But then `document.body` might be weird. Better to just do `<body>`... Actually simplest: use `<canvas width=300 height=300>` then script after. Without body tags, the parser auto-creates body. Canvas before script: canvas is in body, script is in body too (sibling). Wait — canvas needs an end tag; if omitted, the parser... For non-void elements, missing end tag means subsequent elements become children. `<canvas>` followed by `<script>` — script would become a child of canvas. That's fine actually — script still executes. But `document.querySelector('canvas')` works. Hmm, but rendering: canvas with children — children are fallback content shown only when canvas unsupported. Script inside is invisible. So it works.
+
+Actually many golfed snakes do: `<canvas id=c width=...></canvas><script>...` Let me just write it cleanly-ish but compact.
+
+Let me write the game logic compactly:
+
+```js
+c=document.querySelector('canvas') // or use id directly: window.c? Named elements: elements with id become global properties. So `c` refers to canvas if id=c. 
+x=c.getContext('2d')
+```
+
+Named access: `c` global works with id="c". 
+
+Grid: let's use 15x15 cells of 20px → 300px canvas. Or 16x16 of 20 → 320.
+
+Snake representation: array of [x,y] pairs, or single numbers p = y*W+x. Using single integers is compact.
+
+Movement: direction dx,dy. Each tick: new head = head + dir; check collisions; push head; if head==food, score++, spawn new food, don't pop tail; else pop tail.
+
+Food spawn: random cell not on snake. Compact: `do f=rand cells while snake includes f` — but includes on array of numbers works.
+
+Rendering: draw cells. Compact: clear, draw food as one rect, draw snake segments as rects. Or draw everything each frame.
+
+Game loop: setInterval or requestAnimationFrame with timer. setInterval(tick, 100) is compact.
+
+Keyboard: onkeydown, map WASD/arrows. Compact mapping: use a string "WASD" or arrow keys. Arrow key codes: 'ArrowLeft' etc. Compact: check e.key. Map: {ArrowUp:[0,-1],...} or compute: k=e.key; if k[0]=='A'... hmm arrows all start with "Arrow". Use e.key[5]? ArrowLeft → key[5]='L'? "ArrowLeft": indices A0 r1 r2 o3 w4 L5. ArrowUp: U at 5. ArrowDown: D5.
+---

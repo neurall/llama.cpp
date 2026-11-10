@@ -1,0 +1,81 @@
+run 25005 | touch5 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.71 t/s | prompt 573.3 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 01:58:51
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 8;
+    params.speculative.num_reuse = 256;
+    params.speculative.num_gpu = params.n_gpu_layers;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // check if the model is already downloaded
+    if (params.model.url.empty()) {
+        return;
+    }
+    if (params.model.path.empty()) {
+        params.model.path = get_default_local_path(params.model.url);
+    }
+    if (fs_check_model_valid(params.model.url, params.model.path)) {
+        return;
+    }
+    if (params.model.use_container) {
+        return;
+    }
+    if (params.model.check_ttl > 0) {
+        return;
+    }
+    if (params.model.check) {
+        return;
+    }
+    if (params.model.check_ttl == 0) {
+        return;
+    }
+    if (params.model.check_ttl < 0) {
+        return;
+    }
+    if (params.model.check_ttl > 0) {
+        return;
+    }
+    if (params.model.check_ttl == 0) {
+        return;
+    }
+    if (params.model.check_ttl < 0) {
+        return;
+    }
+    if (params.model.check_ttl > 0) {
+        return;
+    }
+    if (params.model.check_ttl == 0) {
+        return;
+    }
+    if (params.model.check_ttl < 0) {
+        return;
+    }
+    if (params.model.check_ttl > 0) {
+        return;
+    }
+    if (params.model.check_ttl == 0) {
+        return;
+    }
+    if (params.model.check_ttl < 0) {
+        return;
+    }
+    if (params.model.check_ttl > 0) {
+        return;
+    }
+    if (params.model.check_ttl == 0) {
+        return;
+    }
+    if (params.model.check_ttl < 0) {
+        return;
+    }
+    if (params.model.check_ttl > 0) {
+        return;
+    }
+    if (params.model.check_ttl ==

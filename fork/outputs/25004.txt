@@ -1,0 +1,39 @@
+run 25004 | touch5 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.3 t/s | prompt 661.7 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 01:57:21
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 5;
+    params.speculative.num_reuse = 256;
+    params.speculative.num_gpu = 0;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // check if the model is a preset
+    if (params.model.path.empty() && params.model.url.empty()) {
+        auto preset = common_preset_find(params.model_alias);
+        if (preset) {
+            params.model_alias = preset->name;
+            params.model.url = preset->url;
+            params.model.url = common_download_get_model_url(params.model.url);
+            params.model.path = get_default_local_path(params.model.url);
+            params.model.url = params.model.url + "#" + clean_file_name(params.model_alias);
+            params.model.url = params.model.url + "#" + std::to_string(preset->size);
+            params.model.url = params.model.url + "#" + preset->sha256;
+            params.model.url = params.model.url + "#" + preset->repo;
+            params.model.url = params.model.url + "#" + preset->file;
+            params.model.url = params.model.url + "#" + std::to_string(preset->ctx);
+            params.model.url = params.model.url + "#" + std::to_string(preset->n_gpt);
+            params.model.url = params.model.url + "#" + std::to_string(preset->n_embd);
+            params.model.url = params.model.url + "#" + std::to_string(preset->n_layer);
+            params.model.url = params.model.url + "#" + std::to_string(preset->n_head);
+            params.model.url = params.model.url + "#" + std::to_string(preset->n_expert);
+            params.model.url = params.model.url + "#" + std::to_string(preset->n_expert_used);
+            params.model.url = params.model.url + "#" + std::to_string(preset->n_ctx_train);
+            params.model.url = params.model.url + "#" + std::to_string(preset->n_embd_head_k);
+            params.model.url = params.model.url +

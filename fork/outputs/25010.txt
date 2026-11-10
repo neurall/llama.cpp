@@ -1,0 +1,55 @@
+run 25010 | touch5 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 28.85 t/s | prompt 935.4 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 02:05:34
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_none(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types[0] == "none";
+}
+
+static bool spec_types_is_all(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types[0] == "all";
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types[0] == "mtp";
+}
+
+static bool spec_types_is_draft(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types[0] == "draft";
+}
+
+static bool spec_types_is_mtp_draft(const common_params & params) {
+    return params.spec_types.size() == 2 && params.spec_types[0] == "mtp" && params.spec_types[1] == "draft";
+}
+
+static bool spec_types_is_draft_mtp(const common_params & params) {
+    return params.spec_types.size() == 2 && params.spec_types[0] == "draft" && params.spec_types[1] == "mtp";
+}
+
+static bool spec_types_is_mtp_only(const common_params & params) {
+    return spec_types_is_mtp(params) || spec_types_is_draft_mtp(params);
+}
+
+static bool spec_types_is_draft_only(const common_params & params) {
+    return spec_types_is_draft(params) || spec_types_is_mtp_draft(params);
+}
+
+static bool spec_types_is_mtp_draft_only(const common_params & params) {
+    return spec_types_is_mtp_draft(params) || spec_types_is_draft_mtp(params);
+}
+
+static bool spec_types_is_mtp_or_draft(const common_params & params) {
+    return spec_types_is_mtp_only(params) || spec_types_is_draft_only(params) || spec_types_is_mtp_draft_only(params);
+}
+
+static bool spec_types_is_mtp_or_draft_or_all(const common_params & params) {
+    return spec_types_is_mtp_or_draft(params) || spec_types_is_all(params);
+}
+
+static bool spec_types_is_mtp_or_draft_or_none(const common_params & params) {
+    return spec_types_is_mtp_or_draft(params) || spec_types_is_none(params);
+}
+
+static bool spec_types_is_mtp_or_draft_or_all_or_none(const common_params & params) {
+    return spec_types_is_mtp_or_draft(params) || spec_types_is_all(params) || spec_types_is_none

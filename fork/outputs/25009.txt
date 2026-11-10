@@ -1,0 +1,68 @@
+run 25009 | touch5 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.84 t/s | prompt 885.0 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 02:04:00
+
+    return params.spec_types.empty() || params.spec_types == std::vector<std::string>{"draft", "speculative"};
+}
+
+static void handle_model_result(const common_params & params, const std::string & model_url, const std::string & model_filename, handle_model_result & result) {
+    // handle preset
+    if (string_ends_with(model_filename, ".json")) {
+        result.preset_path = model_filename;
+        result.found_preset = true;
+        return;
+    }
+
+    // handle mtp
+    if (string_ends_with(model_filename, ".mtp")) {
+        result.mtp = {model_filename, model_filename};
+        result.found_mtp = true;
+        return;
+    }
+
+    // handle mmproj
+    if (string_ends_with(model_filename, ".mmproj")) {
+        result.mmproj = {model_filename, model_filename};
+        result.found_mmproj = true;
+        return;
+    }
+
+    // handle model
+    if (params.model.empty()) {
+        params.model = {model_url, model_filename};
+    }
+
+    // handle speculative model
+    if (params.speculative.model.empty() && params.speculative.n_draft_max > 0 && !spec_types_is_default(params)) {
+        params.speculative.model = {model_url, model_filename};
+    }
+}
+
+static void handle_model_url(const common_params & params, const std::string & model_url, handle_model_result & result) {
+    // handle preset
+    if (string_ends_with(model_url, ".json")) {
+        result.preset_path = get_default_local_path(model_url);
+        result.found_preset = true;
+        return;
+    }
+
+    // handle mtp
+    if (string_ends_with(model_url, ".mtp")) {
+        result.mtp = {model_url, get_default_local_path(model_url)};
+        result.found_mtp = true;
+        return;
+    }
+
+    // handle mmproj
+    if (string_ends_with(model_url, ".mmproj")) {
+        result.mmproj = {model_url, get_default_local_path(model_url)};
+        result.found_mmproj = true;
+        return;
+    }
+
+    // handle model
+    if (params.model.empty()) {
+        params.model = {model_url, get_default_local_path(model_url)};
+    }
+
+    // handle speculative model
+    if (params.speculative.model.empty() && params.speculative.n_draft_max > 0 && !spec_types_is_default(params)) {
+        params.speculative.model = {model

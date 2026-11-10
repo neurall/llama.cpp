@@ -1,0 +1,56 @@
+run 25008 | touch5 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.41 t/s | prompt 591.7 t/s | 512 tokens | args: -np 1 --moe split=bw | power 200+200 W | 2026-11-10 02:02:41
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 8;
+    params.speculative.num_reuse = 256;
+    params.speculative.num_gpu = 0;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // check if we have a model in the cache
+    if (params.model.path.empty() && params.model.url.empty()) {
+        // check for model in cache
+        auto model = common_find_model("default", params.model);
+        if (model.path.empty()) {
+            // no model found, try to fetch default model
+            params.model = common_download_model("default", params.model);
+        } else {
+            params.model = model;
+        }
+    }
+    // check if we have a mmproj in the cache
+    if (params.mmproj.path.empty() && params.mmproj.url.empty()) {
+        // check for mmproj in cache
+        auto mmproj = common_find_model("default-mmproj", params.mmproj);
+        if (mmproj.path.empty()) {
+            // no mmproj found, try to fetch default mmproj
+            params.mmproj = common_download_model("default-mmproj", params.mmproj);
+        } else {
+            params.mmproj = mmproj;
+        }
+    }
+}
+
+handle_model_result common_models_handler::handle_model(const std::string & model) {
+    handle_model_result result;
+    result.found_preset = common_download_model(model, params.model, params.mmproj, params.mtp, params.preset, params.model_url);
+    if (result.found_preset) {
+        result.preset_path = params.preset;
+        result.found_mmproj = !params.mmproj.path.empty();
+        result.found_mtp = !params.mtp.path.empty();
+        return result;
+    }
+    // check if we have a model in the cache
+    auto found_model = common_find_model(model, params.model);
+    if (found_model.path.empty()) {
+        // no model found, try to fetch model
+        params.model = common_download_model(model, params.model);
+    } else {
+       

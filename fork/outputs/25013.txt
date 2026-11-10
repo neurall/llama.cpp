@@ -1,0 +1,51 @@
+run 25013 | touch5 | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 22.21 t/s | prompt 416.0 t/s | 512 tokens | args: -np 1 | power 200+200 W | 2026-11-10 02:09:18
+
+    return params.speculative.types == common_speculative_types_default();
+}
+
+static bool spec_types_is_ngram(const common_params & params) {
+    return params.speculative.types == common_speculative_types_ngram();
+}
+
+static bool spec_types_is_ngram_simple(const common_params & params) {
+    return params.speculative.types == common_speculative_types_ngram_simple();
+}
+
+static bool spec_types_is_ngram_oo(const common_params & params) {
+    return params.speculative.types == common_speculative_types_ngram_oo();
+}
+
+static bool spec_types_is_ngram_oo_simple(const common_params & params) {
+    return params.speculative.types == common_speculative_types_ngram_oo_simple();
+}
+
+static bool spec_types_is_ngram_oo_any(const common_params & params) {
+    return spec_types_is_ngram_oo(params) || spec_types_is_ngram_oo_simple(params);
+}
+
+static bool spec_types_is_ngram_any(const common_params & params) {
+    return spec_types_is_ngram(params) || spec_types_is_ngram_simple(params) || spec_types_is_ngram_oo(params) || spec_types_is_ngram_oo_simple(params);
+}
+
+static bool spec_types_is_ngram_any_simple(const common_params & params) {
+    return spec_types_is_ngram_simple(params) || spec_types_is_ngram_oo_simple(params);
+}
+
+static bool spec_types_is_ngram_any_oo(const common_params & params) {
+    return spec_types_is_ngram_oo(params) || spec_types_is_ngram_oo_simple(params);
+}
+
+static bool spec_types_is_ngram_any_oo_simple(const common_params & params) {
+    return spec_types_is_ngram_oo_simple(params);
+}
+
+static bool spec_types_is_ngram_any_simple_oo(const common_params & params) {
+    return spec_types_is_ngram_simple(params) || spec_types_is_ngram_oo_simple(params);
+}
+
+static bool spec_types_is_ngram_any_oo_simple(const common_params & params) {
+    return spec_types_is_ngram_oo_simple(params);
+}
+
+static bool spec_types_is_ngram_any_oo_simple(const common_params & params) {
+    return spec_types_is

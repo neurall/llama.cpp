@@ -1,0 +1,12 @@
+run 25048 | touch5 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.09 t/s | prompt 30.1 t/s | 64 tokens | args: -np 1 -b 8192 -ub 64 | power 200+200 W | 2026-11-10 02:58:32
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            std::vector<literal_or_rule> alternatives;
+            std::string alt_name;
+            std::function<void

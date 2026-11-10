@@ -1,0 +1,66 @@
+run 25011 | touch5 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 21.35 t/s | prompt 901.7 t/s | 512 tokens | args: -np 1 --moe split=bw | power 200+200 W | 2026-11-10 02:06:34
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_default(const common_params & params, const std::string & spec_type) {
+    return params.spec_types.empty() || params.spec_types == spec_type;
+}
+
+static bool spec_types_is_not_default(const common_params & params, const std::string & spec_type) {
+    return !spec_types_is_default(params, spec_type);
+}
+
+static bool spec_types_is_not_default(const common_params & params) {
+    return !spec_types_is_default(params);
+}
+
+static bool spec_types_is_not_default(const common_params & params, const std::string & spec_type) {
+    return !spec_types_is_default(params, spec_type);
+}
+
+static bool spec_types_is_default(const common_params & params, const std::string & spec_type) {
+    return params.spec_types.empty() || params.spec_types == spec_type;
+}
+
+static bool spec_types_is_not_default(const common_params & params, const std::string & spec_type) {
+    return !spec_types_is_default(params, spec_type);
+}
+
+static bool spec_types_is_not_default(const common_params & params) {
+    return !spec_types_is_default(params);
+}
+
+static bool spec_types_is_not_default(const common_params & params, const std::string & spec_type) {
+    return !spec_types_is_default(params, spec_type);
+}
+
+static bool spec_types_is_default(const common_params & params, const std::string & spec_type) {
+    return params.spec_types.empty() || params.spec_types == spec_type;
+}
+
+static bool spec_types_is_not_default(const common_params & params, const std::string & spec_type) {
+    return !spec_types_is_default(params, spec_type);
+}
+
+static bool spec_types_is_not_default(const common_params & params) {
+    return !spec_types_is_default(params);
+}
+
+static bool spec_types_is_not_default(const common_params & params, const std::string & spec_type) {
+    return !spec_types_is_default(params, spec_type);
+}
+
+static bool spec_types_is_default(const common_params & params, const std::string & spec_type) {
+    return params.spec_types.empty() || params.spec_types == spec_type;
+}
+
+static bool spec_types_is_not_default(const common_params & params, const std::string & spec_type) {
+    return !spec_types_is_default(params, spec_type);
+}
+
+static bool spec_types_is_not_default(const common_params & params) {
+    return !spec_types_is_default(params);
+}
+
+static bool spec_types_is_not_default(const common_params & params, const std

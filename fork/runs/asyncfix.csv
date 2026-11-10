@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+fx-qni-12k,qn_iq4xs,2,pf12k,64,,
+fx-glm-12k,glm,2,pf12k,64,,

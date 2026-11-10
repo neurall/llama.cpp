@@ -1,0 +1,46 @@
+run 25061 | touch5 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.02 t/s | prompt 7.4 t/s | 1005 tokens | args: -np 1 --moe state=/tmp/runstate/decreal/glm.ini | power 200+200 W | 2026-11-10 03:12:27
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf / minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a genuinely playable Tetris.
+
+Let me think about what "smallest" means here. There are famous entries in the "smallest tetris" genre — like the ~200-byte-ish Tetris in 140 characters of JS (there's a famous "Tetris in 140 bytes" but that's not really full Tetris). A well-known one is "Tiny Tetris" in ~500 bytes of JS embedded in HTML. There's also the famous 4k intro style.
+
+I want to write a genuinely playable minimal Tetris:
+- 10×20 grid
+- 7 tetrominoes with rotation (at least basic rotation, maybe simple SRS-lite)
+- Line clearing
+- Score, level/speed increase
+- Keyboard controls: left/right/down, rotate, drop
+- Game over
+- Rendered on canvas (canvas is the most compact way)
+
+I should aim for something like ~600–900 bytes of actual code, minified-ish but still readable-ish? The user asked for "smallest html tetris game" — I think they want the code golf aesthetic. I'll write it compactly, with short variable names, but I can still make it look decent visually — a dark background, monochrome-ish or minimal color blocks, crisp rendering. Actually for "smallest", visual polish usually costs bytes. But I can get good looks cheaply: canvas with a dark background, blocks drawn with slight inset for a beveled look (one extra line of code), a subtle grid. Score display via document.title or a small element.
+
+Let me design the code carefully to be genuinely small but complete.
+
+Approach: single canvas, fixed size. Grid W=10, H=20, cell size ~16px → canvas 160×320 plus maybe a border. Keep it simple: canvas 160×320, scale via CSS to look nice (image-rendering: pixelated). Actually I can set canvas width/height attributes and CSS size.
+
+Data structures:
+- Board: array of 200 (or 2D array). Using a flat array with index y*10+x is compact.
+- Pieces: define shapes as arrays of rotation states? Compact trick: define each tetromino as a set of 4 cells in one rotation, and rotate mathematically: rotation of a cell (x,y) around pivot → for simple rotation in a box: (x,y) -> (y, 3-x) or similar for 4-wide bounding box? Classic trick: represent each tetromino as 4 coordinates within a 4×4 (or 2×2 for O) box, rotate via (x,y)->(y, size-1-x)? Hmm.
+
+A very compact classic approach: shapes as strings. E.g. each piece = array of 4 rotations, each rotation = array of [x,y] offsets. That's verbose. 
+
+Compact trick used in tiny tetris implementations: define piece as a bitmask matrix and rotate the matrix. E.g. shapes:
+```
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]
+```
+Rotate by transposing+reversing. With strings: "0110/1111/0110/0000"? Hmm.
+
+Even more compact: each tetromino as a 4×4 or 3×3 binary encoded as a number, and rotation computed by bit manipulation. That's clever but harder to get right quickly.
+
+Alternative compact approach: store each piece as array of 4 rotation states, each state as array of 4 [x,y] pairs. Like:
+
+```js
+P=[[[1,0],[1,1],[2,1],[2,0]],...]
+```
+That's long.
+
+Better: use the "cells within bounding box, rotate via formula" trick. Define each tetromino by its cells in a bounding box of size n (I and O use 4, others use 3... actually standard: I in 4×4, O in 2×2 (or 4×4), rest in 3×3). Rotation within an n×n box: (x,y) → (n-1-y, x) (90° clockwise). This works for all pieces if we choose the right bounding boxes:
+
+- I: 4×4 box, cells at row 1: (0,1),(1,1),(2,1),(3,1). Rotating
+---

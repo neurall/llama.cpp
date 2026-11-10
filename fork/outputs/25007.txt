@@ -1,0 +1,61 @@
+run 25007 | touch5 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.46 t/s | prompt 592.1 t/s | 512 tokens | args: -np 1 --moe split=bw | power 200+200 W | 2026-11-10 02:00:46
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 8;
+    params.speculative.num_reuse = 256;
+    params.speculative.num_gpu = 99;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // check if we have a preset file
+    if (params.model_preset.empty()) {
+        return;
+    }
+    if (params.model_preset == "help") {
+        printf("Available presets:\n");
+        for (const auto & preset : get_preset_names()) {
+            printf("  %s\n", preset.c_str());
+        }
+        exit(0);
+    }
+    if (get_preset_names().find(params.model_preset) == get_preset_names().end()) {
+        throw std::invalid_argument("unknown preset: " + params.model_preset);
+    }
+    // load the preset file
+    std::string preset_file = get_preset_file(params.model_preset);
+    if (!std::filesystem::exists(preset_file)) {
+        throw std::invalid_argument("preset file not found: " + preset_file);
+    }
+    std::string preset_content = read_file(preset_file);
+    // parse the preset content
+    auto preset = common_preset_parse(preset_content);
+    // apply the preset to the params
+    common_preset_apply(preset, params);
+    // update the model path from the preset
+    params.model_preset_path = preset_file;
+    params.model_preset = params.model_preset;
+}
+
+handle_model_result common_models_handler::handle_model(const std::string & model) {
+    handle_model_result result;
+    if (model.empty()) {
+        return result;
+    }
+    if (string_ends_with(model, ".mtp")) {
+        result.found_mtp = true;
+        result.mtp.path = model;
+        return result;
+    }
+    if (string_ends_with(model, ".mmproj")) {
+        result.found_mmproj = true;
+        result.mmproj.path = model;
+        return result;
+    }
+    if (string_ends_with(model, ".preset
