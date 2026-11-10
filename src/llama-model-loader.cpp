@@ -2003,8 +2003,10 @@ bool llama_model_loader::load_all_data(
             }
 
             GGML_ASSERT(buf_mmap || cur->data); // either we have a buffer to allocate the tensor in, or it is already allocated
-            if (buf_mmap && cur->data == nullptr) {
-                ggml_backend_tensor_alloc(buf_mmap, cur, place);
+            // fork: a lazy tensor the async load placed in the mapping before its reads (llama-model.cpp): nothing to copy, its range stays in use
+            const bool placed = buf_mmap && cur->data == place && lazy.has(cur);
+            if (buf_mmap && (cur->data == nullptr || placed)) {
+                if (!placed) { ggml_backend_tensor_alloc(buf_mmap, cur, place); }
 
                 // locking a lazy tensor would fault all of it in, which is what lazy avoids
                 if (lmlocks && !lazy.has(cur)) {

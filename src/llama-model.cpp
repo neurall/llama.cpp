@@ -2483,6 +2483,27 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 if (b && std::find(pend.begin(), pend.end(), b) == pend.end()) { pend.push_back(b); llama_moe_host_pending_fork(b, true); }
             }
         }
+        // lazy tensors (TENSOR_READ_LAZY: qni4's 26.8 GiB per-layer token embedding) are views of the file mapping: placed here, before any graph is reserved.
+        // Placed by the read thread, the first context's reserve under the reads found one without data and gave it room in the CPU's pass buffer: 26.8 GiB
+        // of pinned host memory (the "host buffer of a pass" 27478 MiB at 256 tokens) for a table that stays on disk
+        if (ml_keep->lazy.any()) {
+            for (auto & [ctx, bufs] : ctx_bufs) {
+                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+                    const llama_tensor_weight * w = !t->data && ml_keep->lazy.has(t) ? ml_keep->get_weight(ggml_get_name(t)) : nullptr;
+                    if (!w || w->idx >= ml_keep->mappings.size() || !ml_keep->mappings[w->idx]) { continue; }
+                    uint8_t * data = (uint8_t *) ml_keep->mappings[w->idx]->addr() + w->offs;
+                    const size_t n = ggml_nbytes(t);
+                    for (ggml_backend_buffer_t buf : bufs) {   // the buffer holding its range (load_all_data's rule)
+                        const auto it = ml_keep->host_origin.find(buf);
+                        const uint8_t * base = it != ml_keep->host_origin.end() ? it->second : (const uint8_t *) ggml_backend_buffer_get_base(buf);
+                        if (base && base <= data && data + n <= base + ggml_backend_buffer_get_size(buf)) {
+                            ggml_backend_tensor_alloc(buf, t, it != ml_keep->host_origin.end() ? (uint8_t *) ggml_backend_buffer_get_base(buf) + (data - base) : data);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         if (pd) { pd(2); }   // the weights' buffers are allocated: what is allocated from here on (the context's graph buffers) holds no weights
         load_thr = std::thread([this, pd, pend, cb = std::move(ctx_bufs)]() mutable {
             for (auto & [ctx, bufs] : cb) {
