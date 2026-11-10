@@ -6334,13 +6334,24 @@ int main(){ size_t n=(size_t)1<<29; double *a=malloc(n*8); /* 4 GiB, first touch
 
 
 def membw():
-    """RAM read bandwidth of the machine in GB/s, all threads streaming a 4 GiB array (gcc + OpenMP, ~3 s); measured on every call (nothing cached: a rented box keeps its name while the hardware behind it changes)"""
+    """RAM read bandwidth of the machine in GB/s, all threads streaming a 4 GiB array (gcc + OpenMP, ~3 s per thread count); measured once per boot of the machine the cell runs on
+    (a rented box keeps its name while the hardware behind it changes, never within one boot). Every cell measured it when it saved its row, while its kept server still held
+    its RAM: 4-5 GiB taken for ~6 s every few minutes on PC1, the RAM pool's grow saw them as other programs' pressure (2026-11-10)"""
+    bid = hsh("cat /proc/sys/kernel/random/boot_id").strip()
+    key, path = f"{(HOST[0] or {}).get('ssh', 'local')}:{bid}", os.path.join(QDIR, "membw.json")
+    try: seen = json.load(open(path))
+    except (OSError, ValueError): seen = {}
+    if bid and key in seen: return seen[key]
     try:   # threads: the CPUs the container may use (cgroup quota), not the ones it can see (384 threads on 46 CPUs are throttled and read a fraction); best of that and half
         sh = ("q=$(awk '{ if ($1==\"max\") print 0; else print int(($1+$2-1)/$2) }' /sys/fs/cgroup/cpu.max 2>/dev/null); n=$(nproc); "
               "[ \"${q:-0}\" -gt 0 ] && [ \"$q\" -lt \"$n\" ] && n=$q; "
               "d=$(mktemp -d); cat > $d/m.c <<'EOF'\n" + MEMBW_C + "\nEOF\ngcc -O3 -fopenmp $d/m.c -o $d/m && for t in $n $((n/2)); do OMP_NUM_THREADS=$t $d/m; done; rm -rf $d")
         v = max(float(x) for x in hsh(sh, 60).split())
     except (OSError, ValueError, IndexError, subprocess.SubprocessError): return None
+    if bid:
+        seen[key] = v
+        try: json.dump(seen, open(path, "w"))
+        except OSError: pass
     return v
 
 
