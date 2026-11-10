@@ -1,0 +1,11 @@
+run 25150 | touch10 | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.21 t/s | prompt 35.1 t/s | 256 tokens | args: -np 1 | power 200+200 W | 2026-11-10 06:20:55
+
+The user wants a science-fiction short story, ~900 words, told through the eyes of a generation ship's archivist. The premise: the crew wakes from cryosleep above the planet they were sent to settle, and finds its cities already lit — the colonists below are their own descendants, from a *copy* of the ship that left a century after them and arrived first. So there's a paradox or at least a strange temporal/technological twist: a second ship, launched later, overtook them (perhaps via better propulsion, a different route, or some relativistic effect), and its people — descended from the same original mission, perhaps literally copies of the crew (clones? embryos? the same crew roster duplicated?) — settled the planet a century or more before the "original" arrives.
+
+Key details to honor:
+- ~900 words
+- Literary prose, sensory detail, dialogue
+- No headings, no lists, no code
+- POV: the ship's archivist — so the narrator's profession should color the telling: records, memory, provenance, the anxiety of originals vs. copies, cataloguing, the weight of being the keeper of the "true" story when the true story has forked.
+- The crew wakes from cry
+---
