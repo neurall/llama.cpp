@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+k31r2-off,k31,2,pf1k,100,,
+k31r2-all,k31,2,pf1k,100,"--moe ring=1",
+k31r2-4,k31,2,pf1k,100,"--moe ring=1,ring-layers=4",
+k31r2-all12,k31,1,pf12k,100,"--moe ring=1",
+k31r2-off12,k31,1,pf12k,100,,

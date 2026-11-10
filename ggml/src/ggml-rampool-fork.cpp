@@ -64,6 +64,7 @@ struct rp_rec {
     bool     prob    = false;   // on probation: it came in without passing the admission rule (rp_take_block), asked again in a later graph it stays (rp_promote)
     bool     ahead   = false;   // read ahead for a predicted later layer (ggml_rampool_ahead_fork), not asked for yet
     bool     ring    = false;   // the prompt ring holds it for its upload (ggml_rampool_ring_plan_fork): one hold, given back when the upload left the block
+    uint32_t taken   = 0;       // the prompt ring's round (one per pass of a call) in which an upload took it: the ring neither reads nor holds it again in that round
 };
 
 struct rp_tensor {
@@ -131,6 +132,8 @@ struct rp_pool {
     std::vector<rp_tensor *> ring_keys;   // upload order: gate, up, down of each MoE layer, the call's passes one after another
     size_t   ring_k = 0, ring_use_k = 0, ring_lead = 0;   // the entry the ring reads next, the one the uploads take now, how far the ring may run ahead
     int64_t  ring_e = 0;                  // the next element of entry ring_k
+    size_t   ring_nk = 1;                 // entries per pass
+    uint32_t ring_base = 0, ring_np = 0;  // the first round of this call minus one, its passes (rounds of earlier calls never match a stamp of this one)
     std::vector<uint32_t> ring_cap;       // per class: probation blocks the ring may grow to by taking resident ones
     std::vector<rp_job>   ring_out;       // what the ring holds a hold on, until its upload gives it back
     bool     ring_on = false;
@@ -353,9 +356,13 @@ void rp_unstart(rp_pool * p, rp_tensor & t, int64_t e) {
     r.state = RP_OUT;
 }
 
+// the ring's round of entry k: one per pass of the call
+uint32_t rp_ring_round(const rp_pool * p, size_t k) { return p->ring_base + (uint32_t) (k / p->ring_nk) + 1; }
+
 // A block for the prompt ring in class ci, -1: none now. The caller holds the lock. A free block, else the oldest probation block once nothing holds it (the ring wraps:
-// a ring block whose upload is done carries graph 0, a decode-time one keeps the stamp rule), else, while the class's probation set is under the ring's cap, the
-// resident expected back latest (the sample of rp_take_block). -1 with the oldest still held: the ring reached the layer whose uploads run, it waits for them.
+// a ring block whose upload is done carries graph 0, a decode-time one keeps the stamp rule), else, while the class's probation set is under the ring's cap, of the
+// blocks an upload of this pass already moved to the card the one expected back latest. A block this pass still needs is never taken (a stream pass uses every
+// element: taking one costs a second read of it). -1 with the oldest still held: the ring reached the layer whose uploads run, it waits for them.
 int32_t rp_ring_block(rp_pool * p, size_t ci) {
     rp_class & c = p->cls[ci];
     if (!c.free.empty()) {
@@ -364,6 +371,7 @@ int32_t rp_ring_block(rp_pool * p, size_t ci) {
         return (int32_t) s;
     }
     const uint32_t g = p->graph.load(std::memory_order_relaxed);
+    const uint32_t rnd = rp_ring_round(p, p->ring_use_k);
     for (size_t turns = c.prob.size(); !c.prob.empty(); ) {
         const uint32_t s = c.prob.front();
         if (s >= c.owner.size() || c.owner[s].t < 0) { c.prob.pop_front(); continue; }
@@ -371,7 +379,7 @@ int32_t rp_ring_block(rp_pool * p, size_t ci) {
         const rp_rec & r = p->tensors[o.t]->rec[o.e];
         if (!r.prob || r.slot != (int32_t) s) { c.prob.pop_front(); continue; }
         if (r.state != RP_IN || r.holds != 0) { break; }   // the oldest is still read or still uploading: the ring reached the running layer
-        if (r.graph + 1 >= g) {   // a decode-time block asked in this graph or the last: not yet, behind the others (it would stop the ring for a whole pass)
+        if (r.graph + 1 >= g || r.taken != rnd) {   // a decode-time block asked in this graph or the last, or one this pass still uploads: behind the others
             if (turns-- == 0) { break; }
             c.prob.pop_front();
             c.prob.push_back(s);
@@ -386,12 +394,13 @@ int32_t rp_ring_block(rp_pool * p, size_t ci) {
     int32_t best = -1;
     double  bh   = -1.0;
     int     seen = 0;
-    for (uint32_t i = 0; i < n && seen < 64; ++i) {
+    for (uint32_t i = 0; i < n && i < 4096 && seen < 64; ++i) {   // bounded: early in a pass few blocks are taken yet, a full scan under the lock per pump would cost seconds
         const uint32_t s = (c.sample + i * 7919u) % n;
         const rp_owner o = c.owner[s];
         if (o.t < 0) { continue; }
         rp_tensor & t = *p->tensors[o.t];
-        if (!rp_evictable(p, t.rec[o.e])) { continue; }
+        const rp_rec & rr = t.rec[o.e];
+        if (rr.state != RP_IN || rr.holds != 0 || rr.taken != rnd) { continue; }
         seen++;
         const double h = p->heat(t.key, o.e, p->ud);
         if (h > bh) { bh = h; best = (int32_t) s; }
@@ -423,7 +432,8 @@ void rp_ring_start(rp_pool * p, rp_tensor & t, int64_t e, int32_t s, uint32_t g,
 }
 
 // The prompt ring reads on: from entry ring_k, element ring_e, at most ring_lead entries past the one the uploads take. An element already in a block gets the ring's
-// hold (its block stays until the upload took it); one out of the pool starts its read into a ring block. Stops at the first element without a block. The caller holds the lock.
+// hold (its block stays until the upload took it); one out of the pool starts its read into a ring block; one an upload took already in this pass is left alone (a hold
+// on it would never be given back before the call ends and stop the ring at its block). Stops at the first element without a block. The caller holds the lock.
 void rp_ring_pump(rp_pool * p) {
     if (!p->ring_on) { return; }
     const uint32_t g = p->graph.load(std::memory_order_relaxed);
@@ -434,6 +444,7 @@ void rp_ring_pump(rp_pool * p) {
         if (p->ring_e >= t.n) { p->ring_k++; p->ring_e = 0; continue; }
         const int64_t e = p->ring_e;
         rp_rec & r = t.rec[e];
+        if (r.taken == rp_ring_round(p, p->ring_k)) { p->ring_e++; continue; }
         if (r.state == RP_IN || r.state == RP_READING) {
             if (!r.ring) { r.ring = true; r.holds++; p->ring_out.push_back({ &t, e }); }
             p->ring_e++;
@@ -781,6 +792,9 @@ GGML_API void ggml_rampool_ring_plan_fork(const void * const * keys, int nk, int
     for (int r = 0; r < n_passes; ++r) {
         for (int k = 0; k < nk; ++k) { if (rp_tensor * t = rp_find(keys[k])) { p->ring_keys.push_back(t); } }
     }
+    p->ring_base += p->ring_np;
+    p->ring_np    = (uint32_t) n_passes;
+    p->ring_nk    = std::max<size_t>(1, p->ring_keys.size() / (size_t) n_passes);
     const int n_layers = std::max(1, nk / keys_per_layer);
     p->ring_cap.assign(p->cls.size(), 0);
     for (size_t c = 0; c < p->cls.size(); ++c) {
@@ -796,8 +810,9 @@ GGML_API void ggml_rampool_ring_plan_fork(const void * const * keys, int nk, int
 
 GGML_API bool ggml_rampool_ring_on_fork(void) { return g_rp != nullptr && g_rp->ring_on; }
 
-// An upload's element: its block, waiting while the ring's read of it runs. *ring: the ring holds it, the upload gives it back with ggml_rampool_ring_done_fork once the copy
-// left the block. nullptr: not in the pool (the upload reads the file). Moves the uploads' position, so the ring reads on.
+// An upload's element: its block; one the ring queued goes first to the readers and the upload waits for that one read only. *ring: the ring holds it, the upload gives
+// it back with ggml_rampool_ring_done_fork once the copy left the block. nullptr: not in the pool and not queued: the upload reads it from the file through its own pinned
+// read buffers straight to the card, no wait for the ring to catch up, and the ring skips it in this pass. Moves the uploads' position, so the ring reads on.
 GGML_API const char * ggml_rampool_ring_take_fork(const void * key, int64_t e, bool * ring) {
     *ring = false;
     rp_tensor * t = rp_find(key);
@@ -810,10 +825,7 @@ GGML_API const char * ggml_rampool_ring_take_fork(const void * key, int64_t e, b
         break;
     }
     rp_rec & r = t->rec[e];
-    if (r.state == RP_OUT && p->ring_on) {   // the ring has not got here (it stopped at a held block): read it now, before the ring's queue, so the ring does not read it again later
-        const int32_t s = rp_ring_block(p, (size_t) t->cls);
-        if (s >= 0) { rp_ring_start(p, *t, e, s, p->graph.load(std::memory_order_relaxed), true); p->work_cv.notify_one(); }
-    }
+    if (p->ring_on) { r.taken = rp_ring_round(p, p->ring_use_k); }
     if (r.state == RP_READING) {
         if (r.ahead && !r.claimed) { r.ahead = false; p->demand.push_back({ t, e }); p->work_cv.notify_one(); }
         const int64_t t0 = rp_now_us();
@@ -827,6 +839,7 @@ GGML_API const char * ggml_rampool_ring_take_fork(const void * key, int64_t e, b
     rp_promote(r, r.graph, g);
     r.graph = g;
     p->st_pp_hit++;
+    if (p->ring_on) { r.holds++; *ring = true; }   // a resident: held until the upload left its block, then the ring may take it (taken in this pass)
     return t->ptr[e].load(std::memory_order_relaxed);
 }
 
