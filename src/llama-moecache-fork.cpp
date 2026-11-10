@@ -2421,6 +2421,9 @@ static int guard_level() {
     return v;
 }
 static std::atomic<int64_t> g_guard_n{0}, g_guard_bad{0};
+// guard: each layer's device table as flush_tables last sent it (what the kernels read), checked against the block owners before every split
+static std::mutex g_gtbl_mu;
+static std::unordered_map<const void *, std::vector<int32_t>> g_gtbl;
 static void pool_guard_access(const ggml_tensor * t, const void * ptr, size_t len, const char * op) {
     moe_cache * mc = g_cache;
     if (!mc || !t || t->name[0] == '\0') { return; }
@@ -2631,6 +2634,183 @@ static void led_dma(int device, const void * dst, size_t bytes, const char * who
         if (p < base || p >= base + ggml_backend_buffer_get_size(ap.buf)) { continue; }
         const size_t lo = (size_t) (p - base);
         led_line(led_card(ap), done ? "dma-done" : "dma-start", lo, lo + bytes, who);
+        return;
+    }
+}
+
+// --moe guard (debug), the kernel probe: what the kernels and the copies touch, checked where the backend-neutral hooks see them, before it happens. Nothing of it runs
+// with the guard off: the split and DMA hooks are only set with it. One violation report for all of them (pool_guard_access keeps its own for ggml's host-side writes).
+static std::string guard_owners(moe_cache * mc, const moe_cache::alias_pool & ap, size_t lo, size_t hi) {
+    std::string owners;
+    for (const auto & sg : ap.segs) {
+        const size_t s0 = sg.base, s1 = sg.base + (size_t) sg.n * sg.B;
+        if (sg.B == 0 || hi <= s0 || lo >= s1 || sg.pcls < 0 || sg.pcls >= (int32_t) mc->pool.size()) { continue; }
+        const auto & ps = mc->pool[sg.pcls];
+        for (size_t b = (std::max(lo, s0) - s0) / sg.B; b < (size_t) sg.n && s0 + b * sg.B < hi && owners.size() < 400; ++b) {
+            const int32_t own = b < ps.owner.size() ? ps.owner[b] : -9;
+            const int32_t e   = own >= 0 && (size_t) own < mc->layers.size() && b < mc->layers[own].slot_expert.size() ? mc->layers[own].slot_expert[b] : -1;
+            owners += tr_fmt(" class %d block %zu +%zu: %s", sg.pcls, b, std::max(lo, s0 + b * sg.B) - (s0 + b * sg.B),
+                    own >= 0 ? tr_fmt("L%d e%d", own, e).c_str() : own == -1 ? "free" : own == -2 ? "lent" : own == -3 ? "KV zone" : "?");
+        }
+    }
+    return owners;
+}
+static void guard_violation(moe_cache * mc, const moe_cache::alias_pool & ap, size_t lo, size_t hi, const std::string & what) {
+    const int64_t nb = ++g_guard_bad;
+    if (nb <= 64 || guard_level() >= 2) {
+        const std::string owners = guard_owners(mc, ap, lo, hi);
+        LLAMA_LOG_ERROR("pool-guard: VIOLATION %lld on %s: %s; [%.6f, %.6f) MiB (%zu bytes); lend [0, %.3f) MiB, zone [%.3f, %.3f) MiB;%s\n", (long long) nb, led_card(ap),
+                what.c_str(), lo / 1048576.0, hi / 1048576.0, hi - lo, ap.want_b / 1048576.0, ap.kv_start / 1048576.0, (ap.kv_h > 0 ? led_kv_end(ap) : 0) / 1048576.0,
+                owners.empty() ? " no expert block" : owners.c_str());
+        if (led_on()) { led_line(led_card(ap), "OVERLAP", lo, hi, "guard: " + what); }
+    }
+    if (guard_level() >= 2) {
+        GGML_ABORT("pool-guard: --moe guard=2 stops at the first violation (above)");
+    }
+}
+// the block an offset lies in: its end, class and index (0 when the offset is in no block)
+static size_t guard_block(const moe_cache::alias_pool & ap, size_t lo, int32_t & pcls, size_t & b) {
+    for (const auto & sg : ap.segs) {
+        const size_t s0 = sg.base, s1 = sg.base + (size_t) sg.n * sg.B;
+        if (sg.B > 0 && lo >= s0 && lo < s1) { b = (lo - s0) / sg.B; pcls = sg.pcls; return s0 + (b + 1) * sg.B; }
+    }
+    return 0;
+}
+static const char * guard_owner_name(int32_t own) { return own == -1 ? "free" : own == -2 ? "lent to a graph" : own == -3 ? "under the KV zone" : "of no layer"; }
+// the device tables as last flushed: every expert they send to a block must be that block's expert of that layer, or the kernels read another expert's weights (or bytes
+// an upload is overwriting)
+static void guard_tables(moe_cache * mc) {
+    std::lock_guard<std::mutex> lk(g_gtbl_mu);
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        const auto & L = mc->layers[li];
+        const auto it = g_gtbl.find(&L.pub);
+        if (it == g_gtbl.end() || L.pcls < 0 || L.pcls >= (int32_t) mc->pool.size()) { continue; }
+        const auto & own = mc->pool[L.pcls].owner;
+        for (int32_t e = 0; e < (int32_t) it->second.size(); ++e) {
+            const int32_t sl = it->second[e];
+            if (sl < 0) { continue; }
+            const int32_t o  = sl < (int32_t) own.size() ? own[sl] : -9;
+            const int32_t se = sl < (int32_t) L.slot_expert.size() ? L.slot_expert[sl] : -9;
+            if (o == (int32_t) li && se == e) { continue; }
+            size_t lo = 0, hi = 0;
+            const moe_cache::alias_pool * ap = led_block(mc, L.pcls, sl, lo, hi);
+            if (!ap) { continue; }
+            guard_violation(mc, *ap, lo, hi, o >= 0 ? tr_fmt("the device table of L%zu sends expert %d to block %d, which holds L%d e%d", li, e, sl, o, se)
+                                                    : tr_fmt("the device table of L%zu sends expert %d to block %d, which is %s", li, e, sl, guard_owner_name(o)));
+        }
+    }
+}
+static std::atomic<int64_t> g_guard_splits{0}, g_guard_nodes{0};
+static void guard_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
+    if (led_level() >= 2) { led_split_cb(be, g, split_id, n_splits, uid); }
+    moe_cache * mc = g_cache;
+    if (!mc) { return; }
+    guard_tables(mc);
+    const ggml_backend_dev_t dev = ggml_backend_get_device(be);
+    for (const auto & ap : mc->alias) {
+        if (ap.dev != dev || !ap.buf) { continue; }
+        const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+        const size_t size = ggml_backend_buffer_get_size(ap.buf);
+        const size_t zlo = ap.kv_start, zhi = ap.kv_h > 0 ? led_kv_end(ap) : 0;
+        const auto off = [&](const ggml_tensor * t, size_t & lo) {
+            const uint8_t * p = (const uint8_t *) t->data;
+            if (!p || p < base || p >= base + size) { return false; }
+            lo = (size_t) (p - base);
+            return true;
+        };
+        int64_t n = 0;
+        for (int j = 0; j < ggml_graph_n_nodes(g); ++j) {
+            const ggml_tensor * t = ggml_graph_node(g, j);
+            if (t->op == GGML_OP_NONE || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE) { continue; }
+            n++;
+            size_t lo = 0;
+            if (off(t, lo)) {   // the output: graph memory (the lend), or an in-place write through a view into the zone (KV rows, recurrent state)
+                const size_t hi = lo + ggml_nbytes(t);
+                if (!(hi <= ap.want_b || (t->view_src && zhi > zlo && lo >= zlo && hi <= zhi))) {
+                    guard_violation(mc, ap, lo, hi, tr_fmt("split %d of %d node %d %s '%s' (%s) writes outside %s", split_id, n_splits, j, ggml_op_name(t->op), t->name,
+                            ggml_type_name(t->type), t->view_src ? "the lend and the KV zone" : "the lend"));
+                }
+            }
+            for (int k = 0; k < GGML_MAX_SRC; ++k) {   // the inputs, as far as a kernel reads them: a matmul's quantized weights with their padding (MMQ/MMVQ read the last row's)
+                const ggml_tensor * sr = t->src[k];
+                if (!sr || !off(sr, lo)) { continue; }
+                const bool padded = k == 0 && (t->op == GGML_OP_MUL_MAT || t->op == GGML_OP_MUL_MAT_ID) && ggml_is_quantized(sr->type) && !sr->view_src && sr->buffer;
+                const size_t hi = lo + (padded ? ggml_backend_buffer_get_alloc_size(sr->buffer, sr) : ggml_nbytes(sr));
+                std::string why;
+                if (lo < ap.want_b) {
+                    if (hi > ap.want_b) { why = "reads past the end of the lend"; }
+                } else if (zhi > zlo && lo >= zlo && lo < zhi) {
+                    if (hi > zhi) { why = "reads past the end of the KV zone"; }
+                } else {
+                    int32_t pc = -1; size_t b = 0;
+                    const size_t bend = guard_block(ap, lo, pc, b);
+                    const int32_t own = bend && pc >= 0 && pc < (int32_t) mc->pool.size() && b < mc->pool[pc].owner.size() ? mc->pool[pc].owner[b] : -9;
+                    if (!bend)         { why = "reads pool bytes in no region"; }
+                    else if (hi > bend) { why = tr_fmt("reads past the end of its expert block (class %d block %zu)", pc, b); }
+                    else if (own < 0)   { why = tr_fmt("reads expert block %zu of class %d, which is %s", b, pc, guard_owner_name(own)); }
+                }
+                if (!why.empty()) {
+                    guard_violation(mc, ap, lo, hi, tr_fmt("split %d of %d node %d %s '%s' src %d '%s' (%s): %s", split_id, n_splits, j, ggml_op_name(t->op), t->name, k,
+                            sr->name, ggml_type_name(sr->type), why.c_str()));
+                }
+            }
+        }
+        g_guard_nodes += n;
+        const int64_t ns = ++g_guard_splits;
+        if (ns == 1 || ns % 20000 == 0) {
+            LLAMA_LOG_WARN("pool-guard: kernel probe: %lld splits, %lld nodes checked, %lld violations so far\n", (long long) ns, (long long) g_guard_nodes.load(), (long long) g_guard_bad.load());
+        }
+        return;
+    }
+}
+// copies into a pool as their streams run them (begin and end, ggml_cuda_dma): at the begin, where it writes (the lend, the zone, or inside one owned block) and whether another
+// copy still runs into the same bytes (two writers at once). The record's name pointer is the same at begin and end: the key.
+struct guard_dma_ent { const char * key; const moe_cache::alias_pool * ap; size_t lo, hi; int64_t t0; std::string who; };
+static std::mutex g_gdma_mu;
+static std::vector<guard_dma_ent> g_gdma;
+static void guard_dma(int device, const void * dst, size_t bytes, const char * who, int done) {
+    if (led_on()) { led_dma(device, dst, bytes, who, done); }
+    if (done) {
+        std::lock_guard<std::mutex> lk(g_gdma_mu);
+        for (size_t i = 0; i < g_gdma.size(); ++i) {
+            if (g_gdma[i].key == who) { g_gdma[i] = std::move(g_gdma.back()); g_gdma.pop_back(); break; }
+        }
+        return;
+    }
+    moe_cache * mc = g_cache;
+    if (!mc) { return; }
+    for (const auto & ap : mc->alias) {
+        if (!ap.buf) { continue; }
+        const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+        const uint8_t * p    = (const uint8_t *) dst;
+        if (p < base || p >= base + ggml_backend_buffer_get_size(ap.buf)) { continue; }
+        const size_t lo = (size_t) (p - base), hi = lo + bytes;
+        const size_t zlo = ap.kv_start, zhi = ap.kv_h > 0 ? led_kv_end(ap) : 0;
+        std::string why;
+        const bool named = who && who[0] != '\0' && who[0] != ' ';   // "NAME queued ...": our own writers (fills, keep-hot) pass unnamed tensors and have the pool gate
+        if (!named || hi <= ap.want_b || (zhi > zlo && lo >= zlo && hi <= zhi)) {
+        } else if (lo < ap.want_b || (zhi > zlo && lo < zhi && hi > zlo)) {
+            why = "across the edge of the lend or the KV zone";
+        } else {
+            int32_t pc = -1; size_t b = 0;
+            const size_t bend = guard_block(ap, lo, pc, b);
+            const int32_t own = bend && pc >= 0 && pc < (int32_t) mc->pool.size() && b < mc->pool[pc].owner.size() ? mc->pool[pc].owner[b] : -9;
+            if (!bend)          { why = "into pool bytes in no region"; }
+            else if (hi > bend) { why = tr_fmt("across the end of expert block %zu of class %d", b, pc); }
+            else if (own < 0)   { why = tr_fmt("into expert block %zu of class %d, which is %s", b, pc, guard_owner_name(own)); }
+        }
+        const int64_t now = poolx_ranges<const void *>::now_us();
+        {
+            std::lock_guard<std::mutex> lk(g_gdma_mu);
+            for (const auto & e : g_gdma) {
+                if (e.ap == &ap && lo < e.hi && hi > e.lo) {
+                    why += (why.empty() ? "" : "; ") + tr_fmt("while another copy still writes [%.6f, %.6f) MiB (%s, began %.3f ms ago)", e.lo / 1048576.0, e.hi / 1048576.0, e.who.c_str(), (now - e.t0) / 1e3);
+                    break;
+                }
+            }
+            g_gdma.push_back({ who, &ap, lo, hi, now, who ? who : "" });
+        }
+        if (!why.empty()) { guard_violation(mc, ap, lo, hi, tr_fmt("a copy (%s) writes %s", who ? who : "?", why.c_str())); }
         return;
     }
 }
@@ -4254,6 +4434,7 @@ void flush_tables() {
         }
         ggml_backend_tensor_set(pub->dev_table, v.data(), 0, v.size()*sizeof(int32_t));
         led_line("?", "table", 0, v.size()*sizeof(int32_t), tr_fmt("L%d device table", pub->il));
+        if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[pub] = v; }
     }
     if (g_cache) {
         for (auto & l : g_cache->layers) {
@@ -8848,8 +9029,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     pool_fill(tmp, 0, total - 4096, 5);
                 }
                 if (poison_on()) { ggml_sched_set_nan_hook_fork(pool_dump_all); }
-                if (led_level() >= 2) { ggml_sched_set_split_hook_fork(led_split_cb); }
-                if (led_on()) { ggml_backend_set_dma_hook_fork(led_dma); }
+                if (led_level() >= 2 || guard_level() > 0) { ggml_sched_set_split_hook_fork(guard_level() > 0 ? guard_split_cb : led_split_cb); }   // the guard chains to the ledger
+                if (led_on() || guard_level() > 0)         { ggml_backend_set_dma_hook_fork(guard_level() > 0 ? guard_dma : led_dma); }
                 if (led_on()) {   // CUDA graph captures and replays with their scratch range go into the ledger
                     typedef void (*graph_hook_t)(int, const void *, const char *, const void *, size_t);
                     typedef void (*set_graph_hook_t)(graph_hook_t);

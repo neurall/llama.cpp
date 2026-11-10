@@ -337,7 +337,8 @@ void ggml_cuda_mul_mat_q(
         const int si1  = ids->nb[1] / ggml_element_size(ids);
         const int sis1 = nb12 / nb11;
 
-        {
+        static const bool id_clear_always = [] { const char * e = getenv("GGML_MMQ_ID_CLEAR"); return !(e && atoi(e) == 0); }();   // =0: only with op_params[1], as before (measurement only: unsafe)
+        if (id_clear_always || dst->op_params[1] != 0) {
             // ids may be -1 (skipped experts): the helper writes no entries for them; row 0 is a safe target (it lies
             // in the unused compact range below expert 0, which holds the skipped slots)
             // Always, not only when the outputs are zeroed (op_params[1]): the prompt chain counts on its misses being uploaded behind the router, but an

@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+ic-on,glm,2,pf12k4k,64,,
+ic-off,glm,2,pf12k4k,64,,--env GGML_MMQ_ID_CLEAR=0
+ic-on2,glm,2,pf12k4k,64,,
+ic-off2,glm,2,pf12k4k,64,,--env GGML_MMQ_ID_CLEAR=0
