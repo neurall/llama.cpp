@@ -1351,6 +1351,12 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
     const double nxt = last + med;
     return std::min(by_count, nxt >= now ? nxt : now + (now - nxt));
 }
+// --moe fill=layers (user 2026-11-11: "fill from top to bottom in both vram and ram pools"): the start fills each card's cache with whole layers from layer 0 on, the
+// RAM pool continues with the next layers; a stream pass then reads the layers neither holds as whole tensors. Eviction during the run is unchanged
+static bool fill_layers() {
+    static const bool on = [] { const char * f = moe_opt("fill"); return f && strcmp(f, "layers") == 0; }();
+    return on;
+}
 static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
     const moe_cache * mc = (const moe_cache *) ud;
     const auto it = mc->by_src.find((const ggml_tensor *) key);
@@ -1361,6 +1367,7 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     // back from the SSD once the card dropped it (pinpool-default 2026-11-08: 15424 demand reads, 13.0 s waited in a 74 s decode, decode 13.7 against 14.7 without the
     // pool). Without eviction the fill ranks card-held experts by heat too: a hot one left out would never come back (rampool3: 17 GiB of card-held slices out of the pool).
     if (mc->rp_evict && mc->rp_filling && (ls.expert_slot[e] >= 0 || ls.queued[e])) { return HUGE_VAL; }
+    if (mc->rp_filling && fill_layers()) { return (double) it->second.first * 1e6 + (double) e; }   // --moe fill=layers: whole layers from layer 0 on, after what the cards took
     return vis_next(mc, ls, (int32_t) e);
 }
 // --moe rampool admission (user 2026-11-10: "admission as vram has", "consider the last 10 revisits"): a newcomer that would evict a resident needs the VRAM cache's ADMIT uses
@@ -2180,10 +2187,12 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
         }
         from = "GGUF moe_cache.expert_usage";
     }
-    if (!ok) {
+    if (!ok && !fill_layers()) {
         return 0;
     }
-    LLAMA_LOG_WARN("moe-cache: usage profile from %s\n", from);   // a warning: the server's log keeps no library INFO lines, and whether the cache starts filled is worth seeing
+    if (ok) {
+        LLAMA_LOG_WARN("moe-cache: usage profile from %s\n", from);   // a warning: the server's log keeps no library INFO lines, and whether the cache starts filled is worth seeing
+    }
     size_t queued = 0;
     std::lock_guard<std::mutex> lk(mc->wmtx);
     // each layer's hottest experts (its share of the pool), then placed hottest first over ALL layers: pick_slot hands out the highest free block,
@@ -2193,10 +2202,17 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
     std::vector<pick> picks;
     for (size_t il = 0; il < mc->layers.size(); ++il) {
         auto & ls = mc->layers[il];
-        ls.glob_count = counts[il];
-        ls.glob_base  = counts[il];
-        ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
-        refresh_sticky(ls);
+        if (ok) {
+            ls.glob_count = counts[il];
+            ls.glob_base  = counts[il];
+            ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
+            refresh_sticky(ls);
+        }
+        if (fill_layers()) {   // the whole layer, hottest first, before any expert of the next one: heat in (-il, -il + 0.5]
+            const double tot = (double) std::max<uint64_t>(1, std::accumulate(ls.glob_count.begin(), ls.glob_count.end(), (uint64_t) 0));
+            for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) { picks.push_back({ 0.5 * (double) ls.glob_count[e] / tot - (double) il, il, e }); }
+            continue;
+        }
         std::vector<int32_t> ids;
         for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) {
             if (ls.glob_count[e] > 0) {
@@ -2210,7 +2226,7 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             picks.push_back({ (double) ls.glob_count[ids[i]] / (double) std::max<uint64_t>(1, total), il, ids[i] });   // share of the layer's picks: comparable across layers
         }
     }
-    mc->profile_ready.store(true, std::memory_order_release);
+    mc->profile_ready.store(ok, std::memory_order_release);
     std::stable_sort(picks.begin(), picks.end(), [](const pick & a, const pick & b) { return a.heat > b.heat; });
     for (const auto & pk : picks) {
         auto & ls = mc->layers[pk.il];
