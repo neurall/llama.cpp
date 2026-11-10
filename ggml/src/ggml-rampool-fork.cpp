@@ -400,8 +400,14 @@ bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampo
     return true;
 }
 
-// The first fill: the elements expected back soonest of each class (none a card holds), laid out in file order, read in requests of p->rq bytes on n_threads threads, the requests
-// in spaced order (the even ones, then the odd ones: neighbours in the file are never in flight together, ggml-read-fork.h).
+// the owner's hook for a chunk whose last fill read landed (on that reader's thread): it pins the chunk then, under the rest of the fill. Declared where it is set
+// (llama-moecache-fork.cpp), no header edit. A chunk no fill read touches gets no call.
+static void (*g_rp_chunk_done)(void * chunk, void * ud) = nullptr;
+extern "C" GGML_API void ggml_rampool_on_chunk_fork(void (*cb)(void * chunk, void * ud)) { g_rp_chunk_done = cb; }
+
+// The first fill: the elements expected back soonest of each class (none a card holds), laid out in file order, read in jobs of one full queue of the async engine
+// (sr_blk x sr_qd: 8 MiB) on n_threads threads, the jobs in spaced order (the even ones, then the odd ones: neighbours in the file are never in flight together,
+// ggml-read-fork.h). Jobs of p->rq (512 KiB) before: 2 of the 32 blocks in flight per thread, DS 101 GiB at 3.36 GB/s against the loader's 4.9.
 void ggml_rampool_fill_fork(void) {
     rp_pool * p = g_rp;
     if (p == nullptr) { return; }
@@ -435,10 +441,14 @@ void ggml_rampool_fill_fork(void) {
             c.owner[s] = { x.t, x.e };
         }
     }
-    struct range { rp_tensor * t; char * dst; size_t n; uint64_t off; };
+    struct range { rp_tensor * t; char * dst; size_t n; uint64_t off; uint32_t ck; };
     std::vector<range> jobs;
     uint64_t bytes = 0;
-    const size_t piece = p->rq > 0 ? p->rq / RP_SECTOR * RP_SECTOR : (size_t) 1 << 22;
+    const size_t piece = std::max<size_t>(p->rq, sr_blk() * (size_t) sr_qd()) / RP_SECTOR * RP_SECTOR;
+    std::vector<uint32_t> ck0(p->cls.size() + 1, 0);   // the first global chunk number of each class
+    for (size_t i = 0; i < p->cls.size(); ++i) { ck0[i + 1] = ck0[i] + (uint32_t) p->cls[i].chunks.size(); }
+    std::unique_ptr<std::atomic<uint32_t>[]> ck_left(new std::atomic<uint32_t>[ck0.back() + 1]);   // fill jobs not yet done per chunk
+    for (uint32_t i = 0; i <= ck0.back(); ++i) { ck_left[i] = 0; }
     for (auto & tp : p->tensors) {
         rp_tensor & t = *tp;
         rp_class & c = p->cls[t.cls];
@@ -449,10 +459,12 @@ void ggml_rampool_fill_fork(void) {
             const size_t pad = b < t.n ? t.pad : 0;   // the next element's first bytes come along; behind the last element zeros
             uint64_t off = t.off + (uint64_t) e * t.esz, end = t.off + (uint64_t) b * t.esz + pad;
             char * dst = c.at((uint32_t) t.rec[e].slot);
+            const uint32_t ck = ck0[t.cls] + (uint32_t) t.rec[e].slot / c.per_chunk;   // a range never crosses a chunk (the run above stops at its edge)
             if (t.pad > pad) { memset(dst + t.esz, 0, t.pad); }
             while (off < end) {
                 const uint64_t cut = std::min(end, (off / piece + 1) * piece);
-                jobs.push_back({ &t, dst, (size_t) (cut - off), off });
+                jobs.push_back({ &t, dst, (size_t) (cut - off), off, ck });
+                ck_left[ck]++;
                 dst += (size_t) (cut - off);
                 off = cut;
             }
@@ -474,6 +486,10 @@ void ggml_rampool_fill_fork(void) {
             if (i >= spaced.size()) { break; }
             const range & r = spaced[i];
             if (bounce == nullptr || !rp_read(p, r.t->dfd, r.t->fd, r.dst, r.n, r.off, bounce, bn)) { bad++; }
+            if (ck_left[r.ck].fetch_sub(1) == 1 && g_rp_chunk_done) {   // the chunk's last read: a failed one too (a failed fill drops the blocks below, the pin is harmless)
+                const rp_class & c = p->cls[r.t->cls];
+                g_rp_chunk_done(c.chunks[r.ck - ck0[r.t->cls]], p->ud);
+            }
         }
         free(bounce);
     };

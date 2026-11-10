@@ -37,6 +37,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "llama-poolalloc-fork.h"
@@ -7408,23 +7409,74 @@ static void rp_raw_free(moe_cache * mc) {   // after ggml_rampool_close_fork: no
     mc->rp_raw.clear();
     mc->rp_raw_bytes = 0;
 }
-// The chunks the fill read into, pinned in place: the read faulted their pages in, so the register only pins them. One that is refused stays pageable (its uploads go
-// through the driver's staging, slower but right).
-static void rp_pin_raw(moe_cache * mc) {
+extern "C" GGML_API void ggml_rampool_on_chunk_fork(void (*cb)(void * chunk, void * ud));   // ggml-rampool-fork.cpp, declared here: no header edit
+// The chunks the fill read into, pinned in place: the read faulted their pages in, so the register only pins them. 4 threads pin each chunk as its last fill read lands
+// (ggml_rampool_on_chunk_fork), under the rest of the fill; what is left (a chunk no fill read touched) after it. One that is refused stays pageable (its uploads go
+// through the driver's staging, slower but right). DS 100.3 GiB: 7.69 s on 4 threads after the fill before.
+struct rp_pinner {
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<size_t> q;                      // rp_raw entries whose fill reads are done
+    bool end = false;
+    std::unordered_map<char *, size_t> at;     // chunk -> its rp_raw entry
+    std::vector<uint8_t> done;
+    std::atomic<size_t> refused{0}, under{0};  // under: bytes pinned as their reads ended
+    std::vector<std::thread> th;
+};
+static rp_pinner * g_rp_pinner = nullptr;
+static void rp_chunk_read(void * chunk, void * /*ud*/) {
+    rp_pinner * pp = g_rp_pinner;
+    if (!pp) { return; }
+    const auto it = pp->at.find((char *) chunk);
+    if (it == pp->at.end()) { return; }   // a piece pinned before the sizing (rp_prepin)
+    { std::lock_guard<std::mutex> lk(pp->mu); pp->q.push_back(it->second); }
+    pp->cv.notify_one();
+}
+static void rp_pin_start(moe_cache * mc, rp_pinner & pp) {
+    if (mc->rp_raw.empty()) { return; }
+    for (size_t i = 0; i < mc->rp_raw.size(); ++i) { pp.at[mc->rp_raw[i].first] = i; }
+    pp.done.assign(mc->rp_raw.size(), 0);
+    g_rp_pinner = &pp;
+    ggml_rampool_on_chunk_fork(rp_chunk_read);
+    for (int t = 0; t < 4; ++t) {
+        pp.th.emplace_back([mc, &pp] {
+            for (;;) {
+                size_t i;
+                {
+                    std::unique_lock<std::mutex> lk(pp.mu);
+                    pp.cv.wait(lk, [&] { return pp.end || !pp.q.empty(); });
+                    if (pp.q.empty()) { return; }
+                    i = pp.q.front();
+                    pp.q.pop_front();
+                }
+                if (!mc->rp_pin(mc->rp_raw[i].first, mc->rp_raw[i].second)) { pp.refused++; }
+                pp.done[i] = 1;
+                pp.under += mc->rp_raw[i].second;
+            }
+        });
+    }
+}
+static void rp_pin_raw(moe_cache * mc, rp_pinner & pp) {
     if (mc->rp_raw.empty()) { return; }
     const int64_t t0 = ggml_time_us();
-    std::atomic<size_t> next{0}, refused{0};
+    { std::lock_guard<std::mutex> lk(pp.mu); pp.end = true; }   // the fill is done: the queue drains, then the threads end
+    pp.cv.notify_all();
+    for (auto & t : pp.th) { t.join(); }
+    ggml_rampool_on_chunk_fork(nullptr);
+    g_rp_pinner = nullptr;
+    std::atomic<size_t> next{0};
     auto work = [&] {
         for (size_t i; (i = next++) < mc->rp_raw.size(); ) {
-            if (!mc->rp_pin(mc->rp_raw[i].first, mc->rp_raw[i].second)) { refused++; }
+            if (!pp.done[i] && !mc->rp_pin(mc->rp_raw[i].first, mc->rp_raw[i].second)) { pp.refused++; }
         }
     };
     std::vector<std::thread> th;
     for (int t = 1; t < 4; ++t) { th.emplace_back(work); }
     work();
     for (auto & t : th) { t.join(); }
-    LLAMA_LOG_WARN("moe-cache: rampool: %.1f GiB pinned after the fill in %.2f s on 4 threads (%zu chunks)%s\n", mc->rp_raw_bytes / 1073741824.0, (ggml_time_us() - t0) / 1e6,
-            mc->rp_raw.size(), refused.load() ? tr_fmt(", %zu refused: pageable", refused.load()).c_str() : "");
+    LLAMA_LOG_WARN("moe-cache: rampool: %.1f GiB pinned in place on 4 threads (%zu chunks): %.1f GiB as their fill reads ended, the rest in %.2f s after the fill%s\n",
+            mc->rp_raw_bytes / 1073741824.0, mc->rp_raw.size(), pp.under.load() / 1073741824.0, (ggml_time_us() - t0) / 1e6,
+            pp.refused.load() ? tr_fmt(", %zu refused: pageable", pp.refused.load()).c_str() : "");
 }
 // Pinned host memory costs every card VRAM for its mapping (GLM 3.5, 101.9 GiB pinned: ~150 MiB per card). Pinned after the expert pool was sized, it ate the
 // margin and cuBLAS found no memory at the first prompt (2026-11-07). So the pool's bytes are pinned here, before the sizing, whose free VRAM then includes that cost.
@@ -7555,9 +7607,11 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
     mc->rp_evict = atoi(rv) >= 2;
     ggml_rampool_evict_fork(mc->rp_evict);
     mc->rp_filling = true;
+    rp_pinner pp;
+    rp_pin_start(mc, pp);
     ggml_rampool_fill_fork();
     mc->rp_filling = false;
-    rp_pin_raw(mc);   // before the tables below: nothing copies from the pool until then
+    rp_pin_raw(mc, pp);   // before the tables below: nothing copies from the pool until then
     struct ggml_rampool_stats st;
     ggml_rampool_stats_fork(&st, true);
     for (auto & ls : mc->layers) {
