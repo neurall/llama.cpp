@@ -10233,16 +10233,24 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                 if (pb) { ggml_tensor z = expert_past_view(dsts[k], off + sz, pb); ggml_backend_tensor_get(&z, got.data() + sz, 0, pb); }
                 const uint8_t * want = (const uint8_t *) srcs[k]->data + (size_t) e * sz;
                 const uint8_t * next = (const uint8_t *) from;
-                size_t diff = 0, first = n;
+                size_t diff = 0, first = n, last = 0;
                 for (size_t i = 0; i < n; ++i) {
-                    if (got[i] != (i < sz ? want[i] : next[i - sz])) { diff++; first = std::min(first, i); }
+                    if (got[i] != (i < sz ? want[i] : next[i - sz])) { diff++; first = std::min(first, i); last = i; }
                 }
                 if (diff == 0) { continue; }
                 const bool in_slice = first < sz;
                 (in_slice ? n_bad : n_bad_past)++;
                 size_t lo = 0, hi = 0;
                 const moe_cache::alias_pool * ap = ls.pcls >= 0 ? led_block(mc, ls.pcls, slot, lo, hi) : nullptr;
-                const std::string who = tr_fmt("L%zu il %d e%d %s block %d: %zu of %zu bytes differ, the first at +%zu (%s)", li, ls.pub.il, e, parts[k], slot, diff, n, first, in_slice ? "in the slice" : "only past the slice");
+                // what the card holds there, and the host: the bytes name their writer (floats of an activation, int ids, a KV row, a poison fill)
+                std::string hx_got, hx_want, fl;
+                for (size_t i = first; i < std::min(n, first + 32); ++i) {
+                    hx_got  += tr_fmt("%02x", got[i]);
+                    hx_want += tr_fmt("%02x", i < sz ? want[i] : next[i - sz]);
+                }
+                for (size_t i = first & ~(size_t) 3; i + 4 <= std::min(n, (first & ~(size_t) 3) + 16); i += 4) { float f; memcpy(&f, got.data() + i, 4); fl += tr_fmt(" %g", f); }
+                const std::string who = tr_fmt("L%zu il %d e%d %s block %d: %zu of %zu bytes differ, the first at +%zu, the last at +%zu (%s); card %s host %s, as floats%s",
+                        li, ls.pub.il, e, parts[k], slot, diff, n, first, last, in_slice ? "in the slice" : "only past the slice", hx_got.c_str(), hx_want.c_str(), fl.c_str());
                 if (ap) { led_line(led_card(*ap), "verify-bad", lo, hi, who); }
                 if (said++ < 16) { LLAMA_LOG_ERROR("pool-verify: BAD %s [%zu, %zu) of %s: %s\n", dsts[k]->name, lo, hi, ap ? led_card(*ap) : "?", who.c_str()); }
             }
