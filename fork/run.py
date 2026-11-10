@@ -871,7 +871,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         if "ask" not in [r[1] for r in con.execute("PRAGMA table_info(outputs)")]: con.execute("ALTER TABLE outputs ADD COLUMN ask TEXT")
         con.execute("INSERT INTO outputs (ts, hw, build, test, model, md5, uniq4, chars, code, text, ask) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9), ask))
         con.commit(); con.close()
-    def insert_stats(ts, hw, build, test, tag, args, text):
+    def insert_stats(ts, hw, build, test, tag, args, text, model=""):
         """the stats.log of a cell (zlib) into table stats: when, machine, build with its commit, branch and uncommitted-diff hash, test, cell tag and the cell's command line; the sources the build was made from
         (the commit's uncommitted diff, bin/SOURCE.diff) go once into table sources, keyed by commit + patch hash, so every logged inefficiency can be traced to the code that ran (user 2026-11-05)"""
         if not text: return
@@ -880,7 +880,11 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         con = connect()
         con.execute("CREATE TABLE IF NOT EXISTS stats (ts TEXT, hw TEXT, build TEXT, [commit] TEXT, branch TEXT, patch TEXT, test TEXT, tag TEXT, args TEXT, log BLOB)")
         con.execute("CREATE TABLE IF NOT EXISTS sources (commit_ TEXT, patch TEXT, diff BLOB, PRIMARY KEY (commit_, patch))")
-        con.execute("INSERT INTO stats VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, bi.get("commit", ""), bi.get("branch", ""), bi.get("patch", ""), test, tag, args, zlib.compress(text.encode(), 9)))
+        cur = con.execute("INSERT INTO stats VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, bi.get("commit", ""), bi.get("branch", ""), bi.get("patch", ""), test, tag, args, zlib.compress(text.encode(), 9)))
+        try:   # the planner's events as rows (table ppev, fork/ppev.py): what the replay and the simulator read
+            import ppev
+            ppev.insert(con, cur.lastrowid, build, model, tag, test, args, text)
+        except Exception as e: print("runs.db ppev:", e, file=sys.stderr)
         sd = os.path.join(HERE, build, "SOURCE.diff")
         if bi.get("patch", "0") not in ("", "0") and os.path.exists(sd):
             con.execute("INSERT OR IGNORE INTO sources VALUES (?,?,?)", (bi.get("commit", ""), bi["patch"], zlib.compress(open(sd, "rb").read(), 9)))
@@ -8178,7 +8182,7 @@ def cmd_cell(a):
         except OSError: pass
         try:   # the same file into runs.db (table stats), with the build's commit and the cell's command line
             import runlog
-            runlog.insert_stats(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t_cell0)), local_hw(), a.builds, a.test, a.tag, args, open(os.path.join(Q5, a.tag + ".stats.log"), errors="replace").read())
+            runlog.insert_stats(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t_cell0)), local_hw(), a.builds, a.test, a.tag, args, open(os.path.join(Q5, a.tag + ".stats.log"), errors="replace").read(), model=a.model)
         except Exception as e: print("runs.db stats:", e, file=sys.stderr)
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
