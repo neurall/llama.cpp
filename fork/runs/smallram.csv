@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+sr-glm16-grow,glm,3,scific,64,,--hog-ram 16
+sr-glm16-fixed,glm,3,scific,64,--moe rp-grow=0,--hog-ram 16
+sr-glm32-grow,glm,3,scific,128,,--hog-ram 32
+sr-glm32-fixed,glm,3,scific,128,--moe rp-grow=0,--hog-ram 32
+sr-glm64-grow,glm,3,scific,256,,--hog-ram 64
+sr-glm64-fixed,glm,3,scific,256,--moe rp-grow=0,--hog-ram 64
+sr-ds32-grow,ds,3,scific,128,,--hog-ram 32
+sr-ds32-fixed,ds,3,scific,128,--moe rp-grow=0,--hog-ram 32
+sr-ds64-grow,ds,3,scific,256,,--hog-ram 64
+sr-ds64-fixed,ds,3,scific,256,--moe rp-grow=0,--hog-ram 64

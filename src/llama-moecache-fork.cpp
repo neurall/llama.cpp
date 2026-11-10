@@ -429,6 +429,9 @@ struct moe_cache {
     size_t                     rp_raw_bytes = 0;
     size_t                     rp_vram_reserve = 0;   // VRAM the pin after the sizing will take on each card (rp_prepin measures one piece); the sizing leaves it free
     size_t                     rp_vram_per = 0;       // of it, what one GiB pinned takes on each card (the page tables): the price of a chunk rp_resize adds
+    size_t                     rp_avail0 = 0;         // RAM available when the start size was picked (rp_start_want): the base the learned size is stored against
+    size_t                     rp_want0 = SIZE_MAX;   // that start size, SIZE_MAX: not picked yet
+    size_t                     rp_extra = 0;          // what the learned size added to the equation's: swap pressure gives it back like a grow (rp_resize)
     bool (*rp_pin)(void *, size_t) = nullptr;      // the GPU backend's pin of a filled range (ggml_backend_cuda_pin_range_fork), nullptr: the pool pins before the fill as before
     void (*rp_unpin)(void *) = nullptr;
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
@@ -7592,14 +7595,62 @@ static void rp_pin_raw(moe_cache * mc, rp_pinner & pp) {
             mc->rp_raw_bytes / 1073741824.0, mc->rp_raw.size(), pp.under.load() / 1073741824.0, (ggml_time_us() - t0) / 1e6,
             pp.refused.load() ? tr_fmt(", %zu refused: pageable", pp.refused.load()).c_str() : "");
 }
+// the machine's RAM in whole GiB, less what --hog-ram holds (sim-ram-held: a smaller machine simulated); the learned start size is kept per model and RAM size
+static unsigned ram_total_gib() {
+    size_t t = 0;
+#if defined(__linux__)
+    t = (size_t) sysconf(_SC_PHYS_PAGES) * (size_t) sysconf(_SC_PAGE_SIZE);
+#elif defined(_WIN32)
+    MEMORYSTATUSEX st = {};
+    st.dwLength = sizeof(st);
+    if (GlobalMemoryStatusEx(&st)) { t = (size_t) st.ullTotalPhys; }
+#endif
+    if (const char * h = moe_opt("sim-ram-held")) { t -= std::min(t, (size_t) strtoull(h, nullptr, 10)); }
+    return (unsigned) ((t + ((size_t) 1 << 29)) >> 30);
+}
+static std::string rp_kept_key() { return "rampool.kept.ram" + std::to_string(ram_total_gib()); }
+// The RAM a grow leaves: the floor, and never what a long prompt needs: the pass cap pins a pass's host buffer from RAM available less 4 GiB (llama-context.cpp, mask
+// budget), and the largest pass's buffer was kept free at the start (common_auto_pin, --moe pass-buf). shortcut: below ~40 GiB of RAM this leaves nothing to grow into
+// (the start keeps max(4 GiB, RAM/10) + that buffer); upgrade when the pool gives chunks back before a long prompt's pin, then the floor alone.
+static size_t rp_grow_floor() {
+    const char * pb = moe_opt("pass-buf");
+    return std::max(ram_floor_bytes(), (size_t) 4 << 30) + (pb ? (size_t) strtoull(pb, nullptr, 10) : 0);
+}
+// The pool's start size: the pin budget less what the loader pinned (common_auto_pin's equation, the loader's freeze guard), or, once a session on this model and RAM size
+// resized its pool, the RAM available now less what that session needed beside its pool (stored by rp_learn; user 2026-11-02: "learned share stored per model + RAM
+// size"): a start at the size the last session ended at, smaller by as much as less RAM is free now. Picked once, before the pool's first pin; rp_setup reads the same.
+// --moe rp-grow=0 starts at the equation (the A/B arm).
+static size_t rp_start_want(moe_cache * mc, const std::string & section) {
+    if (mc->rp_want0 != SIZE_MAX) { return mc->rp_want0; }
+    const char * pb = moe_opt("pin-budget"), * pu = moe_opt("pin-used"), * g = moe_opt("rp-grow");
+    const size_t budget = pb ? (size_t) strtoull(pb, nullptr, 10) : 0, used = pu ? (size_t) strtoull(pu, nullptr, 10) : 0;
+    const size_t eq = budget > used ? budget - used : 0;
+    mc->rp_avail0 = ram_avail_bytes();
+    mc->rp_want0 = eq;
+    std::string v;
+    if (eq > 0 && !(g && atoi(g) == 0) && !section.empty() && moe_state_get(section, rp_kept_key(), v)) {
+        const size_t kept = std::max((size_t) strtoull(v.c_str(), nullptr, 10), rp_grow_floor());   // a larger pass since then keeps its buffer free all the same
+        if (mc->rp_avail0 > kept) {
+            mc->rp_want0 = mc->rp_avail0 - kept;
+            mc->rp_extra = mc->rp_want0 > eq ? mc->rp_want0 - eq : 0;
+        }
+        const double G = 1073741824.0;
+        LLAMA_LOG_WARN("moe-cache: rampool: start %.1f GiB = RAM available %.1f - %.1f GiB the last session on %u GiB of RAM needed beside its pool (%s); the equation gave %.1f GiB\n",
+                mc->rp_want0 / G, mc->rp_avail0 / G, kept / G, ram_total_gib(), rp_kept_key().c_str(), eq / G);
+    }
+    return mc->rp_want0;
+}
+// after a resize: the RAM this session needs beside its pool, against the RAM that was available at its start (rp_start_want)
+static void rp_learn(moe_cache * mc, size_t pool_bytes) {
+    if (mc->profile.empty() || mc->rp_avail0 <= pool_bytes) { return; }
+    moe_state_set(mc->profile, {{ rp_kept_key(), std::to_string(mc->rp_avail0 - pool_bytes) }});
+}
 // Pinned host memory costs every card VRAM for its mapping (GLM 3.5, 101.9 GiB pinned: ~150 MiB per card). Pinned after the expert pool was sized, it ate the
 // margin and cuBLAS found no memory at the first prompt (2026-11-07). So the pool's bytes are pinned here, before the sizing, whose free VRAM then includes that cost.
-static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu) {
+static void rp_prepin(moe_cache * mc, ggml_backend_dev_t gpu, const std::string & section) {
     const char * rv = moe_opt("rampool");
     if (!rv || atoi(rv) == 0 || !gpu) { return; }
-    const char * pb = moe_opt("pin-budget"), * pu = moe_opt("pin-used");
-    const size_t budget = pb ? (size_t) strtoull(pb, nullptr, 10) : 0, used = pu ? (size_t) strtoull(pu, nullptr, 10) : 0;
-    const size_t want = budget > used ? budget - used : 0;
+    const size_t want = rp_start_want(mc, section);
     if (want == 0) { return; }
     mc->pin_buft = ggml_backend_dev_host_buffer_type(gpu);
     const int64_t t0 = ggml_time_us();
@@ -7704,7 +7755,7 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
             n_t++; bytes += ggml_nbytes(ts[k]);
         }
     }
-    const size_t avail = mem_available_bytes(), want = budget > used ? budget - used : 0;
+    const size_t avail = mem_available_bytes(), want = rp_start_want(mc, mc->profile);
     if (!gpu || n_t == 0 || want == 0 || mc->rd_threads <= 0) {
         LLAMA_LOG_WARN("moe-cache: rampool: off (%s; pin budget %.1f GiB, pinned by the loader %.1f GiB, %zu expert tensors mapped for direct reads, %zu read past their slice)\n",
                 !gpu ? "no GPU" : n_t == 0 ? "no expert tensor stayed mapped: the model fits the pin budget" : want == 0 ? "no budget left" : "no direct reads", budget / 1073741824.0, used / 1073741824.0, n_t, n_past);
@@ -7774,9 +7825,10 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
 #endif
     size_t ringed = 0;
     for (const auto & ls : mc->layers) { for (size_t i = RP_VIS - 1; i < ls.vis.size(); i += RP_VIS) { ringed += ls.vis[i] != 0; } }
-    LLAMA_LOG_WARN("moe-cache: rampool: %.1f of %.1f GiB expert slices in RAM (%.1f GiB filled, %d size classes, %zu tensors) = pin budget %.1f - pinned by the loader %.1f GiB, RAM available %.1f GiB, in %.1f s; "
+    LLAMA_LOG_WARN("moe-cache: rampool: %.1f of %.1f GiB expert slices in RAM (%.1f GiB filled, %d size classes, %zu tensors) = pin budget %.1f - pinned by the loader %.1f GiB%s, RAM available %.1f GiB, in %.1f s; "
             "picked by heat (%s): %zu experts with a visit ring (clock %u), the rest by lifetime count; %zu tensors read past their slice (their blocks carry those bytes)\n",
-            st.bytes / 1073741824.0, bytes / 1073741824.0, st.used / 1073741824.0, st.classes, n_t, budget / 1073741824.0, used / 1073741824.0, avail / 1073741824.0, (ggml_time_us() - t0) / 1e6,
+            st.bytes / 1073741824.0, bytes / 1073741824.0, st.used / 1073741824.0, st.classes, n_t, budget / 1073741824.0, used / 1073741824.0,
+            want != (budget > used ? budget - used : 0) ? tr_fmt(" (learned start %.1f GiB, rp_start_want)", want / 1073741824.0).c_str() : "", avail / 1073741824.0, (ggml_time_us() - t0) / 1e6,
             heat_from_file ? mc->heat_file.c_str() : "no heat file yet, the state's lifetime counts", ringed, mc->vis_now.load(), n_past);
     llama_moe_decision_fork("stage", "rampool fill", "");
 }
@@ -8150,8 +8202,9 @@ static std::mutex g_vram_mtx;
 // The RAM pool follows the RAM the system leaves, between requests (user 2026-11-02: "grow while the floor holds, unpin the last step when pressure shows"; 2026-11-10: the RAM
 // the mapping's page cache took is the pool's now, "we cant just ignore usable 1.8g on machines with 4-8 ram"). The least RAM available since the last resize (ram_sample,
 // a request and the idle time before it) against the floor (ram_floor_bytes): below it chunks go back at once, the least-read class's last chunk first; above it half of
-// what is left over is added, as empty blocks the misses fill (a few requests converge without overshooting, each shows the next where it stands). The start stays as it
-// was (common_auto_pin): a first request no session measured yet runs with the room it always had. Every GiB pinned takes each card's page tables (rp_vram_per, 2 MiB on
+// what is left over the grow floor is added (rp_grow_floor: a long prompt's pass keeps its host buffer), as empty blocks the misses fill (a few requests converge without
+// overshooting, each shows the next where it stands). Each resize stores the RAM the session needs beside its pool (rp_learn): the next start on this model and RAM size
+// begins where this one ended (rp_start_want); a first session starts at the equation (common_auto_pin). Every GiB pinned takes each card's page tables (rp_vram_per, 2 MiB on
 // PC1): a growth never takes a card's lowest free VRAM of this session below the safety the margin keeps over its need. Swap-out since the last resize (more than a
 // thousandth of the pool) is pressure too: what this session grew goes back first, as much as was swapped out, and nothing is added.
 static std::atomic<bool> g_rp_growing{false};   // a grow pins on its own thread: until it ends no resize starts and the teardown waits
@@ -8165,7 +8218,7 @@ static void rp_resize(moe_cache * mc) {
     const double G = 1073741824.0;
     // swapped out since the last resize, more than a thousandth of the pool: the last growth goes back (at most what this session added), and no new one
     const uint64_t swp = vm_swapped_out(), swp_b = swp - std::min(swp, g_swp_last.exchange(swp));
-    static size_t grown = 0;   // what the grows of this session added, less what went back
+    static size_t grown = mc->rp_extra;   // what the grows of this session (and its learned start) added, less what went back
     const size_t swap_back = swp_b > st0.bytes / 1024 ? std::min<size_t>(grown, (size_t) swp_b) : 0;
     if (low < floor || swap_back > 0) {
         // no graph runs between requests and every copy out of the pool outside one holds its block (take/drop): the last two graphs' elements may go too. Without this a
@@ -8175,13 +8228,15 @@ static void rp_resize(moe_cache * mc) {
         const size_t ask = std::max(low < floor ? floor - low : 0, swap_back);
         const size_t freed = ggml_rampool_shrink_fork(ask, rp_chunk_free);
         grown -= std::min(grown, freed);
+        if (freed > 0) { rp_learn(mc, st0.bytes - std::min<uint64_t>(st0.bytes, freed)); }
         const std::string line = tr_fmt("resize: %.2f GiB given back of %.2f GiB asked: RAM available fell to %.2f GiB since the last resize, floor %.2f GiB, %.2f GiB swapped out; pool %.1f GiB",
                 freed / G, ask / G, low / G, floor / G, swp_b / G, (st0.bytes - std::min<uint64_t>(st0.bytes, freed)) / G);
         llama_moe_stats_log_fork("RPL", line.c_str());
         LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
         return;
     }
-    size_t want = (low - floor) / 2;
+    const size_t gfloor = rp_grow_floor(), half = low > gfloor ? (low - gfloor) / 2 : 0;
+    size_t want = half;
     size_t vram_cap = SIZE_MAX;
     {
         std::lock_guard<std::mutex> lk(g_vram_mtx);
@@ -8197,12 +8252,13 @@ static void rp_resize(moe_cache * mc) {
     // pinning takes ~0.3 s per GiB (PC1, rp_prepin): on a thread of its own, the next request does not wait for it. Its chunks join under the pool's lock (readers
     // outside it index a chunk vector that never moves); rp_bufs is touched by nothing else meanwhile: a shrink waits for it (above), the teardown too
     g_rp_growing.store(true);
-    std::thread([mc, want, low, floor, vram_cap, pool0 = st0.bytes, gp = &grown]() {
+    std::thread([mc, want, low, gfloor, half, vram_cap, pool0 = st0.bytes, gp = &grown]() {
         const double G = 1073741824.0;
         const int64_t t0 = ggml_time_us();
         const size_t added = ggml_rampool_grow_fork(want, rp_grow_alloc);
         *gp += added;   // read by the next resize only once g_rp_growing is false again
         if (added > 0) {
+            rp_learn(mc, pool0 + added);
             std::lock_guard<std::mutex> lk(g_vram_mtx);
             const size_t cost = (size_t) ((double) std::max<size_t>(mc->rp_vram_per, ((size_t) 1 << 30) / 4096 * 8) * ((double) added / G));
             for (auto & d : g_vram) {   // the page tables are no need outside the pool: the watch's figure and the room above stay right
@@ -8210,8 +8266,8 @@ static void rp_resize(moe_cache * mc) {
                 if (d.low != SIZE_MAX) { d.low -= std::min(d.low, cost); }
             }
         }
-        const std::string line = tr_fmt("resize: %.2f GiB added of %.2f GiB asked in %.2f s: RAM available at least %.2f GiB since the last resize, floor %.2f GiB, half the rest%s; pool %.1f GiB",
-                added / G, want / G, (ggml_time_us() - t0) / 1e6, low / G, floor / G, vram_cap != SIZE_MAX && vram_cap < (low - floor) / 2 ? tr_fmt(", the cards' VRAM allows %.1f", vram_cap / G).c_str() : "",
+        const std::string line = tr_fmt("resize: %.2f GiB added of %.2f GiB asked in %.2f s: RAM available at least %.2f GiB since the last resize, kept %.2f GiB (floor, 4 GiB pass margin, largest pass), half the rest%s; pool %.1f GiB",
+                added / G, want / G, (ggml_time_us() - t0) / 1e6, low / G, gfloor / G, vram_cap != SIZE_MAX && vram_cap < half ? tr_fmt(", the cards' VRAM allows %.1f", vram_cap / G).c_str() : "",
                 (pool0 + added) / G);
         llama_moe_stats_log_fork("RPL", line.c_str());
         LLAMA_LOG_WARN("moe-cache: rampool: %s\n", line.c_str());
@@ -8434,7 +8490,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // n_slots < 0: fill each device's free VRAM (called after KV/compute buffers
         // exist), leaving a margin for the compute graph growing by the cache chain.
         // ponytail: one slot count per device, uniform over that device's layers.
-        rp_prepin(mc, ggml_backend_buft_get_device(groups.begin()->first));
+        rp_prepin(mc, ggml_backend_buft_get_device(groups.begin()->first), profile_path(model));
         ggml_backend_dev_t sz_dev = nullptr;   // the last sizing (slots_for): the block pool fills the rest of its last round from it
         size_t sz_free = 0, sz_margin = 0;
         int64_t sz_stored = -1;

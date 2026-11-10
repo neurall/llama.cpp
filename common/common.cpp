@@ -2057,6 +2057,7 @@ static void common_auto_pin(common_params & params) {
         const size_t pass_buf = common_pass_buffer_reserve(params);
         const size_t ram_total = common_ram_total();
         const size_t margin = std::max((size_t) 4 << 30, ram_total / 10) + pass_buf;
+        llama_moe_set_opt("pass-buf", std::to_string(pass_buf).c_str());   // the RAM pool's grow keeps it free too (llama-moecache-fork.cpp, rp_grow_floor)
         LOG_INF("%s: %.1f GiB of RAM kept free for the pinned host buffer of the largest prompt pass\n", __func__, pass_buf / 1073741824.0);
         if (avail && model_size + margin <= avail) {
             params.load_mode        = LLAMA_LOAD_MODE_NONE;
