@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+g35-pool-1,glm35,2,pf12k1k,1024,,
+g35-map-1,glm35,2,pf12k1k,1024,--moe rampool=0,
+g35-pool-2,glm35,2,pf12k1k,1024,,
+g35-map-2,glm35,2,pf12k1k,1024,--moe rampool=0,
