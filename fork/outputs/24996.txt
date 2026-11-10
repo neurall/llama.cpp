@@ -1,0 +1,7 @@
+run 24996 | touch4 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.32 t/s | prompt 182.3 t/s | 64 tokens | args: -np 1 -b 8192 -ub 1024 --moe pp-path=chain,pool-floor=1 | power 200+200 W | 2026-11-10 01:34:54
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0

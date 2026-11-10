@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+sp-glm-def,glm,2,pf12k,512,,
+sp-glm-bw,glm,2,pf12k,512,--moe split=bw,
+sp-mimo-def,mimo,2,pf12k,512,,
+sp-mimo-bw,mimo,2,pf12k,512,--moe split=bw,
+sp-ds-def,ds,2,pf12k,512,,
+sp-ds-bw,ds,2,pf12k,512,--moe split=bw,

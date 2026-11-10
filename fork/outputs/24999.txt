@@ -1,0 +1,11 @@
+run 24999 | touch4 | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.64 t/s | prompt 46.4 t/s | 64 tokens | args: -np 1 -b 8192 -ub 128 --moe pp-path=chain,pool-floor=1 | power 200+200 W | 2026-11-10 01:39:54
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            auto starts_with_unescaped = [&](const std::string & s, char c) {
+                if (s

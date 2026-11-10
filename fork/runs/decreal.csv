@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+dr-glm-tetris,glm,1,tetrisc,1024,"--moe state=/tmp/runstate/decreal/glm.ini",
+dr-glm-scifi,glm,1,scific,1024,"--moe state=/tmp/runstate/decreal/glm.ini",
+dr-glm-poem,glm,1,poemc,1024,"--moe state=/tmp/runstate/decreal/glm.ini",
+dr-glm-snake,glm,1,snakec,1024,"--moe state=/tmp/runstate/decreal/glm.ini",
+dr-glm-scifi2,glm,1,scifi2c,1024,"--moe state=/tmp/runstate/decreal/glm.ini",
+dr-glm-breakout,glm,1,breakoutc,1024,"--moe state=/tmp/runstate/decreal/glm.ini",
+dr-qni-tetris,qn_iq4xs,1,tetrisc,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-scifi,qn_iq4xs,1,scific,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-poem,qn_iq4xs,1,poemc,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-snake,qn_iq4xs,1,snakec,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-scifi2,qn_iq4xs,1,scifi2c,1024,"--moe state=/tmp/runstate/decreal/qni.ini",
+dr-qni-breakout,qn_iq4xs,1,breakoutc,1024,"--moe state=/tmp/runstate/decreal/qni.ini",

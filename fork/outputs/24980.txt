@@ -1,0 +1,7 @@
+run 24980 | touch4 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 42.98 t/s | prompt 1836.5 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-11-10 01:06:27
+
+    return params.speculative.types == (1u << COMMON_SPEC_TYPE_NONE)
+        || (params.speculative.types == (1u << COMMON_SPEC_TYPE_NGRAM) && params.speculative.types == params.speculative.types_all());
+}
+
+static bool is_diffusion(const common_params_model & model) {

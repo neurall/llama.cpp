@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+xa-glm-64,glm,2,pf4k,64,-b 8192 -ub 64 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xa-glm-256,glm,2,pf4k,64,-b 8192 -ub 256 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xa-glm-1024,glm,2,pf12k,64,-b 8192 -ub 1024 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xd-glm-64,glm,2,pf4k,64,-b 8192 -ub 64,--env CUDA_VISIBLE_DEVICES=1
+xd-glm-256,glm,2,pf4k,64,-b 8192 -ub 256,--env CUDA_VISIBLE_DEVICES=1
+xa-qni-64,qn_iq4xs,2,pf4k,64,-b 8192 -ub 64 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xa-qni-256,qn_iq4xs,2,pf4k,64,-b 8192 -ub 256 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xa-qni-1024,qn_iq4xs,2,pf12k,64,-b 8192 -ub 1024 --moe pool-floor=1,--env CUDA_VISIBLE_DEVICES=1
+xd-qni-64,qn_iq4xs,2,pf4k,64,-b 8192 -ub 64,--env CUDA_VISIBLE_DEVICES=1
+xd-qni-256,qn_iq4xs,2,pf4k,64,-b 8192 -ub 256,--env CUDA_VISIBLE_DEVICES=1

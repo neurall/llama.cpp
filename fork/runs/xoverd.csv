@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+xo-glm-64-r,glm,2,pf4k,64,"-b 8192 -ub 64 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-glm-64-s,glm,2,pf4k,64,"-b 8192 -ub 64 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-256-r,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 256 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-256-s,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 256 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-512-r,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 512 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-512-s,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 512 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-1024-r,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 1024 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-1024-s,qn_iq4xs,2,pf12k,64,"-b 8192 -ub 1024 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-128-r,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 128 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-128-s,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 128 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-64-r,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 64 --moe pp-path=chain,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1
+xo-qni-64-s,qn_iq4xs,2,pf4k,64,"-b 8192 -ub 64 --moe pp-path=stream,pool-floor=1",--env CUDA_VISIBLE_DEVICES=1

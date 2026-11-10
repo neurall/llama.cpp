@@ -1,0 +1,10 @@
+run 24979 | touch4 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 18.33 t/s | prompt 1560.3 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-11-10 01:05:29
+
+    return params.speculative.types.all == (
+        (1u << COMMON_SPEC_TYPE_NONE) |
+        (1u << COMMON_SPEC_TYPE_DRAFT) |
+        (1u << COMMON_SPEC_TYPE_NGRAM) |
+        (1u << COMMON_SPEC_TYPE_NGRAM_MAP));
+}
+
+static
