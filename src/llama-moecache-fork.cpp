@@ -13262,6 +13262,14 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             // shortcut: 256 is the sweep's crossover on MiMo and GLM, not computed (DeepSeek's is near 1000); use dec_max alone once it is built from a measured compute and link rate
             if (ok[p] && n > std::max((double) g_mb_auto.load(std::memory_order_relaxed), std::min(dec_max, 256.0)) && !known[p]) { ok[p] = false; }   // no trial past the crossover: MiMo 64k warm, a 16384-token decode chain trial calculated 8.6 s took 1170 s (the stream known, so the old test let it run)
         }
+        // R1's mirror: at or below that crossover the chains are the cold pick, so an arm that streams and never ran here is no trial there, while a chain can
+        // run. DeepSeek 117 tokens (2026-11-10, third start of two builds): two decode chain samples of 3.7 s left a mean of 14.2 s (the first sample's error
+        // went to the coefficient of the calculated time, which then read 4.4 s instead of 1.1), an unknown stream, k x1 drew 3.5 s and took 29.5 s (49 GB
+        // read from the SSD). A stream measured here competes on its mean at any size.
+        if (ok[PP_DEC] || ok[PP_CHAIN]) {
+            const double xo = std::max((double) g_mb_auto.load(std::memory_order_relaxed), std::min(dec_max, 256.0));
+            for (int p = 0; p < PP_PATHS; ++p) { if (p != PP_CHAIN && p != PP_DEC && ok[p] && !known[p] && n <= xo) { ok[p] = false; } }
+        }
         // The predictions compete on their calculated upload (user 2026-11-08: "if we are not trying it prior full stream than it is bug"), the lowest k first: it stages the least,
         // a higher k only after it ran. The mix competes on its mean up to PP_MIX_COLD (2026-11-08 auto rows: MiMo 418 tokens 3018 ms against the stream's 3834, 1016 tokens 3187
         // against 3907; Qwen3.8 IQ3 1.5-4.5k +18-47%, GLM 3.5 2.3k +10%); past it a mix that never ran here is a trial only, never a mean pick: its prior is the stream's (means
