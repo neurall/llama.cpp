@@ -1,0 +1,10 @@
+run 24967 | touch3 | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 8.79 t/s | prompt 426.5 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-11-10 00:49:59
+
+    return params.speculative.types == common_speculative_types_default();
+}
+
+static bool spec_types_is_ngram(const common_params & params) {
+    return params.speculative.types == common_speculative_types_ngram();
+}
+
+static bool spec_types_is_ngram_simple(const common_params

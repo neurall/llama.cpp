@@ -1,0 +1,7 @@
+run 24970 | horizon3 | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.3 t/s | prompt 716.5 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-11-10 00:54:47
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0

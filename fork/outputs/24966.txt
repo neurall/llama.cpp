@@ -1,0 +1,11 @@
+run 24966 | touch3 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 22.56 t/s | prompt 946.3 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-11-10 00:49:14
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_none(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types.front() == "none";
+}
+
+static bool spec_types_is_all(const common_params & params) {
+    return params.spec_types.size() == 

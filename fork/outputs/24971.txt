@@ -1,0 +1,8 @@
+run 24971 | horizon3 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 17.93 t/s | prompt 1377.2 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-11-10 00:55:36
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_MTP | SPEC_TYPE_NGRAM5 | SPEC_TYPE_NGRAM16);
+}
+
+static bool parse_url_model_type(const std::string & url, common_params_model_type & out) {
+    auto
