@@ -53,7 +53,9 @@ def complete_cells(con, build, rows):
     for r in rows:
         want = int(r['n'] or 1)
         best = 0
-        for sid, in con.execute('SELECT rowid FROM stats WHERE tag = ? ORDER BY rowid DESC', (f"{build}-{r['name']}",)):
+        for sid, args in con.execute('SELECT rowid, args FROM stats WHERE tag = ? ORDER BY rowid DESC', (f"{build}-{r['name']}",)):
+            if (r['args'] or '').strip() not in (args or ''):   # recorded with other arguments than the row has now (q35 before --moe sim-vram): not this row
+                continue
             k = con.execute("SELECT COUNT(DISTINCT req) FROM ppev WHERE stat_id = ? AND ev = 'PHA' AND path = 'prefill' AND req >= 0", (sid,)).fetchone()[0]
             if k >= want:
                 done[r['name']] = sid
@@ -166,6 +168,7 @@ def runsim_cmd(argv):
     if 'auto' not in {r['strat'] for r in rows if r['name'] in done}:
         sys.exit("sim: the auto row is not complete: nothing to replay")
     cells, tots = {}, {}
+    rows = [r for r in rows if r['strat'] != 'warm']   # the block's throwaway first start: no truth
     for r in rows:
         if r['name'] in done:
             cells[r['strat']], tots[r['strat']] = load_cell(con, done[r['name']])
