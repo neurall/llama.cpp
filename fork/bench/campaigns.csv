@@ -7252,3 +7252,5 @@ touch5-dr-qni-snake-snakec,2026-11-10 03:25:33,bench /m/q/4/Qwen3.8-Flash-Next-U
 touch5-dr-qni-scifi2-scifi2c,2026-11-10 03:26:40,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds touch5 variants v test scifi2c n=1,,
 touch5-dr-qni-breakout-breakoutc,2026-11-10 03:27:47,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds touch5 variants v test breakoutc n=1,,
 touch5-glm30-pf12k4k,2026-11-10 03:29:23,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch5 variants v test pf12k n=2,,
+touch6-fx-qni-12k-pf12k,2026-11-10 03:34:25,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf builds touch6 variants v test pf12k n=2,,
+touch6-fx-glm-12k-pf12k,2026-11-10 03:35:56,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch6 variants v test pf12k n=2,,
