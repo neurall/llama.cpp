@@ -7693,7 +7693,8 @@ def run_list(name, argv):
             if rec.get("section") == "running" and run_since: rec["el"] = time.time() - run_since   # elapsed since the cell process started, not the time of an earlier run of it
             if rec.get("section") == "running" and not rec.get("exp"): rec["exp"] = cell_expect(rec["model"], rec["test"], 2, rec["tag"].split("-")[0], o.warm)   # the cell may be one the -nrt skip dropped from rows: its model and test come from its record
         qd = queue_waiting()   # tasks of the queue daemon (tasks.csv): only their name is known; a stopped daemon starts none of them, they are counted, not listed
-        qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"]).returncode == 0
+        try: qd_on = subprocess.run(["systemctl", "is-active", "--quiet", "queued.service"], timeout=5).returncode == 0
+        except subprocess.TimeoutExpired: qd_on = False   # PID 1 stuck in D (2026-11-10): systemctl never returns
         for t in (qd if qd_on else []):
             CELL_REC.append(dict(tag=t, section="queued", asked=0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt="", model="", test="", name=t, el=None, lt="", rc=0, res=[], st=None, stock_row=False))
         print(col(1, hw_line()) + "\n" + "\n".join(final_table(CELL_REC)), flush=True)
