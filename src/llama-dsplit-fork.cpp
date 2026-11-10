@@ -1468,6 +1468,10 @@ void llama_dsplit_bench_fork(const llama_model & model) {
     for (const auto & d : model.devices) { if (dsplit_card(model, d.dev)) { devs.push_back(d.dev); } }
     std::lock_guard<std::mutex> lk(g_plan_mu);
     dsplit_mm_bench(model, devs);
+    // the state file's section and hardware key now, under the reads: the moe-cache's posteriors (pp.rls.*) are read through them. Set only by the first
+    // split plan before, after the first prompt call had planned from the priors (fillread2 GLM 100 tokens: its plan saw decode chain n=0, the split plan the
+    // stored n=1 one); a machine that never plans a split (one card) may never have set them
+    dsplit_calib_load(model);
 }
 
 llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int64_t n_tokens) {
