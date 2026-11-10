@@ -12757,7 +12757,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             const double best = b >= 0 ? pp_took_us(b, n1) : 0.0;
             g_pp_total_us += (double) us;
             if (was <= 0.0 && best > 0.0 && took > best) { g_pp_lost_us += (took - best) * P; }
-            if (path == PP_CHAIN && n1 >= PP_MIN_BATCH) {
+            if (path == PP_CHAIN && n1 >= PP_MIN_BATCH && std::fabs(g_pp_phi[path][1] - n1) <= 32.0) {   // only when the sample's pass is the one its upload was calculated for (a fixed -ub cuts a call into passes the planner does not count)
                 double & w = g_pp_wait_us[pp_bucket(n1)];
                 const double got = std::max(1.0, took - g_pp_up_call - g_pp_c_us * n1);
                 w = w > 0.0 ? std::min(w, got) : got;
@@ -13083,11 +13083,12 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         if (pp_switch && ok[PP_RING] && ok[PP_CHAIN]) {
             const double wait = pp_wait_us(n), comp = g_pp_c_us * n;
             const double ran_r = pp_took_us(PP_CHAIN, n), ran_s = pp_took_us(PP_RING, n);
-            const double t_r = ran_r > 0.0 ? ran_r : up + wait + comp, t_s = ran_s > 0.0 ? ran_s : std::max(Ts, comp);
+            // U, not Ts: Ts adds the SSD for tensors it takes to be mapped, and counted 93 GB of GLM's locked weights at 6.3 GB/s (14.8 s against a 3.9 s upload)
+            const double t_r = ran_r > 0.0 ? ran_r : up + wait + comp, t_s = ran_s > 0.0 ? ran_s : std::max(U, comp);
             const bool stream = t_s <= t_r;
             ok[stream ? PP_CHAIN : PP_RING] = false;
             llama_moe_stats_log_fork("DEC", format("prompt call of %.0f tokens: %s: router %.3f ms per token (%s; picks %.0f, wait %.0f, compute %.0f ms), full stream %.3f ms per token (%s; upload %.0f ms)", n, stream ? "full stream" : "router",
-                    t_r / 1e3 / n, ran_r > 0.0 ? "measured" : "estimate", up / 1e3, wait / 1e3, comp / 1e3, t_s / 1e3 / n, ran_s > 0.0 ? "measured" : "estimate", Ts / 1e3).c_str());
+                    t_r / 1e3 / n, ran_r > 0.0 ? "measured" : "estimate", up / 1e3, wait / 1e3, comp / 1e3, t_s / 1e3 / n, ran_s > 0.0 ? "measured" : "estimate", U / 1e3).c_str());
         }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
