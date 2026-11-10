@@ -1630,7 +1630,10 @@ void llama_context::sched_reserve() {
     const uint32_t n_seqs = cparams.n_seq_max;
     const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
 
-    const size_t max_nodes = this->graph_max_nodes(n_tokens);
+    // fork: the size the first micro-batch cut below came from: fit_ub goes back up to it once the pools exist, so the reserve graphs are sized for it
+    static const llama_context * ub_asked_ctx = nullptr;
+    static uint32_t ub_asked = 0;
+    const size_t max_nodes = this->graph_max_nodes(std::max(n_tokens, ub_asked_ctx == this ? ub_asked : 0u));
 
     LLAMA_LOG_DEBUG("%s: max_nodes = %zu\n", __func__, max_nodes);
 
@@ -1738,6 +1741,8 @@ void llama_context::sched_reserve() {
         if (u >= 512 && u < n_tokens) {
             LLAMA_LOG_WARN("%s: micro-batch from free VRAM: %u tokens (configured %u; %s)\n", __func__, u, n_tokens, why.c_str());
             llama_moe_decision_fork("ubatch", std::to_string(u).c_str(), ("free VRAM at the first reserve: " + why).c_str());
+            static const bool ub_up = [] { const char * e = llama_moe_get_opt("ub-up"); return e && atoi(e) != 0; }();   // A/B 2026-11-10 (user): off = the cut stays
+            if (ub_up) { ub_asked_ctx = this; ub_asked = n_tokens; }
             cparams.n_ubatch = u;
             sched_need_reserve = true;
             sched_reserve();
@@ -1776,6 +1781,18 @@ void llama_context::sched_reserve() {
             llama_moe_decision_fork("stage", "micro-batch size chosen", "");
         };
         if (fits(hi)) {
+            // The free-VRAM cut of the first reserve is made before the pools lend anything and can sit well below what they hold (two cards, GLM 3.0: 10144 tokens where 13024 fit, so a
+            // 12k prompt took two passes, each with the whole fixed cost of a pass). Back up along the line through the origin per card, at most to the size asked; a probe that does not fit steps down 1/32.
+            const uint32_t asked = ub_asked_ctx == this ? ub_asked : 0;
+            if (asked > hi) {
+                double scale = (double) asked / (double) hi;
+                for (const auto & [i, d] : gi) { if (s[i] > 0) { scale = std::min(scale, (double) llama_moe_cache_alias_room_fork(d, hi) / (double) s[i]); } }
+                uint32_t up = (uint32_t) ((double) hi * scale) / 32 * 32;
+                for (int k = 0; k < 3 && up >= hi + 32; ++k, up -= std::max<uint32_t>(32, up / 32 / 32 * 32)) {
+                    if (fits(up)) { say(up, "above the free-VRAM cut"); return up; }
+                }
+                fits(hi);   // the sizes of the answer for the log line
+            }
             say(hi, "the configured size fits");
             return hi;
         }
@@ -1821,7 +1838,7 @@ void llama_context::sched_reserve() {
     if (!moe_alias_bufs.empty() && !model.no_alloc() && ub_fitted != this && n_tokens > 512) {
         ub_fitted = this;
         const uint32_t u = fit_ub(n_tokens);
-        if (u >= 512 && u < n_tokens) {
+        if (u >= 512 && u != n_tokens) {
             cparams.n_ubatch = u;
             sched_need_reserve = true;
             sched_reserve();

@@ -2331,7 +2331,8 @@ uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch
     if (!e || strcmp(e, "1") != 0 || !sp || strcmp(sp, "0") == 0) { return n_ubatch; }   // the loop is off unless --moe split-pass=1 (default off since 2026-10-25)
     // Max pass by default, except for models with sliding-window layers (MiMo): their ring doubles with the pass, which costs ~1.5 GiB of expert cache per card
     // and attention over the bigger ring; 60k prompt, forced split: 16k pass 865-886 t/s vs 32k pass 684-758 (MiMo), while Qwen3.8 gained +7% from the 32k pass.
-    for (uint32_t il = 0; il < model->hparams.n_layer(); ++il) { if (model->hparams.is_swa(il)) { return n_ubatch; } }
+    static const bool swa_big = [] { const char * v = llama_moe_get_opt("swa-big"); return v && atoi(v) != 0; }();   // A/B 2026-11-10 (user): the big pass on SSD-bound MiMo
+    for (uint32_t il = 0; il < model->hparams.n_layer() && !swa_big; ++il) { if (model->hparams.is_swa(il)) { return n_ubatch; } }
     std::lock_guard<std::mutex> lk(g_mu);
     const auto it = g_sets.find(model);
     if (it == g_sets.end() || it->second.failed || it->second.resident || it->second.mirror.size() < 2) { return n_ubatch; }
