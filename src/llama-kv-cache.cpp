@@ -1285,6 +1285,15 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
                 LLAMA_LOG_ERROR("%s: failed to allocate compute graph for K-shift\n", __func__);
                 return updated;
             }
+            // fork: --moe alias: this context's graphs live in the expert pool, the K-shift's too. The pool lends it the blocks it reaches before anything writes
+            // them, as process_ubatch does; without the lend the shift's tensors (an F32 copy of a layer's K when K is quantized) overwrote cached experts (audit 2026-11-10)
+            if (!lctx->moe_alias_bufs.empty()) {
+                llama_moe_cache_alias_fork(sched, 1);
+                if (const char * why = llama_moe_cache_alias_err_fork()) {
+                    LLAMA_LOG_ERROR("%s: the K-shift graph does not fit the expert pool: %s\n", __func__, why);
+                    return updated;
+                }
+            }
 
             res->set_inputs(nullptr);
 

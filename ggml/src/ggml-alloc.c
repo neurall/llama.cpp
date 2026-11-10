@@ -597,7 +597,10 @@ void ggml_gallocr_set_external_buffer(ggml_gallocr_t galloc, int buffer_id, ggml
         galloc->ext_twin[buffer_id] = *buffer;
         galloc->ext_twin[buffer_id].usage = GGML_BACKEND_BUFFER_USAGE_COMPUTE;
     }
-    galloc->ext_buf[buffer_id] = buffer ? &galloc->ext_twin[buffer_id] : NULL;
+    // GGML_GALLOC_TWIN=0 places through the pool buffer itself, as before: only to test that the pool guard (--moe guard) finds that bug
+    static int twin = -1;
+    if (twin < 0) { const char * e = getenv("GGML_GALLOC_TWIN"); twin = !(e != NULL && atoi(e) == 0); }
+    galloc->ext_buf[buffer_id] = buffer ? (twin ? &galloc->ext_twin[buffer_id] : buffer) : NULL;
     galloc->ext_off[buffer_id] = offset;
     galloc->ext_cap[buffer_id] = buffer ? capacity : 0;
 }

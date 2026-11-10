@@ -1012,6 +1012,8 @@ static void ggml_backend_cuda_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     delete ctx;
 }
 
+extern "C" void ggml_backend_fork_pool_access(const struct ggml_tensor * t, const void * ptr, size_t len, const char * op);   // ggml-backend.cpp: the pool guard (no header edit)
+
 static bool ggml_backend_buffer_is_cuda(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_cuda_buffer_free_buffer;
 }
@@ -1036,6 +1038,7 @@ static enum ggml_status ggml_backend_cuda_buffer_init_tensor(ggml_backend_buffer
 
         if (padded_size > original_size) {
             ggml_cuda_set_device(ctx->device);
+            ggml_backend_fork_pool_access(tensor, (char *)tensor->data + original_size, padded_size - original_size, "init_tensor padding clear");
             CUDA_CHECK(cudaMemsetAsync((char *)tensor->data + original_size, 0, padded_size - original_size, cudaStreamPerThread));
             CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
         }

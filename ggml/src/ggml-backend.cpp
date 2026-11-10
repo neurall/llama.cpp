@@ -489,11 +489,21 @@ static bool ggml_backend_tensor_batch_is_2d(
     return true;
 }
 
+// fork: the pool guard (--moe guard, registered by llama-moecache-fork.cpp). Writes into device memory that ggml makes on its own (tensor set, memset and copy,
+// CUDA's init_tensor padding clear, the matmuls' padding clear) pass through here first, so a write into bytes another owner holds right now is named where it
+// happens (2026-11-10: init_tensor zeroed row padding inside cached experts, which no check of ours could see). NULL: off, one pointer test per call.
+static void (*g_pool_access_fork)(const struct ggml_tensor * t, const void * ptr, size_t len, const char * op) = NULL;
+extern "C" GGML_API void ggml_backend_fork_set_pool_access(void (*fn)(const struct ggml_tensor *, const void *, size_t, const char *)) { g_pool_access_fork = fn; }
+extern "C" GGML_API void ggml_backend_fork_pool_access(const struct ggml_tensor * t, const void * ptr, size_t len, const char * op) {
+    if (g_pool_access_fork != NULL && len > 0) { g_pool_access_fork(t, ptr, len, op); }
+}
+
 void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(backend);
     GGML_ASSERT(tensor);
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
     GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of bounds");
+    ggml_backend_fork_pool_access(tensor, (const char *) tensor->data + offset, size, "tensor_set_async");
 
     if (backend->iface.set_tensor_async == NULL) {
         ggml_backend_synchronize(backend);
@@ -570,6 +580,7 @@ void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, siz
 
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
     GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of bounds");
+    ggml_backend_fork_pool_access(tensor, (const char *) tensor->data + offset, size, "tensor_set");
 
     buf->iface.set_tensor(buf, tensor, data, offset, size);
 }
@@ -793,6 +804,7 @@ void ggml_backend_tensor_memset(struct ggml_tensor * tensor, uint8_t value, size
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
     GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of bounds");
     GGML_ASSERT(buf->iface.memset_tensor != NULL && "memset not implemented by backend buffer");
+    ggml_backend_fork_pool_access(tensor, (const char *) tensor->data + offset, size, "tensor_memset");
 
     buf->iface.memset_tensor(buf, tensor, value, offset, size);
 }
@@ -884,6 +896,9 @@ void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor
         return;
     }
 
+    if (!ggml_backend_buffer_is_host(src->buffer) && !ggml_backend_buffer_is_host(dst->buffer)) {
+        ggml_backend_fork_pool_access(dst, dst->data, ggml_nbytes(dst), "tensor_copy");   // device to device (a host source goes through tensor_set)
+    }
     if (ggml_backend_buffer_is_host(src->buffer)) {
         ggml_backend_tensor_set(dst, src->data, 0, ggml_nbytes(src));
     } else if (ggml_backend_buffer_is_host(dst->buffer)) {
@@ -1341,6 +1356,7 @@ void ggml_backend_tensor_copy_async(ggml_backend_t backend_src, ggml_backend_t b
     }
 
     GGML_ASSERT(backend_dst);
+    ggml_backend_fork_pool_access(dst, dst->data, ggml_nbytes(dst), "tensor_copy_async");
     if (backend_dst->iface.cpy_tensor_async != NULL) {
         if (backend_dst->iface.cpy_tensor_async(backend_src, backend_dst, src, dst)) {
             return;

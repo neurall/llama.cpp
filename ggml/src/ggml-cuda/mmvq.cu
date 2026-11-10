@@ -12,6 +12,7 @@
 #include <map>
 #include <mutex>
 #endif
+extern "C" void ggml_backend_fork_pool_access(const struct ggml_tensor * t, const void * ptr, size_t len, const char * op);   // ggml-backend.cpp: the pool guard (no header edit)
 
 // only enabled on DGX Spark, where it is a gain on every type below. On the higher-bandwidth parts the kernel
 // has little exposed latency left to hide and the extra requests cost more than they save.
@@ -1681,6 +1682,7 @@ void ggml_cuda_mul_mat_vec_q(
         if (size_alloc > size_data) {
             GGML_ASSERT(ggml_is_contiguously_allocated(src0));
             GGML_ASSERT(!src0->view_src);
+            ggml_backend_fork_pool_access(src0, (char *) src0->data + size_data, size_alloc - size_data, "mmvq padding clear");
             CUDA_CHECK(cudaMemsetAsync((char *) src0->data + size_data, 0, size_alloc - size_data, stream));
         }
     }

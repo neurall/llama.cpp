@@ -4,6 +4,7 @@
 #include "mmid.cuh"
 
 #include <cstdint>
+extern "C" void ggml_backend_fork_pool_access(const struct ggml_tensor * t, const void * ptr, size_t len, const char * op);   // ggml-backend.cpp: the pool guard (no header edit)
 
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream, const ggml_prec prec_src1) {
     switch (args.type_x) {
@@ -215,6 +216,7 @@ void ggml_cuda_mul_mat_q(
             if (size_alloc > size_data) {
                 GGML_ASSERT(ggml_is_contiguously_allocated(t));
                 GGML_ASSERT(!t->view_src);
+                ggml_backend_fork_pool_access(t, (char *) t->data + size_data, size_alloc - size_data, "mmq padding clear");
                 CUDA_CHECK(cudaMemsetAsync((char *) t->data + size_data, 0, size_alloc - size_data, stream));
             }
         }
@@ -335,9 +337,11 @@ void ggml_cuda_mul_mat_q(
         const int si1  = ids->nb[1] / ggml_element_size(ids);
         const int sis1 = nb12 / nb11;
 
-        if (dst->op_params[1] != 0) {
+        {
             // ids may be -1 (skipped experts): the helper writes no entries for them; row 0 is a safe target (it lies
             // in the unused compact range below expert 0, which holds the skipped slots)
+            // Always, not only when the outputs are zeroed (op_params[1]): the prompt chain counts on its misses being uploaded behind the router, but an
+            // upload skipped inside a move range leaves a -1 there too, and then stale scratch bytes picked the rows written (audit 2026-11-10). A few KiB per call.
             CUDA_CHECK(cudaMemsetAsync(ids_src1.get(), 0, ne_get_rows*sizeof(int32_t), stream));
             CUDA_CHECK(cudaMemsetAsync(ids_dst.get(),  0, ne_get_rows*sizeof(int32_t), stream));
             // the seams below expert 0 (the -1 columns) are never written by the helper and mul_mat_q reads every tile_spec entry: a zeroed spec is

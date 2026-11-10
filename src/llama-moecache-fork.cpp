@@ -2409,6 +2409,75 @@ static bool pool_gate(const moe_cache::alias_pool & ap, size_t lo, size_t hi, co
     }
     return false;
 }
+// --moe guard=1|2 (debug): the pool guard. ggml's own writes into device memory (tensor set, memset and copy, CUDA's init_tensor padding clear, the matmuls'
+// padding clears) reach pool_guard_access through ggml_backend_fork_pool_access before they are made; it checks them against who owns those bytes right now.
+// Allowed: graph memory (usage COMPUTE, the gallocr twin) inside the lend [0, want_b); an expert class tensor (an upload) outside the lend and the zone; any
+// other named tensor inside the lend or inside the zone. Everything else is a VIOLATION, logged with the block's owner and expert (guard=1) or aborted on (2).
+// Our own writers (uploads, keep-hot, zone moves, zero restores, poison) pass unnamed temporary tensors and have their own checks (pool_gate, the ledger).
+// Found by it: 2026-11-10, CUDA's init_tensor zeroed the padding behind graph tensors placed through the pool buffer before the lend (f6dbde5665).
+extern "C" void ggml_backend_fork_set_pool_access(void (*fn)(const struct ggml_tensor *, const void *, size_t, const char *));   // ggml-backend.cpp (no header edit)
+static int guard_level() {
+    static const int v = [] { const char * e = moe_opt("guard"); return e ? std::max(0, atoi(e)) : 0; }();
+    return v;
+}
+static std::atomic<int64_t> g_guard_n{0}, g_guard_bad{0};
+static void pool_guard_access(const ggml_tensor * t, const void * ptr, size_t len, const char * op) {
+    moe_cache * mc = g_cache;
+    if (!mc || !t || t->name[0] == '\0') { return; }
+    for (const auto & ap : mc->alias) {
+        if (!ap.buf) { continue; }
+        const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+        const uint8_t * p    = (const uint8_t *) ptr;
+        if (p < base || p >= base + ggml_backend_buffer_get_size(ap.buf)) { continue; }
+        g_guard_n++;
+        const size_t lo = (size_t) (p - base), hi = lo + len;
+        const bool graph = t->buffer && ggml_backend_buffer_get_usage(t->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE;
+        const bool cls   = strncmp(t->name, "moe_cache_", 10) == 0 || strncmp(t->name, "moe_jit_", 8) == 0;
+        const size_t zlo = ap.kv_start, zhi = ap.kv_h > 0 ? led_kv_end(ap) : 0;
+        const bool in_lend   = hi <= ap.want_b;
+        const bool in_zone   = zhi > zlo && lo >= zlo && hi <= zhi;
+        const bool hits_lend = lo < ap.want_b;
+        const bool hits_zone = zhi > zlo && lo < zhi && hi > zlo;
+        const char * why = nullptr;
+        if (graph)          { why = in_lend ? nullptr : "graph memory outside the lend"; }
+        else if (cls)       { why = hits_lend ? "an expert upload into the lend" : hits_zone ? "an expert upload into the KV zone" : nullptr; }
+        else if (hits_zone) { why = in_zone ? nullptr : "across the KV zone's edge"; }
+        else                { why = in_lend ? nullptr : "into expert blocks, outside the lend and the zone"; }
+        poolx_ranges<const void *>::ent fl[2];
+        const int n_fl = g_ranges.writers(&ap, lo, hi, fl, 2);   // a DMA into these bytes still running: whoever owns them, this write races it
+        if (!why && n_fl > 0) { why = "into bytes an in-flight DMA is writing"; }
+        if (!why) { return; }
+        const int64_t nb = ++g_guard_bad;
+        if (nb <= 64 || guard_level() >= 2) {
+            std::string owners;
+            for (const auto & sg : ap.segs) {
+                const size_t s0 = sg.base, s1 = sg.base + (size_t) sg.n * sg.B;
+                if (sg.B == 0 || hi <= s0 || lo >= s1 || sg.pcls < 0 || sg.pcls >= (int32_t) mc->pool.size()) { continue; }
+                const auto & ps = mc->pool[sg.pcls];
+                for (size_t b = (std::max(lo, s0) - s0) / sg.B; b < (size_t) sg.n && s0 + b * sg.B < hi && owners.size() < 400; ++b) {
+                    const int32_t own = b < ps.owner.size() ? ps.owner[b] : -9;
+                    const int32_t e   = own >= 0 && (size_t) own < mc->layers.size() && b < mc->layers[own].slot_expert.size() ? mc->layers[own].slot_expert[b] : -1;
+                    owners += tr_fmt(" class %d block %zu +%zu: %s", sg.pcls, b, std::max(lo, s0 + b * sg.B) - (s0 + b * sg.B),
+                            own >= 0 ? tr_fmt("L%d e%d", own, e).c_str() : own == -1 ? "free" : own == -2 ? "lent" : own == -3 ? "KV zone" : "?");
+                }
+            }
+            LLAMA_LOG_ERROR("pool-guard: VIOLATION %lld on %s: %s %s '%s' (%s ne0 %lld, %s) writes [%.6f, %.6f) MiB (%zu bytes): %s; lend [0, %.3f) MiB, zone [%.3f, %.3f) MiB;%s\n",
+                    (long long) nb, led_card(ap), op, graph ? "graph tensor" : cls ? "expert class tensor" : "tensor", t->name, ggml_type_name(t->type), (long long) t->ne[0],
+                    t->buffer ? ggml_backend_buffer_name(t->buffer) : "no buffer", lo / 1048576.0, hi / 1048576.0, len, why, ap.want_b / 1048576.0, zlo / 1048576.0, zhi / 1048576.0,
+                    owners.empty() ? " no expert block" : owners.c_str());
+            for (int i = 0; i < std::min(n_fl, 2); ++i) {
+                LLAMA_LOG_ERROR("pool-guard:   in-flight write [%.6f, %.6f) MiB, started %.3f ms ago\n", fl[i].lo / 1048576.0, fl[i].hi / 1048576.0,
+                        (poolx_ranges<const void *>::now_us() - fl[i].t0) / 1e3);
+            }
+            if (led_on()) { led_line(led_card(ap), "OVERLAP", lo, hi, tr_fmt("guard: %s '%s': %s", op, t->name, why)); }
+        }
+        if (guard_level() >= 2) {
+            GGML_ABORT("pool-guard: --moe guard=2 stops at the first violation (above)");
+        }
+        return;
+    }
+}
+
 // Fill ids (the dump and the ledger): graph (cb) 1, CUDA scratch (sc) 2, prefetch staging (ub) 3, KV zone rows 4, expert blocks 5; the zero blocks stay 0. The first NaN the
 // scheduler finds (GGML_SCHED_NAN_CHECK=1) writes pool-dump-<card>.txt into the log directory: the region map and, per MiB, the byte that fills most of it, how much of the MiB
 // that is, and the writers named in it.
@@ -9721,6 +9790,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         }
         g_cache = mc;
         g_init_done = true;
+        if (guard_level() > 0) {
+            ggml_backend_fork_set_pool_access(pool_guard_access);
+            LLAMA_LOG_WARN("%s: pool guard on (--moe guard=%d): ggml's own writes into the pool are checked against their owners, %s\n", __func__, guard_level(),
+                    guard_level() >= 2 ? "the first violation aborts" : "violations are logged");
+        }
 
         miss_dev_setup(mc);
         LLAMA_LOG_WARN("%s: MoE expert cache enabled: %zu layers, slots/layer %d..%d, %d inserts/step, %.1f MiB device memory\n",
