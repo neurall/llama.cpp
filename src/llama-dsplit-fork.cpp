@@ -679,7 +679,12 @@ static std::string rls_key(const char * what) {
     const char * r = llama_moe_get_opt("regime");
     return std::string(what) + "%" + (r ? r : "-");
 }
-static bool dsplit_state_on() { return !g_calib_section.empty() && !g_hw_key.empty() && llama_moe_get_opt("build-id"); }   // no build id (a tool without common's setup): session only
+// --moe verify: its readbacks run inside the timed calls, so its samples are no path's time; a verify row stored a decode chain posterior with the upload x11.2
+// and the next row of the build (fillread2, GLM 3.0 100 tokens) read one card 24.08 s against 2.27, tried the split: 5.6 s against about 2.1
+static bool dsplit_state_on() {
+    static const bool verify = [] { const char * e = llama_moe_get_opt("verify"); return e && atoi(e) != 0; }();
+    return !verify && !g_calib_section.empty() && !g_hw_key.empty() && llama_moe_get_opt("build-id");   // no build id (a tool without common's setup): session only
+}
 // ---- dense-split factors learned from every request (user 2026-10-25: "any request measures and stores ... per GPU per token times"; "decide dense on or off
 // from them for a given prompt length") ------------------------------------------------------------------------------------------------------------------------
 // Every prompt pass, one card or split, is timed: wall time from its decision to the synchronize before the next pass (or the end of its call), the copy
