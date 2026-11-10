@@ -12896,6 +12896,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         std::lock_guard<std::mutex> lock(mc->mtx);
         const double r0 = mc->gbs_link[0] * 1e3;   // bytes / us
         const double rc = cpu_gbs_now(mc) * 1e3;   // as llama_moe_cache_jit_fork
+        ggml_backend_buffer_type_t pinned_buft = mc->link_dev[0] ? ggml_backend_dev_host_buffer_type(mc->link_dev[0]) : nullptr;
         cpu_known = rc > 0.0;
         for (const auto & l : mc->layers) {
             if (!l.pub.up_src || !l.pub.gate_src || !l.pub.down_src) {
@@ -12909,7 +12910,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             double Sm = 0.0;   // one expert of this layer, as far as its tensors are not pinned (the mapping reads them from the file)
             for (int k = 0; k < 3; ++k) {
                 const ggml_tensor * t = k == 0 ? l.pub.up_src : k == 1 ? l.pub.gate_src : l.pub.down_src;
-                if (l.src_fd[k] < 0 || !t->buffer) { continue; }
+                // a tensor in the card's pinned host buffer is resident (read straight into place, locked): it never comes off the SSD. Counting it as mapped priced
+                // GLM 3.0's 100.5 GiB of locked weights as SSD reads at 6.3 GB/s (stream 17.5 s, decode chain 19.7 s for a 100-token call) and only the mix escaped it
+                if (l.src_fd[k] < 0 || !t->buffer || (pinned_buft && ggml_backend_buffer_get_type(t->buffer) == pinned_buft)) { continue; }
                 const char * b = (const char *) ggml_backend_buffer_get_base(t->buffer);
                 if ((const char *) t->data >= b && (const char *) t->data < b + ggml_backend_buffer_get_size(t->buffer)) { Sm += (double) t->nb[2]; }
             }
