@@ -7354,3 +7354,5 @@ touch13-dc-glm-scifi-scific,2026-11-10 08:06:25,bench /m/gl/3/GLM-5.3-Flash-GSQ-
 touch13-dc-mimo-scifi-scific,2026-11-10 08:07:59,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds touch13 variants v test scific n=1,,
 touch14-dc-ds-12k-pf12k,2026-11-10 08:11:52,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds touch14 variants v test pf12k n=2,,
 touch14-dc-ds-scifi-scific,2026-11-10 08:14:50,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds touch14 variants v test scific n=1,,
+touch15-glm30-pf12k4k,2026-11-10 08:19:13,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds touch15 variants v test pf12k n=2,,
+touch15-glm35-pf12k4k,2026-11-10 08:28:46,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds touch15 variants v test pf12k n=2,,

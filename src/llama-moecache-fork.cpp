@@ -12955,13 +12955,17 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             const double S  = (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
             A += (double) mc->n_expert_used * S;
             const double rl = mc->gbs_link[l.link] * 1e3;
+            // how often each expert is picked: the state's lifetime counts plus the RAM pool's heat file. A fresh state has no counts, every expert then looked equally likely
+            // and a 117-token DeepSeek pass was priced as touching 97% of each layer, the SSD-only cold ones among them (decode chain 6.95 s planned, 2.1 s taken; 65 of 256
+            // experts missed in layer 0), while the pool had been filled by that very heat (2026-11-10)
+            auto picks_of = [&](size_t e) { return (double) l.glob_count[e] + (e < l.heat_cnt.size() ? (double) l.heat_cnt[e] : 0.0); };
             double all = (double) l.glob_count.size();
-            for (const auto x : l.glob_count) { all += (double) x; }
+            for (size_t e = 0; e < l.glob_count.size(); ++e) { all += picks_of(e); }
             for (size_t e = 0; e < l.expert_slot.size(); ++e) {
                 const bool on_card = l.expert_slot[e] >= 0;
                 const double Sm = pp_mapped_expert_bytes(l, pinned_buft, (int64_t) e);   // what the SSD delivers of it: nothing where it is pinned or in the RAM pool
                 // its share of one token's picks: k (count + 1) / (all counts + experts), so a model nobody ran yet counts as uniform
-                pp_sums_add(sums, n, S, Sm, on_card, l.link == 0, (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all, r0, rl, rc);
+                pp_sums_add(sums, n, S, Sm, on_card, l.link == 0, (double) mc->n_expert_used * (picks_of(e) + 1.0) / all, r0, rl, rc);
             }
         }
     }
