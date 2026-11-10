@@ -41,6 +41,7 @@ decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat
 import argparse, atexit, math, csv, glob, hashlib, io, json, os, random, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
 
 import types, collections, tempfile
+__import__("faulthandler").register(signal.SIGUSR1, all_threads=True)   # kill -USR1 PID: every thread's stack to stderr (a run hung between rows, 2026-11-10)
 
 
 def _register(name, ns):
@@ -1139,6 +1140,7 @@ def cmd_memwatch(a):
             d = {}
             for l in open(f"/proc/{a.pid}/status"):
                 k, _, v = l.partition(":")
+                if k == "State" and v.split()[0] == "Z": return None   # a zombie is gone (2026-11-10: PID 1 stuck in D never reaped one, memwatch ran on)
                 if k in ("VmRSS", "RssAnon", "RssFile", "VmSwap", "VmLck", "VmPin"): d[k] = int(v.split()[0]) / 1048576.0
             return d
         except (OSError, ValueError):
