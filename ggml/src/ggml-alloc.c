@@ -504,6 +504,7 @@ struct ggml_gallocr {
     ggml_backend_buffer_t * ext_buf;    // [n_buffers]
     size_t * ext_off;                   // [n_buffers]
     size_t * ext_cap;                   // [n_buffers]
+    struct ggml_backend_buffer * ext_twin;   // [n_buffers] the external buffer as compute memory (ggml_gallocr_set_external_buffer)
 
     struct leaf_alloc * leaf_allocs; // [n_leafs]
     int n_leafs;
@@ -525,7 +526,8 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
     galloc->ext_buf = calloc(n_bufs, sizeof(ggml_backend_buffer_t));
     galloc->ext_off = calloc(n_bufs, sizeof(size_t));
     galloc->ext_cap = calloc(n_bufs, sizeof(size_t));
-    GGML_ASSERT(galloc->ext_buf != NULL && galloc->ext_off != NULL && galloc->ext_cap != NULL);
+    galloc->ext_twin = calloc(n_bufs, sizeof(struct ggml_backend_buffer));
+    GGML_ASSERT(galloc->ext_buf != NULL && galloc->ext_off != NULL && galloc->ext_cap != NULL && galloc->ext_twin != NULL);
 
     for (int i = 0; i < n_bufs; i++) {
         galloc->bufts[i] = bufts[i];
@@ -587,7 +589,15 @@ void ggml_gallocr_set_external_buffer(ggml_gallocr_t galloc, int buffer_id, ggml
         }
         galloc->buffers[buffer_id] = NULL;
     }
-    galloc->ext_buf[buffer_id] = buffer;
+    // The graph's tensors are compute memory, as in the allocator's own buffers (usage COMPUTE): they are placed through a copy of the buffer object (same memory,
+    // same interface) that says so. Placed through the expert pool's buffer itself (WEIGHTS), CUDA's init_tensor zeroed the row padding behind every quantized
+    // graph tensor when the graph was placed, before the expert cache lent the blocks: keep-hot then carried those zeros into the experts it moved out (qni4's
+    // streamed down tensors, ne0 640: 216 and 408 bytes; DeepSeek; verify -r 2, 2026-11-10). As compute memory the matmuls clear it when they run (mmq.cu, mmvq.cu).
+    if (buffer != NULL) {
+        galloc->ext_twin[buffer_id] = *buffer;
+        galloc->ext_twin[buffer_id].usage = GGML_BACKEND_BUFFER_USAGE_COMPUTE;
+    }
+    galloc->ext_buf[buffer_id] = buffer ? &galloc->ext_twin[buffer_id] : NULL;
     galloc->ext_off[buffer_id] = offset;
     galloc->ext_cap[buffer_id] = buffer ? capacity : 0;
 }
@@ -638,6 +648,7 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
     free(galloc->ext_buf);
     free(galloc->ext_off);
     free(galloc->ext_cap);
+    free(galloc->ext_twin);
     free(galloc->node_allocs);
     free(galloc->leaf_allocs);
     free(galloc);
