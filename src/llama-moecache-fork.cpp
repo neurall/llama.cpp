@@ -12361,10 +12361,13 @@ static void pp_add(uint32_t n, uint32_t ub, double U, int k) {
     g_pp_xc   += (double) n * std::max(0.0, (double) g_pp_cells - 0.5 * (double) n);
 }
 
-// One expert of this layer, as far as its tensors are not pinned (the mapping reads them from the file, the SSD behind it).
-static double pp_mapped_expert_bytes(const layer_state & l, ggml_backend_buffer_type_t pinned_buft) {
+// Expert e of this layer, as far as its tensors are neither pinned nor in the RAM pool (the SSD delivers them).
+static double pp_mapped_expert_bytes(const layer_state & l, ggml_backend_buffer_type_t pinned_buft, int64_t e) {
     double Sm = 0.0;
     for (int k = 0; k < 3; ++k) {
+        // the RAM pool holds this slice: DeepSeek, 101 of 123 GiB in the pool, all 123 priced as SSD reads put every path of a 117-token call at 21 s and hid the
+        // decode chain (2.2 s forced) behind the stream (20 s taken), 2026-11-10
+        if (l.rp_tab[k] && l.rp_tab[k][e]) { continue; }
         const ggml_tensor * t = k == 0 ? l.pub.up_src : k == 1 ? l.pub.gate_src : l.pub.down_src;
         // a tensor in the card's pinned host buffer is resident (read straight into place, locked): it never comes off the SSD. Counting it as mapped priced
         // GLM 3.0's 100.5 GiB of locked weights as SSD reads at 6.3 GB/s (stream 17.5 s, decode chain 19.7 s for a 100-token call) and only the mix escaped it
@@ -12398,7 +12401,14 @@ static void pp_expert_bytes(moe_cache * mc, ggml_backend_dev_t dev, double & E, 
         }
         E += lb;
         R += lb * (double) std::min<int64_t>(held, n_exp) / (double) n_exp;
-        if (Mm) { *Mm += pp_mapped_expert_bytes(l, pinned_buft) * (double) (n_exp - std::min<int64_t>(held, n_exp)); }
+        if (Mm) {
+            const bool mine = c && c->buffer && ggml_backend_buft_get_device(ggml_backend_buffer_get_type(c->buffer)) == dev;
+            for (int64_t e = 0; e < n_exp; ++e) {
+                const int32_t sl = mine && (size_t) e < l.expert_slot.size() ? l.expert_slot[e] : -1;
+                if (sl >= 0 && !((size_t) sl < l.slot_in_flight.size() && l.slot_in_flight[sl])) { continue; }
+                *Mm += pp_mapped_expert_bytes(l, pinned_buft, e);
+            }
+        }
     }
 }
 
@@ -12939,11 +12949,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             const double S  = (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
             A += (double) mc->n_expert_used * S;
             const double rl = mc->gbs_link[l.link] * 1e3;
-            const double Sm = pp_mapped_expert_bytes(l, pinned_buft);   // one expert of this layer, as far as its tensors are not pinned (the mapping reads them from the file)
             double all = (double) l.glob_count.size();
             for (const auto x : l.glob_count) { all += (double) x; }
             for (size_t e = 0; e < l.expert_slot.size(); ++e) {
                 const bool on_card = l.expert_slot[e] >= 0;
+                const double Sm = pp_mapped_expert_bytes(l, pinned_buft, (int64_t) e);   // what the SSD delivers of it: nothing where it is pinned or in the RAM pool
                 if (r0 > 0 && !(on_card && l.link == 0)) {   // the fastest link's card holds it: copied there, else it streams
                     U += S / r0; M += Sm;
                     const double p1 = (double) mc->n_expert_used * ((double) l.glob_count[e] + 1.0) / all;   // its share of one token's picks
