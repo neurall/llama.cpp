@@ -1,11 +1,11 @@
-# The planner's events of a cell as rows (user 2026-11-10: "new table with timestamp pppos ubatch maxubatch promptlen evtype vals"): table ppev in runs.db,
+# The planner's events of a cell as rows (user 2026-11-10: "new table with timestamp pppos ubatch maxubatch promptlen evtype vals"): table ppev in stats.db,
 # one row per event of the stats.log (REQ, PLN, CAL, DEC, SPL, PAS, DON, PRE, PHA), stamped with the request, the call within it, the prompt length, the
 # pass size and its ceiling in force; vals holds the event's numbers as JSON. run.py fills it with every cell (runlog.insert_stats); the replay and the
 # simulator read it instead of the text logs (fork/replay_score.py).
-#   python3 -I fork/ppev.py load        every stats row of runs.db not in ppev yet (the model from the cell's server log, else from table runs)
+#   python3 -I fork/ppev.py load        every stats row of stats.db not in ppev yet (the model from the cell's server log, else from table runs)
 import json, os, re, sqlite3, sys, zlib
 
-DB = '/p/bw/data/runs.db'
+DB = '/p/bw/data/stats.db'   # next to runs.db, local only (run.py runlog STATS_DB)
 Q5H = '/p/bw/data/q5h'
 PATHS = {'stream': 'stream', 'stream, mix': 'mix', 'prompt chain': 'chain', 'decode chain': 'dec', 'dense': 'dense'}
 # model: short name (glm30, glm35, mimo, ds, qni4, q35, olmoe; else the file's stem), prompt: the test's short name (pf2k, scific, pf64k4k), forced: the strategy the
@@ -135,7 +135,9 @@ def model_of(con, tag, build, test, ts):
                     return m.group(1)
                 if i > 400:
                     break
-    r = con.execute('SELECT model FROM runs WHERE build = ? AND test = ? AND ts >= ? ORDER BY ts LIMIT 1', (build, test, ts)).fetchone()
+    runs = sqlite3.connect(os.path.join(os.path.dirname(os.path.realpath(DB)), 'runs.db'))   # stats.db has no runs table
+    r = runs.execute('SELECT model FROM runs WHERE build = ? AND test = ? AND ts >= ? ORDER BY ts LIMIT 1', (build, test, ts)).fetchone()
+    runs.close()
     return os.path.basename(r[0]) if r and r[0] else ''
 
 

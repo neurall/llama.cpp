@@ -22,7 +22,7 @@ Example: python3 -I fork/crosstest.py -b ram-pool -b pinpool-default. Numbers ar
 import argparse, collections, math, os, re, sqlite3, statistics, sys, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DB = os.path.join(HERE, "runs.db")
+DB = os.path.join(os.path.dirname(os.path.realpath(os.path.join(HERE, "runs.db"))), "stats.db")   # the kept stats.logs (run.py runlog STATS_DB)
 YARD = 0.05   # a pick within 5% of the measured best passes (planner-crossovers.md: the replay gate's yardstick)
 XO = ["X1 cpu-vs-upload", "X2 stream-vs-chain/k", "X3 stream-vs-mix", "X4 one-vs-split", "X5 split-vs-expert"]
 KNOWN = ("glm30", "glm35", "mimo", "ds", "qwen36", "qni4", "qni3", "qn1m", "olmoe")

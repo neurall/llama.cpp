@@ -871,13 +871,14 @@ consistent best = the highest value that at least two runs agree on within 5% (a
         if "ask" not in [r[1] for r in con.execute("PRAGMA table_info(outputs)")]: con.execute("ALTER TABLE outputs ADD COLUMN ask TEXT")
         con.execute("INSERT INTO outputs (ts, hw, build, test, model, md5, uniq4, chars, code, text, ask) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, test, model, md5, uniq4, chars, code, zlib.compress(text.encode(), 9), ask))
         con.commit(); con.close()
+    STATS_DB = os.path.join(os.path.dirname(os.path.realpath(DB)), "stats.db")   # the kept stats.logs, their builds' sources and table ppev: local only, never published (user 2026-11-10: it grows with every cell)
     def insert_stats(ts, hw, build, test, tag, args, text, model=""):
         """the stats.log of a cell (zlib) into table stats: when, machine, build with its commit, branch and uncommitted-diff hash, test, cell tag and the cell's command line; the sources the build was made from
         (the commit's uncommitted diff, bin/SOURCE.diff) go once into table sources, keyed by commit + patch hash, so every logged inefficiency can be traced to the code that ran (user 2026-11-05)"""
         if not text: return
         import zlib
         bi = build_info(build)
-        con = connect()
+        con = sqlite3.connect(":memory:" if os.environ.get("FORK_NO_RUNS_DB") else STATS_DB)
         con.execute("CREATE TABLE IF NOT EXISTS stats (ts TEXT, hw TEXT, build TEXT, [commit] TEXT, branch TEXT, patch TEXT, test TEXT, tag TEXT, args TEXT, log BLOB)")
         con.execute("CREATE TABLE IF NOT EXISTS sources (commit_ TEXT, patch TEXT, diff BLOB, PRIMARY KEY (commit_, patch))")
         cur = con.execute("INSERT INTO stats VALUES (?,?,?,?,?,?,?,?,?,?)", (ts, hw, build, bi.get("commit", ""), bi.get("branch", ""), bi.get("patch", ""), test, tag, args, zlib.compress(text.encode(), 9)))
@@ -5325,7 +5326,7 @@ def _publish_db(here, push=True):
     c = sqlite3.connect(os.path.join(here, "runs.db"), timeout=60)
     sys.modules["runstats"].refresh(c)   # the statistics of records added since the last query are current in the published file
     c.execute("VACUUM INTO ?", (out,)); c.close()
-    o = sqlite3.connect(out); o.execute("DELETE FROM stats"); o.commit(); o.execute("VACUUM"); o.close()   # the kept stats logs (47 MB on 2026-11-08 alone) stay local: with them the file passed GitHub's 100 MB limit
+    o = sqlite3.connect(out); [o.execute(f"DROP TABLE IF EXISTS {t}") for t in ("stats", "sources", "ppev")]; o.commit(); o.execute("VACUUM"); o.close()   # the kept stats logs (47 MB on 2026-11-08 alone) stay local: with them the file passed GitHub's 100 MB limit
     n = sqlite3.connect(out).execute("select count(*) from runs").fetchone()[0]
     blob = _git(R, "hash-object", "-w", out)
     mktree = lambda text: subprocess.run(["git", "-C", R, "mktree"], input=text, capture_output=True, text=True, check=True).stdout.strip()
@@ -8180,10 +8181,10 @@ def cmd_cell(a):
     if a.builds.count(",") == 0:
         try: shutil.copy(f"/tmp/perf-{a.builds}.stats.log", os.path.join(Q5, a.tag + ".stats.log"))
         except OSError: pass
-        try:   # the same file into runs.db (table stats), with the build's commit and the cell's command line
+        try:   # the same file into stats.db (table stats, its events in table ppev), with the build's commit and the cell's command line
             import runlog
             runlog.insert_stats(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t_cell0)), local_hw(), a.builds, a.test, a.tag, args, open(os.path.join(Q5, a.tag + ".stats.log"), errors="replace").read(), model=a.model)
-        except Exception as e: print("runs.db stats:", e, file=sys.stderr)
+        except Exception as e: print("stats.db:", e, file=sys.stderr)
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
         try:   # the start before the last one (the cold run of a clean-state cell), when it belongs to this cell
