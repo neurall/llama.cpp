@@ -1,25 +1,25 @@
 name,model,n,test,tokens,args,extra
-xq-ram-c64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-s64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-c128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-s128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-c256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-s256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-c512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-s512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-c1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-s1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-c2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
-xq-ram-s2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-c64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-s64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-c128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-s128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-c256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-s256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-c512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-s512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-c1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-s1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-c2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
-xq-ssd-s2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-c64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-s64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-c128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-s128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-c256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-s256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-c512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-s512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-c1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-s1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-c2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=1
+xq-ram-s2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-c64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-s64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-c128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-s128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-c256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-s256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-c512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-s512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-c1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-s1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-c2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=chain,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
+xq-ssd-s2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,sim-ram=4096",--env CUDA_VISIBLE_DEVICES=1
