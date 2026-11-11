@@ -10802,6 +10802,7 @@ ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork 
 // stream for ready events. Blocks: free or empty first, then those of layers already computed in this pass (the experts this pass streamed before the hot ones), and only
 // for the layer whose split is next, those of layers not uploaded for yet (the farthest first). Experts the cache holds are not copied.
 struct cs_cp { int32_t e, b; };
+static ggml_backend_t ring_backend(moe_cache * mc, int link);   // pp-ahead's upload stream of a link, below
 static bool cs_plan(moe_cache * mc, size_t p, bool last, std::vector<cs_cp> & out, bool & from_done) {   // cache lock held
     const size_t li = mc->cs_order[p];
     layer_state & ls = mc->layers[li];
