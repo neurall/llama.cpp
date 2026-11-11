@@ -9,8 +9,10 @@ Design: fork/docs/kv-fit.md (branch auto-kv-ram-quant-fallback), sections "First
 * H = horizon in cells, the same for every record of the card (GLM has two: the latent-K attention cache and the indexer cache). Rows are forward:
   cell c is row c (no reversed rows), so the indexer's cell addressing is right.
 * L = lend capacity: what the biggest graph of the current horizon borrows (graph tensors, CUDA scratch, staging slots).
-* Growth of H (cells needed > H): H += step (1000 up to 10000, then 10000; step later from measured copy bandwidth + re-reserve time), the records are
-  moved back to front (device copy, chunked, overlapping) and re-attached, the new blocks are claimed from the coldest experts.
+* Growth of H (cells needed > H): since 2026-11-11 H is exactly the cells in use plus the call's tokens, in whole pads of 256 (the attention reads whole pads), at
+  least one pad; it grows at each call's start before find_slot (llama_moe_cache_kv_tail_grow_fork), no steps, nothing ahead (until then: steps of 2048 or 10240
+  cells, half a step ahead). The new blocks are claimed from the coldest experts, never past the experts' floor (floor_end: every size class keeps one layer's
+  experts behind the lend and the zone, so a prompt chain pass always fits).
 * Growth of L (a graph needs more than L): all records shift forward by the difference, same move.
 * Request end: H and L go back to their start values, records move down, the experts get the blocks back.
 

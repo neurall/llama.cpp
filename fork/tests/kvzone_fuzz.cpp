@@ -15,7 +15,7 @@
 struct seg_t { size_t base; int n; size_t B; };
 struct pool_t {
     std::vector<seg_t> segs; std::vector<int> kvt;
-    size_t tail_end = 0, kv_fixed = 0, kv_h = 0, kv_row = 0, kv_start = 0, span = 0;
+    size_t tail_end = 0, floor_end = 0, kv_fixed = 0, kv_h = 0, kv_row = 0, kv_start = 0, span = 0;
 };
 
 static int fails = 0;
@@ -36,6 +36,7 @@ int main(int argc, char ** argv) {
             at += (size_t) sg.n * sg.B;
         }
         ap.tail_end = at;
+        ap.floor_end = at;   // no floor: the checks below are about placement
         ap.kvt.push_back(1);
         ap.kv_row   = R(1, 4096) * 16;
         ap.kv_fixed = rng() % 3 == 0 ? unit * R(0, 100) : 0;

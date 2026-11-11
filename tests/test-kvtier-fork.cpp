@@ -127,57 +127,6 @@ static void test_ladder() {
            !kvx_ram_needs_q4(kvx_allowed("k8v8,ram"), 0) && !kvx_ram_needs_q4(kvx_allowed("ram"), 0));
 }
 
-static void test_zone_first() {
-    printf("Testing quant first (strict, user 2026-11-11): no expert block while a listed tier fits the zone, then the most compact at the floor, then RAM:\n");
-    const caps_t c = { 1000, 1900, 3500, 20000 };   // at the experts' floor
-    const size_t z[3] = { 300, 560, 1050 };          // in the zone's start size
-    struct one { const char * list; int kv_tier, min_tier; size_t n; int want; const char * what; };
-    const one cases[] = {
-        { KVX_DEFAULT, 0, 0,   200,  0, "f16 inside the zone" },
-        { KVX_DEFAULT, 0, 0,   500,  1, "q8_0 inside the zone before f16 takes blocks" },
-        { KVX_DEFAULT, 0, 0,  1000,  2, "q4_0 inside the zone although f16 holds it at the floor" },
-        { KVX_DEFAULT, 0, 0,  1500,  2, "no tier in the zone: the most compact takes blocks" },
-        { KVX_DEFAULT, 0, 0,  3500,  2, "q4_0 down to the floor" },
-        { KVX_DEFAULT, 0, 0,  3600,  3, "then RAM to keep running" },
-        { KVX_DEFAULT, 0, 0, 20001, -1, "nothing holds it" },
-        { "f16,k8v8",  0, 0,  1000,  1, "no q4_0 listed: q8_0 takes blocks" },
-        { "f16,k8v8",  0, 0,  2000,  3, "no q4_0 listed: RAM after q8_0's floor" },
-        { "f16",       0, 0,   500,  0, "f16 alone takes blocks" },
-        { "f16",       0, 0,  1500,  3, "f16 alone, then RAM" },
-        { "none",      0, 0,   500,  0, "none: f16 takes blocks" },
-        { "none",      0, 0,  1500, -1, "none: no RAM" },
-        { "ram",       0, 0,   500,  3, "ram alone: RAM from the first token" },
-        { KVX_DEFAULT, 1, -1,  1200,  2, "filled up at q8_0: q4_0, at the floor" },
-        { KVX_DEFAULT, 3, -1,  5000,  3, "filled up in RAM: more layers to RAM" },
-    };
-    bool ok = true; std::string why;
-    for (const auto & k : cases) {
-        const int got = kvx_select_zone_first(c, z, kvx_allowed(k.list), k.kv_tier, k.min_tier, k.n);
-        if (got != k.want) { ok = false; why = fmt("%s (%s, %zu tokens): got %d, expected %d", k.what, k.list, k.n, got, k.want); }
-    }
-    report("each case lands where the order says", ok, why);
-    std::mt19937_64 rng(g_seed + 2);
-    long bad = 0, took = 0, zoned = 0; std::string first;
-    for (long it = 0; it < g_iters; ++it) {
-        caps_t f; f.f16 = rng() % 5000; f.k8v8 = f.f16 + rng() % 5000; f.k4v4 = f.k8v8 + rng() % 8000; f.ram = rng() % 2 ? f.k4v4 + rng() % 100000 : rng() % 1000;
-        size_t zz[3]; zz[0] = rng() % (f.f16 + 1); zz[1] = std::min(f.k8v8, zz[0] * 2 + rng() % 50); zz[2] = std::min(f.k4v4, zz[1] * 2 + rng() % 50);
-        const unsigned mask = (unsigned) (rng() % 16);
-        std::string list; for (int t = 0; t < 4; ++t) { if (mask >> t & 1) { list += (list.empty() ? "" : ","); list += t == 0 ? "f16" : t == 1 ? "k8v8" : t == 2 ? "k4v4" : "ram"; } }
-        const auto al = kvx_allowed(mask ? list : "none");
-        const int kv_tier = (int) (rng() % 4), min_tier = (int) (rng() % 5) - 1, lo = min_tier < 0 ? std::min(kv_tier + 1, 3) : min_tier;
-        const size_t n = rng() % 30000;
-        const int t = kvx_select_zone_first(f, zz, al, kv_tier, min_tier, n);
-        auto listed = [&](int x) { return std::find(al.begin(), al.end(), x) != al.end(); };
-        int in_zone = -1, top = -1;
-        for (int x = 2; x >= 0; --x) { if (listed(x) && x >= lo) { if (top < 0) { top = x; } if (n <= zz[x]) { in_zone = x; } } }
-        int want = in_zone >= 0 ? in_zone : (top >= 0 && n <= cap_of(f, top)) ? top : (listed(3) && n <= f.ram) ? 3 : -1;
-        if (t != want) { if (bad++ == 0) { first = fmt("n %zu zone %zu/%zu/%zu floor %zu/%zu/%zu/%zu list '%s' tier %d min %d: got %d want %d", n, zz[0], zz[1], zz[2], f.f16, f.k8v8, f.k4v4, f.ram, list.c_str(), kv_tier, min_tier, t, want); } }
-        if (t >= 0 && t < 3 && n > zz[t]) { took++; } else if (t >= 0 && t < 3) { zoned++; }
-    }
-    report("random caps and lists: the zone first, the most compact at the floor next, RAM last", bad == 0, first);
-    report("the run took blocks and stayed in the zone both", took > 50 && zoned > 50, fmt("%ld took blocks, %ld in the zone", took, zoned));
-}
-
 static void test_capacity_and_host() {
     printf("Testing capacities and the host buffer of the RAM tier:\n");
     // the cells grow as the row shrinks: q8_0 rows are 34/64 of f16, q4_0 18/64 (per value: 2 bytes, 34/32, 18/32 -> 1.0 : 0.53 : 0.28)
@@ -210,7 +159,6 @@ int main(int argc, char ** argv) {
     test_list();
     test_select_properties();
     test_ladder();
-    test_zone_first();
     test_capacity_and_host();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);

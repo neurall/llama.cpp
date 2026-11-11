@@ -46,7 +46,7 @@ struct tseg { int32_t pcls = -1; size_t base = 0, B = 0; int32_t n = 0, blocked 
 struct tps  { std::vector<int32_t> owner, free; };
 struct tpool {
     std::vector<tseg> segs; std::vector<tps> ps; std::vector<int> kvt;
-    size_t tail_end = 0, kv_fixed = 0, kv_h = 0, kv_row = 0, kv_start = 0, span = 0, want_b = 0;
+    size_t tail_end = 0, floor_end = 0, kv_fixed = 0, kv_h = 0, kv_row = 0, kv_start = 0, span = 0, want_b = 0;
 };
 static tpool make_pool(std::mt19937_64 & rng, bool with_zone_rows) {
     auto R = [&](size_t lo, size_t hi) { return lo + (size_t) (rng() % (hi - lo + 1)); };
@@ -62,7 +62,7 @@ static tpool make_pool(std::mt19937_64 & rng, bool with_zone_rows) {
         p.ps.push_back(ps);
         at += (size_t) sg.n * sg.B;   // the classes back to back (no zero block between them)
     }
-    p.tail_end = at;
+    p.tail_end = at; p.floor_end = at;
     p.span = p.segs.back().base + (size_t) p.segs.back().n * p.segs.back().B;
     if (with_zone_rows) { p.kvt.push_back(1); p.kv_row = R(1, 40); }
     return p;
@@ -417,7 +417,7 @@ static void test_threads() {
 static tpool shaped(std::initializer_list<std::pair<size_t, int>> cls, size_t row, size_t fixed = 0) {
     tpool p; size_t at = 0; int c = 0;
     for (auto & x : cls) { tseg sg; sg.pcls = c++; sg.base = at; sg.B = x.first; sg.n = x.second; p.segs.push_back(sg); at += (size_t) x.second * x.first; }
-    p.tail_end = at; p.span = p.segs.back().base + (size_t) p.segs.back().n * p.segs.back().B;
+    p.tail_end = at; p.floor_end = at; p.span = p.segs.back().base + (size_t) p.segs.back().n * p.segs.back().B;
     p.kvt.push_back(1); p.kv_row = row; p.kv_fixed = fixed;
     return p;
 }
@@ -446,6 +446,20 @@ static void test_regress_padded_rows() {
         }
     }
     report("a lend promised for the padded rows leaves a gap for the padded rows", bad == 0, first);
+}
+// the experts' floor (2026-11-11): the zone and the lend stay in front of floor_end, so each size class keeps one layer's experts for the prompt chain
+static void test_experts_floor() {
+    printf("Testing the experts' floor (floor_end) bounds the zone and the lend:\n");
+    tpool p = shaped({ { 100, 50 }, { 60, 20 } }, 10);   // class 0: 50 blocks of 100 B, class 1: 20 of 60 B right behind it
+    const int E = 8;                                     // experts per layer: class 0 keeps its last 8 blocks
+    p.floor_end = p.segs[0].base + (size_t) (p.segs[0].n - E) * p.segs[0].B;
+    const size_t fit = kvz_gap_fit(p, kvz_bmax(p), 0, p.kv_row);
+    report("gap fit stops at the floor", fit == p.floor_end / p.kv_row, fmt("fit %zu cells, floor at %zu B", fit, p.floor_end));
+    const size_t pot = kvz_lend_potential(p, 100);
+    report("lend potential leaves the zone in front of the floor", pot + 100 * p.kv_row <= p.floor_end, fmt("potential %zu, zone %zu, floor %zu", pot, (size_t) 100 * p.kv_row, p.floor_end));
+    p.kv_start = pot; p.kv_h = (p.floor_end - pot) / p.kv_row + 1;   // one cell past the floor
+    const char * bad = kvz_bad(p, pot);
+    report("a zone into the floor is an invariant break", bad != nullptr, bad ? bad : "kvz_bad accepted it");
 }
 static void test_regress_lend_potential_cells() {
     printf("Testing [bug 4] lend potential counts the cells of the graph asked about:\n");
@@ -539,6 +553,7 @@ int main(int argc, char ** argv) {
     test_range_collision();
     test_threads();
     test_regress_padded_rows();
+    test_experts_floor();
     test_regress_lend_potential_cells();
     test_regress_zone_across_classes();
     test_regress_potential_matches_place();

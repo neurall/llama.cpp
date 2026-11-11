@@ -1,4 +1,4 @@
-// KV zone placement in the expert pool, as templates over the pool type (anything with segs{base,n,B}, tail_end, kv_fixed, kv_h, kv_row, kvt, span) so that
+// KV zone placement in the expert pool, as templates over the pool type (anything with segs{base,n,B}, tail_end, floor_end, kv_fixed, kv_h, kv_row, kvt, span) so that
 // fork/tests/kvzone_fuzz.cpp can drive them with random pool shapes and no GPU. llama-moecache-fork.cpp includes this and wraps it for moe_cache::alias_pool.
 #pragma once
 #include <algorithm>
@@ -43,15 +43,16 @@ template <class P> static size_t kvz_block_floor(const P & ap, size_t x) {
     return x;
 }
 
-// Where a KV zone may lie: [lo_min, tail_end), its start rounded up to `round`, over blocks of any size class (the classes lie back to back, nothing between them:
+// Where a KV zone may lie: [lo_min, floor_end), its start rounded up to `round`, over blocks of any size class (the classes lie back to back, nothing between them:
 // the device tables mark uncached experts -1 and the kernels skip them, so no class keeps a zero block). Until 2026-10-24 each class ended in a zero block the zone
 // had to avoid, which cut the pool into one gap per class: MiMo-V2.6-Flash's 3 GiB sliding-window part fitted none of its 9 classes on the x4 card behind an 11 GiB
 // lend, with 9.5 GiB of the pool behind it. One walk for every question about where the zone fits (a rule fixed in one copy was once missing in the next, MiMo
-// 12k, OLMoE 185 MiB pool, 2026-10-18).
+// 12k, OLMoE 185 MiB pool, 2026-10-18). floor_end: every size class keeps one layer's experts behind the lend and the zone (user 2026-11-11: no staging, the prompt
+// chain must always fit); tail_end without a floor.
 template <class P> static std::vector<std::pair<size_t, size_t>> kvz_gaps(const P & ap, size_t lo_min, size_t round) {   // round > 1: the start on a block edge
     std::vector<std::pair<size_t, size_t>> out;
     const size_t g0 = round > 1 ? kvz_block_ceil(ap, lo_min) : lo_min;
-    if (ap.tail_end > g0) { out.push_back({ g0, ap.tail_end }); }
+    if (ap.floor_end > g0) { out.push_back({ g0, ap.floor_end }); }
     return out;
 }
 
@@ -94,6 +95,7 @@ template <class P> static const char * kvz_bad(const P & ap, size_t lend_end) {
     if (ap.kv_h == 0) { return nullptr; }
     const size_t lo = ap.kv_start, hi = kvz_end(ap);
     if (hi > ap.tail_end)   { return "zone ends past the pool"; }
+    if (hi > ap.floor_end)  { return "zone ends inside the experts' floor (one layer per size class)"; }
     if (lo < lend_end)      { return "zone starts inside the lend"; }
     for (const auto & g : kvz_gaps(ap, 0, 1)) { if (lo >= g.first && hi <= g.second) { return nullptr; } }
     return "zone is not inside the expert blocks";

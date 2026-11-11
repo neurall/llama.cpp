@@ -1550,7 +1550,6 @@ void llama_context::sched_new(size_t max_nodes, bool parallel) {
 // qkv-ram-fallback: the tier a request of n_tokens (prompt + answer) needs, and the rebuild when it differs from the cache's. Returns the tier (0 f16, 1 k8v8, 2 k4v4, 3 ram),
 // -1 when no enabled tier holds it (note says why), -2 when the pool does not exist yet (the first decode starts it: this request runs as the cache is). Bit 8 is set when the cache was
 // rebuilt (the caller drops what it knew of the old one).
-void llama_moe_cache_kv_zone_caps_fork(size_t out[3]);   // llama-moecache-fork.cpp: tokens each pool tier holds in the KV zone's start size (no header edit)
 int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char * note, size_t note_size) {
     if (min_tier >= 0) { g_request_tokens_fork = n_tokens; }   // the server asks at a request's start, with its whole size (--moe attn-split=2, decode)
     auto say = [&](const char * fmt, auto... args) { if (note && note_size) { snprintf(note, note_size, fmt, args...); } };
@@ -1566,29 +1565,9 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
         std::string w; for (auto & u : unknown) { w += (w.empty() ? "'" : ", '") + u + "'"; }
         LLAMA_LOG_WARN("%s: --moe kv-fallback=%s: not a tier: %s (tiers are f16, k8v8, k4v4, ram; none = f16 only)\n", __func__, list.c_str(), w.c_str());
     }   // the listed tiers, cheapest first: f16, q8_0, q4_0 in place in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
-    const int ladder = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);   // the cheapest tier that holds the request with the experts at their floor
-    int tier = ladder;
-    // fork, user 2026-11-11 (strict "quant first"): the expert blocks are the layers the next passes need, so the KV takes none of them while a listed tier avoids it:
-    // the cheapest listed tier that holds the request in the zone's start size, else the most compact one at the floor (it takes blocks), else RAM. -ctk / -ctv force a
-    // type (--moe kv-policy=0 is the same switch alone): then the plain ladder above (f16 takes expert blocks down to the floor first, the A/B arm).
-    const char * kv_policy = llama_moe_get_opt("kv-policy");
-    size_t zone[3] = { 0, 0, 0 };
-    if (!kv_policy || atoi(kv_policy) != 0) {
-        llama_moe_cache_kv_zone_caps_fork(zone);
-        tier = kvx_select_zone_first(cp, zone, allowed, kv_tier, min_tier, n_tokens);
-    }
-    const bool policy_pick = tier != ladder && ladder >= 0;   // the ladder holds the request at a cheaper tier: this pick may fail without failing the request
-    if (policy_pick) {
-        static int last = -2;
-        if (last != tier) {
-            last = tier;
-            char why[320];
-            snprintf(why, sizeof(why), "request of %u tokens, quant first: the KV zone's start holds f16 %zu, q8_0 %zu, q4_0 %zu tokens; at the experts' floor f16 %zu, q8_0 %zu, q4_0 %zu",
-                n_tokens, zone[0], zone[1], zone[2], cp.f16, cp.k8v8, cp.k4v4);
-            static const char * nm[] = { "f16", "q8_0", "q4_0", "RAM" };
-            llama_moe_decision_fork("kv", tier >= 0 ? nm[tier] : "none", why);
-        }
-    }
+    // the cheapest listed tier that holds the request with the experts at their floor (one layer per size class kept: f16, then q8_0 and q4_0 in place, RAM last;
+    // user 2026-11-11). The zone grows with the cells, so there is no start size to fill first (the zone-first rule went with the growth steps).
+    const int tier = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
     if (tier < 0) {
         say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=f16,k8v8,k4v4)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, cp.ram, list.c_str());
         return -1;
@@ -1611,10 +1590,6 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     synchronize();
     char why[256] = { 0 };
     if (!llama_moe_cache_kv_retype_fork(sched.get(), tier, why, sizeof(why))) {
-        if (policy_pick && ladder == kv_tier) {   // the plain ladder holds it as the KV is now
-            llama_moe_decision_fork("kv", kv_tier == 0 ? "f16" : "as it is", why);
-            return kv_tier;
-        }
         if (tier < kv_tier) {   // back down (a shorter request) while the cache still holds more than the lower tier fits: stay, nothing is lost
             say("kv-fit: staying %s: %s", kv_tier == 1 ? "q8_0/q8_0" : "q4_0/q4_0", why);
             return kv_tier;
@@ -4460,6 +4435,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     // fork: the dense split sizes its ranges against the one-card limit (no card gets more than it, ds_plan); a pass of a call sized pass by pass
     // (--moe split-pass=1, the loop at the top of decode) runs as ONE pass: the pass planner still runs for its claim of the prompt's KV (kv-tail)
     if (n_tokens_all >= 64 && cparams.moe_cache && memory && !g_split_sub) { llama_dsplit_note_limit_fork(n_ubatch_lim); }
+    // fork: the KV zone holds this call's cells before find_slot asks for them, in whole pads, nothing ahead (user 2026-11-11: no growth steps)
+    bool llama_moe_cache_kv_tail_grow_fork(ggml_backend_sched_t sched, uint32_t n);   // llama-moecache-fork.cpp (no header edit)
+    if (cparams.moe_cache && memory) { llama_moe_cache_kv_tail_grow_fork(sched.get(), n_tokens_all); }
     const uint32_t n_ubatch_split = g_split_sub && cparams.moe_cache ? (llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_tokens_all), n_tokens_all) : 0;
     uint32_t n_ubatch_call = n_ubatch_split > 0 ? n_ubatch_split : cparams.moe_cache ? llama_moe_ubadapt_cache_fork(n_tokens_all, llama_moe_cache_prefill_ubatch_fork(n_tokens_all, n_ubatch_lim), n_ubatch_lim) : llama_moe_ubadapt_next_fork(n_tokens_all, n_ubatch_lim);
     if (g_pass_cap_fork > 0) { n_ubatch_call = std::min(n_ubatch_call, g_pass_cap_fork); }   // the rest of a call after the pool refused one of its passes (below)

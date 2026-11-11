@@ -374,6 +374,7 @@ struct moe_cache {
                          ggml_type tk = GGML_TYPE_F16, tv = GGML_TYPE_F16, tk0 = GGML_TYPE_F16, tv0 = GGML_TYPE_F16; bool convertible = false; size_t unit = 256; };   // tk0/tv0: the types it was created with (tier 0); unit: its row and its place in the combined row are multiples of it
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (the zone never reaches the last two blocks before it)
+        size_t                floor_end = 0;    // the most the lend and the KV zone reach: every size class keeps one layer's experts behind them (set with tail_end)
         size_t                span_full = 0;    // the lend's reach without a KV zone
         size_t                kv_row   = 0;     // bytes of one combined cell (the sum of the growing records' rows)
         size_t                kv_fixed = 0;     // bytes of the fixed records (fewer cells than the largest record, e.g. MiMo's sliding-window cache: laid out at full size, first in the zone)
@@ -5675,17 +5676,18 @@ static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size
     return true;
 }
 
-// the horizon of every card: the cells in use (or planned for the prompt) rounded to the pad, plus half a step at least; it grows by kv_step before the rows are
-// needed, at a point where no graph is built (a prompt call plans all its tokens up front, a decode grows it half a step ahead), and shrinks only at a request
-// start. Until 2026-10-17 it kept TWICE the cells in use: at a 255k-token MiMo prompt 4.7 GB of the two pools sat under empty rows (about 550 expert blocks).
+// the horizon of every card: the cells in use (or planned for this call) rounded to the pad, grown at a call's start where no graph is built, shrunk only at a
+// request start. Until 2026-10-17 it kept TWICE the cells in use: at a 255k-token MiMo prompt 4.7 GB of the two pools sat under empty rows (about 550 expert
+// blocks); until 2026-11-11 it grew in steps of 2048 or 10240 cells, half a step ahead (GLM 3.5: up to 193 MiB of empty rows, 19 expert blocks).
 // The lend in front of it is the most a graph of this size needed before (moe_alias remembers it), so a known size never moves the zone after its graph is built.
 static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, bool allow_shrink, int32_t n_tokens, bool dry) {
     bool any = false;
     for (auto & ap : mc->alias) {
         if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
-        size_t eff = 0, cells = 0, cells_max = 0;   // cells_max: the most cells of any growing record (a compressed cache's fewer rows never cap the others)
+        size_t eff = 0, cells = 0, cells_max = 0, pad_g = 1;   // cells_max: the most cells of any growing record (a compressed cache's fewer rows never cap the others)
         for (auto & r : ap.kvt) {
             if (r.fixed) { continue; }   // laid out at full size
+            pad_g = std::max<size_t>(pad_g, r.pad);
             const size_t c = r.rows ? r.rows() : 0;
             if (!dry) {
                 r.cells = c;
@@ -5698,9 +5700,11 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
             cells = std::max(cells, c);
             cells_max = std::max(cells_max, r.cells_max);
         }
-        const size_t step = std::max<size_t>(256, ap.kv_step);
-        size_t h = (allow_shrink || ap.kv_h == 0) ? step : ap.kv_h;
-        while (eff + step / 2 > h) { h += step; }
+        // continuous (user 2026-11-11: "kv shall grow and be pretty much zero on zero tokens", "why in steps?"): the zone backs the cells this call needs in whole
+        // pads (the attention reads up to the pad) and nothing ahead, at least one pad (the fixed part and the first cell). Each call plans its own tokens at its
+        // start, before find_slot asks for them (llama_moe_cache_kv_tail_grow_fork: a decode call its one cell, a prompt call all of its tokens).
+        size_t h = (allow_shrink || ap.kv_h == 0) ? 0 : ap.kv_h;
+        h = std::max({ h, eff, pad_g });
         // the zone stays where it is unless the lend of this graph size reaches it. Rounding its own start again to the block grids of all classes (they do not
         // line up) moved it one block up at every call: 584 MB of rows copied and the graph built again for every decoded token, until it crept over a zero
         // block (2026-10-18, pool ledger). The lend's end is rounded as kv_layout lays it out (the block edge it ends on).
@@ -5713,19 +5717,20 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
                 lr = std::max(lr, nb); lend_min = std::max(lend_min, nb);
             }
         }
-        // the end of the pool is a hard limit (nothing past tail_end is the KV's: the claim check cannot even see it). When the cells this call needs do not fit
-        // behind the lend, the lend shrinks (the call's passes get smaller: pp_cap_to_pool sees the zone), never below what a decode graph borrows.
-        if (ap.tail_end <= lr + kvz_bytes(ap, eff)) {
+        // the experts' floor is a hard limit (behind floor_end each size class keeps one layer's experts, past tail_end nothing is the KV's). When the cells this call
+        // needs do not fit behind the lend, the lend shrinks (the call's passes get smaller: pp_cap_to_pool sees the zone), never below what a decode graph borrows.
+        const size_t fe = ap.floor_end;
+        if (fe <= lr + kvz_bytes(ap, eff)) {
             const size_t floor_l = kv_lend_round(ap, ap.dec_need);   // what a decode graph borrows (measured), on its block edge
             const size_t zone_b  = kvz_bytes(ap, eff);
-            if (ap.tail_end > zone_b + floor_l) { lr = std::min(lr, std::max(floor_l, kvz_block_floor(ap, ap.tail_end - zone_b))); }
+            if (fe > zone_b + floor_l) { lr = std::min(lr, std::max(floor_l, kvz_block_floor(ap, fe - zone_b))); }
         }
-        const size_t hard = ap.tail_end > lr + ap.kv_fixed ? (ap.tail_end - lr - ap.kv_fixed) / ap.kv_row : 0;
-        const size_t room = hard;   // the zone may take every expert block behind the lend (KV and micro-batch first, the cache gets what is left)
+        const size_t hard = fe > lr + ap.kv_fixed ? (fe - lr - ap.kv_fixed) / ap.kv_row : 0;
+        const size_t room = hard;   // the zone may take every expert block behind the lend down to the floor (KV and micro-batch first, the cache gets what is left)
         h = std::min({ h, cells_max, std::max(room, eff), hard });
         if (eff > room && !dry) {
-            LLAMA_LOG_WARN("moe-cache: kv-tail %s: %zu cells do not fit behind a lend of %.1f MiB (room for %zu, %zu at most): the experts give up their last blocks%s\n",
-                    ggml_backend_dev_name(ap.dev), eff, lr / 1048576.0, room, hard, eff > hard ? "; the pool cannot hold this call (the cache refuses the cells past it)" : "");
+            LLAMA_LOG_WARN("moe-cache: kv-tail %s: %zu cells do not fit behind a lend of %.1f MiB in front of the experts' floor (room for %zu): the cache refuses the cells past it\n",
+                    ggml_backend_dev_name(ap.dev), eff, lr / 1048576.0, hard);
         }
         // the zone starts at the lend rounded up to whole blocks: from the unrounded end of the graph (12566400 B on MiMo, 16 KB short of 12 MiB) its first block was also the
         // last lent block (owner -2), never claimable for the KV (owner -3): the first request after the server's own warm-up decode aborted
@@ -5850,7 +5855,7 @@ static void kv_tail_bind(moe_cache::alias_pool & ap) {
     }
     ap.kv_start = 0; ap.kv_h = 0;
     size_t bmax = 0; for (auto & sg2 : ap.segs) { bmax = std::max(bmax, sg2.B); }
-    const size_t cap = ap.kv_row && ap.tail_end > 4 * bmax + ap.kv_fixed ? (ap.tail_end - 4 * bmax - ap.kv_fixed) / ap.kv_row : 0;
+    const size_t cap = ap.kv_row && ap.floor_end > 4 * bmax + ap.kv_fixed ? (ap.floor_end - 4 * bmax - ap.kv_fixed) / ap.kv_row : 0;
     LLAMA_LOG_WARN("%s: kv-tail: %zu record(s) on %s: fixed part %.1f MiB, growing part %zu B per cell in steps of %zu cells: room for %zu tokens in the pool of %.1f MiB (model cap %zu)\n",
             __func__, ap.kvt.size(), ggml_backend_dev_name(ap.dev), ap.kv_fixed / 1048576.0, ap.kv_row, ap.kv_step, cap, ap.tail_end / 1048576.0, cmax);
 }
@@ -5877,6 +5882,18 @@ bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_
     kv_tail_plan(mc, 0, reset, false, n_tokens, false);
     flush_tables();
     return g_kv_epoch.load() != g_kv_epoch_built;
+}
+
+// the KV zone grows on the fly (user 2026-11-11: "and grow on the fly?"): at a call's start, before find_slot, to the cells in use plus the call's n tokens (a new
+// request's call shrinks it to that). The last graph may still read the blocks that change hands: a change waits for it. Declared in llama-context.cpp (no header edit).
+bool llama_moe_cache_kv_tail_grow_fork(ggml_backend_sched_t sched, uint32_t n);
+bool llama_moe_cache_kv_tail_grow_fork(ggml_backend_sched_t sched, uint32_t n) {
+    moe_cache * mc = g_cache;
+    if (!mc || n == 0 || !kv_tail_plan(mc, n, false, true, 0, true)) { return false; }
+    if (sched) { ggml_backend_sched_synchronize(sched); }
+    kv_tail_plan(mc, n, false, true, 0, false);
+    flush_tables();
+    return true;
 }
 
 // ---- KV arena for the cards without an expert pool (dense models): one buffer per card, the records interleaved in one combined row per cell ----
@@ -6001,7 +6018,7 @@ static size_t kv_prompt_lend0(const moe_cache::alias_pool & ap) {
 // the cells a prompt's KV can grow to on this card with a zone of fixed part F and combined row R while the lend grows by pc per cell (not capped by the model's
 // context: the log shows what really fits)
 static size_t kv_prompt_cells(const moe_cache::alias_pool & ap, size_t F, size_t R, size_t pc) {
-    return kvx_cells(ap.tail_end, kv_prompt_lend0(ap), F, R, pc);
+    return kvx_cells(ap.floor_end, kv_prompt_lend0(ap), F, R, pc);
 }
 static bool kv_any_out(const moe_cache::alias_pool & ap);
 static size_t kv_mem_available();
@@ -6051,31 +6068,6 @@ llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
         out.ram = made ? have : (row_all ? kv_mem_available() / row_all : 0);
     }
     return out;
-}
-
-// "quant first" (user 2026-11-11): tokens each pool tier holds in the KV zone's start size, no expert block taken. The zone goes back to one horizon step at a request
-// start (kv_tail_plan), so that step of f16 rows is the KV's own room: re-laid in tier t's rows (fixed part and the lend's growth per cell charged), least over cards.
-void llama_moe_cache_kv_zone_caps_fork(size_t out[3]);   // used by llama-context.cpp (kv_fit_select), declared there: no header edit
-void llama_moe_cache_kv_zone_caps_fork(size_t out[3]) {
-    out[0] = out[1] = out[2] = 0;
-    moe_cache * mc = g_cache;
-    if (!mc) { return; }
-    size_t cap[3] = { (size_t) -1, (size_t) -1, (size_t) -1 };
-    bool any = false;
-    for (auto & ap : mc->alias) {
-        if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
-        kvt_runs v0; size_t F0 = 0, R0 = 0;
-        if (!kv_records_as(ap.kvt, 0, v0, F0, R0)) { continue; }
-        any = true;
-        const size_t zone = F0 + std::max<size_t>(256, ap.kv_step) * R0;
-        for (int t = 0; t < 3; ++t) {
-            kvt_runs v; size_t F = 0, R = 0, pc = 0, pcd = 0;
-            if (!kv_records_as(ap.kvt, t, v, F, R)) { cap[t] = 0; continue; }
-            kv_lend_pc_of(v, pc, pcd);
-            cap[t] = std::min(cap[t], zone > F && R + pc > 0 ? (zone - F) / (R + pc) : 0);
-        }
-    }
-    if (any) { for (int t = 0; t < 3; ++t) { out[t] = cap[t]; } }
 }
 
 // ---- qkv-ram-fallback in place: the KV changes its types inside the pool (fork/docs/qkv-ram-fallback.md) ----
@@ -6229,7 +6221,7 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         if (!le && !ge) { say("kv-fit: %s: tier %d's layout is neither smaller nor larger everywhere (records keep their order)", dn, tier); return false; }
         cp.up = !le;
         for (auto & r : ap.kvt) { if (!r.fixed) { cp.cells = std::max(cp.cells, r.rows ? r.rows() : 0); } }
-        const size_t room = ap.tail_end > ap.kv_start + cp.F ? (ap.tail_end - ap.kv_start - cp.F) / std::max<size_t>(1, cp.R) : 0;   // every block behind the zone's start
+        const size_t room = ap.floor_end > ap.kv_start + cp.F ? (ap.floor_end - ap.kv_start - cp.F) / std::max<size_t>(1, cp.R) : 0;   // every block behind the zone's start, to the experts' floor
         if (cp.cells > room) { say("kv-fit: %s: %zu cells do not fit the zone as tier %d (room for %zu)", dn, cp.cells, tier, room); return false; }
         cp.h = std::min(std::max(ap.kv_h, cp.cells), std::max(room, cp.cells));
         {   // the new extent must stay inside the one gap between class zero blocks that holds the zone (kvz_bad): bigger rows (converting up) reach past it, over a zero block, where
@@ -6651,7 +6643,7 @@ size_t llama_moe_cache_kv_tail_cap_fork(void * owner) {
             const size_t bmax = kv_bmax(ap);
             const size_t dpc = ap.kv_lend_pc_dec * ap.dec_cells;   // a decode graph's lend at no cells (quantized K/V: its f16 copies grow per cell)
             const size_t floor_b = kv_lend_round(ap, ap.dec_need > dpc ? ap.dec_need - dpc : 0) + ap.kv_fixed;   // the least lend (a decode graph's, measured) on its block edge, then the fixed part
-            const size_t room = ap.tail_end > floor_b ? ap.tail_end - floor_b : 0;
+            const size_t room = ap.floor_end > floor_b ? ap.floor_end - floor_b : 0;
             // the zone lies in ONE gap between the class zero blocks and the attention reads its cells rounded up to the pad: what the pool can really hold is the
             // largest gap behind the least lend, in whole pads. Not the pool's bytes over the row size (OLMoE 1.0 GiB free: "room for 6308 tokens" on a card whose
             // largest gap held 3300 rows, the 3440-token prompt was admitted and failed at cell 2949, 2026-10-18)
@@ -6713,7 +6705,7 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
             // zone read to 1536, 2026-10-18). The lend only grows with c and the gap only shrinks with the lend: bisection.
             auto fits = [&](size_t c) -> bool {
                 const size_t lend = lend_at(c);
-                return lend + kvz_bytes(ap, c) <= ap.tail_end && kv_gap_fit(ap, bmax, lend, ap.kv_row) >= c;   // c is in whole pads: the attention reads exactly c rows   // one pad of margin: the lend is a fit through measured sizes and the real graph came 0.3% bigger (Qwen3.6 PC1, gap 13780 for 13824 cells)
+                return lend + kvz_bytes(ap, c) <= ap.floor_end && kv_gap_fit(ap, bmax, lend, ap.kv_row) >= c;   // c is in whole pads: the attention reads exactly c rows   // one pad of margin: the lend is a fit through measured sizes and the real graph came 0.3% bigger (Qwen3.6 PC1, gap 13780 for 13824 cells)
             };
             size_t lo = 0, hi = cap / pad;   // in pads: lo fits (0 cells), hi is the advertised limit
             while (lo < hi) {
@@ -7005,9 +6997,9 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             // the zone moves behind exactly this graph's lend, its start on the block edge the lend ends on (no headroom: a bigger graph later moves it again, a
             // device copy of the rows in use, ~2.5 ms per GB; 25% headroom pushed MiMo's zone 3.4 GiB further back and the decode then found no room for its cells)
             const size_t keep = kvz_bytes(ap, std::max(cells, (size_t) 1));   // the zone as it is now must still fit behind the lend
-            const size_t lr_max = ap.tail_end > keep ? kvz_block_floor(ap, ap.tail_end - keep) : 0;
+            const size_t lr_max = ap.floor_end > keep ? kvz_block_floor(ap, ap.floor_end - keep) : 0;
             const size_t lr = kv_lend_round(ap, need_b);   // the zone starts where the lend really ends
-            if (lr + keep > ap.tail_end) {
+            if (lr + keep > ap.floor_end) {   // the zone behind this lend would reach into the experts' floor
                 LLAMA_LOG_ERROR("moe-cache: kv-tail %s: a %d-token graph needs %.1f MiB lent from the start of the pool, and %zu cells of KV (%.1f MiB) do not fit behind it in the pool of %.1f MiB\n",
                         ggml_backend_dev_name(ap.dev), n_tokens, need_b / 1048576.0, cells, cells * ap.kv_row / 1048576.0, ap.tail_end / 1048576.0);
                 // a clean refusal of this pass (the caller fails the decode, the server answers the request with an error) instead of killing the process
@@ -7021,7 +7013,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             }
             ggml_backend_sched_synchronize(sched);   // the previous graph may still read the rows
             size_t h = ap.kv_h;
-            const size_t room = (ap.tail_end - lr - ap.kv_fixed) / std::max<size_t>(1, ap.kv_row);
+            const size_t room = (ap.floor_end - lr - ap.kv_fixed) / std::max<size_t>(1, ap.kv_row);
             h = std::min(h, std::max(room, cells));
             kv_layout(mc, ap, h, lr, cells, false, lr);
             poison_free_blocks(mc, ap);   // --moe poison: the zone's old place holds nothing now
@@ -9340,6 +9332,13 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         if (!alias_all || split) { break; }
                     }
                     ap.tail_end  = split ? ap.span : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    // the experts' floor (user 2026-11-11: no staging, the prompt chain must always fit): each class keeps a whole layer's experts (E blocks) behind
+                    // the lend and the KV zone, which fill the classes from the front. A class too small for one layer even with nothing in front stays out of it.
+                    ap.floor_end = ap.tail_end;
+                    for (const auto & sg : ap.segs) {
+                        const int32_t E = (int32_t) ll[pl.cls[(size_t) (sg.pcls - (int32_t) pool0)].members[0]]->ffn_up_exps->ne[2];
+                        if (sg.n >= E) { ap.floor_end = std::min(ap.floor_end, sg.base + (size_t) (sg.n - E) * sg.B); }
+                    }
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
                     mc->alias.push_back(ap);
