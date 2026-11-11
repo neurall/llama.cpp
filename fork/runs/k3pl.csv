@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+k3pl-s-off,k31,2,chatv,32,"--moe pred-top=16,predict-ahead=2,pred=1,pp-path=chain,pp-pred=0",--prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt
+k3pl-s-on,k31,2,chatv,32,"--moe pred-top=16,predict-ahead=2,pred=1,pp-path=chain,pp-pred=1",--prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt
+k3pl-m-off,k31,2,chatv,32,"--moe pred-top=16,predict-ahead=2,pred=1,pp-path=chain,pp-pred=0",--prompt @/p/bw/wt-mb/fork/prompts/prompt-ww1.txt
+k3pl-m-on,k31,2,chatv,32,"--moe pred-top=16,predict-ahead=2,pred=1,pp-path=chain,pp-pred=1",--prompt @/p/bw/wt-mb/fork/prompts/prompt-ww1.txt
+k3pl-l-on,k31,2,chatv,32,"--moe pred-top=16,predict-ahead=2,pred=1,pp-path=chain,pp-pred=1",--prompt @/p/bw/wt-mb/fork/prompts/prompt-tetris-long.txt

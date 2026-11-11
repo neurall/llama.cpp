@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+pl1d-on,olmoe,1,pf2k,128,"--moe-expert-cache 80 --refresh-ssd --cpu-moe -t 6 -tb 8 --moe autotune=0,admit-boot=0,verify=2,pp-path=chain,pred-top=8,pred=1,predict-ahead=2,pp-pred=1",--env CUDA_VISIBLE_DEVICES=1
