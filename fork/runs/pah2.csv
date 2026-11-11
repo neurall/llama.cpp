@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+pah2-t1,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0",
+pah2-t2,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0,upload-threads=2",
+pah2-t4,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0,upload-threads=4",
+pah2-8g-t4,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,staging=0,upload-threads=4",
