@@ -11682,18 +11682,19 @@ double llama_moe_cache_resident_frac_fork(int il, ggml_backend_dev_t dev) {
     return 0.0;
 }
 
+// bulk planners (dense split, stream, mix) get the probed link maximum: gbs_link becomes the per-expert upload average in decode (19 vs 26.7 GB/s on PC1 x16)
 double llama_moe_cache_link_gbs_fork(ggml_backend_dev_t dev) {
+    for (const auto & e : g_early_gbs) {
+        if (e.first == dev && e.second > 0) {
+            return e.second;
+        }
+    }
     moe_cache * mc = g_cache; // set once at init
     if (mc && dev) {
         for (int k = 0; k < mc->n_links; ++k) {
             if (mc->link_dev[k] == dev && mc->gbs_link[k] > 0) {
                 return mc->gbs_link[k];
             }
-        }
-    }
-    for (const auto & e : g_early_gbs) {
-        if (e.first == dev) {
-            return e.second;
         }
     }
     return 0;
