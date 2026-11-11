@@ -1138,7 +1138,12 @@ static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call
 static std::atomic<uint32_t> g_pp_last_n{0}, g_pp_last_ub{0};   // the last decision's call (tokens, pass ceiling): decided again when the chain is refused after it
 static std::atomic<bool> g_pp_dec{false};        // this prompt call runs on the decode chain, misses may stay on the CPU (llama_moe_cache_pp_decide_fork)
 static uint32_t g_pp_chain_refused = UINT32_MAX;  // the chain's graph refused a pass of this size or more (a fact per pass size, not a bucket)
-static bool pp_no_staging();
+// --moe staging=0 (user 2026-11-11: staging is prohibited): no prompt path that stages (the stream, the mix, the predictions' k arms); the two chains upload into the
+// cache's blocks and their kernels read the tables. A refused chain becomes the decode chain (llama_moe_cache_pp_chain_fork); only a forced path still streams.
+static bool pp_no_staging() {
+    static const bool v = [] { const char * e = moe_opt("staging"); return e && atoi(e) == 0; }();
+    return v;
+}
 static bool              g_pp_dec_built = false; // the same when the last graph was finished
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
@@ -13323,12 +13328,6 @@ static double pp_k_pick(double n, double r, double U, int n_used, int n_expert, 
 // what a stream of this size took beyond its whole upload, which it can at most have spent in sequence. The other side is what this size took, or the upload streaming needs (no staging can
 // beat that). A try that loses costs one pass and settles the size and everything above it (GLM, 4684 tokens: 17.4 s against 8 s, before the stream's time bounded the compute). No miss at
 // all: the chain, it uploads nothing and needs no staging.
-// --moe staging=0 (user 2026-11-11: staging is prohibited): no prompt path that stages (the stream, the mix, the predictions' k arms); the two chains upload into the
-// cache's blocks and their kernels read the tables. The stream stays only where no chain can take the call, and its DEC line says so.
-static bool pp_no_staging() {
-    static const bool v = [] { const char * e = moe_opt("staging"); return e && atoi(e) == 0; }();
-    return v;
-}
 
 static bool pp_chain_pays(double n, double up, double U, bool stream, const char ** why) {
     const int b = pp_bucket(n);
