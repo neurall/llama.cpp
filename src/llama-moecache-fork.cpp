@@ -1137,6 +1137,8 @@ static std::atomic<int64_t> g_mb_auto { 0 };       // outside a prompt call, the
 static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call left a layer fewer blocks than its pass may use: its passes leave the prompt chain
 static std::atomic<uint32_t> g_pp_last_n{0}, g_pp_last_ub{0};   // the last decision's call (tokens, pass ceiling): decided again when the chain is refused after it
 static std::atomic<bool> g_pp_dec{false};        // this prompt call runs on the decode chain, misses may stay on the CPU (llama_moe_cache_pp_decide_fork)
+static uint32_t g_pp_chain_refused = UINT32_MAX;  // the chain's graph refused a pass of this size or more (a fact per pass size, not a bucket)
+static bool pp_no_staging();
 static bool              g_pp_dec_built = false; // the same when the last graph was finished
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
@@ -10663,6 +10665,13 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
         if (!mc->link_be[l.link] || pp_blocks(mc, l) < want) {
             static int n_log = 0;
             if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt chain refused: layer %d has %lld blocks, wants %lld\n", pub->il, (long long) pp_blocks(mc, l), (long long) want); }
+            // --moe staging=0: never the stream. The call becomes the decode chain from this layer on (its CPU computes what finds no block; layers built before keep
+            // the chain, they had their blocks), and the size leaves the chain for good, as a refusal the stream ran for does after the call
+            if (pp_no_staging()) {
+                g_pp_dec = true;
+                g_pp_chain_refused = std::min(g_pp_chain_refused, (uint32_t) n_tokens);
+                return 0;
+            }
             return -1;
         }
         g_pp_want  = n_tokens * n_used;
@@ -12051,6 +12060,8 @@ static void tables_check(moe_cache * mc) {
             const int32_t own = s < (int32_t) ps.owner.size() ? ps.owner[s] : -9;
             const int32_t has = s < (int32_t) ls.slot_expert.size() ? ls.slot_expert[s] : -9;
             if (own == (int32_t) li && has == (int32_t) e) { continue; }
+            // the prompt's preheat (moe_fill_cb) gave this block to another layer; the entry is reset below in this step, and no graph of the call read it (one-card stream passes read their copies)
+            if (has < 0 && std::find(ls.adopt_victims.begin(), ls.adopt_victims.end(), (int32_t) e) != ls.adopt_victims.end()) { continue; }
             if (n_bad++ < 20) {
                 LLAMA_LOG_ERROR("moe-cache: table check: layer %zu expert %lld -> block %d of class %d, but the block's owner is %d (%s) and it holds expert %d\n",
                         li, (long long) e, s, ls.pcls, own, own == -1 ? "free" : own == -2 ? "lent to a graph" : own == -3 ? "under the KV zone" : own == -9 ? "out of range" : "another layer", has);
@@ -12903,7 +12914,8 @@ int64_t llama_moe_cache_max_batch_fork() {
         return 1;
     }
     if (g_prompt_call.load(std::memory_order_relaxed) && pp_chain_on()) {   // a prompt call: the prompt chain, as far as it pays; none once the lend left it too few blocks
-        return g_pp_short.load(std::memory_order_relaxed) ? 0 : mb_fixed() >= 0 ? mb_fixed() : g_pp_mb.load(std::memory_order_relaxed);
+        // a short chain (the lend left a layer too few blocks) leaves the cache path, unless the call was decided again for the decode chain: it was built as the stream
+        return g_pp_short.load(std::memory_order_relaxed) && !g_pp_dec.load(std::memory_order_relaxed) ? 0 : mb_fixed() >= 0 ? mb_fixed() : g_pp_mb.load(std::memory_order_relaxed);
     }
     if (mb_fixed() >= 0) {
         // with the prompt chain a fixed limit is the prompts' limit: other passes (a reserve, a pass with many outputs) keep the decode chain's own, or a test's forced chain would
@@ -13158,7 +13170,6 @@ static std::map<uint32_t, int> g_pp_size_seen;    // calls per pass size in this
 static bool     g_pp_trial = false;               // the call's pick is a trial (value of information), not the lowest mean
 static int64_t  g_pp_seen_c0 = -1;                // the first cell of the last call: a lower one is a new request
 static bool     g_pp_redraw = true;               // a pass surprised its model (NIS > 1): draw again at the next call
-static uint32_t g_pp_chain_refused = UINT32_MAX;  // the chain's graph refused a pass of this size or more (a fact per pass size, not a bucket)
 static bool pp_split_model_on() { static const bool on = [] { const char * o = moe_opt("split-model"); return !o || atoi(o) != 0; }(); return on; }
 bool llama_dsplit_state_get_fork(const char * what, std::string & v);         // llama-dsplit-fork.cpp: this model/cards/build's state value, false: not known yet
 void llama_dsplit_state_set_fork(const char * what, const std::string & v);   // and store one
@@ -14144,7 +14155,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // So no try of a mix not known here while uploads run; a known one keeps its mean.
         if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
         for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
-        if (pp_no_staging() && (ok[PP_CHAIN] || ok[PP_DEC])) {   // --moe staging=0: only the chains compete
+        if (pp_no_staging()) {   // --moe staging=0: only the chains compete (none ok: no pick, the rules below take a chain)
             ok[PP_RING] = ok[PP_MIX] = false;
             for (int p = PP_K; p < PP_PATHS; ++p) { ok[p] = false; }
         }
@@ -14185,8 +14196,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
     if (pp_no_staging() && !force && !chain && !dec) {   // --moe staging=0: a chain wherever one can take the call (the uploads on their way land when its graph is built)
         if (!g_pp_short.load(std::memory_order_relaxed) && (uint32_t) n < g_pp_chain_refused && chain_fits) { chain = true; why = "--moe staging=0"; }
-        else if (cpu_known) { dec = true; why = "--moe staging=0"; }
-        else { why = "--moe staging=0, but no chain can take this call: the stream stages"; }
+        else { dec = true; why = cpu_known ? "--moe staging=0" : "--moe staging=0 (the decode chain before its CPU rate was measured)"; }
     }
     g_pp_dec = dec;
     const bool cstream = force && strcmp(force, "cstream") == 0;   // test path: the stream into the cache's blocks, step 1 (every expert of the pass must fit them)
