@@ -1368,6 +1368,12 @@ static void common_gpu_free(size_t & total, size_t & max, int & n, const std::ve
 // RAM that can be used without swapping: Linux MemAvailable (free + reclaimable page cache), 0 if unknown
 // with_pool: also the free pages of a reserved huge page pool (1 GiB and 2 MiB, Linux): MemAvailable does not count them, but the pinned weights buffer is taken
 // from exactly those pages, so for the decision to pin they are available RAM (a 100 GiB pool left 21 GiB "available" and a 109 GiB model fell back to mmap)
+// --moe sim-ram: bytes the simulated machine has less than this one (common_hog)
+static size_t common_sim_ram_held() {
+    const char * h = llama_moe_get_opt("sim-ram-held");
+    return h ? (size_t) strtoull(h, nullptr, 10) : 0;
+}
+
 // the RAM of the machine, huge pages included; 0 when unknown
 static size_t common_ram_total() {
     size_t t = 0;
@@ -1389,7 +1395,8 @@ static size_t common_ram_available(bool with_pool = false) {
     GGML_UNUSED(with_pool);
     MEMORYSTATUSEX st = {};
     st.dwLength = sizeof(st);
-    return GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+    const size_t a = GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+    return a - std::min(a, common_sim_ram_held());
 #elif defined(__linux__)
     std::ifstream f("/proc/meminfo");
     std::string key;
@@ -1426,7 +1433,7 @@ static size_t common_ram_available(bool with_pool = false) {
                     mem = std::min(mem, lim > used ? lim - used : (size_t) 0);
                 }
             }
-            return mem + pool;
+            return mem - std::min(mem, common_sim_ram_held()) + pool;
         }
         f.ignore(256, '\n');
     }
@@ -1926,27 +1933,21 @@ LLAMA_API double llama_moe_vram_gbs_fork(ggml_backend_dev_t d);
 static void decide_fork(const char * name, const std::string & value, const std::string & why) { llama_moe_decision_fork(name, value.c_str(), why.c_str()); }
 static void common_moe_cache_auto_impl(common_params & params);
 
-// --moe sim-vram=MB / sim-ram=MB: leave exactly MB MiB free on every GPU / in RAM for the rest of the run, by really taking the memory (test runs on a "smaller
-// machine"; sim-vram used to only change what the card reported, which let real allocations go past it). Held for the life of the process and freed by the OS when it ends, however it ends: the external
-// holder process this replaces left 8 GiB per card taken after its starter was killed and tainted later runs (2026-10-18). Runs before any size is read.
+// --moe sim-vram=MB / sim-ram=MB: every GPU / the RAM reports MB MiB free at start (test runs on a "smaller machine"). Faked since 2026-11-11, nothing held
+// (the held RAM swapped PC1): ggml-backend.cpp takes the gap off every card's free memory and refuses buffers past it (a real hold before: an early fake let
+// allocations go past the card), the RAM readers take sim-ram-held off. Runs before any size is read: the first reading fixes the gap.
 static void common_hog(void) {
     static std::vector<ggml_backend_buffer_t> gpu_hog;
-    static void * ram_hog = nullptr;
     const char * hg = llama_moe_get_opt("sim-vram");
     const char * hr = llama_moe_get_opt("sim-ram");
-    if (hg && gpu_hog.empty()) {
-        const size_t keep = (size_t) (atof(hg) * 1048576.0);
+    static bool sim_done = false;
+    if (hg && !sim_done) {   // the first reading fixes what each card reports free (ggml-backend.cpp): nothing is held (user 2026-11-11)
         for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
             if (!ggml_backend_dev_is_gpu(dev)) { continue; }
             size_t free = 0, tot = 0;
             ggml_backend_dev_memory(dev, &free, &tot);
-            if (free <= keep) { continue; }
-            ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), free - keep);
-            if (!buf) { LOG_WRN("sim-vram: could not take %.2f GiB on %s\n", (free - keep) / 1073741824.0, ggml_backend_dev_name(dev)); continue; }
-            gpu_hog.push_back(buf);
-            size_t f2 = 0; ggml_backend_dev_memory(dev, &f2, &tot);
-            LOG_WRN("sim-vram: %s holds %.2f GiB, %.2f GiB left free\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1073741824.0, f2 / 1073741824.0);
+            LOG_WRN("sim-vram: %s reports %.2f GiB free (faked, nothing held)\n", ggml_backend_dev_name(dev), free / 1073741824.0);
         }
     }
     // --moe hog-<card>=MB (hog-CUDA0=7943): take MB MiB on that one card, a control run that holds what something else would (a DSpark draft took 7943 MiB of the
@@ -1965,45 +1966,14 @@ static void common_hog(void) {
         LOG_WRN("hog: %s holds %.0f MiB\n", ggml_backend_dev_name(dev), ggml_backend_buffer_get_size(buf) / 1048576.0);
     }
     hog_done = true;
-#ifdef __linux__
-    if (hr && !ram_hog) {
-        const size_t keep = (size_t) (atof(hr) * 1048576.0);   // stress test: exactly what was asked for, no floor (swapping is part of what is being tested)
-        size_t avail = 0;
-        if (FILE * f = fopen("/proc/meminfo", "r")) {
-            char line[256]; unsigned long long kb = 0;
-            while (fgets(line, sizeof line, f)) { if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = (size_t) kb * 1024; break; } }
-            fclose(f);
-        }
+    if (hr && !sim_done) {   // every reader of the RAM (total and available) takes the gap off: nothing is held (it swapped PC1: user 2026-11-11 "no need to allocate them")
+        const size_t keep = (size_t) (atof(hr) * 1048576.0), avail = common_ram_available();
         if (avail > keep) {
-            const size_t n = avail - keep;
-            void * p = mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            if (p != MAP_FAILED) {
-                for (size_t o = 0; o < n; o += 4096) { ((volatile char *) p)[o] = 1; }
-                mlock(p, n);
-                ram_hog = p;
-                llama_moe_set_opt("sim-ram-held", std::to_string(n).c_str());   // the simulated machine is this much smaller: common_ram_total and the loader's freeze guard take it off
-                LOG_WRN("sim-ram: holds %.2f GiB, about %.2f GiB left\n", n / 1073741824.0, keep / 1073741824.0);
-            }
+            llama_moe_set_opt("sim-ram-held", std::to_string(avail - keep).c_str());
+            LOG_WRN("sim-ram: reports %.2f GiB less RAM, about %.2f GiB available (faked, nothing held)\n", (avail - keep) / 1073741824.0, keep / 1073741824.0);
         }
     }
-#elif defined(_WIN32)
-    if (hr && !ram_hog) {
-        const size_t keep = (size_t) (atof(hr) * 1048576.0);   // same rule as above: exactly what was asked for, no floor
-        MEMORYSTATUSEX ms; ms.dwLength = sizeof ms;
-        if (GlobalMemoryStatusEx(&ms) && ms.ullAvailPhys > keep) {
-            const size_t n = (size_t) ms.ullAvailPhys - keep;
-            SetProcessWorkingSetSize(GetCurrentProcess(), n + ((size_t) 256 << 20), (size_t) ms.ullTotalPhys);   // VirtualLock needs the room in the working set; the maximum must stay far above the hog (later pinned host buffers lock pages too)
-            void * p = VirtualAlloc(nullptr, n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-            if (p) {
-                for (size_t o = 0; o < n; o += 4096) { ((volatile char *) p)[o] = 1; }
-                VirtualLock(p, n);
-                ram_hog = p;
-                llama_moe_set_opt("sim-ram-held", std::to_string(n).c_str());   // the simulated machine is this much smaller: common_ram_total and the loader's freeze guard take it off
-                LOG_WRN("sim-ram: holds %.2f GiB, about %.2f GiB left\n", n / 1073741824.0, keep / 1073741824.0);
-            }
-        }
-    }
-#endif
+    sim_done = true;
 }
 
 // pinned weights for every model, whether or not the expert cache is on (OLMoE fits the VRAM, the placement code returns early, and its weights were mapped: 2026-10-21)

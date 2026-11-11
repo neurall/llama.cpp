@@ -282,6 +282,7 @@ LLAMA_API bool llama_moe_ram_short_fork(uint64_t n_cells, uint64_t bytes) {
     if (avail == 0) {
         return false;
     }
+    if (const char * h = llama_moe_get_opt("sim-ram-held")) { avail -= std::min<uint64_t>(avail, strtoull(h, nullptr, 10)); }   // --moe sim-ram: the simulated machine's RAM
     const double per_tok = std::max(1.0, g_host_a * (double) n_cells + g_host_b);
     const double need    = (double) g_host_ub * per_tok + g_host_d * (double) n_cells + g_host_c;
     return (double) avail + (double) (pool_free << 30) + (double) g_host_held < need + (double) ram_margin_bytes() + (double) bytes;

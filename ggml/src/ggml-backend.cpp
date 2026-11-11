@@ -43,11 +43,43 @@ const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
     return buft->iface.get_name(buft);
 }
 
+// fork: --moe sim-vram=MB (GGML_SIM_VRAM_MB, test runs on a smaller card): every GPU reports MB MiB free from its first reading after the option is set
+// (common_hog takes it before any size is read) and less as memory is used, and a buffer past that fails as on the small card. Nothing is held (user 2026-11-11:
+// "fake free ram and vram in sim modes, no need to allocate them"). shortcut: cuBLAS workspaces and CUDA graphs are not refused past it, only buffers and the
+// CUDA memory pool (ggml-cuda.cu); upgrade if a sim row's real VRAM (runs.db vram_mib) goes past the simulated card.
+static size_t ggml_backend_sim_vram_off(ggml_backend_dev_t dev, size_t free_now) {
+    const char * e = getenv("GGML_SIM_VRAM_MB");
+    if (!e || (dev->iface.get_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU && dev->iface.get_type(dev) != GGML_BACKEND_DEVICE_TYPE_IGPU)) {
+        return 0;
+    }
+    static std::mutex mtx;
+    static std::map<ggml_backend_dev_t, size_t> off;
+    std::lock_guard<std::mutex> lock(mtx);
+    auto it = off.find(dev);
+    if (it == off.end()) {
+        const size_t keep = (size_t) (atof(e) * 1048576.0);
+        it = off.emplace(dev, free_now > keep ? free_now - keep : 0).first;
+    }
+    return it->second;
+}
+
 ggml_backend_buffer_t ggml_backend_buft_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     GGML_ASSERT(buft);
     if (size == 0) {
         // return a dummy buffer for zero-sized allocations
         return ggml_backend_buffer_init(buft, {}, NULL, 0);
+    }
+    if (getenv("GGML_SIM_VRAM_MB") && !ggml_backend_buft_is_host(buft)) {   // --moe sim-vram: the simulated card has no room for it
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
+        const enum ggml_backend_dev_type type = dev ? ggml_backend_dev_type(dev) : GGML_BACKEND_DEVICE_TYPE_CPU;
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            size_t free = 0, total = 0;
+            ggml_backend_dev_memory(dev, &free, &total);
+            if (size > free) {
+                GGML_LOG_WARN("%s: sim-vram: %s refuses %.1f MiB, %.1f MiB free on the simulated card\n", __func__, ggml_backend_dev_name(dev), size / 1048576.0, free / 1048576.0);
+                return NULL;
+            }
+        }
     }
     return buft->iface.alloc_buffer(buft, size);
 }
@@ -1467,6 +1499,7 @@ extern "C" { GGML_API void ggml_sched_set_split_hook_fork(void (*fn)(ggml_backen
 void ggml_backend_dev_memory(ggml_backend_dev_t device, size_t * free, size_t * total) {
     GGML_ASSERT(device);
     device->iface.get_memory(device, free, total);
+    *free -= std::min(*free, ggml_backend_sim_vram_off(device, *free));   // --moe sim-vram: what the simulated card has free
 }
 
 enum ggml_backend_dev_type ggml_backend_dev_type(ggml_backend_dev_t device) {

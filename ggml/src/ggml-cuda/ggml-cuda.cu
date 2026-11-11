@@ -224,8 +224,21 @@ static int ggml_cuda_op_offload_min_batch() {
     return min_batch;
 }
 
+// fork: --moe sim-vram (ggml-backend.cpp fakes the free memory): no room on the simulated card fails like a real out-of-memory, nothing is held
+static bool ggml_cuda_sim_full(int device, size_t size) {
+    if (!getenv("GGML_SIM_VRAM_MB")) {
+        return false;
+    }
+    size_t free = 0, total = 0;
+    ggml_backend_dev_memory(ggml_backend_reg_dev_get(ggml_backend_cuda_reg(), device), &free, &total);
+    return size > free;
+}
+
 static cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device) {
     ggml_cuda_set_device(device);
+    if (ggml_cuda_sim_full(device, size)) {
+        return cudaErrorMemoryAllocation;
+    }
     cudaError_t err;
     if (ggml_cuda_unified_memory_enabled()) {
         err = cudaMallocManaged(ptr, size);
@@ -510,18 +523,6 @@ static ggml_cuda_device_info ggml_cuda_init() {
         }
     }
 
-    // --moe sim=N: pretend every card has N GiB by allocating the rest up front (never freed), so the engine only ever sees N GiB free.
-    if (const char * sim = getenv("GGML_CUDA_SIM_GB")) {
-        const size_t keep = (size_t) (atof(sim) * 1073741824.0);
-        for (int id = 0; id < info.device_count; ++id) {
-            size_t fr = 0, tot = 0; void * hog = nullptr;
-            ggml_cuda_set_device(id);
-            if (cudaMemGetInfo(&fr, &tot) == cudaSuccess && fr > keep && cudaMalloc(&hog, fr - keep) == cudaSuccess) {
-                GGML_LOG_INFO("%s: sim: device %d holds %.1f GiB, %.1f GiB left\n", __func__, id, (fr - keep) / 1073741824.0, keep / 1073741824.0);
-            }
-        }
-    }
-
     return info;
 }
 
@@ -547,10 +548,13 @@ struct ggml_cuda_oom {
 };
 // The pool holds `have` bytes, the allocation that failed asked for `ask` more, and `free` bytes of the card are left: the pass needs at least have + ask and can have
 // have + free, so about that share of its tokens x cells fits (llama_context::decode cuts the retried pass to it, less a safety, instead of halving it).
-static double ggml_cuda_oom_fit(size_t have, size_t ask) {
+static double ggml_cuda_oom_fit(int device, size_t have, size_t ask) {
     size_t free_b = 0, total_b = 0;
     (void) cudaMemGetInfo(&free_b, &total_b);
     (void) cudaGetLastError();
+    if (getenv("GGML_SIM_VRAM_MB")) {   // --moe sim-vram: the simulated card's free memory
+        ggml_backend_dev_memory(ggml_backend_reg_dev_get(ggml_backend_cuda_reg(), device), &free_b, &total_b);
+    }
     return (double) (have + free_b) / (double) std::max<size_t>(1, have + ask);
 }
 static ggml_cuda_oom    g_cuda_last_oom  = { -1, 0, "", 0.0 };   // the last one caught, for libllama (ggml_backend_cuda_last_oom_fork)
@@ -667,7 +671,7 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         }
         if (err == cudaErrorMemoryAllocation) {   // fork: still no room after the flush: caught by ggml_backend_cuda_graph_compute (ggml_cuda_oom)
             (void) cudaGetLastError();
-            throw ggml_cuda_oom{device, look_ahead_size, "memory pool", ggml_cuda_oom_fit(pool_size, look_ahead_size)};
+            throw ggml_cuda_oom{device, look_ahead_size, "memory pool", ggml_cuda_oom_fit(device, pool_size, look_ahead_size)};
         }
         CUDA_CHECK(err);
         *actual_size = look_ahead_size;
@@ -752,9 +756,9 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
             prop.location.id = physical_device;
             CUmemGenericAllocationHandle handle;
             {
-                const CUresult cr = cuMemCreate(&handle, reserve_size, &prop, 0);
+                const CUresult cr = ggml_cuda_sim_full(device, reserve_size) ? CUDA_ERROR_OUT_OF_MEMORY : cuMemCreate(&handle, reserve_size, &prop, 0);
                 if (cr == CUDA_ERROR_OUT_OF_MEMORY) {   // fork: caught by ggml_backend_cuda_graph_compute (ggml_cuda_oom); the pool is unchanged
-                    throw ggml_cuda_oom{device, reserve_size, "memory pool", ggml_cuda_oom_fit(pool_size, reserve_size)};
+                    throw ggml_cuda_oom{device, reserve_size, "memory pool", ggml_cuda_oom_fit(device, pool_size, reserve_size)};
                 }
                 CU_CHECK(cr);
             }

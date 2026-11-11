@@ -636,7 +636,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
             if a.get("state") and os.path.exists(a["state"]) and not dry and a.get("keep_state") != "1":   # keep_state = 1: a second phase continues the arm's learned state
                 os.remove(a["state"])
         if setup.get("hold_vram"):
-            sys.exit("hold_vram is gone: the server holds memory itself; put --moe sim-vram=MB (MiB left free) in the arm args")
+            sys.exit("hold_vram is gone: the server fakes the free memory itself; put --moe sim-vram=MB (MiB left free) in the arm args")
         n_run = 0
         try:
             for mname, mpath in models.items():
@@ -1894,7 +1894,7 @@ def _pin_flag_needed(build, args):
     decides), `--load-mode pin` is added for every non-stock build."""
     if build.startswith("stock") or "--load-mode" in args or "-lm" in args:
         return False
-    if any("sim-ram=" in str(a) for a in args):   # -simram: the server takes its RAM after this check, so "fits the RAM available" is false by then; the engine's own rule (partial pin) is what a small machine runs
+    if any("sim-ram=" in str(a) for a in args):   # -simram: the server fakes a smaller RAM after this check, so "fits the RAM available" here is PC1's, not the simulated machine's; the engine's own rule (partial pin) is what a small machine runs
         return False
     try:
         import glob as _g
@@ -7603,7 +7603,7 @@ def run_list(name, argv):
     ap.add_argument("-pt", "--prompt-type", dest="pt", metavar="LIST", help="only the cells of these prompt types (comma list): i = input-heavy (mimo-i), io = input+output-heavy (mimo-io), o = output-heavy (mimo-o); the last word of the row name")
     ap.add_argument("-ps", "--prompt-size", dest="ps", action="append", metavar="TEST", help="run THESE sizes instead of the list's own, for the models the other filters leave (repeatable): 100k4k = the source cut at 100k tokens behind an instruction, 4000 answer tokens; 100k = prompt only (the list's answer length); tetrisc4k = that test with 4000 answer tokens; any other name is a test as it is")
     ap.add_argument("-ub", "--ubatch", dest="ub", metavar="LIST", help="micro-batch clamps, a comma list (4k,8k,16k; k = 1024): every selected cell once per size with the server argument -ub N, which clamps the largest micro-batch per card (the automatic one is never raised); rows are named <name>-ub<size>")
-    ap.add_argument("-sim", dest="hog_gpu", help="VRAM left free on every GPU for OUR cells (the server takes the rest at start: --moe sim-vram): -sim 16g = every card behaves like a 16 GiB card; a bare number is GiB, m = MiB")
+    ap.add_argument("-sim", dest="hog_gpu", help="VRAM left free on every GPU for OUR cells (the server reports only that free and refuses past it, nothing held: --moe sim-vram): -sim 16g = every card behaves like a 16 GiB card; a bare number is GiB, m = MiB")
     ap.add_argument("-simram", dest="hog_ram", help="RAM left free for OUR cells (--moe sim-ram): -simram 32g; a bare number is GiB, m = MiB")
     ap.add_argument("-ds", "--dense-split", dest="dense_split", choices=["on", "off", "one", "auto"], help="force the dense split for OUR cells: on = --moe dense-split=1, off = 0 (expert split alone), one = copies made but every prompt pass on one card, auto = the engine's own choice (the default); stored in the args column like -a")
     ap.add_argument("-pl", "--power", metavar="W", nargs="?", const="max", help="power limits in W for the whole run instead of the day/night schedule: no value = every card at its maximum; 285 = all cards; 285,285,300,285 = per card; 220/280 = cards on a narrower link than the widest / the widest (PC1: x4 card, x16 card). The max of the x4 card throttled and crashed it once on PC1 (330-350 W): not for PC1's x4 card. A remote host may refuse (blg: Insufficient Permissions)")
@@ -8235,7 +8235,7 @@ def cmd_cell(a):
         need = -(-sum(os.path.getsize(p) for p in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", a.model))) >> 30)
         if int(open(HUGE_NR).read()) >= need + 1: args += " -lm pin"
     hog = ",".join(k + "=" + str(int(float(v) * 1024)) for k, v in (("sim-vram", a.hog_gpu), ("sim-ram", a.hog_ram)) if v is not None)
-    if hog:   # --moe sim-vram / sim-ram: the server takes the memory itself (common_hog), freed by the OS with the process, no helper process to leave behind
+    if hog:   # --moe sim-vram / sim-ram: the server fakes the free memory itself (common_hog, ggml-backend.cpp), nothing held, no helper process to leave behind
         args += " --moe " + hog
     out = os.path.join(Q5, f"{a.tag}-{a.test}.run.out")
     cmd = ["timeout", "5400", sys.executable, os.path.abspath(__file__), "bench", "--models", a.model, "--builds", a.builds, "--variant", "v=" + args, "--variants", "v",
@@ -11052,7 +11052,7 @@ if __name__ == "__main__":
     ce.add_argument("--clean-state", action="store_true", help="bench --clean-state: an empty learned state for this build and cell; run 1 cold, run 2 warm")
     ce.add_argument("--keep-loops", action="store_true", help="do not discard and repeat a looping or garbled answer (bench --keep-loops): one server run per cell")
     ce.add_argument("--warm", action="store_true", help="a discarded run before each measured one: the first run after a server start is cold (nothing learned yet, the planner still guesses) and a gate does not compare it")
-    ce.add_argument("--hog-gpu", help="GiB left free on every GPU (the server takes the rest at start: --moe sim-vram=MiB), simulates a smaller card")
+    ce.add_argument("--hog-gpu", help="GiB left free on every GPU (faked by the server, nothing held: --moe sim-vram=MiB), simulates a smaller card")
     ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")
     ce.add_argument("--env", action="append", help="KEY=VALUE for the bench run (e.g. PERF_PPL_CHUNKS=12), repeatable")
     ce.add_argument("--nothink", action="store_const", const=True, help="chat tests: reasoning off (enable_thinking=false)")

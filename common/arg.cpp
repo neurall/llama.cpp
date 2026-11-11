@@ -2574,9 +2574,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "up-max") { params.n_moe_cache_inserts = v; }
                 else if (key == "recent")  { params.n_moe_cache_window  = v; }
                 else if (key == "pred-top") { params.n_moe_predict       = v; }
-                else if (key == "sim-vram") { } // leave v MiB free on every card: the memory is really taken at start (common_hog)
-                else if (key == "sim-ram")  { setenv("GGML_SIM_RAM_MB", std::to_string(v).c_str(), 1); }  // pretend v MiB of RAM can be pinned (test runs)
-                else if (key == "sim") { setenv("GGML_CUDA_SIM_GB", std::to_string(v).c_str(), 1); } // simulated card size in GiB: the CUDA backend hogs the rest of every card before anything else allocates
+                else if (key == "sim-vram") { setenv("GGML_SIM_VRAM_MB", std::to_string(v).c_str(), 1); } // every card reports v MiB free at start (ggml-backend.cpp): faked, nothing held
+                else if (key == "sim-ram")  { setenv("GGML_SIM_RAM_MB", std::to_string(v).c_str(), 1); }  // pretend v MiB of RAM can be pinned (test runs); the available RAM is faked (common_hog)
+                else if (key == "sim") { setenv("GGML_SIM_VRAM_MB", std::to_string((long) v * 1024).c_str(), 1); } // = sim-vram in GiB
                 else if (key == "chain-fuse") { if (v == 0) { setenv("GGML_CUDA_NO_CHAIN_FUSE", "1", 1); } } // 0: the expert cache chain keeps gate and up as two matmuls (A/B of the fused MMQ kernel)
                 else if (key == "fuse-off") { setenv("GGML_CUDA_FUSE_OFF", val.c_str(), 1); } // debug: the CUDA fusions that start at these ops (GLU+MUL+ROPE) stay apart, to name the one a bug needs
                 else if (key == "autotune") { params.autotune = v != 0; }

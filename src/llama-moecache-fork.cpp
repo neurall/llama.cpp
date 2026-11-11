@@ -668,12 +668,19 @@ bool file_location(const llama_model & model, const ggml_tensor * t, int * fd, s
     return true;
 }
 
+// --moe sim-ram: bytes the simulated machine has less than this one (common_hog fakes the RAM, nothing is held)
+static size_t sim_ram_held() {
+    const char * h = moe_opt("sim-ram-held");
+    return h ? (size_t) strtoull(h, nullptr, 10) : 0;
+}
+
 static size_t mem_available_bytes() {
+    size_t b = 0;
 #ifdef _WIN32
     MEMORYSTATUSEX st = {};   // /proc/meminfo is Linux only: on Windows this returned 0 and every pinning path (rampool, pinr, preheat) refused
     st.dwLength = sizeof(st);
-    return GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
-#endif
+    b = GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
+#else
     FILE * f = fopen("/proc/meminfo", "r");
     size_t kb = 0;
     char line[256];
@@ -681,7 +688,9 @@ static size_t mem_available_bytes() {
         if (sscanf(line, "MemAvailable: %zu kB", &kb) == 1) { break; }
     }
     if (f) { fclose(f); }
-    return kb * 1024;
+    b = kb * 1024;
+#endif
+    return b - std::min(b, sim_ram_held());
 }
 
 // MemAvailable, or less where a container's limit (cgroup v2 memory.max - memory.current) leaves less: pinned pages count against that limit too
@@ -6363,6 +6372,7 @@ static size_t kv_mem_available() {
     }
     b = kb * 1024;
 #endif
+    b -= std::min(b, sim_ram_held());
     static bool warned = false;
     if (b == 0 && !warned) { warned = true; LLAMA_LOG_WARN("moe-cache: kv-ram: the free RAM could not be read: the RAM tier of the KV holds nothing\n"); }
     const size_t margin = (size_t) 4 << 30;
