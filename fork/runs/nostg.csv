@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+ns-stg-auto,olmoe,2,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+ns-nostg-auto,olmoe,2,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,staging=0",--env CUDA_VISIBLE_DEVICES=1
+ns-stream,olmoe,2,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=1
+ns-nostg-vf,olmoe,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,staging=0,verify=2",--env CUDA_VISIBLE_DEVICES=1
+ns-stg-sci,olmoe,1,scific,64,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+ns-nostg-sci,olmoe,1,scific,64,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,staging=0",--env CUDA_VISIBLE_DEVICES=1
