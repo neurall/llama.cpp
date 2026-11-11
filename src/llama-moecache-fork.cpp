@@ -6514,8 +6514,10 @@ bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, cha
     std::string what;
     // a failure on a later card leaves the earlier ones as they were: their host places are given back and their layers stay in the pool
     auto rollback = [&]() { for (auto & [ap, hu] : undo) { ap->hused = hu; for (auto & r : ap->kvt) { r.out_next = r.out; } } };
+    const char * fl = moe_opt("kv-fallback");
+    const bool all_out = kvx_ram_only(kvx_allowed(fl ? fl : KVX_DEFAULT));   // --moe kv-fallback=ram: every layer's KV to host memory, needed or not
     for (auto & ap : mc->alias) {
-        if (ap.kvt.empty() || ap.kv_row == 0 || kv_prompt_room(ap) >= n_cells) { continue; }
+        if (ap.kvt.empty() || ap.kv_row == 0 || (!all_out && kv_prompt_room(ap) >= n_cells)) { continue; }
         const char * dn = ggml_backend_dev_name(ap.dev);
         const size_t r_all = kv_row_all(ap);
         if (r_all == 0) { say("kv-ram: %s: no layer can move", dn); rollback(); return false; }
@@ -6549,6 +6551,7 @@ bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, cha
             for (auto & q : sg) { by[q.lay] += ggml_row_size(q.type, q.ne0); }
             for (auto & [l, b] : by) { c.push_back({ i, l, b }); }
         }
+        if (all_out && c.empty()) { undo.pop_back(); continue; }   // every layer of this card is in host memory already (a later request)
         std::sort(c.begin(), c.end(), [](const cand & a, const cand & b) { return a.bytes > b.bytes; });
         uint8_t * hb = (uint8_t *) ggml_backend_buffer_get_base(ap.hbuf);
         size_t n_mv = 0, b_mv = 0;
@@ -6571,7 +6574,7 @@ bool llama_moe_cache_kv_ram_fork(ggml_backend_sched_t sched, size_t n_cells, cha
             GGML_ASSERT(ap.hused <= ap.hsize);
             n_mv++; b_mv += k.bytes;
             kvt_runs v; size_t F = 0, R = 0, pc = 0, pcd = 0;
-            if (kv_records_as(ap.kvt, 3, v, F, R)) { kv_lend_pc_of(v, pc, pcd); if (kv_prompt_cells(ap, F, R, pc) >= n_cells) { met = true; break; } }
+            if (kv_records_as(ap.kvt, 3, v, F, R)) { kv_lend_pc_of(v, pc, pcd); if (R == 0 || kv_prompt_cells(ap, F, R, pc) >= n_cells) { met = true; if (!all_out) { break; } } }   // R 0: no layer left in the pool, the host buffer holds the cells
         }
         if (!met) { say("kv-ram: %s: with every layer's KV in host memory %zu cells still do not fit", dn, n_cells); rollback(); return false; }
         what += tr_fmt("%s%s: %zu layer(s), %zu B per cell", what.empty() ? "" : "; ", dn, n_mv, b_mv);

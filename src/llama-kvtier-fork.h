@@ -1,7 +1,8 @@
 // KV tier ladder decisions (qkv-ram-fallback), pure functions so tests/test-kvtier-fork.cpp can run them with no GPU and no model; llama-context.cpp (kv_fit_select) and
 // llama-moecache-fork.cpp (llama_moe_cache_kv_ram_fork) call these.
 //   tiers: 0 f16, 1 q8_0/q8_0, 2 q4_0/q4_0 (all converted in place in the pool), 3 RAM (whole layers' KV in host memory)
-//   --moe kv-fallback=k8v8,k4v4,ram  the tiers allowed after f16 (default all three; "none": f16 only)
+//   --moe kv-fallback=f16,k8v8,ram  the tiers allowed, f16 included (default KVX_DEFAULT; "none": f16 only). A tier not in the list is off: "k8v8,ram" starts at q8_0,
+//   "ram" alone puts every layer's KV in host memory from the first token (user 2026-11-11: q4_0 left out of the default, its quality loss)
 #pragma once
 #include <algorithm>
 #include <cctype>
@@ -10,11 +11,13 @@
 #include <string>
 #include <vector>
 
-// the tiers a kv-fallback list allows (after f16), ascending. Words are matched without case or blanks; a word that is none of them is left out of the tiers and, with `unknown`,
+static const char * const KVX_DEFAULT = "f16,k8v8,ram";
+
+// the tiers a kv-fallback list allows, ascending (a list that names no tier: f16 only, as "none"). Words are matched without case or blanks; a word that is none of them is left out of the tiers and, with `unknown`,
 // reported (a typo like "RAM" or "q8" otherwise reads as "no fallback" and the refusal later prints the list as typed, which looks consistent with it); an empty list too.
 static inline std::vector<int> kvx_allowed(const std::string & list, std::vector<std::string> * unknown = nullptr) {
     std::vector<int> allowed;
-    if (list == "none") { return allowed; }
+    if (list == "none") { return { 0 }; }
     if (list.empty() && unknown) { unknown->push_back("(empty list)"); }
     size_t i = 0;
     while (i <= list.size() && !list.empty()) {
@@ -22,27 +25,30 @@ static inline std::vector<int> kvx_allowed(const std::string & list, std::vector
         std::string e = list.substr(i, j - i);
         e.erase(std::remove_if(e.begin(), e.end(), [](unsigned char c) { return c == ' ' || c == '\t'; }), e.end());
         for (char & c : e) { c = (char) tolower((unsigned char) c); }
-        if (e == "k8v8") { allowed.push_back(1); } else if (e == "k4v4") { allowed.push_back(2); } else if (e == "ram") { allowed.push_back(3); }
+        if (e == "f16") { allowed.push_back(0); } else if (e == "k8v8") { allowed.push_back(1); } else if (e == "k4v4") { allowed.push_back(2); } else if (e == "ram") { allowed.push_back(3); }
         else if (unknown) { unknown->push_back(list.substr(i, j - i)); }
         i = j + 1;
     }
     std::sort(allowed.begin(), allowed.end());   // tried from the cheapest tier up whatever the order of the list
     allowed.erase(std::unique(allowed.begin(), allowed.end()), allowed.end());
+    if (allowed.empty()) { allowed.push_back(0); }
     return allowed;
 }
 
-// The tier a request of n_tokens needs: the lowest tier at or above `lo` that holds it (f16 first, then the allowed tiers in list order); -1 when none does.
+// The tier a request of n_tokens needs: the lowest allowed tier at or above `lo` that holds it; -1 when none does.
 // lo: min_tier when given (>= 0), else the tier above the cache's own (a request whose KV filled up goes higher, whatever the estimate said); the RAM tier repeats
 // (a request that outgrows the layers moved so far moves more of them), so lo is at most 3. Caps: tokens each tier holds (llama_kv_fit_caps).
 template <class C> static int kvx_select(const C & cp, const std::vector<int> & allowed, int kv_tier, int min_tier, size_t n_tokens) {
     const int lo = min_tier < 0 ? std::min(kv_tier + 1, 3) : min_tier;
-    if (lo <= 0 && n_tokens <= cp.f16) { return 0; }
     for (int t : allowed) {
         if (t < lo) { continue; }
-        if (n_tokens <= (t == 1 ? cp.k8v8 : t == 2 ? cp.k4v4 : cp.ram)) { return t; }
+        if (n_tokens <= (t == 0 ? cp.f16 : t == 1 ? cp.k8v8 : t == 2 ? cp.k4v4 : cp.ram)) { return t; }
     }
     return -1;
 }
+
+// no tier in the pool (the list is "ram" alone): the RAM tier moves every layer's KV, not only as many as the request needs
+static inline bool kvx_ram_only(const std::vector<int> & allowed) { return !allowed.empty() && allowed.front() == 3; }
 
 // the RAM tier takes the pool's KV to q4_0 first when the list allows q4_0 and the cache is below it (the layers moved to host memory hold q4_0)
 static inline bool kvx_ram_needs_q4(const std::vector<int> & allowed, int kv_tier) {

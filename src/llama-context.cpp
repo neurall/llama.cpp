@@ -1555,15 +1555,15 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     const llama_kv_fit_caps cp = llama_moe_cache_kv_fit_caps_fork();
     if (!cp.valid) { return -2; }
     const char * lst = llama_moe_get_opt("kv-fallback");
-    std::string list = lst ? lst : "k8v8,k4v4,ram";
+    std::string list = lst ? lst : KVX_DEFAULT;
     std::vector<std::string> unknown;
     const std::vector<int> allowed = kvx_allowed(list, &unknown);
     static bool warned_list = false;
     if (!unknown.empty() && !warned_list) {   // once: the words that are no tier (k8v8, k4v4, ram, or none) are left out
         warned_list = true;
         std::string w; for (auto & u : unknown) { w += (w.empty() ? "'" : ", '") + u + "'"; }
-        LLAMA_LOG_WARN("%s: --moe kv-fallback=%s: not a tier: %s (tiers are k8v8, k4v4, ram; none = f16 only)\n", __func__, list.c_str(), w.c_str());
-    }   // tiers tried after f16, in place: q8_0, q4_0 in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
+        LLAMA_LOG_WARN("%s: --moe kv-fallback=%s: not a tier: %s (tiers are f16, k8v8, k4v4, ram; none = f16 only)\n", __func__, list.c_str(), w.c_str());
+    }   // the listed tiers, cheapest first: f16, q8_0, q4_0 in place in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
     int tier = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
     bool policy_pick = false;   // q8_0 picked to give the experts room, f16 would fit: it can fail without failing the request
     // fork: q8_0 pays only when this request's KV takes a real share of the pool the experts live in: f16 fits, but q8_0 would give the experts back at least KV_Q8_MIN_SHARE of the pool.
@@ -1586,7 +1586,7 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
         if (pick) { tier = 1; }
     }
     if (tier < 0) {
-        say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=k8v8,k4v4,ram)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, cp.ram, list.c_str());
+        say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=f16,k8v8,k4v4,ram)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, cp.ram, list.c_str());
         return -1;
     }
     if (tier == 3) {   // q4_0 in the pool first (if the list has it), then whole layers to host memory until the request fits

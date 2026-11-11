@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+kvr-olmoe-vram,olmoe,1,pf2k,16,"--moe autotune=0,kv-fallback=f16,kv-policy=0",--env CUDA_VISIBLE_DEVICES=1
+kvr-olmoe-ram,olmoe,1,pf2k,16,"--moe autotune=0,kv-fallback=ram",--env CUDA_VISIBLE_DEVICES=1

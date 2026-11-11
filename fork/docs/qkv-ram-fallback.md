@@ -13,7 +13,7 @@ length needs:
 
 When the KV leaves the GPU (RAM tier) the pool space it held goes back to the expert cache, which compensates the slower
 attention. Anything above the RAM capacity (free RAM minus a margin) is refused with the numbers. `--moe kv-fallback=LIST`
-(default `k8v8,k4v4,ram`) selects and orders the tiers; `none` refuses as today. The user is told upfront (log at warning
+(default `f16,k8v8,ram`, f16 included; a tier not listed is off, `ram` alone puts every layer's KV in RAM from the first token) selects the tiers; `none` refuses as today. The user is told upfront (log at warning
 level before the prefill, and a `kv_fit` object in the first SSE event). Details of the list syntax and the quality notes:
 branch auto-kv-ram-quant-fallback, fork/docs/kv-fit.md.
 

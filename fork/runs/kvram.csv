@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+kvr-glm35-vram,glm35,2,pf64k,16,"--moe autotune=0,kv-fallback=f16,kv-policy=0",--env CUDA_VISIBLE_DEVICES=1
+kvr-glm35-ram,glm35,2,pf64k,16,"--moe autotune=0,kv-fallback=ram",--env CUDA_VISIBLE_DEVICES=1
