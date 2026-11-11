@@ -2568,6 +2568,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                         throw std::invalid_argument("--moe: " + key + " needs a number (autotune also on/off), got '" + val + "'");
                     }
                 }
+                if (key == "staging" && v == 0) { params.prefetch_experts_slots = 0; }   // no prompt staging slots either (the engine reads the knob for its paths)
                 if      (key == "slots")   { params.n_moe_cache_slots       = v; } // = --moe-expert-cache
                 else if (key == "pf-slots") { params.prefetch_experts_slots  = v; } // = --prefetch-experts-slots
                 else if (key == "up-max") { params.n_moe_cache_inserts = v; }

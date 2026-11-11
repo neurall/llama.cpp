@@ -13274,6 +13274,13 @@ static double pp_k_pick(double n, double r, double U, int n_used, int n_expert, 
 // what a stream of this size took beyond its whole upload, which it can at most have spent in sequence. The other side is what this size took, or the upload streaming needs (no staging can
 // beat that). A try that loses costs one pass and settles the size and everything above it (GLM, 4684 tokens: 17.4 s against 8 s, before the stream's time bounded the compute). No miss at
 // all: the chain, it uploads nothing and needs no staging.
+// --moe staging=0 (user 2026-11-11: staging is prohibited): no prompt path that stages (the stream, the mix, the predictions' k arms); the two chains upload into the
+// cache's blocks and their kernels read the tables. The stream stays only where no chain can take the call, and its DEC line says so.
+static bool pp_no_staging() {
+    static const bool v = [] { const char * e = moe_opt("staging"); return e && atoi(e) == 0; }();
+    return v;
+}
+
 static bool pp_chain_pays(double n, double up, double U, bool stream, const char ** why) {
     const int b = pp_bucket(n);
     if (g_pp_no_chain[b]) { *why = "its graph refused this size"; return false; }
@@ -14034,7 +14041,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(pm)); }
     // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
     // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed). The prompt chain's uploads wait for the same SSD reads.
-    if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, estimate_moe_miss_ongpu_time(pm)); }
+    if ((!busy || pp_no_staging()) && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, estimate_moe_miss_ongpu_time(pm)); }   // staging=0: the chain drops the queued uploads (pp_settle) rather than stage
     // its calculated time (uploads and CPU side by side, the chunks, the learned ratios), not its uploads alone: the uploads alone priced a 100-token GLM call at 4.8 s, the
     // calculation said 1.6 s, it took 2.1 s, and the stream (3.3 s) won every such call (2026-11-10, two cards)
     if (cpu_known) { cand(PP_DEC, estimate_decodechain_time(pm)); }
@@ -14099,6 +14106,10 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // So no try of a mix not known here while uploads run; a known one keeps its mean.
         if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
         for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
+        if (pp_no_staging() && (ok[PP_CHAIN] || ok[PP_DEC])) {   // --moe staging=0: only the chains compete
+            ok[PP_RING] = ok[PP_MIX] = false;
+            for (int p = PP_K; p < PP_PATHS; ++p) { ok[p] = false; }
+        }
         // Router or full stream (user 2026-11-10): time per token of the path that ran here against the estimate of the other, and the stream as soon as it costs the same or less.
         // A path measured at this size counts with its real time. The estimates: the router waits for its ids, uploads its picks and computes; the full stream uploads every expert
         // (one expert's upload x the experts) while it computes, so it takes the longer of the two. No stored threshold. --moe pp-switch=0: both compete on their means, as before.
@@ -14134,6 +14145,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     chain = !g_pp_short.load(std::memory_order_relaxed) && (force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why));   // a refused chain stays out of the second decision
     dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
     if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
+    if (pp_no_staging() && !force && !chain && !dec) {   // --moe staging=0: a chain wherever one can take the call (the uploads on their way land when its graph is built)
+        if (!g_pp_short.load(std::memory_order_relaxed) && (uint32_t) n < g_pp_chain_refused && chain_fits) { chain = true; why = "--moe staging=0"; }
+        else if (cpu_known) { dec = true; why = "--moe staging=0"; }
+        else { why = "--moe staging=0, but no chain can take this call: the stream stages"; }
+    }
     g_pp_dec = dec;
     const bool cstream = force && strcmp(force, "cstream") == 0;   // test path: the stream into the cache's blocks, step 1 (every expert of the pass must fit them)
     g_pp_cstream_call = cstream;
