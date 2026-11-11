@@ -1,5 +1,5 @@
 name,model,n,test,tokens,args,extra
-kvr-olmoe-vram,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,sim-vram=2048,kv-fallback=f16,kv-policy=0",--env CUDA_VISIBLE_DEVICES=1
-kvr-olmoe-ram,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,sim-vram=2048,kv-fallback=ram",--env CUDA_VISIBLE_DEVICES=1
-kvr-olmoe-ssd-vram,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,sim-vram=2048,sim-ram=6144,kv-fallback=f16,kv-policy=0",--env CUDA_VISIBLE_DEVICES=1
-kvr-olmoe-ssd-ram,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,sim-vram=2048,sim-ram=6144,kv-fallback=ram",--env CUDA_VISIBLE_DEVICES=1
+kvr-olmoe-vram,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=2048,kv-fallback=f16,kv-policy=0",--env CUDA_VISIBLE_DEVICES=1
+kvr-olmoe-ram,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=2048,kv-fallback=ram",--env CUDA_VISIBLE_DEVICES=1
+kvr-olmoe-ssd-vram,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=2048,sim-ram=6144,kv-fallback=f16,kv-policy=0",--env CUDA_VISIBLE_DEVICES=1
+kvr-olmoe-ssd-ram,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=2048,sim-ram=6144,kv-fallback=ram",--env CUDA_VISIBLE_DEVICES=1
