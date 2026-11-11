@@ -5985,6 +5985,29 @@ static size_t kv_arena_cells(const kv_arena_t & ar) { return ar.size / std::max<
 static std::vector<kv_arena_t> g_kv_arena;
 static std::string g_kv_arena_err;   // why a card got no arena (the records stay unattached: a graph built over them aborts in the allocator); asked for by decode()
 
+// a card's arena from the records it takes: growing records in one combined row, sliding-window rings fixed at full size in front (as in the pool, kv_rec_fixed);
+// tmax: the most tokens a record covers, cmax: the most rows of a growing record (the combined rows the arena needs). The caller holds g_kvt_mtx.
+struct kv_arena_shape { size_t row = 0, fixed = 0, cmax = 0, tmax = 0, pad = 256; };
+template <class Take> static kv_arena_shape kv_arena_shape_of(ggml_backend_dev_t dev, const Take & take) {
+    kv_arena_shape s;
+    for (auto & r : g_kvt) {
+        if (take(r) && r.dev == dev && r.row) { s.tmax = std::max(s.tmax, r.bytes / r.row * llama_kv_cache_tail_ratio_fork(r.owner)); s.pad = std::max<size_t>(s.pad, r.pad); }
+    }
+    for (auto & r : g_kvt) {
+        if (!take(r) || r.dev != dev || !r.row) { continue; }
+        if (kv_rec_fixed(r.bytes / r.row, llama_kv_cache_tail_ratio_fork(r.owner), s.tmax, r.step > 0 ? r.step : 10240)) { s.fixed += (r.bytes + 255) / 256 * 256; }
+        else { s.row += r.row; s.cmax = std::max(s.cmax, r.bytes / r.row); }
+    }
+    return s;
+}
+static size_t kv_arena_margin() { return (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 484) * 1024 * 1024; }   // VRAM an arena leaves free behind it
+// what an arena allocated now would take on a card: the whole context of the records not placed yet
+static size_t kv_arena_need(ggml_backend_dev_t dev) {
+    std::lock_guard<std::mutex> lk(g_kvt_mtx);
+    const kv_arena_shape s = kv_arena_shape_of(dev, [](const llama_kv_tail_fork & r) { return !r.attached; });
+    return s.row ? s.fixed + s.cmax * s.row : 0;
+}
+
 // pool_records: whether the records of the context that expects the expert pool may go to an arena (see g_kvt_pool_bound). That context passes true once its
 // pool started (the records the pool did not take); every other context (a draft) false, so it takes only its own records.
 static void kv_arena_start(bool pool_records) {
@@ -5993,21 +6016,14 @@ static void kv_arena_start(bool pool_records) {
     std::vector<ggml_backend_dev_t> devs;
     for (auto & r : g_kvt) { if (take(r) && r.dev && std::find(devs.begin(), devs.end(), r.dev) == devs.end()) { devs.push_back(r.dev); } }
     for (ggml_backend_dev_t dev : devs) {
-        // growing records in one combined row, sliding-window rings fixed at full size in front (as in the pool, kv_rec_fixed); tmax: the most tokens a record
-        // covers, cmax: the most rows of a growing record (the combined rows the arena needs)
-        size_t row = 0, fixed = 0, cmax = 0, tmax = 0;
+        const kv_arena_shape s = kv_arena_shape_of(dev, take);
+        const size_t row = s.row, fixed = s.fixed, cmax = s.cmax, tmax = s.tmax;
         auto fixed_of = [&](const llama_kv_tail_fork & r) { return kv_rec_fixed(r.bytes / r.row, llama_kv_cache_tail_ratio_fork(r.owner), tmax, r.step > 0 ? r.step : 10240); };
-        for (auto & r : g_kvt) { if (take(r) && r.dev == dev && r.row) { tmax = std::max(tmax, r.bytes / r.row * llama_kv_cache_tail_ratio_fork(r.owner)); } }
-        for (auto & r : g_kvt) {
-            if (!take(r) || r.dev != dev || !r.row) { continue; }
-            if (fixed_of(r)) { fixed += (r.bytes + 255) / 256 * 256; } else { row += r.row; cmax = std::max(cmax, r.bytes / r.row); }
-        }
         if (row == 0) { continue; }
         size_t free_b = 0, total = 0;
         ggml_backend_dev_memory(dev, &free_b, &total);
-        const size_t margin = (size_t) (knobs().margin_mb > 0 ? knobs().margin_mb : 484) * 1024 * 1024;
-        size_t pad = 256;   // the attention reads the cells rounded up to the pad: the buffer holds at least one whole pad of rows behind the fixed part
-        for (auto & r : g_kvt) { if (take(r) && r.dev == dev && r.row) { pad = std::max<size_t>(pad, r.pad); } }
+        const size_t margin = kv_arena_margin();
+        const size_t pad = s.pad;   // the attention reads the cells rounded up to the pad: the buffer holds at least one whole pad of rows behind the fixed part
         const size_t least = fixed + pad * row;
         if (free_b <= margin + (64u << 20) || free_b - margin < least) {
             LLAMA_LOG_ERROR("kv-arena: %s has %.1f MiB free: no room for the KV\n", ggml_backend_dev_name(dev), free_b / 1048576.0);
@@ -9105,6 +9121,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             int64_t stored_mb = -1;
             bool from_cold = false;
             size_t margin = vram_margin(dev, vram_section, vram_cold, &stored_mb, &from_cold);
+            // no pool (router prediction keeps per-layer cache tensors): the KV arena comes after the cache and keeps its own margin free behind it, on top of what
+            // CUDA takes after the cache; leave it the whole context (GLM 3.5 pred-top 2026-11-12: the cache took 32.7 GiB, 297 MiB were left, "kv-arena: no room for the KV")
+            if (!pool_on) {
+                margin += kv_arena_margin() + kv_arena_need(dev);
+            }
             // --prefetch-experts-slots: the scheduler lazily allocates N full expert
             // tensors on the device big batches are offloaded to
             if (prefetch_slots >= 2 && !alias_on()) {   // with the compute alias the staging slots are lent blocks: no permanent reserve
@@ -10210,13 +10231,15 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 {
                     // the copies come after the VRAM sizing: they may only take what the KV and the graphs do not need (K3 2026-11-11: 84 layers x 37.5 MiB took the
                     // KV's margin, "kv-arena: no room for the KV")
-                    const size_t need = (size_t) n_embd * ne_x * routers.size() * (2 + (use_q8 ? 34.0/32 : 0)) + ((size_t) 1 << 30);
                     size_t fr = 0, tot = 0;
                     ggml_backend_dev_t pd = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(routers[0]->buffer));
-                    if (pd && ggml_backend_dev_type(pd) != GGML_BACKEND_DEVICE_TYPE_CPU) { ggml_backend_dev_memory(pd, &fr, &tot); }
-                    if (pd && ggml_backend_dev_type(pd) != GGML_BACKEND_DEVICE_TYPE_CPU && fr < need) {
+                    const bool gpu_pd = pd && ggml_backend_dev_type(pd) != GGML_BACKEND_DEVICE_TYPE_CPU;
+                    // the copy plus what the KV arena takes after it (its context and its margin), the same room the sizing left
+                    const size_t need = (size_t) n_embd * ne_x * routers.size() * (2 + (use_q8 ? 34.0/32 : 0)) + (gpu_pd ? kv_arena_margin() + kv_arena_need(pd) : 0);
+                    if (gpu_pd) { ggml_backend_dev_memory(pd, &fr, &tot); }
+                    if (gpu_pd && fr < need) {
                         static bool told = false;
-                        if (!told) { told = true; LLAMA_LOG_WARN("moe-cache: learned predictor copies stop at layer %d: %.0f MiB free on %s, a copy needs %.0f MiB with 1 GiB kept free; the rest predict with the next router\n", pub.il, fr / 1048576.0, ggml_backend_dev_name(pd), need / 1048576.0); }
+                        if (!told) { told = true; LLAMA_LOG_WARN("moe-cache: learned predictor copies stop at layer %d: %.0f MiB free on %s, a copy needs %.0f MiB with the KV arena's room kept free; the rest predict with the next router\n", pub.il, fr / 1048576.0, ggml_backend_dev_name(pd), need / 1048576.0); }
                         continue;   // this layer predicts with the next router itself (pred_w)
                     }
                 }
