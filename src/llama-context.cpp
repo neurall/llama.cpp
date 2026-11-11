@@ -272,11 +272,12 @@ LLAMA_API bool llama_moe_ram_short_fork(uint64_t n_cells, uint64_t bytes) {
     if (!g_host_ok) {
         return false;
     }
-    uint64_t avail = 0, pool_free = 0;
+    uint64_t avail = 0, pool_free = 0, cma_b = 0;
     if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
     if (FILE * f = fopen("/proc/meminfo", "r")) {
         char line[256];
-        while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; break; } }
+        while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; } else if (sscanf(line, "CmaFree: %llu kB", &kb) == 1) { cma_b = kb << 10; } }   // CmaFree is in MemAvailable but no pinned page can use it
+        avail -= std::min<uint64_t>(avail, cma_b);
         fclose(f);
     }
     if (avail == 0) {
@@ -4345,12 +4346,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         // every page beyond that depends on the kernel finding pinnable memory (the 6.5 GiB request stalled for 180 s). So the budget is the free pool pages right now (at least 1 GiB),
         // or, with no pool, the available RAM less the 4 GiB margin the weight loader keeps. --moe mask-mb=N overrides.
         uint64_t budget = 0;
-        uint64_t pool_free = 0, pool_total = 0, avail = 0;
+        uint64_t pool_free = 0, pool_total = 0, avail = 0, cma_b = 0;
         if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r")) { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_free = v; } fclose(f); }
         if (FILE * f = fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r"))   { unsigned long long v = 0; if (fscanf(f, "%llu", &v) == 1) { pool_total = v; } fclose(f); }
         if (FILE * f = fopen("/proc/meminfo", "r")) {
             char line[256];
-            while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; break; } }
+            while (fgets(line, sizeof line, f)) { unsigned long long kb = 0; if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { avail = kb << 10; } else if (sscanf(line, "CmaFree: %llu kB", &kb) == 1) { cma_b = kb << 10; } }   // CmaFree is in MemAvailable but no pinned page can use it
+        avail -= std::min<uint64_t>(avail, cma_b);
             fclose(f);
         }
         if (mm) {

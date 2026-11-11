@@ -6474,8 +6474,10 @@ static size_t kv_mem_available() {
     size_t kb = 0;
     if (FILE * f = fopen("/proc/meminfo", "r")) {
         char line[256];
-        while (fgets(line, sizeof line, f)) { if (sscanf(line, "MemAvailable: %zu kB", &kb) == 1) { break; } }
+        size_t cma = 0;
+        while (fgets(line, sizeof line, f)) { size_t v = 0; if (sscanf(line, "MemAvailable: %zu kB", &v) == 1) { kb = v; } else if (sscanf(line, "CmaFree: %zu kB", &v) == 1) { cma = v; } }
         fclose(f);
+        kb -= std::min(kb, cma);   // CmaFree is in MemAvailable but no pinned page can use it
     }
     b = kb * 1024;
 #endif

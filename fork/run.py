@@ -1179,7 +1179,7 @@ def cmd_memwatch(a):
         try: psi = re.findall(r"avg10=([\d.]+)", open("/proc/pressure/memory").read())
         except OSError: psi = ["0", "0"]
         some, full = float(psi[0]), float(psi[1]) if len(psi) > 1 else 0.0
-        avail, swap = m.get("MemAvailable", 0), m.get("SwapTotal", 0) - m.get("SwapFree", 0)
+        avail, swap = m.get("MemAvailable", 0) - m.get("CmaFree", 0), m.get("SwapTotal", 0) - m.get("SwapFree", 0)   # CmaFree: in MemAvailable, unusable for pinned pages
         buf.append(time.strftime("%T ") + f"avail {avail:.1f} free {m.get('MemFree', 0):.1f} cached {m.get('Cached', 0):.1f} anon {m.get('AnonPages', 0):.1f} mlock {m.get('Mlocked', 0):.1f} "
                    f"dirty {m.get('Dirty', 0):.2f} swap {swap:.2f} GiB, swap-out {so:.0f} major {mf:.0f} reclaim {rs:.0f} compact {cs:.0f} /s, psi {some:.1f} {full:.1f}; server rss {p.get('VmRSS', 0):.1f} anon {p.get('RssAnon', 0):.1f} "
                    f"file {p.get('RssFile', 0):.1f} locked {p.get('VmLck', 0) + p.get('VmPin', 0):.1f} swapped {p.get('VmSwap', 0):.2f} GiB\n")

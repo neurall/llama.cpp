@@ -1398,11 +1398,14 @@ static size_t common_ram_available(bool with_pool = false) {
     const size_t a = GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
     return a - std::min(a, common_sim_ram_held());
 #elif defined(__linux__)
+    size_t cma_kb = 0;   // free CMA pages are in MemAvailable but take no pinned page (PC1: 9.4 GiB with CmaTotal 0): never counted
+    { std::ifstream cf("/proc/meminfo"); std::string ck; size_t cv = 0; while (cf >> ck >> cv) { if (ck == "CmaFree:") { cma_kb = cv; break; } } }
     std::ifstream f("/proc/meminfo");
     std::string key;
     size_t kb = 0;
     while (f >> key >> kb) {
         if (key == "MemAvailable:") {
+            kb -= std::min(kb, cma_kb);
             size_t pool = 0;
             if (with_pool) {
                 for (const auto & hp : { std::make_pair("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", (size_t) 1 << 30),
