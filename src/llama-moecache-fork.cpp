@@ -8937,7 +8937,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // LLAMA_MOE_CACHE_JIT_POOL=n: JIT pool slots per slower-link layer on the fastest-link GPU. Default 0: the pool
         // chain's cross-GPU input/output copies cost ~10% on GLM (2x3090, 20 x4 layers) even with nothing in the pool
         // --moe pool=0: own cache tensors per layer with a fixed slot count each, as before the block pool (reference for A/B)
-        const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }() && predict <= 0;   // the predictor's stream slots are per layer
+        const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }()   // the predictor's stream slots are per layer; with the RAM pool it only starts
+                && (predict <= 0 || [] { const char * e = moe_opt("rampool"); return e && atoi(e) != 0; }());   // RAM reads (no uploads, no stream slots): Kimi K3.1 crashed at load without the pool's lend
         const int32_t jit_pool = [] { const char * e = moe_opt("jit-pool"); return e ? std::max(0, atoi(e)) : 0; }();
         // LLAMA_MOE_CACHE_JIT_POOL_ALL=1: every layer gets a pool (JIT never evicts the main cache)
         const bool jit_pool_all = [] { const char * e = moe_opt("jit-pool-all"); return e && atoi(e) != 0; }();
