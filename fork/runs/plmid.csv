@@ -1,0 +1,10 @@
+name,model,n,test,tokens,args,extra
+plmid-g35-s-plan,glm35,2,chatv,32,,--prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt
+plmid-g35-s-off,glm35,2,chatv,32,"--moe pred-top=8,pred=1,predict-ahead=2,pp-path=chain,pp-pred=0",--prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt
+plmid-g35-s-on,glm35,2,chatv,32,"--moe pred-top=8,pred=1,predict-ahead=2,pp-path=chain,pp-pred=1",--prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt
+plmid-g35-m-plan,glm35,2,chatv,32,,--prompt @/p/bw/wt-mb/fork/prompts/prompt-ww1.txt
+plmid-g35-m-off,glm35,2,chatv,32,"--moe pred-top=8,pred=1,predict-ahead=2,pp-path=chain,pp-pred=0",--prompt @/p/bw/wt-mb/fork/prompts/prompt-ww1.txt
+plmid-g35-m-on,glm35,2,chatv,32,"--moe pred-top=8,pred=1,predict-ahead=2,pp-path=chain,pp-pred=1",--prompt @/p/bw/wt-mb/fork/prompts/prompt-ww1.txt
+plmid-g35-l-plan,glm35,2,chatv,32,,--prompt @/p/bw/wt-mb/fork/prompts/prompt-tetris-long.txt
+plmid-g35-l-off,glm35,2,chatv,32,"--moe pred-top=8,pred=1,predict-ahead=2,pp-path=chain,pp-pred=0",--prompt @/p/bw/wt-mb/fork/prompts/prompt-tetris-long.txt
+plmid-g35-l-on,glm35,2,chatv,32,"--moe pred-top=8,pred=1,predict-ahead=2,pp-path=chain,pp-pred=1",--prompt @/p/bw/wt-mb/fork/prompts/prompt-tetris-long.txt
