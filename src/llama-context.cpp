@@ -295,6 +295,14 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
 void llama_moe_uniq_start(const llama_model & model);   // llama-moecache-fork.cpp
 void llama_moe_uniq_step(int n_tokens);
 
+// fork: sched_reserve's once-per-context micro-batch guards, keyed by address. A context whose reserve failed is freed and the next one is often built at the
+// same address: the constructor clears them, else the free-VRAM cut is skipped for it (Kimi K3.1 2026-11-11: from the 4th try on every size reserved at full
+// size and failed, the step-down ran out, the context came up without op offload and the prompt ran 7x slower through the mapping)
+static const llama_context * ub_asked_ctx = nullptr;   // the size the first micro-batch cut came from: fit_ub goes back up to it once the pools exist
+static uint32_t              ub_asked     = 0;
+static const llama_context * ub_capped    = nullptr;   // the free-VRAM cut ran
+static const llama_context * ub_fitted    = nullptr;   // the pools' fit ran
+
 llama_context::llama_context(
         const llama_model & model,
               llama_context_params params) :
@@ -307,6 +315,7 @@ llama_context::llama_context(
     // TODO warning when creating llama_context with awkward ctx size that is not a power of 2,
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
+    for (const llama_context ** g : { &ub_asked_ctx, &ub_capped, &ub_fitted }) { if (*g == this) { *g = nullptr; } }   // left by a dead context at this address
     if (!model.no_alloc()) { llama_dsplit_bench_fork(model); }   // fork: once per process, while the VRAM is still free (the KV cache and the expert pool come below); started under the weight reads (llama-model.cpp), a no_alloc probe context needs none of it
 
     t_start_us = model.t_start_us;
@@ -1633,9 +1642,7 @@ void llama_context::sched_reserve() {
     const uint32_t n_seqs = cparams.n_seq_max;
     const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
 
-    // fork: the size the first micro-batch cut below came from: fit_ub goes back up to it once the pools exist, so the reserve graphs are sized for it
-    static const llama_context * ub_asked_ctx = nullptr;
-    static uint32_t ub_asked = 0;
+    // fork: the size the first micro-batch cut below came from (ub_asked): fit_ub goes back up to it once the pools exist, so the reserve graphs are sized for it
     const size_t max_nodes = this->graph_max_nodes(std::max(n_tokens, ub_asked_ctx == this ? ub_asked : 0u));
 
     LLAMA_LOG_DEBUG("%s: max_nodes = %zu\n", __func__, max_nodes);
@@ -1726,7 +1733,6 @@ void llama_context::sched_reserve() {
     // failed on every big model (GLM: 29.7 GiB on one card) and common.cpp bisected it with a new context per step, each step pinning 4-5 GiB of host memory
     // again (seven pins of 200-600 MB/s in one GLM 3.5 load, the memory stall of 2026-11-07). The graph's bytes are linear in tokens through the origin, so
     // the measure-only sizes above give the largest pass each card's free VRAM holds behind its margin; the pools' own fit (fit_ub) runs after they exist.
-    static const llama_context * ub_capped = nullptr;
     if (cparams.moe_cache && moe_alias_bufs.empty() && !model.no_alloc() && n_tokens > 512 && ub_capped != this) {
         ub_capped = this;
         uint32_t u = n_tokens;
@@ -1849,7 +1855,6 @@ void llama_context::sched_reserve() {
         say(lo, lo > 0 ? "the largest that fits" : "not even 512 tokens fit");
         return lo;
     };
-    static const llama_context * ub_fitted = nullptr;   // computed once per context, when its pools first lend the graphs
     if (!moe_alias_bufs.empty() && !model.no_alloc() && ub_fitted != this && n_tokens > 512) {
         ub_fitted = this;
         const uint32_t u = fit_ub(n_tokens);
