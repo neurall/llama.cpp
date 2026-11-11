@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+k31wr2-fill,k31,2,pf1k,100,"--moe fill=layers,pp-path=stream",--env GGML_SCHED_RUN_LOG=6000 --env RUN_DBG_TOKENS=1
+k31wr2-whole,k31,2,pf1k,100,"--moe fill=layers,whole-reads=1,pp-path=stream",--env GGML_SCHED_RUN_LOG=6000 --env RUN_DBG_TOKENS=1
