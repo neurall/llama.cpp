@@ -44,6 +44,12 @@ import types, collections, tempfile
 __import__("faulthandler").register(signal.SIGUSR1, all_threads=True)   # kill -USR1 PID: every thread's stack to stderr (a run hung between rows, 2026-11-10)
 
 
+def mem_avail_kb(m=None):
+    """MemAvailable less CmaFree: the kernel counts free CMA pages as available, but no pinned or anonymous page can use them (PC1: 9.4 GiB with CmaTotal 0)"""
+    if m is None:
+        m = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/meminfo")}
+    return m.get("MemAvailable", 0) - m.get("CmaFree", 0)
+
 def _register(name, ns):
     """the namespace returned by a merged library section as module `name`: every `import name` in this file and in the sections keeps working"""
     m = types.ModuleType(name, ns.get('__doc__'))
@@ -388,7 +394,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
 
     def machine_state():
         m = meminfo()
-        st = {"mem_avail_gb": round(m.get("MemAvailable", 0) / 1048576, 1), "swap_mb": round((m.get("SwapTotal", 0) - m.get("SwapFree", 0)) / 1024),
+        st = {"mem_avail_gb": round((m.get("MemAvailable", 0) - m.get("CmaFree", 0)) / 1048576, 1), "swap_mb": round((m.get("SwapTotal", 0) - m.get("SwapFree", 0)) / 1024),
               "kernel": os.uname().release, "huge_1g_free": _read("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages").strip(),
               "huge_1g_total": _read("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages").strip()}
         try:
@@ -419,7 +425,7 @@ The engine's end-of-run line `moe-summary: ...` (when the binary prints it) fill
                     self.cpu.append(100.0 * (b1 - b0) / (t1 - t0))
                 b0, t0 = b1, t1
                 m = meminfo()
-                self.avail.append(m.get("MemAvailable", 0) / 1048576)
+                self.avail.append((m.get("MemAvailable", 0) - m.get("CmaFree", 0)) / 1048576)
                 self.swap.append((m.get("SwapTotal", 0) - m.get("SwapFree", 0)) / 1024)
                 try:
                     out = subprocess.run(["nvidia-smi", "--query-gpu=index,utilization.gpu,clocks.sm,power.draw,temperature.gpu,clocks_throttle_reasons.active",
@@ -1542,7 +1548,7 @@ def wait_host_free(limit_s=900):
             except Exception:
                 continue
         if not why:
-            avail = int(re.search(r"MemAvailable:\s+(\d+)", open("/proc/meminfo").read()).group(1)) // 1048576
+            avail = mem_avail_kb() // 1048576
             if avail < need:
                 why = f"only {avail} GiB of RAM available"
         if not why:
@@ -1901,7 +1907,7 @@ def _pin_flag_needed(build, args):
     try:
         import glob as _g
         size = sum(os.path.getsize(f) for f in _g.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", MODEL))) if MODEL and os.path.exists(MODEL) else 0
-        avail = int(re.search(r"MemAvailable:\s+(\d+)", open("/proc/meminfo").read()).group(1)) * 1024
+        avail = mem_avail_kb() * 1024
         return 0 < size < avail
     except Exception:
         return False
@@ -4288,7 +4294,7 @@ def feasible_ctx(path, hw_gb):
     """tokens of context this machine can hold for the model, by arithmetic: the KV cache of one token (kv_bytes_per_token) against the memory it may take: half of the cards' VRAM (the rest
     holds the weights, the expert cache and the compute buffers) plus a quarter of the available RAM (the KV ladder spills to RAM); never more than the trained context. (tokens, bytes per token, budget GiB)"""
     meta = gguf_meta(path); bpt = kv_bytes_per_token(meta) if meta else 0
-    try: ram = next(int(l.split()[1]) * 1024 for l in open("/proc/meminfo") if l.startswith("MemAvailable"))
+    try: ram = mem_avail_kb() * 1024
     except (OSError, ValueError, StopIteration): ram = 0
     budget = 0.5 * hw_gb * 2**30 + 0.25 * ram
     train = int(meta.get(f"{meta.get('general.architecture', '')}.context_length", 0) or 0)
@@ -5092,7 +5098,7 @@ def cmd_ctl(a):
     ctl = "/tmp/perf-ctl.txt"
     open(ctl, "w").close()
     for _ in range(120):  # a previous server's pinned weights take a while to be released; starting before that makes auto mode fall back to pageable uploads
-        avail = int(re.search(r"MemAvailable:\s+(\d+)", open("/proc/meminfo").read()).group(1)) // 1048576
+        avail = mem_avail_kb() // 1048576
         if avail >= a.min_avail_gb:
             break
         time.sleep(2)
@@ -6763,7 +6769,7 @@ def kv_line():
 
 
 def mem_avail_gib():
-    return next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemAvailable:")) / 2**20
+    return mem_avail_kb() / 2**20
 
 
 def ram_total_gib():
@@ -7351,7 +7357,7 @@ def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
     try:
         with quiet(0): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
         # the old pool is gone: its RAM is back. Mounting more than the machine can spare is what froze PC1 (110g): check first, mount only what leaves headroom
-        avail = int([l for l in open("/proc/meminfo") if l.startswith("MemAvailable")][0].split()[1]) >> 20
+        avail = mem_avail_kb() >> 20
         if need + 8 <= avail:   # 8 GiB stay free beyond MemAvailable (~117 GiB here): MiMo 108 passes, GLM 110 does not (110g froze PC1 and core-dumped other programs, 2026-10-19)
             with quiet(0): cmd_hugepool(argparse.Namespace(action="mount", what=[f"{need}g"]))
     except SystemExit as e:
