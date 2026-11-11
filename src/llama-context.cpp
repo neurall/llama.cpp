@@ -1768,6 +1768,18 @@ void llama_context::sched_reserve() {
             ggml_cgraph * mg = graph_reserve(u, n_seqs, n_seqs, mctx.get(), true, s.data());
             probes++;
             list_top(mg, u);
+            if (mg && backend_cpu) {   // which ops of this pass size the scheduler put on the CPU (k31 2026-11-11: at 6560 tokens 4.4 GiB of CPU buffer, the prompt 7x slower)
+                std::map<std::string, int> on_cpu;
+                for (int k = 0; k < ggml_graph_n_nodes(mg); ++k) {
+                    ggml_tensor * t = ggml_graph_node(mg, k);
+                    if (ggml_backend_sched_get_tensor_backend(sched.get(), t) == backend_cpu) { on_cpu[ggml_op_desc(t)]++; }
+                }
+                std::string l;
+                for (const auto & [op, c] : on_cpu) { l += format(" %s x%d", op.c_str(), c); }
+                size_t cb = 0;
+                for (size_t i = 0; i < backend_ptrs.size(); ++i) { if (backend_ptrs[i] == backend_cpu) { cb = s[i]; } }
+                LLAMA_LOG_WARN("%s: probe %u tokens: CPU buffer %.0f MiB, nodes on the CPU:%s\n", __func__, u, cb / 1048576.0, l.empty() ? " none" : l.c_str());
+            }
             if (mg) {
                 for (const auto & [i, d] : gi) { s[i] += llama_moe_cache_graph_scratch_fork(sched.get(), d); }   // the reserve's splits are still in the scheduler
             }
