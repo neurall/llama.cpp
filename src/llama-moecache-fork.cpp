@@ -10,6 +10,7 @@
 #include "llama-dsplit-fork.h"
 #include "llama-rls-fork.h"   // the planner's estimator (one RLS per prompt path)
 #include "llama-estimate-fork.h"   // the planner's strategy estimators: metrics in, time per token out
+#include "llama-moe-fetchlist-fork.h"   // the predictor's ordered fetch list (decode and prompt passes)
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -609,7 +610,18 @@ struct moe_cache {
         int64_t            n_tok;
         int64_t            n_blk; // predicted layers li+1 .. li+n_blk
         std::vector<float> x;     // [n_tok][n_blk][n_expert] logits
+        bool               pp = false;   // from a prompt pass (llama_moe_cache_pp_pred_fork): step = the pass's sequence number
+        int32_t            n_used = 0;   // experts per token (prompt passes: the picks listed per token)
     };
+    // prompt passes: what the list of an earlier layer held for a layer, scored against that layer's real picks (pp_pred_log)
+    struct pp_pset { uint64_t seq = 0; std::vector<uint8_t> f; };   // f[e]: 1 = predicted pick, 2 = oversampled
+    struct pp_pcnt { uint64_t uniq = 0, hit = 0, over = 0, pred = 0, late = 0; };
+    enum { PP_PD = 8 };                          // depths scored (predict-ahead's maximum)
+    std::vector<std::vector<pp_pset>> pp_ps;     // [layer][depth]
+    std::mutex              pp_ps_mtx;
+    uint64_t                pp_seq = 0, pp_uniq = 0, pp_lay = 0, pp_listed = 0, pp_tok = 0;
+    size_t                  pp_last_li = SIZE_MAX;
+    pp_pcnt                 pp_pc[PP_PD];
     std::deque<pred_req>    preq;
     std::mutex              pmtx;
     std::condition_variable pcv;
@@ -4116,28 +4128,40 @@ void pred_loop(moe_cache * mc) {
         }
         const int64_t t_pop = ggml_time_us();
         const int64_t ne = (int64_t) mc->layers[r.li + 1].expert_slot.size();
-        if (mc->rp_on) {
+        if (r.pp || mc->rp_on) {
             // the RAM pool on: the predictions start the SSD reads of the next layers' experts into the pool, queued behind the demand reads, and the step waits
             // only for what its own layer still lacks (user 2026-11-10: read layer after layer, nonstop). No uploads: their bytes would have to be in RAM first.
-            for (int64_t k = 0; k < r.n_blk && r.li + 1 + k < mc->layers.size(); ++k) {
-                const auto & ls = mc->layers[r.li + 1 + k];
-                if (!ls.rp_tab[0]) { continue; }
-                const auto & b = mc->pred_b[r.li + 1 + k];
-                const int32_t m = std::min<int32_t>(mc->pred_m, (int32_t) ne);
-                std::vector<int32_t> ahead;
-                lg.resize(ne);
-                idx.resize(ne);
-                for (int64_t t = 0; t < r.n_tok; ++t) {
-                    const float * src = r.x.data() + (t*r.n_blk + k)*ne;
-                    for (int32_t e = 0; e < ne; ++e) { lg[e] = b.empty() ? src[e] : 1.0f/(1.0f + expf(-src[e])) + b[e]; idx[e] = e; }
-                    std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c]; });
-                    for (int32_t j = 0; j < m; ++j) {
-                        if (ls.expert_slot[idx[j]] < 0 && std::find(ahead.begin(), ahead.end(), idx[j]) == ahead.end()) { ahead.push_back(idx[j]); }
+            // One ordered list for decode and prompt passes (llama-moe-fetchlist-fork.h): per layer ahead its picks, then its oversampled, most tokens first.
+            // shortcut: a prompt pass on a model that fits in RAM only scores its list (no predicted upload yet), upgrade with the VRAM stage of the list.
+            static const int32_t pp_over = [] { const char * e = moe_opt("pp-over"); return e ? std::max(0, atoi(e)) : 0; }();   // --moe pp-over=M: M oversampled per token and layer
+            const int64_t n_use = std::min<int64_t>(r.n_blk, (int64_t) mc->layers.size() - 1 - (int64_t) r.li);
+            const auto list = moe_fetch_list(r.x.data(), r.n_tok, r.n_blk, n_use, ne, &mc->pred_b[r.li + 1], r.pp ? r.n_used : mc->pred_m, r.pp ? pp_over : 0,
+                    [&](int32_t d, int32_t e) { return !r.pp && mc->layers[r.li + 1 + d].expert_slot[e] >= 0; }, SIZE_MAX);
+            if (r.pp) {
+                std::lock_guard<std::mutex> lk(mc->pp_ps_mtx);
+                if (mc->pp_ps.size() == mc->layers.size()) {
+                    for (int64_t d = 0; d < std::min<int64_t>(n_use, moe_cache::PP_PD); ++d) {
+                        auto & s = mc->pp_ps[r.li + 1 + d][d];
+                        s.seq = r.step;
+                        s.f.assign(ne, 0);
+                    }
+                    for (const auto & en : list) {
+                        if (en.depth < moe_cache::PP_PD) { mc->pp_ps[r.li + 1 + en.depth][en.depth].f[en.e] = (uint8_t) (en.rank + 1); }
                     }
                 }
-                if (!ahead.empty()) {
+            }
+            std::vector<int32_t> ahead;
+            for (size_t i = 0; mc->rp_on && i < list.size();) {
+                const int32_t d = list[i].depth;
+                const auto & ls = mc->layers[r.li + 1 + d];
+                ahead.clear();
+                for (; i < list.size() && list[i].depth == d; ++i) {
+                    if (ls.expert_slot[list[i].e] < 0) { ahead.push_back(list[i].e); }
+                }
+                if (ls.rp_tab[0] && !ahead.empty()) {
                     const void * keys[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
                     ggml_rampool_ahead_fork(keys, 3, ahead.data(), (int) ahead.size());
+                    if (r.pp) { std::lock_guard<std::mutex> lk(mc->pp_ps_mtx); mc->pp_listed += ahead.size(); }
                 }
             }
             continue;
@@ -8395,9 +8419,11 @@ static void rp_log(const char * when) {
 }
 
 static void rp_resize(moe_cache * mc);   // below, by the VRAM watch it reads
+static void pp_pred_log(moe_cache * mc);   // below, by the prompt chain
 void llama_moe_request_end_fork(void) {
     llama_moe_stats_log_fork("REQ", "end");
     rp_log("request");
+    pp_pred_log(g_cache);
     rp_resize(g_cache);
     g_warm.store(true);
     if (g_pjit_layers.load() > 0) {   // prompt calls of this request: what the JIT saw and did (uploads against CPU-computed misses)
@@ -11185,6 +11211,98 @@ static void pp_ahead_consume(moe_cache * mc, layer_state & ls) {
     for (int32_t s : ls.ring_slots) { ls.slot_in_flight[s] = false; }
     ls.ring_slots.clear();
     ls.ring_pending = false;
+}
+
+// The prompt chain's fetch list (user 2026-11-11: a short prompt on a model far bigger than RAM needs a few experts per layer, not the stream of all of
+// them): at layer L the predictor gives the routers of L+1..L+n on L's activation, the predictor thread (pred_loop) lists what those layers will pick and
+// starts the reads, and only the picks the list missed wait for the real router. Here: the logits go to that thread, and this layer's real picks score the
+// lists made for it (pp_pred_log: what a depth covers decides the oversampling and the depth).
+bool llama_moe_cache_pp_pred_want_fork(int64_t n_tokens) {
+    moe_cache * mc = g_cache;
+    static const bool on = [] { const char * e = moe_opt("pp-pred"); return !e || atoi(e) != 0; }();   // --moe pp-pred=0: no list (the A/B's other arm)
+    if (!mc || !on || mc->pred_m <= 0 || mc->layers.empty()) { return false; }
+    const auto & p0 = mc->layers[0].pub;
+    if (!p0.up_src || !p0.gate_src || !p0.down_src) { return false; }
+    // the logits come to the host at every layer: worth it while they are smaller than one token's experts of a layer (a bigger pass streams)
+    const double eb = (double) (p0.up_src->nb[2] + p0.gate_src->nb[2] + p0.down_src->nb[2]);
+    const double lb = (double) n_tokens * (double) mc->layers[0].expert_slot.size() * std::max(1, mc->pred_ahead) * sizeof(float);
+    return lb <= eb * (double) std::max<int64_t>(1, mc->n_expert_used);
+}
+
+void llama_moe_cache_pp_pred_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids, const ggml_tensor * pred) {
+    moe_cache * mc = g_cache;
+    if (!mc || !pred || pred->type != GGML_TYPE_F32 || pred->ne[1] != ids->ne[1]) { return; }
+    size_t li = mc->layers.size();
+    for (size_t i = 0; i < mc->layers.size(); ++i) {
+        if (&mc->layers[i].pub == pub) { li = i; break; }
+    }
+    if (li == mc->layers.size()) { return; }
+    const int64_t ne = (int64_t) mc->layers[li].expert_slot.size(), n_tokens = ids->ne[1];
+    const int64_t n_blk = ne > 0 ? pred->ne[0] / ne : 0;
+    if (n_blk <= 0) { return; }
+    std::vector<uint8_t> seen(ne, 0);
+    uint64_t uniq = 0;
+    for (int64_t t = 0; t < n_tokens; ++t) {
+        for (int64_t i = 0; i < ids->ne[0]; ++i) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + t*ids->nb[1] + i*ids->nb[0]);
+            if (e >= 0 && e < ne && !seen[e]) { seen[e] = 1; uniq++; }
+        }
+    }
+    uint64_t seq;
+    {
+        std::lock_guard<std::mutex> lk(mc->pp_ps_mtx);
+        if (mc->pp_ps.size() != mc->layers.size()) { mc->pp_ps.assign(mc->layers.size(), std::vector<moe_cache::pp_pset>(moe_cache::PP_PD)); }
+        if (li <= mc->pp_last_li) { mc->pp_seq++; }   // the layers of a pass come in rising order: a new pass
+        mc->pp_last_li = li;
+        seq = mc->pp_seq;
+        mc->pp_uniq += uniq;
+        mc->pp_lay++;
+        mc->pp_tok = std::max<uint64_t>(mc->pp_tok, (uint64_t) n_tokens);
+        for (int64_t d = 0; d < std::min<int64_t>(n_blk, moe_cache::PP_PD) && (size_t) d < li; ++d) {
+            const auto & s = mc->pp_ps[li][d];
+            auto & c = mc->pp_pc[d];
+            c.uniq += uniq;
+            if (s.seq != seq || (int64_t) s.f.size() != ne) { c.late += uniq; continue; }   // the predictor thread had not listed this layer when it started
+            for (int64_t e = 0; e < ne; ++e) {
+                c.pred += s.f[e] != 0;
+                c.hit  += seen[e] && s.f[e] == 1;
+                c.over += seen[e] && s.f[e] == 2;
+            }
+        }
+    }
+    if (li + 1 >= mc->layers.size()) { return; }
+    moe_cache::pred_req r { li, seq, n_tokens, n_blk, std::vector<float>(n_blk*ne*n_tokens) };
+    r.pp = true;
+    r.n_used = (int32_t) ids->ne[0];
+    for (int64_t t = 0; t < n_tokens; ++t) {
+        memcpy(r.x.data() + t*n_blk*ne, (const char *) pred->data + t*pred->nb[1], n_blk*ne*sizeof(float));
+    }
+    {
+        std::lock_guard<std::mutex> plk(mc->pmtx);
+        mc->preq.push_back(std::move(r));
+    }
+    mc->pcv.notify_one();
+}
+
+static void pp_pred_log(moe_cache * mc) {
+    if (!mc) { return; }
+    std::string line;
+    {
+        std::lock_guard<std::mutex> lk(mc->pp_ps_mtx);
+        if (mc->pp_lay == 0) { return; }
+        line = format("%llu layer passes of up to %llu tokens, unique picks per layer %.1f of %zu, read ahead asked for %llu experts; the picks the list of a layer before held, by depth",
+                (unsigned long long) mc->pp_lay, (unsigned long long) mc->pp_tok, (double) mc->pp_uniq / (double) mc->pp_lay, mc->layers[0].expert_slot.size(), (unsigned long long) mc->pp_listed);
+        for (int d = 0; d < moe_cache::PP_PD; ++d) {
+            auto & c = mc->pp_pc[d];
+            if (c.uniq == 0) { continue; }
+            const double u = (double) c.uniq;
+            line += format("; %d: %.1f%% as picks, %.1f%% as oversampled, %.1f%% too late, %.2f listed per pick", d + 1, 100.0 * c.hit / u, 100.0 * c.over / u, 100.0 * c.late / u, (double) c.pred / u);
+            c = moe_cache::pp_pcnt();
+        }
+        mc->pp_uniq = mc->pp_lay = mc->pp_listed = mc->pp_tok = 0;
+    }
+    llama_moe_stats_log_fork("PFL", line.c_str());
+    LLAMA_LOG_WARN("moe-cache: prompt fetch list: %s\n", line.c_str());
 }
 
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {

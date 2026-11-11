@@ -36,6 +36,8 @@
 
 int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used);   // src/llama-moecache-fork.cpp: the prompt chain
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
+bool llama_moe_cache_pp_pred_want_fork(int64_t n_tokens);   // the prompt chain's fetch list: the next layers' router logits come to the host in this pass
+void llama_moe_cache_pp_pred_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids, const ggml_tensor * pred);
 void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched);
 ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork * pub);
 extern "C" { GGML_API double ggml_backend_pred_get_fork(); }   // ggml-backend.cpp: predicted staging of this pass   // the prompt mix: the card whose ring takes this layer's misses, null = no mix
@@ -3042,7 +3044,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         if (mc_cstream) { cpu_backend = nullptr; }   // the experts are in their blocks before the pass: no CPU split, no host sync per layer
         mc_cpu_backend = mc_mix_b ? nullptr : cpu_backend;   // the mix runs on the GPUs alone
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
-        if (pw && pw->buffer && mcache->pred_on && !mc_pp && !mc_mix_b) {
+        if (pw && pw->buffer && mcache->pred_on && (!mc_pp || (cpu_backend && llama_moe_cache_pp_pred_want_fork(n_tokens))) && !mc_mix_b) {
             // the next layers' router logits from this layer's input (learned predictors, else the next
             // router), on their GPU in the split before the CPU copy; handed to the CPU gate op as src[4]
             // ([n_expert*ahead, n_tokens]), where the cache's observer reads them
@@ -3058,7 +3060,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     mc_pred = ggml_mul_mat(ctx0, mcache->pred_q ? mcache->pred_q : pw, x2);
                     ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
                     // train on decode and small batches only: a big prefill batch would sum too many steps
-                    if (mcache->pred_all && mcache->pred_mu && n_tokens <= 8 && llama_moe_cache_pred_train_now_fork()) {
+                    if (mcache->pred_all && mcache->pred_mu && n_tokens <= 8 && !mc_pp && llama_moe_cache_pred_train_now_fork()) {
                         moe_pred_srcs[il] = { mcache->pred_all, mcache->pred_q, x2, mc_pred, mcache->pred_mu, b, mcache->pred_ahead, {} };
                         for (int k = 0; k < mcache->pred_ahead; ++k) {
                             moe_pred_todo[il + 1 + k].push_back(il);
@@ -3167,7 +3169,18 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     memcpy(dst->data, a->data, ggml_nbytes(a));
                 }
             };
-            ggml_tensor * jit = ggml_map_custom1(ctx0, selected_experts, mc_pp || mc_ppk ? pp_op : jit_op, 1, (void *) mcache);
+            // the prompt chain with the next layers' logits: the cache lists what those layers will pick and starts fetching it before this layer's own uploads
+            ggml_custom2_op_t pp_pred_op = [](ggml_tensor * dst, const ggml_tensor * a, const ggml_tensor * b, int ith, int nth, void * ud) {
+                GGML_UNUSED(nth);
+                if (ith == 0) {
+                    llama_moe_cache_pp_pred_fork((const llama_moe_cache_layer_fork *) ud, a, b);
+                    llama_moe_cache_pp_upload_fork((const llama_moe_cache_layer_fork *) ud, a);
+                    memcpy(dst->data, a->data, ggml_nbytes(a));
+                }
+            };
+            ggml_tensor * jit = mc_pp && mc_pred ? ggml_map_custom2(ctx0, selected_experts, mc_pred, pp_pred_op, 1, (void *) mcache)
+                                                 : ggml_map_custom1(ctx0, selected_experts, mc_pp || mc_ppk ? pp_op : jit_op, 1, (void *) mcache);
+            if (mc_pp) { mc_pred = nullptr; }   // the chain's gate op runs on the GPU: it must not take the host's copy as a source
             ggml_backend_sched_set_tensor_backend(sched, jit, cpu_backend);
             cb(jit, "ffn_moe_cache_jit", il);
             ggml_build_forward_expand(gf, jit);
