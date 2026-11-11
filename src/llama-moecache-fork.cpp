@@ -5477,7 +5477,13 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
 
 #include "llama-kvzone-fork.h"
 static size_t kv_bmax(const moe_cache::alias_pool & ap) { return kvz_bmax(ap); }
-static size_t kv_lend_potential(const moe_cache::alias_pool & ap, size_t min_cells) { return kvz_lend_potential(ap, min_cells); }
+// the zone behind the lend holds the cells the attention reads, rounded up to the pad: a pass of 1568 tokens got a lend that left 1536 rows, find_slot refused its
+// first cells and the prompt fell to the decode chain (Qwen3.6 iq4_xs at a simulated 8 GiB card, 2026-11-11)
+static size_t kv_lend_potential(const moe_cache::alias_pool & ap, size_t min_cells) {
+    size_t pad = 1;
+    for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
+    return kvz_lend_potential(ap, kvz_read_cells(min_cells, pad));
+}
 static size_t kv_gap_fit(const moe_cache::alias_pool & ap, size_t bmax, size_t lo_min, size_t row) { return kvz_gap_fit(ap, bmax, lo_min, row); }
 static size_t kv_gap_place(const moe_cache::alias_pool & ap, size_t bmax, size_t lo_min, size_t want, size_t size) { return kvz_gap_place(ap, bmax, lo_min, want, size); }
 static void kv_zone_check(const moe_cache::alias_pool & ap, size_t lend_end, const char * who) {   // a violation used to show up as '!!!!' or a NaN many tokens later; now it stops here, with the numbers
