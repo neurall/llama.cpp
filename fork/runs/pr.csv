@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+pr-sane,qn_iq4xs,1,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1
+pr-d3,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0",
+pr-d0,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0,pp-ahead=0",
+pr-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1",
+pr-8g,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,staging=0",
+pr-8g-d0,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,staging=0,pp-ahead=0",
