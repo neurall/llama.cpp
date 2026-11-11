@@ -7749,3 +7749,4 @@ kv_quant_first-ns1-auto-pf1k,2026-11-11 10:52:10,bench /m/o/4/OLMoE-1B-7B-0924-Q
 kv_quant_first-ns2-dense-pf1k,2026-11-11 10:53:11,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds kv_quant_first variants v test pf1k n=2,,
 kv_quant_first-ns2-dense-exp-pf1k,2026-11-11 10:54:16,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds kv_quant_first variants v test pf1k n=2,,
 kv_quant_first-ns1-stg-pf1k,2026-11-11 10:55:20,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds kv_quant_first variants v test pf1k n=2,,
+regress-pre-hip-399298b22f-1111-1107-OLMoE-1B-7B-0924-Q4_K_M.,2026-11-11 11:08:06,quick regression check against the best build (fixed-text comparator),,
