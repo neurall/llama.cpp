@@ -3216,7 +3216,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used*n_tokens);
             mc_slot_ids = ggml_get_rows(ctx0, mcache->dev_table, ids_flat); // [1, n_expert_used*n_tokens]
             mc_slot_ids = ggml_reshape_2d(ctx0, mc_slot_ids, n_expert_used, n_tokens);
-            cb(mc_slot_ids, "ffn_moe_cache_slots", il);
+            cb(mc_slot_ids, mc_cstream ? "ffn_moe_cs_slots" : "ffn_moe_cache_slots", il);   // cstream: this read of the table starts the layer's split (cs_split_cb waits there for its uploads)
         }
         // JIT pool (layer cached on a slower-link GPU): the pool's slot ids, on the fastest-link GPU
         ggml_tensor * mc_pool_ids = nullptr;

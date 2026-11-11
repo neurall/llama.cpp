@@ -2338,6 +2338,9 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             // fork: the concat of an attention whose KV heads lie on several cards (--moe attn-split, llm_graph_context::build_attn): its inputs must not be copied at the start of the split
             // that runs the home card's own part, that would wait for the other cards first and the parts would run one after the other
             if (node->op == GGML_OP_CONCAT && strcmp(node->name, "attn_parts_merge") == 0) { need_new_split = true; }
+            // fork: --moe pp-path=cstream: a layer's read of its expert table starts a split, the hook in front of it (llama-moecache-fork.cpp cs_split_cb) makes the compute
+            // stream wait there for the uploads of that layer's experts into the cache's blocks, which run on the card's upload stream while the layers before it compute
+            if (node->op == GGML_OP_GET_ROWS && i > split->i_start && strncmp(node->name, "ffn_moe_cs_slots", 16) == 0) { need_new_split = true; }
             // fork: an expert matmul on host weights always starts a split, also behind a split without inputs yet: a split's inputs are copied before its first node runs,
             // so in one split with its router the expert upload (staging, or the copy callback) would come before the ids it needs. Moving the early router's nodes in
             // build_moe_ffn made that happen (Qwen3.6, blk.20.ffn_gate_exps behind ffn_moe_logits-20: logits off by 0.05 on one prompt in 8, whatever K).
