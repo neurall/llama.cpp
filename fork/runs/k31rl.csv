@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+k31rl-on,k31,1,pf1k,100,"--moe fill=layers",--env GGML_SCHED_RUN_LOG=4000
