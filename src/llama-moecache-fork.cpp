@@ -15058,7 +15058,10 @@ std::string llama_moe_bw_json_fork() {
     std::string o = b;
     for (int k = 0; k < mc->n_links; ++k) {
         snprintf(b, sizeof b, "%s{\"link\":%d,\"dev\":\"%s\",\"gbs\":%.2f,\"max_gbs\":%.2f,\"uploaded_mib\":%.0f}", k ? "," : "", k,
-                 mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", lk[k], mc->gbs_link[k], (double) mc->link_bytes[k] / 1048576.0);
+                 mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", lk[k],
+                 // max = the probed link rate; gbs_link turns into the per-expert upload average once decode uploads (19 vs 26.7 GB/s on PC1 x16)
+                 [&] { for (const auto & e : g_early_gbs) { if (e.first == mc->link_dev[k] && e.second > 0) { return e.second; } } return mc->gbs_link[k]; }(),   // lookup only: never start the probe copy on the HTTP thread
+                 (double) mc->link_bytes[k] / 1048576.0);
         o += b;
     }
     snprintf(b, sizeof b, "]},\"hit\":{\"all\":%.2f,\"recent\":%.2f,\"prompt_all\":%.2f,\"prompt_recent\":%.2f}", hh + mm ? 100.0 * hh / (hh + mm) : 0.0, hr_recent,
