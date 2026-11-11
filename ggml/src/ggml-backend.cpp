@@ -2719,12 +2719,29 @@ static int ggml_backend_sched_rd_slot(struct sched_rd_ring * R) {
 static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy, size_t off, size_t n) {
     const size_t esz = input->nb[2];
     if (esz == 0 || off % esz != 0 || n < esz || ggml_rampool_table_fork(input) == NULL) {
+        static std::atomic<int> raw_log{ [] { const char * e = getenv("GGML_SCHED_RUN_LOG"); return e ? atoi(e) : 0; }() };
+        if (raw_log.load(std::memory_order_relaxed) > 0 && raw_log.fetch_sub(1) > 0) {
+            GGML_LOG_WARN("%s: run log %s bytes [%zu, %zu) of %zu without a pool table: one file range\n", __func__, input->name, off, off + n, ggml_nbytes(input));
+        }
         ggml_backend_sched_upload_weight_file(sched, backend, input, input_cpy, off, n);
         return;
     }
     const int64_t e0 = (int64_t) (off / esz), ne = (int64_t) (n / esz);
     std::vector<const char *> ps((size_t) ne);
     for (int64_t i = 0; i < ne; ++i) { ps[i] = ggml_rampool_use_fork(input, e0 + i); }
+    static std::atomic<int> run_log{ [] { const char * e = getenv("GGML_SCHED_RUN_LOG"); return e ? atoi(e) : 0; }() };   // debug: what splits a stream's file reads
+    if (run_log.load(std::memory_order_relaxed) > 0 && run_log.fetch_sub(1) > 0) {
+        std::string s;
+        int np = 0, nf = 0;
+        for (int64_t i = 0; i < ne; ) {
+            int64_t j = i + 1;
+            while (j < ne && (ps[j] != nullptr) == (ps[i] != nullptr)) { ++j; }
+            if (ps[i]) { np++; } else { nf++; if (s.size() < 240) { s += std::to_string(j - i) + " "; } }
+            i = j;
+        }
+        GGML_LOG_WARN("%s: run log %s experts [%lld, %lld) of %lld: %d pool runs, %d file runs, file run lengths in experts: %s\n", __func__, input->name,
+                (long long) e0, (long long) (e0 + ne), (long long) input->ne[2], np, nf, s.c_str());
+    }
     const bool side = g_moe_read_threads.load() > 1;
     struct file_run { size_t off, n; int slot; size_t pos; const void * got; };
     std::vector<file_run> fr;
