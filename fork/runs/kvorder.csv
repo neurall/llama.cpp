@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+kvo-quantfirst,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=2048",--env CUDA_VISIBLE_DEVICES=1
+kvo-ladder,olmoe,2,pf2k,64,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=2048,kv-policy=0",--env CUDA_VISIBLE_DEVICES=1
