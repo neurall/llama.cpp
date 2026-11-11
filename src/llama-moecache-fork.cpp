@@ -10034,7 +10034,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     continue;
                 }
                 auto & pub = mc->layers[li].pub;
-                const int64_t n_embd = pub.up_src->ne[0];
+                // the routers' input width: the expert input, or the full hidden state where the experts run in a latent space (Kimi K3.1: routers 7168 wide,
+                // experts 3584; the graph then feeds the predictor the router's own input)
+                const ggml_tensor * r0 = pub.il + 1 < (int) model.layers.size() ? model.layers[pub.il + 1].ffn_gate_inp : nullptr;
+                const int64_t n_embd = r0 && r0->ne[0] == (int64_t) model.hparams.n_embd ? r0->ne[0] : pub.up_src->ne[0];
                 std::vector<ggml_tensor *> routers;
                 for (int k = 0; k < std::max(1, mc->pred_ahead) && li + 1 + k < nl; ++k) {
                     const int il = mc->layers[li + 1 + k].pub.il;

@@ -3047,8 +3047,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             ggml_backend_dev_t wdev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pw->buffer));
             for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
                 ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
-                if (wdev && ggml_backend_get_device(b) == wdev && b != cpu_backend) {
-                    ggml_tensor * x2 = ggml_reshape_2d(ctx0, mc_inp, n_embd, n_tokens);
+                // the predictor reads what the routers read: the expert input, or the router's own input where the experts run in a latent space (Kimi K3.1)
+                ggml_tensor * x_in = pw->ne[0] == n_embd ? mc_inp
+                                   : probs_in && probs_in->op == GGML_OP_MUL_MAT && probs_in->src[1]->ne[0] == pw->ne[0] ? probs_in->src[1] : nullptr;
+                if (x_in && wdev && ggml_backend_get_device(b) == wdev && b != cpu_backend) {
+                    ggml_tensor * x2 = ggml_reshape_2d(ctx0, x_in, pw->ne[0], n_tokens);
                     // all lookaheads in one matmul ([n_expert * K, n_tokens], the stacked layout the cache reads)
                     mc_pred = ggml_mul_mat(ctx0, mcache->pred_q ? mcache->pred_q : pw, x2);
                     ggml_backend_sched_set_tensor_backend(sched, mc_pred, b);
