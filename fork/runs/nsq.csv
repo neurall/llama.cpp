@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+nsq-sane,qn_iq4xs,1,pf4k,256,"--moe sim-vram=8192,staging=0,verify=2,poison=3",--env CUDA_VISIBLE_DEVICES=0 --env GGML_SCHED_NAN_CHECK=1
+nsq-stg,qn_iq4xs,2,pf4k,256,"--moe sim-vram=8192",--env CUDA_VISIBLE_DEVICES=0
+nsq-nost,qn_iq4xs,2,pf4k,256,"--moe sim-vram=8192,staging=0",--env CUDA_VISIBLE_DEVICES=0
+nsq-chain,qn_iq4xs,2,pf4k,256,"--moe sim-vram=8192,staging=0,pp-path=chain",--env CUDA_VISIBLE_DEVICES=0
+nsq-stream,qn_iq4xs,2,pf4k,256,"--moe sim-vram=8192,staging=0,pp-path=stream",--env CUDA_VISIBLE_DEVICES=0
