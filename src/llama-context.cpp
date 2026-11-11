@@ -84,6 +84,9 @@ bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // t
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
 extern "C" void ggml_backend_sched_upload_weight_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy,
                                                       size_t off, size_t n);   // ggml-backend.cpp: a host expert weight to its card from the RAM pool, else O_DIRECT; the mapping only if a read fails
+extern "C" void ggml_backend_sched_upload_runs_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy,
+                                                    int n, const size_t * offs, const size_t * lens);   // ggml-backend.cpp: --moe batch-reads, all runs of a weight in one call
+extern "C" bool ggml_backend_sched_batch_reads_fork(void);   // ggml-backend.cpp: --moe batch-reads is on (SSD streaming only)
 extern "C" void ggml_backend_sched_link_add_fork(ggml_backend_dev_t dst, ggml_backend_dev_t src, uint64_t n);   // the same for any input: src NULL = host memory
 bool     llama_kv_parts_on_fork();   // llama-kv-cache.cpp: the attention runs on several cards now (--moe attn-split)
 bool     llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * note, size_t note_size);   // llama-moecache-fork.cpp: the KV rows move
@@ -5614,6 +5617,14 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         return t;
     };
 
+    // --moe batch-reads (SSD streaming only): the file ranges below are collected and read as one queue per round (before the slice copies, as they were issued)
+    const bool batch = ggml_backend_sched_batch_reads_fork();
+    std::vector<size_t> b_off, b_len;
+    auto upload = [&](size_t off, size_t n) {
+        if (batch) { b_off.push_back(off); b_len.push_back(n); return; }
+        ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, off, n);
+    };
+
     // group consecutive experts and copy them together
     auto copy_run = [&](int64_t first, int64_t last) {
         // the experts in the MoE cache are copied from device memory, the others are uploaded
@@ -5625,7 +5636,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
                 continue;
             }
             if (next < e) {
-                ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, next*expert_size, (e - next)*expert_size);
+                upload(next*expert_size, (e - next)*expert_size);
                 ggml_backend_sched_upload_add_fork(ggml_backend_get_device(backend), (uint64_t) (e - next)*expert_size);
             }
             e   += n;
@@ -5638,7 +5649,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         const size_t size    = (last + 1 - next)*expert_size + padding;   // stock's fix: only what the cache did not copy (it was last - first + 1 experts from next: past last)
         // fork: from the RAM pool or O_DIRECT, never src->data where the experts stayed mapped (DeepSeek: map-guard caught this read, 2026-11-10)
         if (size > 0) {
-            ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, offset, size);
+            upload(offset, size);
             ggml_backend_sched_upload_add_fork(ggml_backend_get_device(backend), (uint64_t) (last + 1 - next)*expert_size);
         }
         if (last == n_expert - 1) {
@@ -5692,7 +5703,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
             // keep the MMQ padding rule: the unused neighbour must not hold NaNs
             if (id < n_expert - 1 && !st.used[id + 1]) {
                 const size_t off = (size_t) (id + 1)*expert_size;
-                ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, off, std::min<size_t>(expert_size, 512));
+                upload(off, std::min<size_t>(expert_size, 512));
             }
             continue;
         }
@@ -5711,6 +5722,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         copy_run(first, last);
     }
 
+    if (!b_off.empty()) { ggml_backend_sched_upload_runs_fork(lctx->sched.get(), backend, src, dst, (int) b_off.size(), b_off.data(), b_len.data()); }
     flush_slices();   // the resident experts, in one launch (they are read by the matmul after the uploads of the runs above, on the same stream)
 
     // the used experts are on the device now: let the expert cache keep some of them

@@ -4622,6 +4622,8 @@ extern "C" {
     GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there too, no shared header)
     GGML_API void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset);  // pool bytes, host bytes, file bytes, file reads, read us, slot wait us
     GGML_API void ggml_backend_set_moe_read_threads_fork(int n);                // --moe side-reads: the file runs of a pool tensor read this many at a time
+    typedef int (*ggml_backend_moe_read_batch_fn_t)(const ggml_tensor *, int, const size_t *, const size_t *, void * const *, const size_t *, const void **, void *);
+    GGML_API void ggml_backend_set_moe_read_batch_fn_fork(ggml_backend_moe_read_batch_fn_t fn, void * user_data);   // --moe batch-reads: one AIO queue per upload round
 }
 // The O_DIRECT read thread count from the machine, not a constant (user 2026-11-02: "8 t is nice on epyc but hardly on 3600"): 1 MiB blocks on n threads for 0.2 s each, n = 1, 2, 4, 8 and
 // 16 up to the hardware threads / 2; the smallest n within 7% of the best bandwidth wins, so a drive that one or two threads fill leaves the other cores to compute.
@@ -4733,6 +4735,94 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     if (total >= ((size_t) 4 << 20) && !fail.load()) { rd_note(0, total, ggml_time_us() - t_pool0); }
 #endif
     return fail.load() ? nullptr : (const void *) (buf + (file_off - beg));
+}
+
+// --moe batch-reads (user 2026-11-11, SSD streaming only): the file runs of one upload round as ONE queue of kernel AIO, 32 reads of 1 MiB in flight across all
+// of them. moe_read_fn reads one run per call and drains its queue at the end of each (Kimi K3.1 stream pass: 5 MB runs at 4.5 GB/s while reading, 4 KiB pad
+// reads between them; the SSD gives 6.7 GB/s sequential at queue depth 32). got[i] = where run i starts inside dsts[i], or nullptr: the caller reads it alone.
+static int moe_read_batch_fn(const ggml_tensor * weight, int n, const size_t * offs, const size_t * lens, void * const * dsts, const size_t * caps, const void ** got, void * ud) {
+    moe_cache * mc = (moe_cache *) ud;
+    int ok = 0;
+    for (int i = 0; i < n; ++i) { got[i] = nullptr; }
+    const auto it = mc->rd_src.find(weight);
+    if (it == mc->rd_src.end() || it->second.first < 0) { return 0; }
+#ifdef MOE_HAVE_AIO
+    if (g_aio_ok.load()) {
+        constexpr int QD = 32;
+        constexpr size_t BLK = (size_t) 1 << 20;
+        struct ctx_t { aio_context_t c = 0; ~ctx_t() { if (c) { syscall(SYS_io_destroy, c); } } };
+        thread_local ctx_t ctx;
+        if (!ctx.c && syscall(SYS_io_setup, QD, &ctx.c) != 0) { ctx.c = 0; }
+        if (ctx.c) {
+            const int dfd = it->second.first;
+            const size_t a = direct_align();
+            struct piece { uint64_t file; size_t n; uint8_t * dst; int r; };
+            std::vector<piece> pcs;
+            std::vector<uint64_t> fend((size_t) n, 0);   // per run: its last needed byte + 1 in the file (a short block past it is the end of the file)
+            std::vector<uint8_t> bad((size_t) n, 1);
+            for (int i = 0; i < n; ++i) {
+                const uint64_t file_off = (uint64_t) it->second.second + offs[i], beg = file_off & ~(uint64_t) (a - 1), end = (file_off + lens[i] + a - 1) & ~(uint64_t) (a - 1);
+                uint8_t * buf = (uint8_t *) (((uintptr_t) dsts[i] + a - 1) & ~(uintptr_t) (a - 1));
+                if ((size_t) (buf - (uint8_t *) dsts[i]) + (size_t) (end - beg) > caps[i]) { continue; }
+                bad[(size_t) i] = 0;
+                fend[(size_t) i] = file_off + lens[i];
+                got[i] = buf + (file_off - beg);
+                for (uint64_t o = beg; o < end; o += BLK) { pcs.push_back({ o, (size_t) std::min<uint64_t>(BLK, end - o), buf + (o - beg), i }); }
+            }
+            iocb cbs[QD]; iocb * ps[QD]; io_event ev[QD];
+            int free_slot[QD], n_free = QD;
+            for (int k = 0; k < QD; ++k) { free_slot[k] = k; }
+            size_t next = 0;
+            int infl = 0;
+            bool lost = false;
+            while ((next < pcs.size() && !lost) || infl > 0) {
+                int nb = 0;
+                while (!lost && next < pcs.size() && n_free > 0) {
+                    const int k = free_slot[--n_free];
+                    const piece & pc = pcs[next++];
+                    memset(&cbs[k], 0, sizeof(iocb));
+                    cbs[k].aio_lio_opcode = IOCB_CMD_PREAD; cbs[k].aio_fildes = (uint32_t) dfd;
+                    cbs[k].aio_buf = (uint64_t) (uintptr_t) pc.dst; cbs[k].aio_nbytes = pc.n; cbs[k].aio_offset = (int64_t) pc.file;
+                    cbs[k].aio_data = (uint64_t) (next - 1);
+                    ps[nb++] = &cbs[k];
+                }
+                if (nb > 0) {   // one syscall for every free slot
+                    const long sub = syscall(SYS_io_submit, ctx.c, (long) nb, ps);
+                    const int done = sub < 0 ? 0 : (int) sub;
+                    infl += done;
+                    for (int j = done; j < nb; ++j) { free_slot[n_free++] = (int) (ps[j] - cbs); bad[(size_t) pcs[(size_t) ps[j]->aio_data].r] = 1; }   // refused: that run is read alone
+                    if (done < nb) { lost = true; }
+                }
+                if (infl == 0) { break; }
+                const long g = syscall(SYS_io_getevents, ctx.c, 1L, (long) QD, ev, (struct timespec *) nullptr);
+                if (g < 0) { if (errno == EINTR) { continue; } lost = true; break; }   // a lost context cannot be drained: nothing of this round counts
+                for (long e = 0; e < g; ++e) {
+                    const iocb * cb = (const iocb *) (uintptr_t) ev[e].obj;
+                    const piece & pc = pcs[(size_t) ev[e].data];
+                    if (ev[e].res < 0 || ((size_t) ev[e].res < pc.n && pc.file + (uint64_t) ev[e].res < fend[(size_t) pc.r])) { bad[(size_t) pc.r] = 1; }
+                    free_slot[n_free++] = (int) (cb - cbs);
+                    --infl;
+                }
+            }
+            for (size_t q = next; q < pcs.size(); ++q) { bad[(size_t) pcs[q].r] = 1; }   // never submitted (a refused submit stopped the round)
+            if (infl > 0) {   // io_getevents failed with reads in flight: the buffers may still change, the context goes
+                syscall(SYS_io_destroy, ctx.c);
+                ctx.c = 0;
+                for (int i = 0; i < n; ++i) { got[i] = nullptr; }
+                return 0;
+            }
+            for (int i = 0; i < n; ++i) {
+                if (bad[(size_t) i]) { got[i] = nullptr; } else { ok++; }
+            }
+            return ok;
+        }
+    }
+#endif
+    for (int i = 0; i < n; ++i) {   // no async engine here: one run at a time
+        got[i] = moe_read_fn(weight, offs[i], lens[i], dsts[i], caps[i], ud);
+        ok += got[i] != nullptr;
+    }
+    return ok;
 }
 
 extern "C" {
@@ -10032,6 +10122,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         }
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
         ggml_backend_set_moe_read_fn_fork(mc->rd_src.empty() ? nullptr : moe_read_fn, mc);
+        if (const char * br = moe_opt("batch-reads"); br && br[0] != '0') {   // SSD streaming only (user 2026-11-11: "only as separate ssd only mode keeping prev modes as before")
+            const bool ssd = !mc->rd_src.empty() && std::any_of(mc->layers.begin(), mc->layers.end(), [](const layer_state & ls) { return ls.src_dfd[0] >= 0 || ls.src_dfd[1] >= 0 || ls.src_dfd[2] >= 0; });
+            ggml_backend_set_moe_read_batch_fn_fork(ssd ? moe_read_batch_fn : nullptr, mc);
+            LLAMA_LOG_WARN("moe-cache: batch-reads %s\n", ssd ? "on: the file runs of an upload round read as one queue, 32 x 1 MiB in flight" : "ignored: no expert tensor reads from the SSD");
+        }
         if (const char * sr = moe_opt("side-reads"); sr && sr[0] != '0') { ggml_backend_set_moe_read_threads_fork(mc->rd_threads); }   // off by default: DeepSeek lost with it
         ggml_set_moe_phase_callback(moe_phase_cb, mc);
         {
