@@ -4114,7 +4114,10 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
     if (cparams.moe_cache && !cparams.moe_cache_started && !moe_cache_defer) {
         cparams.moe_cache_started = true;
         const char * alias_opt = llama_moe_get_opt("alias");
-        const bool   alias     = !alias_opt || atoi(alias_opt) != 0;   // default on; the pool decides whether there is anything to lend
+        const char * pool_opt  = llama_moe_get_opt("pool");
+        // default on; the pool decides whether there is anything to lend. Not without the block pool (--moe pool=0, or router prediction: per-layer cache tensors,
+        // llama_moe_cache_init_fork): nothing lends the graphs back, so their buffers stay (Kimi K3.1 with pred-top: the cache filled them, the reserve crashed the load)
+        const bool   alias     = (!alias_opt || atoi(alias_opt) != 0) && (!pool_opt || atoi(pool_opt) != 0) && cparams.moe_predict <= 0;
         if (alias) {   // the compute buffers go back to the devices first: the pool is sized with that memory and lends it back to the graphs
             for (auto & be : backends) {
                 if (ggml_backend_dev_is_gpu(ggml_backend_get_device(be.get()))) {
