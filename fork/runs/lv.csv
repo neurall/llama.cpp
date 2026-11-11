@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+lv-d0,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0,pp-ahead=0",
+lv-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1",
