@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+k31rt-base,k31,2,pf1k,100,"--moe batch-reads=1",
+k31rt-rt8,k31,2,pf1k,100,"--moe batch-reads=1,read-threads=8",
+k31rt-rt16,k31,2,pf1k,100,"--moe batch-reads=1,read-threads=16",
