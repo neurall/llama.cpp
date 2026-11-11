@@ -717,13 +717,16 @@ static size_t mem_available_bytes() {
     b = GlobalMemoryStatusEx(&st) ? (size_t) st.ullAvailPhys : 0;
 #else
     FILE * f = fopen("/proc/meminfo", "r");
-    size_t kb = 0;
+    size_t kb = 0, cma = 0, v = 0;
     char line[256];
     while (f && fgets(line, sizeof line, f)) {
-        if (sscanf(line, "MemAvailable: %zu kB", &kb) == 1) { break; }
+        if (sscanf(line, "MemAvailable: %zu kB", &v) == 1) { kb = v; }
+        else if (sscanf(line, "CmaFree: %zu kB", &v) == 1) { cma = v; }
     }
     if (f) { fclose(f); }
-    b = kb * 1024;
+    // CMA's free pages count in MemAvailable but take no pinned or anonymous page (K3 2026-11-11: 9.4 GiB of the 9.2 GiB "left" beside a 111.9 GiB pool were CMA, the
+    // page cache of the mapped weights fell to 0.8 GiB, 7000 major faults/s, PC1 froze)
+    b = (kb - std::min(kb, cma)) * 1024;
 #endif
     return b - std::min(b, sim_ram_held());
 }
@@ -10201,6 +10204,19 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 const int64_t ne_x = routers[0]->ne[1];
                 while (!routers.empty() && routers.back()->ne[1] != ne_x) {
                     routers.pop_back();
+                }
+                {
+                    // the copies come after the VRAM sizing: they may only take what the KV and the graphs do not need (K3 2026-11-11: 84 layers x 37.5 MiB took the
+                    // KV's margin, "kv-arena: no room for the KV")
+                    const size_t need = (size_t) n_embd * ne_x * routers.size() * (2 + (use_q8 ? 34.0/32 : 0)) + ((size_t) 1 << 30);
+                    size_t fr = 0, tot = 0;
+                    ggml_backend_dev_t pd = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(routers[0]->buffer));
+                    if (pd && ggml_backend_dev_type(pd) != GGML_BACKEND_DEVICE_TYPE_CPU) { ggml_backend_dev_memory(pd, &fr, &tot); }
+                    if (pd && ggml_backend_dev_type(pd) != GGML_BACKEND_DEVICE_TYPE_CPU && fr < need) {
+                        static bool told = false;
+                        if (!told) { told = true; LLAMA_LOG_WARN("moe-cache: learned predictor copies stop at layer %d: %.0f MiB free on %s, a copy needs %.0f MiB with 1 GiB kept free; the rest predict with the next router\n", pub.il, fr / 1048576.0, ggml_backend_dev_name(pd), need / 1048576.0); }
+                        continue;   // this layer predicts with the next router itself (pred_w)
+                    }
                 }
                 ggml_init_params ip = { ggml_tensor_overhead()*3, nullptr, true };
                 ggml_context * pctx = ggml_init(ip);

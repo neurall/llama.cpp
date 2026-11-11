@@ -1184,7 +1184,9 @@ def cmd_memwatch(a):
                    f"dirty {m.get('Dirty', 0):.2f} swap {swap:.2f} GiB, swap-out {so:.0f} major {mf:.0f} reclaim {rs:.0f} compact {cs:.0f} /s, psi {some:.1f} {full:.1f}; server rss {p.get('VmRSS', 0):.1f} anon {p.get('RssAnon', 0):.1f} "
                    f"file {p.get('RssFile', 0):.1f} locked {p.get('VmLck', 0) + p.get('VmPin', 0):.1f} swapped {p.get('VmSwap', 0):.2f} GiB\n")
         short = avail < 2 * a.min_avail or some > 5 or swap > 1 or so > 1000
-        bad = bad + 1 if avail < a.min_avail or (so > 25000 and some > 30) or full > 40 else 0
+        # thrash: the page cache of the mapped weights gone and every access a disk read (K3 2026-11-11: cache 0.8 GiB, 7000 major/s, pressure 47 only 14 s later, PC1 froze)
+        thrash = m.get("Cached", 0) < 1.5 and mf > 2000
+        bad = bad + 1 if avail < a.min_avail or (so > 25000 and some > 30) or full > 40 or thrash else 0
         if bad >= 2:
             try: os.kill(a.pid, signal.SIGKILL)   # first: the write below may block on a stuck journal
             except OSError: pass
