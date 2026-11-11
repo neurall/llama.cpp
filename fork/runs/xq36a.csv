@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+xq-x16-a64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xq-x16-a128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xq-x16-a256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xq-x16-a512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xq-x16-a1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xq-x16-a2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=1
+xq-x4-a64,qwen36,1,pf2k,16,"-b 2048 -ub 64 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=0
+xq-x4-a128,qwen36,1,pf2k,16,"-b 2048 -ub 128 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=0
+xq-x4-a256,qwen36,1,pf2k,16,"-b 2048 -ub 256 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=0
+xq-x4-a512,qwen36,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=0
+xq-x4-a1024,qwen36,1,pf2k,16,"-b 2048 -ub 1024 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=0
+xq-x4-a2048,qwen36,1,pf2k,16,"-b 2048 -ub 2048 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0",--env CUDA_VISIBLE_DEVICES=0
