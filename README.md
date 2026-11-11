@@ -1,5 +1,5 @@
 # Rocket LLama 
-<img width="1145" height="389" alt="image" src="https://github.com/user-attachments/assets/f543ba8e-7611-47a5-ae76-7c939ffaa48e" />
+
 
 # A bit experimental, slightly faster ... 
 up to 20x faster prefill and 2.4x decode on big models 
