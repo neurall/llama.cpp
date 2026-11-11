@@ -5635,9 +5635,12 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         // copy a bit extra to ensure there are no NaNs in the padding of the last expert, this is necessary for MMQ in the CUDA backend
         const size_t offset  = next*expert_size;
         const size_t padding = last < n_expert - 1 ? std::min<size_t>(expert_size, 512) : 0;
+        const size_t size    = (last + 1 - next)*expert_size + padding;   // stock's fix: only what the cache did not copy (it was last - first + 1 experts from next: past last)
         // fork: from the RAM pool or O_DIRECT, never src->data where the experts stayed mapped (DeepSeek: map-guard caught this read, 2026-11-10)
-        ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, offset, (last - first + 1)*expert_size + padding);
-        ggml_backend_sched_upload_add_fork(ggml_backend_get_device(backend), (uint64_t) (last - first + 1)*expert_size);
+        if (size > 0) {
+            ggml_backend_sched_upload_weight_fork(lctx->sched.get(), backend, src, dst, offset, size);
+            ggml_backend_sched_upload_add_fork(ggml_backend_get_device(backend), (uint64_t) (last + 1 - next)*expert_size);
+        }
         if (last == n_expert - 1) {
             ggml_backend_tensor_zero_tail_fork(backend, dst);   // fork: the last expert has no neighbour: zeros in the tensor's own row padding (see ggml-backend.cpp)
         }
