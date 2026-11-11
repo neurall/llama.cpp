@@ -1365,7 +1365,7 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     // back from the SSD once the card dropped it (pinpool-default 2026-11-08: 15424 demand reads, 13.0 s waited in a 74 s decode, decode 13.7 against 14.7 without the
     // pool). Without eviction the fill ranks card-held experts by heat too: a hot one left out would never come back (rampool3: 17 GiB of card-held slices out of the pool).
     if (mc->rp_evict && mc->rp_filling && (ls.expert_slot[e] >= 0 || ls.queued[e])) { return HUGE_VAL; }
-    if (mc->rp_filling && mc->fill_layers) { return (double) it->second.first * 1e6 + (double) e; }   // --moe fill=layers: whole layers from layer 0 on, after what the cards took
+    if (mc->rp_filling && mc->fill_layers) { return (double) ls.pub.il * 1e6 + (double) e; }   // --moe fill=layers: whole layers from model layer 0 on (mc->layers runs per card group), after what the cards took
     return vis_next(mc, ls, (int32_t) e);
 }
 // --moe rampool admission (user 2026-11-10: "admission as vram has", "consider the last 10 revisits"): a newcomer that would evict a resident needs the VRAM cache's ADMIT uses
@@ -2211,9 +2211,9 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
             ls.glob_max   = std::max<uint64_t>(1, *std::max_element(ls.glob_count.begin(), ls.glob_count.end()));
             refresh_sticky(ls);
         }
-        if (mc->fill_layers) {   // the whole layer, hottest first, before any expert of the next one: heat in (-il, -il + 0.5]
+        if (mc->fill_layers) {   // the whole layer, hottest first, before any expert of the next model layer (mc->layers runs per card group): heat in (-L, -L + 0.5]
             const double tot = (double) std::max<uint64_t>(1, std::accumulate(ls.glob_count.begin(), ls.glob_count.end(), (uint64_t) 0));
-            for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) { picks.push_back({ 0.5 * (double) ls.glob_count[e] / tot - (double) il, il, e }); }
+            for (int32_t e = 0; e < (int32_t) ls.glob_count.size(); ++e) { picks.push_back({ 0.5 * (double) ls.glob_count[e] / tot - (double) ls.pub.il, il, e }); }
             continue;
         }
         std::vector<int32_t> ids;
