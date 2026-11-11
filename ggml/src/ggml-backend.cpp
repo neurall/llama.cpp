@@ -959,8 +959,10 @@ extern "C" {
     GGML_API void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset);
     GGML_API void ggml_backend_set_moe_read_threads_fork(int n);
     GGML_API void ggml_backend_set_whole_reads_fork(bool on);
+    GGML_API bool ggml_backend_whole_reads_fork(void);
 }
 void ggml_backend_set_whole_reads_fork(bool on) { g_whole_reads.store(on); }
+bool ggml_backend_whole_reads_fork(void) { return g_whole_reads.load(std::memory_order_relaxed); }
 void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset) {
     for (int i = 0; i < 6; i++) { out6[i] = reset ? g_up_stat[i].exchange(0) : g_up_stat[i].load(); }
 }

@@ -84,6 +84,7 @@ bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // t
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
 extern "C" void ggml_backend_sched_upload_weight_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy,
                                                       size_t off, size_t n);   // ggml-backend.cpp: a host expert weight to its card from the RAM pool, else O_DIRECT; the mapping only if a read fails
+extern "C" bool ggml_backend_whole_reads_fork(void);   // ggml-backend.cpp: --moe whole-reads (SSD streaming only): runs read through unused experts
 extern "C" void ggml_backend_sched_link_add_fork(ggml_backend_dev_t dst, ggml_backend_dev_t src, uint64_t n);   // the same for any input: src NULL = host memory
 bool     llama_kv_parts_on_fork();   // llama-kv-cache.cpp: the attention runs on several cards now (--moe attn-split)
 bool     llama_moe_cache_kv_parts_fork(ggml_backend_sched_t sched, bool on, char * note, size_t note_size);   // llama-moecache-fork.cpp: the KV rows move
@@ -5677,6 +5678,10 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
 
     int64_t first = -1;
     int64_t last  = -1;
+    // --moe whole-reads (user 2026-11-11, SSD streaming only): a run goes on through the experts this pass does not use, one long read instead of one per piece
+    // (Kimi K3.1, 995 tokens: 14% of each layer unused, runs of 6-7 experts); an expert the card holds still ends it (copied on the card, not read again)
+    const bool whole = ggml_backend_whole_reads_fork();
+    bool held_gap = false;   // a held expert lies between the run's last expert and the next used one
     for (int64_t id = 0; id < n_expert; ++id) {
         if (!st.used[id]) {
             continue;
@@ -5685,6 +5690,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         const void *          dev_data = nullptr;
         ggml_backend_buffer_t dev_buf  = nullptr;
         if (ggml_backend_moe_src(src, (int32_t) id, dev, &dev_data, &dev_buf)) {
+            held_gap = true;
             pairs.push_back({ dev_data, (uint8_t *) dst->data + (size_t) id*expert_size, dev_buf, dst->buffer });   // cache block -> slot in the staged tensor
             if (id == n_expert - 1) {
                 ggml_backend_tensor_zero_tail_fork(backend, dst);   // the last expert, taken from the cache: the row padding behind it is the tensor's own
@@ -5697,7 +5703,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
             continue;
         }
 
-        if (first >= 0 && id == last + 1) {
+        if (first >= 0 && (id == last + 1 || (whole && !held_gap))) {
             last = id;
             continue;
         }
@@ -5706,6 +5712,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
         }
         first = id;
         last  = id;
+        held_gap = false;
     }
     if (first >= 0) {
         copy_run(first, last);
