@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+k31l-stg,olmoe,2,pf1k,100,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=1280,sim-ram=4900",--env CUDA_VISIBLE_DEVICES=1
+k31l-nostg,olmoe,2,pf1k,100,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=1280,sim-ram=4900,staging=0",--env CUDA_VISIBLE_DEVICES=1
+k31l-nostg-vf,olmoe,1,pf1k,100,"-t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=1280,sim-ram=4900,staging=0,verify=2",--env CUDA_VISIBLE_DEVICES=1
