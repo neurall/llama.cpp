@@ -9196,7 +9196,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 // --moe pool-floor=1: every class can hold one whole layer's experts, paid by the class with the most layers. The prompt chain refuses a pass a class cannot hold
                 // (GLM 3.0, one card: "layer 3 has 111 blocks, wants 288"), so without this it never runs on such a model above a few dozen tokens.
                 // shortcut: off by default and tests only, it costs the big class decode hits; make it the default if the chain against stream rows pay for it
-                static const bool pool_floor = [] { const char * e = moe_opt("pool-floor"); return e && atoi(e) != 0; }();
+                // --moe staging=0 implies it: with no stream to fall back to, a class short of one layer sent every call of its size to the decode chain (Qwen3.8-Flash-Next,
+                // 2 cards at 8 GiB: two one-layer classes of 99 blocks against 512 experts, prompt 307 t/s on the CPU's misses against 643 staged, 2026-11-11)
+                static const bool pool_floor = [] { const char * e = moe_opt("pool-floor"); return e ? atoi(e) != 0 : pp_no_staging(); }();
                 if (pool_floor && !order.empty()) {
                     const size_t  big = order[0];
                     const int32_t big_E = (int32_t) ll[pl.cls[big].members[0]]->ffn_up_exps->ne[2];

@@ -3,3 +3,5 @@ dsn2-sane,qn_iq4xs,1,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0,veri
 dsn2-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1",
 dsn2-nost,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=1,staging=0",
 dsn2-off-nost,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,dense-split=0,staging=0",
+dsn2-8g-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192",
+dsn2-8g-nost,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,staging=0",
