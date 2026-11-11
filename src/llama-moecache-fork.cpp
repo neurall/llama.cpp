@@ -1204,7 +1204,6 @@ static std::vector<size_t> g_cs_order_graph;           // the cstream layers of 
 static std::vector<size_t> g_cs_order_built;           // the same for the graph that runs (cs_begin)
 static std::atomic<bool>   g_cs_live{false};           // a cstream pass may be on the GPU: flush_tables leaves the device tables to cs_layer (its copies are ordered on the upload stream) until cs_end
 static void (*g_cs_hook_next)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t) = nullptr;   // the ledger's or the guard's hook, behind cs_split_cb
-static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid);
 static bool              g_pp_mix_built = false; // the same for the graph that runs: the staging fill leaves out what such a layer's home card holds
 static std::atomic<double>  g_pp_up_us{0.0};     // upload time of the misses of the prompt chain's passes since the last report: the pass's time without it is its compute
 std::atomic<bool>     g_topic_answer{false};     // its prompt is over (its key came): from here on its uses are the answer's (a short prompt runs as decode steps too)
@@ -9330,8 +9329,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     pool_fill(tmp, 0, total - 4096, 5);
                 }
                 if (poison_on()) { ggml_sched_set_nan_hook_fork(pool_dump_all); }
-                if (led_level() >= 2 || guard_level() > 0) { g_cs_hook_next = guard_level() > 0 ? guard_split_cb : led_split_cb; }   // the guard chains to the ledger
-                ggml_sched_set_split_hook_fork(cs_split_cb);   // cstream's waits, then the ledger's or guard's hook
+                if (led_level() >= 2 || guard_level() > 0) {   // the guard chains to the ledger; a cstream pass puts its hook in front (cs_begin)
+                    g_cs_hook_next = guard_level() > 0 ? guard_split_cb : led_split_cb;
+                    ggml_sched_set_split_hook_fork(g_cs_hook_next);
+                }
                 if (led_on() || guard_level() > 0)         { ggml_backend_set_dma_hook_fork(guard_level() > 0 ? guard_dma : led_dma); }
                 if (led_on()) {   // CUDA graph captures and replays with their scratch range go into the ledger
                     typedef void (*graph_hook_t)(int, const void *, const char *, const void *, size_t);
@@ -10912,8 +10913,12 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
     ggml_backend_event_record(ls.ring_ev, rb);
 }
 
+static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid);   // below
+
 // before a graph of a cstream call runs (pp_freeze, after pp_settle): the pass's layer order, the events, the upload streams' start. Nothing is copied here.
 static void cs_begin(moe_cache * mc) {
+    static const bool hooked = [] { ggml_sched_set_split_hook_fork(cs_split_cb); return true; }();   // in front of the ledger's or guard's hook (g_cs_hook_next)
+    GGML_UNUSED(hooked);
     std::lock_guard<std::mutex> lock(mc->mtx);
     static int n_log = 0;
     if (mc->cs_pass > 0 && (n_log < 6 || mc->cs_pass % 64 == 0)) {
