@@ -85,11 +85,11 @@ def sane(txt):
 
 def allowed_tiers(lst):
     if lst is None:
-        return {0, 1, 3}   # the default f16,k8v8,ram
+        return {0, 1, 2, 3}   # the default f16,k8v8,k4v4, RAM last
     if lst == "none":
         return {0}
     m = {"f16": 0, "k8v8": 1, "k4v4": 2, "ram": 3}
-    return {m[w] for w in lst.split(",") if w in m} or {0}   # a list that names no tier (typo) is f16 only, and must be warned about
+    return ({m[w] for w in lst.split(",") if w in m} or {0}) | {3}   # RAM is the last resort of every list but none; a list that names no tier (typo) is f16 then RAM, and must be warned about
 
 
 def run(host, build, sizes):

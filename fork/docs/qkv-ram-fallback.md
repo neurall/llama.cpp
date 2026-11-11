@@ -13,7 +13,7 @@ length needs:
 
 When the KV leaves the GPU (RAM tier) the pool space it held goes back to the expert cache, which compensates the slower
 attention. Anything above the RAM capacity (free RAM minus a margin) is refused with the numbers. `--moe kv-fallback=LIST`
-(default `f16,k8v8,ram`, f16 included; a tier not listed is off, `ram` alone puts every layer's KV in RAM from the first token) selects the tiers; `none` refuses as today. The user is told upfront (log at warning
+(default `f16,k8v8,k4v4`, f16 included; a tier not listed is off; RAM is the last resort of every list but `none`; `ram` alone puts every layer's KV in RAM from the first token) selects the tiers; `none` refuses as today. Since 2026-11-11 the KV quantises before it takes an expert block (the layers held ahead): the cheapest listed tier that holds the request in the zone's start size, else the most compact one at the experts' floor, then RAM. The user is told upfront (log at warning
 level before the prefill, and a `kv_fit` object in the first SSE event). Details of the list syntax and the quality notes:
 branch auto-kv-ram-quant-fallback, fork/docs/kv-fit.md.
 

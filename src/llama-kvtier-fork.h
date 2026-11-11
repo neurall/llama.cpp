@@ -1,8 +1,10 @@
 // KV tier ladder decisions (qkv-ram-fallback), pure functions so tests/test-kvtier-fork.cpp can run them with no GPU and no model; llama-context.cpp (kv_fit_select) and
 // llama-moecache-fork.cpp (llama_moe_cache_kv_ram_fork) call these.
 //   tiers: 0 f16, 1 q8_0/q8_0, 2 q4_0/q4_0 (all converted in place in the pool), 3 RAM (whole layers' KV in host memory)
-//   --moe kv-fallback=f16,k8v8,ram  the tiers allowed, f16 included (default KVX_DEFAULT; "none": f16 only). A tier not in the list is off: "k8v8,ram" starts at q8_0,
-//   "ram" alone puts every layer's KV in host memory from the first token (user 2026-11-11: q4_0 left out of the default, its quality loss)
+//   --moe kv-fallback=f16,k8v8,k4v4  the tiers allowed, f16 included (default KVX_DEFAULT; "none": f16 only, nothing after it). A tier not in the list is off: "k8v8"
+//   starts at q8_0. RAM is the last resort of every list but "none" (user 2026-11-11: "only then move kv to ram as last possible option to keep running"); "ram" alone puts
+//   every layer's KV in host memory from the first token (the A/B arm). Order (user 2026-11-11, strict "quant first"): the listed pool tiers in the KV zone's start size,
+//   cheapest first; then the most compact listed one with the experts at their floor (it takes expert blocks, the layers held ahead); then RAM (kvx_select_zone_first)
 #pragma once
 #include <algorithm>
 #include <cctype>
@@ -11,7 +13,7 @@
 #include <string>
 #include <vector>
 
-static const char * const KVX_DEFAULT = "f16,k8v8,ram";
+static const char * const KVX_DEFAULT = "f16,k8v8,k4v4";
 
 // the tiers a kv-fallback list allows, ascending (a list that names no tier: f16 only, as "none"). Words are matched without case or blanks; a word that is none of them is left out of the tiers and, with `unknown`,
 // reported (a typo like "RAM" or "q8" otherwise reads as "no fallback" and the refusal later prints the list as typed, which looks consistent with it); an empty list too.
@@ -29,9 +31,10 @@ static inline std::vector<int> kvx_allowed(const std::string & list, std::vector
         else if (unknown) { unknown->push_back(list.substr(i, j - i)); }
         i = j + 1;
     }
+    if (allowed.empty()) { allowed.push_back(0); }
+    allowed.push_back(3);   // RAM: the last resort of every list but "none"
     std::sort(allowed.begin(), allowed.end());   // tried from the cheapest tier up whatever the order of the list
     allowed.erase(std::unique(allowed.begin(), allowed.end()), allowed.end());
-    if (allowed.empty()) { allowed.push_back(0); }
     return allowed;
 }
 
@@ -44,6 +47,23 @@ template <class C> static int kvx_select(const C & cp, const std::vector<int> & 
         if (t < lo) { continue; }
         if (n_tokens <= (t == 0 ? cp.f16 : t == 1 ? cp.k8v8 : t == 2 ? cp.k4v4 : cp.ram)) { return t; }
     }
+    return -1;
+}
+
+// The tier a request of n_tokens takes under "quant first" (user 2026-11-11, strict): the expert blocks are the layers the next passes need, so the KV takes none of them
+// while a listed tier avoids it. zone[t]: tokens tier t holds in the KV zone's start size (one horizon step of f16 rows, laid out in tier t's rows), no expert block taken;
+// cp: tokens each tier holds with the experts at their floor. The cheapest listed pool tier at or above lo that holds it in the zone; else the most compact listed pool
+// tier that holds it at the floor (it takes expert blocks); else RAM (always listed but for "none"); -1 when nothing holds it. lo as in kvx_select.
+template <class C> static int kvx_select_zone_first(const C & cp, const size_t zone[3], const std::vector<int> & allowed, int kv_tier, int min_tier, size_t n_tokens) {
+    const int lo = min_tier < 0 ? std::min(kv_tier + 1, 3) : min_tier;
+    int top = -1;
+    for (int t : allowed) {
+        if (t < lo || t > 2) { continue; }
+        if (n_tokens <= zone[t]) { return t; }
+        top = t;
+    }
+    if (top >= 0 && n_tokens <= (top == 0 ? cp.f16 : top == 1 ? cp.k8v8 : cp.k4v4)) { return top; }
+    if (std::find(allowed.begin(), allowed.end(), 3) != allowed.end() && n_tokens <= cp.ram) { return 3; }
     return -1;
 }
 

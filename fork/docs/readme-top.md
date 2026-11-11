@@ -74,7 +74,7 @@ PERF_PPL_CHUNKS=12 run bench --models qwen36 --builds stock-latest,b13586 --vari
 
 ## KV tiers (experimental)
 
-A request whose KV does not fit in f16 moves to q8_0 (in place in the pool), then whole layers' KV to host memory, so the same small GPU can take much larger documents and only the huge requests pay the quantisation. It is on by default; `--moe kv-fallback=k8v8,k4v4,ram` lists the tiers (for example `k8v8,ram` skips q4_0, `none` keeps f16 only and turns the ladder off). Perplexity of a quantised KV on Qwen3.6-35B (CPU, fixed text): f16 1.5244, q8_0 1.5257, q4_0 1.5217: no measurable loss. Tokens a card holds per tier, OLMoE with 3.5 GB of VRAM (a small-GPU stand-in):
+A request whose KV outgrows its zone moves to q8_0, then q4_0 (in place in the pool) before it takes room from the experts, then takes expert blocks, and only then moves whole layers' KV to host memory, so the same small GPU can take much larger documents. It is on by default; `--moe kv-fallback=f16,k8v8,k4v4` lists the tiers (for example `f16,k8v8` skips q4_0, `none` keeps f16 only and turns the ladder off). Perplexity of a quantised KV on Qwen3.6-35B (CPU, fixed text): f16 1.5244, q8_0 1.5257, q4_0 1.5217: no measurable loss. Tokens a card holds per tier, OLMoE with 3.5 GB of VRAM (a small-GPU stand-in):
 
 {{TIERS}}
 

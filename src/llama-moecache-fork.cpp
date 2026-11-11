@@ -6046,6 +6046,31 @@ llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
     return out;
 }
 
+// "quant first" (user 2026-11-11): tokens each pool tier holds in the KV zone's start size, no expert block taken. The zone goes back to one horizon step at a request
+// start (kv_tail_plan), so that step of f16 rows is the KV's own room: re-laid in tier t's rows (fixed part and the lend's growth per cell charged), least over cards.
+void llama_moe_cache_kv_zone_caps_fork(size_t out[3]);   // used by llama-context.cpp (kv_fit_select), declared there: no header edit
+void llama_moe_cache_kv_zone_caps_fork(size_t out[3]) {
+    out[0] = out[1] = out[2] = 0;
+    moe_cache * mc = g_cache;
+    if (!mc) { return; }
+    size_t cap[3] = { (size_t) -1, (size_t) -1, (size_t) -1 };
+    bool any = false;
+    for (auto & ap : mc->alias) {
+        if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
+        kvt_runs v0; size_t F0 = 0, R0 = 0;
+        if (!kv_records_as(ap.kvt, 0, v0, F0, R0)) { continue; }
+        any = true;
+        const size_t zone = F0 + std::max<size_t>(256, ap.kv_step) * R0;
+        for (int t = 0; t < 3; ++t) {
+            kvt_runs v; size_t F = 0, R = 0, pc = 0, pcd = 0;
+            if (!kv_records_as(ap.kvt, t, v, F, R)) { cap[t] = 0; continue; }
+            kv_lend_pc_of(v, pc, pcd);
+            cap[t] = std::min(cap[t], zone > F && R + pc > 0 ? (zone - F) / (R + pc) : 0);
+        }
+    }
+    if (any) { for (int t = 0; t < 3; ++t) { out[t] = cap[t]; } }
+}
+
 // ---- qkv-ram-fallback in place: the KV changes its types inside the pool (fork/docs/qkv-ram-fallback.md) ----
 // User design 2026-10-17/18: no new cache object, no graph reallocation, nothing allocated or freed. When the KV of a tier fills the pool, the rows in use are
 // converted on the card to the next tier's types (f16 -> q8_0 -> q4_0: 0.53, then 0.28 of the f16 bytes) and the zone shrinks to the new rows: the blocks it leaves
