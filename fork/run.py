@@ -3169,6 +3169,14 @@ def gpu_details():
 GPU_DET = []   # gpu_details() of this machine, read once: the live display redraws every tick
 
 
+def cuda_idx(k):
+    """nvidia-smi index of a server's CUDA<k>: servers run with CUDA_DEVICE_ORDER=PCI_BUS_ID through the running cell's --env CUDA_VISIBLE_DEVICES (run_watched
+    sets STRIP["vis"]; os.environ never sees it, 2026-11-11: an x16-only OLMoE row drew its uploads on the x4 card), else this process's (-ng)."""
+    v = STRIP.get("vis")
+    vis = [x.strip() for x in (os.environ.get("CUDA_VISIBLE_DEVICES", "") if v is None else v).split(",") if x.strip()]
+    return int(vis[k]) if k < len(vis) and vis[k].isdigit() else k
+
+
 def card_label(c):
     """The name a card is shown and called by (user 2026-10-24: "cuda0 cuda1 is confusing"): [p]cuda<n>x<slot width>, p for the primary card (it computes the
     experts of the dense split and takes its full card limit every pass), e.g. pcuda1x16 and cuda0x4 on PC1. The width is the link's CURRENT width from nvidia-smi
@@ -3177,8 +3185,7 @@ def card_label(c):
     dev = str(c.get("dev", "?"))
     if not GPU_DET: GPU_DET.append({} if HOST[0] else gpu_details())
     k = re.sub(r"\D", "", dev)
-    vis = [x.strip() for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
-    idx = vis[int(k)] if k and vis and int(k) < len(vis) else k
+    idx = str(cuda_idx(int(k))) if k else k
     w = GPU_DET[0].get(idx, {}).get("link_width", "")
     return ("p" if c.get("experts") else "") + dev.lower() + (f"x{w}" if str(w).isdigit() else "")
 
@@ -6049,7 +6056,7 @@ def map_pos_lines(mp):
     if mp.get("ram"): rows.append(("RAM", mp["ram"].get("gib", 0), mp["ram"].get("cells", ""), mp["ram"].get("gb") or {}, MAP_POS_RAM))
     for dev, gib, cells, gb, kinds in rows:
         if not cells: continue
-        head = f"{dev[:6]:<6} {gib:5.1f}G "
+        head = f"{(card_label({'dev': dev}) if re.fullmatch(r'CUDA\d+', dev) else dev)[:8]:<8} {gib:5.1f}G "
         w = max(20, LIVE_W - 1 - len(head) - 2)
         res = [cells[min(len(cells) - 1, j * len(cells) // w)] for j in range(w)]
         runs, j = [], 0
@@ -6090,12 +6097,11 @@ def strip_lines(t0, utils, links, rx):
     link's measured maximum. Both lines low in the same columns = uploads and compute taking turns instead of overlapping."""
     now = time.time()
     if STRIP["t0"] != t0: STRIP.update(t0=t0, cols=[], last=None)
-    vis = [x.strip() for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
     up, cur, last = {}, {}, STRIP["last"]
     for l in links:   # CUDA<k> -> nvidia-smi index (servers run with CUDA_DEVICE_ORDER=PCI_BUS_ID, through CUDA_VISIBLE_DEVICES)
         k = re.sub(r"\D", "", str(l.get("dev", "")))
         if not k: continue
-        idx = int(vis[int(k)]) if vis and int(k) < len(vis) and vis[int(k)].isdigit() else int(k)
+        idx = cuda_idx(int(k))
         mib = float(l.get("uploaded_mib") or 0); cur[idx] = mib
         g = float(l.get("gbs") or 0)   # the engine's own window on the first tick
         if last and idx in last[1] and now > last[0] and mib >= last[1][idx]: g = (mib - last[1][idx]) * 1048576 / 1e9 / (now - last[0])
@@ -7212,6 +7218,7 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     try: os.remove(LOAD_FILE)
     except OSError: pass
     p = subprocess.Popen(cmd, env=env, stdout=out, stderr=subprocess.STDOUT if out else None); t0 = time.time()
+    STRIP["vis"] = next((str(x).split("=", 1)[1] for x in cmd if str(x).startswith("CUDA_VISIBLE_DEVICES=")), None)   # the cell's cards (cuda_idx)
     tty = live_tty(); pexp = gen_expect(*peek) if peek else None
     DEC_RATE[0] = dec_rate(*peek) if peek else None
     first = True   # draw at once: the previous cell's finished block must not stay up as this cell's (bars at 0 %)
