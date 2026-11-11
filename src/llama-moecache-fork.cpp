@@ -4622,8 +4622,10 @@ extern "C" {
     GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there too, no shared header)
     GGML_API void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset);  // pool bytes, host bytes, file bytes, file reads, read us, slot wait us
     GGML_API void ggml_backend_set_moe_read_threads_fork(int n);                // --moe side-reads: the file runs of a pool tensor read this many at a time
-    typedef int (*ggml_backend_moe_read_batch_fn_t)(const ggml_tensor *, int, const size_t *, const size_t *, void * const *, const size_t *, const void **, void *);
-    GGML_API void ggml_backend_set_moe_read_batch_fn_fork(ggml_backend_moe_read_batch_fn_t fn, void * user_data);   // --moe batch-reads: one AIO queue per upload round
+    typedef void * (*ggml_backend_moe_read_dst_fn_t)(int, size_t, void *);
+    typedef void   (*ggml_backend_moe_read_done_fn_t)(int, const void *, void *);
+    typedef int (*ggml_backend_moe_read_batch_fn_t)(const ggml_tensor *, int, const size_t *, const size_t *, ggml_backend_moe_read_dst_fn_t, ggml_backend_moe_read_done_fn_t, void *, void *);
+    GGML_API void ggml_backend_set_moe_read_batch_fn_fork(ggml_backend_moe_read_batch_fn_t fn, void * user_data);   // --moe batch-reads: one AIO queue per weight
 }
 // The O_DIRECT read thread count from the machine, not a constant (user 2026-11-02: "8 t is nice on epyc but hardly on 3600"): 1 MiB blocks on n threads for 0.2 s each, n = 1, 2, 4, 8 and
 // 16 up to the hardware threads / 2; the smallest n within 7% of the best bandwidth wins, so a drive that one or two threads fill leaves the other cores to compute.
@@ -4737,90 +4739,107 @@ static const void * moe_read_fn(const ggml_tensor * weight, size_t off, size_t n
     return fail.load() ? nullptr : (const void *) (buf + (file_off - beg));
 }
 
-// --moe batch-reads (user 2026-11-11, SSD streaming only): the file runs of one upload round as ONE queue of kernel AIO, 32 reads of 1 MiB in flight across all
-// of them. moe_read_fn reads one run per call and drains its queue at the end of each (Kimi K3.1 stream pass: 5 MB runs at 4.5 GB/s while reading, 4 KiB pad
-// reads between them; the SSD gives 6.7 GB/s sequential at queue depth 32). got[i] = where run i starts inside dsts[i], or nullptr: the caller reads it alone.
-static int moe_read_batch_fn(const ggml_tensor * weight, int n, const size_t * offs, const size_t * lens, void * const * dsts, const size_t * caps, const void ** got, void * ud) {
+// --moe batch-reads (user 2026-11-11, SSD streaming only): all file runs of one weight's upload as ONE queue of kernel AIO, 32 reads of 1 MiB in flight across
+// them, kept full from the first run to the last. moe_read_fn reads one run per call and drains its queue at the end of each (Kimi K3.1 stream pass: 8 MB runs
+// at 4.5 GB/s while reading; one drain per round of the read ring still left 4.9 GB/s against 6.3 from fio). dst_of(i, bytes) is asked right before run i's first
+// read goes out (it may wait for the ring chunk to be free) and gives a 4 KiB aligned place for it, or nullptr; done(i, got) comes once per run, in the order
+// the runs complete: got = run i's first byte, or nullptr (not read here: the caller reads it another way). Returns how many runs were read.
+static int moe_read_batch_fn(const ggml_tensor * weight, int n, const size_t * offs, const size_t * lens, ggml_backend_moe_read_dst_fn_t dst_of,
+                             ggml_backend_moe_read_done_fn_t done, void * cb_ud, void * ud) {
     moe_cache * mc = (moe_cache *) ud;
-    int ok = 0;
-    for (int i = 0; i < n; ++i) { got[i] = nullptr; }
     const auto it = mc->rd_src.find(weight);
-    if (it == mc->rd_src.end() || it->second.first < 0) { return 0; }
+    int i0 = 0, ok = 0;   // runs from i0 on are left to the plain loop at the end
 #ifdef MOE_HAVE_AIO
-    if (g_aio_ok.load()) {
+    if (it != mc->rd_src.end() && it->second.first >= 0 && g_aio_ok.load()) {
         constexpr int QD = 32;
-        constexpr size_t BLK = (size_t) 1 << 20;
+        constexpr uint64_t BLK = (uint64_t) 1 << 20;
         struct ctx_t { aio_context_t c = 0; ~ctx_t() { if (c) { syscall(SYS_io_destroy, c); } } };
         thread_local ctx_t ctx;
         if (!ctx.c && syscall(SYS_io_setup, QD, &ctx.c) != 0) { ctx.c = 0; }
         if (ctx.c) {
             const int dfd = it->second.first;
-            const size_t a = direct_align();
-            struct piece { uint64_t file; size_t n; uint8_t * dst; int r; };
-            std::vector<piece> pcs;
-            std::vector<uint64_t> fend((size_t) n, 0);   // per run: its last needed byte + 1 in the file (a short block past it is the end of the file)
-            std::vector<uint8_t> bad((size_t) n, 1);
-            for (int i = 0; i < n; ++i) {
-                const uint64_t file_off = (uint64_t) it->second.second + offs[i], beg = file_off & ~(uint64_t) (a - 1), end = (file_off + lens[i] + a - 1) & ~(uint64_t) (a - 1);
-                uint8_t * buf = (uint8_t *) (((uintptr_t) dsts[i] + a - 1) & ~(uintptr_t) (a - 1));
-                if ((size_t) (buf - (uint8_t *) dsts[i]) + (size_t) (end - beg) > caps[i]) { continue; }
-                bad[(size_t) i] = 0;
-                fend[(size_t) i] = file_off + lens[i];
-                got[i] = buf + (file_off - beg);
-                for (uint64_t o = beg; o < end; o += BLK) { pcs.push_back({ o, (size_t) std::min<uint64_t>(BLK, end - o), buf + (o - beg), i }); }
-            }
+            const uint64_t a = direct_align();
+            struct run_st { uint64_t beg = 0, end = 0, fend = 0; uint8_t * buf = nullptr; int left = 0; bool bad = false; };
+            std::vector<run_st> rs((size_t) n);
             iocb cbs[QD]; iocb * ps[QD]; io_event ev[QD];
-            int free_slot[QD], n_free = QD;
+            int free_slot[QD], n_free = QD, infl = 0;
             for (int k = 0; k < QD; ++k) { free_slot[k] = k; }
-            size_t next = 0;
-            int infl = 0;
+            int ri = 0;          // the run whose pieces go out next
+            uint64_t ro = 0;     // its next piece's file offset (0: run ri not started)
             bool lost = false;
-            while ((next < pcs.size() && !lost) || infl > 0) {
+            auto finish = [&](int r) {
+                run_st & x = rs[(size_t) r];
+                done(r, x.bad ? nullptr : (const void *) (x.buf + ((uint64_t) it->second.second + offs[r] - x.beg)), cb_ud);
+                ok += !x.bad;
+            };
+            while (true) {
                 int nb = 0;
-                while (!lost && next < pcs.size() && n_free > 0) {
+                while (!lost && ri < n && n_free > 0) {
+                    run_st & x = rs[(size_t) ri];
+                    if (ro == 0) {   // run ri starts: its place in the caller's ring
+                        const uint64_t file_off = (uint64_t) it->second.second + offs[ri];
+                        x.beg = file_off & ~(a - 1); x.end = (file_off + lens[ri] + a - 1) & ~(a - 1); x.fend = file_off + lens[ri];
+                        x.buf = (uint8_t *) dst_of(ri, (size_t) (x.end - x.beg), cb_ud);
+                        if (!x.buf || ((uintptr_t) x.buf & (a - 1))) { x.bad = true; finish(ri); ++ri; continue; }
+                        x.left = (int) ((x.end - x.beg + BLK - 1) / BLK);
+                        ro = x.beg;
+                    }
                     const int k = free_slot[--n_free];
-                    const piece & pc = pcs[next++];
                     memset(&cbs[k], 0, sizeof(iocb));
                     cbs[k].aio_lio_opcode = IOCB_CMD_PREAD; cbs[k].aio_fildes = (uint32_t) dfd;
-                    cbs[k].aio_buf = (uint64_t) (uintptr_t) pc.dst; cbs[k].aio_nbytes = pc.n; cbs[k].aio_offset = (int64_t) pc.file;
-                    cbs[k].aio_data = (uint64_t) (next - 1);
+                    cbs[k].aio_buf = (uint64_t) (uintptr_t) (x.buf + (ro - x.beg)); cbs[k].aio_nbytes = (uint64_t) std::min<uint64_t>(BLK, x.end - ro);
+                    cbs[k].aio_offset = (int64_t) ro; cbs[k].aio_data = (uint64_t) ri;
                     ps[nb++] = &cbs[k];
+                    ro += cbs[k].aio_nbytes;
+                    if (ro >= x.end) { ++ri; ro = 0; }
                 }
                 if (nb > 0) {   // one syscall for every free slot
                     const long sub = syscall(SYS_io_submit, ctx.c, (long) nb, ps);
-                    const int done = sub < 0 ? 0 : (int) sub;
-                    infl += done;
-                    for (int j = done; j < nb; ++j) { free_slot[n_free++] = (int) (ps[j] - cbs); bad[(size_t) pcs[(size_t) ps[j]->aio_data].r] = 1; }   // refused: that run is read alone
-                    if (done < nb) { lost = true; }
+                    const int put = sub < 0 ? 0 : (int) sub;
+                    infl += put;
+                    for (int j = put; j < nb; ++j) {   // refused: that run is not read here (its other pieces still land, it finishes when they do)
+                        run_st & x = rs[(size_t) ps[j]->aio_data];
+                        x.bad = true; free_slot[n_free++] = (int) (ps[j] - cbs);
+                        if (--x.left == 0) { finish((int) ps[j]->aio_data); }
+                    }
+                    if (put < nb) { lost = true; }
                 }
                 if (infl == 0) { break; }
                 const long g = syscall(SYS_io_getevents, ctx.c, 1L, (long) QD, ev, (struct timespec *) nullptr);
-                if (g < 0) { if (errno == EINTR) { continue; } lost = true; break; }   // a lost context cannot be drained: nothing of this round counts
+                if (g < 0) {
+                    if (errno == EINTR) { continue; }
+                    syscall(SYS_io_destroy, ctx.c);   // cancels or waits for what is in flight: the buffers are the caller's again after it
+                    ctx.c = 0;
+                    for (int r = 0; r < ri; ++r) { if (rs[(size_t) r].left > 0) { rs[(size_t) r].bad = true; rs[(size_t) r].left = 0; finish(r); } }
+                    if (ro != 0) { rs[(size_t) ri].bad = true; finish(ri); ++ri; ro = 0; }
+                    infl = 0; lost = true;
+                    break;
+                }
                 for (long e = 0; e < g; ++e) {
                     const iocb * cb = (const iocb *) (uintptr_t) ev[e].obj;
-                    const piece & pc = pcs[(size_t) ev[e].data];
-                    if (ev[e].res < 0 || ((size_t) ev[e].res < pc.n && pc.file + (uint64_t) ev[e].res < fend[(size_t) pc.r])) { bad[(size_t) pc.r] = 1; }
+                    const int r = (int) ev[e].data;
+                    run_st & x = rs[(size_t) r];
+                    if (ev[e].res < 0 || ((uint64_t) ev[e].res < cb->aio_nbytes && (uint64_t) cb->aio_offset + (uint64_t) ev[e].res < x.fend)) { x.bad = true; }   // short only past the end of the file
                     free_slot[n_free++] = (int) (cb - cbs);
                     --infl;
+                    if (--x.left == 0) { finish(r); }
                 }
             }
-            for (size_t q = next; q < pcs.size(); ++q) { bad[(size_t) pcs[q].r] = 1; }   // never submitted (a refused submit stopped the round)
-            if (infl > 0) {   // io_getevents failed with reads in flight: the buffers may still change, the context goes
-                syscall(SYS_io_destroy, ctx.c);
-                ctx.c = 0;
-                for (int i = 0; i < n; ++i) { got[i] = nullptr; }
-                return 0;
+            if (ro != 0) {   // a refused submit stopped the queue inside run ri: its pieces that went out are done, the rest never will be
+                rs[(size_t) ri].bad = true; finish(ri); ++ri;
             }
-            for (int i = 0; i < n; ++i) {
-                if (bad[(size_t) i]) { got[i] = nullptr; } else { ok++; }
-            }
-            return ok;
+            i0 = ri;
         }
     }
 #endif
-    for (int i = 0; i < n; ++i) {   // no async engine here: one run at a time
-        got[i] = moe_read_fn(weight, offs[i], lens[i], dsts[i], caps[i], ud);
-        ok += got[i] != nullptr;
+    for (int r = i0; r < n; ++r) {   // no async engine here, or what it left: one run at a time, into the place the caller gives
+        const void * got = nullptr;
+        if (it != mc->rd_src.end() && it->second.first >= 0) {
+            const size_t a = direct_align(), file_off = it->second.second + offs[r], beg = file_off & ~(a - 1), end = (file_off + lens[r] + a - 1) & ~(a - 1);
+            if (void * d = dst_of(r, end - beg, cb_ud)) { got = moe_read_fn(weight, offs[r], lens[r], d, end - beg, ud); }
+        }
+        done(r, got, cb_ud);
+        ok += got != nullptr;
     }
     return ok;
 }
