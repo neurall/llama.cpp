@@ -1,3 +1,3 @@
 name,model,n,test,tokens,args,extra
-cst-st-2k,olmoe,2,pf2k,16,"--refresh-ssd --cpu-moe --moe-expert-cache 64 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,verify=2",--env CUDA_VISIBLE_DEVICES=1
-cst-cs-2k,olmoe,2,pf2k,16,"--refresh-ssd --cpu-moe --moe-expert-cache 64 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=cstream,verify=2",--env CUDA_VISIBLE_DEVICES=1
+cst-st-2k,olmoe,2,pf2k,16,"--refresh-ssd --cpu-moe --moe-expert-cache 80 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,verify=2",--env CUDA_VISIBLE_DEVICES=1
+cst-cs-2k,olmoe,2,pf2k,16,"--refresh-ssd --cpu-moe --moe-expert-cache 80 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=cstream,verify=2",--env CUDA_VISIBLE_DEVICES=1
