@@ -301,6 +301,7 @@ struct upload_job {
     int64_t t_queued = 0;    // ggml_time_us() when queued (trace)
     bool    bg      = false; // refill of a free block after a prompt (reheat_free_blocks): the step does not wait for it, a worker takes it only when no other
                              // job waits on its link, and it does not count against the swap budget
+    bool    ahead   = false; // prompt chain prefetch of the next layer (pp_ahead_on): no router prediction, so not counted as one in decode (prefetched)
 };
 
 struct moe_cache {
@@ -3347,7 +3348,7 @@ void publish_job(moe_cache * mc, const upload_job & j) {
     ls.slot_last_use[j.slot]   = ++mc->clock;
     ls.slot_in_flight[j.slot]  = false;
     ls.queued[j.expert]        = 0;
-    ls.prefetched[j.expert]    = j.urgent;
+    ls.prefetched[j.expert]    = j.urgent && !j.ahead;
     set_table_entry(ls.pub, j.expert, j.slot);
     ls.cached_since[j.expert] = mc->n_steps + 1;
     ls.up_t[j.expert]    = j.t_done;
@@ -11164,6 +11165,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                 ln.queued[want[i]]           = 1;
                 upload_job j { nli, want[i], c[i].slot };
                 j.urgent   = true;
+                j.ahead    = true;
                 j.step     = mc->n_steps;
                 j.t_queued = ggml_time_us();
                 ahead.push_back(j);
