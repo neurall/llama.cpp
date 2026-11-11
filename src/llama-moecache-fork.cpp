@@ -4622,6 +4622,7 @@ extern "C" {
     GGML_API void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * user_data);   // ggml-backend.cpp (declared there too, no shared header)
     GGML_API void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset);  // pool bytes, host bytes, file bytes, file reads, read us, slot wait us
     GGML_API void ggml_backend_set_moe_read_threads_fork(int n);                // --moe side-reads: the file runs of a pool tensor read this many at a time
+    GGML_API void ggml_backend_set_whole_reads_fork(bool on);                   // --moe whole-reads: staged ranges read through the few experts held elsewhere
 }
 // The O_DIRECT read thread count from the machine, not a constant (user 2026-11-02: "8 t is nice on epyc but hardly on 3600"): 1 MiB blocks on n threads for 0.2 s each, n = 1, 2, 4, 8 and
 // 16 up to the hardware threads / 2; the smallest n within 7% of the best bandwidth wins, so a drive that one or two threads fill leaves the other cores to compute.
@@ -10033,6 +10034,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         ggml_set_moe_obs_callback(moe_obs_cb, mc);
         ggml_backend_set_moe_read_fn_fork(mc->rd_src.empty() ? nullptr : moe_read_fn, mc);
         if (const char * sr = moe_opt("side-reads"); sr && sr[0] != '0') { ggml_backend_set_moe_read_threads_fork(mc->rd_threads); }   // off by default: DeepSeek lost with it
+        if (const char * wr = moe_opt("whole-reads"); wr && wr[0] != '0') {   // SSD streaming only (user 2026-11-11: "only as separate ssd only mode keeping prev modes as before")
+            const bool ssd = std::any_of(mc->layers.begin(), mc->layers.end(), [](const layer_state & ls) { return ls.src_dfd[0] >= 0 || ls.src_dfd[1] >= 0 || ls.src_dfd[2] >= 0; });
+            ggml_backend_set_whole_reads_fork(ssd);
+            LLAMA_LOG_WARN("moe-cache: whole-reads %s\n", ssd ? "on: staged ranges read through the few experts the card or the RAM pool holds" : "ignored: no expert tensor reads from the SSD");
+        }
         ggml_set_moe_phase_callback(moe_phase_cb, mc);
         {
             const char * e = moe_opt("prefill-d2d");

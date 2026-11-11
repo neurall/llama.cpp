@@ -951,10 +951,16 @@ void ggml_backend_set_moe_read_fn_fork(ggml_backend_moe_read_fn_t fn, void * use
 // blocks, from host memory, from the file; the file reads, the time they held the thread, the time it waited for a ring slot's last upload
 static std::atomic<uint64_t> g_up_stat[6];   // pool bytes, host bytes, file bytes, file reads, read us, slot wait us
 static std::atomic<int>      g_moe_read_threads{1};   // --moe side-reads: the scattered file runs of a pool tensor read that many at a time (the probe's reader count); 1 = one run at a time
+// --moe whole-reads (user 2026-11-11: "in ssd stream mode pass param to reader to read whole tensors"; set by the expert cache only when experts read from the SSD): a staged
+// range with fewer than a third of its experts on the card or in the RAM pool reads straight through them from the file, one sequential run, instead of runs broken at
+// every held expert (Kimi K3.1 stream pass: 4-6 MB reads at 3.6-4.9 GB/s, the SSD gives 6.7 GB/s sequential)
+static std::atomic<bool>     g_whole_reads{false};
 extern "C" {
     GGML_API void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset);
     GGML_API void ggml_backend_set_moe_read_threads_fork(int n);
+    GGML_API void ggml_backend_set_whole_reads_fork(bool on);
 }
+void ggml_backend_set_whole_reads_fork(bool on) { g_whole_reads.store(on); }
 void ggml_backend_upload_stats_fork(uint64_t * out6, bool reset) {
     for (int i = 0; i < 6; i++) { out6[i] = reset ? g_up_stat[i].exchange(0) : g_up_stat[i].load(); }
 }
@@ -2729,6 +2735,11 @@ static void ggml_backend_sched_upload_weight(ggml_backend_sched_t sched, ggml_ba
     const int64_t e0 = (int64_t) (off / esz), ne = (int64_t) (n / esz);
     std::vector<const char *> ps((size_t) ne);
     for (int64_t i = 0; i < ne; ++i) { ps[i] = ggml_rampool_use_fork(input, e0 + i); }
+    if (g_whole_reads.load(std::memory_order_relaxed)) {   // few pool hits: one file run through them (their RAM copies stay, unused this time)
+        int64_t hits = 0;
+        for (const char * x : ps) { hits += x != nullptr; }
+        if (hits > 0 && hits * 3 < ne) { std::fill(ps.begin(), ps.end(), nullptr); }
+    }
     static std::atomic<int> run_log{ [] { const char * e = getenv("GGML_SCHED_RUN_LOG"); return e ? atoi(e) : 0; }() };   // debug: what splits a stream's file reads
     if (run_log.load(std::memory_order_relaxed) > 0 && run_log.fetch_sub(1) > 0) {
         std::string s;
@@ -4106,6 +4117,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (!p.remote.empty()) {
                 if (wanted.empty()) { wanted.assign((size_t) input->ne[2], 1); p.filled.assign((size_t) (p.hi - p.lo), 0); }
                 for (int64_t id = p.lo; id < p.hi; ++id) { if (p.remote[id]) { wanted[id] = 0; } }
+            }
+            static std::atomic<int> pf_log{ [] { const char * e = getenv("GGML_SCHED_RUN_LOG"); return e ? atoi(e) : 0; }() };   // debug: what splits a staged range
+            if (pf_log.load(std::memory_order_relaxed) > 0 && pf_log.fetch_sub(1) > 0) {
+                GGML_LOG_WARN("%s: run log %s staged [%lld, %lld): %d on the card, %zu marked remote, predicted %s (pred_T %d)\n", __func__, input->name, (long long) p.lo, (long long) p.hi,
+                        n_res, p.remote.empty() ? (size_t) 0 : (size_t) std::count(p.remote.begin(), p.remote.end(), (uint8_t) 1), wanted.empty() ? "no" : "yes", pred_T);
+            }
+            if (g_whole_reads.load(std::memory_order_relaxed) && pred_T < 0 && wanted.empty() && n_res > 0 && (int64_t) n_res * 3 < p.hi - p.lo) {
+                n_res = 0;   // --moe whole-reads: one sequential read through the few experts the card holds (their copies on the card stay)
             }
             if ((n_res <= 0 || where_buf == NULL) && wanted.empty()) {
                 ggml_backend_sched_upload_weight(sched, R->backend, input, input_cpy, off, (size_t) (p.hi - p.lo)*esz + pad);
