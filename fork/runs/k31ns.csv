@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+k31ns-stream,k31,2,pf1k,100,"--moe batch-reads=1",
+k31ns-chain,k31,2,pf1k,100,"--moe batch-reads=1,pp-path=chain",
+k31ns-dec,k31,2,pf1k,100,"--moe batch-reads=1,pp-path=dec",
