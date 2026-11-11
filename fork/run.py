@@ -9187,6 +9187,22 @@ def cmd_stop(a):
         try: cwd = os.readlink(f"/proc/{pid}/cwd")
         except OSError: return False
         return "/.claude/jobs/" in cwd and len(argv) >= 2 and os.path.basename(argv[0]) in ("bash", "sh", "python3", "python") and argv[1].lstrip("./").endswith((".py", ".sh"))
+    def is_viewer(pid, argv):   # a foreground `run [LIST ...]` or `bg ...` only shows the detached run's log (the work is the RUN_DAEMON process); a plain `run` waits for the next run: stop leaves viewers (user 2026-11-11)
+        i = next((k for k in range(1, min(len(argv), 4)) if argv[k].endswith("run.py")), None)
+        if i is None or len(argv) < i + 2 or argv[i + 1] not in ("run", "jobs", "bg"):
+            return False
+        try:
+            if b"RUN_DAEMON=1" in open(f"/proc/{pid}/environ", "rb").read().split(b"\0"):
+                return False
+            runs = os.path.join(os.path.dirname(os.path.join(os.readlink(f"/proc/{pid}/cwd"), argv[i])), "runs")
+        except OSError:
+            return False
+        rest = argv[i + 2:]
+        return argv[i + 1] == "bg" or not rest or "-c" in rest or os.path.exists(os.path.join(runs, rest[0] + ".csv"))
+    viewers = {p for p, (argv, _) in procs.items() if p not in protected and is_viewer(p, argv)}
+    for p in sorted(viewers):
+        print(f"  viewer   {p:>8}  left running  {' '.join(procs[p][0])[:80]}")
+    protected |= viewers
     roots = {p for p, (argv, _) in procs.items() if p not in protected and (is_driver(p, argv) or is_harness(argv) or is_tool(argv) or (os.path.basename(argv[0]) in ("flock", "timeout") and any(x.endswith("run.py") for x in argv)))}
     scripts = set()
     for r in roots:   # the scripts above the harness: they would start the next cell
