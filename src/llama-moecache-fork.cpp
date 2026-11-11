@@ -6819,14 +6819,13 @@ bool llama_moe_cache_kv_tail_covers_fork(void * owner, size_t max_cell) {
 static void kv_tail_pad_zero(moe_cache * mc) {
     for (auto & ap : mc->alias) {
         if (ap.kvt.empty() || ap.kv_row == 0) { continue; }
-        size_t cells = 0, pad = 1;
-        for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); pad = std::max(pad, r.pad); } }
+        size_t cells = 0;
+        for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); } }
         if (cells < ap.kv_last_cells) { ap.kv_zhi = 0; }   // the cache shrank (a new request): the window is set up again
         ap.kv_last_cells = cells;
         // every row of the zone past the cells in use, not only the pad the next graph reads: the zone code calls this after each change (grow, move, retype),
         // so no caller can leave rows a later graph reads unzeroed (user 2026-11-11)
         const size_t hi = ap.kv_h;
-        (void) pad;
         const size_t lo = std::max(ap.kv_zhi, cells);
         if (hi <= lo) { continue; }
         ggml_tensor z = {};
