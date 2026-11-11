@@ -91,6 +91,7 @@ struct rp_class {
     uint32_t sample = 0;                // where the next eviction sample starts
     uint64_t cold   = 0;                // bytes this class read from the file since the last resize: where a new chunk pays most
     std::deque<uint32_t> prob;          // probation blocks, oldest first: a declined newcomer takes the oldest one nobody reads
+    std::vector<uint8_t> left;          // block -> 1 once an element left it (evicted): the blocks still 0 and owned hold what came in first and never left (ggml_rampool_map_fork)
     char * at(uint32_t s) const { return chunks[s / per_chunk] + (size_t) (s % per_chunk) * size; }
 };
 
@@ -243,6 +244,7 @@ void rp_drop_owner(rp_pool * p, rp_class & c, uint32_t s) {
     t.rec[o.e].state = RP_OUT;
     t.rec[o.e].ahead = false;   // read ahead and never asked for: a wasted read
     c.owner[s] = rp_owner();
+    if (s < c.left.size()) { c.left[s] = 1; }
     p->st_evicted++;
 }
 
@@ -443,6 +445,7 @@ bool ggml_rampool_open_fork(size_t bytes, ggml_rampool_alloc_t alloc, ggml_rampo
         }
         c.n_slots = (uint32_t) std::min(got, c.elems);
         c.owner.assign(c.n_slots, rp_owner());
+        c.left.assign(c.n_slots, 0);
         c.free.clear();
         for (uint32_t s = c.n_slots; s > 0; --s) { c.free.push_back(s - 1); }
         p->pool_bytes += (uint64_t) c.n_slots * c.size;
@@ -819,6 +822,7 @@ GGML_API size_t ggml_rampool_grow_fork(size_t bytes, ggml_rampool_alloc_t alloc)
             c.chunks.push_back(m);
             c.chunk_n.push_back((uint32_t) k);
             c.owner.resize((size_t) base + k);
+            c.left.resize((size_t) base + k, 0);
             for (uint32_t s = (uint32_t) k; s > 0; --s) { c.free.push_back(base + s - 1); }   // empty: the next misses of the class land here before anything is evicted
             c.n_slots += (uint32_t) k;
             p->pool_bytes += k * c.size;
@@ -865,6 +869,7 @@ GGML_API size_t ggml_rampool_shrink_fork(size_t bytes, void (*free_chunk)(void *
             }
             c.free.erase(std::remove_if(c.free.begin(), c.free.end(), [base](uint32_t s) { return s >= base; }), c.free.end());
             c.owner.resize(base);
+            c.left.resize(base);
             c.n_slots -= k;
             p->pool_bytes -= (uint64_t) k * c.size;
             gone.push_back(c.chunks.back());
@@ -880,6 +885,21 @@ GGML_API size_t ggml_rampool_shrink_fork(size_t bytes, void (*free_chunk)(void *
 
 uint64_t ggml_rampool_wait_us_fork(void) {
     return g_rp ? g_rp->wait_total_us.load(std::memory_order_relaxed) : 0;
+}
+
+// the live map (run.py): bytes of blocks holding the element that came in first and never left (the hot set the pool keeps), and of blocks on probation
+extern "C" GGML_API void ggml_rampool_map_fork(uint64_t * kept, uint64_t * prob) {
+    *kept = *prob = 0;
+    rp_pool * p = g_rp;
+    if (p == nullptr) { return; }
+    std::lock_guard<std::mutex> lk(p->mu);
+    for (const auto & c : p->cls) {
+        for (size_t s = 0; s < c.owner.size(); ++s) {
+            const rp_owner o = c.owner[s];
+            if (o.t < 0) { continue; }
+            if (p->tensors[o.t]->rec[o.e].prob) { *prob += c.size; } else if (s < c.left.size() && !c.left[s]) { *kept += c.size; }
+        }
+    }
 }
 
 void ggml_rampool_stats_fork(struct ggml_rampool_stats * s, bool reset) {

@@ -1,3 +1,4 @@
+#include <bitset>
 #include <csignal>
 #include "../ggml/src/ggml-read-fork.h"
 #include "../ggml/src/ggml-rampool-fork.h"
@@ -1132,7 +1133,17 @@ std::atomic<bool>     g_topic_on{false};
 std::atomic<bool>     g_topic_thinking{false};   // the request being served is thinking (between <think> and </think>): its answer's uses count in the thinking map
 static std::atomic<uint64_t> g_ppc_picked{0}, g_ppc_all{0}, g_ppc_miss{0};   // prompt chain, this call: experts its routers picked, experts of those layers, picks not in a block
 static std::atomic<uint64_t> g_pjit_miss{0}, g_pjit_up{0}, g_pjit_layers{0};   // prompt calls: missed experts seen by the JIT, uploaded, layer-steps
-static std::atomic<uint64_t> g_pjit_left_l[256], g_pjit_pool_l[256];   // per layer: misses left to the CPU in prompt calls; 1 if the layer uses the pool branch
+static std::atomic<uint64_t> g_pjit_left_l[256], g_pjit_pool_l[256];
+// the live pass row (user 2026-11-11: "report how many layers you managed to upload during pass and how many % of uploads overlap with compute"): the layers that got
+// experts this pass, the upload time inside a graph op (the compute stream waits for it: prompt chain, decode chain, cstream), beside the graph (upload workers) and the
+// host's waits for uploads in flight (pp_settle). Times from the measured link rates. Read and reset per pass: llama_moe_cache_pass_uploads_fork
+static std::atomic<uint64_t> g_pu_bits[8];
+static std::atomic<int64_t>  g_pu_in_ns{0}, g_pu_beside_ns{0}, g_pu_wait_ns{0};
+static void pu_note(const moe_cache * mc, size_t li, int link, double bytes, bool in_graph) {
+    if (li < 512) { g_pu_bits[li / 64].fetch_or(1ull << (li % 64), std::memory_order_relaxed); }
+    const double gbs = link >= 0 && link < mc->n_links ? mc->gbs_link[link] : 0.0;   // GB/s = bytes per ns
+    if (gbs > 0) { (in_graph ? g_pu_in_ns : g_pu_beside_ns) += (int64_t) (bytes / gbs); }
+}   // per layer: misses left to the CPU in prompt calls; 1 if the layer uses the pool branch
 static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (llama_moe_cache_prompt_call_fork, set by llama_context::decode)
 static std::atomic<int64_t> g_mb_auto { 0 };       // outside a prompt call, the largest pass on the cache path: experts per layer / experts per token, the tokens that can touch them all
 static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call left a layer fewer blocks than its pass may use: its passes leave the prompt chain
@@ -4932,6 +4943,7 @@ static bool moe_src_cb(const ggml_tensor * weight, int32_t expert, ggml_backend_
     // an expert the pass takes from RAM: its bytes cross this card's link (live bandwidth of the prompt phase)
     auto streamed = [&]() {
         mc->pf_bytes += (int64_t) weight->nb[2];
+        pu_note(mc, it->second.first, -1, 0.0, false);   // the stream ring's layer (its copies run beside the graph; their waits are not timed here)
         for (int k = 0; k < mc->n_links; ++k) { if (mc->link_dev[k] == dev) { mc->pf_link[k] += (int64_t) weight->nb[2]; break; } }
         return false;
     };
@@ -9805,6 +9817,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     mc->ddr_mbs += link_mbs;
                     mc->up_bytes += (int64_t) sz; mc->link_bytes[ls.link] += (int64_t) sz;
+                    pu_note(mc, j.layer_idx, ls.link, (double) sz, false);
                     ddr_trace(mc, ggml_time_us());
                     struct ddr_release { moe_cache * mc; int64_t v; ~ddr_release() { mc->ddr_mbs -= v; ddr_trace(mc, ggml_time_us()); } } rel { mc, link_mbs };
                     if ((knobs().gate == 2 || (knobs().gate == 1 && j.stream)) && mc->cpu_busy) {
@@ -10507,6 +10520,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             ls.pool_dirty      = true;
             set_table_entry(ls.pub, id, ls.pub.n_slots + 1); // CPU skips it, the pool chain computes it
             mc->up_bytes += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S;
+            pu_note(mc, (size_t) (&ls - mc->layers.data()), lk, S, true);
             ++n_up;
         }
         mc->n_pool_up += n_up;
@@ -10581,6 +10595,7 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
         ls.up_cost[id] = (float) (S / rlb);
         ls.up_hits[id] = 0;
         mc->up_bytes  += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S;
+        pu_note(mc, (size_t) (&ls - mc->layers.data()), lk, S, true);
         ++n_up;
     }
     mc->n_jit += n_up;
@@ -10631,7 +10646,9 @@ static void pp_settle(moe_cache * mc) {
         mc->done.push_back(j);
     }
     mc->todo.clear();
+    const int64_t tw = ggml_time_us();
     mc->dcv.wait(wlk, [mc]() { return mc->in_flight == 0; });
+    g_pu_wait_ns += (ggml_time_us() - tw) * 1000;
     std::lock_guard<std::mutex> lk(mc->mtx);
     for (const auto & j : mc->done) { publish_job(mc, j); }
     mc->done.clear();
@@ -10773,6 +10790,7 @@ static void cstream_fill(moe_cache * mc) {
             const int32_t id = t.second[i], slot = free_b[i];
             pool_take(mc, t.first, slot);
             led_upload(mc, "cstream-up", t.first, id, slot, false);
+            pu_note(mc, t.first, ls.link, (double) (pub->up_src->nb[2] + pub->gate_src->nb[2] + pub->down_src->nb[2]), true);
             for (int k = 0; k < 3; ++k) {
                 const size_t sz = srcs[k]->nb[2];
                 const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;   // the pool's pinned block carries the past bytes too
@@ -11060,6 +11078,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                 ls.up_cost[id] = rlb > 0 ? (float) (S / rlb) : 0.0f;
                 ls.up_hits[id] = 0;
                 mc->up_bytes  += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S;
+                pu_note(mc, jli, ls.link, S, true);
             }
             mc->n_jit += miss.size();
             mc->n_jit_layers++;
@@ -14364,6 +14383,51 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
 
 // Blocks of the expert pools that hold an expert now, and all blocks (lent and free ones count in the total): how full the cache is when a prompt starts.
 // the engine's byte counters, for the per-token lines of stats.log (llama-moestate-fork.cpp): cpu compute, uploads, prompt streaming, then every link's bytes; 0 when no cache runs
+// the pools' live map (user 2026-11-11: "live distribution and map of vram pool and next line ram pool ... mark % hottest that never leaves", "see pp parts disappear
+// moving to decode"): each card's pool by owner (the lent graph, the KV zone and its fixed ring, experts, free), then the RAM pool (kept since the fill, on probation,
+// the rest of its residents, free). GiB, for run.py's map rows; logged as MAP per prompt pass and every 10 decoded tokens.
+extern "C" void ggml_rampool_map_fork(uint64_t * kept, uint64_t * prob);
+std::string llama_moe_cache_map_fork() {
+    moe_cache * mc = g_cache;
+    if (!mc) { return ""; }
+    const double G = 1073741824.0;
+    std::string s;
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        for (auto & ap : mc->alias) {
+            size_t graph = 0, zone = 0, exp = 0, fr = 0;
+            for (const auto & sg : ap.segs) {
+                const auto & ps = mc->pool[sg.pcls];
+                for (int32_t b = 0; b < sg.n && b < (int32_t) ps.owner.size(); ++b) {
+                    const int32_t o = ps.owner[b];
+                    (o == -1 ? fr : o == -2 ? graph : o == -3 ? zone : exp) += sg.B;
+                }
+            }
+            const size_t ring = std::min(zone, ap.kv_fixed), total = ap.buf ? ggml_backend_buffer_get_size(ap.buf) : 0;
+            const size_t other = total > graph + zone + exp + fr ? total - graph - zone - exp - fr : 0;
+            s += format("%s%s %.2f GiB: graph %.2f, kv %.2f, ring %.2f, experts %.2f, free %.2f, other %.2f", s.empty() ? "" : " | ", ggml_backend_dev_name(ap.dev), total / G,
+                    graph / G, (zone - ring) / G, ring / G, exp / G, fr / G, other / G);
+        }
+    }
+    ggml_rampool_stats st;
+    ggml_rampool_stats_fork(&st, false);
+    if (st.bytes > 0) {
+        uint64_t kept = 0, prob = 0;
+        ggml_rampool_map_fork(&kept, &prob);
+        const uint64_t rest = st.used > kept + prob ? st.used - kept - prob : 0;
+        s += format("%sRAM %.2f GiB: kept %.2f, resident %.2f, probation %.2f, free %.2f", s.empty() ? "" : " | ", st.bytes / G, kept / G, rest / G, prob / G,
+                (st.bytes > st.used ? st.bytes - st.used : 0) / G);
+    }
+    return s;
+}
+
+void llama_moe_cache_pass_uploads_fork(int * layers, int * n_layers, double * in_ms, double * beside_ms, double * wait_ms) {
+    int n = 0;
+    for (auto & b : g_pu_bits) { n += (int) std::bitset<64>(b.exchange(0)).count(); }
+    *layers = n; *n_layers = g_cache ? (int) g_cache->layers.size() : 0;
+    *in_ms = g_pu_in_ns.exchange(0) / 1e6; *beside_ms = g_pu_beside_ns.exchange(0) / 1e6; *wait_ms = g_pu_wait_ns.exchange(0) / 1e6;
+}
+
 int llama_moe_cache_counters_fork(int64_t * v, int cap) {
     moe_cache * mc = g_cache;
     if (!mc || cap < 3 + mc->n_links) { return 0; }

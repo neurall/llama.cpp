@@ -5965,7 +5965,7 @@ def fork_off():
     return FORK_OFF["v"]
 
 
-LAST_PAS = {"key": None, "pos": 0, "line": ""}
+LAST_PAS = {"key": None, "pos": 0, "line": "", "map": ""}
 def last_pass_line():
     """the running server's last prompt pass (its stats log PAS line), compact, for the live block: shown for every call, one pass or many (user 2026-11-10:
     a one-pass call showed no pass at all). Reads only what the log grew by since the last look."""
@@ -5973,7 +5973,7 @@ def last_pass_line():
     if not f: return ""
     try:
         st = os.stat(f)
-        if LAST_PAS["key"] != (f, st.st_ino) or st.st_size < LAST_PAS["pos"]: LAST_PAS.update(key=(f, st.st_ino), pos=0, line="")   # a new server's log
+        if LAST_PAS["key"] != (f, st.st_ino) or st.st_size < LAST_PAS["pos"]: LAST_PAS.update(key=(f, st.st_ino), pos=0, line="", map="")   # a new server's log
         if st.st_size > LAST_PAS["pos"]:
             with open(f, "rb") as fh:
                 fh.seek(LAST_PAS["pos"]); data = fh.read()
@@ -5981,6 +5981,7 @@ def last_pass_line():
             LAST_PAS["pos"] += cut
             for l in data[:cut].decode(errors="replace").splitlines():
                 if " PAS " in l: LAST_PAS["line"] = l.split(" PAS ", 1)[1]
+                elif " MAP " in l: LAST_PAS["map"] = l.split(" MAP ", 1)[1]   # the pools' map (each prompt pass, every 10 decoded tokens): map_lines
     except OSError: pass
     t = LAST_PAS["line"]
     m = re.match(r"prompt pass (\d+/\d+): (\d+) tokens in ([\d.]+) s \(([\d.]+) t/s\)", t)
@@ -5988,8 +5989,37 @@ def last_pass_line():
     per = re.findall(r"(cpu|upload|stream) ([\d.]+) MiB", t)
     links = re.findall(r"(link\d) [\d.]+ MiB \(([\d.]+) GB/s\)", t)
     cache = re.search(r"experts from cache (\d+)%", t)
-    return (f"last pass {m[1]}: {m[2]} tok in {m[3]} s, {m[4]} t/s" + (f", cache {cache[1]}%" if cache else "") + "; per tok MiB: "
+    up = re.search(r"uploads in (\d+) of (\d+) layers, (\d+)% beside compute", t)   # layers that got experts in the pass, share of upload time beside the compute
+    return (f"last pass {m[1]}: {m[2]} tok in {m[3]} s, {m[4]} t/s" + (f", cache {cache[1]}%" if cache else "")
+            + (f"; up {up[1]}/{up[2]} layers, overlap {up[3]}%" if up else "") + "; per tok MiB: "
             + " ".join(f"{k} {float(v):.1f}" for k, v in per) + "; " + " ".join(f"{k} {v} GB/s" for k, v in links))[:LIVE_W - 1]
+
+
+MAP_SEG = {"graph": "45", "kv": "44", "ring": "46", "experts": "42", "free": "100", "other": "40",   # background colours of the pool map's parts
+           "kept": "41", "resident": "42", "probation": "43"}
+def map_lines():
+    """the pools' live map, one screen-wide bar per card and one for the RAM pool (user 2026-11-11: "[ 30% kv | 70% moe ] ... next line ram pool, mark % hottest that
+    never leaves", "see pp parts disappear moving to decode"): each part as wide as its share, its name and percent inside when it fits. From the engine's MAP
+    record (llama_moe_cache_map_fork), read by last_pass_line. RAM: kept = blocks whose first element never left."""
+    out = []
+    for part in [p for p in LAST_PAS.get("map", "").split(" | ") if p.strip()]:
+        m = re.match(r"(\S+) ([\d.]+) GiB: (.*)", part.strip())
+        if not m or float(m[2]) <= 0: continue
+        segs = [(k, float(v)) for k, v in re.findall(r"(\w+) ([\d.]+)", m[3]) if float(v) > 0]
+        tot = sum(v for _, v in segs) or 1.0
+        head = f"{m[1][:6]:<6} {float(m[2]):5.1f}G "
+        w = max(20, LIVE_W - 1 - len(head) - 2)
+        cols = [v / tot * w for _, v in segs]
+        n = [int(c) for c in cols]
+        for i in sorted(range(len(cols)), key=lambda i: cols[i] - n[i], reverse=True)[: w - sum(n)]: n[i] += 1   # largest remainders: the bar is exactly w wide
+        bar = ""
+        for (k, v), cw in zip(segs, n):
+            if cw <= 0: continue
+            lab = f"{k} {100 * v / tot:.0f}%"
+            lab = lab if len(lab) <= cw else f"{100 * v / tot:.0f}%" if len(f"{100 * v / tot:.0f}%") <= cw else ""
+            bar += f"\033[{MAP_SEG.get(k, '40')};97m{lab.center(cw)[:cw]}\033[0m"
+        out.append(head + "[" + bar + "]")
+    return "\n".join(out)
 
 
 def cell_status(t0, expect, label, total=None):
@@ -6088,6 +6118,7 @@ def cell_status(t0, expect, label, total=None):
             mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
             eng = eng + "\n" + "  ".join(mode) + "\n" + kv_line()
             if (lp := last_pass_line()): eng += "\n" + col(90, lp)
+            if (ml := map_lines()): eng += "\n" + ml
             if sp.get("why"): eng += "\n" + col(90, sp["why"])   # own line: beside the mode it passed the screen width, the wrapped line broke the redraw (cpu row repeated, user 2026-10-25)
             if CELL_REF[0] and (best := best_ref(*CELL_REF[0])):   # live speeds against the best earlier run of this model, test and power limits (runs.db)
                 bpp, bpb, btg, btb = best

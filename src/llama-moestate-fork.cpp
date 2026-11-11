@@ -490,6 +490,7 @@ static std::map<uint32_t, double> g_ub_tps;   // EMA of prompt tokens/s per pass
 static uint32_t g_ub_cur = 0, g_ub_calls_since = 0;
 
 static void tok_window_note(double ms);
+std::string llama_moe_cache_map_fork();   // src/llama-moecache-fork.cpp: the pools' live map (MAP records: every prompt pass, every 10 decoded tokens)
 void llama_moe_token_time_fork(double ms) {
     tok_window_note(ms);
     std::lock_guard<std::mutex> lk(g_tok_mu);
@@ -766,6 +767,7 @@ static void tok_window_note(double ms) {   // one decode call of one token took 
     if (cnt >= 10) {
         const tok_snap e = tok_snap_now();
         llama_moe_stats_emit_at_fork("TOK", format("10 tokens: %.2f ms per token (engine), %.2f ms per token (wall); %s", sum_ms / cnt, (e.t - base.t) * 1e3 / cnt, tok_per_token(base, e, cnt).c_str()).c_str(), e.t);
+        if (const std::string mp = llama_moe_cache_map_fork(); !mp.empty()) { llama_moe_stats_log_fork("MAP", mp.c_str()); }
         base = e; cnt = 0; sum_ms = 0.0;
     }
 }
@@ -956,8 +958,10 @@ void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total);   // src/ll
 bool llama_moe_cache_staging_counts_fork(int64_t * asked, int64_t * found, int64_t * wrong);
 bool llama_moe_cache_staging_card_fork(int k, const char ** name, int64_t * asked, int64_t * found, int64_t * wrong);   // src/llama-moecache-fork.cpp   // src/llama-moecache-fork.cpp
 static tok_snap g_pass_snap;   // the counters at the end of the previous pass of the running prompt call (or at its start)
+void llama_moe_cache_pass_uploads_fork(int * layers, int * n_layers, double * in_ms, double * beside_ms, double * wait_ms);   // src/llama-moecache-fork.cpp
 void llama_moe_prompt_begin_fork(uint32_t n_tokens, uint32_t ubatch) {
     g_pass_snap = tok_snap_now();
+    { int a, b; double c, d, e; llama_moe_cache_pass_uploads_fork(&a, &b, &c, &d, &e); }   // the pass counters start with this call
     if (n_tokens > 1) {   // (before g_tok_mu: the cache lock is taken inside, the other code takes it first)
         uint64_t filled, total;
         llama_moe_cache_fill_fork(&filled, &total);
@@ -1009,7 +1013,14 @@ void llama_moe_prompt_progress_fork(uint32_t done) {
         LLAMA_LOG_WARN("%s: %s\n", __func__, pass_line.c_str());
         llama_moe_cache_pp_pass_learn_fork(done - prev, s_pass * 1e6);   // the pass teaches its prompt path now, not at the call's end
         const tok_snap pass_end = tok_snap_now();
-        llama_moe_stats_log_fork("PAS", (pass_line + format(", %.2f ms per token; ", done > prev ? s_pass * 1e3 / (done - prev) : 0.0) + tok_per_token(g_pass_snap, pass_end, done - prev)).c_str());
+        int ul = 0, nl = 0; double in_ms = 0, bs_ms = 0, w_ms = 0;
+        llama_moe_cache_pass_uploads_fork(&ul, &nl, &in_ms, &bs_ms, &w_ms);
+        // the share of the pass's upload time that ran while the GPU computed: uploads beside the graph less what the host waited for them, over all upload time
+        const double up_all = in_ms + bs_ms;
+        const std::string ups = nl > 0 ? format(", uploads in %d of %d layers, %.0f%% beside compute (in the graph %.0f ms, beside %.0f ms, waited %.0f ms)", ul, nl,
+                up_all > 0 ? 100.0 * std::max(0.0, bs_ms - w_ms) / up_all : 0.0, in_ms, bs_ms, w_ms) : std::string();
+        if (const std::string mp = llama_moe_cache_map_fork(); !mp.empty()) { llama_moe_stats_log_fork("MAP", mp.c_str()); }
+        llama_moe_stats_log_fork("PAS", (pass_line + ups + format(", %.2f ms per token; ", done > prev ? s_pass * 1e3 / (done - prev) : 0.0) + tok_per_token(g_pass_snap, pass_end, done - prev)).c_str());
         g_pass_snap = pass_end;
     }
 }
