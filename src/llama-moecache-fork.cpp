@@ -10956,9 +10956,48 @@ bool llama_moe_cache_pp_short_fork() {
 // ran and this layer's experts the pass does not use, then the layer furthest ahead: the same order as the JIT's prompt rule. An expert a slow layer or the hot set holds on to
 // is the last choice, never refused: nothing in a prompt may stop a miss.
 static std::atomic<int64_t> g_ppoff_pairs{0}, g_ppoff_dev{0}, g_ppoff_all{0};   // --moe pp-off: kept-off pairs, of them on the device, all pairs
+// --moe pp-ahead=0: no prefetch in the prompt chain. A chain pass that touches nearly every expert of a layer (the upload-bound passes) touches nearly all of the
+// next layer's too: its uncached experts go to the upload workers at this layer's call, so they copy beside this layer's compute. Their blocks are ones no kernel
+// still to run in this pass reads before the table changes: free ones, then by prompt_victim_rank (this layer's unused, the layers just finished, the furthest ahead),
+// never this layer's used ones nor the two layers after the next. The next layer's call first waits for its jobs still in flight and publishes them.
+// shortcut: only when this layer touched 7/8 of its experts, one layer ahead; smaller passes would need the predictor's picks, several layers the SSD-bound ring.
+static bool pp_ahead_on() {
+    static const bool v = [] { const char * e = moe_opt("pp-ahead"); return !e || atoi(e) != 0; }();
+    return v;
+}
+
+// the prefetch jobs of layer li that the last layer's call queued: wait until each has landed (or was dropped), then publish them (main thread, like the call)
+static void pp_ahead_land(moe_cache * mc, size_t li) {
+    layer_state & ls = mc->layers[li];
+    const int64_t want = std::count(ls.queued.begin(), ls.queued.end(), (uint8_t) 1);
+    if (want == 0) { return; }
+    std::unique_lock<std::mutex> wlk(mc->wmtx);
+    const int64_t tw = ggml_time_us();
+    const bool ok = mc->dcv.wait_for(wlk, std::chrono::seconds(30), [&] {
+        int64_t n = 0;
+        for (const auto & j : mc->done) { n += j.layer_idx == li; }
+        return n >= want;
+    });
+    g_pu_wait_ns += (ggml_time_us() - tw) * 1000;
+    if (!ok) { static int n_log = 0; if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: pp-ahead: layer %d: %lld prefetched experts not landed after 30 s, uploaded again by the chain\n", ls.pub.il, (long long) want); } }
+    std::lock_guard<std::mutex> lk(mc->mtx);
+    for (size_t i = 0; i < mc->done.size(); ) {
+        if (mc->done[i].layer_idx != li) { ++i; continue; }
+        publish_job(mc, mc->done[i]);
+        mc->done[i] = mc->done.back();
+        mc->done.pop_back();
+    }
+}
+
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     GGML_ASSERT(mc != nullptr);
+    if (pp_ahead_on()) {
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            if (&mc->layers[li].pub == pub) { pp_ahead_land(mc, li); break; }
+        }
+    }
+    std::vector<upload_job> ahead;   // the next layer's prefetch, queued once the lock below is left
     if (mc->rp_on) {   // this pass's misses into the pool first, no lock of the cache held (the reads take ms): the uploads below are DMAs from its pinned blocks, not from the unpopulated mapping
         std::vector<int32_t> need;
         {
@@ -11095,6 +11134,46 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
             g_pjit_up += miss.size();
             if (rlb > 0) { g_pp_up_us.store(g_pp_up_us.load() + (double) miss.size() * S / rlb); }
         }
+        const size_t nli = jli + 1;   // pp_ahead_on: the next layer's uncached experts, into blocks no kernel of this pass reads before the tables change
+        if (pp_ahead_on() && !mc->workers.empty() && nli < mc->layers.size() && mc->layers[nli].pcls >= 0 && n_visited * 8 >= used.size() * 7) {
+            layer_state & ln = mc->layers[nli];
+            std::vector<int32_t> want;
+            for (int32_t e = 0; e < (int32_t) ln.expert_slot.size(); ++e) {
+                if (ln.expert_slot[e] < 0 && !ln.queued[e]) { want.push_back(e); }
+            }
+            struct cand { double rank; int32_t slot, owner; };
+            std::vector<cand> c;
+            const auto & ps = mc->pool[ln.pcls];
+            for (int32_t b = 0, nb = want.empty() ? 0 : ps.n_active(); b < nb; ++b) {
+                const int32_t o = ps.owner[b];
+                if (o == -1) { c.push_back({ -2.0 - (double) b, b, -1 }); continue; }
+                if (o < 0 || ((size_t) o >= nli && (size_t) o <= nli + 2)) { continue; }   // lent, the next layer's own, or needed right after it
+                layer_state & lo = mc->layers[o];
+                if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
+                const int32_t x = lo.slot_expert[b];
+                if (x < 0) { c.push_back({ -1.0, b, -1 }); continue; }
+                if (((size_t) o == jli && used[x]) || pinned(mc, lo, x)) { continue; }   // this layer's chain reads it next
+                c.push_back({ prompt_victim_rank(mc, lo, (size_t) o, nli, x, true), b, o });
+            }
+            const size_t k = std::min(want.size(), c.size());
+            std::partial_sort(c.begin(), c.begin() + (ptrdiff_t) k, c.end(), [](const cand & a, const cand & b) { return a.rank < b.rank; });
+            for (size_t i = 0; i < k; ++i) {
+                if (c[i].owner >= 0) { evict_slot(mc, mc->layers[c[i].owner], c[i].slot); }
+                pool_take(mc, nli, c[i].slot);
+                ln.slot_in_flight[c[i].slot] = true;
+                ln.queued[want[i]]           = 1;
+                upload_job j { nli, want[i], c[i].slot };
+                j.urgent   = true;
+                j.step     = mc->n_steps;
+                j.t_queued = ggml_time_us();
+                ahead.push_back(j);
+            }
+        }
+    }
+    if (!ahead.empty()) {
+        std::lock_guard<std::mutex> wlk(mc->wmtx);
+        for (const auto & j : ahead) { mc->todo.push_back(j); }
+        mc->wcv.notify_all();
     }
     // the CPU's expert op is not in this graph and the GPU's prompt counters do not see slot ids: the observer gets the pass's ids here (heat for the answer)
     g_pp_obs = true;
