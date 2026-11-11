@@ -92,6 +92,7 @@ struct rp_class {
     uint64_t cold   = 0;                // bytes this class read from the file since the last resize: where a new chunk pays most
     std::deque<uint32_t> prob;          // probation blocks, oldest first: a declined newcomer takes the oldest one nobody reads
     std::vector<uint8_t> left;          // block -> 1 once an element left it (evicted): the blocks still 0 and owned hold what came in first and never left (ggml_rampool_map_fork)
+    std::vector<int64_t> t_in;          // block -> when its element came (rp_now_us): the live map's churn split (ggml_rampool_live_fork); grown on first use
     char * at(uint32_t s) const { return chunks[s / per_chunk] + (size_t) (s % per_chunk) * size; }
 };
 
@@ -119,6 +120,7 @@ struct rp_pool {
 
     std::atomic<uint64_t> st_asked{0}, st_hit{0}, st_cold{0}, st_refused{0}, st_evicted{0}, st_cold_b{0}, st_wait_us{0}, st_pp_hit{0}, st_pp_miss{0};
     std::atomic<uint64_t> wait_total_us{0};   // st_wait_us without the per-request reset (ggml_rampool_wait_us_fork)
+    std::atomic<uint64_t> rd_kept_b{0}, rd_hit_b{0}, rd_cold_b{0}, rd_ppmiss_b{0};   // bytes served since open, never reset (ggml_rampool_live_fork): hits on kept blocks, all hits, file reads, prompt-pass misses left to the SSD path
     bool (*admit)(const void * key, int64_t e, double victim, void * ud) = nullptr;   // ggml_rampool_admit_fork: may element e evict a block expected back at `victim`
     std::atomic<uint64_t> st_admitted{0}, st_declined{0};
     std::atomic<uint64_t> st_ahead{0}, st_ahead_used{0};   // reads ahead started; of those, asked for before their block left
@@ -302,6 +304,18 @@ int32_t rp_take_block(rp_pool * p, rp_class & c, bool force, bool cpu, const rp_
     return best;
 }
 
+// block s of class c got a new element now (the caller holds the lock)
+static void rp_tin(rp_class & c, int32_t s) {
+    if (c.t_in.size() < c.owner.size()) { c.t_in.resize(c.owner.size(), 0); }
+    c.t_in[s] = rp_now_us();
+}
+// a hit on element r of tensor t: its bytes, and whether its block still holds what came in first (the hot set that never left). The caller holds the lock.
+static void rp_hit_bytes(rp_pool * p, const rp_tensor & t, const rp_rec & r) {
+    p->rd_hit_b += t.esz;
+    const rp_class & c = p->cls[t.cls];
+    if (r.slot >= 0 && (size_t) r.slot < c.left.size() && !c.left[r.slot]) { p->rd_kept_b += t.esz; }
+}
+
 // asked again in a later graph than the one that read it in: off probation (the block stays when probation is evicted). The caller holds the lock.
 void rp_promote(rp_rec & r, uint32_t last_graph, uint32_t g) {
     if (r.prob && last_graph != g) { r.prob = false; }
@@ -322,6 +336,7 @@ bool rp_start(rp_pool * p, rp_tensor & t, int64_t e, bool force = false, bool cp
     r.prob    = prob;
     r.ahead   = ahead;
     c.owner[s] = { t.idx, (int32_t) e };
+    rp_tin(c, s);
     if (prob) { c.prob.push_back((uint32_t) s); }
     (ahead ? p->pf : p->demand).push_back({ &t, e });
     return true;
@@ -373,6 +388,7 @@ void rp_reader(rp_pool * p) {
                 t.ptr[j.e].store(dst, std::memory_order_release);
                 r.state = RP_IN;
                 p->st_cold_b += t.esz;
+                p->rd_cold_b += t.esz;
                 c.cold += t.esz;
             } else {
                 GGML_LOG_WARN("rampool: a read of %zu bytes at %llu failed: %s\n", t.esz, (unsigned long long) (t.off + (uint64_t) j.e * t.esz), strerror(errno));
@@ -497,6 +513,7 @@ void ggml_rampool_fill_fork(void) {
             t.rec[x.e].state = RP_READING;
             t.rec[x.e].claimed = true;
             c.owner[s] = { x.t, x.e };
+            rp_tin(c, (int32_t) s);
         }
     }
     struct range { rp_tensor * t; char * dst; size_t n; uint64_t off; uint32_t ck; };
@@ -688,7 +705,7 @@ static void rp_need(const void * const * keys, int nk, const int32_t * ids, int 
             r.graph = g;
             const bool was_ahead = r.ahead;
             if (was_ahead) { r.ahead = false; p->st_ahead_used++; }
-            if (r.state == RP_IN) { rp_promote(r, g0, g); hit++; continue; }
+            if (r.state == RP_IN) { rp_promote(r, g0, g); hit++; rp_hit_bytes(p, *t, r); continue; }
             if (r.state == RP_READING) {   // a read ahead still queued behind other reads ahead goes into the demand queue too: the first reader to come claims it
                 reading++;
                 if (was_ahead && !r.claimed) { p->demand.push_back({ t, e }); bumped++; }
@@ -738,11 +755,12 @@ const char * ggml_rampool_use_fork(const void * key, int64_t e) {
     rp_pool * p = g_rp;
     std::lock_guard<std::mutex> lk(p->mu);
     rp_rec & r = t->rec[e];
-    if (r.state != RP_IN) { p->st_pp_miss++; return nullptr; }
+    if (r.state != RP_IN) { p->st_pp_miss++; p->rd_ppmiss_b += t->esz; return nullptr; }
     const uint32_t g = p->graph.load(std::memory_order_relaxed);
     rp_promote(r, r.graph, g);
     r.graph = g;
     p->st_pp_hit++;
+    rp_hit_bytes(p, *t, r);
     return t->ptr[e].load(std::memory_order_relaxed);
 }
 
@@ -754,7 +772,7 @@ const char * ggml_rampool_take_fork(const void * key, int64_t e) {
     std::unique_lock<std::mutex> lk(p->mu);
     r.holds++;
     p->st_asked++;
-    if (r.state == RP_IN) { rp_promote(r, r.graph, p->graph.load(std::memory_order_relaxed)); p->st_hit++; return t->ptr[e].load(std::memory_order_relaxed); }
+    if (r.state == RP_IN) { rp_promote(r, r.graph, p->graph.load(std::memory_order_relaxed)); p->st_hit++; rp_hit_bytes(p, *t, r); return t->ptr[e].load(std::memory_order_relaxed); }
     if (r.state == RP_OUT) {
         if (!rp_start(p, *t, e)) {
             r.holds--;
@@ -899,6 +917,49 @@ extern "C" GGML_API void ggml_rampool_map_fork(uint64_t * kept, uint64_t * prob)
             if (o.t < 0) { continue; }
             if (p->tensors[o.t]->rec[o.e].prob) { *prob += c.size; } else if (s < c.left.size() && !c.left[s]) { *kept += c.size; }
         }
+    }
+}
+
+// the live map (GET /moe/stats, user 2026-11-11: "rampool how many are being swapped frequently and how many stick around longer"): the pool's blocks class by
+// class as n cells, each the kind of most of its bytes: K kept (the element that came in first, never left), E there churn_us or longer, e newer (the churn),
+// p probation, f free. parts: bytes of K E e p f and the pool; rd: bytes served since open by source (kept hits, all hits, file reads, prompt misses to the SSD path).
+extern "C" GGML_API void ggml_rampool_live_fork(char * cells, int n, uint64_t * parts, uint64_t * rd, int64_t churn_us) {
+    for (int i = 0; i < 6; ++i) { parts[i] = 0; }
+    for (int i = 0; i < 4; ++i) { rd[i] = 0; }
+    for (int i = 0; i < n; ++i) { cells[i] = 'f'; }
+    rp_pool * p = g_rp;
+    if (p == nullptr || n <= 0) { return; }
+    rd[0] = p->rd_kept_b; rd[1] = p->rd_hit_b; rd[2] = p->rd_cold_b; rd[3] = p->rd_ppmiss_b;
+    static const char kind[5] = { 'K', 'E', 'e', 'p', 'f' };
+    std::lock_guard<std::mutex> lk(p->mu);
+    const int64_t now = rp_now_us();
+    uint64_t total = 0;
+    for (const auto & c : p->cls) { total += (uint64_t) c.n_slots * c.size; }
+    if (total == 0) { return; }
+    std::vector<double> cb((size_t) n * 5, 0.0);
+    uint64_t at = 0;
+    for (const auto & c : p->cls) {
+        for (uint32_t s = 0; s < c.n_slots; ++s, at += c.size) {
+            const rp_owner o = s < c.owner.size() ? c.owner[s] : rp_owner();
+            int k = 4;
+            if (o.t >= 0) {
+                if (p->tensors[o.t]->rec[o.e].prob) { k = 3; }
+                else if (s < c.left.size() && !c.left[s]) { k = 0; }
+                else { k = s < c.t_in.size() && now - c.t_in[s] < churn_us ? 2 : 1; }
+            }
+            parts[k] += c.size;
+            for (uint64_t lo = at, hi = at + c.size; lo < hi; ) {   // the block's bytes over the cells it covers
+                const uint64_t ci = std::min<uint64_t>((uint64_t) n - 1, lo * (uint64_t) n / total), end = std::min<uint64_t>(hi, (ci + 1) * total / (uint64_t) n);
+                cb[ci * 5 + k] += (double) (end > lo ? end - lo : hi - lo);
+                lo = end > lo ? end : hi;
+            }
+        }
+    }
+    parts[5] = total;
+    for (int i = 0; i < n; ++i) {
+        int best = 4;
+        for (int k = 0; k < 5; ++k) { if (cb[(size_t) i * 5 + k] > cb[(size_t) i * 5 + best]) { best = k; } }
+        cells[i] = kind[best];
     }
 }
 

@@ -491,6 +491,7 @@ static uint32_t g_ub_cur = 0, g_ub_calls_since = 0;
 
 static void tok_window_note(double ms);
 std::string llama_moe_cache_map_fork();   // src/llama-moecache-fork.cpp: the pools' live map (MAP records: every prompt pass, every 10 decoded tokens)
+std::string llama_moe_cache_map_json_fork();   // src/llama-moecache-fork.cpp: the same pools cell by cell in address order, for GET /moe/stats ("map")
 void llama_moe_token_time_fork(double ms) {
     tok_window_note(ms);
     std::lock_guard<std::mutex> lk(g_tok_mu);
@@ -1072,7 +1073,7 @@ int llama_moe_stats_json_fork(char * buf, int cap) {
         }
         o += "],";
     }
-    o += llama_moe_bw_json_fork() + "," + llama_dsplit_state_json_fork() + "}";
+    o += llama_moe_bw_json_fork() + "," + llama_dsplit_state_json_fork() + "," + llama_moe_cache_map_json_fork() + "}";
     const int len = (int) o.size();
     if (cap <= 0) { return len; }
     const int m = std::min(len, cap - 1);

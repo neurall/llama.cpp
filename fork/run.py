@@ -5996,7 +5996,7 @@ def last_pass_line():
 
 
 MAP_SEG = {"graph": "45", "kv": "44", "ring": "46", "experts": "42", "free": "100", "other": "40",   # background colours of the pool map's parts
-           "kept": "41", "resident": "42", "probation": "43"}
+           "kept": "46", "resident": "42", "probation": "43", "ssd": "101"}
 def map_lines():
     """the pools' live map, one screen-wide bar per card and one for the RAM pool (user 2026-11-11: "[ 30% kv | 70% moe ] ... next line ram pool, mark % hottest that
     never leaves", "see pp parts disappear moving to decode"): each part as wide as its share, its name and percent inside when it fits. From the engine's MAP
@@ -6011,8 +6011,8 @@ def map_lines():
     return "\n".join(out)
 
 
-MAP_TAG = {"graph": "gr", "kv": "kv", "ring": "rg", "experts": "ex", "free": "fr", "other": "ot", "kept": "kp", "resident": "rs", "probation": "pb"}
-def seg_bar(segs, w):
+MAP_TAG = {"graph": "gr", "kv": "kv", "ring": "rg", "experts": "ex", "free": "fr", "other": "ot", "kept": "kp", "resident": "rs", "probation": "pb", "ssd": "ss"}
+def seg_bar(segs, w, unit="G"):
     """[(name, GiB)] as a bar exactly w wide, each part as wide as its share, its label inside: name GiB %, name %, tag % (kv3%), tag. Every part keeps room
     for its tag and percent, taken from the widest parts (user 2026-11-11: "5 3 % of what? ... ratio doesnt need to be perfect add little acronim or label")."""
     tot = sum(v for _, v in segs) or 1.0
@@ -6031,9 +6031,54 @@ def seg_bar(segs, w):
     for (k, v), cw in zip(segs, n):
         if cw <= 0: continue
         p = f"{100 * v / tot:.0f}%"
-        lab = next((x for x in (f"{k} {v:.2f}G {p}", f"{k} {p}", f"{MAP_TAG.get(k, k[:2])} {p}", tag(k, v), MAP_TAG.get(k, k[:2])) if len(x) <= cw), "")
+        lab = next((x for x in (f"{k} {v:.2f}{unit} {p}", f"{k} {p}", f"{MAP_TAG.get(k, k[:2])} {p}", tag(k, v), MAP_TAG.get(k, k[:2])) if len(x) <= cw), "")
         bar += f"\033[{MAP_SEG.get(k, '40')};97m{lab.center(cw)[:cw]}\033[0m"
     return bar
+
+
+MAP_POS = {"m": ("cp", "106"), "g": ("gr", "45"), "r": ("rg", "46"), "k": ("kv", "44"), "E": ("ex", "42"), "e": ("new", "43"), "a": ("up", "41"), "f": ("fr", "100"), "o": ("ot", "40")}
+MAP_POS_RAM = {"K": ("kept", "46"), "E": ("old", "42"), "e": ("new", "43"), "p": ("pb", "45"), "f": ("fr", "100")}
+RD_LAST = {}
+def map_pos_lines(mp):
+    """The engine's live pool maps (GET /moe/stats "map", builds from 2026-11-11), redrawn every status tick: each card's pool in address order, who owns which
+    range (user: "live poolmaps per gpu who owns what ie how long is kv or moes"): cp dense-split copies, gr graph lend, rg KV ring, kv KV rows, ex experts there
+    10 s or longer, new experts that came within 10 s (the churn), up uploads in flight, fr free; the RAM pool the same way (kept since the fill, old, new, pb
+    probation, fr); under each bar every owner's GiB; then where the RAM pool's reads came from since the last tick (kept blocks, other blocks, SSD)."""
+    out = []
+    rows = [(c.get("dev", "?"), c.get("gib", 0), c.get("cells", ""), c.get("gb") or {}, MAP_POS) for c in mp.get("cards") or []]
+    if mp.get("ram"): rows.append(("RAM", mp["ram"].get("gib", 0), mp["ram"].get("cells", ""), mp["ram"].get("gb") or {}, MAP_POS_RAM))
+    for dev, gib, cells, gb, kinds in rows:
+        if not cells: continue
+        head = f"{dev[:6]:<6} {gib:5.1f}G "
+        w = max(20, LIVE_W - 1 - len(head) - 2)
+        res = [cells[min(len(cells) - 1, j * len(cells) // w)] for j in range(w)]
+        runs, j = [], 0
+        while j < w:
+            k = j
+            while k < w and res[k] == res[j]: k += 1
+            runs.append((res[j], j, k)); j = k
+        big = {}
+        for r in runs:
+            if r[2] - r[1] > (big[r[0]][2] - big[r[0]][1] if r[0] in big else 0): big[r[0]] = r
+        tot = sum(gb.values()) or 1.0
+        bar = ""
+        for r in runs:   # the widest run of each owner carries its name, GiB and share
+            name, bg = kinds.get(r[0], (r[0], "40")); v = gb.get(r[0], 0); cw = r[2] - r[1]
+            lab = next((t for t in (f"{name} {v:.2f}G {100 * v / tot:.0f}%", f"{name} {100 * v / tot:.0f}%", name) if len(t) <= cw), "") if big.get(r[0]) == r else ""
+            bar += f"\033[{bg};97m{lab.center(cw)}\033[0m"
+        out.append(head + "[" + bar + "]")
+        out.append(" " * len(head) + "  ".join(f"\033[{bg};97m{name}\033[0m {gb[x]:.2f}G {100 * gb[x] / tot:.0f}%" for x, (name, bg) in kinds.items() if gb.get(x, 0) >= 0.005))
+    rd = (mp.get("ram") or {}).get("rd")
+    if rd:   # bytes the RAM pool served since the last tick, by source
+        now, last = time.time(), RD_LAST.get("v")
+        RD_LAST["v"] = (now, rd)
+        if last and now > last[0]:
+            d = {k: max(0, rd.get(k, 0) - last[1].get(k, 0)) / (now - last[0]) / 1e9 for k in rd}
+            segs = [("kept", d.get("kept", 0)), ("resident", max(0.0, d.get("hit", 0) - d.get("kept", 0))), ("ssd", d.get("cold", 0) + d.get("ppmiss", 0))]
+            if sum(v for _, v in segs) > 0.001:
+                head = f"reads  {sum(v for _, v in segs):4.1f}G/s "
+                out.append(head + "[" + seg_bar([x for x in segs if x[1] > 0], max(20, LIVE_W - 1 - len(head) - 2), unit="G/s") + "]")
+    return "\n".join(out)
 
 
 STRIP = {"t0": None, "cols": [], "last": None}   # one cell's compute / upload strip: a column per status tick, (time, [(util %, upload GB/s, link max GB/s) per card])
@@ -6172,7 +6217,7 @@ def cell_status(t0, expect, label, total=None):
             mode.append(col(36, f"par gpus prompt {pgpus or '?'} decode 1") + (col(90, f"  cache on {ncache} cards") if ncache else "") + (col(35, f" uploading on {up}/{len(links)} links") if links else ""))
             eng = eng + "\n" + "  ".join(mode) + "\n" + kv_line()
             if (lp := last_pass_line()): eng += "\n" + col(90, lp)
-            if (ml := map_lines()): eng += "\n" + ml
+            if (ml := map_pos_lines(es["map"]) if isinstance(es.get("map"), dict) else map_lines()): eng += "\n" + ml
             _ut = [fl(x.split(",")[0].strip()) for x in sysi[2].split("\n") if x.count(",") == 5]   # each card's load, from the tick's nvidia-smi query above
             if (sl := strip_lines(t0, _ut, links, rx)): eng += "\n" + sl
             if sp.get("why"): eng += "\n" + col(90, sp["why"])   # own line: beside the mode it passed the screen width, the wrapped line broke the redraw (cpu row repeated, user 2026-10-25)

@@ -1142,6 +1142,7 @@ static std::atomic<uint64_t> g_pjit_left_l[256], g_pjit_pool_l[256];
 // the live pass row (user 2026-11-11: "report how many layers you managed to upload during pass and how many % of uploads overlap with compute"): the layers that got
 // experts this pass, the upload time inside a graph op (the compute stream waits for it: prompt chain, decode chain, cstream), beside the graph (upload workers) and the
 // host's waits for uploads in flight (pp_settle). Times from the measured link rates. Read and reset per pass: llama_moe_cache_pass_uploads_fork
+static int64_t g_step_us[4096];   // when step n (mc->n_steps) ended, at n & 4095: the live map's age of a cached expert (its cached_since step), see llama_moe_cache_map_json_fork
 static std::atomic<uint64_t> g_pu_bits[8];
 static std::atomic<int64_t>  g_pu_in_ns{0}, g_pu_beside_ns{0}, g_pu_wait_ns{0};
 static void pu_note(const moe_cache * mc, size_t li, int link, double bytes, bool in_graph) {
@@ -10974,7 +10975,8 @@ static std::atomic<int64_t> g_ppoff_pairs{0}, g_ppoff_dev{0}, g_ppoff_all{0};   
 // change reads (this layer's used blocks, the layers streamed ahead and the two after them), and a layer's worth always stays for the misses.
 // shortcut: a pass touching fewer than 7/8 of a layer's experts is not streamed ahead (its picks are known only after the router: the predictor's picks would do).
 static int pp_ahead_depth() {
-    static const int v = [] { const char * e = moe_opt("pp-ahead"); return e ? std::max(0, atoi(e)) : 3; }();
+    // off unless asked (2026-11-11, pp_ring: +2-4% prompt at 12 GiB, +21% at 8 GiB, but decode after it -26% at 8 GiB and one hung prompt call in pr-d3)
+    static const int v = [] { const char * e = moe_opt("pp-ahead"); return e ? std::max(0, atoi(e)) : 0; }();
     return v;
 }
 
@@ -12468,6 +12470,7 @@ void llama_moe_cache_step_fork() {
 
     std::lock_guard<std::mutex> lock(mc->mtx);
     mc->n_steps++;
+    g_step_us[mc->n_steps & 4095] = ggml_time_us();
     if (mc->rp_on) {   // the graph that ran is over (synchronised): the pool may evict what the one before it asked for
         mc->vis_now.store(mc->vis_base + 1 + (uint32_t) mc->n_steps, std::memory_order_relaxed);
         ggml_rampool_graph_fork();
@@ -14561,6 +14564,89 @@ std::string llama_moe_cache_map_fork() {
                 (st.bytes > st.used ? st.bytes - st.used : 0) / G);
     }
     return s;
+}
+
+// The live pool maps for GET /moe/stats, built at each request (user 2026-11-11: "live poolmaps per gpu who owns what ie how long is kv or moes", "rampool how
+// many are being swapped frequently and how many stick around longer"): each card's pool in address order as 160 cells, each the owner of most of its bytes, and
+// every owner's GiB: m dense-split copies, g the graph lend (graph, scratch, staging slots), r the KV zone's fixed records, k its rows, E an expert there 10 s or
+// longer, e one that came within 10 s (the churn), a an upload in flight, f free, o anything else (gaps between classes, zero blocks). The RAM pool the same way
+// (ggml_rampool_live_fork), with the bytes it served so far by source for run.py's rates.
+extern "C" void ggml_rampool_live_fork(char * cells, int n, uint64_t * parts, uint64_t * rd, int64_t churn_us);
+std::string llama_moe_cache_map_json_fork() {
+    moe_cache * mc = g_cache;
+    if (!mc) { return "\"map\":null"; }
+    constexpr int NC = 160;
+    constexpr int64_t CHURN_US = 10000000;
+    static const char KIND[] = "mgrkEeafo";
+    const double G = 1073741824.0;
+    const int64_t now = ggml_time_us();
+    std::string s = "\"map\":{\"churn_s\":10,\"cards\":[";
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        bool first = true;
+        for (auto & ap : mc->alias) {
+            const size_t total = ap.buf ? ggml_backend_buffer_get_size(ap.buf) : 0;
+            if (total == 0) { continue; }
+            std::vector<double> cb((size_t) NC * 9, 0.0);
+            double part[9] = {};
+            const auto add = [&](size_t lo, size_t hi, int k) {
+                part[k] += (double) (hi - lo);
+                while (lo < hi) {
+                    const size_t ci = std::min<size_t>(NC - 1, lo / ((total + NC - 1) / NC)), end = std::min(hi, (ci + 1) * ((total + NC - 1) / NC));
+                    const size_t e2 = end > lo ? end : hi;
+                    cb[ci * 9 + k] += (double) (e2 - lo);
+                    lo = e2;
+                }
+            };
+            const size_t ring_hi = ap.kv_start + ap.kv_fixed;
+            size_t known = 0;
+            for (const auto & sg : ap.segs) {
+                const auto & ps = mc->pool[sg.pcls];
+                for (int32_t b = 0; b < sg.n && b < (int32_t) ps.owner.size(); ++b) {
+                    const size_t lo = sg.base + (size_t) b * sg.B, hi = lo + sg.B;
+                    const int32_t o = ps.owner[b];
+                    int k = 7;   // free
+                    if (o == -2) { k = lo < ap.mirror_b ? 0 : 1; }
+                    else if (o == -3) { k = lo < ring_hi ? 2 : 3; }
+                    else if (o >= 0) {
+                        const layer_state & ls = mc->layers[o];
+                        const int32_t v = b < (int32_t) ls.slot_expert.size() ? ls.slot_expert[b] : -1;
+                        if (v < 0) { k = 7; }
+                        else if (b < (int32_t) ls.slot_in_flight.size() && ls.slot_in_flight[b]) { k = 6; }
+                        else {
+                            const uint64_t cs = v < (int32_t) ls.cached_since.size() ? ls.cached_since[v] : 0;   // the step it came in (0: before any step)
+                            const bool fresh = cs > mc->n_steps || (cs > 0 && mc->n_steps - cs < 4096 && now - g_step_us[cs & 4095] < CHURN_US);
+                            k = fresh ? 5 : 4;
+                        }
+                    }
+                    add(lo, hi, k);
+                    known += sg.B;
+                }
+            }
+            part[8] = total > known ? (double) (total - known) : 0.0;   // outside every block: gaps, the class zero blocks
+            std::string cells(NC, 'o');
+            const double csz = (double) ((total + NC - 1) / NC);
+            for (int i = 0; i < NC; ++i) {
+                double got = 0; int best = 8; double bv = 0;
+                for (int k = 0; k < 8; ++k) { got += cb[(size_t) i * 9 + k]; if (cb[(size_t) i * 9 + k] > bv) { bv = cb[(size_t) i * 9 + k]; best = k; } }
+                cells[i] = csz - got > bv ? 'o' : KIND[best];
+            }
+            s += format("%s{\"dev\":\"%s\",\"gib\":%.3f,\"cells\":\"%s\",\"gb\":{", first ? "" : ",", ggml_backend_dev_name(ap.dev), total / G, cells.c_str());
+            for (int k = 0; k < 9; ++k) { s += format("%s\"%c\":%.3f", k ? "," : "", KIND[k], part[k] / G); }
+            s += "}}";
+            first = false;
+        }
+    }
+    s += "]";
+    char cells[NC + 1] = {};
+    uint64_t parts[6], rd[4];
+    ggml_rampool_live_fork(cells, NC, parts, rd, CHURN_US);
+    if (parts[5] > 0) {
+        s += format(",\"ram\":{\"gib\":%.3f,\"cells\":\"%s\",\"gb\":{\"K\":%.3f,\"E\":%.3f,\"e\":%.3f,\"p\":%.3f,\"f\":%.3f},\"rd\":{\"kept\":%llu,\"hit\":%llu,\"cold\":%llu,\"ppmiss\":%llu}}",
+                parts[5] / G, cells, parts[0] / G, parts[1] / G, parts[2] / G, parts[3] / G, parts[4] / G,
+                (unsigned long long) rd[0], (unsigned long long) rd[1], (unsigned long long) rd[2], (unsigned long long) rd[3]);
+    }
+    return s + "}";
 }
 
 void llama_moe_cache_pass_uploads_fork(int * layers, int * n_layers, double * in_ms, double * beside_ms, double * wait_ms) {
