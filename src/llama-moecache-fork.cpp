@@ -1164,6 +1164,7 @@ static int64_t           g_pp_want  = 0;         // tokens x experts per token o
 static std::atomic<int64_t> g_pp_mb{0};          // this prompt call: the largest pass the prompt chain takes (llama_moe_cache_pp_decide_fork)
 static bool              g_pp_mix_graph = false; // the graph being built has layers on the prompt mix (llama_moe_cache_pp_mix_fork)
 static std::atomic<bool> g_pp_cstream_call{false};   // this prompt call streams into the cache's own blocks (--moe pp-path=cstream): the graph reads every expert through the tables, no staging
+static std::atomic<bool> g_pp_all{false};          // --moe staging=0 with pp-path=stream: the full stream is the prompt chain with every expert of each layer (no staging)
 static bool              g_pp_cstream_graph = false; // the graph being built has such layers (llama_moe_cache_pp_chain_fork returned 2)
 static bool              g_pp_cstream_built = false; // the same for the graph that runs: its experts go into blocks before it (llama_moe_cache_pp_freeze_fork)
 static bool              g_pp_mix_built = false; // the same for the graph that runs: the staging fill leaves out what such a layer's home card holds
@@ -10676,7 +10677,8 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
         }
         // --moe pp-off=F: F of the pairs stay off the card, so the pass needs at most (1 - F) of the experts' blocks (the least used ones are what stays off)
         static const double off_f = [] { const char * e = moe_opt("pp-off"); return e ? atof(e) : 0.0; }();
-        const int64_t want = (int64_t) std::ceil((1.0 - off_f) * (double) std::min<int64_t>((int64_t) l.expert_slot.size(), n_tokens * n_used));
+        const int64_t want = g_pp_all.load(std::memory_order_relaxed) ? (int64_t) l.expert_slot.size()
+                           : (int64_t) std::ceil((1.0 - off_f) * (double) std::min<int64_t>((int64_t) l.expert_slot.size(), n_tokens * n_used));
         if (!mc->link_be[l.link] || pp_blocks(mc, l) < want) {
             static int n_log = 0;
             if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt chain refused: layer %d has %lld blocks, wants %lld\n", pub->il, (long long) pp_blocks(mc, l), (long long) want); }
@@ -10943,6 +10945,9 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                         if (e >= 0 && e < (int32_t) seen.size() && !seen[e]) { seen[e] = 1; if (l.expert_slot[e] < 0) { need.push_back(e); } }
                     }
                 }
+                if (g_pp_all.load(std::memory_order_relaxed)) {   // the full stream: every expert of the layer, picked or not
+                    for (int32_t e = 0; e < (int32_t) seen.size(); ++e) { if (!seen[e] && l.expert_slot[e] < 0) { need.push_back(e); } }
+                }
                 break;
             }
         }
@@ -10968,6 +10973,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                 if (e >= 0 && e < (int32_t) used.size()) { used[e] = 1; cnt[e]++; }
             }
         }
+        if (g_pp_all.load(std::memory_order_relaxed)) { std::fill(used.begin(), used.end(), 1); }   // the full stream: the layer's every expert goes into a block, no staging copy
         std::vector<int32_t> miss;
         size_t n_visited = 0;
         for (int32_t e = 0; e < (int32_t) used.size(); ++e) {
@@ -14200,9 +14206,12 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     } else {
     g_pp_pick = -1;   // the old rules decide: no regret is booked against the draws
     const bool dec_ok = cpu_known && de < ot;
-    chain = !g_pp_short.load(std::memory_order_relaxed) && (force ? strcmp(force, "chain") == 0 : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why));   // a refused chain stays out of the second decision
+    // --moe staging=0: a forced stream is the full stream into the cache's blocks: the prompt chain with every expert of each layer (the experts' floor keeps a layer's blocks)
+    const bool fstream = force && pp_no_staging() && strcmp(force, "stream") == 0;
+    g_pp_all = fstream;
+    chain = !g_pp_short.load(std::memory_order_relaxed) && (force ? strcmp(force, "chain") == 0 || fstream : !busy && (!dec_ok || td > 0.0) && pp_chain_pays(n, up, U, !dec_ok, &why));   // a refused chain stays out of the second decision
     dec = force ? strcmp(force, "dec") == 0 : dec_ok && !chain;
-    if (force) { why = "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
+    if (force) { why = fstream ? "--moe pp-path=stream, staging=0: every expert into the cache's blocks" : "--moe pp-path"; } else if (busy) { why = "uploads on their way"; } else if (dec) { why = "the decode chain is faster"; }
     if (pp_no_staging() && !force && !chain && !dec) {   // --moe staging=0: a chain wherever one can take the call (the uploads on their way land when its graph is built)
         if (!g_pp_short.load(std::memory_order_relaxed) && (uint32_t) n < g_pp_chain_refused && chain_fits) { chain = true; why = "--moe staging=0"; }
         else { dec = true; why = cpu_known ? "--moe staging=0" : "--moe staging=0 (the decode chain before its CPU rate was measured)"; }
