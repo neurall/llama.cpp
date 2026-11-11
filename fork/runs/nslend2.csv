@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+nl2-olmoe-stream,olmoe,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,log=w",--env CUDA_VISIBLE_DEVICES=1
+nl2-olmoe-nostg,olmoe,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,staging=0,log=w",--env CUDA_VISIBLE_DEVICES=1
+nl2-q36-stream,qwen36,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,log=w",--env CUDA_VISIBLE_DEVICES=1
+nl2-q36-nostg,qwen36,1,pf2k,16,"-b 2048 -ub 512 --cpu-moe --moe autotune=0,predict=0,admit-boot=0,staging=0,log=w",--env CUDA_VISIBLE_DEVICES=1
