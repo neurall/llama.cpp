@@ -2976,6 +2976,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     bool mc_ppk = false;                // the prompt upload with misses kept on the host (--moe pp-off)
     bool mc_pp = false;                 // the prompt chain: this pass's experts run on the GPU alone, see llama_moe_cache_pp_upload_fork
     bool mc_cstream = false;            // --moe pp-path=cstream: the stream into the cache's blocks, every expert in its block before the pass (llama_moe_cache_pp_freeze_fork)
+    static const bool no_staging = [] { const char * e = moe_opt("staging"); return e && atoi(e) == 0; }();   // --moe staging=0 (llama-moecache-fork.cpp pp_no_staging)
     ggml_tensor * mc_ids_all = nullptr; // LLAMA_MOE_DEFER: full ids (router observation) and the deferred ids
     ggml_tensor * mc_ids_def = nullptr;
     ggml_tensor * mc_w_host  = nullptr;
@@ -2993,8 +2994,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
         mcache = llama_moe_cache_lookup_fork(up_exps);
         if (mcache && sched) { llama_moe_cache_link_backends_fork(sched); }
-        // a prompt call: the prompt chain, or the prompt path for a layer whose blocks cannot hold the pass (a dense split keeps its own path)
-        const int pp = mcache && moe_ranges.empty() ? llama_moe_cache_pp_chain_fork(mcache, n_tokens, n_expert_used) : 0;
+        // a prompt call: the prompt chain, or the prompt path for a layer whose blocks cannot hold the pass (a dense split keeps its own path, which stages,
+        // unless --moe staging=0: there the layer's cache computes every token's experts and each range takes its rows, see range_cache)
+        const int pp = mcache && (moe_ranges.empty() || no_staging) ? llama_moe_cache_pp_chain_fork(mcache, n_tokens, n_expert_used) : 0;
         mc_pp  = pp > 0;
         mc_cstream = pp == 2;
         mcache = pp < 0 ? nullptr : mcache;
@@ -3613,7 +3615,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
     // fork: dense split (moe_ranges, set by the model builder): the split path is taken in any case; without an expert split, the expert card (the fastest
     // link, see llama_model_glm5_next::graph; its range by llama_ds_xr_fork) holds all experts, also when this call carries only another card's range
-    if (!moe_ranges.empty() && parts.empty() && sched) {
+    // --moe staging=0: a dense split pass takes the layer's cache like any prompt pass (the prompt chain, or the decode chain where its blocks cannot hold the
+    // pass), for every token of the call on the cache's card; the end of this function hands each range its rows. The part below would stage the experts.
+    const bool range_cache = !moe_ranges.empty() && mcache && no_staging;
+    if (!moe_ranges.empty() && no_staging && !mcache) {
+        static int n_log = 0;
+        if (n_log++ < 3) { LLAMA_LOG_WARN("%s: --moe staging=0: a dense split pass of %lld tokens has no cache path at layer %d: its experts stage\n", __func__, (long long) n_tokens, il); }
+    }
+    if (!moe_ranges.empty() && parts.empty() && sched && !range_cache) {
         parts.push_back({ ds_r[llama_ds_xr_fork(ds_r)].b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(ds_r[llama_ds_xr_fork(ds_r)].b)), 0, n_expert });
     }
     if (mc_mix_b) {   // the fastest link's card: every expert id the home card does not hold
@@ -3981,6 +3990,17 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     if (defer_prev) {
         moe_out = ggml_add(ctx0, moe_out, defer_prev);
         cb(moe_out, "ffn_moe_out_with_deferred", il);
+    }
+
+    if (range_cache) {   // the dense split's ranges (staging=0): each takes its rows of the cache's sum on its own card
+        // shortcut: the rows cross as f32 (the staged split sends f16, llama_dsplit_hop_mode_range_fork); halve them if the hand-off shows in the pass time
+        for (auto & rg : moe_ranges) {
+            ggml_tensor * v = ggml_cont(ctx0, ggml_view_2d(ctx0, moe_out, n_embd, rg.t1 - rg.t0, moe_out->nb[1], rg.t0 * moe_out->nb[1]));
+            ggml_backend_sched_set_tensor_backend(sched, v, rg.b);
+            cb(v, "ffn_moe_out", il);
+            rg.out = v;
+        }
+        return moe_ranges.back().out;
     }
 
     cb(moe_out, "ffn_moe_out", il);
