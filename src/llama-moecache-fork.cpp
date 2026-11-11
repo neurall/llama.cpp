@@ -10629,18 +10629,20 @@ static bool pp_chain_allowed() {
     return pp_chain_on() && g_prompt_call.load(std::memory_order_relaxed) && !g_pp_short.load(std::memory_order_relaxed) && !g_pp_dec.load(std::memory_order_relaxed);
 }
 
-// the blocks of a layer's class an expert may take now: not lent to a graph, not under the KV zone, no upload in flight
-static int64_t pp_blocks(moe_cache * mc, layer_state & ls) {
+// the blocks of a layer's class an expert may take now: not lent to a graph, not under the KV zone, no upload in flight. landed: count the uploads in flight as
+// landed, as the chain's graph does after pp_settle (the call's decision runs before it: a one-layer class of exactly its experts with one refill on its way refused
+// the chain for the whole call, 2026-11-11)
+static int64_t pp_blocks(moe_cache * mc, layer_state & ls, bool landed = false) {
     int64_t n = 0;
     if (ls.pcls >= 0) {
         const auto & ps = mc->pool[ls.pcls];
         for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
             const int32_t o = ps.owner[b];
-            n += o == -1 || (o >= 0 && !mc->layers[o].slot_in_flight[b] && !mc->layers[o].is_stream[b]);
+            n += o == -1 || (o >= 0 && (landed || !mc->layers[o].slot_in_flight[b]) && !mc->layers[o].is_stream[b]);
         }
         return n;
     }
-    for (int32_t b = 0; b < ls.pub.n_slots; ++b) { n += !ls.slot_in_flight[b] && !ls.is_stream[b]; }
+    for (int32_t b = 0; b < ls.pub.n_slots; ++b) { n += (landed || !ls.slot_in_flight[b]) && !ls.is_stream[b]; }
     return n;
 }
 
@@ -14008,7 +14010,18 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             n_expert = std::max(n_expert, (int) l.expert_slot.size());
             has_slower = has_slower || l.link > 0;
             // a chain the graph then refuses falls to the decode chain's CPU side: DeepSeek, 62-token call, chain calculated 2.1 s, ran 18.5 s that way (2026-11-10)
-            if (chain_fits && (!mc->link_be[l.link] || pp_blocks(mc, const_cast<layer_state &>(l)) < std::min<int64_t>((int64_t) l.expert_slot.size(), (int64_t) std::ceil(n) * (int64_t) mc->n_expert_used))) { chain_fits = false; }
+            if (chain_fits) {
+                const int64_t want = std::min<int64_t>((int64_t) l.expert_slot.size(), (int64_t) std::ceil(n) * (int64_t) mc->n_expert_used);
+                const int64_t have = mc->link_be[l.link] ? pp_blocks(mc, const_cast<layer_state &>(l), true) : -1;
+                if (have < want) {
+                    chain_fits = false;
+                    static int n_log = 0;
+                    if (n_log++ < 5) {
+                        LLAMA_LOG_WARN("moe-cache: no prompt chain for a %.0f-token call: layer %d %s\n", n, l.pub.il,
+                                have < 0 ? "has no backend for its link yet" : format("has %lld blocks, wants %lld", (long long) have, (long long) want).c_str());
+                    }
+                }
+            }
             const double S  = (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
             A += (double) mc->n_expert_used * S;
             const double rl = mc->gbs_link[l.link] * 1e3;
