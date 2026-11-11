@@ -5860,6 +5860,7 @@ static void kv_tail_bind(moe_cache::alias_pool & ap) {
             __func__, ap.kvt.size(), ggml_backend_dev_name(ap.dev), ap.kv_fixed / 1048576.0, ap.kv_row, ap.kv_step, cap, ap.tail_end / 1048576.0, cmax);
 }
 
+static void kv_tail_pad_zero(moe_cache * mc);
 bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }
@@ -5876,11 +5877,13 @@ bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_
     const bool reset = n_tokens < 64;   // a decode graph ends the plan of the last prompt
     if (!kv_tail_plan(mc, 0, reset, false, n_tokens, true)) {
         if (reset) { kv_tail_plan(mc, 0, true, false, n_tokens, false); }   // only the plan resets (no change of the zones)
+        kv_tail_pad_zero(mc);   // a retype or a new request since the last call: rows past the cells are zeroed again
         return false;
     }
     if (sched) { ggml_backend_sched_synchronize(sched); }   // the previous graph may still read the rows and the blocks that change hands
     kv_tail_plan(mc, 0, reset, false, n_tokens, false);
     flush_tables();
+    kv_tail_pad_zero(mc);   // the zone moved or grew: its new rows held expert bytes (poison NaN)
     return g_kv_epoch.load() != g_kv_epoch_built;
 }
 
@@ -5889,11 +5892,15 @@ bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_
 bool llama_moe_cache_kv_tail_grow_fork(ggml_backend_sched_t sched, uint32_t n);
 bool llama_moe_cache_kv_tail_grow_fork(ggml_backend_sched_t sched, uint32_t n) {
     moe_cache * mc = g_cache;
-    if (!mc || n == 0 || !kv_tail_plan(mc, n, false, true, 0, true)) { return false; }
-    if (sched) { ggml_backend_sched_synchronize(sched); }
-    kv_tail_plan(mc, n, false, true, 0, false);
-    flush_tables();
-    return true;
+    if (!mc || n == 0) { return false; }
+    const bool grow = kv_tail_plan(mc, n, false, true, 0, true);
+    if (grow) {
+        if (sched) { ggml_backend_sched_synchronize(sched); }
+        kv_tail_plan(mc, n, false, true, 0, false);
+        flush_tables();
+    }
+    kv_tail_pad_zero(mc);   // the grown rows (and those of a new request) are zero before the call's first graph reads them
+    return grow;
 }
 
 // ---- KV arena for the cards without an expert pool (dense models): one buffer per card, the records interleaved in one combined row per cell ----
@@ -6050,7 +6057,9 @@ llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
             kvt_runs v; size_t F = 0, R = 0, pc = 0, pcd = 0;
             if (!kv_records_as(ap.kvt, t, v, F, R)) { cap[t] = 0; continue; }
             kv_lend_pc_of(v, pc, pcd);
-            cap[t] = std::min(cap[t], kv_prompt_cells(ap, F, R, pc));
+            size_t pad = 1;   // the zone grows in whole pads (kv_tail_plan): a tier holds only whole pads, or the pick passes a request the growth then refuses
+            for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
+            cap[t] = std::min(cap[t], kv_prompt_cells(ap, F, R, pc) / pad * pad);
             if (t == 0) { row0 += R; }
         }
     }
@@ -6813,8 +6822,10 @@ static void kv_tail_pad_zero(moe_cache * mc) {
         for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); pad = std::max(pad, r.pad); } }
         if (cells < ap.kv_last_cells) { ap.kv_zhi = 0; }   // the cache shrank (a new request): the window is set up again
         ap.kv_last_cells = cells;
-        if (cells == 0) { continue; }
-        const size_t hi = kvz_read_cells(cells, pad, ap.kv_h);
+        // every row of the zone past the cells in use, not only the pad the next graph reads: the zone code calls this after each change (grow, move, retype),
+        // so no caller can leave rows a later graph reads unzeroed (user 2026-11-11)
+        const size_t hi = ap.kv_h;
+        (void) pad;
         const size_t lo = std::max(ap.kv_zhi, cells);
         if (hi <= lo) { continue; }
         ggml_tensor z = {};
