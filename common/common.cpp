@@ -2315,10 +2315,10 @@ static void common_moe_cache_auto_impl(common_params & params) {
         // upload until the per-token compute starts to rise (full models, 12k prompt: GLM 4096 -> 476 prompt tokens/s, 8192 -> 572, 12416 -> 573; MiMo 469 -> 599; compute-only
         // models peak at 2048-4096). The compute alias lends the pool's blocks to the graph, so the big maximum costs no cache while decoding; the per-prompt
         // rule (llama_moe_cache_prefill_ubatch_fork) then splits the prompt into equal passes up to this maximum, and the shrink-to-fit in the context lowers it
-        // when the pool cannot lend the graph. Without the alias (--moe alias=0, pool=0, router prediction on) the old chooser below weighs the compute buffer against the cache.
+        // when the pool cannot lend the graph. Without the alias (--moe alias=0, pool=0) the old chooser below weighs the compute buffer against the cache.
         const char * o_alias = llama_moe_get_opt("alias");
         const char * o_pool  = llama_moe_get_opt("pool");
-        const bool   alias_ok = use_cache && params.n_moe_predict <= 0 && (!o_alias || atoi(o_alias) != 0) && (!o_pool || atoi(o_pool) != 0);
+        const bool   alias_ok = use_cache && (!o_alias || atoi(o_alias) != 0) && (!o_pool || atoi(o_pool) != 0);   // router prediction keeps the alias too (the context lends with it on; the old chooser here crashed Kimi K3.1 at load, 2026-11-11)
         if (alias_ok) {
             // no fixed size: the best pass differs per model (12.4k prompt, full models: GLM flat from 8192 to 12416, MiMo 12416 +28% over 8192, Qwen3.8 8192).
             // The maximum is the context; the context's shrink-to-fit halves it until the pool can lend the graph, and the per-prompt rule picks equal passes under it.
