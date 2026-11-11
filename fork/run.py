@@ -6006,19 +6006,73 @@ def map_lines():
         m = re.match(r"(\S+) ([\d.]+) GiB: (.*)", part.strip())
         if not m or float(m[2]) <= 0: continue
         segs = [(k, float(v)) for k, v in re.findall(r"(\w+) ([\d.]+)", m[3]) if float(v) > 0]
-        tot = sum(v for _, v in segs) or 1.0
         head = f"{m[1][:6]:<6} {float(m[2]):5.1f}G "
-        w = max(20, LIVE_W - 1 - len(head) - 2)
-        cols = [v / tot * w for _, v in segs]
-        n = [int(c) for c in cols]
-        for i in sorted(range(len(cols)), key=lambda i: cols[i] - n[i], reverse=True)[: w - sum(n)]: n[i] += 1   # largest remainders: the bar is exactly w wide
-        bar = ""
-        for (k, v), cw in zip(segs, n):
-            if cw <= 0: continue
-            lab = f"{k} {100 * v / tot:.0f}%"
-            lab = lab if len(lab) <= cw else f"{100 * v / tot:.0f}%" if len(f"{100 * v / tot:.0f}%") <= cw else ""
-            bar += f"\033[{MAP_SEG.get(k, '40')};97m{lab.center(cw)[:cw]}\033[0m"
-        out.append(head + "[" + bar + "]")
+        out.append(head + "[" + seg_bar(segs, max(20, LIVE_W - 1 - len(head) - 2)) + "]")
+    return "\n".join(out)
+
+
+MAP_TAG = {"graph": "gr", "kv": "kv", "ring": "rg", "experts": "ex", "free": "fr", "other": "ot", "kept": "kp", "resident": "rs", "probation": "pb"}
+def seg_bar(segs, w):
+    """[(name, GiB)] as a bar exactly w wide, each part as wide as its share, its label inside: name GiB %, name %, tag % (kv3%), tag. Every part keeps room
+    for its tag and percent, taken from the widest parts (user 2026-11-11: "5 3 % of what? ... ratio doesnt need to be perfect add little acronim or label")."""
+    tot = sum(v for _, v in segs) or 1.0
+    segs = [(k, v) for k, v in segs if v / tot >= 0.005]   # a part under half a percent would only show its tag
+    cols = [v / tot * w for _, v in segs]
+    n = [int(c) for c in cols]
+    for i in sorted(range(len(cols)), key=lambda i: cols[i] - n[i], reverse=True)[: w - sum(n)]: n[i] += 1   # largest remainders: the bar is exactly w wide
+    tag = lambda k, v: f"{MAP_TAG.get(k, k[:2])}{100 * v / tot:.0f}%"
+    need = [len(tag(k, v)) for k, v in segs]
+    for i in range(len(n)):
+        while n[i] < need[i]:
+            j = max(range(len(n)), key=lambda j: n[j] - need[j])
+            if n[j] - need[j] <= 0: break
+            n[j] -= 1; n[i] += 1
+    bar = ""
+    for (k, v), cw in zip(segs, n):
+        if cw <= 0: continue
+        p = f"{100 * v / tot:.0f}%"
+        lab = next((x for x in (f"{k} {v:.2f}G {p}", f"{k} {p}", f"{MAP_TAG.get(k, k[:2])} {p}", tag(k, v), MAP_TAG.get(k, k[:2])) if len(x) <= cw), "")
+        bar += f"\033[{MAP_SEG.get(k, '40')};97m{lab.center(cw)[:cw]}\033[0m"
+    return bar
+
+
+STRIP = {"t0": None, "cols": [], "last": None}   # one cell's compute / upload strip: a column per status tick, (time, [(util %, upload GB/s, link max GB/s) per card])
+STRIP_LV = " ▁▂▃▄▅▆▇█"
+def strip_lines(t0, utils, links, rx):
+    """Two lines per card, one column per status tick, newest right (user 2026-11-11: "top line compute and bottom line upload ... 100% compute full green without
+    blips ... 100% upload fully yellow ... show up speed in g/s and compute in %", "state we already have for free"): green = the card's load from the tick's own
+    nvidia-smi query, yellow = what the card's host link carried since the last tick (the engine's byte counters; nvidia-smi dmon without an engine) against the
+    link's measured maximum. Both lines low in the same columns = uploads and compute taking turns instead of overlapping."""
+    now = time.time()
+    if STRIP["t0"] != t0: STRIP.update(t0=t0, cols=[], last=None)
+    vis = [x.strip() for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+    up, cur, last = {}, {}, STRIP["last"]
+    for l in links:   # CUDA<k> -> nvidia-smi index (servers run with CUDA_DEVICE_ORDER=PCI_BUS_ID, through CUDA_VISIBLE_DEVICES)
+        k = re.sub(r"\D", "", str(l.get("dev", "")))
+        if not k: continue
+        idx = int(vis[int(k)]) if vis and int(k) < len(vis) and vis[int(k)].isdigit() else int(k)
+        mib = float(l.get("uploaded_mib") or 0); cur[idx] = mib
+        g = float(l.get("gbs") or 0)   # the engine's own window on the first tick
+        if last and idx in last[1] and now > last[0] and mib >= last[1][idx]: g = (mib - last[1][idx]) * 1048576 / 1e9 / (now - last[0])
+        up[idx] = (g, float(l.get("max_gbs") or 0))
+    if links: STRIP["last"] = (now, cur)
+    elif rx: up = {i: (v, 0.0) for i, v in enumerate(rx)}
+    n = max([len(utils)] + [i + 1 for i in up])
+    if n == 0: return ""
+    STRIP["cols"].append((now, [(utils[i] if i < len(utils) else 0.0, *up.get(i, (0.0, 0.0))) for i in range(n)]))
+    del STRIP["cols"][:-400]
+    w = max(10, LIVE_W - 1 - 13 - 19)
+    cols = STRIP["cols"][-w:]
+    if not GPU_DET: GPU_DET.append({} if HOST[0] else gpu_details())
+    bars = lambda vals: " " * (w - len(vals)) + "".join(STRIP_LV[max(0, min(8, round(v * 8)))] for v in vals)
+    out = []
+    for i in range(n):
+        cs = [c[1][i] for c in cols if i < len(c[1])]
+        mx = max([c[2] for c in cs] + [c[1] for c in cs] + [1e-9])   # the link's measured maximum, else its busiest tick
+        lw = GPU_DET[0].get(str(i), {}).get("link_width", "")
+        lab = f"g{i}" + (f"x{lw}" if str(lw).isdigit() else "")
+        out.append(f"{lab:<6} comp [" + col("92;40", bars([c[0] / 100 for c in cs])) + "] " + col(92, f"{cs[-1][0]:3.0f}%"))
+        out.append(f"{'':<6} up   [" + col("93;40", bars([c[1] / mx for c in cs])) + "] " + col(93, f"{cs[-1][1]:4.1f}/{mx:.0f} GB/s"))
     return "\n".join(out)
 
 
@@ -6119,6 +6173,8 @@ def cell_status(t0, expect, label, total=None):
             eng = eng + "\n" + "  ".join(mode) + "\n" + kv_line()
             if (lp := last_pass_line()): eng += "\n" + col(90, lp)
             if (ml := map_lines()): eng += "\n" + ml
+            _ut = [fl(x.split(",")[0].strip()) for x in sysi[2].split("\n") if x.count(",") == 5]   # each card's load, from the tick's nvidia-smi query above
+            if (sl := strip_lines(t0, _ut, links, rx)): eng += "\n" + sl
             if sp.get("why"): eng += "\n" + col(90, sp["why"])   # own line: beside the mode it passed the screen width, the wrapped line broke the redraw (cpu row repeated, user 2026-10-25)
             if CELL_REF[0] and (best := best_ref(*CELL_REF[0])):   # live speeds against the best earlier run of this model, test and power limits (runs.db)
                 bpp, bpb, btg, btb = best
