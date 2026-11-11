@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+ptiny-on,olmoei,1,pf1k,64,"--cpu-moe --moe-expert-cache 19 --moe pred-top=16,predict-ahead=2,pred=1,rampool=1",--env CUDA_VISIBLE_DEVICES=1
+ptiny-p0,olmoei,1,pf1k,64,"--cpu-moe --moe-expert-cache 19 --moe pred-top=16,predict-ahead=2,pred=1,rampool=1,pool=0",--env CUDA_VISIBLE_DEVICES=1
+ptiny-off,olmoei,1,pf1k,64,"--cpu-moe --moe-expert-cache 19 --moe rampool=1",--env CUDA_VISIBLE_DEVICES=1

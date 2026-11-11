@@ -10022,6 +10022,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
             }
             size_t n_pred = 0, n_learn = 0;
+            std::string why_none;   // the first layer that found no router to predict with, and why (planner explains picks)
             // LLAMA_MOE_CACHE_PREDICT_STRIDE=N: predict only from every Nth layer (each covers its next `ahead`
             // layers, so ahead >= N keeps every layer predicted): N times fewer predictor matmuls and weights
             const char * pst = moe_opt("predict-stride");
@@ -10038,10 +10039,15 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 for (int k = 0; k < std::max(1, mc->pred_ahead) && li + 1 + k < nl; ++k) {
                     const int il = mc->layers[li + 1 + k].pub.il;
                     if (il != pub.il + 1 + k || il >= (int) model.layers.size()) {
+                        if (why_none.empty()) { why_none = format("layer %d: the next cached layer is %d", pub.il, il); }
                         break;
                     }
                     ggml_tensor * w = model.layers[il].ffn_gate_inp;
                     if (!w || !w->buffer || w->ne[0] != n_embd || w->ne[1] != (int64_t) mc->layers[li + 1 + k].expert_slot.size()) {
+                        if (why_none.empty()) {
+                            why_none = format("layer %d: router of %d %s (ne %lld x %lld, n_embd %lld, experts %zu)", pub.il, il, !w ? "missing" : !w->buffer ? "has no buffer" : "has another shape",
+                                    w ? (long long) w->ne[0] : 0LL, w ? (long long) w->ne[1] : 0LL, (long long) n_embd, mc->layers[li + 1 + k].expert_slot.size());
+                        }
                         break;
                     }
                     routers.push_back(w);
@@ -10135,6 +10141,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 LLAMA_LOG_WARN("moe-cache: router prediction for %zu layers: top-%d, up to %d uploads per layer\n",
                         n_pred, mc->pred_m, mc->pred_max);
             } else {
+                if (mc->pred_m > 0) {
+                    LLAMA_LOG_WARN("moe-cache: router prediction asked (top-%d) but no layer has one: %s\n", mc->pred_m, why_none.empty() ? "no layer reached" : why_none.c_str());
+                }
                 mc->pred_m = 0;
                 ggml_backend_set_split_callback(moe_split_cb, mc); // JIT: the GPU backends and the table flush before chains
             }
