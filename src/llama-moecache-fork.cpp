@@ -10797,7 +10797,10 @@ static void cstream_fill(moe_cache * mc) {
         std::vector<int32_t> free_b;
         if (ls.pcls >= 0) {
             const auto & ps = mc->pool[ls.pcls];
-            for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) { if (ps.owner[b] == -1) { free_b.push_back(b); } }
+            // the layer's own empty blocks too: pp_settle drops queued uploads (the preload) and their blocks stay the layer's, empty
+            for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
+                if (ps.owner[b] == -1 || (ps.owner[b] == (int32_t) t.first && ls.slot_expert[b] < 0 && !ls.slot_in_flight[b])) { free_b.push_back(b); }
+            }
         } else {
             for (int32_t b = 0; b < pub->n_slots; ++b) { if (ls.slot_expert[b] < 0 && !ls.slot_in_flight[b] && !ls.is_stream[b]) { free_b.push_back(b); } }
         }
