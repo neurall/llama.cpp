@@ -268,6 +268,10 @@ struct layer_state {
     // router prediction: expert id -> upload queued or running (no second copy), published by the predictor
     std::vector<uint8_t>  queued;
     std::vector<uint8_t>  prefetched;
+    // pp-ahead: blocks a prompt call copied for this layer ahead on the card's upload stream, the event the layer's call makes its compute stream wait for
+    std::vector<int32_t>  ring_slots;
+    ggml_backend_event_t  ring_ev      = nullptr;
+    bool                  ring_pending = false;
 
     // swap pay-back accounting, per expert: when its current copy finished uploading (0: not uploaded,
     // e.g. adopted from prefill), what that upload cost, and the decode hits it served since
@@ -301,7 +305,6 @@ struct upload_job {
     int64_t t_queued = 0;    // ggml_time_us() when queued (trace)
     bool    bg      = false; // refill of a free block after a prompt (reheat_free_blocks): the step does not wait for it, a worker takes it only when no other
                              // job waits on its link, and it does not count against the swap budget
-    bool    ahead   = false; // prompt chain prefetch of the next layer (pp_ahead_on): no router prediction, so not counted as one in decode (prefetched)
 };
 
 struct moe_cache {
@@ -482,6 +485,7 @@ struct moe_cache {
     int                      n_links = 1; // GPUs holding cache layers
     ggml_backend_dev_t       link_dev[MAX_LINKS] = {}; // the GPU behind each link
     ggml_backend_t           link_be[MAX_LINKS]  = {}; // its compute backend (seen at the split callback): JIT uploads go on its stream
+    ggml_backend_t           ring_be[MAX_LINKS]  = {}; // pp-ahead: its upload stream, beside the compute stream (ring_backend)
     uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
     std::vector<double>      layer_dt;
@@ -3348,7 +3352,7 @@ void publish_job(moe_cache * mc, const upload_job & j) {
     ls.slot_last_use[j.slot]   = ++mc->clock;
     ls.slot_in_flight[j.slot]  = false;
     ls.queued[j.expert]        = 0;
-    ls.prefetched[j.expert]    = j.urgent && !j.ahead;
+    ls.prefetched[j.expert]    = j.urgent;
     set_table_entry(ls.pub, j.expert, j.slot);
     ls.cached_since[j.expert] = mc->n_steps + 1;
     ls.up_t[j.expert]    = j.t_done;
@@ -10663,6 +10667,12 @@ static void pp_settle(moe_cache * mc) {
     std::lock_guard<std::mutex> lk(mc->mtx);
     for (const auto & j : mc->done) { publish_job(mc, j); }
     mc->done.clear();
+    for (ggml_backend_t rb : mc->ring_be) { if (rb) { ggml_backend_synchronize(rb); } }   // pp-ahead copies of a call that ended early
+    for (auto & l : mc->layers) {
+        for (int32_t s : l.ring_slots) { l.slot_in_flight[s] = false; }
+        l.ring_slots.clear();
+        l.ring_pending = false;
+    }
 }
 
 // graph build: 1, this layer of a prompt pass takes the prompt chain. The pass may use every distinct expert of the layer at once, so the blocks must hold that many (no quota: all
@@ -10957,48 +10967,38 @@ bool llama_moe_cache_pp_short_fork() {
 // ran and this layer's experts the pass does not use, then the layer furthest ahead: the same order as the JIT's prompt rule. An expert a slow layer or the hot set holds on to
 // is the last choice, never refused: nothing in a prompt may stop a miss.
 static std::atomic<int64_t> g_ppoff_pairs{0}, g_ppoff_dev{0}, g_ppoff_all{0};   // --moe pp-off: kept-off pairs, of them on the device, all pairs
-// --moe pp-ahead=0: no prefetch in the prompt chain. A chain pass that touches nearly every expert of a layer (the upload-bound passes) touches nearly all of the
-// next layer's too: its uncached experts go to the upload workers at this layer's call, so they copy beside this layer's compute. Their blocks are ones no kernel
-// still to run in this pass reads before the table changes: free ones, then by prompt_victim_rank (this layer's unused, the layers just finished, the furthest ahead),
-// never this layer's used ones nor the two layers after the next. The next layer's call first waits for its jobs still in flight and publishes them.
-// shortcut: only when this layer touched 7/8 of its experts, one layer ahead; smaller passes would need the predictor's picks, several layers the SSD-bound ring.
-static bool pp_ahead_on() {
-    static const bool v = [] { const char * e = moe_opt("pp-ahead"); return !e || atoi(e) != 0; }();
+// --moe pp-ahead=D (default 3, 0 off): a prompt chain pass that touches nearly every expert of a layer (the big, upload-bound passes) streams whole layers ahead:
+// at a layer's call the uncached experts of the next D layers are copied on their card's own upload stream (async from the pinned pool, no host wait, no sync per
+// copy) while this layer computes, and each streamed layer's call makes its compute stream wait for that stream's event. Experts already cached are not copied:
+// the kernels read every block through the layer's table. Blocks: free ones, then by prompt_victim_rank; never one that a kernel still to run before the tables
+// change reads (this layer's used blocks, the layers streamed ahead and the two after them), and a layer's worth always stays for the misses.
+// shortcut: a pass touching fewer than 7/8 of a layer's experts is not streamed ahead (its picks are known only after the router: the predictor's picks would do).
+static int pp_ahead_depth() {
+    static const int v = [] { const char * e = moe_opt("pp-ahead"); return e ? std::max(0, atoi(e)) : 3; }();
     return v;
 }
 
-// the prefetch jobs of layer li that the last layer's call queued: wait until each has landed (or was dropped), then publish them (main thread, like the call)
-static void pp_ahead_land(moe_cache * mc, size_t li) {
-    layer_state & ls = mc->layers[li];
-    const int64_t want = std::count(ls.queued.begin(), ls.queued.end(), (uint8_t) 1);
-    if (want == 0) { return; }
-    std::unique_lock<std::mutex> wlk(mc->wmtx);
-    const int64_t tw = ggml_time_us();
-    const bool ok = mc->dcv.wait_for(wlk, std::chrono::seconds(30), [&] {
-        int64_t n = 0;
-        for (const auto & j : mc->done) { n += j.layer_idx == li; }
-        return n >= want;
-    });
-    g_pu_wait_ns += (ggml_time_us() - tw) * 1000;
-    if (!ok) { static int n_log = 0; if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: pp-ahead: layer %d: %lld prefetched experts not landed after 30 s, uploaded again by the chain\n", ls.pub.il, (long long) want); } }
-    std::lock_guard<std::mutex> lk(mc->mtx);
-    for (size_t i = 0; i < mc->done.size(); ) {
-        if (mc->done[i].layer_idx != li) { ++i; continue; }
-        publish_job(mc, mc->done[i]);
-        mc->done[i] = mc->done.back();
-        mc->done.pop_back();
-    }
+// the upload stream of a link (made on first use): its copies run beside the compute stream of the same card
+static ggml_backend_t ring_backend(moe_cache * mc, int link) {
+    if (!mc->ring_be[link] && mc->link_dev[link]) { mc->ring_be[link] = ggml_backend_dev_init(mc->link_dev[link], nullptr); }
+    return mc->ring_be[link];
+}
+
+// a layer's call (cache lock held): what earlier calls streamed ahead for it is waited for on the GPU (its compute stream waits for the upload stream's event)
+static void pp_ahead_consume(moe_cache * mc, layer_state & ls) {
+    if (!ls.ring_pending) { return; }
+    if (mc->link_be[ls.link]) { ggml_backend_event_wait(mc->link_be[ls.link], ls.ring_ev); }
+    for (int32_t s : ls.ring_slots) { ls.slot_in_flight[s] = false; }
+    ls.ring_slots.clear();
+    ls.ring_pending = false;
 }
 
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids) {
     moe_cache * mc = g_cache;
     GGML_ASSERT(mc != nullptr);
-    if (pp_ahead_on()) {
-        for (size_t li = 0; li < mc->layers.size(); ++li) {
-            if (&mc->layers[li].pub == pub) { pp_ahead_land(mc, li); break; }
-        }
-    }
-    std::vector<upload_job> ahead;   // the next layer's prefetch, queued once the lock below is left
+    struct ahead_cp { layer_state * l; int32_t e, slot; };
+    std::vector<ahead_cp>      ahead_cps;   // pp-ahead: copies chosen under the lock below, issued after it
+    std::vector<layer_state *> ahead_ls;
     if (mc->rp_on) {   // this pass's misses into the pool first, no lock of the cache held (the reads take ms): the uploads below are DMAs from its pinned blocks, not from the unpopulated mapping
         std::vector<int32_t> need;
         {
@@ -11032,6 +11032,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
         GGML_ASSERT(lsp != nullptr);
         layer_state & ls = *lsp;
         const size_t  jli = (size_t) (&ls - mc->layers.data());
+        pp_ahead_consume(mc, ls);
         std::vector<uint8_t> used(ls.expert_slot.size(), 0);
         std::vector<int64_t> cnt(ls.expert_slot.size(), 0);
         for (int64_t t = 0; t < ids->ne[1]; ++t) {
@@ -11135,47 +11136,86 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
             g_pjit_up += miss.size();
             if (rlb > 0) { g_pp_up_us.store(g_pp_up_us.load() + (double) miss.size() * S / rlb); }
         }
-        const size_t nli = jli + 1;   // pp_ahead_on: the next layer's uncached experts, into blocks no kernel of this pass reads before the tables change
-        if (pp_ahead_on() && !mc->workers.empty() && nli < mc->layers.size() && mc->layers[nli].pcls >= 0 && n_visited * 8 >= used.size() * 7) {
-            layer_state & ln = mc->layers[nli];
-            std::vector<int32_t> want;
-            for (int32_t e = 0; e < (int32_t) ln.expert_slot.size(); ++e) {
-                if (ln.expert_slot[e] < 0 && !ln.queued[e]) { want.push_back(e); }
-            }
-            struct cand { double rank; int32_t slot, owner; };
-            std::vector<cand> c;
-            const auto & ps = mc->pool[ln.pcls];
-            for (int32_t b = 0, nb = want.empty() ? 0 : ps.n_active(); b < nb; ++b) {
-                const int32_t o = ps.owner[b];
-                if (o == -1) { c.push_back({ -2.0 - (double) b, b, -1 }); continue; }
-                if (o < 0 || ((size_t) o >= nli && (size_t) o <= nli + 2)) { continue; }   // lent, the next layer's own, or needed right after it
-                layer_state & lo = mc->layers[o];
-                if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
-                const int32_t x = lo.slot_expert[b];
-                if (x < 0) { c.push_back({ -1.0, b, -1 }); continue; }
-                if (((size_t) o == jli && used[x]) || pinned(mc, lo, x)) { continue; }   // this layer's chain reads it next
-                c.push_back({ prompt_victim_rank(mc, lo, (size_t) o, nli, x, true), b, o });
-            }
-            const size_t k = std::min(want.size(), c.size());
-            std::partial_sort(c.begin(), c.begin() + (ptrdiff_t) k, c.end(), [](const cand & a, const cand & b) { return a.rank < b.rank; });
-            for (size_t i = 0; i < k; ++i) {
-                if (c[i].owner >= 0) { evict_slot(mc, mc->layers[c[i].owner], c[i].slot); }
-                pool_take(mc, nli, c[i].slot);
-                ln.slot_in_flight[c[i].slot] = true;
-                ln.queued[want[i]]           = 1;
-                upload_job j { nli, want[i], c[i].slot };
-                j.urgent   = true;
-                j.ahead    = true;
-                j.step     = mc->n_steps;
-                j.t_queued = ggml_time_us();
-                ahead.push_back(j);
+        const int depth = pp_ahead_depth();   // pp-ahead: whole layers ahead on their card's upload stream
+        if (depth > 0 && n_visited * 8 >= used.size() * 7) {
+            for (size_t nli = jli + 1; nli <= jli + (size_t) depth && nli < mc->layers.size(); ++nli) {
+                layer_state & ln = mc->layers[nli];
+                if (ln.ring_pending || ln.pcls < 0 || !mc->link_be[ln.link] || !ring_backend(mc, ln.link)) { continue; }
+                std::vector<int32_t> want;
+                for (int32_t e = 0; e < (int32_t) ln.expert_slot.size(); ++e) {
+                    if (ln.expert_slot[e] < 0) { want.push_back(e); }
+                }
+                if (want.empty()) { continue; }
+                struct cand { double rank; int32_t slot, owner; };
+                std::vector<cand> c;
+                const auto & ps = mc->pool[ln.pcls];
+                for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
+                    const int32_t o = ps.owner[b];
+                    if (o == -1) { c.push_back({ -2.0 - (double) b, b, -1 }); continue; }
+                    if (o < 0 || ((size_t) o > jli && (size_t) o <= jli + (size_t) depth + 2)) { continue; }   // lent, streamed ahead, or needed right after
+                    layer_state & lo = mc->layers[o];
+                    if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
+                    const int32_t x = lo.slot_expert[b];
+                    if (x < 0) { c.push_back({ -1.0, b, -1 }); continue; }
+                    if (((size_t) o == jli && used[x]) || pinned(mc, lo, x)) { continue; }   // this layer's chain reads it next
+                    c.push_back({ prompt_victim_rank(mc, lo, (size_t) o, nli, x, true), b, o });
+                }
+                const int64_t keep = (int64_t) ln.expert_slot.size();   // a layer's worth stays for the misses of the calls before this one
+                const size_t  k    = std::min<size_t>(want.size(), (size_t) std::max<int64_t>(0, (int64_t) c.size() - keep));
+                if (k == 0) { break; }   // the layers after it find no blocks either
+                if (!ln.ring_ev) { ln.ring_ev = ggml_backend_event_new(mc->link_dev[ln.link]); }
+                if (!ln.ring_ev) { break; }
+                std::partial_sort(c.begin(), c.begin() + (ptrdiff_t) k, c.end(), [](const cand & a, const cand & b) { return a.rank < b.rank; });
+                const double S   = (double) (ln.pub.up_src->nb[2] + ln.pub.gate_src->nb[2] + ln.pub.down_src->nb[2]);
+                const double rlb = mc->gbs_link[ln.link] * 1e3;
+                for (size_t i = 0; i < k; ++i) {
+                    const int32_t id = want[i], slot = c[i].slot;
+                    if (c[i].owner >= 0) { evict_slot(mc, mc->layers[c[i].owner], slot); }
+                    pool_take(mc, nli, slot);
+                    led_upload(mc, "ahead-up", nli, id, slot, false);
+                    ln.slot_in_flight[slot] = true;   // until its layer's call: no other upload takes the block before the copy is waited for
+                    ln.ring_slots.push_back(slot);
+                    ln.slot_expert[slot]   = id;
+                    ln.expert_slot[id]     = slot;
+                    ln.slot_last_use[slot] = ++mc->clock;
+                    set_table_entry(ln.pub, id, slot);   // flushed before this layer's chain; the streamed layer's chain waits for the copy
+                    ln.cached_since[id] = mc->n_steps + 1;
+                    ln.up_t[id]    = ggml_time_us();
+                    ln.up_cost[id] = rlb > 0 ? (float) (S / rlb) : 0.0f;
+                    ln.up_hits[id] = 0;
+                    mc->up_bytes  += (int64_t) S; mc->link_bytes[ln.link] += (int64_t) S;
+                    pu_note(mc, nli, ln.link, S, false);
+                    ahead_cps.push_back({ &ln, id, slot });
+                }
+                ln.ring_pending = true;
+                ahead_ls.push_back(&ln);
             }
         }
     }
-    if (!ahead.empty()) {
-        std::lock_guard<std::mutex> wlk(mc->wmtx);
-        for (const auto & j : ahead) { mc->todo.push_back(j); }
-        mc->wcv.notify_all();
+    for (layer_state * l : ahead_ls) {   // the copies, outside the lock (the pool's reads may take ms)
+        ggml_backend_t rb = mc->ring_be[l->link];
+        const ggml_tensor * srcs[3] = { l->pub.up_src, l->pub.gate_src, l->pub.down_src };
+        ggml_tensor *       dsts[3] = { l->pub.up_c,   l->pub.gate_c,   l->pub.down_c   };
+        if (mc->rp_on && l->rp_tab[0]) {
+            std::vector<int32_t> need;
+            for (const auto & a : ahead_cps) { if (a.l == l) { need.push_back(a.e); } }
+            const void * keys[3] = { srcs[0], srcs[1], srcs[2] };
+            ggml_rampool_need_fork(keys, 3, need.data(), (int) need.size());
+        }
+        for (const auto & a : ahead_cps) {
+            if (a.l != l) { continue; }
+            for (int k = 0; k < 3; ++k) {
+                const size_t sz = srcs[k]->nb[2];
+                const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], a.e) : nullptr;   // shortcut: the pool block is not held until the copy lands (no pool eviction while it fits in RAM)
+                ggml_backend_tensor_set_async(rb, dsts[k], rp ? rp : (const char *) srcs[k]->data + (size_t) a.e*sz, (size_t) a.slot*dsts[k]->nb[2], sz);
+                const char * from = nullptr;
+                if (const size_t pb = expert_past(mc, *l, k, a.e, srcs[k], from)) {
+                    ggml_tensor z = expert_past_view(dsts[k], (size_t) a.slot*dsts[k]->nb[2] + sz, pb);
+                    ggml_backend_tensor_set_async(rb, &z, rp ? rp + sz : from, 0, pb);
+                }
+            }
+        }
+        ggml_backend_event_record(l->ring_ev, rb);
     }
     // the CPU's expert op is not in this graph and the GPU's prompt counters do not see slot ids: the observer gets the pass's ids here (heat for the answer)
     g_pp_obs = true;
