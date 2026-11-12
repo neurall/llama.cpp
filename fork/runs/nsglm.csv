@@ -1,0 +1,13 @@
+name,model,n,test,tokens,args,extra
+ng-glm30-verify,glm,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ng-glm35-verify,glm35,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ng-glm30-stg,glm,2,pf12k,64,,--env GGML_PF_STATS=1
+ng-glm30-ns,glm,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
+ng-glm35-stg,glm35,2,pf12k,64,,--env GGML_PF_STATS=1
+ng-glm35-ns,glm35,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
+ng-glm30-es-ns,glm,2,pf12k,64,"--moe prefill-split=0.5,staging=0",--env GGML_PF_STATS=1
+ng-glm30-es-stg,glm,2,pf12k,64,"--moe prefill-split=0.5",--env GGML_PF_STATS=1
+ng-glm30-ds1-ns,glm,2,pf12k,64,"--moe dense-split=1,staging=0",--env GGML_PF_STATS=1
+ng-glm35-es-ns,glm35,2,pf12k,64,"--moe prefill-split=0.5,staging=0",--env GGML_PF_STATS=1
+ng-glm35-es-stg,glm35,2,pf12k,64,"--moe prefill-split=0.5",--env GGML_PF_STATS=1
+ng-glm35-ds1-ns,glm35,2,pf12k,64,"--moe dense-split=1,staging=0",--env GGML_PF_STATS=1
