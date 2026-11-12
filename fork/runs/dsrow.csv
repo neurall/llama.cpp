@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+dsrow-direct,ds,2,pf12k4k,4096,,--env PERF_LEDGER=0
+dsrow-map,ds,2,pf12k4k,4096,,--env PERF_LEDGER=0 --env LLAMA_ROWREAD=0
