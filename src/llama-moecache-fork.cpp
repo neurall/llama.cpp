@@ -9168,10 +9168,9 @@ static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
     const std::string with = g_vram_others ? ".with" + std::to_string(g_vram_others >> 20) : "";   // a plain run keeps the key it always had
     // LLAMA_ASYNC_LOAD sizes the pool before the card's first kernels and cuBLAS handle exist (182 MiB more free at sizing on GLM 3.0): a normal start's need is too small for it (cublasCreate failed)
     extern bool g_async_load_fork;
-    // --moe staging=0 runs other kernels than the staging paths (CUDA loads a kernel's code into VRAM at its first launch): its need is 70-100 MiB smaller on the card
-    // the staged dense split stages into (CUDA1: DeepSeek 163 against 233, GLM 3.5 149 against 216, MiMo 131 against 195 MiB), so one key made the staged start
-    // after a staging=0 one die at its first prompt (2026-11-12)
-    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + with + (g_async_load_fork ? ".async" : "") + (pp_no_staging() ? ".ns" : "") + (cold ? ".cold" : ".warm"));
+    // (--moe staging=0 had a key of its own for a day: the 70-100 MiB its starts seemed to need less on CUDA1 were the poison fill of the verify rows, see the watch's
+    // entry where the pool is sized; a plain staging=0 start needs what a staged one does, GLM 3.5 CUDA1 220 against 216 MiB)
+    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + with + (g_async_load_fork ? ".async" : "") + (cold ? ".cold" : ".warm"));
 }
 
 // the margin a pool leaves on a card: --moe vram-reserve-mb / margin_mb if set, else the need an earlier session measured on this card, driver and build
@@ -9629,6 +9628,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     std::lock_guard<std::mutex> lk(g_vram_mtx);
                     vram_dev_t d;
                     d.dev = sz_dev; d.free_at_size = sz_free; d.pool = total; d.stored_mb = sz_stored; d.from_cold = sz_from_cold; d.section = vram_section; d.key = vram_key(sz_dev, vram_cold);
+                    // --moe poison: the fill below takes seconds per card (GLM 3.5: 8.6 s for 18.7 GiB), so the next card is sized after the loader has pinned most of
+                    // the model, and the page tables of those pins (1.4-2 MiB per GiB on each card) are gone from its free VRAM already: its need reads 70-100 MiB
+                    // lower than a plain start's, which pins after the sizing (CUDA1: 149 against 220 MiB). Stored, the next plain start died at its first prompt
+                    // (cublasGemmEx with 1 MiB free, restart at half the micro-batch: DeepSeek, GLM 3.5, MiMo 2026-11-12). A poisoned start stores no need.
+                    if (poison_on()) { d.section.clear(); }
                     g_vram.push_back(d);
                 }
                 for (auto * b : ubufs) { ggml_backend_buffer_clear(b, 0); }
