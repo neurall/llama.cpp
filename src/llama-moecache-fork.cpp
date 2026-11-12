@@ -14483,7 +14483,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     bool has_slower = false;
     bool cpu_known = false;   // the CPU's read rate is measured: without it the decode chain's time cannot be calculated, and no prompt call takes it
     bool chain_fits = true;   // every layer has the blocks a prompt chain pass of this size takes (the graph's own check, llama_moe_cache_pp_chain_fork)
-    bool cs_fits    = true;   // every layer can take the stream into the cache's blocks (staging=0: else no stream)
+    bool cs_fits    = false;  // some layer can take the stream into the cache's blocks (staging=0: else no stream). Not every layer: one whose class holds fewer blocks than it has
+                              // experts gets its tensors as plain graph inputs, as the forced cstream rows ran (Qwen3.8 at 8 GiB: 43 of 48 layers in the ring, 915 t/s; with "every"
+                              // the stream was off and the 12k prompt ran as the decode chain, 363 t/s, 2026-11-12)
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
         const double r0 = mc->gbs_link[0] * 1e3;   // bytes / us
@@ -14498,9 +14500,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             has_slower = has_slower || l.link > 0;
             // a chain the graph then refuses falls to the decode chain's CPU side: DeepSeek, 62-token call, chain calculated 2.1 s, ran 18.5 s that way (2026-11-10)
             // the stream into the blocks takes a layer's worth of its class besides the lend and the KV rows (llama_moe_cache_pp_chain_fork, the same test)
-            if (cs_fits && (l.pcls < 0 || !mc->link_be[l.link] || l.pub.jit_n > 0 || !experts_in_file_layout(&l.pub) ||
-                            pp_blocks(mc, const_cast<layer_state &>(l), true) < (int64_t) l.expert_slot.size())) {
-                cs_fits = false;
+            if (!cs_fits && !(l.pcls < 0 || !mc->link_be[l.link] || l.pub.jit_n > 0 || !experts_in_file_layout(&l.pub) ||
+                              pp_blocks(mc, const_cast<layer_state &>(l), true) < (int64_t) l.expert_slot.size())) {
+                cs_fits = true;
             }
             if (chain_fits) {
                 const int64_t want = std::min<int64_t>((int64_t) l.expert_slot.size(), (int64_t) std::ceil(n) * (int64_t) mc->n_expert_used);
@@ -14751,7 +14753,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     const double r = pp_took_us(mix ? PP_MIX : PP_RING, n);
     m = k_auto && !force && !chain && !dec && !why_mix[0] && !pp_no_staging() ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
     if (pp_no_staging() && !force && !chain && !dec && !mix && !cs_fits) {   // no stream into the blocks for this call (a layer has fewer blocks than experts): the decode chain
-        dec = true; g_pp_dec = true; g_pp_mb = ub_max; why = "--moe staging=0: a layer has fewer blocks than experts for the stream into the cache";
+        dec = true; g_pp_dec = true; g_pp_mb = ub_max; why = "--moe staging=0: no layer has a layer's worth of blocks for the stream into the cache";
     }
     }
     // The stream into the cache's blocks (cs_begin, cs_layer): the stream's own copies (whole layers, ahead of compute, on the expert card's upload stream) with the cache's

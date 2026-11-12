@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+nspick-ns,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0",--env GGML_PF_STATS=1
