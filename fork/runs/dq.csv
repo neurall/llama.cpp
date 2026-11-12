@@ -6,3 +6,4 @@ dq-def-prof,qwen38,1,pf2k1k,1024,,--env GGML_SCHED_PROF=1
 dq-stockmode-prof,qwen38,1,pf2k1k,1024,"--moe mode=stock",--env GGML_SCHED_PROF=1
 dq-def-tr,qwen38,1,pf2k1k,128,,--env GGML_SCHED_TRACE=/home/o/.claude/jobs/44ecfe4e/tmp/tr_cache.csv --env GGML_SCHED_TRACE_ALL=1
 dq-stockmode-tr,qwen38,1,pf2k1k,128,"--moe mode=stock",--env GGML_SCHED_TRACE=/home/o/.claude/jobs/44ecfe4e/tmp/tr_stock.csv --env GGML_SCHED_TRACE_ALL=1
+dq-nsys,qwen38,1,pf2k1k,48,,--wrap "nsys profile --trace=cuda --sample=none --cpuctxsw=none --cuda-graph-trace=node -o /home/o/.claude/jobs/44ecfe4e/tmp/dq_nsys --force-overwrite=true"

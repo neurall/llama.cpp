@@ -17,7 +17,7 @@ static __global__ void mul_mat_vec_f(
     const float   * GGML_CUDA_RESTRICT y   = y_ptr;
     const int32_t * GGML_CUDA_RESTRICT ids = ids_ptr;
     float         * GGML_CUDA_RESTRICT dst = dst_ptr;
-    const int row         = blockIdx.x;
+    const int row         = blockIdx.x*blockDim.y + threadIdx.y;   // fork: several rows a block, a warp each, when the launch says so (blockDim.y is 1 otherwise)
     // for MUL_MAT_ID - blockIdx.y = n_expert_used, blockIdx.z = ncols_dst (tokens)
     const int channel_dst = blockIdx.y;
     const int tid         = threadIdx.x;
@@ -458,9 +458,20 @@ void launch_mul_mat_vec_f_cuda(
 
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr;
 
+    // fork: short rows of a tall matrix (Qwen3.8's 10240 x 320 bf16 hyper-connection weights, two products a layer in decode): a warp a row and up to 8 rows a
+    // block. The rule above gave every row its own block of 160 threads with one product each and a reduction through shared memory: 17.1 us a call on a 3090
+    // (nsys), 1.6 ms of a decode token's 13.2 ms of kernels.
+    int64_t rows_per_block = 1;
+    if (ncols_dst == 1 && ids == nullptr && ncols <= 512 && nrows >= 1024) {
+        for (int64_t r = 8; r > 1 && rows_per_block == 1; r /= 2) {
+            if (nrows % r == 0) { rows_per_block = r; }
+        }
+        if (rows_per_block > 1) { block_size_best = warp_size; }
+    }
+
     const int nbytes_shared = warp_size*sizeof(float) + (has_fusion ? warp_size*sizeof(float) : 0);
-    const dim3 block_nums(nrows, nchannels_dst, nsamples_or_ntokens);
-    const dim3 block_dims(block_size_best, 1, 1);
+    const dim3 block_nums(nrows / rows_per_block, nchannels_dst, nsamples_or_ntokens);
+    const dim3 block_dims(block_size_best, rows_per_block, 1);
     switch (block_size_best) {
         case   32: {
             mul_mat_vec_f_switch_fusion<T, type_acc, ncols_dst, 32, is_multi_token_id>
