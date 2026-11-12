@@ -508,6 +508,10 @@ struct ggml_gallocr {
 
     struct leaf_alloc * leaf_allocs; // [n_leafs]
     int n_leafs;
+
+    // fork: ggml_gallocr_get_graph_peak's answer per buffer for the plan in node_allocs and leaf_allocs (SIZE_MAX: not computed since the last reserve).
+    // The expert cache asks before every graph: 0.17 ms per decode token over a 2,500-node plan that had not changed (Qwen3.8, perf record).
+    size_t * peak; // [n_buffers]
 };
 
 ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
@@ -519,6 +523,10 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
 
     galloc->buffers = calloc(n_bufs, sizeof(struct vbuffer *));
     GGML_ASSERT(galloc->buffers != NULL);
+
+    galloc->peak = malloc(n_bufs * sizeof(size_t));
+    GGML_ASSERT(galloc->peak != NULL);
+    for (int i = 0; i < n_bufs; i++) { galloc->peak[i] = SIZE_MAX; }
 
     galloc->buf_tallocs = calloc(n_bufs, sizeof(struct ggml_dyn_tallocr *));
     GGML_ASSERT(galloc->buf_tallocs != NULL);
@@ -555,6 +563,9 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
 size_t ggml_gallocr_get_graph_peak(ggml_gallocr_t galloc, int buffer_id) {
     // the end of the highest tensor the allocator placed for the current graph in this buffer (its own allocation records, so tensors it
     // did not place, e.g. weights living in an external buffer, do not count)
+    if (buffer_id >= 0 && buffer_id < galloc->n_buffers && galloc->peak[buffer_id] != SIZE_MAX) {
+        return galloc->peak[buffer_id];
+    }
     size_t peak = 0;
     for (int i = 0; i < galloc->n_nodes; i++) {
         const struct node_alloc * na = &galloc->node_allocs[i];
@@ -572,6 +583,9 @@ size_t ggml_gallocr_get_graph_peak(ggml_gallocr_t galloc, int buffer_id) {
         if (la->buffer_id == buffer_id && la->size_max > 0) {
             peak = MAX(peak, la->addr.offset + la->size_max);
         }
+    }
+    if (buffer_id >= 0 && buffer_id < galloc->n_buffers) {
+        galloc->peak[buffer_id] = peak;
     }
     return peak;
 }
@@ -613,6 +627,8 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
     if (galloc == NULL) {
         return;
     }
+
+    free(galloc->peak);
 
     for (int i = 0; i < galloc->n_buffers; i++) {
         if (galloc->buffers != NULL) {
@@ -902,6 +918,7 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
 
 static bool ggml_gallocr_reserve_n_impl(
         ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids, bool no_alloc) {
+    for (int i = 0; i < galloc->n_buffers; i++) { galloc->peak[i] = SIZE_MAX; }   // fork: the plan is rewritten below
     size_t min_hash_size = graph->n_nodes + graph->n_leafs;
     // add 25% margin to avoid hash collisions
     min_hash_size += min_hash_size / 4;
