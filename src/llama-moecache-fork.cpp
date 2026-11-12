@@ -14180,13 +14180,15 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     // The graph bytes per token leave out the staging slots (a fixed part), added when known. No headroom on top (user 2026-10-22: no cap may cost a pass
     // where fewer were possible; GLM 12k ran 5 passes instead of 3 with 1.35x): a pass the estimate lets past the KV zone's room fails its call and the
     // server retries it smaller, which only small cards (3 GiB free per card) met.
+    // the cells this call ends at: the zone must hold them behind the pass (2026-11-12: the call's own tokens were passed as the zone's rows, Qwen3.8 staging=0 ran
+    // a 5056-token call as one pass at 8664 cells, its KV did not fit behind the graph and find_slot refused it: "failed to prepare attention ubatches")
+    size_t cells_end = (size_t) n_prompt;
+    for (auto & r : ap.kvt) { if (!r.fixed) { cells_end = std::max(cells_end, (r.rows ? r.rows() : 0) + (size_t) n_prompt); } }
     auto seeded = [&]() -> uint32_t {   // the graph alone: the staging slots take what the pool holds behind it (ppx_stage_slots), they never cut a pass
-        return ap.graph_tok > 0 ? kvz_pass_cap(ap, n_prompt, ub, 0.0, (double) (ap.graph_tok + ap.scr_tok), pad, ap.mirror_b) : ub;
+        return ap.graph_tok > 0 ? kvz_pass_cap(ap, cells_end, ub, 0.0, (double) (ap.graph_tok + ap.scr_tok), pad, ap.mirror_b) : ub;
     };
     if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
-    size_t cells_end = (size_t) n_prompt;
-    for (auto & r : ap.kvt) { if (!r.fixed) { cells_end = std::max(cells_end, (r.rows ? r.rows() : 0) + (size_t) n_prompt); } }
     std::vector<std::pair<int32_t, size_t>> pts;
     for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells_end) }); } }
     if (pts.empty()) { return seeded(); }
@@ -14220,10 +14222,10 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     // headroom there (Qwen3.6-35B, 3 GiB free per card, cold: a 4128-token pass lent 1222 of the x4 card's 1282 MiB and its KV did not fit, 2026-10-22)
     if (moe_log_has("w")) {   // the cap's inputs: a 22381-token call of GLM (split-pass=0, 55k cells) was capped to 96 tokens (239 passes)
         LLAMA_LOG_WARN("moe-cache: pass cap: n %u cells_end %zu pts %zu a %.0f b %.0f mirror %zu lend_potential %zu -> %u\n", n_prompt, cells_end, pts.size(), a, b, ap.mirror_b,
-                (size_t) kvz_lend_potential(ap, kvz_read_cells(std::max<size_t>(n_prompt, ap.kv_h), pad)), kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b));
+                (size_t) kvz_lend_potential(ap, kvz_read_cells(std::max<size_t>(cells_end, ap.kv_h), pad)), kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b));
         for (const auto & p : pts) { LLAMA_LOG_WARN("moe-cache: pass cap point: %d tokens -> %zu B\n", p.first, p.second); }
     }
-    return kvz_pass_cap(ap, n_prompt, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
+    return kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
 }
 
 // The dense split's pass loop (llama_context::decode, --moe split-pass) sizes each pass itself and runs it as one sub-call, so the planner's pool cap (pp_plan)

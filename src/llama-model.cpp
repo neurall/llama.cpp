@@ -1927,6 +1927,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             const auto * r = llama_gpu_probe_find_fork(devices[i].dev);
             link[i] = r ? r->h2d_gbs : 0.0;
         }
+        // links within 10% are one speed (PC1, two x16 cards: 26.4 against 26.3 GB/s swapped which card took the first layers from run to run, and with it the
+        // output card's pool: 5810 or 5510 MiB, a pass ceiling of 5632 or 5056 tokens): the device order decides then
+        const double fastest = *std::max_element(link.begin(), link.end());
+        for (auto & l : link) { if (l >= 0.9 * fastest) { l = fastest; } }
         std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return link[a] > link[b]; });
         std::string txt;
         for (size_t k = 0; k < order.size(); ++k) {
