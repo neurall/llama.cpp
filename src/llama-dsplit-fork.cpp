@@ -376,6 +376,7 @@ bool llama_dsplit_ready_fork(const llama_model & model) {
     return it != g_sets.end() && dsplit_copies_ready(it->second);
 }
 
+size_t llama_moe_cache_split_room_fork(ggml_backend_dev_t dev);   // src/llama-moecache-fork.cpp (no header edit)
 void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector<llama_moe_alias_buf_fork> & pools) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sets.find(&model);
@@ -393,7 +394,8 @@ void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector
             if (p.dev == kv.first) { pb = &p; }
         }
         // at most half of what the pool lends: the graph, its scratch and the staging slots of a split pass go behind the copies
-        if (pb != nullptr && c.bytes <= pb->capacity / 2) {
+        // (--moe staging=0: of what it lends beside a stream pass's ring of whole layers, llama_moe_cache_split_room_fork)
+        if (pb != nullptr && c.bytes <= std::min(pb->capacity, llama_moe_cache_split_room_fork(kv.first)) / 2) {
             uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(pb->buf);
             for (size_t i = 0; i < c.pairs.size(); ++i) {
                 ggml_tensor * t = c.pairs[i].second;

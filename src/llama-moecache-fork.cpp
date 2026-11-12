@@ -5166,6 +5166,19 @@ static std::atomic<int> g_lend_epoch{0};
 static int g_lend_epoch_built = 0;
 
 // the dense split's copies sit at the start of dev's pool buffer (llama_dsplit_mirror_place_fork): the pass planner keeps room for them
+// --moe staging=0: what a card's pool lends beside the ring of a stream pass with whole layers (or the forced chunk count): the room the dense split's copies are
+// judged by (llama_dsplit_mirror_place_fork). Judged by the ring at rest (the smallest), the copies were placed, came off every pass's room and a 13.7k prompt
+// ended in 54 passes of 64 tokens (Qwen3.8, 2 x 8 GiB, 2026-11-12). SIZE_MAX: no ring on this card.
+size_t llama_moe_cache_split_room_fork(ggml_backend_dev_t dev) {
+    moe_cache * mc = g_cache;
+    if (!mc || !pp_no_staging()) { return SIZE_MAX; }
+    for (const auto & ap : mc->alias) {
+        size_t fe = 0;
+        if (ap.dev == dev && !ap.rcls.empty() && cs_ring_floor(ap, std::max(1, cs_forced()), fe)) { return fe; }
+    }
+    return SIZE_MAX;
+}
+
 void llama_moe_cache_alias_mirror_fork(ggml_backend_dev_t dev, size_t bytes) {
     moe_cache * mc = g_cache;
     if (!mc) {
