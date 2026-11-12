@@ -1,0 +1,4 @@
+run 25452 | preload_bg_sparse_early_segments_pin_floor | scific | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 17.25 t/s | prompt 2.4 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 220+280 W | 2026-11-10 12:40:34
+
+The user wants a science-fiction short
+---

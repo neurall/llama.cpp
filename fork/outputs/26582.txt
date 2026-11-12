@@ -1,0 +1,7 @@
+run 26582 | ns_layer_ring2 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 37.97 t/s | prompt 1338.7 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=1 | power 280+280 W | 2026-11-12 10:27:34
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_EAGLE3 | SPEC_TYPE_VERIFY_GREEDY | SPEC_TYPE_NGRAM_MAP_MEM | SPEC_TYPE_NGRAM_MAP_CACHE);
+}
+
+static bool is_default_model(const common_params_model & model) {

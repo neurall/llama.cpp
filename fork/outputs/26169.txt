@@ -1,0 +1,6 @@
+run 26169 | pl2 | chatv | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 11.04 t/s | prompt 18.8 t/s | 32 tokens | args: -np 1 | power 220+280 W | 2026-11-11 20:44:30
+
+The user is asking a simple factual question: What is the capital of France? They want a one short sentence answer.
+
+The answer is Paris. Simple, direct
+---

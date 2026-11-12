@@ -1,0 +1,19 @@
+run 25510 | engram_rows_from_file_fix_adopt_past | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 19.85 t/s | prompt 495.9 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-10 15:03:35
+
+<think>We need answer code review. Need inspect source. User provided two files? They ask "Do a code review of following source file." It includes json-schema-to-grammar.cpp and arg.cpp partial. Need review. Need identify bugs, style, correctness, security, maintainability. Need likely focus on first file? They included arg.cpp too. Need review both? The prompt says source file singular but includes two files. We should review both, perhaps note arg.cpp truncated. Need be thorough but concise. Desired oververbosity 5. Need produce code review with issues and suggestions. Need analyze deeply.
+
+We need inspect code. Let's parse.
+
+File common/json-schema-to-grammar.cpp. It converts JSON schema to GBNF grammar. Need identify bugs.
+
+Let's understand functions.
+
+build_repetition(item_rule, min_items, max_items, separator_rule). Potential issues:
+- max_items == 0 returns "" even if min_items >0? If max_items=0 and min_items>0 invalid? It returns empty. Could be okay? But if min_items > max_items, no validation. For arrays min_items maybe > max_items? Should error.
+- min_items==0 && max_items==1 returns item_rule + "?".
+- separator empty: if min=1 no max -> +; min=0 no max -> *; else item_rule + "{" + min + "," + (has_max ? max : "") + "}". For min=0 max=0 handled. For min=1 max=1 returns item_rule{1,1}? Actually if max_items==1 and min_items==1, not special, returns item_rule{1,1}. Fine. For min=0 max=2 returns item_rule{0,2}. Fine.
+- separator nonempty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?". Need check semantics. For min=0 max=1 separator: result = item_rule + " " + build_repetition("(sep item)", 0, 0) = item_rule + " " + "" = item_rule + " "; then result = "(item )?" -> matches optional item with trailing space? Actually array rule: "\"[\" space " + build_repetition(item_rule, min, max, "\",\" space") + " space \"]\"". For min=0 max=1, build_repetition returns "(item )?"? Let's compute: item_rule + " " + build_repetition("(sep item)", 0, 0). max_items-1=0, build_repetition returns "" because max_items==0. result = item_rule + " ". Then min_items==0 -> "(" + result + ")?" = "(item )?". Then array rule: "[\" space (item )? space \"]\"" -> matches "[" space optional item space "]". But if item present, there is item + space then final space -> two spaces? Wait array rule includes " space " before repetition and " space " after. For empty array: "[" space + optional absent + space "]" -> "[" space space "]" maybe two spaces? Let's examine SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}". It matches optional? Actually rule "space" content starts with "|"? Wait SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}". This is weird: starts with "|" meaning empty alternative? In GBNF, rule "space ::= | " " | "\n"{1,2} [ \t]{0,20}"? It has leading |, so empty alternative. So space can be empty. Thus double spaces okay? But grammar may allow whitespace. Need check.
+
+For separator nonempty min=1 max=1: result = item + " " + build_repetition("(sep item)", 0, 0) = item + " "; min_items !=0 so no optional. Array rule: "[" space item space space "]"? Actually build_repetition returns item + " " (trailing space). Then array rule adds " space " after, so item + space + space. But space can be empty, so okay. But if space rule matches actual space, could require two spaces? Since space can be empty, it can choose empty for one. So okay. But grammar may be ambiguous.
+
+Potential bug: build_repetition with separator and max_items=0 returns "" before min check. If

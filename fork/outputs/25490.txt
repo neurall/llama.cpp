@@ -1,0 +1,10 @@
+run 25490 | rampool_fill_full_queue_pin_under_fill | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 20.14 t/s | prompt 46.7 t/s | 256 tokens | args: -np 1 | power 220+280 W | 2026-11-10 14:13:31
+
+The user wants a science-fiction short story, ~900 words, told through the eyes of a generation ship's archivist. The premise: the crew wakes from cryosleep above the planet they were sent to settle and finds its cities already lit — the colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first. Literary prose, sensory detail, dialogue, no headings/lists/code.
+
+Key elements to hit:
+- Archivist POV — someone whose job is memory, records, lineage. This is thematically rich: archives, duplicates, provenance, the question of which copy is "original," what an archive means when there are two of everything.
+- Cryosleep waking — sensory detail: cold, muscle ache, light, the smell of the ship, thaw.
+- The reveal: cities lit below. Not a dead world, not wilderness — a settled world. The twist: a second ship, launched a century later with better engines (or a different route), overtook them. The people below are descendants of a copy of their own ship — same manifest, same archives, same names.
+- Dialogue: conversations with the captain, maybe with the ship's AI or another crew member, maybe a transmission from below.
+---

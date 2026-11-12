@@ -1,0 +1,12 @@
+run 26637 | ns_part_units_early_release | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 173.4 t/s | prompt 399.2 t/s | 64 tokens | args: -np 1 --moe mode=cache,sim-vram=1536,staging=0,cs-chunks=4,verify=2,poison=3 | power 280+280 W | 2026-11-12 11:25:33
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, sub_nines);
+                    }
+                }
+            }
+        

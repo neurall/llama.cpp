@@ -1,0 +1,4 @@
+run 26179 | pl3 | chatv | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.04 t/s | prompt 61.5 t/s | 32 tokens | args: -np 1 | power 200+200 W | 2026-11-12 00:35:12
+
+The user wants an explanation of the main causes of the First World War and how the alliance system transformed a regional Balkan conflict into a general European war. They
+---

@@ -1,0 +1,7 @@
+run 26277 | fix_slow_by_link_pins_yield | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 22.63 t/s | prompt 124.5 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,staging=0,verify=2,poison=3 | power 200+200 W | 2026-11-12 03:18:20
+
+    return params.speculative.types.all() && !params.speculative.types.none();
+}
+
+static bool spec_types_is_default(const std::vector<llama_spec_type> & types) {
+    return types.empty() || (types.size() == 1 && types[0] == LLM_BASE);

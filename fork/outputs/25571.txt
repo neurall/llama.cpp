@@ -1,0 +1,6 @@
+run 25571 | pool_guard_write_hooks | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 116.35 t/s | prompt 478.1 t/s | 8 tokens | args: -np 1 --moe verify=2,guard=1 | power 220+280 W | 2026-11-10 19:14:37
+
+Here's a thinking process:
+
+1
+---

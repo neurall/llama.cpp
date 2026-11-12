@@ -1,0 +1,5 @@
+run 25761 | predlatent | pf2k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 57.6 t/s | prompt 49.7 t/s | 16 tokens | args: -np 1 -b 2048 -ub 64 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream | power 220+280 W | 2026-11-11 08:52:24
+
+},
+    {"null", {"\"null\"", {}},
+    {"string

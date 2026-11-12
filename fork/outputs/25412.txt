@@ -1,0 +1,4 @@
+run 25412 | fillread2 | scific | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 35.21 t/s | prompt 1.7 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 220+280 W | 2026-11-10 11:10:42
+
+We need respond to user: write science
+---

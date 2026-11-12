@@ -1,0 +1,4 @@
+run 25548 | fix_graph_pad_zero_before_lend | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.9 t/s | prompt 3.2 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 220+280 W | 2026-11-10 16:47:18
+
+The user wants a science-fiction short story
+---

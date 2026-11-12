@@ -1,0 +1,6 @@
+run 26206 | fix_predictor_kv_room | chatv | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 23.78 t/s | prompt 18.8 t/s | 32 tokens | args: -np 1 --moe pred-top=8,pred=1,predict-ahead=2,pp-path=chain,pp-pred=0 | power 200+200 W | 2026-11-12 01:03:42
+
+The user wants a complete, polished, genuinely novel 3D Tetris in a single HTML file. This is a massive undertaking. Let me plan carefully.
+
+
+---

@@ -1,0 +1,14 @@
+run 25682 | batch_reads | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 0.7 t/s | prompt 11.2 t/s | 100 tokens | args: -np 1 --moe batch-reads=1,pp-path=stream | power 200+200 W | 2026-11-11 04:55:07
+
+ } else if (i == from.length()) {
+            out << "\"";
+            out << from.substr(i);
+            out << "\"";
+        }
+    };
+    auto uniform_range_s = [&](const std::string & from, const std::string & to) {
+        uniform_range(from, to);
+    };
+    auto _num_digits = [&](int64_t value) {
+        return std::to_string(value).length() - (value < 0 ? 1 : 0);
+    };

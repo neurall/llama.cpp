@@ -1,0 +1,5 @@
+run 25344 | touch19 | poemc | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 83.71 t/s | prompt 394.9 t/s | 16 tokens | args: -np 1 --refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=dec | power 220+280 W | 2026-11-10 10:12:01
+
+
+---
+Write a poem about a person you admire, using the name of that person as

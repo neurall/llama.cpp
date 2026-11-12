@@ -1,0 +1,13 @@
+run 25705 | predtop_pool | pf1k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 85.28 t/s | prompt 2942.0 t/s | 64 tokens | args: -np 1 --cpu-moe --moe-expert-cache 19 --moe pred-top=16,predict-ahead=2,pred=1,rampool=1,pool=0 | power 200+200 W | 2026-11-11 06:13:06
+
+
+                    if (to_reached) {
+                        out << " ";
+                    }
+                }
+            }
+        };
+    build_min_max_int(min_value, max_value, out, decimals_left, top_level = false);
+}
+
+static

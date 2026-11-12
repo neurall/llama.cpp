@@ -1,0 +1,7 @@
+run 26107 | pp_ring | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 32.29 t/s | prompt 595.4 t/s | 64 tokens | args: -np 1 --moe sim-vram=12288,dense-split=1,staging=0,pp-ahead=0 | power 220+280 W | 2026-11-11 17:14:30
+
+    return params.speculative.types == (1u << COMMON_SPEC_TYPE_NONE)
+        || (params.speculative.types == (1u << COMMON_SPEC_TYPE_NGRAM) && params.speculative.ngram_size == 8);
+}
+
+static bool is_default(const common_params & params, const common_arg & opt

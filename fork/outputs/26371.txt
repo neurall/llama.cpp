@@ -1,0 +1,7 @@
+run 26371 | fix_ns_redo_card_cursor | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 18.85 t/s | prompt 196.0 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,staging=0,verify=2,poison=3 | power 200+200 W | 2026-11-12 05:07:56
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_MTP | SPEC_TYPE_DRAFT_EAGLE3 | SPEC_TYPE_VERIFY_NGRAM);
+}
+
+static bool parse_url_model(const std::string & url, common_params_model & model, bool no_download,

@@ -1,0 +1,4 @@
+run 25562 | pool_guard_write_hooks | scific | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 36.85 t/s | prompt 1.7 t/s | 8 tokens | args: -np 1 --moe verify=2,guard=1 | power 220+280 W | 2026-11-10 18:57:11
+
+We need answer user's request: write
+---

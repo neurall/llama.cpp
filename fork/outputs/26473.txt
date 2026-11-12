@@ -1,0 +1,84 @@
+run 26473 | oneexe | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 32.26 t/s | prompt 667.9 t/s | 4096 tokens | args: -np 1 | power 280+280 W | 2026-11-12 08:41:13
+
+<think>We need answer complete fixed version of source file. Need identify bugs. We need output every line from first to last with fixes marked comments. Source includes two files concatenated? It says file common/json-schema-to-grammar.cpp then // file: common/arg.cpp. Need return complete fixed version of following source file: every line from first to last. Likely need fix bugs in entire provided source. Need inspect for bugs. Need produce full code with comments marking changes. Need not summarize. Need include all lines. Need determine intended bugs. This is likely from llama.cpp code. Need compare to actual upstream? We need fix bugs in source. Need identify all bugs. Let's analyze.
+
+We have json-schema-to-grammar.cpp and arg.cpp partial (ends mid-function spec_types_is_default). Need fix bugs in provided source. Could be a benchmark where source has injected bugs. Need find all. Need output complete fixed version with comments. Need not skip unchanged parts. Need include all lines. Need mark each change by comment. Need maybe fix compile errors and logic.
+
+Let's inspect json-schema-to-grammar.cpp.
+
+Potential bugs:
+- `build_repetition`: separator logic. Let's verify. For separator_rule nonempty, result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?"; This seems from upstream? Need check. For min_items=0 max_items=1 with separator? It returns? max_items==1 not 0, min_items==0 max_items==1 returns item_rule + "?" before separator. But if separator nonempty and max_items=1, should item_rule? maybe okay. For min_items=0 max_items=0 returns "". For separator and min_items=0 max_items=1 returns item_rule? (no separator) okay. For min_items=1 max_items=1 separator: result = item_rule + " " + build_repetition("(" + sep + " " + item_rule + ")", 0, 0) = item_rule + " " + "" = item_rule + " " trailing space. Bug? Upstream maybe handles? Let's check actual llama.cpp json-schema-to-grammar.cpp. I recall code:
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+This is actual? Maybe yes. But for min_items=1 max_items=1 separator, result = item_rule + " " + build_repetition(...,0,0) = item_rule + " " (trailing). In grammar, trailing space before closing? In array rule: `"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\""`. If min=1 max=1, build_repetition returns item_rule + " " then plus " space \"]\"" => item_rule + "  space \"]\"" double spaces. Grammar allows spaces? It might be okay? But actual upstream maybe has `if (min_items == 1 && max_items == 1) return item_rule;`? Let's search memory. I have seen llama.cpp code. In json-schema-to-grammar.cpp, build_repetition:
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Maybe actual. But there is a bug: for min_items=1 max_items=1 separator, result trailing space. Could be accepted. But maybe not bug.
+
+- `build_min_max_int`: Need inspect logic. Potential bug in `uniform_range`: `auto sub_len = from.length() - i - 1;` If i < from.length() && i < to.length(), and from/to same length? For uniform_range called with min_s and string_repeat("9", digits) where min_s length may be less than digits? Wait in loop: for digits = min_digits; digits < max_digits; digits++ { uniform_range(min_s, string_repeat("9", digits)); min_s = "1" + string_repeat("0", digits); out << " | "; } Here min_s initially length min_digits. For digits = min_digits, to length = digits = min_digits, same length. Then min_s updated to length digits+1. Next digits = min_digits+1, min_s length = digits, to length = digits. So same length. Good. In uniform_range, from and to same length. `sub_len = from.length() - i - 1`; if i == from.length()-1, sub_len=0. Good. If i < from.length() && i < to.length(), and from/to same length. Good.
+
+Potential bug: `uniform_range` uses `from.substr(i + 1)` and `to.substr(i + 1)`. If i+1 > length? sub_len >0 ensures i+1 < length. Good.
+
+Potential bug: `digit_range(from[i], to[i] - 1);` if from[i] == to[i]? But condition `from_sub == sub_zeros` and i < from.length() && i < to.length(). If from[i] == to[i], then to[i]-1 < from[i], invalid range. But if from_sub == sub_zeros, then from[i] could equal to[i]? Example from="10", to="19": i=0? from[0]=1, to[0]=1, from_sub="0", to_sub="9", sub_zeros="0", from_sub==sub_zeros. digit_range(from[i], to[i]-1) = digit_range('1','0') invalid. Wait uniform_range("10","19"): i=0 because from[0]==to[0]='1'. i>0? no. i < length and i < length. sub_len = 2-0-1=1. from_sub = from.substr(1)="0"; to_sub="9"; sub_zeros="0"; sub_nines="9". from_sub == sub_zeros true. digit_range(from[i], to[i]-1) = digit_range('1','0') -> out "[1-0]" invalid. But actual logic? Let's test: uniform_range("10","19") should match 10-19. It should output `"1" [0-9]`? Wait from_sub == sub_zeros means lower suffix all zeros. Then range from 10 to 19: first digit fixed 1, second digit 0-9. The code does digit_range(from[i], to[i] - 1) where from[i]=1, to[i]=1 -> digit_range('1','0') invalid. That seems a bug. But maybe uniform_range is called with from and to where first differing char? Let's re-evaluate: In uniform_range, while i < from.length() && i < to.length() && from[i] == to[i] i++; So i is first differing index. For "10","19", from[0]='1', to[0]='1' equal, i becomes 1. Then i=1, from[1]='0', to[1]='9' differ. i>0, out << "\"" << from.substr(0, i) << "\""; outputs "1". Then i < from.length() && i < to.length() true. sub_len = from.length() - i - 1 = 2-1-1=0. So sub_len=0, goes to else: out << "[" << from[i] << "-" << to[i] << "]"; outputs [0-9]. Good. My earlier i=0 was wrong because while loop increments. So okay.
+
+Potential bug: `uniform_range` when from_sub == sub_zeros: digit_range(from[i], to[i] - 1); out << " "; more_digits(sub_len, sub_len); This handles from suffix zeros to to suffix not all nines? Example from="100", to="199": i=0? from[0]=1,to[0]=1 equal i=1; from[1]=0,to[1]=9 differ. sub_len=1. from_sub="00", to_sub="99", sub_zeros="00", sub_nines="99". from_sub==sub_zeros true. digit_range(from[1]='0', to[1]-1='8') -> [0-8]; more_digits(1,1) -> [0-9]? Wait more_digits(1,1) outputs "[0-9]" (since min_digits==max_digits==1 returns after out << "[0-9]"; actually code: out << "[0-9]"; if (min_digits == max_digits && min_digits == 1) return; so outputs [0-9]. So result "1" [0-8] [0-9]? That matches 100-189? But to=199, should include 190-199 via to_reached? Let's see code: if from_sub == sub_zeros { digit_range(from[i], to[i] - 1); out << " "; more_digits(sub_len, sub_len); } else ... Then if (!to_reached) { out << " | "; digit_range(to[i], to[i]); out << " "; uniform_range(sub_zeros, to_sub); } to_reached initially false. So after first branch, it adds `| [9] uniform_range("00","99")`. uniform_range("00","99") outputs [0-9][0-9]? Let's compute: from="00", to="99": i=0? from[0]=0,to[0]=9 differ. i=0. sub_len=2-0-1=1. from_sub="0", to_sub="9", sub_zeros="0", sub_nines="9". from_sub==sub_zeros true. digit_range(from[0]='0', to[0]-1='8') -> [0-8]; more_digits(1,1) -> [0-9]; then !to_reached -> | [9] uniform_range("0","9") -> [0-9]. So uniform_range("00","99") = [0-8][0-9] | [9][0-9] = 00-89 | 90-99. Good. So overall "1" ([0-8][0-9] | [9][0-9]) = 100-199. Good.
+
+Potential bug: `build_min_max_int` for negative min and max. If min_value < 0 && max_value < 0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value, out, decimals_left, true); out << ")"; return. This handles negative range. If min_value < 0 and max_value >=0: out << "\"-\" ("; build_min_max_int(0, -min_value, out, decimals_left, true); out << ") | "; min_value=0; then continues. But if max_value=0? min<0 max=0: out "-" (0..-min) | then min=0, max=0. Then has_min && has_max true, min_s="0", max_s="0", min_digits=1 max_digits=1, loop none, uniform_range("0","0"). uniform_range: i=0? from[0]==to[0]='0', i=1. i>0 out "\"0\""; i < length? i=1 not <1. returns. So output "-" (0..-min) | "0". Good.
+
+Potential bug: `build_min_max_int` for has_min only, min_value < 0: out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1); This seems weird. For min_value negative, e.g. min=-5, no max. Should match integers >= -5. It outputs "-" (min_int to 5) | [0] | [1-9] [0-9]{0,15}? Wait `more_digits(0, decimals_left - 1)` outputs `[0-9]{0,15}`? Let's see more_digits(0,15): out << "[0-9]"; min_digits=0 max_digits=15; not (0==15 && 0==1). out << "{0,15}"? Actually code: out << "{"; out << min_digits; if (max_digits != min_digits) { out << ","; if (max_digits != max) out << max_digits; } out << "}"; So `[0-9]{0,15}`. Combined `[0] | [1-9] [0-9]{0,15}` matches nonnegative integers up to 16 digits? But min=-5 no max, should allow any positive integer, not limited to 16 digits? Wait `decimals_left` default 16. For integer schema, max int64, so max digits 19. But build_min_max_int with no max and min negative should allow all positive integers? It uses decimals_left=16, so limits to 16 digits? But int64 max is 19 digits. However `integer` primitive uses `[0] | [1-9] [0-9]{0,15}` which matches up to 16 digits (max 9999999999999999) not full int64. Maybe actual code uses 16 decimals for JSON number? Hmm.
+
+Potential bug: `build_min_max_int` for has_min only, min_value <=9: `char c = '0' + min_value;` min_value int64_t but <=9 and >=0. `char c = '0' + min_value;` if min_value is int64_t, addition yields int64_t then assigned char. okay. `auto range_start = top_level ? '1' : '0';` if c > range_start. For min_value=0 top_level true: c='0', range_start='1', c>range_start false. digit_range(c,'9') -> [0-9]; more_digits(0, less_decimals) -> [0-9]{0,15}? Wait for min=0 top_level true, earlier branch min_value==0 handles separately. So not here. For min=5 top_level true: c='5', range_start='1', c>range_start true: digit_range('1','4'); more_digits(1, less_decimals); out " | "; digit_range('5','9'); more_digits(0, less_decimals). This matches 1-4 followed by 1..15 digits? Actually more_digits(1,15) = [0-9]{1,15}; so 1-4 with 1-15 digits = 10..499...? Then 5-9 with 0-15 digits = 5..999...? Combined >=5. Good.
+
+Potential bug: `build_min_max_int` for has_min only, min_value >9: `auto c = min_s[0];` char. `if (c > '1') { digit_range(top_level ? '1' : '0', c - 1); out << " "; more_digits(len, less_decimals); out << " | "; }` Here more_digits(len, less_decimals) uses len = min_s.length(), but for numbers with first digit less than c, they should have len digits? Example min=500, top_level true. c='5', len=3. digit_range('1','4'); more_digits(3,15) -> [0-9]{3,15}. This matches 100-499 with 3-15 digits? Wait first digit 1-4, then 3-15 digits total? more_digits(3,15) outputs `[0-9]{3,15}` after first digit, so total digits 4-16? That seems wrong. Let's parse: digit_range('1','4') matches first digit. Then more_digits(len, less_decimals) where len=3. It outputs `[0-9]{3,15}`. So total length = 1 + 3..15 = 4..16 digits. But numbers with first digit 1-4 and total

@@ -1,0 +1,8 @@
+run 26105 | pp_ring | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 29.93 t/s | prompt 609.3 t/s | 64 tokens | args: -np 1 --moe sim-vram=12288,dense-split=1,staging=0 | power 220+280 W | 2026-11-11 17:12:26
+
+    return params.speculative.types == (COMMON_SPEC_TYPE_TOP_K | COMMON_SPEC_TYPE_TYPICAL | COMMON_SPEC_TYPE_GREEDY | COMMON_SPEC_TYPE_SIMPLE);
+}
+
+static bool is_diff_from_default(const common_arg & o, const common_params & params, const common_params & params_base);
+
+static void handle

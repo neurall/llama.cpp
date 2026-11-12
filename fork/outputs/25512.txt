@@ -1,0 +1,27 @@
+run 25512 | engram_rows_from_file_fix_adopt_past | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 21.31 t/s | prompt 491.3 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-10 15:11:00
+
+<think>We need answer code review. Need inspect source. User provided two files? They ask "Do a code review of following source file." It includes json-schema-to-grammar.cpp and arg.cpp partial. Need review. Need identify bugs, style, correctness, security, maintainability. Need be thorough but desired oververbosity 5. Need likely focus on code. Need analyze.
+
+We need review source. Let's parse.
+
+First file common/json-schema-to-grammar.cpp. Need identify issues.
+
+Let's understand code. It converts JSON schema to GBNF grammar. Potential bugs.
+
+Functions:
+
+build_repetition(item_rule, min_items, max_items, separator_rule). Cases:
+- max_items == 0 return "".
+- min=0 max=1 return item_rule + "?"
+- separator empty:
+  - min=1 !has_max -> item_rule + "+"
+  - min=0 !has_max -> item_rule + "*"
+  - return item_rule + "{" + min + "," + (has_max ? max : "") + "}"
+Potential issue: if min_items == max_items? It emits {n,n}? Actually if has_max and min==max, returns item_rule + "{n,n}"? GBNF supports {n}? It may accept {n,n}? Need check. If min=0 max=0 handled. If min=1 max=1 returns item_rule + "{1,1}" not item_rule. Could be okay but inefficient. If min=0 max=1 handled. If min=0 max=2 returns item_rule + "{0,2}" okay. If min=1 max=2 returns {1,2}. If min=2 max=2 returns {2,2}. GBNF syntax maybe {m,n} valid. But if max_items == min_items, could use {n}. Not bug.
+
+Separator case:
+result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if min_items == 0 result = "(" + result + ")?";
+return result.
+
+Need check for min_items=0, max_items=1 with separator. It doesn't hit earlier? max_items==1 and min=0 returns item_rule + "?" before separator. That ignores separator, okay for one item no separator. For min=0 max=2: result = item_rule + " " + build_repetition("(sep item)", 0, 1) = item_rule + " " + "(sep item)?" then wrap? Wait min_items==0 -> result = "(" + result + ")?". So final = "(item (sep item)?)?"? Let's compute: build_repetition(item,0,2,sep): result = item + " " + build_repetition("(sep item)", 0, 1) = item + " " + "(sep item)?"; then if min=0 result = "(" + result + ")?". So final = "(item (sep item)?)?" This matches zero or one item, and if one item optional separator+item? Actually for max 2, should allow 0,1,2 items. Grammar: (item (sep item)?)? allows 0, 1, or 2 items. Good. For min=1 max=2: result = item + " " + build_repetition("(sep item)", 0, 1) = item + " " + "(sep item)?"; min !=0 no wrap. Allows item or item sep item. Good. For min=2 max=2: result = item + " " + build_repetition("(sep item)", 1, 1) = item + " " + "(sep item)"? Wait build_repetition with min=1 max=1 separator empty? It calls build_repetition("(sep item)", 1, 1) with separator empty. max_items=1, min=1. It doesn't hit min=0 max=1. separator empty: min=1 !has_max? has_max true (max=1), so returns item_rule + "{1,1}" = "(sep item){1,1}". So result = item + " " + "(sep item){1,1}" = item sep item. Good. For min=2 max=3: result = item + " " + build_repetition("(sep item)", 1, 2) = item + " " + "(sep item){1,2}"? build_repetition min=1 max=2 sep empty returns item_rule + "{1,2}". So item sep item{1,2}

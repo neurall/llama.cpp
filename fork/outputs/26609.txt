@@ -1,0 +1,7 @@
+run 26609 | ns_request_pass_equal | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 43.93 t/s | prompt 1916.8 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0 | power 280+280 W | 2026-11-12 10:49:37
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_MTP | SPEC_TYPE_DRAFT_EAGLE3 | SPEC_TYPE_VERIFY_GREEDY);
+}
+
+static bool parse_gguf_model(const std::string & fname, common_params & params, bool no

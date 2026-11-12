@@ -1,0 +1,11 @@
+run 25949 | alias_off_padzero | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 208.52 t/s | prompt 1883.7 t/s | 64 tokens | args: -np 1 -t 6 -tb 8 --moe autotune=0,mode=cache,alias=0 | power 220+280 W | 2026-11-11 13:03:28
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, sub_nines);
+                    }
+                    out << ")";
+                

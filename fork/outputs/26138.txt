@@ -1,0 +1,3 @@
+run 26138 | cs2 | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 278.48 t/s | prompt 1321.8 t/s | 128 tokens | args: -np 1 --moe-expert-cache 80 --refresh-ssd --cpu-moe -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,verify=2,pp-path=cstream | power 220+280 W | 2026-11-11 18:11:34
+
+elecallybcr cra craas k.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.c.

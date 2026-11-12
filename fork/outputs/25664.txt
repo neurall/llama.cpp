@@ -1,0 +1,15 @@
+run 25664 | whole_reads | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 0.66 t/s | prompt 8.9 t/s | 100 tokens | args: -np 1 --moe fill=layers,whole-reads=1 | power 200+200 W | 2026-11-11 02:27:58
+
+ } else if (from.length() == to.length()) {
+            out << "\"" << from << "\"";
+        } else {
+            out << "[0-9] ";
+            more_digits(from.length(), from.length());
+        }
+    };
+
+    if (has_min && has_max) {
+        auto min_digits = std::to_string(min_value);
+        auto max_digits = std::to_string(max_value);
+        if (min_value < 0) {
+            min_digits = min_digits.substr(1

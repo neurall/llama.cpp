@@ -1,0 +1,4 @@
+run 25569 | pool_guard_write_hooks | scific | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 18.67 t/s | prompt 2.2 t/s | 8 tokens | args: -np 1 --moe verify=2,guard=1 | power 220+280 W | 2026-11-10 19:11:21
+
+The user wants a science-fiction short
+---

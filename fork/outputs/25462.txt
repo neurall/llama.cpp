@@ -1,0 +1,4 @@
+run 25462 | fix_chain_upload_from_pool_not_mapping | scific | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 8.85 t/s | prompt 2.9 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 220+280 W | 2026-11-10 13:10:42
+
+The user wants a science-fiction short
+---

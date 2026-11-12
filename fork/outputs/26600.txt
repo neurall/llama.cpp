@@ -1,0 +1,8 @@
+run 26600 | ns_request_pass_equal | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 38.33 t/s | prompt 1281.2 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,staging=0 -lm pin | power 280+280 W | 2026-11-12 10:42:18
+
+    return params.speculative.types.all == (
+        COMMON_SPECULATIVE_TYPES_DEFAULT_EXCPT_MTP &
+        COMMON_SPECULATIVE_TYPES_DEFAULT_EXCPT_DRAFT);
+}
+
+static bool is_diff_from_default(const common_arg & opt, const common_params & params, const common_params & params_base

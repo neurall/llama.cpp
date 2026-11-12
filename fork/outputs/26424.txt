@@ -1,0 +1,371 @@
+run 26424 | oneexe | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 24.82 t/s | prompt 673.7 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-12 07:02:14
+
+<think>Let me analyze this task. The user wants me to return the complete fixed version of the source file(s), with every bug fixed and each change marked by a comment. The files are:
+
+1. `common/json-schema-to-grammar.cpp`
+2. `common/arg.cpp` (partially shown, cut off at `static bool spec_types_is_default(const common_params & params) {`)
+
+Wait, the prompt says "the following source file" but there are two files shown. The second file is cut off mid-function. Hmm. The instruction says "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment. Do not summarise, do not skip unchanged parts, do not stop early."
+
+This looks like a task where I need to find bugs in the code and fix them. Let me carefully analyze the code for bugs.
+
+Let me start with `json-schema-to-grammar.cpp`:
+
+1. `build_repetition`:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm, wait. Let me compare with the original llama.cpp code:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm, wait, in the original llama.cpp code, the recursion for min_items == 0 case: `build_repetition(..., min_items == 0 ? 0 : min_items - 1, ...)`. Actually let me check the original:
+
+Original llama.cpp `json-schema-to-grammar.cpp`:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm, actually I recall the original code being:
+
+```cpp
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+Wait, but there's a subtle bug: when `min_items == 0`, the recursive call gets `min_items = 0`, and then inside the recursion, `if (min_items == 0) { result = "(" + result + ")?"; }` — that would wrap the whole thing in an optional group again. Hmm, actually let me think about the original code more carefully.
+
+Actually the original llama.cpp code is:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm wait, that doesn't look right either. Let me recall the actual original:
+
+From llama.cpp `common/json-schema-to-grammar.cpp`:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm, I actually think the original is:
+
+```cpp
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+```
+
+Wait, but if min_items == 0, the recursive call has min_items = 0, and the recursion would then wrap its own result in "(...)?". That would produce `item (sep item)?` wrapped as `(item (sep item)?)?` — hmm, that's actually wrong because it would allow the separator without the item... Actually no: `(item (sep item)?)?` — the inner `(sep item)?` requires both sep and item, so it's fine. Actually wait, the recursion with min_items=0 would produce: `item_rule + " " + build_repetition(..., 0, ...)` and then wrap in `(...)?`. The inner build_repetition with min_items=0 and max_items = max-1 would produce `item (sep item)?`... wait no.
+
+Let me trace: build_repetition(item, 0, max, sep):
+- result = item + " " + build_repetition("(sep item)", 0, max-1)
+- inner: build_repetition("(sep item)", 0, max-1): result = "(sep item)" + " " + build_repetition("(sep (sep item))", 0, max-2), then wrapped in "(...)?"
+- So the outer result = item + " " + "((sep item) ...)?", then wrapped: "(item ((sep item)...)?)?"
+
+Hmm, that seems off. Actually the correct semantics for min_items=0 with separator: `item (sep item)*` optionally — i.e., `(item (sep item)*)?` or `item (sep item)*` where the whole thing is optional. Hmm.
+
+Actually, I recall the original llama.cpp code being:
+
+```cpp
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+```
+
+Hmm, wait. Let me actually look at the real llama.cpp source. From memory of `common/json-schema-to-grammar.cpp` in llama.cpp:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm, I'm not 100% sure. Let me think about what the correct behavior should be and whether the given code has a bug.
+
+Given code:
+```cpp
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+```
+
+Hmm, wait. If min_items == 0, recursion gets min_items=0. In the recursion, if separator_rule is empty (it's not, since we pass "(sep item)" as item_rule and "" as separator... wait no, the recursion call is `build_repetition("(" + separator_rule + " " + item_rule + ")", ..., ...)` with default separator_rule = "". So in the recursion, separator_rule is empty. With min_items=0 and separator empty: if max_items (recursion's max) is not max int: returns `item_rule{0,max-1}`. So result = `item (sep item){0,max-1}`, then wrapped: `(item (sep item){0,max-1})?`. That's correct for min=0.
+
+If has_max is false (max_items == INT_MAX), recursion gets max_items = INT_MAX (unchanged since has_max false → max_items - 1 would underflow, so they pass max_items). Wait: `has_max ? max_items - 1 : max_items` — if has_max is false, pass max_items unchanged (INT_MAX). Good. Then recursion: min_items=0, max=INT_MAX, separator empty → returns `item_rule*`. So result = `item (sep item)*`, wrapped: `(item (sep item)*)?`. Correct.
+
+If min_items >= 1: recursion gets min_items - 1. E.g., min=2, max=5: result = item + " " + build_repetition("(sep item)", 1, 4) = item + " (sep item){1,4}". Correct: item (sep item){1,4} means total items 2..5. Good.
+
+So `build_repetition` looks correct as given. Hmm, but wait — there's a subtle issue: when min_items == 0 and max_items == 1 handled earlier. What about min_items == 0 && max_items == 0? handled by max_items == 0 → "". OK.
+
+Hmm, but actually wait. Let me reconsider: in the original llama.cpp code, I believe the recursion is:
+
+```cpp
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+Yes, I think that matches. OK so build_repetition seems fine.
+
+Now `build_min_max_int`. Let me compare with the original llama.cpp implementation:
+
+Original (from llama.cpp, the newer version with `decimals_left`):
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) {
+        out << "[";
+        if (from == to) {
+            out << from;
+        } else {
+            out << from << "-" << to;
+        }
+        out << "]";
+    };
+    auto more_digits = [&](int min_digits, int max_digits) {
+        out << "[0-9]";
+        if (min_digits == max_digits && min_digits == 1) {
+            return;
+        }
+        out << "{";
+        out << min_digits;
+        if (max_digits != min_digits) {
+            out << ",";
+            if (max_digits != std::numeric_limits<int>::max()) {
+                out << max_digits;
+            }
+        }
+        out << "}";
+    };
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+        [&](const std::string_view & from, const std::string_view & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                    auto sub_zeros = string_repeat("0", sub_len);
+                    auto sub_nines = string_repeat("9", sub_len);
+
+                    auto to_reached = false;
+                    out << "(";
+                    if (from_sub == sub_zeros) {
+                        digit_range(from[i], to[i] - 1);
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    } else {
+                        out << "[" << from[i] << "] ";
+                        out << "(";
+                        uniform_range(from_sub, sub_nines);
+                        out << ")";
+                        if (from[i] < to[i] - 1) {
+                            out << " | ";
+                            if (to_sub == sub_nines) {
+                                digit_range(from[i] + 1, to[i]);
+                                to_reached = true;
+                            } else {
+                                digit_range(from[i] + 1, to[i] - 1);
+                            }
+                            out << " ";
+                            more_digits(sub_len, sub_len);
+                        }
+                    }
+                    if (!to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, to_sub);
+                    }
+                    out << ")";
+                } else {
+                    out << "[" << from[i] << "-" << to[i] << "]";
+                }
+            }
+        };
+
+    if (has_min && has_max) {
+        if (min_value < 0 && max_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+            out << ")";
+            return;
+        }
+
+        if (min_value < 0) {
+            out << "\"-\" (";
+            build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+            out << ") | ";
+            min_value = 0;
+        }
+
+        auto min_s =

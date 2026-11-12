@@ -1,0 +1,4 @@
+run 26199 | fix_predictor_kv_room | chatv | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.77 t/s | prompt 21.6 t/s | 32 tokens | args: -np 1 --moe pred-top=8,pred=1,predict-ahead=2,pp-path=chain,pp-pred=0 | power 200+200 W | 2026-11-12 00:57:44
+
+The user wants an explanation of the main causes of the First World War and how the alliance system transformed a regional Balkan conflict into a general European war. They
+---

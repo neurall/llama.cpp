@@ -1,0 +1,34 @@
+run 26055 | lend_pad_map | pf4k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 22.03 t/s | prompt 188.3 t/s | 256 tokens | args: -np 1 --moe sim-vram=8192,staging=0 | power 220+280 W | 2026-11-11 15:23:09
+
+
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            while (i < length) {
+                if (i >= MAX_PATTERN_DEPTH) {
+                    throw unsupported_pattern("pattern too complex");
+                }
+                i++;
+                char c = sub_pattern[i];
+                std::string literal;
+
+                size_t escape_len = gbnf_escape_length(sub_pattern, i);
+                if (escape_len) {
+                    literal = sub_pattern.substr(i + 1, escape_len - 1);
+                    i += escape_len;
+                } else if (c == '\\') {
+                    i++;
+                    if (i >= length) {
+                        throw invalid_pattern("trailing backslash");
+                    }
+                    c = sub_pattern[i];
+                    if (std::isalpha(c)) {
+                        i++;
+                        if (c == 'n') {
+                            seq.emplace_back("\\n", false);
+                        } else if (c == 'r') {
+                            seq.emplace_back("\\r", false);
+                        } else if (c ==

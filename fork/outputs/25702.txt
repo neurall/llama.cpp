@@ -1,0 +1,15 @@
+run 25702 | predtop_pool | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 0.76 t/s | prompt 9.4 t/s | 100 tokens | args: -np 1 | power ? W | 2026-11-11 06:01:50
+
+ } else if (i == from.length()) {
+            out << "\"";
+            out << from.substr(i);
+            out << "\"";
+        }
+    };
+    auto uniform_range_s = [&](const std::string & from, const std::string & to) {
+        uniform_range(from, to);
+    };
+    auto _num = [&](int64_t n) {
+        return std::to_string(n);
+    };
+    auto minus = "([\"-\"0-9] | \"-\

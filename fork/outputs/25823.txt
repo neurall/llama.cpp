@@ -1,0 +1,6 @@
+run 25823 | sim_memory_faked | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 53.21 t/s | prompt 3097.2 t/s | 64 tokens | args: -np 1 -t 6 -tb 8 --moe autotune=0,sim-vram=2048,kv-fallback=ram | power 220+280 W | 2026-11-11 10:15:18
+
+}},
+    {"string", {"\"(\" space ( value (\",\" space value)* )? space \")\"", {"value"}}},
+    {"value", {"\"(\" space ( value (\",\" space value)* )? space \")\"", {"value"}}},
+    {"space",

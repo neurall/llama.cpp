@@ -1,0 +1,4 @@
+run 25355 | touch19 | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 159.87 t/s | prompt 3756.9 t/s | 16 tokens | args: -np 1 --refresh-ssd --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 | power 220+280 W | 2026-11-10 10:15:52
+
+}},
+    {"string", {"\"(\" space ( value (\",\"

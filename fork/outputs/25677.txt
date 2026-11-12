@@ -1,0 +1,15 @@
+run 25677 | batch_reads | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 0.67 t/s | prompt 1.8 t/s | 100 tokens | args: -np 1 --moe batch-reads=1,read-threads=16 | power 200+200 W | 2026-11-11 03:54:48
+
+ } else if (i == from.length()) {
+            out << "[0-9] ";
+            if (to_sub == string_repeat("9", to_sub.length())) {
+                more_digits(to.length() - i, to.length() - i);
+            } else {
+                out << "(";
+                uniform_range(string_repeat("0", to.length() - i), to_sub);
+                out << ")";
+            }
+            out << "?";
+        }
+    };
+    auto range = [&](int64_t from

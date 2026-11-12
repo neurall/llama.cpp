@@ -1,0 +1,4 @@
+run 26137 | cs2 | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 --moe-expert-cache 19 --refresh-ssd --cpu-moe -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,verify=2,pp-path=cstream | power 220+280 W | 2026-11-11 18:11:03
+
+uo
+	ad oop ysdallycfsbcr yzcoopbscr, although T, albeit T and T twoput themathersmlspsome o, T. T: T. Tsdaw T. T. Tbsafsmo Tbs and/Tbsamay Tbsb, Tbs Tbsam Upsa, Tbsam Upsa, Tbsam Upsa, Tbsam Upsa, T. Tbsam Upsa, T. T. T. T. T. T. T. T. T. T.

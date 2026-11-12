@@ -1,0 +1,4 @@
+run 25504 | engram_rows_from_file_fix_adopt_past | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 11.76 t/s | prompt 1.3 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 220+280 W | 2026-11-10 14:46:11
+
+The user wants a science-fiction short story
+---

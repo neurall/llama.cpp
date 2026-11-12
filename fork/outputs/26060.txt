@@ -1,0 +1,29 @@
+run 26060 | lend_pad_map | pf4k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 23.53 t/s | prompt 184.1 t/s | 256 tokens | args: -np 1 --moe sim-vram=8192,staging=0,pp-path=stream | power 220+280 W | 2026-11-11 15:28:42
+
+
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            while (i < length) {
+                if (i > MAX_PATTERN_DEPTH) {
+                    throw unsupported_pattern("pattern too complex");
+                }
+                char c = sub_pattern[i];
+                if (c == '\\') {
+                    size_t n_esc = gbnf_escape_length(sub_pattern, i);
+                    if (n_esc == 0) {
+                        throw invalid_pattern("invalid escape sequence at position " + std::to_string(i));
+                    }
+                    auto esc = sub_pattern.substr(i, n_esc);
+                    i += n_esc;
+                    if (esc == "\\A" || esc == "\\Z") {
+                        throw unsupported_pattern("\\A and \\Z are not supported");
+                    }
+                    if (esc == "\\b" || esc == "\\B") {
+                        throw unsupported_pattern("\\b and \\B are not supported");
+                    }
+                    if (esc == "\\d") {
+                        seq.emplace_back(_add_rule("digit", "[0-9]"),

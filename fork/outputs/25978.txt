@@ -1,0 +1,11 @@
+run 25978 | kv_pad_in_zone | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode None t/s | prompt None t/s | None tokens | args: -np 1 -t 6 -tb 8 --moe autotune=0,mode=cache,sim-vram=1280,sim-ram=4900,staging=0,verify=2,poison=3,dense-split=0,pp-path=stream | power 220+280 W | 2026-11-11 13:20:44
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, sub_nines);
+                    }
+                    out << ")";
+                

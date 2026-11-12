@@ -1,0 +1,4 @@
+run 25818 | kv_fallback_list_names_f16 | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 56.95 t/s | prompt 3010.7 t/s | 16 tokens | args: -np 1 --cpu-moe -t 6 -tb 8 --moe autotune=0,kv-fallback=ram | power 220+280 W | 2026-11-11 09:59:58
+
+}},
+    {"string", {"\"(\" space ( value (\",\"

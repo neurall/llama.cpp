@@ -1,0 +1,4 @@
+run 25473 | fix_chain_upload_from_pool_not_mapping | scific | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 6.91 t/s | prompt 24.4 t/s | 8 tokens | args: -np 1 --moe read-threads=12 | power 220+280 W | 2026-11-10 13:38:08
+
+We need answer story ~900 words.
+---

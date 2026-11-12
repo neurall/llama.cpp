@@ -1,0 +1,11 @@
+run 26502 | ns_layer_ring | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 96.55 t/s | prompt 1023.7 t/s | 64 tokens | args: -np 1 --moe sim-vram=2048,staging=0,verify=2,poison=3 | power 280+280 W | 2026-11-12 09:26:50
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, sub_nines);
+                    }
+                    out << ")";
+                

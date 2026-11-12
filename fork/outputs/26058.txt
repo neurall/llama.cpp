@@ -1,0 +1,30 @@
+run 26058 | lend_pad_map | pf4k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 23.75 t/s | prompt 184.8 t/s | 256 tokens | args: -np 1 --moe sim-vram=8192,staging=0,pp-path=chain | power 220+280 W | 2026-11-11 15:26:28
+
+
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string_join(results, " "), false);
+            };
+
+            while (i < length) {
+                if (i > MAX_PATTERN_DEPTH) {
+                    throw unsupported_pattern("pattern too long");
+                }
+                // check for repetition
+                if (sub_pattern[i] == '(') {
+                    paren_depth++;
+                } else if (sub_pattern[i] == ')') {
+                    if (paren_depth == 0) {
+                        throw invalid_pattern("Unbalanced parentheses");
+                    }
+                    paren_depth--;
+                }
+                if (i + 1 < length && paren_depth == 0 && (sub_pattern[i + 1] == '?' || sub_pattern[i + 1] == '*' || sub_pattern[i + 1] == '+')) {
+                    seq.back().first = _add_repetition_rule(seq.back(), sub_pattern[i + 1]);
+                    i++;
+                } else {
+                    char c = sub_pattern[i];
+                    if (c == '.') {
+                        seq.emplace_back(get_dot(), false);
+                    } else if

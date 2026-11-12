@@ -1,0 +1,4 @@
+run 25566 | pool_guard_write_hooks | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.88 t/s | prompt 3.2 t/s | 8 tokens | args: -np 1 --moe verify=2,guard=1 | power 220+280 W | 2026-11-10 19:05:38
+
+The user wants a science-fiction short story
+---

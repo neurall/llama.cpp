@@ -1,0 +1,4 @@
+run 25522 | preload_waits_before_ready | scific | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 18.07 t/s | prompt 2.2 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 220+280 W | 2026-11-10 15:34:08
+
+We need answer story ~900 words.
+---

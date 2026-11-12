@@ -1,0 +1,5 @@
+run 25802 | prompt_chains_without_staging | pf2k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 62.15 t/s | prompt 866.0 t/s | 16 tokens | args: -np 1 -b 2048 -ub 512 --cpu-moe --moe-expert-cache 32 --moe autotune=0,predict=0,admit-boot=0,staging=0,log=w | power 220+280 W | 2026-11-11 09:46:06
+
+},
+    {"null", {"\"null\"", {}},
+    {"string

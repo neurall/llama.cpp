@@ -1,0 +1,5 @@
+run 25406 | fillread1 | scific | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 38.92 t/s | prompt 147.9 t/s | 98 tokens | args: -np 1 | power 220+280 W | 2026-11-10 10:54:33
+
+user
+Write a science-fiction short story of about 900 words. The crew of a generation ship wakes from cryosleep above the planet they were sent to settle and finds its cities already lit: the colonists below are their own descendants, from a copy of the ship that left a century after them and arrived first. Tell it through the eyes of the ship's archivist. Literary prose with sensory detail and dialogue; no headings, no lists, no code.
+---

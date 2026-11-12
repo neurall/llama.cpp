@@ -1,0 +1,8 @@
+run 26077 | chain_landed | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 33.46 t/s | prompt 529.6 t/s | 64 tokens | args: -np 1 --moe sim-vram=12288,dense-split=1,staging=0 | power 220+280 W | 2026-11-11 16:09:14
+
+    return params.speculative.types.all == (
+        COMMON_SPECULATIVE_TYPES_DEFAULT_EXC_TOP_K |
+        COMMON_SPECULATIVE_TYPES_DEFAULT_EXC_TOP_P |
+        COMMON_SPECULATIVE_TYPES_DEFAULT_EXC_TYPICAL |
+        COMMON_SPECULATIVE_TYPES_DEFAULT_EXC_MIN_P |
+       

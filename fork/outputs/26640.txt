@@ -1,0 +1,9 @@
+run 26640 | ns_part_units_early_release | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 23.62 t/s | prompt 117.3 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,verify=2,poison=3 | power 280+280 W | 2026-11-12 11:31:26
+
+    return params.speculative.types.all == (
+        (1u << COMMON_SPEC_TYPE_NONE) |
+        (1u << COMMON_SPEC_TYPE_DRAFT) |
+        (1u << COMMON_SPEC_TYPE_NGRAM) |
+        (1u << COMMON_SPEC_TYPE_DFLASH)
+    );
+}

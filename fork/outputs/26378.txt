@@ -1,0 +1,394 @@
+run 26378 | oneexe | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.1 t/s | prompt 761.7 t/s | 4096 tokens | args: -np 1 -lm pin | power 200+200 W | 2026-11-12 05:34:24
+
+<think>Let me analyze this source file carefully for bugs. The file contains two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each file systematically.
+
+## common/json-schema-to-grammar.cpp
+
+1. **`build_repetition` function**: Looks correct. Handles various cases of min/max items.
+
+2. **`build_min_max_int` function**: Let me check carefully...
+   - The `uniform_range` lambda looks correct.
+   - The negative number handling looks correct.
+   - The `has_min` only case looks correct.
+   - The `has_max` only case looks correct.
+
+3. **`_pattern_to_rule` function**: Let me check...
+   - The character class handling looks correct.
+   - The curly bracket handling looks correct.
+   - The literal handling looks correct.
+
+4. **`_not_strings` function**: Looks correct.
+
+5. **`_resolve_ref` function**: Looks correct.
+
+6. **`_build_object_rule` function**: Looks correct.
+
+7. **`_add_primitive` function**: Looks correct.
+
+8. **`visit` function**: Looks correct.
+
+9. **`json_schema_to_grammar` functions**: Looks correct.
+
+10. **`build_grammar` function**: Looks correct.
+
+Wait, let me look more carefully at some specific areas...
+
+In `_pattern_to_rule`, the `join_seq` function:
+```cpp
+auto join_seq = [&]() {
+    std::vector<literal_or_rule> ret;
+    // ...
+    std::vector<std::string> results;
+    results.reserve(ret.size());
+    for (const auto & item : ret) {
+        results.push_back(to_rule(item));
+    }
+    return std::make_pair(string_join(results, " "), false);
+};
+```
+
+This returns a `literal_or_rule` which is `std::pair<std::string, bool>`. The `false` means it's not a literal. That seems correct since the joined result could be a rule reference.
+
+Actually wait, let me re-read the `join_seq` return type. It returns `std::make_pair(string_join(results, " "), false)` which is a `literal_or_rule`. But the function `transform` returns `literal_or_rule`. So `join_seq` should return `literal_or_rule`. Let me check... yes, `join_seq` returns `std::make_pair(...)` which is `std::pair<std::string, bool>` = `literal_or_rule`. That's correct.
+
+Hmm, actually I need to look more carefully. The `join_seq` lambda returns `std::make_pair(string_join(results, " "), false)` - but the return type of `join_seq` is not explicitly declared. Since it's a lambda, the return type is deduced. `std::make_pair(string_join(results, " "), false)` returns `std::pair<std::string, bool>` which matches `literal_or_rule`. OK that's fine.
+
+Let me look at the `transform` function more carefully:
+
+```cpp
+std::function<literal_or_rule()> transform = [&]() -> literal_or_rule {
+    std::vector<literal_or_rule> seq;
+    // ...
+    while (i < length) {
+        char c = sub_pattern[i];
+        if (c == '.') {
+            seq.emplace_back(get_dot(), false);
+            i++;
+        } else if (c == '(') {
+            // ...
+            seq.emplace_back("(" + to_rule(transform()) + ")", false);
+        } else if (c == ')') {
+            // ...
+            return join_seq();
+        } else if (c == '^' || c == '$') {
+            throw unsupported_pattern("anchor inside the pattern");
+        } else if (c == '[') {
+            // ...
+        } else if (c == '|') {
+            seq.emplace_back("|", false);
+            i++;
+        } else if (c == '*' || c == '+' || c == '?') {
+            // ...
+        } else if (c == '{') {
+            // ...
+        } else {
+            // literal handling
+        }
+    }
+    return join_seq();
+};
+```
+
+This looks correct.
+
+Now let me look at the `common/arg.cpp` file...
+
+Actually, the file seems to be cut off at the end. The last line is:
+```cpp
+static bool spec_types_is_default(const common_params & params) {
+```
+
+This is an incomplete function. But the prompt says "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment."
+
+So I need to return the complete file as-is, with bugs fixed. Let me look more carefully for bugs.
+
+Let me re-read the entire file more carefully...
+
+Actually, looking at this more carefully, I think the file might be intentionally truncated (the last function is incomplete). The prompt says to return every line from first to last, so I should include everything as-is.
+
+Let me look for actual bugs:
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+When `min_items == 0`, the recursive call gets `min_items = 0`, so it would produce `item_rule + "*"` or similar. Then the whole thing is wrapped in `(...)?`. This seems correct.
+
+2. In `build_min_max_int`, the `uniform_range` lambda... let me trace through an example.
+
+Actually, let me focus on finding actual bugs rather than verifying correctness of everything.
+
+Let me look at `_pattern_to_rule` more carefully:
+
+```cpp
+} else if (c == '[') {
+    std::string square_brackets = std::string(1, c);
+    i++;
+    while (i < length && sub_pattern[i] != ']') {
+        if (sub_pattern[i] == '\\') {
+            auto escape_length = gbnf_escape_length(sub_pattern, i);
+            if (escape_length == 0) {
+                throw unsupported_pattern("unsupported escape in character class: " + sub_pattern.substr(i, 2));
+            }
+            square_brackets += sub_pattern.substr(i, escape_length);
+            i += escape_length;
+        } else {
+            square_brackets += sub_pattern[i];
+            i++;
+        }
+    }
+    if (i >= length) {
+        throw invalid_pattern("unterminated character class");
+    }
+    square_brackets += ']';
+    i++;
+    seq.emplace_back(square_brackets, false);
+}
+```
+
+This looks correct.
+
+Now the literal handling:
+```cpp
+} else {
+    std::string literal;
+    auto is_non_literal = [&](char c) {
+        return NON_LITERAL_SET.find(c) != NON_LITERAL_SET.end();
+    };
+    while (i < length) {
+        if (sub_pattern[i] == '\\') {
+            if (i == length - 1) {
+                throw invalid_pattern("trailing backslash");
+            }
+            char next = sub_pattern[i + 1];
+            if (ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.find(next) != ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.end()) {
+                i++;
+                literal += sub_pattern[i];
+                i++;
+            } else {
+                auto escape_length = gbnf_escape_length(sub_pattern, i);
+                if (escape_length == 0) {
+                    throw unsupported_pattern("unsupported escape: " + sub_pattern.substr(i, 2));
+                }
+                literal += sub_pattern.substr(i, escape_length);
+                i += escape_length;
+            }
+        } else if (sub_pattern[i] == '"') {
+            literal += "\\\"";
+            i++;
+        } else if (!is_non_literal(sub_pattern[i]) &&
+                (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+            literal += sub_pattern[i];
+            i++;
+        } else {
+            break;
+        }
+    }
+    if (literal.empty()) { // nothing was consumed, ex. a stray ']' or '}'
+        throw unsupported_pattern(std::string("unsupported character: ") + c);
+    }
+    seq.emplace_back(literal, true);
+}
+```
+
+Hmm, the condition for consuming a literal character:
+```cpp
+!is_non_literal(sub_pattern[i]) &&
+(i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))
+```
+
+This means: the current char is a literal char, AND (it's the last char, OR the literal is empty so far, OR the next char is '.', OR the next char is also a literal char).
+
+Wait, `literal.empty()` - if the literal is empty, we should consume the current char. But what if the current char is a literal and the next char is a non-literal? Then we should still consume the current char because it's a literal. The condition `literal.empty()` handles this case.
+
+Actually, I think the logic is: we want to consume consecutive literal characters. We stop when we encounter a non-literal character. The condition checks:
+- Current char is not a non-literal (i.e., it's a literal char)
+- AND (it's the last char, OR we haven't started a literal yet, OR the next char is '.', OR the next char is also a literal)
+
+Wait, `sub_pattern[i + 1] == '.'` - why would we check if the next char is '.'? The '.' is in NON_LITERAL_SET, so `!is_non_literal('.')` would be false. So if the next char is '.', we'd stop. But the condition says `sub_pattern[i + 1] == '.'` would allow us to continue. That seems wrong...
+
+Actually wait, let me re-read. The condition is:
+```
+(i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))
+```
+
+If `sub_pattern[i + 1] == '.'`, then we continue consuming. But '.' is a non-literal character (it's in NON_LITERAL_SET). So why would we want to continue?
+
+Hmm, actually I think the intent is: if the next character is '.', we should consume the current character because '.' will be handled separately (it's a special regex character). So we want to stop before the '.', but we should consume the current character first.
+
+Wait no, the condition is about whether to consume `sub_pattern[i]`. If `sub_pattern[i + 1] == '.'`, we consume `sub_pattern[i]` and then on the next iteration, `sub_pattern[i]` will be '.', which is in NON_LITERAL_SET, so `is_non_literal('.')` is true, and we'd break out of the loop. So the `sub_pattern[i + 1] == '.'` condition is there to ensure we consume the current character even if the next one is a special character.
+
+Actually, I think the logic is correct. Let me trace through:
+- If current char is a literal and next char is '.', we consume current char (because `sub_pattern[i + 1] == '.'` is true)
+- Next iteration: current char is '.', `is_non_literal('.')` is true, so we break
+
+That seems correct.
+
+But wait, what about `literal.empty()`? If the literal is empty and the current char is a literal but the next char is a non-literal (not '.'), we'd consume the current char. Then on the next iteration, the current char would be a non-literal, and we'd break. That's correct.
+
+OK, I think the pattern parsing logic is correct.
+
+Let me look at other potential bugs...
+
+In `_build_object_rule`:
+```cpp
+std::string kv_rule = _add_rule(sub_name + "-kv", key_rule + " \":\" space " + value_rule);
+```
+
+Wait, the kv rule should have `space ":" space` not just `":"`. Let me check... Actually looking at the required props:
+```cpp
+prop_kv_rule_names[prop_name] = _add_rule(
+    name + (name.empty() ? "" : "-") + prop_name + "-kv",
+    format_literal(json(prop_name).dump()) + " space \":\" space " + prop_rule_name
+);
+```
+
+This has `space ":" space`. But the additional properties kv rule:
+```cpp
+std::string kv_rule = _add_rule(sub_name + "-kv", key_rule + " \":\" space " + value_rule);
+```
+
+This is missing `space` before `":"`. It should be `key_rule + " space \":\" space " + value_rule`.
+
+Hmm, but actually, looking at the required props rule, it's `format_literal(...) + " space \":\" space " + prop_rule_name`. So the pattern is `<key> space ":" space <value>`.
+
+For additional properties, it's `key_rule + " \":\" space " + value_rule`. This is missing `space` before `":"`.
+
+Wait, but actually, maybe the key_rule already ends with something that handles space? Let me think... The key_rule is either a string primitive or a `_not_strings` rule. The `_not_strings` rule ends with `["]` (closing quote). So after the key, we need `space ":" space`.
+
+So yes, the additional properties kv rule is missing `space` before `":"`. It should be:
+```cpp
+std::string kv_rule = _add_rule(sub_name + "-kv", key_rule + " space \":\" space " + value_rule);
+```
+
+Wait, but actually, let me re-read. The required props kv rule is:
+```
+format_literal(json(prop_name).dump()) + " space \":\" space " + prop_rule_name
+```
+
+And the additional props kv rule is:
+```
+key_rule + " \":\" space " + value_rule
+```
+
+So the required one has `space ":" space` and the additional one has `":" space`. The additional one is missing `space` before `":"`.
+
+Hmm, but wait. Let me look at this more carefully. Actually, I think this might be intentional - maybe the key_rule already includes trailing space handling? No, that doesn't make sense.
+
+Actually, I think this IS a bug. The additional properties kv rule should be:
+```cpp
+key_rule + " space \":\" space " + value_rule
+```
+
+Let me continue looking for other bugs...
+
+In `_visit_all_of`:
+```cpp
+std::string _visit_all_of(const common_chat_schema_all_of & schema, const std::string & name, const std::string & rule_name) {
+```
+
+The function signature takes `name` and `rule_name`. Let me check how it's called:
+```cpp
+case common_chat_schema::KIND_ALL_OF:
+    return _visit_all_of(as<common_chat_schema_all_of>(schema), name, rule_name);
+```
+
+And inside `_visit_all_of`, `name` is used for building object rules and `rule_name` is used for the final rule name. That seems correct.
+
+In `visit`:
+```cpp
+std::string rule_name = is_reserved_name(name) ? name + "-" : name.empty() ? "root" : name;
+std::string sub_name  = name + (name.empty() ? "" : "-");
+```
+
+This looks correct.
+
+Let me look at the `KIND_ARRAY` case:
+```cpp
+case common_chat_schema::KIND_ARRAY: {
+    const auto & arr = as<common_chat_schema_array>(schema);
+    if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+        return _visit_primitive(rule_name, "array");
+    }
+    std::string item_rule_name = visit(*arr.items, sub_name + "item");
+    int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;
+    return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+}
+```
+
+This looks correct.
+
+Let me look at `KIND_STRING`:
+```cpp
+case common_chat_schema::KIND_STRING: {
+    const auto & str = as<common_chat_schema_string>(schema);
+    if (!str.pattern.empty()) {
+        return _visit_pattern(str.pattern, rule_name);
+    }
+    if (str.format == common_chat_schema::FORMAT_UUID) {
+        return _visit_primitive(rule_name, "uuid");
+    }
+    if (str.format != common_chat_schema::FORMAT_NONE) {
+        std::string prim_name = std::string(str.format == common_chat_schema::FORMAT_DATE ? "date" : str.format == common_chat_schema::FORMAT_TIME ? "time" : "date-time") + "-string";
+        return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
+    }
+    if (str.min_length > 0 || str.max_length >= 0) {
+        std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+        int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+        return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, str.min_length, max_len) + " \"\\\"\"");
+    }
+    return _visit_primitive(rule_name, "string");
+}
+```
+
+This looks correct.
+
+Let me look at `KIND_INTEGER`:
+```cpp
+case common_chat_schema::KIND_INTEGER: {
+    const auto & i = as<common_chat_schema_integer>(schema);
+    if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max()) {
+        return _visit_primitive(rule_name, "integer");
+    }
+    std::stringstream out;
+    out << "(";
+    build_min_max_int(i.minimum, i.maximum, out);
+    out << ")";
+    return _add_rule(rule_name, out.str());
+}
+```
+
+This looks correct.
+
+Now let me look at `common/arg.cpp`...
+
+The file seems to be cut off at the end. The last complete function is `spec_types_is_default` which starts but doesn't have a body. So the file is incomplete.
+
+But the prompt says "Return the complete fixed version of the following source file: every line of it, from the first line to the last". So I should include everything as-is.
+
+Let me look for bugs in `common/arg.cpp`:
+
+1. `read_file` function - looks correct.
+
+2. `get_common_arg_defs` - looks correct.
+
+3. `common_arg::set_examples` - looks correct.
+
+4. `common_arg::set_excludes` - looks correct.
+
+5. `common_arg::set_env` - looks correct.
+
+6. `common_arg::set_sampling` - looks correct.
+
+7. `common_arg::set_spec` - looks correct.
+
+8. `common_arg::set_preset_only` - looks correct.
+
+9. `common_arg::in_example` - looks correct.
+
+10

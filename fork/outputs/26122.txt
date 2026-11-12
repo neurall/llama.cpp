@@ -1,0 +1,4 @@
+run 26122 | live_map | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 216.66 t/s | prompt 126.5 t/s | 16 tokens | args: -np 1 --refresh-ssd --cpu-moe --moe-expert-cache 64 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0,pp-path=stream,verify=2 | power 220+280 W | 2026-11-11 17:41:20
+
+}},
+    {"string", {"\"(\" space ( value (\",\"

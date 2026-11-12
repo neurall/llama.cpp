@@ -1,0 +1,182 @@
+run 26444 | fix_floor_only_without_staging | pf12k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 144.08 t/s | prompt 8586.5 t/s | 4096 tokens | args: -np 1 | power 280+280 W | 2026-11-12 08:01:05
+
+<think>
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Input:** A C++ source file containing two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+   - **Task:** Return the complete fixed version of the source file. Every line must be included. Every bug must be fixed. Each change must be marked by a comment. Do not summarize, skip unchanged parts, or stop early.
+   - **Constraints:** Strict formatting, line-by-line preservation, bug fixes with comments.
+
+2.  **Identify Potential Bugs/Issues in the Code:**
+   I need to carefully scan the provided code for common C++ errors, logical bugs, syntax issues, or missing includes/definitions. Since this is a large file, I'll look for:
+   - Missing includes or forward declarations
+   - Syntax errors (e.g., mismatched braces, missing semicolons)
+   - Logical errors (e.g., incorrect loop conditions, missing checks)
+   - Undefined variables/functions
+   - Potential compilation issues (e.g., `std::min`/`std::max` conflict on Windows, though already handled with `NOMINMAX`)
+   - Missing `#include` for `string_repeat`, `string_join`, `string_split`, `string_replace_all`, `is_truthy`, `is_falsey`, `fs_get_cache_file`, `common_params`, `common_params_parser_init`, `common_chat_schema`, etc. (These are likely from `common.h` or other headers, but I should check if they're properly referenced or if there are obvious missing pieces).
+   - The code uses `common_chat_schema`, `common_chat_schema_ptr`, `common_chat_schema_ref`, etc. These are likely defined elsewhere. I'll assume they exist as per the context.
+   - Let's look for specific bugs:
+     - `build_repetition`: `max_items == 0` returns `""`. If `min_items == 0` and `max_items == 0`, it should probably return `""` or handle it. The code handles it.
+     - `build_min_max_int`: Uses `std::numeric_limits<int64_t>::min()` and `max()`. Checks `has_min` and `has_max`. Looks okay.
+     - `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`: Defined as `static std::unordered_map`. Looks okay.
+     - `is_reserved_name`: Uses a static lambda to initialize a set. Correct.
+     - `replacePattern`: Uses `std::regex_search`. Looks okay.
+     - `gbnf_escape_length`: Checks hex digits. Looks okay.
+     - `common_chat_schema_converter`: Class definition. Uses `friend std::string build_grammar(...)`. Looks okay.
+     - `_add_rule`: Handles naming collisions. Looks okay.
+     - `_generate_union_rule`: Calls `visit`. Looks okay.
+     - `_visit_pattern`: Parses regex. Handles `(`, `)`, `[`, `]`, `*`, `+`, `?`, `{`, `|`, `.`, literals. Looks complex but mostly correct. Potential bug: `sub_pattern[i] == '^' || sub_pattern[i] == '$'` throws unsupported. But anchors are stripped at the start. Inside, it throws. That's fine.
+     - `_not_strings`: Uses a trie. Looks okay.
+     - `_resolve_ref`: Handles `$ref`. Looks okay.
+     - `_build_object_rule`: Complex logic for required/optional properties. Looks okay.
+     - `_add_primitive`: Recursively adds dependencies. Looks okay.
+     - `visit`: Switch on schema kind. Looks okay.
+     - `check_errors`: Throws on errors, prints warnings. Looks okay.
+     - `format_grammar`: Outputs rules. Looks okay.
+     - `json_schema_to_grammar`: Two overloads. Looks okay.
+     - `build_grammar`: Uses converter. Looks okay.
+     - `common/arg.cpp`: Includes, defines, functions.
+     - `get_common_arg_defs`: Uses `common_params_parser_init`. Might be missing forward declaration or include, but assumed present.
+     - `common_arg::to_string`: Uses `std::max(0, 7 - (int)tmp.size())`. `std::max` might conflict on Windows, but `NOMINMAX` is defined. However, `std::max` is in `<algorithm>`, which is included. The `#define NOMINMAX` is before `#include <windows.h>`, so it should work. But wait, `std::max` is used in `to_string`. On Windows, `min`/`max` macros from windows.h can conflict with `std::min`/`std::max`. The `#define NOMINMAX` prevents this. It's fine.
+     - `break_str_into_lines`: Uses `std::istringstream`. Looks okay.
+     - `parse_tensor_buffer_overrides`: Uses `static std::list<std::string> buft_overrides;`. This is a static local variable. It will persist across calls, which might cause memory leaks or stale data if not cleared. But the comment says "keep strings alive and avoid leaking memory by storing them in a static vector". Actually, it's a `std::list`. This is a potential bug: static local variables retain state across function calls. If called multiple times, it will accumulate strings. It should probably be cleared or use a different approach. I'll fix it by making it a local vector or clearing it, but the comment says "keep strings alive". I'll change it to a local `std::vector` or just keep it but note the issue. Actually, in C++, static local variables are initialized once. If this function is called multiple times, `buft_overrides` will grow. This is likely a bug. I'll fix it by making it a local `std::vector<std::string>` or clearing it, but I'll stick to the intent: maybe it's meant to be a static cache. I'll add a comment and fix it to be a local vector to avoid accumulation, or just leave it but mark it. Actually, the code says `static std::list<std::string> buft_overrides;`. I'll change it to `std::vector<std::string> buft_overrides;` locally to avoid persistent state issues, or keep it static but add a comment. I'll fix it to be local.
+     - `clean_file_name`: Uses `string_replace_all`. Assumes it's defined.
+     - `kv_cache_types`: Vector of types.
+     - `kv_cache_type_from_str`: Linear search.
+     - `get_all_kv_cache_types`: Builds string.
+     - `parse_bool_value`: Uses `is_truthy`/`is_falsey`.
+     - `arg_removed`: Throws.
+     - `get_default_local_path`: Splits URL.
+     - `spec_types_is_default`: Function declaration, but body is cut off! The input ends abruptly at `static bool spec_types_is_default(const common_params & params) {`. This is a critical issue. I need to complete it or note it. Since the prompt says "Return the complete fixed version... every line... do not stop early", I must provide a complete file. I'll assume the function body is missing and I need to provide a reasonable completion or just leave it as is but mark it. Actually, I should just complete it logically or add a placeholder comment. But the prompt says "every bug fixed". I'll complete it with a standard implementation or just add a comment that it's incomplete, but I'll try to infer it's likely `return params.spec_types == common_params::SPEC_TYPES_DEFAULT;` or similar. I'll just add a comment and complete it minimally.
+     - Wait, the input ends exactly at `static bool spec_types_is_default(const common_params & params) {`. I will complete it with a reasonable body and mark it.
+
+   Let's systematically scan for bugs:
+   1. `build_repetition`: `max_items == 0` returns `""`. If `min_items > 0`, it should probably throw or handle. But JSON schema allows `min: 0, max: 0`. It's fine.
+   2. `build_min_max_int`: `decimals_left` parameter. Used correctly.
+   3. `PRIMITIVE_RULES`/`STRING_FORMAT_RULES`: `{"number", {"(\"-\"? integral-part) (\".\" decimal-part)? ([eE] [-+]? integral-part)?", {"integral-part", "decimal-part"}}}` - The escape sequences in strings might be tricky. `\"-\"?` is fine.
+   4. `is_reserved_name`: `static const std::unordered_set<std::string> RESERVED_NAMES = [] { ... }();` - Correct.
+   5. `replacePattern`: `std::regex_search` loop. Correct.
+   6. `gbnf_escape_length`: `pattern[pos + 1]` checks. Correct.
+   7. `common_chat_schema_converter`: `_dotall` member. Correct.
+   8. `_add_rule`: `regex_replace` uses `INVALID_RULE_CHARS_RE`. Correct.
+   9. `_generate_union_rule`: `name + (name.empty() ? "alternative-" : "-") + std::to_string(i)` - Correct.
+   10. `_visit_pattern`: `sub_pattern[i] == '^' || sub_pattern[i] == '$'` throws. Correct.
+   11. `_not_strings`: `trie.nodes[0].pattern < 0` check. Correct.
+   12. `_resolve_ref`: `schema.ref.find('#')`. Correct.
+   13. `_build_object_rule`: `get_recursive_refs` lambda. Correct.
+   14. `_add_primitive`: `PRIMITIVE_RULES.find(dep)`. Correct.
+   15. `visit`: Switch cases. Correct.
+   16. `check_errors`: `fprintf(stderr, ...)`. Correct.
+   17. `format_grammar`: `ss << kv.first << " ::= " << kv.second << '\n';`. Correct.
+   18. `json_schema_to_grammar`: Two overloads. Correct.
+   19. `build_grammar`: `options.dotall`. Correct.
+   20. `arg.cpp`: `#define NOMINMAX` before `#include <windows.h>`. Correct.
+   21. `get_common_arg_defs`: `common_params_parser_init(params, LLAMA_EXAMPLE_SERVER, nullptr)`. Might need `#include "common_params.h"` but assumed.
+   22. `common_arg::to_string`: `std::max(0, 7 - (int)tmp.size())`. `std::max` requires `<algorithm>`, included. Correct.
+   23. `break_str_into_lines`: `std::istringstream iss(input);`. Correct.
+   24. `parse_tensor_buffer_overrides`: `static std::list<std::string> buft_overrides;` - I'll fix this to be a local `std::vector` to avoid state accumulation across calls, as it's a common bug. I'll add a comment.
+   25. `clean_file_name`: `string_replace_all`. Assumed defined.
+   26. `spec_types_is_default`: Incomplete. I'll complete it with a standard implementation and mark it.
+
+   Let's look for more subtle bugs:
+   - `build_repetition`: `auto has_max = max_items != std::numeric_limits<int>::max();` - `max_items` is `int`. Correct.
+   - `build_min_max_int`: `auto less_decimals = std::max(decimals_left - 1, 1);` - `decimals_left` is `int`. Correct.
+   - `PRIMITIVE_RULES` initialization: `static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_RULES = { ... };` - Correct.
+   - `is_reserved_name`: `static const std::unordered_set<std::string> RESERVED_NAMES = [] { ... }();` - Correct.
+   - `replacePattern`: `std::string::const_iterator searchStart(input.cbegin());` - Correct.
+   - `gbnf_escape_length`: `if (pos + 2 + n_hex > pattern.length())` - Correct.
+   - `common_chat_schema_converter`: `_rules` is `std::map`. Correct.
+   - `_add_rule`: `regex_replace(name, INVALID_RULE_CHARS_RE, "-")` - `std::regex_replace` is in `<regex>`, included. Correct.
+   - `_generate_union_rule`: `string_join` assumed.
+   - `_visit_pattern`: `auto to_rule = [&](const literal_or_rule & ls) { ... }` - Correct.
+   - `_not_strings`: `common_trie trie(strings);` - Assumed.
+   - `_resolve_ref`: `static const std::regex nonalphanumeric_regex(R"([^a-zA-Z0-9-]+)");` - Correct.
+   - `_build_object_rule`: `prop_kv_rule_names[prop_name] = _add_rule(...)` - Correct.
+   - `_add_primitive`: `BuiltinRule dep_rule;` unused. I'll remove it or mark it. Actually, it's declared but never used. I'll remove it to fix a warning/bug.
+   - `visit`: `case common_chat_schema::KIND_ANY:` returns `_add_primitive("value", PRIMITIVE_RULES.at("value"))`. Correct.
+   - `check_errors`: `fprintf(stderr, ...)` - Correct.
+   - `format_grammar`: `ss << kv.first << " ::= " << kv.second << '\n';` - Correct.
+   - `json_schema_to_grammar`: `common_chat_schema_from_json(schema)` - Assumed.
+   - `build_grammar`: `common_grammar_builder builder { ... }` - Correct.
+   - `arg.cpp`: `#include <cinttypes>` should be `<cstdint>`. I'll fix this typo.
+   - `#include <linux/limits.h>` - Linux usually uses `<limits.h>`. I'll fix to `<limits.h>`.
+   - `#include <shellapi.h>` should be `<shellapi.h>` or `<shlwapi.h>`? Actually, it's `<shellapi.h>` in some contexts, but usually `<windows.h>` covers it. I'll leave it or fix to `<shellapi.h>` -> `<shellapi.h>` is fine. Actually, it's likely `<shellapi.h>` or `<shlwapi.h>`. I'll keep it but note it.
+   - `LLAMA_MAX_URL_LENGTH 2084` - Fine.
+   - `mmproj_examples` initializer list - Fine.
+   - `read_file` - Fine.
+   - `get_common_arg_defs` - Fine.
+   - `common_arg::set_examples` etc. - Fine.
+   - `get_value_from_env` - Fine.
+   - `has_value_from_env` - Fine.
+   - `break_str_into_lines` - Fine.
+   - `to_string` - Fine.
+   - `get_args` - Fine.
+   - `get_env` - Fine.
+   - `parse_tensor_buffer_overrides` - I'll fix the static list issue.
+   - `clean_file_name` - Fine.
+   - `handle_model_result` - Struct.
+   - `kv_cache_types` - Fine.
+   - `kv_cache_type_from_str` - Fine.
+   - `get_all_kv_cache_types` - Fine.
+   - `parse_bool_value` - Fine.
+   - `arg_removed` - Fine.
+   - `get_default_local_path` - Fine.
+   - `spec_types_is_default` - Incomplete. I'll complete it.
+
+   Let's carefully check `#include <cinttypes>` -> should be `<cstdint>`.
+   `#include <linux/limits.h>` -> should be `<limits.h>`.
+   `static std::list<std::string> buft_overrides;` -> I'll change to `std::vector<std::string> buft_overrides;` and add a comment explaining why (to avoid persistent state across calls).
+   `BuiltinRule dep_rule;` in `_add_primitive` is unused. I'll remove it.
+   `spec_types_is_default` is cut off. I'll add a reasonable implementation and mark it.
+
+   I will now reconstruct the entire file, line by line, inserting comments for every fix. I must ensure NO lines are skipped.
+
+   Let's draft the fixed version mentally, checking each section:
+
+   **Section 1: json-schema-to-grammar.cpp**
+   - Includes: fine.
+   - `build_repetition`: fine.
+   - `build_min_max_int`: fine.
+   - `SPACE_RULE`: fine.
+   - `BuiltinRule`: fine.
+   - `PRIMITIVE_RULES`: fine.
+   - `STRING_FORMAT_RULES`: fine.
+   - `is_reserved_name`: fine.
+   - `INVALID_RULE_CHARS_RE` etc.: fine.
+   - `replacePattern`: fine.
+   - `format_literal`: fine.
+   - `gbnf_format_literal`: fine.
+   - `gbnf_escape_length`: fine.
+   - `common_chat_schema_converter`:
+     - `_add_primitive`: remove unused `BuiltinRule dep_rule;`
+     - `_visit_pattern`: fine.
+     - `_not_strings`: fine.
+     - `_resolve_ref`: fine.
+     - `_build_object_rule`: fine.
+     - `visit`: fine.
+     - `check_errors`: fine.
+     - `format_grammar`: fine.
+   - `json_schema_to_grammar`: fine.
+   - `build_grammar`: fine.
+
+   **Section 2: arg.cpp**
+   - `#include <cinttypes>` -> fix to `<cstdint>`
+   - `#include <linux/limits.h>` -> fix to `<limits.h>`
+   - `static std::list<std::string> buft_overrides;` -> fix to `std::vector<std::string> buft_overrides;`
+   - `spec_types_is_default` -> complete it.
+
+   I will now generate the full text, ensuring every line is present, and each fix is marked with a comment. I'll be meticulous.
+
+   Let's verify line by line mentally to ensure no omissions:
+   - First line: `// file: common/json-schema-to-grammar.cpp`
+   - Includes...
+   - `using json = common_json;`
+   - `build_repetition`...
+   - `build_min_max_int`...
+   - `SPACE_RULE`...
+   - `BuiltinRule`...
+   - `PRIMITIVE_RULES`...
+   - `STRING_FORMAT_RULES`...
+   - `is_reserved_name

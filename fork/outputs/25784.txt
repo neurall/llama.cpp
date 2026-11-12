@@ -1,0 +1,4 @@
+run 25784 | prompt_chains_without_staging | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 156.04 t/s | prompt 2358.2 t/s | 16 tokens | args: -np 1 -b 2048 -ub 512 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 | power 220+280 W | 2026-11-11 09:34:46
+
+}},
+    {"string", {"\"(\" space ( value (\",\"

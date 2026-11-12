@@ -1,0 +1,4 @@
+run 25444 | rampool_fill_full_queue_pin_under_fill | scific | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 6.18 t/s | prompt 1.1 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 220+280 W | 2026-11-10 12:11:23
+
+We need answer story ~900 words.
+---

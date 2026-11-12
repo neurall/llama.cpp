@@ -1,0 +1,4 @@
+run 25518 | preload_waits_before_ready | scific | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 17.29 t/s | prompt 1.4 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 220+280 W | 2026-11-10 15:25:52
+
+The user wants a science-fiction short
+---

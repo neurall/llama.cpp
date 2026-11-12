@@ -1,0 +1,15 @@
+run 25369 | touch19 | pf2k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 154.8 t/s | prompt 5324.9 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=1,dense-split=one | power 220+280 W | 2026-11-10 10:22:36
+
+},
+    {"null", {"\"null\"", {}}},
+    {"string", {"\"\"\" (\"\\\\\" | \"\\\"\" | \"\\n\" | \"\\t\" | \"\\r\" | \"\\b\" | \"\\f\" | \"\\\\u\" hex-digit hex-digit hex-digit hex-digit | [^\"\\n\\t\\r\\b\\f\\\\])* \"\"\"", {}}},
+    {"hex-digit", {"[0-9a-fA-F]", {}}},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULES_RE = {
+    {"boolean", "true|false"},
+    {"decimal-part", "[0-9]{1,16}"},
+    {"integral-part", "[0]|[1-9][0-9]{0,15}"},
+    {"number", "(\\-?[0-9]{1,16})(\\.[0-9]{1,16})?([eE][\\-+]?[0-9]{1,16})?"},
+    {"integer", "\\-?[0-9]{1,16}"},
+    {"value

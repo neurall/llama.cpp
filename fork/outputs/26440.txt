@@ -1,0 +1,361 @@
+run 26440 | fix_floor_only_without_staging | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.83 t/s | prompt 1438.3 t/s | 4096 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-12 07:50:42
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each part systematically.
+
+**Part 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?` but the initial `item_rule` part should also be optional. Let me look more carefully...
+
+Actually, let me look at the logic:
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+if (min_items == 0) {
+    result = "(" + result + ")?";
+}
+```
+
+When `min_items == 0`, the result is `item_rule + " " + build_repetition(...)` which means the first item is required. Then it wraps the whole thing with `(...)?`. So the first item becomes optional too. That seems correct.
+
+Wait, but when `min_items == 0` and `max_items == 1`, it returns `item_rule + "?"` early. And when `min_items == 0` and `max_items == 0`, it returns `""`. Those seem fine.
+
+2. In `build_min_max_int`, let me check the `has_min` and `has_max` logic:
+
+```cpp
+auto has_min = min_value != std::numeric_limits<int64_t>::min();
+auto has_max = max_value != std::numeric_limits<int64_t>::max();
+```
+
+This seems correct.
+
+3. In the `has_min && has_max` case with `min_value < 0 && max_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+out << ")";
+```
+This converts negative range to positive range. Seems correct.
+
+4. In the `has_min && has_max` case with `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+out << ") | ";
+min_value = 0;
+```
+This handles the negative part, then continues with the non-negative part. Seems correct.
+
+5. In the `has_min` only case with `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+Wait, this is wrong. When `min_value < 0`, we want numbers >= min_value. The negative part is numbers from min_value to -1, which is `-(1 to -min_value)`. So we should call `build_min_max_int(1, -min_value, ...)` for the positive part of the absolute value. But the code calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` which would generate numbers from INT64_MIN to -min_value... that doesn't make sense.
+
+Actually wait, let me re-read. The function generates a rule for integers in range [min_value, max_value]. When min_value < 0, the negative numbers are from min_value to -1. The absolute values are from 1 to -min_value. So we should generate `"- " (1 to -min_value)`.
+
+But the code says:
+```cpp
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+```
+
+This would generate numbers from INT64_MIN to -min_value... but we want 1 to -min_value (the absolute values). Hmm, actually wait - the function is called with `std::numeric_limits<int64_t>::min()` as min_value, which means `has_min` would be false (since min_value == INT64_MIN). So it would only handle the max case. And max_value = -min_value (which is positive). So it would generate numbers from 0 to -min_value. But we want 1 to -min_value (since we already have the "-" prefix).
+
+Hmm, actually looking at the `has_max` only case:
+```cpp
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    } else {
+        ...
+    }
+    return;
+}
+```
+
+Wait, this is the `has_max` only case (no min). When `top_level` is true and `max_value >= 0`, it adds negative numbers first (from -max_value to -1), then non-negative numbers (0 to max_value). But the negative part is `"- " [1-9] more_digits(0, less_decimals)` which generates 1 to 9 followed by 0-15 more digits... that's not bounded by max_value.
+
+Hmm, actually I think the `has_max` only case with `top_level=true` is generating all negative numbers (unbounded below) plus numbers from 0 to max_value. That makes sense because there's no min bound.
+
+But wait, in the `has_min` only case with `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+
+This generates:
+- `"- " (numbers from INT64_MIN to -min_value)` - but wait, that's wrong. We want `"- " (numbers from 1 to -min_value)` for the negative part.
+
+Actually, `build_min_max_int(INT64_MIN, -min_value, ...)` with `top_level=false`:
+- `has_min` = false (since min_value == INT64_MIN)
+- `has_max` = true (since -min_value != INT64_MAX, assuming min_value is negative)
+- So it goes to the `has_max` only case
+- `max_value = -min_value >= 0`
+- `top_level = false`, so it doesn't add the negative part
+- It calls `build_min_max_int(0, -min_value, out, decimals_left, true)` which generates 0 to -min_value
+
+But we want 1 to -min_value (since we already have the "-" prefix). So this would include 0, which is wrong - `"-0"` is not a valid representation.
+
+Hmm, but actually looking at the `has_max` only case more carefully:
+```cpp
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    }
+```
+
+When `top_level=false`, it just calls `build_min_max_int(0, max_value, ...)` which generates 0 to max_value. So the negative part would be `"- " (0 to -min_value)` which includes `"-0"`.
+
+This seems like a bug. The negative part should be `"- " (1 to -min_value)`.
+
+Actually, wait. Let me re-read the `has_min` only case with `min_value < 0`:
+
+```cpp
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    }
+```
+
+Hmm, actually I think the intent is:
+- Negative numbers: `"- " (1 to -min_value)` - numbers from min_value to -1
+- Non-negative numbers: `[0] | [1-9] more_digits(...)` - numbers from 0 to infinity
+
+But the code generates `"- " (0 to -min_value)` which includes 0.
+
+Actually, wait. Let me think about this differently. The function `build_min_max_int(INT64_MIN, -min_value, ...)` with `top_level=false`:
+- `has_min` = false
+- `has_max` = true
+- Goes to `has_max` only case
+- `max_value = -min_value >= 0`
+- `top_level = false`, so no negative part
+- Calls `build_min_max_int(0, -min_value, out, decimals_left, true)` which generates 0 to -min_value
+
+So the output would be `"- " (0 to -min_value) | [0] | [1-9] more_digits(...)`.
+
+The `"- 0"` part is wrong. It should be `"- " (1 to -min_value)`.
+
+Hmm, but maybe I'm wrong about this. Let me look at the `has_max` only case again:
+
+```cpp
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    } else {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+        out << ")";
+    }
+    return;
+}
+```
+
+When `top_level=true` and `max_value >= 0`, it adds `"- " [1-9] more_digits(...)` for all negative numbers (unbounded), then `build_min_max_int(0, max_value, ...)` for 0 to max_value. This seems correct for the case where there's no min bound.
+
+When `top_level=false` and `max_value >= 0`, it just calls `build_min_max_int(0, max_value, ...)` for 0 to max_value. This is used when we're already inside a `"- "` context.
+
+OK so back to the `has_min` only case with `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out << ") | [0] | [1-9] ";
+more_digits(0, decimals_left - 1);
+```
+
+The intent is to generate:
+- `"- " (1 to -min_value)` for negative numbers from min_value to -1
+- `[0] | [1-9] more_digits(...)` for non-negative numbers from 0 to infinity
+
+But `build_min_max_int(INT64_MIN, -min_value, ...)` with `top_level=false` generates `0 to -min_value`, not `1 to -min_value`.
+
+So the bug is that it should be `build_min_max_int(1, -min_value, ...)` instead of `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`.
+
+Wait, but if we call `build_min_max_int(1, -min_value, ...)`:
+- `has_min` = true (1 != INT64_MIN)
+- `has_max` = true (-min_value != INT64_MAX)
+- Both are positive
+- It would generate numbers from 1 to -min_value
+
+That seems correct!
+
+Actually, hold on. Let me reconsider. Maybe the original code is correct and I'm misunderstanding something.
+
+`build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false)`:
+- `has_min` = false (min_value == INT64_MIN)
+- `has_max` = true (assuming -min_value != INT64_MAX)
+- Goes to `has_max` only case
+- `max_value = -min_value >= 0`
+- `top_level = false`
+- Calls `build_min_max_int(0, -min_value, out, decimals_left, true)` which generates 0 to -min_value
+
+So the output is `"- " (0 to -min_value)`. This includes `"-0"` which is wrong.
+
+Hmm, but actually maybe `"-0"` is acceptable in some contexts? No, in JSON, `-0` is not a valid number representation... actually it is valid in JSON. But for integer rules, it might be intentional.
+
+Actually, I think the bug might be different. Let me look at this more carefully.
+
+Wait, I think I need to look at this from a different angle. Let me check if there are other bugs first, and then come back.
+
+Let me look at the `_pattern_to_rule` function more carefully.
+
+In the character class handling:
+```cpp
+} else if (c == '[') {
+    std::string square_brackets = std::string(1, c);
+    i++;
+    while (i < length && sub_pattern[i] != ']') {
+        if (sub_pattern[i] == '\\') {
+            auto escape_length = gbnf_escape_length(sub_pattern, i);
+            if (escape_length == 0) {
+                throw unsupported_pattern("unsupported escape in character class: " + sub_pattern.substr(i, 2));
+            }
+            square_brackets += sub_pattern.substr(i, escape_length);
+            i += escape_length;
+        } else {
+            square_brackets += sub_pattern[i];
+            i++;
+        }
+    }
+    if (i >= length) {
+        throw invalid_pattern("unterminated character class");
+    }
+    square_brackets += ']';
+    i++;
+    seq.emplace_back(square_brackets, false);
+}
+```
+
+This looks correct.
+
+In the curly brackets handling:
+```cpp
+} else if (c == '{') {
+    std::string curly_brackets = std::string(1, c);
+    i++;
+    while (i < length && sub_pattern[i] != '}') {
+        curly_brackets += sub_pattern[i];
+        i++;
+    }
+    if (i >= length) {
+        throw unsupported_pattern("unterminated curly brackets");
+    }
+    curly_brackets += '}';
+    i++;
+    auto nums = string_split(curly_brackets.substr(1, curly_brackets.length() - 2), ",");
+    int min_times = 0;
+    int max_times = std::numeric_limits<int>::max();
+    if (nums.size() != 1 && nums.size() != 2) {
+        throw unsupported_pattern("wrong number of values in curly brackets");
+    }
+    try {
+        if (nums.size() == 1) {
+            min_times = max_times = std::stoi(nums[0]);
+        } else {
+            if (!nums[0].empty()) {
+                min_times = std::stoi(nums[0]);
+            }
+            if (!nums[1].empty()) {
+                max_times = std::stoi(nums[1]);
+            }
+        }
+    } catch (const std::logic_error &) {
+        throw unsupported_pattern("invalid number in curly brackets");
+    }
+    if (seq.empty()) {
+        throw invalid_pattern("nothing to repeat");
+    }
+    auto &last = seq.back();
+    auto &sub = last.first;
+    auto sub_is_literal = last.second;
+
+    if (!sub_is_literal) {
+        std::string & sub_id = sub_rule_ids[sub];
+        if (sub_id.empty()) {
+            sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+        }
+        sub = sub_id;
+    }
+    seq.back().first = build_repetition(
+        sub_is_literal ? "\"" + sub + "\"" : sub,
+        min_times,
+        max_times,
+        ""
+    );
+    seq.back().second = false;
+}
+```
+
+Wait, there's a bug here. When `sub_is_literal` is true, the code does:
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+```
+
+But `sub` is `last.first` which is the literal string. So it wraps it in quotes. That seems correct.
+
+But wait, when `sub_is_literal` is false, the code modifies `sub` (which is `last.first`) to be the rule ID:
+```cpp
+if (!sub_is_literal) {
+    std::string & sub_id = sub_rule_ids[sub];
+    if (sub_id.empty()) {
+        sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+    }
+    sub = sub_id;
+}
+```
+
+Then `build_repetition(sub, ...)` uses the rule ID. That seems correct.
+
+Hmm, but there's a subtle issue. When `sub_is_literal` is true, `sub` is the literal string, and we wrap it in quotes. But what if the literal contains characters that need escaping? The `format_literal` function handles that, but here we're just doing `"\"" + sub + "\""`. If `sub` contains a `"` character, it would break.
+
+Actually, looking at the literal handling in the main loop:
+```cpp
+} else if (sub_pattern[i] == '"') {
+    literal += "\\\"";
+    i++;
+}
+```
+
+So `"` in the pattern is escaped as `\"` in the literal. Then when we do `"\"" + sub + "\""`, the `\"` in `sub` would be inside the outer quotes, which should be fine for GBNF.
+
+Hmm, actually I'm not sure about this. Let me think... In GBNF, a literal is `"..."` and inside it, `"` needs to be escaped as `\"`. So if `sub` is `\"`, then `"\"" + sub + "\""` = `"\"\""` which is a literal containing `"`. That seems correct.
+
+OK, let me look for other bugs.
+
+In the `_build_object_rule` function, the `get_recursive_refs` lambda:
+
+```cpp
+std::function<std::string(const std::vector<std::string> &, bool)> get_recursive_refs = [&](const std::vector<std::string> & ks, bool first_is_optional) {
+    std::string res;
+    if (ks.empty()) {
+        return res;
+    }
+    const std::string& k = ks[0];
+    std::string kv_rule_name =
