@@ -9283,7 +9283,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 // shortcut: off by default and tests only, it costs the big class decode hits; make it the default if the chain against stream rows pay for it
                 // --moe staging=0 implies it: with no stream to fall back to, a class short of one layer sent every call of its size to the decode chain (Qwen3.8-Flash-Next,
                 // 2 cards at 8 GiB: two one-layer classes of 99 blocks against 512 experts, prompt 307 t/s on the CPU's misses against 643 staged, 2026-11-11)
-                static const bool pool_floor = [] { const char * e = moe_opt("pool-floor"); return e ? atoi(e) != 0 : pp_no_staging(); }();
+                // (not implied by --moe staging=0 any more, 2026-11-12: the stream runs without staging into the cache's blocks, and the floor left the graph 1363 MiB of
+                // lend where the staged layout lends 3356: passes of 1216 tokens instead of 5056, Qwen3.8 12k prompt 158 t/s against 867 staged)
+                static const bool pool_floor = [] { const char * e = moe_opt("pool-floor"); return e && atoi(e) != 0; }();
                 if (pool_floor && !order.empty()) {
                     const size_t  big = order[0];
                     const int32_t big_E = (int32_t) ll[pl.cls[big].members[0]]->ffn_up_exps->ne[2];
@@ -14634,7 +14636,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(pm)); }
     // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
     // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed). The prompt chain's uploads wait for the same SSD reads.
-    if ((!busy || pp_no_staging()) && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, estimate_moe_miss_ongpu_time(pm)); }   // staging=0: the chain drops the queued uploads (pp_settle) rather than stage
+    if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, estimate_moe_miss_ongpu_time(pm)); }
     // its calculated time (uploads and CPU side by side, the chunks, the learned ratios), not its uploads alone: the uploads alone priced a 100-token GLM call at 4.8 s, the
     // calculation said 1.6 s, it took 2.1 s, and the stream (3.3 s) won every such call (2026-11-10, two cards)
     if (cpu_known) { cand(PP_DEC, estimate_decodechain_time(pm)); }
