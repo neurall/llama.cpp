@@ -439,6 +439,25 @@ void llama_dsplit_mirror_place_fork(const llama_model & model, const std::vector
         LLAMA_LOG_WARN("%s: dense split: %.1f MiB of copies for %s in a buffer of their own (%s)\n", __func__, c.bytes / 1048576.0, ggml_backend_dev_name(kv.first),
                 pb ? "more than half of the pool" : "no expert pool on the card");
     }
+    // A split needs two cards with copies, the expert card among them (g_cards). Without that no pass ever splits, but the pass planner went on keeping room for
+    // the copies placed in the other cards' pools: Qwen3.8 on 2 x 8 GiB with --moe staging=0, CUDA1's copies refused, CUDA0 kept 1878 MiB for its own, room for
+    // the graph 1978 MiB instead of 3815, prompt passes of 2816 tokens (884.8 against 1331.4 prompt t/s staged, 2026-11-12). The room goes back.
+    if (dsplit_copies_ready(S)) {
+        size_t good = 0;
+        for (const auto & kv : S.copies) { good += !S.bad.count(kv.first); }
+        if (good > 0 && (good < 2 || (!g_card_order.empty() && S.bad.count(g_card_order.back())))) {
+            for (auto & kv : S.copies) {
+                dsplit_copies & c = kv.second;
+                if (S.bad.count(kv.first) || !c.pooled) { continue; }   // copies in a buffer of their own are paid for: left
+                llama_moe_cache_alias_mirror_fork(kv.first, 0);
+                c.pooled = false;
+                S.bad.insert(kv.first);
+                LLAMA_LOG_WARN("%s: dense split: no two cards hold their copies, nothing will split: the %.1f MiB kept for %s's copies go back to its expert pool\n", __func__,
+                        c.bytes / 1048576.0, ggml_backend_dev_name(kv.first));
+            }
+            dsplit_update_fill(S);
+        }
+    }
 }
 
 std::vector<std::pair<ggml_tensor *, ggml_tensor *>> llama_dsplit_mirror_take_upload_fork(const llama_model & model, ggml_backend_dev_t dev) {

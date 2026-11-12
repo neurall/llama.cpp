@@ -4890,6 +4890,21 @@ private:
                             batch_cap = std::min<size_t>(n_batch, batch.size() + (size_t) size);
                         }
                     }
+                    // fork: the checkpoint's cut lies one planned pass before the tail. The passes of what the request still has to process are equal and sized
+                    // under the pools' cap at the request's LAST cells (llama_moe_request_pass_fork). Upstream's offset is the context's micro-batch, the cap
+                    // at an empty KV: the call it cut off no longer fit one pass once the KV had grown and ran as two (Qwen3.8 --moe staging=0, 13.7k tokens:
+                    // calls of 8312 + 5408 ran as 5408 + 2904 + 2720 + 2688 tokens, four passes where three fit; every pass uploads all experts again).
+                    // Planned once per call from the tokens left, so a cap that moved after the first call's graphs still gives equal passes. 0: no plan.
+                    int n_pass_plan = 0;
+                    if (do_checkpoint) {
+                        const int n_total = slot.task->n_tokens(), n_left = n_total - slot.prompt.n_tokens() - 4;
+                        n_pass_plan = n_left > 0 ? llama_moe_request_pass_fork(n_left, n_total, n_ubatch) : 0;
+                        // the cut on a multiple of 256 cells where one pass still holds the longer rest (the KV and its mask are laid out in 256-cell pads, see above)
+                        if (const int r = n_pass_plan > 0 && n_pass_plan < n_left ? (n_total - 4 - n_pass_plan) % 256 : 0;
+                            r > 0 && llama_moe_request_pass_fork(n_pass_plan + r, n_total, n_ubatch) == n_pass_plan + r) {
+                            n_pass_plan += r;
+                        }
+                    }
                     // add prompt tokens for processing in the current batch
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < batch_cap) {
                         // get next token to process
@@ -4954,7 +4969,7 @@ private:
                             // 3 GiB free per card, 2026-10-22). The calls are planned into equal passes each (llama_moe_cache_prefill_ubatch_fork).
                             // A prompt of two passes is cut in two equal halves: a pass costs at least its expert uploads whatever its tokens (GLM 3.0 12.4k: 2268 + 10144 tokens, the 2268-token pass 4.0-4.9 s of 14-15 s)
                             const int n_todo = slot.task->n_tokens() - slot.stats.n_prompt_cached;
-                            const int checkpoint_offsets[] = {4 + (n_todo > 4 + n_ubatch && n_todo <= 4 + 2 * n_ubatch ? (n_todo - 4) / 2 : n_ubatch), 4};
+                            const int checkpoint_offsets[] = {4 + (n_pass_plan > 0 ? n_pass_plan : n_todo > 4 + n_ubatch && n_todo <= 4 + 2 * n_ubatch ? (n_todo - 4) / 2 : n_ubatch), 4};
 
                             bool should_break = false;
                             for (int offset : checkpoint_offsets) {

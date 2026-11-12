@@ -19,6 +19,10 @@ LLAMA_API void llama_moe_request_end_fork(void);
 // gives back what the big pass borrowed and refills it right after this call, so the tail and the first decode steps find their experts
 LLAMA_API void llama_moe_prompt_tail_fork(int32_t n);
 
+// the pass size for the n prompt tokens a request still has before its checkpoint tail: equal passes under what every card's expert pool can lend at the
+// request's last cells (cells_end), at most ub. The server cuts its checkpoint one such pass before the tail. 0: no expert pool, or --moe request-pass=0
+LLAMA_API int32_t llama_moe_request_pass_fork(int32_t n, int32_t cells_end, int32_t ub);
+
 #ifdef __cplusplus
 }
 #endif

@@ -14512,6 +14512,20 @@ uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub) {
     return ub;
 }
 
+// The server's checkpoint cut (llama-fork-hooks.h): n tokens of a request are still to process before its tail and the request ends at cells_end cells.
+// Their pass size as equal passes under what every card's pool can lend at those last cells. The context's micro-batch is the cap at an empty KV: a call cut
+// at it no longer fits one pass once the KV has grown.
+int32_t llama_moe_request_pass_fork(int32_t n, int32_t cells_end, int32_t ub) {
+    static const bool on = [] { const char * e = moe_opt("request-pass"); return !e || atoi(e) != 0; }();
+    moe_cache * mc = g_cache;
+    if (!on || !mc || mc->alias.empty() || n <= 0 || ub <= 0 || cells_end <= 0) { return 0; }
+    uint32_t cap = (uint32_t) ub;
+    for (const auto & a : mc->alias) { cap = pp_cap_to_pool(a, (uint32_t) n, cap, (size_t) cells_end); }
+    if (cap == 0) { return 0; }
+    const uint32_t passes = ((uint32_t) n + cap - 1) / cap;
+    return (int32_t) (((uint32_t) n + passes - 1) / passes);
+}
+
 static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub_old) {
     static const bool on = [] { const char * e = moe_opt("pass-plan"); return !e || atoi(e) != 0; }();
     const moe_cache::alias_pool * ap = nullptr;
@@ -15357,9 +15371,11 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
         }
         return pp_plan(g_cache, n, ub_max, ub_old);
     }
-    if (g_cache && on && n > 64 && llama_moe_cache_max_batch_fork() >= (int64_t) n) {
+    if (g_cache && on && n > 64 && llama_moe_cache_max_batch_fork() >= (int64_t) std::min(n, ub_max)) {
         // a call with no batch limit (the cstream ring: every layer reads the cache's blocks) skipped pp_plan and with it the pool and KV cap: Qwen3.8 staging=0 ran
-        // a 5408-token call as one pass at 8312 cells, its KV did not fit ("failed to prepare attention ubatches"), and an 8312-token call as 5408 + 2904
+        // a 5408-token call as one pass at 8312 cells, its KV did not fit ("failed to prepare attention ubatches"), and an 8312-token call as 5408 + 2904.
+        // The cache path's limit is the pass limit there (g_pp_mb = ub_max), not the call's tokens: a call above it met neither this rule nor pp_plan's
+        // (ns_expert_split_parts_only: 8312 tokens still ran as 5408 + 2904, 10904 as 3 x 2816 + 2456)
         uint32_t cap = ub_max;
         for (const auto & a : g_cache->alias) { cap = pp_cap_to_pool(a, n, cap); }
         const uint32_t passes = (n + cap - 1) / std::max<uint32_t>(1, cap);
