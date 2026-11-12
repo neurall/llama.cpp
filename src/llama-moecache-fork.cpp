@@ -9302,12 +9302,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 // largest 5.3 GiB): its 3 GiB sliding-window part fitted no class behind an 11 GiB lend with 9.5 GiB of the pool behind it ("do not fit in any
                 // gap", the pass fell from 27623 to 2609 tokens, 2026-10-24). A read past a class's blocks now reads the next class's experts (poison: 5), not
                 // zeros that hide it.
-                // the class with the most layers first: its first blocks are the ones the compute buffer can borrow (alias)
+                // the class with the most layers first: its first blocks are the ones the compute buffer can borrow (alias). --moe staging=0 (the layer ring): the class with
+                // the most layers LAST, so the ring reserve at the tail lies in its blocks and every other class's grid (which runs forward from its own blocks) reaches over
+                // it; a class with few layers at the tail had no bytes past its home (Qwen3.8 at 8 GiB: its 1-layer classes of 3.32 and 3.08 MiB, fewer blocks than experts)
                 std::vector<size_t> order(pl.cls.size());
                 for (size_t c = 0; c < order.size(); ++c) { order[c] = c; }
                 std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
-                    if (pl.cls[x].members.size() != pl.cls[y].members.size()) { return pl.cls[x].members.size() > pl.cls[y].members.size(); }
-                    return pp_no_staging() && pl.cls[x].B < pl.cls[y].B;   // staging=0: the largest layer's class at the pool's tail, its grid is the experts' floor
+                    if (pl.cls[x].members.size() != pl.cls[y].members.size()) { return pp_no_staging() ? pl.cls[x].members.size() < pl.cls[y].members.size() : pl.cls[x].members.size() > pl.cls[y].members.size(); }
+                    return pp_no_staging() && pl.cls[x].B < pl.cls[y].B;
                 });
                 for (size_t c : order) { nblk[c] = slots * (int32_t) pl.cls[c].members.size(); }   // the class's share of the memory, owned by no layer
                 // the slot count is whole rounds (a block per layer of the card, GLM 3.0: 182 MiB): what the last round leaves under the margin becomes
