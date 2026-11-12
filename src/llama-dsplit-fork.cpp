@@ -1494,10 +1494,20 @@ void llama_dsplit_bench_fork(const llama_model & model) {
     for (const auto & d : model.devices) { if (dsplit_card(model, d.dev)) { devs.push_back(d.dev); } }
     std::lock_guard<std::mutex> lk(g_plan_mu);
     dsplit_mm_bench(model, devs);
+    dsplit_link_model(model, 0);   // the weight bytes a token reads, for llama_dsplit_compute_calc_us_fork before the first split plan
     // the state file's section and hardware key now, under the reads: the moe-cache's posteriors (pp.rls.*) are read through them. Set only by the first
     // split plan before, after the first prompt call had planned from the priors (fillread2 GLM 100 tokens: its plan saw decode chain n=0, the split plan the
     // stored n=1 one); a machine that never plans a split (one card) may never have set them
     dsplit_calib_load(model);
+}
+
+// The compute per token of a prompt pass on card d before one was timed: the weight bytes a token reads over the card's matmul rate probed at load (us),
+// 0 = not probed. The calculation llama_dsplit_plan_get_fork logs, without its attention term (that needs the model and the call's cells).
+// shortcut: no attention term (GLM 3.0 at 6k cells: 230 of 396 us per token); add it once the caller passes the model and cells.
+double llama_dsplit_compute_calc_us_fork(ggml_backend_dev_t d) {
+    std::lock_guard<std::mutex> lk(g_plan_mu);
+    const double rate = dsplit_mm_rate(d);
+    return g_w_bytes_tok > 0.0 && rate > 0.0 ? g_w_bytes_tok / rate * 1e6 : 0.0;
 }
 
 llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int64_t n_tokens) {

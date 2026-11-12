@@ -15249,6 +15249,7 @@ double llama_moe_cache_compute_att_us_fork() {
 //   streaming      max(C(n), U): U is the upload of everything no card holds, over the fastest link; the staging slots hide it under the compute
 // P = 1 - (1 - p)^n, with p the expert's share of the layer's picks so far: k (count + 1) / (all counts + experts), so a model nobody ran yet counts as uniform.
 double llama_dsplit_read_rate_fork(ggml_backend_dev_t d);   // llama-dsplit-fork.cpp: the card's weight read rate from the matmul timing at load (bytes/s), 0 = not timed
+double llama_dsplit_compute_calc_us_fork(ggml_backend_dev_t d);   // llama-dsplit-fork.cpp: a prompt pass's compute per token from the matmul rate probed at load (us), 0 = not probed
 
 void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     moe_cache * mc = g_cache;
@@ -15263,6 +15264,10 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // --moe staging=0: the call's chunk count, once per call (the server's pass plan made it already for its requests), before anything below asks for a ring entry
     if (!g_cs_pick_held.exchange(true) && !cs_pick(mc, n_tokens, 0, ub_max)) { cs_rest_set(mc); }
     const double R_read = llama_dsplit_read_rate_fork(mc->link_dev[0]);   // before any lock: it takes the split planner's (which calls into the cache under it)
+    // --moe staging=0: the router path uploads a layer's misses and then computes (no slots, nothing ahead), the stream uploads under the compute. Priced with no
+    // compute before a pass was timed, both looked like their uploads and the router won the first 12k call: GLM 3.0 16.3 s against the stream's 12.1-12.7 s
+    // (2026-11-12). The staged router path fetches ahead through its slots, so its sum is no model of it: left as it was there.
+    const double C_calc = pp_no_staging() ? llama_dsplit_compute_calc_us_fork(mc->link_dev[0]) : 0.0;   // same lock rule as R_read
     double A = 0.0;   // the expert bytes one token reads, all layers: what the decode chain's chunks read again for every token
     pp_sums sums((size_t) (PP_PATHS - PP_K));   // llama-estimate-fork.h: every expert added below, the same sums a simulated machine fills
     std::vector<pp_miss> & v = sums.miss;      // the experts no card holds
@@ -15421,7 +15426,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // 5.5-11 s calculated without it): the misses' mapped bytes over the stream's SSD rate, the same rate Ts uses
     const double ssd_miss = ssd_rate > 0.0 ? miss_ssd_bytes / (ssd_rate * 1e3) : 0.0;
     pp_metrics pm;
-    pm.n = n; pm.comp_us_tok = g_pp_c_us > 0.0 ? g_pp_c_us : g_pp_c_chain; pm.ssd_gbs = ssd_rate;   // the chain's bound until a stream measures it (not the load-time read rate: 20x high on OLMoE)
+    pm.n = n; pm.comp_us_tok = g_pp_c_us > 0.0 ? g_pp_c_us : g_pp_c_chain > 0.0 ? g_pp_c_chain : C_calc; pm.ssd_gbs = ssd_rate;   // the chain's bound until a stream measures it (not the load-time read rate: 20x high on OLMoE)
     pm.U = U; pm.M = M; pm.Um = Um; pm.Mm = Mm; pm.up = up; pm.cpu = cpu; pm.ssd_miss = ssd_miss;
     pm.wait_us = pp_wait_us(n); pm.chunk_us = chunk_at(n); pm.dec_f = dec_f; pm.dec_r = dec_r; pm.dec_kc = g_pp_dec_kc;
     pm.Uk = Uk; pm.Mk = Mk;
