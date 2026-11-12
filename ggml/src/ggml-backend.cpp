@@ -3512,6 +3512,7 @@ static void ggml_backend_sched_nan_check(ggml_backend_sched_t sched, int split_i
     for (int j = 0; j < split->graph.n_nodes; j++) {
         const struct ggml_tensor * t = split->graph.nodes[j];
         if (ggml_is_view_op(t->op) || t->view_src != NULL) { continue; }
+        if ((t->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) { continue; }   // a branch ggml_build_forward_select did not pick (the mixed-token embeddings): never computed, its bytes are stale
         {
             auto rb = read_by.find(t);
             if (j != split->graph.n_nodes - 1 && (rb == read_by.end() || rb->second <= split_id)) { continue; }   // nothing after this split reads it
