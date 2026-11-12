@@ -5185,7 +5185,7 @@ llama_moe_alias_fit_fork llama_moe_cache_alias_fit_fork(ggml_backend_sched_t sch
                     ap.graph_tok_n = (uint32_t) n_tokens;
                 }
             }
-            const size_t stage = slot_b * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
+            const size_t stage = pp_no_staging() ? 0 : slot_b * (size_t) std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
             if (stage > 0 && base + stage > cap) {
                 fit.stage = false;
                 fit.need  = std::max(fit.need, base + stage);
@@ -7049,7 +7049,10 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             const size_t slot_b = ggml_backend_sched_prefetch_slot_bytes_dev(sched, ap.dev);
             const size_t cap_b  = kv_lend_potential(ap, (size_t) n_tokens);   // the slots may reach past the KV zone: it moves behind them (above)
             const int    n_cfg  = std::max(0, ggml_backend_sched_get_prefetch_experts_slots(sched));
-            const int    fit    = ppx_stage_slots(slot_b, cap_b, stage_off, n_cfg, n_tokens >= 64 ? g_pp_k.load() : -1);   // the pass planner's choice: more slots evict more cached experts
+            // no slots for a graph that stages nothing (--moe staging=0, or a call that streams into the cache's blocks): they were lent all the same, evicted cached
+            // experts and counted in the pass's measured need, so the KV fit refused a 5056-token pass at 13720 cells (Qwen3.8 12k, 2026-11-12)
+            const bool   no_stg = pp_no_staging() || (n_tokens >= 64 && g_pp_cstream_call.load(std::memory_order_relaxed));
+            const int    fit    = no_stg ? 0 : ppx_stage_slots(slot_b, cap_b, stage_off, n_cfg, n_tokens >= 64 ? g_pp_k.load() : -1);   // the pass planner's choice: more slots evict more cached experts
             stage = slot_b * (size_t) fit;
             ap.slot_b  = slot_b;
             ap.n_stage = fit;
