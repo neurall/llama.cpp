@@ -2038,6 +2038,11 @@ WATCH_LOG = None   # server log of the running server: post() takes its growth a
 
 
 HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and reference rows of the machine that measured (pc2 numbers must not be divided by pc1 stock)
+# a host whose hardware changed keeps its name: rows before the change are another machine (2026-11-12 PC1: Ryzen 7 3700X with 2-channel RAM and x16 + x4 became a
+# Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
+HW_SINCE = {"pc1": "2026-11-12"}
+def hw_filter(hw):
+    return f" and hw='{hw}'" + (f" and ts >= '{HW_SINCE[hw]}'" if hw in HW_SINCE else "")
 REMOTE_SLOTS = [None]   # file the progress of a cell on another machine is mirrored to (slots_progress reads it instead of the local /slots)
 SLOT_EXACT = [None]   # (prompt total, prompt done, decoded, decode total) from /slots, None when the server does not report them
 
@@ -7782,7 +7787,7 @@ def run_list(name, argv):
     if o.power:
         if not re.fullmatch(r"max|\d{2,3}(/\d{2,3}|(,\d{2,3})*)", o.power): sys.exit("-pl: no value = every card at its maximum; W for every card (285), or per card (285,285,300,285), or narrow-link cards/widest-link cards (220/280)")
         if o.machine.split("-")[0] == "pc1": os.environ["PERF_POWER"] = o.power   # the cell processes inherit it; wait_vram_free applies it before every cell   # the cell processes inherit it; wait_vram_free applies it before every cell
-    HW = o.machine.split("-")[0]; HWF[0] = f" and hw='{HW}'"   # rows of this machine only count for -nrt and for the stock check (pc1-cli is pc1)
+    HW = o.machine.split("-")[0]; HWF[0] = hw_filter(HW)   # rows of this machine (and its current hardware) only count for -nrt and for the stock check (pc1-cli is pc1)
     stock_latest.remote = o.machine.split("-")[0] != "pc1"; stock_latest.skip = o.nodl; stock_latest.days = max(o.not_today, 1)
     if o.stock: o.build = stock_latest(o.dry)
     o.build = resolve_build(o.build)   # -b b13563: a build number
