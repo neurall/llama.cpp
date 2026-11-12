@@ -11199,6 +11199,22 @@ static void cs_begin(moe_cache * mc) {
         if (!ls.cs_done_ev) { ls.cs_done_ev = ggml_backend_event_new(mc->link_dev[ls.link]); }
         GGML_ASSERT(ls.ring_ev && ls.cs_done_ev && ring_backend(mc, ls.link) && "cstream: no events or upload stream");
     }
+    // the call's first cstream pass: a grid class has exactly a layer's worth of blocks for its ring layers, so a layer outside the pass drops what it caches there
+    // (Qwen3.8: the last layer runs its output rows on the decode path, its 32 decode experts kept ring layer 30 from 512 blocks; it misses ~8 experts once instead)
+    if (!g_cs_live.load()) {
+        bool any = false;
+        for (auto & ps : mc->pool) {
+            if (ps.home_lo == 0) { continue; }
+            for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+                const int32_t o = ps.owner[b];
+                if (o >= 0 && mc->cs_pos[o] < 0 && mc->layers[o].slot_expert[b] >= 0) { evict_slot(mc, mc->layers[o], b); any = true; }
+            }
+        }
+        if (any) {
+            for (int k = 0; k < mc->n_links; ++k) { if (mc->link_be[k]) { ggml_backend_synchronize(mc->link_be[k]); } }
+            flush_tables();   // no kernel runs: the device tables say "uncached" before the layer's path reads them
+        }
+    }
     mc->cs_next = 0;
     mc->cs_pass++;
     for (int k = 0; k < mc->n_links; ++k) {
