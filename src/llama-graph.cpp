@@ -3308,7 +3308,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
 
-        if (!mc_mix_b) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
+        // cstream: the chain joins the graph through its use (one card) or not at all (the expert split's parts replace it): expanded here it also ran over every
+        // expert beside the parts and its unread output was never freed (Qwen3.8 staging=0: an 8657 MiB graph at 3168 tokens, 324 MiB per layer)
+        if (!mc_mix_b && !mc_cstream) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
             ggml_build_forward_expand(gf, down_g);
         }
     }
