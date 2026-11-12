@@ -1769,7 +1769,13 @@ void llama_context::sched_reserve() {
                 LLAMA_LOG_WARN("%s: probe %u tokens: CPU buffer %.0f MiB, nodes on the CPU:%s\n", __func__, u, cb / 1048576.0, l.empty() ? " none" : l.c_str());
             }
             if (mg) {
-                for (const auto & [i, d] : gi) { s[i] += llama_moe_cache_graph_scratch_fork(sched.get(), d); }   // the reserve's splits are still in the scheduler
+                std::string parts;   // each card's two parts, to hold against a pass's own lend line (--moe log=w): the estimate came 1.47 x a real stream pass (Qwen3.8, 2026-11-12)
+                for (const auto & [i, d] : gi) {
+                    const size_t scr = llama_moe_cache_graph_scratch_fork(sched.get(), d);   // the reserve's splits are still in the scheduler
+                    parts += format("%s%s graph %.1f + CUDA scratch %.1f MiB", parts.empty() ? "" : ", ", ggml_backend_dev_name(d), s[i] / 1048576.0, scr / 1048576.0);
+                    s[i] += scr;
+                }
+                LLAMA_LOG_WARN("%s: probe %u tokens: %s\n", __func__, u, parts.c_str());
             }
             llama_moe_cache_measure_stream_fork(false);   // behind the scratch: it is computed from the reserve's splits
             for (const auto & [i, d] : gi) { llama_moe_cache_note_graph_fork(d, u, s[i]); }

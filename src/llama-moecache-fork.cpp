@@ -579,6 +579,15 @@ struct moe_cache {
     std::atomic<int64_t> pf_ask[MAX_LINKS] = {}, pf_found[MAX_LINKS] = {}, pf_wrong[MAX_LINKS] = {};   // staging lookups per card (link): experts asked, found on that card, asked of a card whose cache is not this one
     std::atomic<int64_t> pf_bytes{0}, pf_link[MAX_LINKS] = {};   // prompt passes: bytes of experts not found in the cache, which the pass streams from RAM over the link (live view in GET /moe/stats only, not in the decode churn columns)
     std::atomic<int64_t> link_bytes[MAX_LINKS] = {};   // uploaded bytes per link, for GET /moe/stats
+    // Why a link carries nothing (user 2026-11-12: "a lot of idle time ... waits? on what?"): the fast window (fast_window_run) books each link's idle share of a
+    // window under one cause, GET /moe/stats and the UPL lines carry it, the viewer colours the upload strip by it. cs_why: what cs_ahead met last on the card (0 no
+    // stream pass, 1 its ring blocks wait for kernels, 2 every entry of the pass is uploaded); cs_hook_us: when a split of the card last met a stream hook (the card
+    // is computing); cs_read: the card's stream copy waits for the RAM pool's read from the disk.
+    enum { UPI_OFF, UPI_TURN, UPI_COMP, UPI_DONE, UPI_READ, UPI_N };   // no stream pass | blocks wait while another card computes | blocks wait for the card's own kernels | the pass is uploaded | weights still come from the disk
+    std::atomic<int>     cs_why[MAX_LINKS] = {};
+    std::atomic<int64_t> cs_hook_us[MAX_LINKS] = {};
+    std::atomic<bool>    cs_read[MAX_LINKS] = {};
+    std::atomic<int64_t> up_idle_us[MAX_LINKS][UPI_N] = {};
     int64_t              seg_cpu_bytes = 0, seg_up_bytes = 0;
     std::atomic<int64_t> busy_t0{0};
     std::atomic<int64_t> busy_us{0};      // total busy time
@@ -8064,11 +8073,17 @@ static void preheat_run(moe_cache * mc) {
 // --moe stats-fast-ms (default 100 ms, 0 = off) the engine's own byte counters are read and the change since the last window is kept in memory, written as UPL lines of stats.log every 10 s with the
 // window's own time. A line has the decode steps of the window and the time per token they took, RAM traffic (CPU compute, uploads, prompt streaming) against the RAM ceiling, every link's
 // traffic against its probed maximum, and how full the cache in VRAM is. Windows where nothing moved are not written. A 3 s prompt call so shows its own rates, not a 10 s average.
+// a link's probed maximum (the early probe's; gbs_link turns into the per-expert upload average once decode uploads: 19 against 26.7 GB/s on PC1 x16). Lookup only.
+static double link_max_gbs(const moe_cache * mc, int k) {
+    for (const auto & e : g_early_gbs) { if (e.first == mc->link_dev[k] && e.second > 0) { return e.second; } }
+    return mc->gbs_link[k];
+}
+static const char * const UPI_NAME[moe_cache::UPI_N] = { "no stream pass", "another card computes", "its own kernels", "pass uploaded", "disk read" };
 static void fast_window_run(moe_cache * mc) {
     const char * o = moe_opt("stats-fast-ms");
     const int period_ms = o ? atoi(o) : 100;
     if (period_ms <= 0) { return; }
-    struct win { double t, dt; uint64_t steps; int64_t cpu, up, pf, lk[MAX_LINKS]; uint64_t filled, total; };
+    struct win { double t, dt; uint64_t steps; int64_t cpu, up, pf, lk[MAX_LINKS]; uint64_t filled, total; int why[MAX_LINKS]; };
     std::vector<win> buf;
     int64_t t0 = ggml_time_us(), cpu0 = mc->cpu_bytes.load(), up0 = mc->up_bytes.load(), pf0 = mc->pf_bytes.load(), lk0[MAX_LINKS] = {};
     for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
@@ -8086,6 +8101,14 @@ static void fast_window_run(moe_cache * mc) {
         for (int k = 0; k < mc->n_links; ++k) {
             const int64_t b = mc->link_bytes[k].load() + mc->pf_link[k].load();
             w.lk[k] = b - lk0[k]; lk0[k] = b; any = any || w.lk[k];
+            // the link's idle share of the window, under what it waits for now (one cause a window: a pass changes cause a few times a second)
+            const int cw = mc->cs_why[k].load(std::memory_order_relaxed);
+            w.why[k] = !g_cs_live.load() ? (g_hpend_n.load(std::memory_order_relaxed) > 0 ? moe_cache::UPI_READ : moe_cache::UPI_OFF) :
+                       mc->cs_read[k].load(std::memory_order_relaxed) ? moe_cache::UPI_READ : cw == 2 ? moe_cache::UPI_DONE :
+                       cw == 1 ? (t - mc->cs_hook_us[k].load(std::memory_order_relaxed) < 250000 ? moe_cache::UPI_COMP : moe_cache::UPI_TURN) : moe_cache::UPI_OFF;
+            const double cap = link_max_gbs(mc, k) * 1e9 * w.dt;
+            const double busy = cap > 0.0 ? std::min(1.0, (double) w.lk[k] / cap) : (w.lk[k] ? 1.0 : 0.0);
+            mc->up_idle_us[k][w.why[k]] += (int64_t) ((1.0 - busy) * w.dt * 1e6);
         }
         t0 = t; cpu0 = cpu; up0 = up; pf0 = pf; n0 = n;
         if (any) { llama_moe_cache_fill_fork(&w.filled, &w.total); buf.push_back(w); }
@@ -8094,8 +8117,8 @@ static void fast_window_run(moe_cache * mc) {
             for (const auto & x : buf) {
                 std::string links;
                 for (int k = 0; k < mc->n_links; ++k) {
-                    const double g = (double) x.lk[k] / x.dt / 1e9;
-                    links += format(" %s %.2f GB/s (%.0f%% of %.1f)", mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", g, mc->gbs_link[k] > 0 ? 100.0 * g / mc->gbs_link[k] : 0.0, mc->gbs_link[k]);
+                    const double g = (double) x.lk[k] / x.dt / 1e9, mx = link_max_gbs(mc, k);   // against the probed maximum (gbs_link drifts with the uploads' own average)
+                    links += format(" %s %.2f GB/s (%.0f%% of %.1f, idle: %s)", mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", g, mx > 0 ? 100.0 * g / mx : 0.0, mx, UPI_NAME[x.why[k]]);
                 }
                 const double ram = (double) (x.cpu + x.up + x.pf) / x.dt / 1e9, ceil = knobs().ddr_gbs;
                 llama_moe_stats_emit_at_fork("UPL", format("window %.0f ms: steps %llu%s; ram %.2f GB/s (%.0f%% of %.1f; cpu %.2f, upload %.2f, stream %.2f); links%s; cache %llu/%llu blocks (%.0f%%)",
@@ -11474,7 +11497,9 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
         std::vector<int32_t> need;
         for (const auto & a : cps) { need.push_back(a.e); }
         const void * keys[3] = { srcs[0], srcs[1], srcs[2] };
+        mc->cs_read[link] = true;
         ggml_rampool_need_fork(keys, 3, need.data(), (int) need.size());
+        mc->cs_read[link] = false;
     }
     for (size_t i = 0; i < cps.size(); ) {
         size_t n = 1;   // a run: consecutive experts into consecutive blocks (host weights are one array per tensor; the RAM pool's blocks are not)
@@ -11582,6 +11607,7 @@ static void cs_begin(moe_cache * mc) {
         mc->cs_hooked[k]  = 0;
         mc->cs_started[k] = false;
         mc->cs_waited[k]  = 0;
+        mc->cs_why[k]     = 0;
         if (!mc->link_be[k] || !mc->ring_be[k]) { continue; }
         ggml_backend_synchronize(mc->ring_be[k]);   // the last pass's table copies are done with their snapshots
         if (!mc->cs_start_ev[k]) { mc->cs_start_ev[k] = ggml_backend_event_new(mc->link_dev[k]); }
@@ -11602,9 +11628,10 @@ static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & j
             size_t & nx = mc->cs_next[c];
             for (int n_other = 0; c == k || n_other < 1; ++n_other) {
                 while (nx < mc->cs_order.size() && csl(mc, mc->cs_order[nx]).link != c) { ++nx; }
-                if (nx >= mc->cs_order.size()) { break; }
+                if (nx >= mc->cs_order.size()) { mc->cs_why[c] = 2; break; }
                 cs_job j { mc->cs_order[nx], {}, false, mc->cs_done[c] };
                 if (!cs_plan(mc, nx, j.cps, j.from_done)) {
+                    mc->cs_why[c] = 1;
                     if (c == k && must != SIZE_MAX && nx <= must) {
                         GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts (the class must hold a layer's worth besides the lend and the KV rows): %s",
                                 csl(mc, mc->cs_order[nx]).pub.il, cs_why(mc, nx).c_str());
@@ -11640,7 +11667,7 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
             ggml_backend_event_record(csl(mc, mc->cs_order[q - 1]).cs_done_ev, cbe);
             mc->cs_done[k] = q;
         }
-        if (ggml_backend_get_device(cbe) == mc->link_dev[k]) { mc->cs_hooked[k] = p + 1; }
+        if (ggml_backend_get_device(cbe) == mc->link_dev[k]) { mc->cs_hooked[k] = p + 1; mc->cs_hook_us[k] = ggml_time_us(); }
         cs_ahead(mc, k, p, jobs);
     }
     for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
@@ -11665,6 +11692,7 @@ static void cs_release(moe_cache * mc, ggml_backend_t cbe) {
         if (k < 0 || mc->cs_hooked[k] <= mc->cs_done[k] || mc->cs_hooked[k] > mc->cs_order.size()) { return; }
         ggml_backend_event_record(csl(mc, mc->cs_order[mc->cs_hooked[k] - 1]).cs_done_ev, cbe);
         mc->cs_done[k] = mc->cs_hooked[k];
+        mc->cs_hook_us[k] = ggml_time_us();
         cs_ahead(mc, k, SIZE_MAX, jobs);
     }
     for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
@@ -11683,6 +11711,7 @@ static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id,
 static void cs_end(moe_cache * mc) {
     if (!g_cs_live.exchange(false)) { return; }
     for (int k = 0; k < mc->n_links; ++k) {
+        mc->cs_why[k] = 0;
         if (mc->link_be[k]) { ggml_backend_synchronize(mc->link_be[k]); }
         if (mc->ring_be[k]) { ggml_backend_synchronize(mc->ring_be[k]); }
     }
@@ -15830,11 +15859,13 @@ std::string llama_moe_bw_json_fork() {
              mc->n_links, win, ram, knobs().ddr_gbs, cpu, (double) mc->up_bytes / 1048576.0);
     std::string o = b;
     for (int k = 0; k < mc->n_links; ++k) {
-        snprintf(b, sizeof b, "%s{\"link\":%d,\"dev\":\"%s\",\"gbs\":%.2f,\"max_gbs\":%.2f,\"uploaded_mib\":%.0f}", k ? "," : "", k,
+        // idle_ms: the link's idle time so far by cause, in the order of UPI_NAME (no stream pass, another card computes, its own kernels, pass uploaded, disk read)
+        snprintf(b, sizeof b, "%s{\"link\":%d,\"dev\":\"%s\",\"gbs\":%.2f,\"max_gbs\":%.2f,\"uploaded_mib\":%.0f,\"idle_ms\":[%lld,%lld,%lld,%lld,%lld]}", k ? "," : "", k,
                  mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", lk[k],
-                 // max = the probed link rate; gbs_link turns into the per-expert upload average once decode uploads (19 vs 26.7 GB/s on PC1 x16)
-                 [&] { for (const auto & e : g_early_gbs) { if (e.first == mc->link_dev[k] && e.second > 0) { return e.second; } } return mc->gbs_link[k]; }(),   // lookup only: never start the probe copy on the HTTP thread
-                 (double) mc->link_bytes[k] / 1048576.0);
+                 link_max_gbs(mc, k),   // lookup only: never start the probe copy on the HTTP thread
+                 (double) mc->link_bytes[k] / 1048576.0,
+                 (long long) (mc->up_idle_us[k][0] / 1000), (long long) (mc->up_idle_us[k][1] / 1000), (long long) (mc->up_idle_us[k][2] / 1000),
+                 (long long) (mc->up_idle_us[k][3] / 1000), (long long) (mc->up_idle_us[k][4] / 1000));
         o += b;
     }
     snprintf(b, sizeof b, "]},\"hit\":{\"all\":%.2f,\"recent\":%.2f,\"prompt_all\":%.2f,\"prompt_recent\":%.2f}", hh + mm ? 100.0 * hh / (hh + mm) : 0.0, hr_recent,

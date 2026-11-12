@@ -6105,14 +6105,17 @@ def map_pos_lines(mp):
 
 STRIP = {"t0": None, "cols": [], "last": None}   # one cell's compute / upload strip: a column per status tick, (time, [(util %, upload GB/s, link max GB/s) per card])
 STRIP_LV = " ▁▂▃▄▅▆▇█"
+STRIP_IDLE = [(40, "no stream"), (45, "other card computes"), (44, "own compute"), (46, "pass uploaded"), (41, "disk read")]   # background of an upload column by the link's idle cause, in the engine's order (idle_ms of GET /moe/stats, UPI_NAME)
 def strip_lines(t0, utils, links, rx):
     """Two lines per card, one column per status tick, newest right (user 2026-11-11: "top line compute and bottom line upload ... 100% compute full green without
     blips ... 100% upload fully yellow ... show up speed in g/s and compute in %", "state we already have for free"): green = the card's load from the tick's own
     nvidia-smi query, yellow = what the card's host link carried since the last tick (the engine's byte counters; nvidia-smi dmon without an engine) against the
-    link's measured maximum. Both lines low in the same columns = uploads and compute taking turns instead of overlapping."""
+    link's measured maximum. Both lines low in the same columns = uploads and compute taking turns instead of overlapping. The background of an upload column is
+    the cause the link was idle for in that tick (STRIP_IDLE; the engine books it: blocks wait while another card computes, or for the card's own kernels, the pass
+    is uploaded, the weights still come from the disk), a legend line follows the strips."""
     now = time.time()
     if STRIP["t0"] != t0: STRIP.update(t0=t0, cols=[], last=None)
-    up, cur, last = {}, {}, STRIP["last"]
+    up, cur, idle, last = {}, {}, {}, STRIP["last"]
     for l in links:   # CUDA<k> -> nvidia-smi index (servers run with CUDA_DEVICE_ORDER=PCI_BUS_ID, through CUDA_VISIBLE_DEVICES)
         k = re.sub(r"\D", "", str(l.get("dev", "")))
         if not k: continue
@@ -6120,12 +6123,14 @@ def strip_lines(t0, utils, links, rx):
         mib = float(l.get("uploaded_mib") or 0); cur[idx] = mib
         g = float(l.get("gbs") or 0)   # the engine's own window on the first tick
         if last and idx in last[1] and now > last[0] and mib >= last[1][idx]: g = (mib - last[1][idx]) * 1048576 / 1e9 / (now - last[0])
-        up[idx] = (g, float(l.get("max_gbs") or 0))
-    if links: STRIP["last"] = (now, cur)
-    elif rx: up = {i: (v, 0.0) for i, v in enumerate(rx)}
+        idl = l.get("idle_ms") or []; idle[idx] = idl   # the link's idle time so far by cause (engine: UPI_NAME); the tick's cause = where most of it went since the last tick
+        d = [a - b for a, b in zip(idl, last[2].get(idx) or [])] if last and len(last) > 2 else []
+        up[idx] = (g, float(l.get("max_gbs") or 0), max(range(len(d)), key=lambda j: d[j]) if d and max(d) > 0 else -1)
+    if links: STRIP["last"] = (now, cur, idle)
+    elif rx: up = {i: (v, 0.0, -1) for i, v in enumerate(rx)}
     n = max([len(utils)] + [i + 1 for i in up])
     if n == 0: return ""
-    STRIP["cols"].append((now, [(utils[i] if i < len(utils) else 0.0, *up.get(i, (0.0, 0.0))) for i in range(n)]))
+    STRIP["cols"].append((now, [(utils[i] if i < len(utils) else 0.0, *up.get(i, (0.0, 0.0, -1))) for i in range(n)]))
     del STRIP["cols"][:-400]
     w = max(10, LIVE_W - 1 - 13 - 19)
     cols = STRIP["cols"][-w:]
@@ -6138,7 +6143,11 @@ def strip_lines(t0, utils, links, rx):
         lw = GPU_DET[0].get(str(i), {}).get("link_width", "")
         lab = f"g{i}" + (f"x{lw}" if str(lw).isdigit() else "")
         out.append(f"{lab:<6} comp [" + col("92;40", bars([c[0] / 100 for c in cs])) + "] " + col(92, f"{cs[-1][0]:3.0f}%"))
-        out.append(f"{'':<6} up   [" + col("93;40", bars([c[1] / mx for c in cs])) + "] " + col(93, f"{cs[-1][1]:4.1f}/{mx:.0f} GB/s"))
+        # the empty part of an upload column is coloured by what the link waited for in that tick (user 2026-11-12: "a lot of idle time, add diff color what is happening there, waits? on what?")
+        upb = col("93;40", " " * (w - len(cs))) + "".join(col(f"93;{STRIP_IDLE[c[3]][0] if 0 <= c[3] < len(STRIP_IDLE) else 40}", STRIP_LV[max(0, min(8, round(c[1] / mx * 8)))]) for c in cs)
+        out.append(f"{'':<6} up   [" + upb + "] " + col(93, f"{cs[-1][1]:4.1f}/{mx:.0f} GB/s"))
+    if any(c[3] >= 0 for t in cols for c in t[1]):
+        out.append(f"{'':<6} idle  " + " ".join(col(f"{'30' if bg == 46 else '97'};{bg}", f" {name} ") for bg, name in STRIP_IDLE))
     return "\n".join(out)
 
 
