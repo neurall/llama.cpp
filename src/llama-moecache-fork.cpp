@@ -10836,14 +10836,21 @@ void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched) {
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
     if (mc && g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed)) {   // 2: the stream into the cache's blocks (cs_begin, cs_layer)
-        if (pub->jit_n > 0 || !experts_in_file_layout(pub)) { return -1; }
+        static std::set<std::pair<int, int>> told;   // (layer, reason) logged once: the planner explains what stays off the ring
+        auto off = [&](int why, const char * txt, int64_t a = 0, int64_t b = 0) {
+            if (told.insert({ pub->il, why }).second) { LLAMA_LOG_WARN("moe-cache: cstream: layer %d stays off the ring: %s (%lld of %lld)\n", pub->il, txt, (long long) a, (long long) b); }
+            return -1;
+        };
+        if (pub->jit_n > 0) { return off(0, "experts read just in time", pub->jit_n, 0); }
+        if (!experts_in_file_layout(pub)) { return off(1, "experts not in the file's layout (repacked)"); }
         std::lock_guard<std::mutex> lock(mc->mtx);
         for (size_t li = 0; li < mc->layers.size(); ++li) {
             layer_state & l = mc->layers[li];
             if (&l.pub == pub) {
-                if (!mc->link_be[l.link]) { return -1; }   // the first graph of a run: no backend to upload with yet
+                if (!mc->link_be[l.link]) { return off(2, "no upload backend yet (first graph)"); }   // the first graph of a run: no backend to upload with yet
                 // the ring takes blocks of the layer's class only: a layer's worth must be there besides the lend and the KV rows (cs_plan's last resort), or the layer stages
-                if (l.pcls < 0 || pp_blocks(mc, l, true) < (int64_t) l.expert_slot.size()) { return -1; }
+                if (l.pcls < 0) { return off(3, "no size class"); }
+                if (const int64_t nb = pp_blocks(mc, l, true); nb < (int64_t) l.expert_slot.size()) { return off(4, "too few blocks in its class", nb, (int64_t) l.expert_slot.size()); }
                 if (std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), li) == g_cs_order_graph.end()) { g_cs_order_graph.push_back(li); }
                 g_pp_cstream_graph = true;
                 return 2;
@@ -11014,8 +11021,9 @@ static std::string cs_why(moe_cache * mc, size_t p) {
         return ((size_t) q < mc->cs_done[lo.link] || (size_t) q > p) ? 6 : 5;
     };
     int claim_bl[8] = {};
+    std::set<int> outl;   // the layers outside the pass (or pinned) that hold blocks of the class
     for (int32_t b = 0; b < ps.n_active(); ++b) {
-        if (ps.owner[b] != -4) { n[kind(ls.pcls, b)]++; continue; }
+        if (ps.owner[b] != -4) { const int k = kind(ls.pcls, b); n[k]++; if (k == 4) { outl.insert(mc->layers[ps.owner[b]].pub.il); } continue; }
         int worst = 7;
         cls_over(mc, ls.pcls, b, [&](int32_t qc, int32_t x) { const int k = kind(qc, x); if (k >= 1 && k <= 5) { worst = std::min(worst, k); } return true; });
         n[7] += worst == 7;
@@ -11023,7 +11031,11 @@ static std::string cs_why(moe_cache * mc, size_t p) {
     }
     return tr_fmt("%d blocks: %d free, %d lent, %d KV, %d in flight, %d outside the pass or pinned, %d wait for kernels, %d takeable; %d of another class claimable, "
                   "not claimable under: %d lent, %d KV, %d in flight, %d outside or pinned, %d waiting", ps.n_active(), n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7],
-                  claim_bl[1], claim_bl[2], claim_bl[3], claim_bl[4], claim_bl[5]);
+                  claim_bl[1], claim_bl[2], claim_bl[3], claim_bl[4], claim_bl[5]) + [&] {
+        std::string t = "; outside or pinned held by layers";
+        for (int il : outl) { const int32_t li = (size_t) il < mc->cs_li.size() ? mc->cs_li[(size_t) il] : -1; t += tr_fmt(" %d(pos %d)", il, li >= 0 ? mc->cs_pos[(size_t) li] : -9); }
+        return t;
+    }();
 }
 static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done) {   // cache lock held
     const size_t li = mc->cs_order[p];
