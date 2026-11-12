@@ -1807,6 +1807,7 @@ struct ggml_backend_sched {
     ggml_backend_event_t tail_ev[GGML_SCHED_MAX_BACKENDS];   // fork: per backend, marks the tail of its stream for a device-side wait before a cross-card input copy (see ggml_backend_sched_copy_input)
     uint32_t xcopy_touched;                                  // fork: bit b = a copy between two GPUs was just queued with backend b as its source or destination (read and cleared by the split loop)
     uint32_t xcopy_src;                                      // fork: the same, source cards only (the stamp behind a card's hand-off, see ggml_sched_chain_stat)
+    uint32_t h2d_pending;                                    // fork: bit b = an upload from the CPU's graph memory is queued on backend b's stream and may not have run yet (ggml_backend_sched_copy_input); the next CPU split waits for it
     struct ggml_tensor ** graph_inputs;
     int n_graph_inputs;
     int graph_inputs_capacity;
@@ -3122,6 +3123,25 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
                 return;
             }
         }
+    }
+
+    // fork: a tensor a CPU split computed goes to its card as an upload queued on that card's own stream, as a user input does above: stream order puts it behind
+    // everything queued there before, which is all the drain below protects, and the host waits for nothing. Its source is the CPU's graph memory, which a later
+    // CPU split may write again: that split waits for the upload first (h2d_pending, the split loop). With the drain the host stood still until the layer's cache
+    // chain had ended, and the card then idled for the copy and the next launch, once per layer: Qwen3.8 IQ3_S decode on 2 x 3090, GGML_SCHED_PROF=1, 2.67 ms of a
+    // 15.1 ms graph in "wait before GPU". GGML_SCHED_H2D_ASYNC=0 keeps the drain.
+    static const bool h2d_async = !(getenv("GGML_SCHED_H2D_ASYNC") && atoi(getenv("GGML_SCHED_H2D_ASYNC")) == 0);
+    if (h2d_async && !ggml_backend_sched_is_host_weight(input) && sched->events[split_backend_id][sched->cur_copy] == NULL &&
+            split_backend->iface.set_tensor_async != NULL && input->buffer && ggml_backend_buffer_is_host(input->buffer) &&
+            ggml_backend_dev_type(ggml_backend_get_device(input_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU &&
+            ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+            ggml_is_contiguous(input) && ggml_is_contiguous(input_cpy) && !ggml_is_quantized(input_cpy->type)) {
+        ggml_backend_sched_link_add(ggml_backend_get_device(split_backend), NULL, ggml_nbytes(input));   // see sched_link_bytes
+        int64_t * ue = ggml_backend_sched_up_begin(split_backend, ggml_nbytes(input));
+        ggml_backend_tensor_set_async(split_backend, input_cpy, input->data, 0, ggml_nbytes(input));
+        ggml_backend_sched_up_end(split_backend, ue);
+        sched->h2d_pending |= 1u << split_backend_id;
+        return;
     }
 
     // wait for the split backend to finish using the input before overwriting it
@@ -4540,6 +4560,17 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
+        // fork: an upload queued from the CPU's graph memory (h2d_pending) must have read its source before this CPU split writes there. The split's own input
+        // copies from that card are queued behind the upload on the card's stream; a copy from another card is not, so the card is drained first then.
+        const bool h2d_wait = sched->h2d_pending != 0 && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
+        for (int b = 0; h2d_wait && b < sched->n_backends; b++) {
+            if (!(sched->h2d_pending >> b & 1)) { continue; }
+            for (int i = 0; i < split->n_inputs; i++) {
+                const int ib = tensor_backend_id(split->inputs[i]);
+                if (ib >= 0 && ib != b && ib != split_backend_id) { SYNC_TIMED(5, ggml_backend_synchronize(sched->backends[b])); break; }
+            }
+        }
+
         const int64_t p_tb = prof ? ggml_time_us() : 0;
         const int64_t tr_tb = tracing ? ggml_time_us() : 0;
         if (prof) {
@@ -4574,6 +4605,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         NVTX_POP();
         for (ggml_backend_t b : d2h_pending) {
             SYNC_TIMED(4, ggml_backend_synchronize(b));
+        }
+        if (h2d_wait) {   // the cards this split read nothing from; one it read from is idle here already
+            for (int b = 0; b < sched->n_backends; b++) {
+                if (sched->h2d_pending >> b & 1) { SYNC_TIMED(5, ggml_backend_synchronize(sched->backends[b])); }
+            }
+            sched->h2d_pending = 0;
         }
         if (copy_ahead && !sched->callback_eval && split_id + 1 < sched->n_splits && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
             struct ggml_backend_sched_split * nx = &splits[split_id + 1];

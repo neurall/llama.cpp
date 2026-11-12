@@ -2,3 +2,7 @@ name,model,n,test,tokens,args,extra
 dq-def,qwen38,3,pf2k1k,1024,,
 dq-stockmode,qwen38,3,pf2k1k,1024,"--moe mode=stock",
 dq-def-nog,qwen38,3,pf2k1k,1024,,--env GGML_CUDA_DISABLE_GRAPHS=1
+dq-def-prof,qwen38,1,pf2k1k,1024,,--env GGML_SCHED_PROF=1
+dq-stockmode-prof,qwen38,1,pf2k1k,1024,"--moe mode=stock",--env GGML_SCHED_PROF=1
+dq-def-tr,qwen38,1,pf2k1k,128,,--env GGML_SCHED_TRACE=/home/o/.claude/jobs/44ecfe4e/tmp/tr_cache.csv --env GGML_SCHED_TRACE_ALL=1
+dq-stockmode-tr,qwen38,1,pf2k1k,128,"--moe mode=stock",--env GGML_SCHED_TRACE=/home/o/.claude/jobs/44ecfe4e/tmp/tr_stock.csv --env GGML_SCHED_TRACE_ALL=1
