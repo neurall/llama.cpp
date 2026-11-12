@@ -696,6 +696,7 @@ static std::string dsplit_state_key(const std::string & what) {
 }
 // The planner's posteriors (dsf.rls.*, pp.rls.*) also carry the run's regime (common.cpp: rampool on/off, load mode, simulated VRAM/RAM): the same
 // features give a different time across them (the pool's SSD wait, the pin ring, the bytes held), so a posterior of one regime is no prior for another.
+// The balance's share factors too (dsplit_zw5): a staged run's factor 0.61 started the staging=0 run after it at 36% of the tokens for the helper.
 static std::string rls_key(const char * what) {
     const char * r = llama_moe_get_opt("regime");
     return std::string(what) + "%" + (r ? r : "-");
@@ -1928,7 +1929,7 @@ void dsplit_zw_save() {   // "CUDA0:0.7500:0.6500,CUDA1:1.0000:1.0000" (card:fac
     for (size_t i = 0; i < g_zw.dev.size() && i < g_zw.f.size() && i < g_zw.k.size(); ++i) {
         v += format("%s%s:%.4f:%.4f", i ? "," : "", ggml_backend_dev_name(g_zw.dev[i]), g_zw.f[i], g_zw.k[i]);
     }
-    moe_state_set(g_calib_section, { { dsplit_state_key("dsplit_zw5"), v } });
+    moe_state_set(g_calib_section, { { dsplit_state_key(rls_key("dsplit_zw5")), v } });
 }
 // the token shares of these cards for a pass (empty: the rule is off)
 std::vector<double> dsplit_zw_shares(const std::vector<ggml_backend_dev_t> & dev) {
@@ -1943,7 +1944,7 @@ std::vector<double> dsplit_zw_shares(const std::vector<ggml_backend_dev_t> & dev
         g_zw.hist.assign(dev.size(), {});
         std::vector<double> stored_k;   // the k an earlier run of this model on these cards measured: it replaces the start-of-server estimate
         std::string v;
-        if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key("dsplit_zw5"), v)) {   // the stored factors, by card name
+        if (dsplit_state_on() && moe_state_get(g_calib_section, dsplit_state_key(rls_key("dsplit_zw5")), v)) {   // the stored factors, by card name
             for (size_t p = 0; p < v.size(); ) {
                 size_t e = v.find(',', p);
                 if (e == std::string::npos) { e = v.size(); }
@@ -1998,7 +1999,12 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
                 k[i], dsplit_zw_pieces() ? "experts" : "dense part", w_x, B.d[i] * 1e3 / (double) B.tok[i], uw * 1e3 / (double) B.tok[i], B.hop[i]);
     }
     // the expert card's wait for the others (measured by cause with --moe pass-stats; without it the gaps before its dense splits)
-    const double w = detail && x < B.xw.size() ? B.xw[x] : B.wd[x];
+    // less what the other cards spent on whole layers' experts for every token (--moe staging=0: the stream into the blocks runs a layer on its home card, and a
+    // card that holds no share of the split's experts still computes its home layers): the expert card waits that long whatever the token shares are. Counted as
+    // caused by the tokens it took 10% off the helper's factor every pass (GLM 3.0 12k: 2.1 s of a 4.1 s wait, the helper went from 49% to 33% of the tokens)
+    double w_home = 0.0;
+    for (size_t i = 0; i < x; ++i) { if (i < B.f_run.size() && B.f_run[i] <= 0.0 && i < B.m.size()) { w_home += B.m[i]; } }
+    const double w = std::max(0.0, (detail && x < B.xw.size() ? B.xw[x] : B.wd[x]) - w_home);
     const double window = w_x * (double) B.tok[x] / 1e3;   // ms of the expert card's own work the other cards' chains run beside
     const std::vector<double> f0 = g_zw.f;
     // f is the target of a card's chain as a share of the expert card's window (k is measured every pass, so f x k x the expert card's tokens gives that share).
@@ -2025,9 +2031,9 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
     g_zw.k = k;
     g_zw.measured = true;
     g_zw.src = "the last pass's measured times";
-    LLAMA_LOG_WARN("split shares (zero wait): %s; the expert card waited %.0f ms of %.0f (%.0f%%), %.0f ms of it the floor (any tokens), %.0f ms caused by the tokens; "
+    LLAMA_LOG_WARN("split shares (zero wait): %s; the expert card waited %.0f ms of %.0f (%.0f%%), %.0f ms of it the floor (any tokens), %.0f ms caused by the tokens%s; "
             "the others' chains %.0f%% of its window %.0f ms; factors%s\n", txt.c_str(), w, B.span, B.span > 0.0 ? 100.0 * w / B.span : 0.0, std::max(0.0, floor_ms), wd,
-            100.0 * worst, window, fx.c_str());
+            w_home > 0.0 ? format(" (and %.0f ms for the other cards' own layers' experts, not counted)", w_home).c_str() : "", 100.0 * worst, window, fx.c_str());
     dsplit_zw_save();
 }
 

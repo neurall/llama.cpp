@@ -4452,7 +4452,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const struct ggml_tensor * n0 = sj->graph.nodes[0];
                 struct ggml_sched_card_stamp & c = g_card_buf[cs_set][n];
                 c.backend_id = sj->backend_id;
-                c.moe = (n0->op == GGML_OP_MUL_MAT_ID && n0->op_params[9] > n0->op_params[8]) || ggml_sched_cs_split(n0) ? 1 : 0;
+                // (a stream pass: the layer's chain on a card that is not the router's starts a split of its own at its first MUL_MAT_ID, behind the copy of the
+                // hidden state: counted as dense, GLM 3.0's helper read 1247 us per token of dense where it computes 690, and its token share fell to a third)
+                c.moe = (n0->op == GGML_OP_MUL_MAT_ID && (cs_pass || n0->op_params[9] > n0->op_params[8])) || ggml_sched_cs_split(n0) ? 1 : 0;
                 c.xin = 0; c.upin = 0;
                 c.nn = sj->graph.n_nodes;
                 snprintf(c.nf, sizeof c.nf, "%s", ggml_op_name(n0->op)); snprintf(c.nl, sizeof c.nl, "%s", ggml_op_name(sj->graph.nodes[sj->graph.n_nodes - 1]->op)); c.ni[0] = 0;
