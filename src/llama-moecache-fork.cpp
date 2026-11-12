@@ -9517,6 +9517,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     // the lend and the KV zone, which fill the classes from the front. A class too small for one layer even with nothing in front stays out of it.
                     ap.floor_end = ap.tail_end;
                     for (const auto & sg : ap.segs) {
+                        // staged prompts stream a short class through the staging slots: a floor there only cut the lend, the classes lie back to back and the first
+                        // one's floor ends it (2026-11-12 gate vs b15065: GLM 3.0 CUDA0 18.1 -> 8.9 GiB lendable, passes 10144 -> 4512; MiMo's 2nd card room 1387 MiB)
+                        if (!pp_no_staging()) { break; }
                         const int32_t E = (int32_t) ll[pl.cls[(size_t) (sg.pcls - (int32_t) pool0)].members[0]]->ffn_up_exps->ne[2];
                         if (sg.n >= E) { ap.floor_end = std::min(ap.floor_end, sg.base + (size_t) (sg.n - E) * sg.B); }
                     }
