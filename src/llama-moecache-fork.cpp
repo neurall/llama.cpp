@@ -1338,6 +1338,7 @@ static std::atomic<int64_t> g_pp_mb{0};          // this prompt call: the larges
 static bool              g_pp_mix_graph = false; // the graph being built has layers on the prompt mix (llama_moe_cache_pp_mix_fork)
 static std::atomic<bool> g_pp_cstream_call{false};   // this prompt call streams into the cache's own blocks (--moe pp-path=cstream): the graph reads every expert through the tables, no staging
 static bool g_pp_cs_reported = false;   // the call llama_moe_cache_prefill_report_fork reports streamed into the blocks (g_pp_cstream_call is reset when decode() returns, before the report)
+static std::atomic<bool> g_pp_cs_split{false};   // this call's stream into the blocks runs under the dense split (llama_moe_cache_pp_yield_fork): said once per call
 static bool              g_pp_cstream_graph = false; // the graph being built has such layers (llama_moe_cache_pp_chain_fork returned 2)
 static bool              g_pp_cstream_built = false; // the same for the graph that runs: its experts go into blocks before it (llama_moe_cache_pp_freeze_fork)
 static std::vector<size_t> g_cs_order_graph;           // the cstream layers of the graph being built, in its order (llama_moe_cache_pp_chain_fork)
@@ -15558,6 +15559,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     const bool cstream = force ? strcmp(force, "cstream") == 0 || (pp_no_staging() && strcmp(force, "stream") == 0)
                                : pp_no_staging() && !chain && !dec && !mix && m <= 0.0;
     g_pp_cstream_call = cstream;
+    g_pp_cs_split = false;
     g_pp_cs_reported = cstream;
     if (cstream) { g_pp_mb = ub_max; }
     if (k_auto) { ggml_backend_pred_set_fork(m); }
@@ -15664,8 +15666,13 @@ double llama_moe_cache_pp_best_one_us_fork(int64_t n_tokens) {
 bool llama_moe_cache_pp_yield_fork(const char * why) {
     static const bool k_auto = moe_opt("pp-k") == nullptr, forced = moe_opt("pp-path") != nullptr;
     if (forced || (!k_auto && ggml_backend_pred_get_fork() > 0.0)) { return false; }   // a path the user set keeps its passes
+    // --moe staging=0: the call's stream is the one into the cache's blocks and it runs on under the split (build_moe_ffn, range_cache), so the cache path stays on.
+    // With it off the split's experts were plain graph inputs, copied when their layer came up: GLM 3.0 12k, 2 x 3090, the expert card waited 4.2 s of a 15.4 s
+    // pass for them (760 prompt t/s against 1030 staged). Every pass of the call asks again (the cache path still takes its size): nothing left to change then.
+    const bool cs = g_pp_cstream_call.load(std::memory_order_relaxed);
+    if (cs && g_pp_cs_split.exchange(true)) { return true; }
     g_pp_dec = false;
-    g_pp_mb = 0;
+    if (!cs) { g_pp_mb = 0; }
     if (k_auto) { ggml_backend_pred_set_fork(0.0); }
     g_pp_path_call = g_pp_mix_call.load(std::memory_order_relaxed) ? PP_MIX : PP_RING;
     g_pp_save_us = 0.0;
