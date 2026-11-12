@@ -3652,29 +3652,35 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // holds only that range (llama_moe_cache_cs_shadow_fork, cs_copy). A card that cannot hold its range: the layer's own chain over every expert (mc_pp below).
     // --moe cs-chunks=N: each card's range of the layer in N chunks, each a part with its own table and split, so the cache's ring holds chunks and not whole layers
     // (the graph gets the bytes: bigger passes). A layer no split shares out: its chunks all on its home card.
-    if (const int nch = mc_cstream && sched ? llama_moe_cache_cs_chunks_fork() : 1; nch > 1) {
-        if (parts.empty()) {
-            const ggml_backend_dev_t home = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->dev_table->buffer));
-            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && parts.empty(); ++i) {
-                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
-                if (ggml_backend_get_device(b) == home) { parts.push_back({ b, llama_moe_cache_link_gbs_fork(home), 0, n_expert }); }
+    // Two tries: the cards' ranges as the split shared them out; a card that cannot hold its range (no class of the layer's shape there) leaves the layer on its home
+    // card, in chunks all the same (Qwen3.8 expert split, 4 chunks: layer 2 has no class on the other card, ran whole and found 174 ring blocks for 512 experts: abort).
+    const int nch = mc_cstream && sched ? llama_moe_cache_cs_chunks_fork() : 1;
+    for (int attempt = 0; mc_cstream && attempt < 2; ++attempt) {
+        if (nch > 1) {
+            if (parts.empty()) {
+                const ggml_backend_dev_t home = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->dev_table->buffer));
+                for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && parts.empty(); ++i) {
+                    ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+                    if (ggml_backend_get_device(b) == home) { parts.push_back({ b, llama_moe_cache_link_gbs_fork(home), 0, n_expert }); }
+                }
             }
-        }
-        std::vector<split_part> cut;
-        for (const auto & pt : parts) {
-            for (int ci = 0; ci < nch; ++ci) {
-                const int64_t clo = pt.lo + (pt.hi - pt.lo) * ci / nch, chi = pt.lo + (pt.hi - pt.lo) * (ci + 1) / nch;
-                if (chi > clo) { cut.push_back({ pt.b, pt.gbs, clo, chi, nullptr, ci }); }
+            std::vector<split_part> cut;
+            for (const auto & pt : parts) {
+                for (int ci = 0; ci < nch; ++ci) {
+                    const int64_t clo = pt.lo + (pt.hi - pt.lo) * ci / nch, chi = pt.lo + (pt.hi - pt.lo) * (ci + 1) / nch;
+                    if (chi > clo) { cut.push_back({ pt.b, pt.gbs, clo, chi, nullptr, ci }); }
+                }
             }
+            parts = cut;
         }
-        parts = cut;
-    }
-    if (mc_cstream && !parts.empty()) {
+        if (parts.empty()) { break; }
         bool ok = parts.size() >= 2;
         for (auto & pt : parts) { pt.pc = ok ? llama_moe_cache_cs_shadow_fork(mcache, ggml_backend_get_device(pt.b), pt.hi - pt.lo, pt.chunk) : nullptr; ok = ok && pt.pc; }
-        if (!ok) { parts.clear(); }
-        for (const auto & pt : parts) { llama_moe_cache_cs_range_fork(pt.pc, (int32_t) pt.lo, (int32_t) pt.hi); }
+        if (ok) { break; }
+        parts.clear();
+        if (nch <= 1) { break; }   // whole layers: the layer's own chain over every expert (mc_pp below)
     }
+    for (const auto & pt : parts) { if (pt.pc) { llama_moe_cache_cs_range_fork(pt.pc, (int32_t) pt.lo, (int32_t) pt.hi); } }
     if (mc_mix_b) {   // the fastest link's card: every expert id the home card does not hold
         parts.push_back({ mc_mix_b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(mc_mix_b)), 0, n_expert });
     }
