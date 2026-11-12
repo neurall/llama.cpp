@@ -8448,8 +8448,11 @@ def cmd_cell(a):
         rep = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "pool_ledger.py"), dst, "--max", "8"], capture_output=True, text=True)
         with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
             f.write(f"-- pool ledger {os.path.basename(dst)} (replay: fork/pool_ledger.py {dst})\n" + rep.stdout)
-    if not lines:
-        errs = [l.rstrip()[:240] for l in open(out, errors="replace") if re.search(r"FAIL|Traceback|Error|error:|PIN_FAIL|out of memory|Compute error|Segmentation|abort|Killed", l)][-4:]
+    # a request without a result (show_row's FAIL) fails the cell even when another request of it answered: a server that died on its second request left
+    # "cells, failed: none" (nsbig-glm35-verify, 2026-11-12: the ring ran out of blocks, the first request's speed was the cell's result)
+    lost = [l.rstrip()[:200] for l in open(out, errors="replace") if re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d .* FAIL( |$)", l)]
+    if not lines or lost:
+        errs = lost[-2:] + [l.rstrip()[:240] for l in open(out, errors="replace") if re.search(r"FAIL|Traceback|Error|error:|PIN_FAIL|out of memory|Compute error|Segmentation|abort|Killed", l)][-4:]
         with open(os.path.join(Q5, "queue", "errors.log"), "a") as f:
             f.write(f"{time.strftime('%F %T')} ERROR {a.tag} {a.test} builds={a.builds} model={os.path.basename(a.model)} run.py exit={rc}\n" + "".join(e + "\n" for e in errs))
         return 1
