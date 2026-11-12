@@ -7300,7 +7300,7 @@ def stock_latest(dry=False):
     devbuilds/stock-latest to it. Returns the real build name, so rows and logs carry the build number. Downloaded once; a newer release adds a directory, older ones stay. A stock pulled today is reused all day (no gh call)."""
     if getattr(stock_latest, "remote", False):   # a list on another machine (-pc): the newest official release is looked up here (gh, no download) and downloaded by that machine itself; -nodl does not hold it back
         for tag in subprocess.run(["gh", "release", "list", "-R", "ggml-org/llama.cpp", "-L", "8", "--json", "tagName", "-q", ".[].tagName"], capture_output=True, text=True).stdout.split():
-            if f"llama-{tag}-bin-ubuntu-cuda-13.4-x64.tar.gz" in subprocess.run(["gh", "release", "view", tag, "-R", "ggml-org/llama.cpp", "--json", "assets", "-q", ".assets[].name"], capture_output=True, text=True).stdout.split():
+            if any(re.fullmatch(rf"llama-{tag}-bin-ubuntu-cuda-13\.\d+-x64\.tar\.gz", x) for x in subprocess.run(["gh", "release", "view", tag, "-R", "ggml-org/llama.cpp", "--json", "assets", "-q", ".assets[].name"], capture_output=True, text=True).stdout.split()):
                 return f"stock-{tag}-official"   # the newest release whose binaries are uploaded already (a fresh one may have only some of its files)
     if getattr(stock_latest, "skip", False):   # -nodl: no look at the newest release, no download: the stock-latest link as it is, else the newest stock directory on disk
         have = [p for p in glob.glob(os.path.join(DEVBUILDS, "stock-b*-official")) if os.path.exists(os.path.join(p, "llama-server"))]
@@ -7326,7 +7326,7 @@ def stock_latest(dry=False):
         print(f"stock: pulling {tag} ...", flush=True)
         tmp = tempfile.mkdtemp(prefix="stock-dl-", dir=DEVBUILDS); ex = os.path.join(tmp, "x")   # downloads are untrusted data: an empty directory of their own
         try:
-            r = subprocess.run(["gh", "release", "download", tag, "-R", "ggml-org/llama.cpp", "-D", tmp, "-p", f"llama-{tag}-bin-ubuntu-cuda-13.4-x64.tar.gz", "-p", f"cudart-llama-{tag}-bin-ubuntu-cuda-13.4-x64.tar.gz"])
+            r = subprocess.run(["gh", "release", "download", tag, "-R", "ggml-org/llama.cpp", "-D", tmp, "-p", f"llama-{tag}-bin-ubuntu-cuda-13.*-x64.tar.gz", "-p", f"cudart-llama-{tag}-bin-ubuntu-cuda-13.*-x64.tar.gz"])   # the CUDA 13 minor of upstream's build moves (13.4, 13.5)
             if r.returncode: sys.exit("stock: download failed")
             os.makedirs(ex)
             for f in sorted(glob.glob(os.path.join(tmp, "*.tar.gz"))):
