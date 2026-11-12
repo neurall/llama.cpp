@@ -5175,6 +5175,8 @@ REGRESS_CELLS = [(REGRESS_MODEL, REGRESS_ARGS, "1", None, False),
                  (fcfg.model("qn_iq4xs"), "--cpu-moe" + _T, None, 2, True)]   # IQ4_XS gainer
 if os.environ.get("REGRESS_FAST") == "1":
     REGRESS_CELLS = [c for c in REGRESS_CELLS if not c[4]]
+elif os.environ.get("REGRESS_FAST") == "2":   # the OLMoE cell only (a bisect step)
+    REGRESS_CELLS = REGRESS_CELLS[:1]
 
 
 def ppl_rate(log):
