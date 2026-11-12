@@ -334,13 +334,15 @@ struct moe_cache {
         size_t               off[3] = { 0, 0, 0 }, len[3] = { 0, 0, 0 };   // up / gate / down slice: offset in a block and bytes
         size_t               past[3] = { 0, 0, 0 };   // bytes a quantized matmul reads past the slice's last row (rows not a multiple of 512 values), see pool_layout
         int32_t              active_end = -1; // kv-tail: the blocks from here on are all under the KV rows (owner -3): scans stop here (-1: the whole class)
-        int32_t              n_active() const { return active_end < 0 ? (int32_t) owner.size() : active_end; }
+        int32_t              n_active() const { return active_end >= 0 ? active_end : home_hi > 0 ? home_hi : (int32_t) owner.size(); }   // the class's own blocks (decode scans; a grid's others are another class's)
         std::vector<uint32_t> cs_up;          // --moe pp-path=cstream: the pass (moe_cache::cs_pass) whose upload put the block's expert there (the pass's counts)
         int32_t               cs_cur = 0;     // cstream's write cursor: the next block of the ring (cs_plan)
-        // --moe staging=0, a class too small for one layer (pool layout: "grid"): its blocks are a grid of a whole layer's worth anchored at the class's end, reaching back
-        // over its neighbours' bytes. Blocks [home_lo, home_hi) are its own; the others are owner -4 (another class's bytes) until the ring claims them (cls_claim)
-        // and go back at the end of the prompt call (cls_home). A class with no grid: home = all its blocks.
+        // --moe staging=0 (pool layout "layer ring", 2026-11-12): every class's block grid runs on from its own blocks to the end of the card's experts, over the ring
+        // reserve at the tail. Blocks [home_lo, home_hi) are its own; the others are owner -4 (another class's bytes) until the ring claims them (cls_claim) and go
+        // back at the end of the prompt call (cls_home). ring_lo: the first block that starts in the reserve (behind floor_end); the ring writes only from there.
+        // Without the ring: home = all its blocks, ring_lo 0.
         int32_t               home_lo = 0, home_hi = 0;
+        int32_t               ring_lo = 0;
     };
     std::vector<pool_state> pool;
     int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
@@ -388,7 +390,8 @@ struct moe_cache {
                          ggml_type tk = GGML_TYPE_F16, tv = GGML_TYPE_F16, tk0 = GGML_TYPE_F16, tv0 = GGML_TYPE_F16; bool convertible = false; size_t unit = 256; };   // tk0/tv0: the types it was created with (tier 0); unit: its row and its place in the combined row are multiples of it
         std::vector<kvt_run>  kvt;
         size_t                tail_end  = 0;    // end of the last class's expert blocks (the zone never reaches the last two blocks before it)
-        size_t                floor_end = 0;    // the most the lend and the KV zone reach: every size class keeps one layer's experts behind them (set with tail_end)
+        size_t                floor_end = 0;    // the most the lend and the KV zone reach (set with tail_end); --moe staging=0: the ring reserve lies behind it
+        size_t                cs_byte   = 0;    // --moe staging=0: the ring's write cursor on this card (bytes; the next layer lands from here, class-blind)
         size_t                span_full = 0;    // the lend's reach without a KV zone
         size_t                kv_row   = 0;     // bytes of one combined cell (the sum of the growing records' rows)
         size_t                kv_fixed = 0;     // bytes of the fixed records (fewer cells than the largest record, e.g. MiMo's sliding-window cache: laid out at full size, first in the zone)
@@ -5292,6 +5295,7 @@ static void pool_fill_log(moe_cache * mc, const char * when) {
         if (g == nullptr) { a.emplace_back(); g = &a.back(); g->dev = ps.dev; }
         for (size_t b = 0; b < ps.owner.size(); ++b) {
             const int32_t o = ps.owner[b];
+            if (o == -4) { continue; }   // another class's bytes (a grid, staging=0): counted there
             g->n++;
             g->b_all += (double) ps.B;
             if (o == -2)                                     { g->lent++; }
@@ -9437,24 +9441,19 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 for (auto * b : ubufs) { ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS); }
                 const size_t pool0 = mc->pool.size();
-                // Grids (--moe staging=0; user 2026-11-12: two layers fit the expert space whatever their class, the rest is the graph's and the KV's): a class that cannot
-                // hold one layer gets a grid of a whole layer's worth of blocks anchored at its end, reaching back over its neighbours' bytes. Its own blocks are the last
-                // ones (home); the others belong to the neighbour (owner -4) until the stream's ring claims them for a layer (cls_claim). The geometry never moves, only
-                // who owns which bytes. The experts' floor follows (alias below): the lend and the KV zone stop before every class's last layer's worth of blocks, a grid
-                // included (one layer of each class, the largest class last; 2026-11-12: a floor of two of the largest layers cut Qwen3.8's 12k passes from 5632 to 1504).
+                // The layer ring (--moe staging=0; user 2026-11-12: "split the pool into an area for n whole layers and one for whatever else fits"): every class's
+                // grid runs on from its own blocks to the end of the card's experts, so a layer of any class can land in the ring reserve at the tail (the floor
+                // below). Its own blocks stay where they are (home); the ones past them are another class's bytes (owner -4) until the ring claims them (cls_claim).
+                // The lend and the KV zone walk the homes only (segs): they never meet a grid block, and the reserve behind floor_end is never theirs.
                 std::vector<size_t>  gbase(pl.cls.size());
-                std::vector<int32_t> gn(pl.cls.size()), ghome(pl.cls.size(), 0);
-                bool grids = false;
+                std::vector<int32_t> gn(pl.cls.size());
+                const bool ring = pp_no_staging() && !split;
                 for (size_t c = 0; c < pl.cls.size(); ++c) { gbase[c] = pl.cls[c].base; gn[c] = nblk[c]; }
-                if (pp_no_staging() && !split && pl.cls.size() > 1) {
+                if (ring && pl.cls.size() > 1) {
+                    const size_t tail = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
                     for (size_t c : order) {
-                        const size_t E   = (size_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2];
                         const size_t end = pl.cls[c].base + (size_t) nblk[c] * pl.cls[c].B;
-                        if (c == order[0] || (size_t) nblk[c] >= E || end < E * pl.cls[c].B) { continue; }
-                        gbase[c] = end - E * pl.cls[c].B;
-                        gn[c]    = (int32_t) E;
-                        ghome[c] = (int32_t) E - nblk[c];
-                        grids    = true;
+                        gn[c] = nblk[c] + (int32_t) ((tail - end) / pl.cls[c].B);
                     }
                 }
                 std::string cls_txt;
@@ -9464,12 +9463,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     ps.B   = pl.cls[c].B;
                     for (int k = 0; k < 3; ++k) { ps.off[k] = pl.cls[c].off[k]; ps.len[k] = pl.cls[c].len[k]; ps.past[k] = pl.cls[c].past[k]; }
                     ps.owner.assign(gn[c], -4);
-                    for (int32_t b = gn[c] - 1; b >= ghome[c]; --b) { ps.owner[b] = -1; ps.free.push_back(b); }
-                    ps.home_lo = ghome[c];
-                    ps.home_hi = gn[c];
+                    for (int32_t b = nblk[c] - 1; b >= 0; --b) { ps.owner[b] = -1; ps.free.push_back(b); }
+                    ps.home_lo = 0;
+                    ps.home_hi = nblk[c];
                     mc->pool.push_back(std::move(ps));
                     cls_txt += tr_fmt("%s%d x %.2f MiB (%zu layers%s)", c ? ", " : "", nblk[c], pl.cls[c].B / 1048576.0, pl.cls[c].members.size(),
-                            ghome[c] > 0 ? tr_fmt(", grid of %d", gn[c]).c_str() : "");
+                            gn[c] > nblk[c] ? tr_fmt(", grid of %d", gn[c]).c_str() : "");
                 }
                 for (size_t i = 0; i < cands.size(); ++i) {
                     layer_state * ls = nullptr;
@@ -9507,24 +9506,41 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         sg.pcls = (int32_t) (pool0 + c);
                         sg.base = gbase[c];
                         sg.B    = pl.cls[c].B;
-                        sg.n    = gn[c];
+                        sg.n    = nblk[c];   // the home: the lend and the KV zone never walk a grid
                         ap.segs.push_back(sg);
                         ap.span = sg.base + (size_t) sg.n * sg.B;
                         if (!alias_all || split) { break; }
                     }
                     ap.tail_end  = split ? ap.span : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
-                    // the experts' floor (user 2026-11-11: no staging, the prompt chain must always fit): each class keeps a whole layer's experts (E blocks) behind
-                    // the lend and the KV zone, which fill the classes from the front. A class too small for one layer even with nothing in front stays out of it.
                     ap.floor_end = ap.tail_end;
-                    for (const auto & sg : ap.segs) {
-                        // staged prompts stream a short class through the staging slots: a floor there only cut the lend, the classes lie back to back and the first
-                        // one's floor ends it (2026-11-12 gate vs b15065: GLM 3.0 CUDA0 18.1 -> 8.9 GiB lendable, passes 10144 -> 4512; MiMo's 2nd card room 1387 MiB)
-                        if (!pp_no_staging()) { break; }
-                        const int32_t E = (int32_t) ll[pl.cls[(size_t) (sg.pcls - (int32_t) pool0)].members[0]]->ffn_up_exps->ne[2];
-                        if (sg.n >= E) { ap.floor_end = std::min(ap.floor_end, sg.base + (size_t) (sg.n - E) * sg.B); }
+                    size_t ring_b = 0;
+                    const char * ring_why = "";
+                    if (ring) {
+                        // the ring reserve: two layers of the most common class (one in the kernels, the next on its way), or the largest layer if that is more, plus two
+                        // of the largest blocks (a grid block across floor_end is not the ring's). One layer when two take over half the pool (the uploads wait then).
+                        // shortcut: a fixed rule; upgrade to a per-call estimate (pass tokens lost against upload overlap gained)
+                        size_t Lmax = 0, Lcom = 0, Bmax = 0, ncom = 0;
+                        for (size_t c : order) {
+                            const size_t L = (size_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2] * pl.cls[c].B;
+                            Lmax = std::max(Lmax, L);
+                            Bmax = std::max(Bmax, pl.cls[c].B);
+                            if (pl.cls[c].members.size() > ncom) { ncom = pl.cls[c].members.size(); Lcom = L; }
+                        }
+                        ring_b   = std::max(Lmax, 2 * Lcom) + 2 * Bmax;
+                        ring_why = Lmax > 2 * Lcom ? "the largest layer" : "two layers of the most common class";
+                        if (ring_b > ap.tail_end / 2) { ring_b = Lmax + 2 * Bmax; ring_why = "one layer (two would take over half the pool: uploads wait for the layer before)"; }
+                        ring_b = std::min(ring_b, ap.tail_end);
+                        ap.floor_end = ap.tail_end - ring_b;
+                    } else {
+                        for (const auto & sg : ap.segs) {
+                            // staged prompts stream a short class through the staging slots: a floor there only cut the lend, the classes lie back to back and the first
+                            // one's floor ends it (2026-11-12 gate vs b15065: GLM 3.0 CUDA0 18.1 -> 8.9 GiB lendable, passes 10144 -> 4512; MiMo's 2nd card room 1387 MiB)
+                            if (!pp_no_staging()) { break; }
+                            const int32_t E = (int32_t) ll[pl.cls[(size_t) (sg.pcls - (int32_t) pool0)].members[0]]->ffn_up_exps->ne[2];
+                            if (sg.n >= E) { ap.floor_end = std::min(ap.floor_end, sg.base + (size_t) (sg.n - E) * sg.B); }
+                        }
                     }
-                    // on a block edge of every class: the lend and the KV rows mark whole blocks, so a block across the floor's edge would put a grid's
-                    // first block under the KV (Qwen3.8 staging=0: "511 of another class claimable, not claimable under: 1 KV", a ring layer aborted)
+                    // on a block edge of the class whose blocks lie there: the lend and the KV rows mark whole blocks (the homes are disjoint, one class holds the edge)
                     for (bool moved = true; moved; ) {
                         moved = false;
                         for (const auto & sg : ap.segs) {
@@ -9534,9 +9550,19 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             if (edge < ap.floor_end) { ap.floor_end = edge; moved = true; }
                         }
                     }
-                    if (grids) {
-                        LLAMA_LOG_WARN("moe-cache: block pool on %s: the experts' floor is %.0f MiB (a layer of each class, grids over shared bytes); the graph and the KV zone take up to %.0f MiB before it\n",
-                                ggml_backend_buft_name(buft), (ap.tail_end - ap.floor_end) / 1048576.0, ap.floor_end / 1048576.0);
+                    ap.cs_byte = ap.floor_end;
+                    if (ring) {
+                        std::string fit;
+                        for (size_t c : order) {
+                            auto & ps = mc->pool[pool0 + c];
+                            ps.ring_lo = ap.floor_end > gbase[c] ? (int32_t) ((ap.floor_end - gbase[c] + pl.cls[c].B - 1) / pl.cls[c].B) : 0;
+                            const int32_t E = (int32_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2];
+                            const int32_t nr = gn[c] - ps.ring_lo;
+                            fit += tr_fmt("%s%d of %d", fit.empty() ? "" : ", ", nr, E);
+                            GGML_ASSERT(nr >= E && "moe-cache: the ring reserve holds less than one layer of a class");
+                        }
+                        LLAMA_LOG_WARN("moe-cache: block pool on %s: ring reserve %.0f MiB at the tail (%s; blocks per class there against a layer: %s); the graph and the KV zone take up to %.0f MiB before it\n",
+                                ggml_backend_buft_name(buft), (ap.tail_end - ap.floor_end) / 1048576.0, ring_why, fit.c_str(), ap.floor_end / 1048576.0);
                     }
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
@@ -10819,7 +10845,7 @@ static int64_t pp_blocks(moe_cache * mc, layer_state & ls, bool landed = false) 
     int64_t n = 0;
     if (ls.pcls >= 0) {
         const auto & ps = mc->pool[ls.pcls];
-        for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
+        for (int32_t b = ps.ring_lo, nb = (int32_t) ps.owner.size(); b < nb; ++b) {   // the ring reserve (staging=0) or the whole class
             const int32_t o = ps.owner[b];
             n += o == -1 || (landed && o == -4) || (o >= 0 && (landed || !mc->layers[o].slot_in_flight[b]) && !mc->layers[o].is_stream[b])   // -4: the ring claims it (cls_claim)
                || o <= -5;   // a shadow's: given back at the next pass (cs_shadow_drop)
@@ -11069,10 +11095,11 @@ template <class F> static bool cls_over(moe_cache * mc, int32_t pc, int32_t b, c
         const size_t lo = me->base + (size_t) b * me->B, hi = lo + me->B;
         for (const auto & sg : ap.segs) {
             if (sg.pcls == pc || sg.B == 0) { continue; }
-            const size_t end = sg.base + (size_t) sg.n * sg.B;
+            const size_t gnb = mc->pool[sg.pcls].owner.size();   // its whole grid: past its home it may hold experts the ring claimed in the reserve
+            const size_t end = sg.base + gnb * sg.B;
             if (hi <= sg.base || lo >= end) { continue; }
             const int32_t x0 = lo > sg.base ? (int32_t) ((lo - sg.base) / sg.B) : 0;
-            const int32_t x1 = (int32_t) std::min<size_t>((size_t) sg.n, (hi - sg.base + sg.B - 1) / sg.B);
+            const int32_t x1 = (int32_t) std::min<size_t>(gnb, (hi - sg.base + sg.B - 1) / sg.B);
             for (int32_t x = x0; x < x1; ++x) { if (!f(sg.pcls, x)) { return false; } }
         }
         return true;
@@ -11185,7 +11212,7 @@ static std::string cs_why(moe_cache * mc, size_t p) {
     };
     int claim_bl[8] = {};
     std::set<int> outl;   // the layers outside the pass (or pinned) that hold blocks of the class
-    for (int32_t b = 0; b < ps.n_active(); ++b) {
+    for (int32_t b = ps.ring_lo; b < (int32_t) ps.owner.size(); ++b) {
         if (ps.owner[b] != -4) { const int k = kind(ls.pcls, b); n[k]++; if (k == 4) { outl.insert(csl(mc, (size_t) cs_li_of(mc, ps.owner[b])).pub.il); } continue; }
         int worst = 7;
         cls_over(mc, ls.pcls, b, [&](int32_t qc, int32_t x) { const int k = kind(qc, x); if (k >= 1 && k <= 5) { worst = std::min(worst, k); } return true; });
@@ -11193,7 +11220,7 @@ static std::string cs_why(moe_cache * mc, size_t p) {
         claim_bl[worst]++;
     }
     return tr_fmt("%d blocks: %d free, %d lent, %d KV, %d in flight, %d outside the pass or pinned, %d wait for kernels, %d takeable; %d of another class claimable, "
-                  "not claimable under: %d lent, %d KV, %d in flight, %d outside or pinned, %d waiting", ps.n_active(), n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7],
+                  "not claimable under: %d lent, %d KV, %d in flight, %d outside or pinned, %d waiting", (int) ps.owner.size() - ps.ring_lo, n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7],
                   claim_bl[1], claim_bl[2], claim_bl[3], claim_bl[4], claim_bl[5]) + [&] {
         std::string t = "; outside or pinned held by layers";
         for (int il : outl) { const int32_t li = (size_t) il < mc->cs_li.size() ? mc->cs_li[(size_t) il] : -1; t += tr_fmt(" %d(pos %d)", il, li >= 0 ? mc->cs_pos[(size_t) li] : -9); }
@@ -11216,13 +11243,22 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     // cursor, so a layer lands in one run over what was written longest ago. Never a block of a layer uploaded for in this pass whose kernels are not queued yet.
     struct cand { int tier; int32_t b; int64_t o; };   // o: the entry (layer or shadow) holding the block, -1 none
     std::vector<cand> c;
-    const int32_t nb = ps.n_active();
-    if (ps.cs_cur >= nb) { ps.cs_cur = 0; }
+    // the layer ring (staging=0): the class's blocks in the reserve behind floor_end, from the card's cursor (bytes, class-blind: the layers of every class follow
+    // one another there, first in first out); without a reserve the class's own cursor over all its blocks
+    const int32_t nb = (int32_t) ps.owner.size(), r0 = ps.ring_lo, nr = nb - r0;
+    moe_cache::alias_pool * card = nullptr;
+    size_t cbase = 0;
+    for (auto & ap : mc->alias) { for (const auto & sg : ap.segs) { if (sg.pcls == ls.pcls) { card = &ap; cbase = sg.base; } } }
+    if (r0 > 0 && card) {
+        const size_t at = std::max(card->cs_byte, card->floor_end);
+        const int32_t b0 = at > cbase ? (int32_t) ((at - cbase + ps.B - 1) / ps.B) : r0;
+        ps.cs_cur = b0 >= r0 && b0 < nb ? b0 - r0 : 0;
+    } else if (ps.cs_cur >= nr) { ps.cs_cur = 0; }
     // a second scan when the first finds too few: pinned experts give way (a pin keeps a decode favourite, it must not keep a layer out of its class's blocks)
     for (int force = 0; force < 2 && c.size() < want.size(); ++force) {
     c.clear();
-    for (int32_t i = 0; i < nb && c.size() < want.size(); ++i) {
-        const int32_t b = (ps.cs_cur + i) % nb;
+    for (int32_t i = 0; i < nr && c.size() < want.size(); ++i) {
+        const int32_t b = r0 + (ps.cs_cur + i) % nr;
         const int32_t o = ps.owner[b];
         if (o == -1) { c.push_back({ 0, b, -1 }); continue; }
         if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: none of it computed in this pass, 6: some)
@@ -11246,7 +11282,8 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     }
     }
     if (c.size() < want.size()) { return false; }
-    ps.cs_cur = (c.back().b + 1) % nb;
+    ps.cs_cur = (c.back().b + 1 - r0) % nr;
+    if (r0 > 0 && card) { card->cs_byte = cbase + (size_t) (c.back().b + 1) * ps.B; if (card->cs_byte >= card->tail_end) { card->cs_byte = card->floor_end; } }
     std::sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return x.b < y.b; });   // ascending blocks for ascending experts: runs of both, one 2D copy each
     const double S   = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
     const double rlb = mc->gbs_link[ls.link] * 1e3;
@@ -11380,13 +11417,13 @@ static void cs_begin(moe_cache * mc) {
         if (!ls.cs_done_ev) { ls.cs_done_ev = ggml_backend_event_new(mc->link_dev[ls.link]); }
         GGML_ASSERT(ls.ring_ev && ls.cs_done_ev && ring_backend(mc, ls.link) && "cstream: no events or upload stream");
     }
-    // the call's first cstream pass: a grid class has exactly a layer's worth of blocks for its ring layers, so a layer outside the pass drops what it caches there
-    // (Qwen3.8: the last layer runs its output rows on the decode path, its 32 decode experts kept ring layer 30 from 512 blocks; it misses ~8 experts once instead)
+    // the call's first cstream pass: the ring reserve is the ring's, so a layer outside the pass drops what it caches there (its path may read the block while
+    // the ring writes it; Qwen3.8: the last layer runs its output rows on the decode path, its 32 decode experts kept ring layer 30 from 512 blocks)
     if (!g_cs_live.load()) {
         bool any = false;
         for (auto & ps : mc->pool) {
-            if (ps.home_lo == 0) { continue; }
-            for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+            if (ps.ring_lo == 0) { continue; }
+            for (int32_t b = ps.ring_lo; b < (int32_t) ps.owner.size(); ++b) {
                 const int32_t o = ps.owner[b];
                 if (o >= 0 && mc->cs_pos[o] < 0 && mc->layers[o].slot_expert[b] >= 0) { evict_slot(mc, mc->layers[o], b); any = true; }
             }
@@ -14589,7 +14626,7 @@ static std::vector<upload_job> preheat_swap(moe_cache * mc, const std::vector<ui
                 }
             }
         }
-        const size_t budget = std::max<size_t>(1, mc->pool[pc].owner.size() / 20);
+        const size_t budget = std::max<size_t>(1, (size_t) mc->pool[pc].n_active() / 20);
         const size_t n = std::min({ hot.size(), cold.size(), budget });
         static const bool own_layer_pp = [] { const char * e = moe_opt("own-layer"); return e && atoi(e) != 0; }();
         if (n == 0 || own_layer_pp) { continue; }   // (this pass moves blocks between layers)
@@ -15461,8 +15498,7 @@ void llama_moe_cache_fill_fork(uint64_t * filled, uint64_t * total) {
     if (!mc) { return; }
     std::lock_guard<std::mutex> lk(mc->mtx);
     for (const auto & p : mc->pool) {
-        *total += p.owner.size();
-        for (int32_t o : p.owner) { *filled += o >= 0; }
+        for (int32_t o : p.owner) { *total += o != -4; *filled += o >= 0; }   // -4: another class's bytes (a grid)
     }
 }
 
