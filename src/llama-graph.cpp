@@ -3312,7 +3312,13 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
         // cstream: the chain joins the graph through its use (one card) or not at all (the expert split's parts replace it): expanded here it also ran over every
         // expert beside the parts and its unread output was never freed (Qwen3.8 staging=0: an 8657 MiB graph at 3168 tokens, 324 MiB per layer)
-        if (!mc_mix_b && !mc_cstream) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
+        // --moe chain-merge=1 (experiment, decode): the card's chain is not queued ahead of the CPU chain, it joins the graph through the merge with it (the CPU
+        // chain is that add's first source): a layer is then one CPU split and one GPU split instead of two of each. Lost: the CPU chain no longer runs beside the
+        // card's chain, a layer with misses holds the card for them. Gained: one launch and one gap with no kernel a layer (nsys, Qwen3.8 IQ3_S decode: about 96
+        // gaps of 20-100 us a token, two a layer).
+        static const bool chain_merge = [] { const char * e = moe_opt("chain-merge"); return e && atoi(e) != 0; }();
+        const bool mc_late = chain_merge && n_tokens == 1 && mc_cpu_backend && !mc_pp && !mc_ppk && !mc_ids_all && !mc_miss_ids && !mc_mix_b && !mc_cstream;
+        if (!mc_mix_b && !mc_cstream && !mc_late) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
             ggml_build_forward_expand(gf, down_g);
         }
     }
