@@ -15102,6 +15102,14 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
         }
         return pp_plan(g_cache, n, ub_max, ub_old);
     }
+    if (g_cache && on && n > 64 && llama_moe_cache_max_batch_fork() >= (int64_t) n) {
+        // a call with no batch limit (the cstream ring: every layer reads the cache's blocks) skipped pp_plan and with it the pool and KV cap: Qwen3.8 staging=0 ran
+        // a 5408-token call as one pass at 8312 cells, its KV did not fit ("failed to prepare attention ubatches"), and an 8312-token call as 5408 + 2904
+        uint32_t cap = ub_max;
+        for (const auto & a : g_cache->alias) { cap = pp_cap_to_pool(a, n, cap); }
+        const uint32_t passes = (n + cap - 1) / std::max<uint32_t>(1, cap);
+        return std::min<uint32_t>(cap, ((n + passes - 1) / passes + 31) / 32 * 32);   // equal passes under the cap
+    }
     return on ? ppx_equal_pass(n, ub_max, mb) : ub_max;
 }
 
