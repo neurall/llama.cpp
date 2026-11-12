@@ -8104,6 +8104,15 @@ static double link_max_gbs(const moe_cache * mc, int k) {
     for (const auto & e : g_early_gbs) { if (e.first == mc->link_dev[k] && e.second > 0) { return e.second; } }
     return mc->gbs_link[k];
 }
+// Every byte card k's link took from host memory: the backend's own count where it keeps one (CUDA: every host-to-device copy, whichever path queued it), else the
+// cache's two counters. Those miss the scheduler's range and staging uploads of a stream or split pass: Qwen3.8 IQ3_S on 2 x 3090, 2026-11-12, a split pass sent
+// 32.3 GB to one card in 2 s, the status line had 0.43 GB/s for that 10 s window and the viewer's strip stayed low, NVML showed 18-28 GB/s.
+static int64_t link_total(const moe_cache * mc, int k) {
+    const ggml_backend_dev_t dev = mc->link_dev[k];
+    const ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+    const auto fn = reg ? (uint64_t (*)(ggml_backend_dev_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_fork_h2d_bytes") : nullptr;
+    return fn ? (int64_t) fn(dev) : mc->link_bytes[k].load() + mc->pf_link[k].load();
+}
 static const char * const UPI_NAME[moe_cache::UPI_N] = { "no stream pass", "another card computes", "its own kernels", "pass uploaded", "disk read" };
 static void fast_window_run(moe_cache * mc) {
     const char * o = moe_opt("stats-fast-ms");
@@ -8112,7 +8121,7 @@ static void fast_window_run(moe_cache * mc) {
     struct win { double t, dt; uint64_t steps; int64_t cpu, up, pf, lk[MAX_LINKS]; uint64_t filled, total; int why[MAX_LINKS]; };
     std::vector<win> buf;
     int64_t t0 = ggml_time_us(), cpu0 = mc->cpu_bytes.load(), up0 = mc->up_bytes.load(), pf0 = mc->pf_bytes.load(), lk0[MAX_LINKS] = {};
-    for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
+    for (int k = 0; k < mc->n_links; ++k) { lk0[k] = link_total(mc, k); }
     uint64_t n0 = mc->n_steps;
     double last_flush = llama_moe_span_now_fork();
     while (!mc->stats_stop.load(std::memory_order_relaxed)) {   // ends with the cache: llama_moe_cache_free_fork joins this thread before it deletes mc
@@ -8124,9 +8133,10 @@ static void fast_window_run(moe_cache * mc) {
         const uint64_t n = mc->n_steps;
         w.steps = n - n0; w.cpu = cpu - cpu0; w.up = up - up0; w.pf = pf - pf0;
         bool any = w.steps || w.cpu || w.up || w.pf;
+        int64_t lsum = 0;
         for (int k = 0; k < mc->n_links; ++k) {
-            const int64_t b = mc->link_bytes[k].load() + mc->pf_link[k].load();
-            w.lk[k] = b - lk0[k]; lk0[k] = b; any = any || w.lk[k];
+            const int64_t b = link_total(mc, k);
+            w.lk[k] = b - lk0[k]; lk0[k] = b; any = any || w.lk[k]; lsum += w.lk[k];
             // the link's idle share of the window, under what it waits for now (one cause a window: a pass changes cause a few times a second)
             const int cw = mc->cs_why[k].load(std::memory_order_relaxed);
             w.why[k] = !g_cs_live.load() ? (g_hpend_n.load(std::memory_order_relaxed) > 0 ? moe_cache::UPI_READ : moe_cache::UPI_OFF) :
@@ -8136,6 +8146,7 @@ static void fast_window_run(moe_cache * mc) {
             const double busy = cap > 0.0 ? std::min(1.0, (double) w.lk[k] / cap) : (w.lk[k] ? 1.0 : 0.0);
             mc->up_idle_us[k][w.why[k]] += (int64_t) ((1.0 - busy) * w.dt * 1e6);
         }
+        w.pf = std::max<int64_t>(w.pf, lsum - w.up);   // the stream's share: what the links carried beyond the cache's own uploads
         t0 = t; cpu0 = cpu; up0 = up; pf0 = pf; n0 = n;
         if (any) { llama_moe_cache_fill_fork(&w.filled, &w.total); buf.push_back(w); }
         if (w.t - last_flush >= 10.0) {
@@ -8160,7 +8171,7 @@ static void stats_status_run(moe_cache * mc) {
     const char * o = moe_opt("stats-ms");
     const int64_t period = (int64_t) std::max(50, o ? atoi(o) : 10000) * 1000;
     int64_t t0 = ggml_time_us(), cpu0 = mc->cpu_bytes.load(), up0 = mc->up_bytes.load(), pf0 = mc->pf_bytes.load(), lk0[MAX_LINKS] = {};
-    for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
+    for (int k = 0; k < mc->n_links; ++k) { lk0[k] = link_total(mc, k); }
     uint64_t h0 = 0, m0 = 0, n0 = mc->n_steps, u0 = mc->n_uploads, e0 = mc->n_evictions;
     while (!mc->stats_stop.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -8171,11 +8182,14 @@ static void stats_status_run(moe_cache * mc) {
         uint64_t h = 0, m = 0;
         for (const auto & l : mc->layers) { h += l.n_hit; m += l.n_miss; }
         std::string links;
+        int64_t lsum = 0;
         for (int k = 0; k < mc->n_links; ++k) {
-            const int64_t b = mc->link_bytes[k].load() + mc->pf_link[k].load();
+            const int64_t b = link_total(mc, k);
             links += format(" %s %.2f/%.1f", mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", (double) (b - lk0[k]) / dt / 1e9, mc->gbs_link[k]);
+            lsum += b - lk0[k];
             lk0[k] = b;
         }
+        const int64_t st = std::max<int64_t>(pf - pf0, lsum - (up - up0));   // the stream's share: what the links carried beyond the cache's own uploads
         size_t todo = 0;
         int in_flight = 0;
         {
@@ -8185,7 +8199,7 @@ static void stats_status_run(moe_cache * mc) {
         }
         const uint64_t n = mc->n_steps, u = mc->n_uploads, e = mc->n_evictions;
         const std::string line = format("ram %.2f/%.1f GB/s (cpu %.2f, upload %.2f, stream %.2f); links%s GB/s; hit %.1f%%, steps %.1f/s, uploads %.0f/s, evictions %.0f/s, queue %zu+%d; %s",
-                (double) (cpu - cpu0 + up - up0 + pf - pf0) / dt / 1e9, knobs().ddr_gbs, (double) (cpu - cpu0) / dt / 1e9, (double) (up - up0) / dt / 1e9, (double) (pf - pf0) / dt / 1e9, links.c_str(),
+                (double) (cpu - cpu0 + up - up0 + st) / dt / 1e9, knobs().ddr_gbs, (double) (cpu - cpu0) / dt / 1e9, (double) (up - up0) / dt / 1e9, (double) st / dt / 1e9, links.c_str(),
                 h + m > h0 + m0 ? 100.0 * (double) (h - h0) / (double) (h + m - h0 - m0) : 0.0, (double) (n - n0) / dt, (double) (u - u0) / dt, (double) (e - e0) / dt, todo, in_flight, llama_moe_stats_io_fork(1).c_str());
         llama_moe_stats_log_fork("STA", line.c_str());
         t0 = t; cpu0 = cpu; up0 = up; pf0 = pf; h0 = h; m0 = m; n0 = n; u0 = u; e0 = e;
@@ -15822,7 +15836,7 @@ int llama_moe_cache_counters_fork(int64_t * v, int cap) {
     moe_cache * mc = g_cache;
     if (!mc || cap < 3 + mc->n_links) { return 0; }
     v[0] = mc->cpu_bytes.load(); v[1] = mc->up_bytes.load(); v[2] = mc->pf_bytes.load();
-    for (int k = 0; k < mc->n_links; ++k) { v[3 + k] = mc->link_bytes[k].load() + mc->pf_link[k].load(); }
+    for (int k = 0; k < mc->n_links; ++k) { v[3 + k] = link_total(mc, k); }
     return 3 + mc->n_links;
 }
 
@@ -15865,7 +15879,7 @@ std::string llama_moe_bw_json_fork() {
     static std::mutex mu; static int64_t t0 = 0, cpu0 = 0, up0 = 0, lk0[MAX_LINKS] = {};
     static double ram = 0, cpu = 0, lk[MAX_LINKS] = {}, win = 0, hr_recent = -1;
     static uint64_t h0 = 0, m0 = 0, sq0 = 0, sh0 = 0; static double pf_recent = -1;
-    static int64_t pfb0 = 0, pfl0[MAX_LINKS] = {};
+    static int64_t pfb0 = 0;
     std::lock_guard<std::mutex> g(mu);
     uint64_t hh = 0, mm = 0;
     for (const auto & l : mc->layers) { hh += l.n_hit; mm += l.n_miss; }
@@ -15874,15 +15888,16 @@ std::string llama_moe_bw_json_fork() {
         if (t0) {
             const double dt = (now - t0) / 1e6;
             cpu = (mc->cpu_bytes - cpu0) / dt / 1e9;
-            ram = cpu + (mc->up_bytes - up0 + mc->pf_bytes - pfb0) / dt / 1e9;
-            for (int k = 0; k < mc->n_links; ++k) { lk[k] = (mc->link_bytes[k] - lk0[k] + mc->pf_link[k] - pfl0[k]) / dt / 1e9; }
+            double lsum = 0.0;
+            for (int k = 0; k < mc->n_links; ++k) { lk[k] = (link_total(mc, k) - lk0[k]) / dt / 1e9; lsum += lk[k]; }
+            ram = cpu + std::max((mc->up_bytes - up0 + mc->pf_bytes - pfb0) / dt / 1e9, lsum);
             if (mc->n_src_query > sq0) { pf_recent = 100.0 * (mc->n_src_hit - sh0) / (mc->n_src_query - sq0); }
             win = dt;
             hr_recent = (hh - h0) + (mm - m0) > 0 ? 100.0 * (hh - h0) / ((hh - h0) + (mm - m0)) : hr_recent;
         }
         h0 = hh; m0 = mm;
         t0 = now; cpu0 = mc->cpu_bytes; up0 = mc->up_bytes; pfb0 = mc->pf_bytes; sq0 = mc->n_src_query; sh0 = mc->n_src_hit;
-        for (int k = 0; k < mc->n_links; ++k) { lk0[k] = mc->link_bytes[k]; pfl0[k] = mc->pf_link[k]; }
+        for (int k = 0; k < mc->n_links; ++k) { lk0[k] = link_total(mc, k); }
     }
     char b[256];
     snprintf(b, sizeof b, "\"bandwidth\":{\"gpus\":%d,\"window_s\":%.2f,\"ram_gbs\":%.2f,\"ram_max_gbs\":%.2f,\"cpu_gbs\":%.2f,\"uploaded_mib\":%.0f,\"links\":[",
@@ -15893,7 +15908,7 @@ std::string llama_moe_bw_json_fork() {
         snprintf(b, sizeof b, "%s{\"link\":%d,\"dev\":\"%s\",\"gbs\":%.2f,\"max_gbs\":%.2f,\"uploaded_mib\":%.0f,\"idle_ms\":[%lld,%lld,%lld,%lld,%lld]}", k ? "," : "", k,
                  mc->link_dev[k] ? ggml_backend_dev_name(mc->link_dev[k]) : "?", lk[k],
                  link_max_gbs(mc, k),   // lookup only: never start the probe copy on the HTTP thread
-                 (double) mc->link_bytes[k] / 1048576.0,
+                 (double) link_total(mc, k) / 1048576.0,
                  (long long) (mc->up_idle_us[k][0] / 1000), (long long) (mc->up_idle_us[k][1] / 1000), (long long) (mc->up_idle_us[k][2] / 1000),
                  (long long) (mc->up_idle_us[k][3] / 1000), (long long) (mc->up_idle_us[k][4] / 1000));
         o += b;

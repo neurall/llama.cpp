@@ -1065,7 +1065,11 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
 // the copy sleeps until then; the copy itself then runs at full speed. The average rate over many copies (the expert uploads of a prefill pass are thousands of
 // copies of a few MB) is the cap; a single large copy still finishes at wire speed, so the cap is not exact for one-off transfers. The startup upload probe in
 // llama.cpp goes through the same path (ggml_backend_tensor_set), so the automatic selection sees the capped bandwidth like a real narrow link.
+// fork: the bytes each card took from host memory so far, whichever path queued the copy (GET /moe/stats: the live view's link rate). Counted here because the three
+// entry points that carry every weight upload all pass through this function.
+static std::atomic<uint64_t> g_h2d_bytes_fork[GGML_CUDA_MAX_DEVICES];
 static void ggml_cuda_h2d_pace(int device, size_t size) {
+    if (device >= 0 && device < GGML_CUDA_MAX_DEVICES) { g_h2d_bytes_fork[device].fetch_add(size, std::memory_order_relaxed); }
     static const std::vector<double> caps = [] {
         std::vector<double> c(GGML_CUDA_MAX_DEVICES, 0.0);
         if (const char * e = getenv("GGML_CUDA_H2D_CAP")) {
@@ -1184,6 +1188,7 @@ static void ggml_backend_cuda_buffer_set_tensor_n(ggml_backend_buffer_t buffer, 
             sizes[i],
             cudaMemcpyHostToDevice,
             cudaStreamPerThread));
+        g_h2d_bytes_fork[ctx->device].fetch_add(sizes[i], std::memory_order_relaxed);   // fork: the loader's uploads count as link traffic too
     }
 
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
@@ -9068,11 +9073,18 @@ static void ggml_backend_cuda_warm_cublas_fork(ggml_backend_t backend) {
     ctx->curr_stream_no = saved;
 }
 
+static uint64_t ggml_backend_cuda_h2d_bytes(ggml_backend_dev_t dev) {   // fork: see g_h2d_bytes_fork
+    return g_h2d_bytes_fork[((ggml_backend_cuda_device_context *) dev->context)->device].load(std::memory_order_relaxed);
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     // fork: the core asks for hooks by the neutral name ggml_backend_fork_<x> (src/llama-backend-fork.h); here they are the ggml_backend_cuda_<x> functions
     if (strncmp(name, "ggml_backend_fork_", 18) == 0) {
         const std::string cuda_name = std::string("ggml_backend_cuda_") + (name + 18);
         return ggml_backend_cuda_reg_get_proc_address(reg, cuda_name.c_str());
+    }
+    if (strcmp(name, "ggml_backend_cuda_h2d_bytes") == 0) {
+        return (void *)ggml_backend_cuda_h2d_bytes;
     }
     if (strcmp(name, "ggml_backend_cuda_warm_cublas_fork") == 0) {
         return (void *)ggml_backend_cuda_warm_cublas_fork;
