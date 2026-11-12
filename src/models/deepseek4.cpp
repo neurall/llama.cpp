@@ -1269,6 +1269,13 @@ llama_model_deepseek4::graph::graph(const llm_graph_params & params) :
     {
         bool ds_ok = !ubatch.embd && !cparams.embeddings_nextn &&
                      std::none_of(cparams.embeddings_layer_inp.begin(), cparams.embeddings_layer_inp.end(), [](bool b) { return b; });
+        if (!ds_ok && llama_dsplit_cur_fork() == 1) {   // planned as a split, built without ranges: say why (see ds_plan)
+            static int n_log = 0;
+            if (n_log++ < 4) {
+                LLAMA_LOG_WARN("dense split: the planner chose it for this pass of %lld tokens, the graph is built without ranges: %s\n", (long long) n_tokens,
+                        ubatch.embd ? "the pass carries embeddings" : cparams.embeddings_nextn ? "the next-token embeddings are read out" : "a layer's input is read out (a draft)");
+            }
+        }
         if (ds_ok && ds_plan(64)) {
             const size_t NR = ds_r.size();
             std::vector<ggml_tensor *> x(NR), residual(NR), post(NR), comb(NR), cur_r(NR), ffn_in(NR), lg(NR), f(NR);

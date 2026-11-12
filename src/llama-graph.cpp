@@ -6055,7 +6055,16 @@ void llama_dsplit_single_dev_fork(ggml_backend_dev_t dev);   // llama-dsplit-for
 bool llama_dsplit_single_pays_fork(const llama_model & model, int64_t n_tokens);   // llama-dsplit-fork.cpp
 
 bool llm_graph_context::ds_plan(int64_t min_tokens) const {
-    if (llama_kv_parts_on_fork()) { return false; }   // the attention already runs on several cards, its KV heads are on them (llama_kv_cache, --moe attn-split)
+    // The planner chose the split for this pass and the builder cannot give it: say why. DeepSeek 4.1 (2026-11-12): every 12k pass was planned, timed and reported
+    // as a dense split while its graph had no ranges; the balance's "0 cards in the range" was the only trace.
+    const auto refuse = [&](const char * why) {
+        static int n_log = 0;
+        if (llama_dsplit_cur_fork() == 1 && n_log++ < 4) {
+            LLAMA_LOG_WARN("dense split: the planner chose it for this pass of %lld tokens, the graph is built without ranges: %s\n", (long long) n_tokens, why);
+        }
+        return false;
+    };
+    if (llama_kv_parts_on_fork()) { return refuse("the attention runs in parts on several cards (--moe attn-split)"); }   // its KV heads are on them (llama_kv_cache)
     ds_r.clear();
     ds_cut.clear();
     ds_mark = nullptr;
@@ -6070,11 +6079,13 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
     const int cur = llama_dsplit_cur_fork();
     const bool single = cur == 0 && one_range && llama_dsplit_single_pays_fork(model, n_tokens);
     llama_dsplit_single_dev_fork(nullptr);   // set below when this graph is a one-range pass: it reads the copies, so it goes behind them
-    if (!sched || (cur != 1 && !single) || ubatch.n_seqs != 1 || cparams.n_rs_seq != 0 || n_tokens < std::max(min_tok, min_tokens)) {
-        return false;
+    if (!sched || (cur != 1 && !single) || n_tokens < std::max(min_tok, min_tokens)) {
+        return false;   // (a pass under the minimum is the rule, not a refusal: a call's last few tokens)
     }
+    if (ubatch.n_seqs != 1)    { return refuse("the pass holds more than one sequence"); }
+    if (cparams.n_rs_seq != 0) { return refuse("the context keeps recurrent state per sequence"); }
     if (!loras->empty()) {
-        return false;   // an adapter is looked up by the weight tensor: the copies on the other cards would run without it
+        return refuse("an adapter is loaded");   // it is looked up by the weight tensor: the copies on the other cards would run without it
     }
     // the cards of the split (llama-dsplit-fork.cpp, g_cards): every GPU whose copies have memory, the slowest link first and the expert card (the fastest
     // link) last; any number of cards, any links and compute. Each takes one range of the tokens, sized by the live balance (equal time per card).
@@ -6087,7 +6098,7 @@ bool llm_graph_context::ds_plan(int64_t min_tokens) const {
         if (b) { be.push_back(b); devs.push_back(d); }
     }
     if (devs.size() < 2) {
-        return false;
+        return refuse("fewer than two cards with a backend in this context");
     }
     if (single) {
         ds_r.push_back({ be.back(), devs.back(), 0, n_tokens });
