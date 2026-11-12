@@ -15,3 +15,5 @@ tail-mimo-i-0,mimo,2,pf12k,1024,"--moe tail-refill=0",
 tail-mimo-i-1,mimo,2,pf12k,1024,"--moe tail-refill=1",
 ring-ds-vled,ds,1,pf12k,64,"--moe staging=0,verify=2,poison=3,ledger=1",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
 ring-ds-vstg,ds,1,pf12k,64,"--moe verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-glm30-cs-verify,glm,1,pf12k,64,"--moe staging=0,pp-path=stream,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-glm30-cs,glm,2,pf12k,64,"--moe staging=0,pp-path=stream",--env GGML_PF_STATS=1

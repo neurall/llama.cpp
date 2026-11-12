@@ -9167,7 +9167,10 @@ static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
     const std::string with = g_vram_others ? ".with" + std::to_string(g_vram_others >> 20) : "";   // a plain run keeps the key it always had
     // LLAMA_ASYNC_LOAD sizes the pool before the card's first kernels and cuBLAS handle exist (182 MiB more free at sizing on GLM 3.0): a normal start's need is too small for it (cublasCreate failed)
     extern bool g_async_load_fork;
-    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + with + (g_async_load_fork ? ".async" : "") + (cold ? ".cold" : ".warm"));
+    // --moe staging=0 runs other kernels than the staging paths (CUDA loads a kernel's code into VRAM at its first launch): its need is 70-100 MiB smaller on the card
+    // the staged dense split stages into (CUDA1: DeepSeek 163 against 233, GLM 3.5 149 against 216, MiMo 131 against 195 MiB), so one key made the staged start
+    // after a staging=0 one die at its first prompt (2026-11-12)
+    return hw_key("vram_need." + gpu + ".drv" + vram_driver() + ".b" + (b ? b : "0") + with + (g_async_load_fork ? ".async" : "") + (pp_no_staging() ? ".ns" : "") + (cold ? ".cold" : ".warm"));
 }
 
 // the margin a pool leaves on a card: --moe vram-reserve-mb / margin_mb if set, else the need an earlier session measured on this card, driver and build
