@@ -3936,6 +3936,16 @@ void resource_probe(moe_cache * mc, const llama_model & model) {
         mc->gbs_link[k] = link_alone[k];
         links += tr_fmt(" link %d %.1f", k, link_alone[k]);
     }
+    // a slow layer is one whose link measured well below the fastest, not one off the prompt card (PC1 2026-11-12: both cards x16, the second card's hot
+    // experts were sticky as on the old x4 slot, and 30 pinned blocks kept a Qwen3.8 layer out of its 512-block grid)
+    double fastest = 0;
+    for (int k = 0; k < mc->n_links; ++k) { fastest = std::max(fastest, mc->gbs_link[k]); }
+    if (fastest > 0) {
+        for (auto & ls : mc->layers) {
+            const double g = mc->gbs_link[ls.link];
+            if (g > 0) { ls.slow = g < 0.6 * fastest; }
+        }
+    }
     // the link bandwidth seen on this hardware, rounded to half octaves (x1.41), kept with its placement records: a probe that differs by a factor of 2 or more
     // (a shared uplink, a throttled or reconfigured slot, a bifurcation the PCI ids do not show) drops those records, so the next start measures again
     if (!mc->profile.empty() && !moe_state_place().empty()) {
@@ -10934,7 +10944,7 @@ template <class F> static bool cls_over(moe_cache * mc, int32_t pc, int32_t b, c
     }
     return false;
 }
-static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool & from_done) {   // cache lock held
+static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool & from_done, bool force) {   // cache lock held; force: pins yield
     bool fd = false;
     const bool ok = cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
         const int32_t o = mc->pool[qc].owner[x];
@@ -10945,7 +10955,7 @@ static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool 
         const int32_t e = lo.slot_expert[x];
         if (e < 0) { return true; }
         const int32_t q = (size_t) o < mc->cs_pos.size() ? mc->cs_pos[o] : -1;
-        if (q < 0 || pinned(mc, lo, e)) { return false; }
+        if (q < 0 || (!force && pinned(mc, lo, e))) { return false; }
         if ((size_t) q < mc->cs_done[lo.link]) { fd = true; return true; }
         return (size_t) q > p;
     });
@@ -11031,13 +11041,16 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     std::vector<cand> c;
     const int32_t nb = ps.n_active();
     if (ps.cs_cur >= nb) { ps.cs_cur = 0; }
+    // a second scan when the first finds too few: pinned experts give way (a pin keeps a decode favourite, it must not keep a layer out of its class's blocks)
+    for (int force = 0; force < 2 && c.size() < want.size(); ++force) {
+    c.clear();
     for (int32_t i = 0; i < nb && c.size() < want.size(); ++i) {
         const int32_t b = (ps.cs_cur + i) % nb;
         const int32_t o = ps.owner[b];
         if (o == -1) { c.push_back({ 0, b, -1 }); continue; }
         if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: none of it computed in this pass, 6: some)
             bool fd = false;
-            if (cls_claimable(mc, ls.pcls, b, p, fd)) { c.push_back({ fd ? 6 : 5, b, -1 }); }
+            if (cls_claimable(mc, ls.pcls, b, p, fd, force)) { c.push_back({ fd ? 6 : 5, b, -1 }); }
             continue;
         }
         if (o < 0) { continue; }   // lent to a graph, under the KV rows
@@ -11046,12 +11059,13 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         const int32_t x = lo.slot_expert[b];
         if (x < 0) { c.push_back({ 1, b, o }); continue; }   // the layer's, empty
         const int32_t q = (size_t) o < mc->cs_pos.size() ? mc->cs_pos[o] : -1;
-        if (q < 0 || pinned(mc, lo, x)) { continue; }   // a layer outside the cstream graph (its path may read the block), a pinned expert
+        if (q < 0 || (!force && pinned(mc, lo, x))) { continue; }   // a layer outside the cstream graph (its path may read the block), a pinned expert
         if ((size_t) q < mc->cs_done[lo.link]) {   // computed in this pass: its done event is on its card's compute stream
             c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, o });
         } else if ((size_t) q > p) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert comes back when its turn comes
             c.push_back({ 4, b, o });
         }
+    }
     }
     if (c.size() < want.size()) { return false; }
     ps.cs_cur = (c.back().b + 1) % nb;
