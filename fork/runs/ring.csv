@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+ring-olmoe-verify,olmoe,1,pf1k,64,"--moe sim-vram=2048,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-qni4-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-qni4-es-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-qni4-ds1-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-glm30-verify,glm,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-glm30-stg,glm,2,pf12k,64,,--env GGML_PF_STATS=1
+ring-glm30-ns,glm,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
+ring-ds-verify,ds,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-ds-stg,ds,2,pf12k,64,,--env GGML_PF_STATS=1
+ring-ds-ns,ds,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
