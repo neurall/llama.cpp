@@ -3661,15 +3661,22 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // Two tries: the cards' ranges as the split shared them out; a card that cannot hold its range (no class of the layer's shape there) leaves the layer on its home
     // card, in chunks all the same (Qwen3.8 expert split, 4 chunks: layer 2 has no class on the other card, ran whole and found 174 ring blocks for 512 experts: abort).
     const int nch = mc_cstream && sched ? llama_moe_cache_cs_chunks_fork() : 1;
+    const auto home_part = [&]() {   // every expert of the layer on its home card (the card whose blocks hold it)
+        const ggml_backend_dev_t home = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->dev_table->buffer));
+        for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && parts.empty(); ++i) {
+            ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(b) == home) { parts.push_back({ b, llama_moe_cache_link_gbs_fork(home), 0, n_expert }); }
+        }
+    };
+    // A dense split pass (ranges) with every expert on one card: that card is the layer's home, not the split's expert card, and the layer runs there as a part:
+    // each range's rows cross to it and back as the staged split sends them (f16 by default, llama_dsplit_hop_mode_range_fork) and its blocks are freed behind its
+    // last matmul. The layer's own chain took the whole call as f32 by way of the expert card (GLM 3.0 12k, a layer homed on the other card: 33 ms of hand-offs
+    // against 10 staged); in chunks the expert card computed every layer from shadows, and the home entries stayed in the ring's order unused.
+    const bool range_home = mc_cstream && sched && range_cache;
+    if (range_home && parts.size() <= 1) { parts.clear(); }
     for (int attempt = 0; mc_cstream && attempt < 2; ++attempt) {
+        if (parts.empty() && (nch > 1 || range_home)) { home_part(); }
         if (nch > 1) {
-            if (parts.empty()) {
-                const ggml_backend_dev_t home = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->dev_table->buffer));
-                for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && parts.empty(); ++i) {
-                    ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
-                    if (ggml_backend_get_device(b) == home) { parts.push_back({ b, llama_moe_cache_link_gbs_fork(home), 0, n_expert }); }
-                }
-            }
             // a part is cut only as far as the ring's entry asks (a layer's experts / chunks): an expert split's half layer at 2 chunks is one entry as it is, with
             // the ring half the size. Every further entry costs a pass over all tokens (zeroed outputs, quantized inputs, a sum): Qwen3.8, 6.9k tokens, 6.5 ms each.
             const int64_t unit = (n_expert + nch - 1) / nch;
@@ -3684,11 +3691,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             parts = cut;
         }
         if (parts.empty()) { break; }
-        bool ok = parts.size() >= 2;
+        bool ok = parts.size() >= 2 || range_home;
         for (auto & pt : parts) { pt.pc = ok ? llama_moe_cache_cs_shadow_fork(mcache, ggml_backend_get_device(pt.b), pt.hi - pt.lo, pt.chunk) : nullptr; ok = ok && pt.pc; }
         if (ok) { break; }
         parts.clear();
-        if (nch <= 1) { break; }   // whole layers: the layer's own chain over every expert (mc_pp below)
+        if (nch <= 1 && !range_home) { break; }   // whole layers: the layer's own chain over every expert (mc_pp below)
     }
     for (const auto & pt : parts) { if (pt.pc) { llama_moe_cache_cs_range_fork(pt.pc, (int32_t) pt.lo, (int32_t) pt.hi); } }
     if (mc_mix_b) {   // the fastest link's card: every expert id the home card does not hold
