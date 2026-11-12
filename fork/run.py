@@ -7470,6 +7470,7 @@ def cmd_calib(a):
     src = [r for r in csv.DictReader(open(os.path.join(here, "runs", "onepass.csv"), newline="")) if r["test"] == "pf12k1k"]
     want = [x for x in (a.models or "").split(",") if x]
     rows = [r for r in src if not want or r["model"] in want]
+    rows += [dict(name=f"{m}-p12", model=m, n="2", test="pf12k1k", tokens="64", args="", extra="") for m in want if not any(r["model"] == m for r in rows)]   # a model onepass.csv does not list (k31) gets the same probe row: no "go and edit the list"
     if not rows: sys.exit(f"calib: no models match {want}")
     sizes = [4, 5, 6, 7, 8, 9, 10, 11, 12]; c = sqlite3.connect(os.path.join(here, "runs.db")); picks = {}
     def probe(r, n):
