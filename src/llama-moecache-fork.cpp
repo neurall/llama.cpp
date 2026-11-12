@@ -335,7 +335,8 @@ struct moe_cache {
         size_t               past[3] = { 0, 0, 0 };   // bytes a quantized matmul reads past the slice's last row (rows not a multiple of 512 values), see pool_layout
         int32_t              active_end = -1; // kv-tail: the blocks from here on are all under the KV rows (owner -3): scans stop here (-1: the whole class)
         int32_t              n_active() const { return active_end < 0 ? (int32_t) owner.size() : active_end; }
-        std::vector<uint32_t> cs_up;          // --moe pp-path=cstream: the pass (moe_cache::cs_pass) whose upload put the block's expert there (cs_plan takes these first)
+        std::vector<uint32_t> cs_up;          // --moe pp-path=cstream: the pass (moe_cache::cs_pass) whose upload put the block's expert there (the pass's counts)
+        int32_t               cs_cur = 0;     // cstream's write cursor: the next block of the ring (cs_plan)
     };
     std::vector<pool_state> pool;
     int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
@@ -10867,11 +10868,11 @@ ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork 
 // Each cstream layer starts a split (llama-graph names its table read "ffn_moe_cs_slots-<il>", the scheduler cuts there) and the split hook (cs_split_cb, on the
 // scheduler thread, before the split's kernels are queued) runs cs_layer: an event behind the layers before it (done), the uploads of this layer and of the ones after
 // it as far as blocks allow, then the compute stream waits for this layer's ready event. Nothing waits on the host: the upload stream waits for done events, the compute
-// stream for ready events. Blocks: free or empty first, then those of layers already computed in this pass (the experts this pass streamed before the hot ones), and only
-// for the layer whose split is next, those of layers not uploaded for yet (the farthest first). Experts the cache holds are not copied.
+// stream for ready events. Blocks: a ring per class, in order from its write cursor (the oldest written first, one run per layer); never those of a layer uploaded for in
+// this pass and not computed yet. Experts the cache holds are not copied.
 struct cs_cp { int32_t e, b; };
 static ggml_backend_t ring_backend(moe_cache * mc, int link);   // pp-ahead's upload stream of a link, below
-static bool cs_plan(moe_cache * mc, size_t p, bool last, std::vector<cs_cp> & out, bool & from_done) {   // cache lock held
+static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done) {   // cache lock held
     const size_t li = mc->cs_order[p];
     layer_state & ls = mc->layers[li];
     out.clear();
@@ -10881,28 +10882,31 @@ static bool cs_plan(moe_cache * mc, size_t p, bool last, std::vector<cs_cp> & ou
     if (want.empty()) { return true; }
     auto & ps = mc->pool[ls.pcls];
     if (ps.cs_up.size() < ps.owner.size()) { ps.cs_up.resize(ps.owner.size(), 0); }
-    struct cand { int tier; double rank; int32_t b, o; };
+    // A ring (user 2026-11-12: "evict past not future"; the staged stream's whole-layer copies, only the destination differs): the blocks in order from the class's write
+    // cursor, so a layer lands in one run over what was written longest ago. Never a block of a layer uploaded for in this pass whose kernels are not queued yet.
+    struct cand { int tier; int32_t b, o; };
     std::vector<cand> c;
-    for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
+    const int32_t nb = ps.n_active();
+    if (ps.cs_cur >= nb) { ps.cs_cur = 0; }
+    for (int32_t i = 0; i < nb && c.size() < want.size(); ++i) {
+        const int32_t b = (ps.cs_cur + i) % nb;
         const int32_t o = ps.owner[b];
-        if (o == -1) { c.push_back({ 0, (double) b, b, -1 }); continue; }
+        if (o == -1) { c.push_back({ 0, b, -1 }); continue; }
         if (o < 0) { continue; }   // lent to a graph, under the KV rows
         layer_state & lo = mc->layers[o];
         if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
         const int32_t x = lo.slot_expert[b];
-        if (x < 0) { c.push_back({ 1, (double) b, b, o }); continue; }   // the layer's, empty
+        if (x < 0) { c.push_back({ 1, b, o }); continue; }   // the layer's, empty
         const int32_t q = (size_t) o < mc->cs_pos.size() ? mc->cs_pos[o] : -1;
         if (q < 0 || pinned(mc, lo, x)) { continue; }   // a layer outside the cstream graph (its path may read the block), a pinned expert
         if ((size_t) q < mc->cs_done[lo.link]) {   // computed in this pass: its done event is on its card's compute stream
-            const bool cold = ps.cs_up[b] == mc->cs_pass;
-            c.push_back({ cold ? 2 : 3, cold ? (double) q : prompt_victim_rank(mc, lo, (size_t) o, li, x, true), b, o });
-        } else if (last && (size_t) q > p) {   // not uploaded for yet in this pass: its expert comes back when its turn comes
-            c.push_back({ 4, -(double) q, b, o });
+            c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, o });
+        } else if ((size_t) q > p) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert comes back when its turn comes
+            c.push_back({ 4, b, o });
         }
     }
     if (c.size() < want.size()) { return false; }
-    std::partial_sort(c.begin(), c.begin() + (ptrdiff_t) want.size(), c.end(), [](const cand & x, const cand & y) { return x.tier != y.tier ? x.tier < y.tier : x.rank < y.rank; });
-    c.resize(want.size());
+    ps.cs_cur = (c.back().b + 1) % nb;
     std::sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return x.b < y.b; });   // ascending blocks for ascending experts: runs of both, one 2D copy each
     const double S   = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
     const double rlb = mc->gbs_link[ls.link] * 1e3;
@@ -11055,7 +11059,7 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il) {
         while (mc->cs_next < mc->cs_order.size()) {
             job j { mc->cs_order[mc->cs_next], {}, false, mc->cs_done[mc->layers[mc->cs_order[mc->cs_next]].link] };
             const bool last = mc->cs_next <= p;
-            if (!cs_plan(mc, mc->cs_next, last, j.cps, j.from_done)) {
+            if (!cs_plan(mc, mc->cs_next, j.cps, j.from_done)) {
                 if (last) {
                     GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts (the class must hold a layer's worth besides the lend and the KV rows)",
                             mc->layers[mc->cs_order[mc->cs_next]].pub.il);
