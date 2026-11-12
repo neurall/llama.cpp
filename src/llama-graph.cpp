@@ -3668,14 +3668,16 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             if (ggml_backend_get_device(b) == home) { parts.push_back({ b, llama_moe_cache_link_gbs_fork(home), 0, n_expert }); }
         }
     };
-    // A dense split pass (ranges) with every expert on one card: that card is the layer's home, not the split's expert card, and the layer runs there as a part:
-    // each range's rows cross to it and back as the staged split sends them (f16 by default, llama_dsplit_hop_mode_range_fork) and its blocks are freed behind its
-    // last matmul. The layer's own chain took the whole call as f32 by way of the expert card (GLM 3.0 12k, a layer homed on the other card: 33 ms of hand-offs
-    // against 10 staged); in chunks the expert card computed every layer from shadows, and the home entries stayed in the ring's order unused.
-    const bool range_home = mc_cstream && sched && range_cache;
-    if (range_home && parts.size() <= 1) { parts.clear(); }
+    // A layer with every expert on one card: that card is the layer's home (in a dense split pass not the split's expert card), and the layer runs there as a part.
+    // Its blocks are freed behind its last matmul (reduce's rel), so the card's next uploads start beside the sum and the next layer's attention; the layer's own
+    // chain freed them at the card's next entry, behind that attention. In a dense split pass each range's rows cross to it and back as the staged split sends
+    // them (f16 by default, llama_dsplit_hop_mode_range_fork): the own chain took the whole call as f32 by way of the expert card (GLM 3.0 12k, a layer homed on
+    // the other card: 33 ms of hand-offs against 10 staged); in chunks the expert card computed every layer from shadows, and the home entries stayed in the
+    // ring's order unused (GLM 3.5, 2 chunks: the ring ran out of blocks, abort).
+    const bool cs_home = mc_cstream && sched;
+    if (cs_home && parts.size() <= 1) { parts.clear(); }
     for (int attempt = 0; mc_cstream && attempt < 2; ++attempt) {
-        if (parts.empty() && (nch > 1 || range_home)) { home_part(); }
+        if (parts.empty() && cs_home) { home_part(); }
         if (nch > 1) {
             // a part is cut only as far as the ring's entry asks (a layer's experts / chunks): an expert split's half layer at 2 chunks is one entry as it is, with
             // the ring half the size. Every further entry costs a pass over all tokens (zeroed outputs, quantized inputs, a sum): Qwen3.8, 6.9k tokens, 6.5 ms each.
@@ -3691,11 +3693,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             parts = cut;
         }
         if (parts.empty()) { break; }
-        bool ok = parts.size() >= 2 || range_home;
+        bool ok = true;
         for (auto & pt : parts) { pt.pc = ok ? llama_moe_cache_cs_shadow_fork(mcache, ggml_backend_get_device(pt.b), pt.hi - pt.lo, pt.chunk) : nullptr; ok = ok && pt.pc; }
         if (ok) { break; }
-        parts.clear();
-        if (nch <= 1 && !range_home) { break; }   // whole layers: the layer's own chain over every expert (mc_pp below)
+        parts.clear();   // a part without its blocks: once more with the layer on its home card alone, then the layer's own chain over every expert (mc_pp below)
     }
     for (const auto & pt : parts) { if (pt.pc) { llama_moe_cache_cs_range_fork(pt.pc, (int32_t) pt.lo, (int32_t) pt.hi); } }
     if (mc_mix_b) {   // the fastest link's card: every expert id the home card does not hold
@@ -3800,10 +3801,17 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // rel: a cstream part: the first node behind its expert matmuls starts a split whose hook frees the part's blocks (cs_release)
         auto reduce = [&](ggml_tensor * e, ggml_backend_t b, ggml_tensor * w, bool rel = false) {
             ggml_tensor * first = nullptr;
+            if (post_exp_norm) {   // as the layer's own chain applies it (below), per expert row: a part's zeroed rows stay zero. The parts left it out (muse-spark)
+                e = ggml_mul(ctx0, e, post_exp_norm);
+                ggml_backend_sched_set_tensor_backend(sched, e, b);
+                first = e;
+                e = ggml_rms_norm(ctx0, e, post_exp_norm_eps);
+                ggml_backend_sched_set_tensor_backend(sched, e, b);
+            }
             if (!weight_before_ffn) {
                 e = ggml_mul(ctx0, e, w ? w : weights);
                 ggml_backend_sched_set_tensor_backend(sched, e, b);
-                first = e;
+                first = first ? first : e;
             }
             ggml_tensor * sum = ggml_view_2d(ctx0, e, n_embd, n_tokens, e->nb[2], 0);
             for (int64_t i = 1; i < (int64_t) hparams.n_expert_used(il); ++i) {
@@ -3872,7 +3880,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             sl = ggml_reshape_2d(ctx0, sl, n_expert_used, n_tokens);
             auto mm = [&](ggml_tensor * w, ggml_tensor * in) {
                 ggml_tensor * m = ggml_mul_mat_id(ctx0, w, in, sl);
-                m->op_params[1] = 1;   // zero first: the ids of the other cards' ranges are -1
+                if (pt.lo > 0 || pt.hi < n_expert) { m->op_params[1] = 1; }   // zero first: the ids of the other parts' ranges are -1 (a part with every expert has none)
                 m->src[3] = selected_experts;
                 m->src[4] = pt.pc->dev_table;
                 return pin(m);
