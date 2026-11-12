@@ -15,6 +15,10 @@ LLAMA_API void llama_moe_request_begin_fork(const int32_t * prompt, int32_t n_pr
 // a request is over (its final response is being sent): the MoE cache writes its per-request files (--moe expids: <state dir>/hotmap/<model>.expids)
 LLAMA_API void llama_moe_request_end_fork(void);
 
+// the prompt call being decoded now is followed only by the context checkpoint's tail of n tokens (upstream #20288): with --moe tail-refill=1 the MoE cache
+// gives back what the big pass borrowed and refills it right after this call, so the tail and the first decode steps find their experts
+LLAMA_API void llama_moe_prompt_tail_fork(int32_t n);
+
 #ifdef __cplusplus
 }
 #endif

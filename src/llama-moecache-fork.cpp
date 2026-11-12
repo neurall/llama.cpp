@@ -8484,6 +8484,18 @@ static void rp_log(const char * when) {
 
 static void rp_resize(moe_cache * mc);   // below, by the VRAM watch it reads
 static void pp_pred_log(moe_cache * mc);   // below, by the prompt chain
+static std::atomic<int32_t> g_tail_next{0};   // the server's next prompt call is the checkpoint's tail of this many tokens (llama_moe_prompt_tail_fork)
+void llama_moe_prompt_tail_fork(int32_t n) { g_tail_next.store(n, std::memory_order_relaxed); }
+// --moe tail-refill=1: after the call before a checkpoint's tail, the lend comes back down to the decode graph's size and the freed blocks are refilled now,
+// not after the tail (MiMo 3k: the 4-token tail missed 614 experts with 30% of the blocks still lent, 242 ms of a 4.8 s prompt)
+static bool tail_refill_now(moe_cache * mc) {   // cache lock held
+    static const bool on = [] { const char * e = moe_opt("tail-refill"); return e && atoi(e) != 0; }();
+    const bool tail = g_tail_next.exchange(0, std::memory_order_relaxed) > 0;
+    if (!on || !tail) { return false; }
+    for (auto & ap : mc->alias) { ap.want_b = std::min(ap.want_b, ap.dec_need); }
+    return true;
+}
+
 void llama_moe_request_end_fork(void) {
     llama_moe_stats_log_fork("REQ", "end");
     rp_log("request");
@@ -13096,6 +13108,7 @@ void llama_moe_cache_step_fork() {
         // behind a pass of the prompt chain: it uploaded what it missed, there is no swap to plan and no decode step to publish for. What the prompt borrowed still comes back here (a sync
         // point): a prompt that ends on the chain may have no decode step behind it, and its blocks stayed empty into the next prompt.
         std::lock_guard<std::mutex> lock(mc->mtx);
+        tail_refill_now(mc);
         const size_t n_back = alias_release(mc);
         if (mc->kv_gave_back.exchange(false)) { reheat_free_blocks(mc, det, true); }
         if (n_back > 0) { reheat_free_blocks(mc, det); }
@@ -13505,6 +13518,7 @@ void llama_moe_cache_step_fork() {
         }
     }
 
+    const bool tail_now = tail_refill_now(mc);
     const size_t n_back = alias_release(mc);
     if (poison_on() && n_back > 0) { for (const auto & ap : mc->alias) { poison_free_blocks(mc, ap); } }   // the blocks given back hold nothing now
     if (mc->kv_gave_back.exchange(false)) {   // the expert cache grew at the start of a request: the freed blocks get the hottest experts the cache misses (scores seeded from the state ini)
@@ -13527,8 +13541,8 @@ void llama_moe_cache_step_fork() {
     }
     // blocks came back and the graph that just ran was a decode graph: the prompt is over (between the passes of a prompt nothing comes back, and
     // after a smaller pass that is still a prompt pass the next pass may take the blocks again)
-    if ((n_back > 0 || n_drop > 0) && decode_graph) {
-        pool_fill_log(mc, "after a prompt (its blocks back)");
+    if ((n_back > 0 || n_drop > 0) && (decode_graph || tail_now)) {
+        pool_fill_log(mc, tail_now ? "after the prompt's last big call (its blocks back before the checkpoint's tail)" : "after a prompt (its blocks back)");
         reheat_free_blocks(mc, det);
         mc->fill_from = (int64_t) mc->n_steps;
         mc->fill_t0   = ggml_time_us();

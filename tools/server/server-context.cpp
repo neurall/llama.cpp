@@ -4973,6 +4973,11 @@ private:
                     // the number of tokens added to the batch for the current slot
                     const auto n_tokens_cur = batch.size() - n_tokens_prev;
 
+                    // fork: this call is followed only by the checkpoint's tail (the 4 tokens cut off above): the MoE cache may refill what this call borrows before it
+                    if (const int32_t rest = slot.task->n_tokens() - slot.prompt.n_tokens(); do_checkpoint && rest > 0 && rest <= 4 && n_tokens_cur > 32) {
+                        llama_moe_prompt_tail_fork(rest);
+                    }
+
                     const auto n_tokens_start = slot.prompt.n_tokens() - n_tokens_cur;
 
                     const bool near_prompt_end = slot.task->n_tokens() < slot.prompt.n_tokens() + n_ubatch;
