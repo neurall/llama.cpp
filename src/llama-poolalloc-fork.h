@@ -232,7 +232,7 @@ static poolx_pick poolx_pick_slot(const PS & ps, int32_t n_active, Busy busy, Ex
     if (top >= 0) { p.slot = top; best = 0; return p; }
     for (int32_t b = 0; b < n_active; ++b) {
         const int32_t o = ps.owner[b];
-        if (o == -2 || o == -3) { continue; }
+        if (o < -1) { continue; }   // lent, under the KV zone, another class's bytes (-4: a grid block not claimed, llama-moecache-fork.cpp)
         // an empty block has no victim: the owner of an earlier candidate must not stay in the answer. A caller evicts by owner and slot, and an adoption took expert -1 of that
         // owner: a write before its table, and a general protection fault at the next step (Qwen Next, forced prompt mix, 2026-11-02)
         if (o < 0) { p.slot = b; p.owner = -1; best = 0; return p; }

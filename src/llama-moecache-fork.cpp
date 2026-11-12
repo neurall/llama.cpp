@@ -337,6 +337,10 @@ struct moe_cache {
         int32_t              n_active() const { return active_end < 0 ? (int32_t) owner.size() : active_end; }
         std::vector<uint32_t> cs_up;          // --moe pp-path=cstream: the pass (moe_cache::cs_pass) whose upload put the block's expert there (the pass's counts)
         int32_t               cs_cur = 0;     // cstream's write cursor: the next block of the ring (cs_plan)
+        // --moe staging=0, a class too small for one layer (pool layout: "grid"): its blocks are a grid of a whole layer's worth anchored at the class's end, reaching back
+        // over its neighbours' bytes. Blocks [home_lo, home_hi) are its own; the others are owner -4 (another class's bytes) until the ring claims them (cls_claim)
+        // and go back at the end of the prompt call (cls_home). A class with no grid: home = all its blocks.
+        int32_t               home_lo = 0, home_hi = 0;
     };
     std::vector<pool_state> pool;
     int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
@@ -505,7 +509,7 @@ struct moe_cache {
     size_t                   cs_waited[MAX_LINKS]   = {};
     ggml_backend_buffer_t    cs_snap_buf = nullptr;   // pinned table snapshots of every layer (shortcut: never freed, one per process)
     int32_t *                cs_snap     = nullptr;
-    uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
+    uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
     uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
     std::vector<double>      layer_dt;
@@ -5332,7 +5336,7 @@ static void keep_hot_move(moe_cache * mc, ggml_backend_sched_t sched, moe_cache:
     }
     for (int32_t b = to, nb = ps.n_active(); b < nb; ++b) {
         const int32_t o = ps.owner[b];
-        if (o == -2 || o == -3) { continue; }
+        if (o < -1) { continue; }   // lent, under the KV rows, another class's bytes (-4)
         if (o < 0) { cold.push_back({ -1.0, b }); continue; }
         layer_state & lo = mc->layers[o];
         if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
@@ -9400,16 +9404,44 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 for (auto * b : ubufs) { ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS); }
                 const size_t pool0 = mc->pool.size();
+                // Grids (--moe staging=0; user 2026-11-12: two layers fit the expert space whatever their class, the rest is the graph's and the KV's): a class that cannot
+                // hold one layer gets a grid of a whole layer's worth of blocks anchored at its end, reaching back over its neighbours' bytes. Its own blocks are the last
+                // ones (home); the others belong to the neighbour (owner -4) until the stream's ring claims them for a layer (cls_claim). The geometry never moves, only
+                // who owns which bytes. The pool's last two layers' worth of bytes (the largest layer) are the experts' floor: the lend and the KV zone stop before it.
+                std::vector<size_t>  gbase(pl.cls.size());
+                std::vector<int32_t> gn(pl.cls.size()), ghome(pl.cls.size(), 0);
+                size_t floor_b = 0;
+                for (size_t c = 0; c < pl.cls.size(); ++c) { gbase[c] = pl.cls[c].base; gn[c] = nblk[c]; }
+                if (pp_no_staging() && !split && pl.cls.size() > 1) {
+                    const size_t tail = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    size_t lay = 0;
+                    for (size_t c = 0; c < pl.cls.size(); ++c) { lay = std::max(lay, (size_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2] * pl.cls[c].B); }
+                    const size_t fl = 2 * lay;
+                    if (tail > fl + 4 * pl.cls[order[0]].B) {
+                        for (size_t c : order) {
+                            const size_t E   = (size_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2];
+                            const size_t end = pl.cls[c].base + (size_t) nblk[c] * pl.cls[c].B;
+                            if (c == order[0] || (size_t) nblk[c] >= E || end < E * pl.cls[c].B || end - E * pl.cls[c].B < tail - fl) { continue; }
+                            gbase[c] = end - E * pl.cls[c].B;
+                            gn[c]    = (int32_t) E;
+                            ghome[c] = (int32_t) E - nblk[c];
+                            floor_b  = fl;
+                        }
+                    }
+                }
                 std::string cls_txt;
                 for (size_t c = 0; c < pl.cls.size(); ++c) {
                     moe_cache::pool_state ps;
                     ps.dev = ggml_backend_buft_get_device(buft);
                     ps.B   = pl.cls[c].B;
                     for (int k = 0; k < 3; ++k) { ps.off[k] = pl.cls[c].off[k]; ps.len[k] = pl.cls[c].len[k]; ps.past[k] = pl.cls[c].past[k]; }
-                    ps.owner.assign(nblk[c], -1);
-                    for (int32_t b = nblk[c] - 1; b >= 0; --b) { ps.free.push_back(b); }
+                    ps.owner.assign(gn[c], -4);
+                    for (int32_t b = gn[c] - 1; b >= ghome[c]; --b) { ps.owner[b] = -1; ps.free.push_back(b); }
+                    ps.home_lo = ghome[c];
+                    ps.home_hi = gn[c];
                     mc->pool.push_back(std::move(ps));
-                    cls_txt += tr_fmt("%s%d x %.2f MiB (%zu layers)", c ? ", " : "", nblk[c], pl.cls[c].B / 1048576.0, pl.cls[c].members.size());
+                    cls_txt += tr_fmt("%s%d x %.2f MiB (%zu layers%s)", c ? ", " : "", nblk[c], pl.cls[c].B / 1048576.0, pl.cls[c].members.size(),
+                            ghome[c] > 0 ? tr_fmt(", grid of %d", gn[c]).c_str() : "");
                 }
                 for (size_t i = 0; i < cands.size(); ++i) {
                     layer_state * ls = nullptr;
@@ -9418,14 +9450,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     const size_t       ci = pl.lay_cls[i];
                     const pool_class & cl = pl.cls[ci];
-                    const int32_t      n  = nblk[ci];
+                    const int32_t      n  = gn[ci];   // the class's grid (its blocks, and with a grid the neighbours' bytes before them)
                     ggml_tensor * t3[3] = { ls->pub.up_c, ls->pub.gate_c, ls->pub.down_c };
                     for (int k = 0; k < 3; ++k) {
                         t3[k]->ne[2]  = n;   // the class's blocks: the tables hold 0 .. n - 1 or -1 (uncached, skipped)
                         t3[k]->nb[2]  = cl.B;
                         t3[k]->nb[3]  = cl.B * (size_t) n;
                         t3[k]->buffer = cbufs[ci];
-                        t3[k]->data   = (uint8_t *) ggml_backend_buffer_get_base(cbufs[ci]) + cl.base + cl.off[k];
+                        t3[k]->data   = (uint8_t *) ggml_backend_buffer_get_base(cbufs[ci]) + gbase[ci] + cl.off[k];
                     }
                     ls->pub.n_slots = n;                      // the class's blocks; n marks "uncached" in the host tables (-1 in the device tables)
                     ls->pcls        = (int32_t) (pool0 + ci);
@@ -9445,9 +9477,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     for (size_t c : order) {
                         moe_cache::alias_pool::seg sg;
                         sg.pcls = (int32_t) (pool0 + c);
-                        sg.base = pl.cls[c].base;
+                        sg.base = gbase[c];
                         sg.B    = pl.cls[c].B;
-                        sg.n    = nblk[c];
+                        sg.n    = gn[c];
                         ap.segs.push_back(sg);
                         ap.span = sg.base + (size_t) sg.n * sg.B;
                         if (!alias_all || split) { break; }
@@ -9459,6 +9491,11 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     for (const auto & sg : ap.segs) {
                         const int32_t E = (int32_t) ll[pl.cls[(size_t) (sg.pcls - (int32_t) pool0)].members[0]]->ffn_up_exps->ne[2];
                         if (sg.n >= E) { ap.floor_end = std::min(ap.floor_end, sg.base + (size_t) (sg.n - E) * sg.B); }
+                    }
+                    if (floor_b > 0 && ap.tail_end > floor_b) {
+                        ap.floor_end = std::min(ap.floor_end, ap.tail_end - floor_b);
+                        LLAMA_LOG_WARN("moe-cache: block pool on %s: the experts' floor is %.0f MiB (two layers of the largest); the graph and the KV zone take up to %.0f MiB before it\n",
+                                ggml_backend_buft_name(buft), floor_b / 1048576.0, ap.floor_end / 1048576.0);
                     }
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
@@ -10743,7 +10780,7 @@ static int64_t pp_blocks(moe_cache * mc, layer_state & ls, bool landed = false) 
         const auto & ps = mc->pool[ls.pcls];
         for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
             const int32_t o = ps.owner[b];
-            n += o == -1 || (o >= 0 && (landed || !mc->layers[o].slot_in_flight[b]) && !mc->layers[o].is_stream[b]);
+            n += o == -1 || (landed && o == -4) || (o >= 0 && (landed || !mc->layers[o].slot_in_flight[b]) && !mc->layers[o].is_stream[b]);   // -4: the ring claims it (cls_claim)
         }
         return n;
     }
@@ -10877,6 +10914,80 @@ ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork 
 // this pass and not computed yet. Experts the cache holds are not copied.
 struct cs_cp { int32_t e, b; };
 static ggml_backend_t ring_backend(moe_cache * mc, int link);   // pp-ahead's upload stream of a link, below
+
+// Size classes by pressure (user 2026-11-12: "evict some classes more based on needs"; the first step: the ring's need, a layer's worth). Block b of class pc is owner -4:
+// its bytes are another class's now. The ring may claim it when every block of the card's other classes over those bytes could be taken by the ring's own rule (free,
+// empty, of a layer computed in this pass or not uploaded for yet; never lent, under the KV rows, in flight, pinned, or of a layer waiting for its kernels).
+// cls_over calls f(other class, its block) for each block over the bytes; false from f stops it.
+template <class F> static bool cls_over(moe_cache * mc, int32_t pc, int32_t b, const F & f) {
+    for (auto & ap : mc->alias) {
+        const moe_cache::alias_pool::seg * me = nullptr;
+        for (const auto & sg : ap.segs) { if (sg.pcls == pc) { me = &sg; } }
+        if (!me) { continue; }
+        const size_t lo = me->base + (size_t) b * me->B, hi = lo + me->B;
+        for (const auto & sg : ap.segs) {
+            if (sg.pcls == pc || sg.B == 0) { continue; }
+            const size_t end = sg.base + (size_t) sg.n * sg.B;
+            if (hi <= sg.base || lo >= end) { continue; }
+            const int32_t x0 = lo > sg.base ? (int32_t) ((lo - sg.base) / sg.B) : 0;
+            const int32_t x1 = (int32_t) std::min<size_t>((size_t) sg.n, (hi - sg.base + sg.B - 1) / sg.B);
+            for (int32_t x = x0; x < x1; ++x) { if (!f(sg.pcls, x)) { return false; } }
+        }
+        return true;
+    }
+    return false;
+}
+static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool & from_done) {   // cache lock held
+    bool fd = false;
+    const bool ok = cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
+        const int32_t o = mc->pool[qc].owner[x];
+        if (o == -1 || o == -4) { return true; }
+        if (o < 0) { return false; }
+        layer_state & lo = mc->layers[o];
+        if (lo.slot_in_flight[x] || lo.is_stream[x]) { return false; }
+        const int32_t e = lo.slot_expert[x];
+        if (e < 0) { return true; }
+        const int32_t q = (size_t) o < mc->cs_pos.size() ? mc->cs_pos[o] : -1;
+        if (q < 0 || pinned(mc, lo, e)) { return false; }
+        if ((size_t) q < mc->cs_done[lo.link]) { fd = true; return true; }
+        return (size_t) q > p;
+    });
+    from_done = ok && fd;
+    return ok;
+}
+static void cls_claim(moe_cache * mc, int32_t pc, int32_t b) {   // cache lock held, after cls_claimable
+    cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
+        auto & qs = mc->pool[qc];
+        const int32_t o = qs.owner[x];
+        if (o == -4) { return true; }
+        if (o >= 0) { evict_slot(mc, mc->layers[o], x); mc->layers[o].n_own--; }
+        else { auto it = std::find(qs.free.begin(), qs.free.end(), x); if (it != qs.free.end()) { qs.free.erase(it); } }
+        qs.owner[x] = -4;
+        return true;
+    });
+    mc->pool[pc].owner[b] = -1;
+    mc->pool[pc].free.push_back(b);
+}
+// the end of a prompt call: every class back to its home blocks (the decode paths know no claims). First everything outside a home goes, then the homes are whole again.
+static void cls_home(moe_cache * mc) {   // cache lock held, no kernel running
+    for (int pass = 0; pass < 2; ++pass) {
+        for (auto & ps : mc->pool) {
+            for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+                const bool home = b >= ps.home_lo && b < ps.home_hi;
+                const int32_t o = ps.owner[b];
+                if (pass == 0 && !home && o != -4) {
+                    if (o < -1) { continue; }   // lent or under the KV rows: never outside a home (the floor), left alone
+                    if (o >= 0) { evict_slot(mc, mc->layers[o], b); mc->layers[o].n_own--; }
+                    else { auto it = std::find(ps.free.begin(), ps.free.end(), b); if (it != ps.free.end()) { ps.free.erase(it); } }
+                    ps.owner[b] = -4;
+                } else if (pass == 1 && home && o == -4) {
+                    ps.owner[b] = -1;
+                    ps.free.push_back(b);
+                }
+            }
+        }
+    }
+}
 static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done) {   // cache lock held
     const size_t li = mc->cs_order[p];
     layer_state & ls = mc->layers[li];
@@ -10897,6 +11008,11 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         const int32_t b = (ps.cs_cur + i) % nb;
         const int32_t o = ps.owner[b];
         if (o == -1) { c.push_back({ 0, b, -1 }); continue; }
+        if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: none of it computed in this pass, 6: some)
+            bool fd = false;
+            if (cls_claimable(mc, ls.pcls, b, p, fd)) { c.push_back({ fd ? 6 : 5, b, -1 }); }
+            continue;
+        }
         if (o < 0) { continue; }   // lent to a graph, under the KV rows
         layer_state & lo = mc->layers[o];
         if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
@@ -10917,8 +11033,9 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     const double rlb = mc->gbs_link[ls.link] * 1e3;
     for (size_t i = 0; i < want.size(); ++i) {
         const int32_t e = want[i], b = c[i].b;
-        if (c[i].tier >= 2) { evict_slot(mc, mc->layers[c[i].o], b); }
-        from_done |= c[i].tier == 2 || c[i].tier == 3;
+        if (c[i].tier >= 5) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; }
+        else if (c[i].tier >= 2) { evict_slot(mc, mc->layers[c[i].o], b); }
+        from_done |= c[i].tier == 2 || c[i].tier == 3 || c[i].tier == 6;
         mc->cs_n_free += c[i].tier <= 1; mc->cs_n_cold += c[i].tier == 2; mc->cs_n_done += c[i].tier == 3; mc->cs_n_ahead += c[i].tier == 4;
         pool_take(mc, li, b);
         led_upload(mc, "cs-up", li, e, b, false);
@@ -10999,15 +11116,15 @@ static void cs_begin(moe_cache * mc) {
     static int n_log = 0;
     if (mc->cs_pass > 0 && (n_log < 6 || mc->cs_pass % 64 == 0)) {
         n_log++;
-        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies: %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of layers ahead\n",
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies: %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of layers ahead, %llu claimed from other size classes\n",
                 mc->cs_pass, (unsigned long long) mc->cs_n_up, (unsigned long long) mc->cs_n_cp, (unsigned long long) mc->cs_n_free, (unsigned long long) mc->cs_n_cold,
-                (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_ahead);
+                (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim);
     }
     if (mc->cs_pass > 0 && mc->cs_n_hook != mc->cs_order.size()) {   // a layer whose split did not start at its table read ran without waiting for its uploads
         LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu of %zu layers met their split hook: the others computed without waiting for their experts\n",
                 mc->cs_pass, (unsigned long long) mc->cs_n_hook, mc->cs_order.size());
     }
-    mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = 0;
+    mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = 0;
     mc->cs_order = g_cs_order_built;
     mc->cs_pos.assign(mc->layers.size(), -1);
     int max_il = 0;
@@ -11106,6 +11223,7 @@ static void cs_end(moe_cache * mc) {
             l.ring_slots.clear();
             l.ring_pending = false;
         }
+        cls_home(mc);
     }
     flush_tables();
 }
@@ -14918,6 +15036,7 @@ std::string llama_moe_cache_map_fork() {
                 const auto & ps = mc->pool[sg.pcls];
                 for (int32_t b = 0; b < sg.n && b < (int32_t) ps.owner.size(); ++b) {
                     const int32_t o = ps.owner[b];
+                    if (o == -4) { continue; }   // another class's bytes: counted there
                     (o == -1 ? fr : o == -2 ? graph : o == -3 ? zone : exp) += sg.B;
                 }
             }
