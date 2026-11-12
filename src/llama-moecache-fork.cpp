@@ -6259,16 +6259,8 @@ static size_t kv_prompt_lend0(const moe_cache::alias_pool & ap) {
     const std::vector<std::pair<int32_t, size_t>> pts = need_pts(ap, cells);
     const size_t dpc = ap.kv_lend_pc_dec * ap.dec_cells;
     size_t lend = ap.dec_need > dpc ? ap.dec_need - dpc : 0;   // no prompt graph seen yet: a decode graph's (measured)
-    if (!pts.empty()) {
-        double a = 0.0, b = 0.0;
-        const auto & p1 = pts.back();
-        if (pts.size() >= 2 && pts[pts.size() - 2].first != p1.first && p1.second > pts[pts.size() - 2].second) {
-            const auto & p0 = pts[pts.size() - 2];
-            b = (double) (p1.second - p0.second) / (double) (p1.first - p0.first);
-            a = std::max(0.0, (double) p1.second - b * (double) p1.first);
-        } else {
-            b = (double) p1.second / (double) p1.first;
-        }
+    double a = 0.0, b = 0.0;
+    if (ppx_lend_line(pts, a, b)) {
         const size_t l64 = (size_t) (a + 64.0 * b), pcc = ap.kv_lend_pc * cells;
         lend = std::max(lend, l64 > pcc ? l64 - pcc : 0);
     }
@@ -6944,23 +6936,14 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
             const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
             size_t pad = 1;
             for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
-            // the lend of a pass of n_tokens when the cache holds c cells (the graph's inputs grow with them), from the two largest sizes measured as pp_cap_to_pool fits them
+            // the lend of a pass of n_tokens when the cache holds c cells (the graph's inputs grow with them), from the line pp_cap_to_pool fits (ppx_lend_line)
             auto lend_at = [&](size_t c) -> size_t {
                 // a size measured as this very pass size: the layout (kv_tail_plan) lends exactly that, so the fit must too (OLMoE 1900-token prompt retried with 512: the line
                 // through the two largest sizes gave less than the 121.6 MiB the 512 graph borrows, the zone was cut to 1481 under a read of 1536 cells)
                 const auto ex = need_exact(ap, (int32_t) n_tokens);
                 if (ex != ap.need_tok.end()) { return kv_lend_round(ap, need_at_cells(ap, ex->first, ex->second, c)); }
-                const std::vector<std::pair<int32_t, size_t>> pts = need_pts(ap, c);
-                if (pts.empty()) { return kv_lend_round(ap, ap.dec_need); }
                 double a = 0.0, b = 0.0;
-                const auto & p1 = pts.back();
-                if (pts.size() >= 2 && pts[pts.size() - 2].first != p1.first && p1.second > pts[pts.size() - 2].second) {
-                    const auto & p0 = pts[pts.size() - 2];
-                    b = (double) (p1.second - p0.second) / (double) (p1.first - p0.first);
-                    a = std::max(0.0, (double) p1.second - b * (double) p1.first);
-                } else {
-                    b = (double) p1.second / (double) p1.first;
-                }
+                if (!ppx_lend_line(need_pts(ap, c), a, b)) { return kv_lend_round(ap, ap.dec_need); }
                 return kv_lend_round(ap, (size_t) (a + (double) n_tokens * b));   // on the block edge the zone starts on
             };
             // the most cells c (whole pads) for which a zone of c cells lies in ONE gap between the zero blocks behind THE LEND OF THIS PASS AT c CELLS, and the pool holds lend + zone
@@ -6977,6 +6960,21 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
                 if (fits(mid * pad)) { lo = mid; } else { hi = mid - 1; }
             }
             res = std::min(res, lo * pad);
+            {   // a pass this limit refuses names its numbers (find_slot only prints the limit: "n_tokens = 7064 > size = 0" took a log read to explain, 2026-11-12)
+                size_t used = 0;
+                for (const auto & q : ap.kvt) { if (!q.fixed) { used = std::max(used, q.rows ? q.rows() : 0); } }
+                const size_t want = kvz_read_cells(used + n_tokens, pad);
+                if (lo * pad < want) {
+                    const size_t lend = lend_at(want);
+                    double a = 0.0, b = 0.0;
+                    const auto pts = need_pts(ap, want);
+                    ppx_lend_line(pts, a, b);
+                    LLAMA_LOG_WARN("moe-cache: kv-tail %s: a %u-token pass ending at %zu cells is refused: its graph is sized %.1f MiB (%s; %zu sizes measured, %.1f MiB + %.4f MiB per token), "
+                            "the KV zone %.1f MiB, the experts' floor at %.1f MiB, the gap behind the graph holds %zu cells; %zu cells fit\n",
+                            ggml_backend_dev_name(ap.dev), n_tokens, want, lend / 1048576.0, need_exact(ap, (int32_t) n_tokens) != ap.need_tok.end() ? "measured at this size" : "from the line",
+                            pts.size(), a / 1048576.0, b / 1048576.0, kvz_bytes(ap, want) / 1048576.0, ap.floor_end / 1048576.0, kv_gap_fit(ap, bmax, lend, ap.kv_row), lo * pad);
+                }
+            }
             break;
         }
     }
@@ -14614,32 +14612,10 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     const bool real_only = need_real_only(ap);   // (need_pts: the start-up estimates leave the fit once a prompt-sized pass ran)
     const std::vector<std::pair<int32_t, size_t>> pts = need_pts(ap, cells_end);
     if (pts.empty()) { return seeded(); }
-    // graph bytes = a + b x tokens, the least-squares line through every measured size (at the cells this call ends at). Not the line through the two largest
-    // sizes: two passes of nearly the same size (GLM 3.0: 8995 and 8973 tokens) gave a slope of noise, negative, and the fallback (all bytes per token, a = 0)
-    // made the graph 1.44 MiB per token where the passes measured 1.5 GiB + 0.33 MiB per token. One size only, or no rising line: bytes per token of the
-    // largest graph (a = 0), which is not below the real slope.
+    // graph bytes = a + b x tokens through every measured size at the cells this call ends at (ppx_lend_line: least squares, the slope never above the least
+    // bytes per token measured; GLM 3.0's passes of 8995 and 8973 tokens, then 6552 and 6554, gave slopes of noise: passes capped to 96 tokens, 239 of them)
     double a = 0.0, b = 0.0;
-    if (pts.size() >= 2) {
-        double mx = 0.0, my = 0.0;
-        for (const auto & p : pts) { mx += p.first; my += (double) p.second; }
-        mx /= (double) pts.size(); my /= (double) pts.size();
-        double sxx = 0.0, sxy = 0.0;
-        for (const auto & p : pts) { sxx += (p.first - mx) * (p.first - mx); sxy += (p.first - mx) * ((double) p.second - my); }
-        if (sxx > 0.0 && sxy > 0.0) { b = sxy / sxx; a = std::max(0.0, my - b * mx); }
-    }
-    if (b <= 0.0) {
-        for (const auto & p : pts) { b = std::max(b, (double) p.second / (double) p.first); }
-        a = 0.0;
-    }
-    // A graph's fixed part is never negative (a >= 0), so the slope can never exceed any measured graph's bytes per token: clamp it there and refit a.
-    // Two passes of nearly the same size (GLM 3.0, 40k prompt: the 6552- and 6554-token passes, 2 tokens apart) gave a slope of noise, 124.8 MB per
-    // token where the graphs measured 1.4 MB per token: the next call's passes were capped to 96 tokens (60k prompt: 239 passes, the cell ran 20+ min).
-    if (b > 0.0) {
-        double bmax = 0.0, mx = 0.0, my = 0.0;
-        for (const auto & p : pts) { const double r = (double) p.second / (double) p.first; bmax = bmax > 0.0 ? std::min(bmax, r) : r; mx += p.first; my += (double) p.second; }
-        if (b > bmax) { b = bmax; a = std::max(0.0, my / (double) pts.size() - b * mx / (double) pts.size()); }
-    }
-    if (b <= 0.0) { return ub; }
+    if (!ppx_lend_line(pts, a, b)) { return ub; }
     // Past the largest measured size the line is an extrapolation from small graphs (a cold start measures 64-512-token calibration graphs): the same
     // headroom there (Qwen3.6-35B, 3 GiB free per card, cold: a 4128-token pass lent 1222 of the x4 card's 1282 MiB and its KV did not fit, 2026-10-22)
     if (moe_log_has("w")) {   // the cap's inputs: a 22381-token call of GLM (split-pass=0, 55k cells) was capped to 96 tokens (239 passes)
@@ -14687,8 +14663,9 @@ static uint32_t cs_cap(moe_cache * mc, uint32_t n, uint32_t ub, size_t cells_end
     uint32_t cap = ub;
     for (const auto & a : mc->alias) {
         uint32_t c = pp_cap_to_pool(a, n, ub, cells_end);
-        if (extra > 0 && !a.need_tok.empty()) {
-            const double b = (double) a.need_tok.rbegin()->second / (double) std::max(1, a.need_tok.rbegin()->first);   // bytes per token of the largest graph measured
+        const auto pts = need_pts(a, cells_end);   // (the sizes every fit reads: no start-up estimate once graphs that ran rule)
+        if (extra > 0 && !pts.empty()) {
+            const double b = (double) pts.back().second / (double) std::max(1, pts.back().first);   // bytes per token of the largest graph measured
             if (b > 0.0) { c = std::max<uint32_t>(64, (uint32_t) ((double) c * b / (b + (double) extra * embd * 4.0)) / 32 * 32); }
         }
         cap = std::min(cap, c);

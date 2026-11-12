@@ -249,6 +249,48 @@ static void test_stream_chunks() {
     }
 }
 
+// ---- a graph's bytes from the sizes measured ---------------------------------------------------------------------------------------------------
+static void test_lend_line() {
+    printf("Testing the graph size line (pass cap, find_slot's limit, the least lend):\n");
+    typedef std::vector<std::pair<int32_t, size_t>> pts_t;
+    const double MiB = 1048576.0;
+    double a = 0.0, b = 0.0;
+    report("no size: no line", !ppx_lend_line(pts_t(), a, b));
+    report("one size: bytes per token, no fixed part", ppx_lend_line(pts_t{ { 512, 1000 * 512 } }, a, b) && a == 0.0 && b == 1000.0);
+    {   // sizes on a line come back as that line
+        const bool ok = ppx_lend_line(pts_t{ { 64, 5000 + 64 * 300 }, { 512, 5000 + 512 * 300 }, { 4096, 5000 + 4096 * 300 } }, a, b);
+        report("sizes on a line: that line", ok && std::fabs(a - 5000.0) < 1e-6 && std::fabs(b - 300.0) < 1e-9, fmt("a %.3f b %.6f", a, b));
+    }
+    {   // Qwen3.8 IQ4_XS --moe staging=0, 2026-11-12: 6656 and 6860 tokens ran (0.41 MiB per token each), the old two-point line sized 7064 tokens at 4.2 GiB
+        const pts_t p{ { 6656, (size_t) (2734 * MiB) }, { 6860, (size_t) (2862 * MiB) } };
+        const bool ok = ppx_lend_line(p, a, b);
+        const double y = (a + b * 7064.0) / MiB;
+        report("two passes of nearly one size: the next size 204 tokens up is within 3% of the largest measured", ok && y >= 2862.0 && y <= 2862.0 * 1.03, fmt("7064 tokens: %.1f MiB", y));
+    }
+    {   // GLM 3.0: the larger pass measured less (a slope of noise, negative)
+        const bool ok = ppx_lend_line(pts_t{ { 8973, (size_t) (4500 * MiB) }, { 8995, (size_t) (4490 * MiB) } }, a, b);
+        const double y = (a + b * 9100.0) / MiB;
+        report("the larger size measured less: still a rising line near the sizes", ok && b > 0.0 && y > 4400.0 && y < 4650.0, fmt("9100 tokens: %.1f MiB", y));
+    }
+    std::mt19937_64 rng(g_seed + 5);
+    long bad = 0; std::string first;
+    auto fail = [&](const std::string & s) { if (bad++ == 0) { first = s; } };
+    for (long it = 0; it < g_iters; ++it) {   // any sizes: a fixed part never negative, a slope never above the least bytes per token, the line through the mean
+        pts_t p;
+        const int n = 1 + (int) (rng() % 6);
+        int32_t x = 64 + (int32_t) (rng() % 512);
+        for (int i = 0; i < n; ++i) { p.push_back({ x, (size_t) (1 + rng() % 4000000) * 1024 }); x += 1 + (int32_t) (rng() % 4000); }
+        if (!ppx_lend_line(p, a, b)) { fail("no line through sizes"); continue; }
+        double rmin = 0.0, mx = 0.0, my = 0.0;
+        for (const auto & q : p) { const double r = (double) q.second / q.first; rmin = rmin > 0.0 ? std::min(rmin, r) : r; mx += q.first; my += (double) q.second; }
+        mx /= n; my /= n;
+        if (a < 0.0 || b <= 0.0) { fail(fmt("a %.1f b %.3f", a, b)); }
+        if (b > rmin * (1.0 + 1e-12)) { fail(fmt("slope %.3f above the least bytes per token %.3f", b, rmin)); }
+        if (std::fabs(a + b * mx - my) > 1e-6 * my + 1.0) { fail(fmt("the line misses the mean: %.1f against %.1f", a + b * mx, my)); }
+    }
+    report("any sizes: fixed part >= 0, 0 < slope <= least bytes per token, through the mean", bad == 0, first);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -257,6 +299,7 @@ int main(int argc, char ** argv) {
     test_passes();
     test_dense_split();
     test_stream_chunks();
+    test_lend_line();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

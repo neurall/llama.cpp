@@ -5,6 +5,34 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
+#include <vector>
+
+// A graph's bytes as a + b x tokens from the sizes measured so far (tokens, bytes, all at one cell count). ONE rule for the pass cap (pp_cap_to_pool), find_slot's
+// limit (llama_moe_cache_kv_tail_cap_n_fork) and the least lend (kv_prompt_lend0), so they cannot disagree. The least-squares line through every size; a graph's
+// fixed part is never negative, so the slope never exceeds the least bytes per token measured: clamped there, a refit. Two passes of nearly one size give a slope of
+// noise (GLM 3.0, 6552 and 6554 tokens: 124.8 MB per token where the graphs measured 1.4). Until 2026-11-12 the two limits took the line through the two largest
+// sizes and cut a negative fixed part to 0 while keeping the slope: Qwen3.8 --moe staging=0 had run 6656 and 6860 tokens (0.60 MiB per token between them, the graphs
+// measure 0.42), a 7064-token pass was sized 4.2 GiB instead of 2.9 and find_slot refused it ("n_tokens = 7064 > size = 0"), the call ran as two passes, 25% slower.
+// One size, or no rising line: the most bytes per token (not below the real slope). False: no size.
+static inline bool ppx_lend_line(const std::vector<std::pair<int32_t, size_t>> & pts, double & a, double & b) {
+    a = b = 0.0;
+    if (pts.empty()) { return false; }
+    double mx = 0.0, my = 0.0, rmin = 0.0, rmax = 0.0;
+    for (const auto & p : pts) {
+        const double r = (double) p.second / (double) p.first;
+        rmin = rmin > 0.0 ? std::min(rmin, r) : r;
+        rmax = std::max(rmax, r);
+        mx += (double) p.first; my += (double) p.second;
+    }
+    mx /= (double) pts.size(); my /= (double) pts.size();
+    double sxx = 0.0, sxy = 0.0;
+    for (const auto & p : pts) { sxx += ((double) p.first - mx) * ((double) p.first - mx); sxy += ((double) p.first - mx) * ((double) p.second - my); }
+    if (sxx > 0.0 && sxy > 0.0) { b = sxy / sxx; a = std::max(0.0, my - b * mx); }
+    if (b <= 0.0) { b = rmax; a = 0.0; }
+    if (b > rmin) { b = rmin; a = std::max(0.0, my - b * mx); }
+    return b > 0.0;
+}
 
 // Prefetch staging: the slots (full expert tensors uploaded ahead on a second stream) are lent blocks behind the graph and its scratch. As many as the pool still holds behind
 // them (cap_b: what the pool can lend at most, stage_off: where the slots start), up to the configured number; never a cut micro-batch. The scheduler keeps slots - 1 uploads
