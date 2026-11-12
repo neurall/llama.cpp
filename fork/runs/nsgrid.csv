@@ -1,3 +1,4 @@
 name,model,n,test,tokens,args,extra
 nsgrid-load,qn_iq4xs,1,chatv,8,"--moe sim-vram=8192,dense-split=0,staging=0",--prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt
 nsgrid-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsgrid-es-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
