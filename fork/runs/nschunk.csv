@@ -10,3 +10,16 @@ ck-free-c8,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,cs-c
 ck-es-c2,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,cs-chunks=2",--env GGML_PF_STATS=1
 ck-es-c4,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,cs-chunks=4",--env GGML_PF_STATS=1
 ck-ds1-c4,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=1,staging=0,cs-chunks=4",--env GGML_PF_STATS=1
+ck-qni4-es-c1-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ck-qni4-es-c2-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,cs-chunks=2,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ck-qni4-c2-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,cs-chunks=2,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ck-es-c1,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0",--env GGML_PF_STATS=1
+ck-free-c3,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,cs-chunks=3",--env GGML_PF_STATS=1
+ck-free-c2-norel,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,cs-chunks=2,cs-release=0",--env GGML_PF_STATS=1
+ck-1g12-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288",--env CUDA_VISIBLE_DEVICES=0 --env GGML_PF_STATS=1
+ck-1g12-ns,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,staging=0",--env CUDA_VISIBLE_DEVICES=0 --env GGML_PF_STATS=1
+ck-1g12-ns-c2,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,staging=0,cs-chunks=2",--env CUDA_VISIBLE_DEVICES=0 --env GGML_PF_STATS=1
+ck-1g12-ns-c4,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,staging=0,cs-chunks=4",--env CUDA_VISIBLE_DEVICES=0 --env GGML_PF_STATS=1
+ck-1g12-ns-c2-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=12288,staging=0,cs-chunks=2,verify=2,poison=3",--env CUDA_VISIBLE_DEVICES=0 --env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ck-1g-stg,qn_iq4xs,2,pf12k,64,,--env CUDA_VISIBLE_DEVICES=0 --env GGML_PF_STATS=1
+ck-1g-ns,qn_iq4xs,2,pf12k,64,"--moe staging=0",--env CUDA_VISIBLE_DEVICES=0 --env GGML_PF_STATS=1

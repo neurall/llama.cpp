@@ -3664,11 +3664,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     if (ggml_backend_get_device(b) == home) { parts.push_back({ b, llama_moe_cache_link_gbs_fork(home), 0, n_expert }); }
                 }
             }
+            // a part is cut only as far as the ring's entry asks (a layer's experts / chunks): an expert split's half layer at 2 chunks is one entry as it is, with
+            // the ring half the size. Every further entry costs a pass over all tokens (zeroed outputs, quantized inputs, a sum): Qwen3.8, 6.9k tokens, 6.5 ms each.
+            const int64_t unit = (n_expert + nch - 1) / nch;
             std::vector<split_part> cut;
             for (const auto & pt : parts) {
-                for (int ci = 0; ci < nch; ++ci) {
-                    const int64_t clo = pt.lo + (pt.hi - pt.lo) * ci / nch, chi = pt.lo + (pt.hi - pt.lo) * (ci + 1) / nch;
-                    if (chi > clo) { cut.push_back({ pt.b, pt.gbs, clo, chi, nullptr, ci }); }
+                const int64_t n = (pt.hi - pt.lo + unit - 1) / unit;
+                for (int64_t ci = 0; ci < n; ++ci) {
+                    const int64_t clo = pt.lo + (pt.hi - pt.lo) * ci / n, chi = pt.lo + (pt.hi - pt.lo) * (ci + 1) / n;
+                    if (chi > clo) { cut.push_back({ pt.b, pt.gbs, clo, chi, nullptr, (int) ci }); }
                 }
             }
             parts = cut;
@@ -3780,20 +3784,26 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
         // each GPU weights and sums its experts ([n_embd, n_tokens] crosses between the GPUs, not [n_embd, n_expert_used, n_tokens])
-        auto reduce = [&](ggml_tensor * e, ggml_backend_t b, ggml_tensor * w) {
+        // rel: a cstream part: the first node behind its expert matmuls starts a split whose hook frees the part's blocks (cs_release)
+        auto reduce = [&](ggml_tensor * e, ggml_backend_t b, ggml_tensor * w, bool rel = false) {
+            ggml_tensor * first = nullptr;
             if (!weight_before_ffn) {
                 e = ggml_mul(ctx0, e, w ? w : weights);
                 ggml_backend_sched_set_tensor_backend(sched, e, b);
+                first = e;
             }
             ggml_tensor * sum = ggml_view_2d(ctx0, e, n_embd, n_tokens, e->nb[2], 0);
             for (int64_t i = 1; i < (int64_t) hparams.n_expert_used(il); ++i) {
                 sum = ggml_add(ctx0, sum, ggml_view_2d(ctx0, e, n_embd, n_tokens, e->nb[2], i*e->nb[1]));
                 ggml_backend_sched_set_tensor_backend(sched, sum, b);
+                first = first ? first : sum;
             }
             if (hparams.n_expert_used(il) == 1) {
                 sum = ggml_cont(ctx0, sum);
                 ggml_backend_sched_set_tensor_backend(sched, sum, b);
+                first = first ? first : sum;
             }
+            if (rel && first) { ggml_format_name(first, "ffn_moe_cs_rel-%d", il); }
             return sum;
         };
         // fork: dense split. Every card's expert chain reads the hidden state of ALL tokens: the ranges on its own card as they are, the other cards' ranges
@@ -3864,7 +3874,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             mm_id_lo = (int32_t) parts[i].lo;
             mm_id_hi = (int32_t) parts[i].hi;
             ggml_tensor * chain_in = !moe_ranges.empty() ? range_in(parts[i].b) : (cur_part[i] ? cur_part[i] : cur);
-            partial[i] = reduce(parts[i].pc ? cs_chain(parts[i], chain_in) : expert_chain(chain_in, ids[i]), parts[i].b, w_part[i]);
+            partial[i] = reduce(parts[i].pc ? cs_chain(parts[i], chain_in) : expert_chain(chain_in, ids[i]), parts[i].b, w_part[i], parts[i].pc != nullptr);
             mm_id_backend = nullptr;
             mm_id_lo = mm_id_hi = 0;
             if (cur_part[i] && hop_f16_out) {   // rule 5: the partial sum leaves the helper as f16 and becomes f32 again on the owner

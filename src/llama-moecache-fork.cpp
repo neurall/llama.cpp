@@ -506,6 +506,7 @@ struct moe_cache {
     std::vector<int32_t>     cs_pos, cs_li;
     size_t                   cs_done[MAX_LINKS] = {};
     size_t                   cs_next[MAX_LINKS] = {};
+    size_t                   cs_hooked[MAX_LINKS] = {};   // 1 + the position of the card's last entry whose split met its hook (its kernels are queued by the card's next split)
     uint32_t                 cs_pass = 0;
     ggml_backend_event_t     cs_start_ev[MAX_LINKS] = {};
     bool                     cs_started[MAX_LINKS]  = {};
@@ -1225,6 +1226,10 @@ static int cs_chunks() {
     return pp_no_staging() ? n : 1;
 }
 static int64_t cs_unit(int64_t E) { return (E + cs_chunks() - 1) / cs_chunks(); }   // the experts one ring entry of a layer of E experts holds
+static bool cs_release_on() {   // --moe cs-release=0: an entry's blocks are freed at the card's next entry, as before (cs_release)
+    static const bool v = [] { const char * e = moe_opt("cs-release"); return !e || atoi(e) != 0; }();
+    return v;
+}
 static bool              g_pp_dec_built = false; // the same when the last graph was finished
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
@@ -11472,6 +11477,7 @@ static void cs_begin(moe_cache * mc) {
     for (int k = 0; k < mc->n_links; ++k) {
         mc->cs_next[k]    = 0;
         mc->cs_done[k]    = 0;
+        mc->cs_hooked[k]  = 0;
         mc->cs_started[k] = false;
         mc->cs_waited[k]  = 0;
         if (!mc->link_be[k] || !mc->ring_be[k]) { continue; }
@@ -11482,10 +11488,37 @@ static void cs_begin(moe_cache * mc) {
     g_cs_live = true;
 }
 
+struct cs_job { size_t li; std::vector<cs_cp> cps; bool from_done; size_t done_at; };
+// the uploads that can start now (cache lock held). Each card's ring runs ahead over its own layers (one cursor over all layers held card 1's uploads back until card 0's
+// ring reached its last layers: on a layer split card 1's link started 0.5 s before its turn, Qwen3.8 12k 2 x 3090, 2026-11-12): card k's first, as far as its blocks
+// allow; another card's one layer per call, so a layer whose experts the RAM pool still reads from the SSD does not hold this card's next split back for long.
+// must: the position that has to be planned by now (the entry whose split is about to be queued), SIZE_MAX: none
+static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & jobs) {
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int c = 0; c < mc->n_links; ++c) {
+            if ((pass == 0) != (c == k)) { continue; }
+            size_t & nx = mc->cs_next[c];
+            for (int n_other = 0; c == k || n_other < 1; ++n_other) {
+                while (nx < mc->cs_order.size() && csl(mc, mc->cs_order[nx]).link != c) { ++nx; }
+                if (nx >= mc->cs_order.size()) { break; }
+                cs_job j { mc->cs_order[nx], {}, false, mc->cs_done[c] };
+                if (!cs_plan(mc, nx, j.cps, j.from_done)) {
+                    if (c == k && must != SIZE_MAX && nx <= must) {
+                        GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts (the class must hold a layer's worth besides the lend and the KV rows): %s",
+                                csl(mc, mc->cs_order[nx]).pub.il, cs_why(mc, nx).c_str());
+                    }
+                    break;   // the next split frees the blocks of this layer
+                }
+                jobs.push_back(std::move(j));
+                nx++;
+            }
+        }
+    }
+}
+
 // the split of cstream layer il is about to be queued on compute stream cbe (scheduler thread)
 static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {   // shadow: -1 the layer itself, else the index of its shadow (another card's part of an expert split, a further chunk)
-    struct job { size_t li; std::vector<cs_cp> cps; bool from_done; size_t done_at; };
-    std::vector<job> jobs;
+    std::vector<cs_job> jobs;
     size_t li = 0;
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
@@ -11505,29 +11538,8 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
             ggml_backend_event_record(csl(mc, mc->cs_order[q - 1]).cs_done_ev, cbe);
             mc->cs_done[k] = q;
         }
-        // each card's ring runs ahead over its own layers (one cursor over all layers held card 1's uploads back until card 0's ring reached its last layers: on a layer
-        // split card 1's link started 0.5 s before its turn, Qwen3.8 12k 2 x 3090, 2026-11-12). This card's first, as far as its blocks allow; another card's one layer
-        // per call, so a layer whose experts the RAM pool still reads from the SSD does not hold this card's next split back for long
-        for (int pass = 0; pass < 2; ++pass) {
-            for (int c = 0; c < mc->n_links; ++c) {
-                if ((pass == 0) != (c == k)) { continue; }
-                size_t & nx = mc->cs_next[c];
-                for (int n_other = 0; c == k || n_other < 1; ++n_other) {
-                    while (nx < mc->cs_order.size() && csl(mc, mc->cs_order[nx]).link != c) { ++nx; }
-                    if (nx >= mc->cs_order.size()) { break; }
-                    job j { mc->cs_order[nx], {}, false, mc->cs_done[c] };
-                    if (!cs_plan(mc, nx, j.cps, j.from_done)) {
-                        if (c == k && nx <= p) {
-                            GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts (the class must hold a layer's worth besides the lend and the KV rows): %s",
-                                    csl(mc, mc->cs_order[nx]).pub.il, cs_why(mc, nx).c_str());
-                        }
-                        break;   // the next split frees the blocks of this layer
-                    }
-                    jobs.push_back(std::move(j));
-                    nx++;
-                }
-            }
-        }
+        if (ggml_backend_get_device(cbe) == mc->link_dev[k]) { mc->cs_hooked[k] = p + 1; }
+        cs_ahead(mc, k, p, jobs);
     }
     for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
     layer_state & ls = csl(mc, li);
@@ -11538,10 +11550,29 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
     ls.ring_pending = false;
 }
 
+// The split behind an entry's three expert matmuls (the sum of its experts, "ffn_moe_cs_rel-<il>": llama-graph.cpp names it, the scheduler starts a split there): the
+// entry's kernels are queued in front of it, so one event here frees the entry's blocks and the card's next uploads start now. Left to the card's next entry, that
+// came behind the next layer's attention: a layer in chunks then uploaded only while its own chunks computed, never beside the attention (Qwen3.8, 2 chunks, 4480
+// tokens: 63 ms per layer where upload and compute each fit in 55).
+static void cs_release(moe_cache * mc, ggml_backend_t cbe) {
+    std::vector<cs_job> jobs;
+    {
+        std::lock_guard<std::mutex> lock(mc->mtx);
+        int k = -1;
+        for (int c = 0; c < mc->n_links; ++c) { if (mc->link_dev[c] == ggml_backend_get_device(cbe)) { k = c; } }
+        if (k < 0 || mc->cs_hooked[k] <= mc->cs_done[k] || mc->cs_hooked[k] > mc->cs_order.size()) { return; }
+        ggml_backend_event_record(csl(mc, mc->cs_order[mc->cs_hooked[k] - 1]).cs_done_ev, cbe);
+        mc->cs_done[k] = mc->cs_hooked[k];
+        cs_ahead(mc, k, SIZE_MAX, jobs);
+    }
+    for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
+}
+
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
     if (g_pp_cstream_built && g_cache && ggml_graph_n_nodes(g) > 0) {
         const char * nm = ggml_get_name(ggml_graph_node(g, 0));
         if (strncmp(nm, "ffn_moe_cs_slots-", 17) == 0) { const char * d = strchr(nm + 17, '-'); cs_layer(g_cache, be, atoi(nm + 17), d && d[1] == 's' ? atoi(d + 2) : -1); }   // "-<il>-s<index>": a shadow
+        else if (strncmp(nm, "ffn_moe_cs_rel-", 15) == 0 && g_cs_live.load() && cs_release_on()) { cs_release(g_cache, be); }   // behind an entry's last expert matmul
     }
     if (g_cs_hook_next) { g_cs_hook_next(be, g, split_id, n_splits, uid); }
 }
