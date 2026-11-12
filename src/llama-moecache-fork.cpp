@@ -1236,6 +1236,7 @@ static int cs_forced() {   // --moe cs-chunks=N: every call; 0: picked per call 
 static double cs_share(const moe_cache * mc) { return g_split_enabled && mc->n_links > 1 ? 1.0 / (double) mc->n_links : 1.0; }   // of a layer's experts on one card (an expert split)
 static int cs_chunks() {
     if (!pp_no_staging()) { return 1; }
+    if (g_cs_measure.load(std::memory_order_relaxed)) { return std::max(1, cs_forced()); }   // the start-up measure: whole layers, whatever ring is in force
     const int n = g_cs_n.load(std::memory_order_relaxed);
     return n > 0 ? n : std::max(1, cs_forced());
 }
@@ -11058,7 +11059,7 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
     }
     if (it->second == SIZE_MAX) { return nullptr; }
     layer_state & sh = mc->shadows[it->second];
-    return pp_blocks(mc, sh, true) >= n ? &sh.pub : nullptr;   // cs_plan's last resort: blocks of the class besides the lend and the KV rows
+    return pp_blocks(mc, sh, true) >= n || g_cs_measure.load(std::memory_order_relaxed) ? &sh.pub : nullptr;   // cs_plan's last resort: blocks of the class besides the lend and the KV rows
 }
 // --moe cs-chunks for the graph builder (1: whole layers), and the index of a part's shadow (-1: the layer itself): the name of the part's table read carries it,
 // cs_split_cb finds the ring entry by it
@@ -11101,7 +11102,8 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
                 if (!mc->link_be[l.link]) { return off(2, "no upload backend yet (first graph)"); }   // the first graph of a run: no backend to upload with yet
                 // the ring takes blocks of the layer's class only: a layer's worth must be there besides the lend and the KV rows (cs_plan's last resort), or the layer stages
                 if (l.pcls < 0) { return off(3, "no size class"); }
-                if (const int64_t nb = pp_blocks(mc, l, true); nb < cs_unit((int64_t) l.expert_slot.size())) { return off(4, "too few blocks in its class", nb, cs_unit((int64_t) l.expert_slot.size())); }
+                // (not at the start-up measure: the ring at rest is the smallest, 131 blocks for 512 experts on Qwen3.8, and the layers measured as plain graph inputs)
+                if (const int64_t nb = pp_blocks(mc, l, true); nb < cs_unit((int64_t) l.expert_slot.size()) && !g_cs_measure.load(std::memory_order_relaxed)) { return off(4, "too few blocks in its class", nb, cs_unit((int64_t) l.expert_slot.size())); }
                 if (std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), li) == g_cs_order_graph.end()) {
                     g_cs_order_graph.push_back(li);
                     g_cs_rng_graph.push_back({ 0, (int32_t) l.expert_slot.size() });   // every expert, unless the graph splits them over the cards (llama_moe_cache_cs_range_fork)
@@ -14636,6 +14638,24 @@ uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub) {
 // shortcut: a further entry costs this share of a token's compute (Qwen3.8 IQ4_XS on two 3090s, 2026-11-12: 47 of 470 us per token); measure it per model at load (a
 // chain over a table of -1 entries) when a model shows another ratio
 static const double CS_ENTRY_COST = 0.10;
+// The largest stream pass every card's pool holds with a layer in N chunks: pp_cap_to_pool, less what a card's further entries keep until the layer's sum (one
+// [n_embd, tokens] f32 each; the start-up sizes are measured with whole layers)
+static uint32_t cs_cap(moe_cache * mc, uint32_t n, uint32_t ub, size_t cells_end, int N) {
+    const int extra = ppx_extra_entries(N, cs_share(mc));
+    double embd = 0.0;
+    for (const auto & l : mc->layers) { if (l.pub.down_src) { embd = (double) l.pub.down_src->ne[1]; break; } }
+    uint32_t cap = ub;
+    for (const auto & a : mc->alias) {
+        uint32_t c = pp_cap_to_pool(a, n, ub, cells_end);
+        if (extra > 0 && !a.need_tok.empty()) {
+            const double b = (double) a.need_tok.rbegin()->second / (double) std::max(1, a.need_tok.rbegin()->first);   // bytes per token of the largest graph measured
+            if (b > 0.0) { c = std::max<uint32_t>(64, (uint32_t) ((double) c * b / (b + (double) extra * embd * 4.0)) / 32 * 32); }
+        }
+        cap = std::min(cap, c);
+    }
+    return cap;
+}
+
 static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
     enum { NC = (int) (sizeof(cs_cand) / sizeof(cs_cand[0])) };
     if (!mc || !pp_no_staging() || cs_forced() > 0 || g_cs_live.load() || n < 64 || ub == 0) { return false; }
@@ -14655,7 +14675,6 @@ static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
         bool ok = true;
         for (size_t k = 0; k < mc->alias.size() && ok; ++k) { fe[k] = old[k]; ok = mc->alias[k].rcls.empty() || cs_ring_floor(mc->alias[k], cs_cand[i], fe[k]); }
         if (!ok) { continue; }
-        uint32_t c = ub;
         for (size_t k = 0; k < mc->alias.size(); ++k) { mc->alias[k].floor_end = fe[k]; }   // the caps below read the floor
         for (const auto & a : mc->alias) {
             if (a.kvt.empty()) { continue; }
@@ -14663,10 +14682,10 @@ static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
             size_t pad = 1, cells = cells_end > 0 ? cells_end : (size_t) n;
             for (const auto & r : a.kvt) { if (!r.fixed) { pad = std::max<size_t>(pad, r.pad); if (cells_end == 0) { cells = std::max(cells, (r.rows ? r.rows() : 0) + (size_t) n); } } }
             if (kvz_lend_potential(a, kvz_read_cells(std::max<size_t>(cells, a.kv_h), pad)) <= kv_lend_round(a, a.dec_need) + a.mirror_b) { ok = false; break; }
-            c = pp_cap_to_pool(a, n, c, cells_end);
         }
+        const uint32_t c = ok ? cs_cap(mc, n, ub, cells_end, cs_cand[i]) : 0;
         for (size_t k = 0; k < mc->alias.size(); ++k) { mc->alias[k].floor_end = old[k]; }
-        cap[i] = ok ? c : 0;
+        cap[i] = c;
     }
     double E = 0.0, R = 0.0;
     pp_expert_bytes(mc, mc->link_dev[0], E, R);
@@ -14713,7 +14732,8 @@ int32_t llama_moe_request_pass_fork(int32_t n, int32_t cells_end, int32_t ub) {
     }
     g_cs_pick_held = true;
     uint32_t cap = (uint32_t) ub;
-    for (const auto & a : mc->alias) { cap = pp_cap_to_pool(a, (uint32_t) n, cap, (size_t) cells_end); }
+    if (pp_no_staging()) { cap = cs_cap(mc, (uint32_t) n, cap, (size_t) cells_end, cs_chunks()); }
+    else { for (const auto & a : mc->alias) { cap = pp_cap_to_pool(a, (uint32_t) n, cap, (size_t) cells_end); } }
     if (cap == 0) { return 0; }
     const uint32_t passes = ((uint32_t) n + cap - 1) / cap;
     return (int32_t) (((uint32_t) n + passes - 1) / passes);
@@ -15580,7 +15600,8 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
         // The cache path's limit is the pass limit there (g_pp_mb = ub_max), not the call's tokens: a call above it met neither this rule nor pp_plan's
         // (ns_expert_split_parts_only: 8312 tokens still ran as 5408 + 2904, 10904 as 3 x 2816 + 2456)
         uint32_t cap = ub_max;
-        for (const auto & a : g_cache->alias) { cap = pp_cap_to_pool(a, n, cap); }
+        if (pp_no_staging()) { cap = cs_cap(g_cache, n, cap, 0, cs_chunks()); }
+        else { for (const auto & a : g_cache->alias) { cap = pp_cap_to_pool(a, n, cap); } }
         const uint32_t passes = (n + cap - 1) / std::max<uint32_t>(1, cap);
         // equal passes under the cap; recorded as the planned calls are (pp_record): the compute per token is measured from them too (it never was under
         // --moe staging=0: the chunk pick and the split planner had no compute to weigh)
