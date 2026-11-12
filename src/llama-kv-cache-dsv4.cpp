@@ -56,11 +56,8 @@ static void dsv4_clear_tensor_stream(ggml_tensor * tensor, uint32_t stream, uint
         return;
     }
 
-    if (ggml_is_contiguous(tensor)) {
-        const size_t stream_size = tensor->nb[2];
-        ggml_backend_tensor_memset(tensor, 0, stream*stream_size, stream_size);
-        return;
-    }
+    // n_rows holds for a contiguous tensor too: a kv-tail record with one member is a contiguous view, backed only up to the claimed cells like a strided one (DeepSeek
+    // without -c, two cards: CUDA1's record is one K of 1280 B a cell, the whole stream is 1048576 cells = 1280 MiB, cleared it zeroed the experts behind the zone)
     dsv4_for_stream_ranges(tensor, stream, std::min<uint32_t>(n_rows, (uint32_t) tensor->ne[1]),
             [&](size_t off, size_t size) { ggml_backend_tensor_memset(tensor, 0, off, size); });
 }
