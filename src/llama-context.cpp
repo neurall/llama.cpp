@@ -1957,6 +1957,7 @@ void llama_context::sched_reserve() {
         // TODO: the worst case graph is not always reached for `n_seqs > 1`
         //       need to implement a more robust mechanism that tries a few different inputs and analyzes the results
         ggml_cgraph * gf = nullptr;
+        if (!moe_alias_bufs.empty()) { llama_moe_cache_measure_stream_fork(true); }   // fork, --moe staging=0: the stream graph again (see the first pp reserve); the alias fit below reads this reserve
         switch (model.arch) {
             case LLM_ARCH_KIMI_LINEAR:
             case LLM_ARCH_MINIMAX_01:
@@ -1968,6 +1969,7 @@ void llama_context::sched_reserve() {
             default:
                 gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), model.no_alloc());
         };
+        llama_moe_cache_measure_stream_fork(false);
 
         if (!gf) {
             throw std::runtime_error("failed to allocate compute pp buffers");
