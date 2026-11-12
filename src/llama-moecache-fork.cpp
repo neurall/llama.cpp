@@ -1335,6 +1335,7 @@ static int64_t           g_pp_want  = 0;         // tokens x experts per token o
 static std::atomic<int64_t> g_pp_mb{0};          // this prompt call: the largest pass the prompt chain takes (llama_moe_cache_pp_decide_fork)
 static bool              g_pp_mix_graph = false; // the graph being built has layers on the prompt mix (llama_moe_cache_pp_mix_fork)
 static std::atomic<bool> g_pp_cstream_call{false};   // this prompt call streams into the cache's own blocks (--moe pp-path=cstream): the graph reads every expert through the tables, no staging
+static bool g_pp_cs_reported = false;   // the call llama_moe_cache_prefill_report_fork reports streamed into the blocks (g_pp_cstream_call is reset when decode() returns, before the report)
 static bool              g_pp_cstream_graph = false; // the graph being built has such layers (llama_moe_cache_pp_chain_fork returned 2)
 static bool              g_pp_cstream_built = false; // the same for the graph that runs: its experts go into blocks before it (llama_moe_cache_pp_freeze_fork)
 static std::vector<size_t> g_cs_order_graph;           // the cstream layers of the graph being built, in its order (llama_moe_cache_pp_chain_fork)
@@ -15098,7 +15099,9 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         // the first pass of a server that fills a layer runs cold whatever its path (Qwen3.6: 348 ms on the chain, 130 warm; the stream 150 ms over its repeats) and the size would keep that
         // number until the path runs again: not a measurement
         // the chain was asked and its graph refused (a layer's blocks cannot hold the pass, pp_chain_fork): the size asks no more
-        if (path != PP_CHAIN && path != PP_DENSE && path != PP_DEC && g_pp_mb.load(std::memory_order_relaxed) > 0) {
+        // A stream into the blocks also sets g_pp_mb (its pass limit) and its refusals ban the chain where they happen (pp_chain_fork): a streamed call is no refusal
+        // (until 2026-11-12 every --moe staging=0 call banned the chain for its pass size and up)
+        if (path != PP_CHAIN && path != PP_DENSE && path != PP_DEC && !g_pp_cs_reported && g_pp_mb.load(std::memory_order_relaxed) > 0) {
             g_pp_no_chain[pp_bucket((double) n_tokens / P)] = true;
             g_pp_chain_refused = std::min(g_pp_chain_refused, (uint32_t) ((double) n_tokens / P));
         }
@@ -15209,6 +15212,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     moe_cache * mc = g_cache;
     g_pp_path_call = PP_RING;   // until decided: the stream, nothing saved against it
     g_pp_save_us = 0.0;
+    g_pp_cs_reported = false;
     g_pp_last_n.store(n_tokens, std::memory_order_relaxed); g_pp_last_ub.store(ub_max, std::memory_order_relaxed);
     // a refused chain (g_pp_short) only takes the chain arm out below: the other arms are still decided (llama_moe_cache_pp_short_fork)
     if (!mc || !pp_chain_on() || !g_prompt_call.load(std::memory_order_relaxed) || g_pp_dec.load(std::memory_order_relaxed) || !mb_is_auto() || ub_max == 0 || mc->n_links <= 0) {
@@ -15507,6 +15511,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     const bool cstream = force ? strcmp(force, "cstream") == 0 || (pp_no_staging() && strcmp(force, "stream") == 0)
                                : pp_no_staging() && !chain && !dec && !mix && m <= 0.0;
     g_pp_cstream_call = cstream;
+    g_pp_cs_reported = cstream;
     if (cstream) { g_pp_mb = ub_max; }
     if (k_auto) { ggml_backend_pred_set_fork(m); }
     double o = 0.0;   // the fastest one-card stream measured here
