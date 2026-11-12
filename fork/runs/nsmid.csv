@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+nsmid-cs-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,pp-path=cstream,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsmid-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0",--env GGML_PF_STATS=1
+nsmid-cs,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,pp-path=cstream",--env GGML_PF_STATS=1
