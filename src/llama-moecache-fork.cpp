@@ -403,6 +403,7 @@ struct moe_cache {
         size_t                kv_zhi   = 0, kv_last_cells = 0;   // the zeroed pad window ends here; the cells at the last zeroing
         std::map<int32_t, size_t> need_tok;     // the most a graph of n tokens borrowed from the start of the buffer (graph + scratch + staging slots)
         std::map<int32_t, size_t> need_cells;   // the cells in use when that most was measured (the graph's inputs grow with them: need_at_cells)
+        std::set<int32_t>     need_est;         // the sizes of need_tok that are start-up estimates (measure-only reserves), not graphs that ran: a lend replaces them
         size_t                kv_blocks = 0;    // blocks under the KV zone now
         size_t                dec_need  = 0;    // the most a decode graph (< 64 tokens) borrowed from the start of the buffer: the KV never takes that
         size_t                dec_cells = 0;    // the cells in use when dec_need was measured
@@ -5355,7 +5356,9 @@ void llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, 
         if (ap.dev != dev) {
             continue;
         }
+        if (const auto it = ap.need_tok.find((int32_t) n_tokens); it != ap.need_tok.end() && !ap.need_est.count((int32_t) n_tokens)) { return; }   // a graph of this size ran: its size stands
         size_t & nt = ap.need_tok[(int32_t) n_tokens];
+        ap.need_est.insert((int32_t) n_tokens);
         // this graph holds one growth step of KV (get_size_reserve), its masks too: at more cells it needs more, like a graph that ran (need_at_cells). With no cells noted it
         // did not grow, and the fit through it and the graphs that ran gave a fixed part of 2.2 GiB at 98k cells: the rest of a 128k prompt ran in passes of 64 tokens at
         // 189 t/s instead of about 4400 tokens at the 2900 t/s of the big passes (Qwen3.6, 4.5 GiB per card, 2026-11-01)
@@ -7202,6 +7205,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             // pool holds behind the graph (user rule 2026-10-24). With the slots in (GLM 3.0: 3 x 2.6 GiB) the fit cut the expert card's passes from 6176 to 3776
             // tokens while 3.5 GiB of the lendable pool stayed free.
             size_t & nt = ap.need_tok[n_tokens];
+            if (ap.need_est.erase(n_tokens) > 0) { nt = 0; }   // a start-up estimate of this size: the graph that runs is the truth
             if (moe_log_has("w")) {   // what a graph of this size borrows, against what its size held so far
                 LLAMA_LOG_WARN("moe-cache: lend %s: %d tokens at %zu cells: graph %.1f MiB + CUDA scratch %.1f MiB behind %.1f MiB, staging %.1f MiB (this size so far %.1f MiB at %zu cells)\n", ggml_backend_dev_name(ap.dev), n_tokens, cells_now,
                         peak / 1048576.0, scratch / 1048576.0, ap.base_off / 1048576.0, stage / 1048576.0, nt / 1048576.0, ap.need_cells.count(n_tokens) ? ap.need_cells[n_tokens] : (size_t) 0);
@@ -14571,8 +14575,16 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     };
     if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
+    // --moe staging=0: once a prompt-sized pass ran (512 tokens or more), only graphs that ran count. The start-up estimates are measure-only reserves whose masks
+    // cover a growth step of cells: 0.61 MiB per token where the passes lend 0.42 (Qwen3.8, 2 x 8 GiB, 2026-11-12), and the line through both kinds capped the
+    // passes of every later call by the estimates. (Staged calls keep the mixed fit: their gate rows were measured with it.)
+    bool ran = false;
+    for (const auto & kv : ap.need_tok) { ran = ran || (kv.first >= 512 && !ap.need_est.count(kv.first)); }
+    const bool real_only = ran && pp_no_staging();
     std::vector<std::pair<int32_t, size_t>> pts;
-    for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells_end) }); } }
+    for (const auto & kv : ap.need_tok) {
+        if (kv.first >= 64 && !(real_only && ap.need_est.count(kv.first))) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells_end) }); }
+    }
     if (pts.empty()) { return seeded(); }
     // graph bytes = a + b x tokens, the least-squares line through every measured size (at the cells this call ends at). Not the line through the two largest
     // sizes: two passes of nearly the same size (GLM 3.0: 8995 and 8973 tokens) gave a slope of noise, negative, and the fallback (all bytes per token, a = 0)
@@ -14610,7 +14622,7 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     unsigned cap = kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b);
     // a graph measured at this very size is the truth, not the line (find_slot checks with it): Qwen3.8 staging=0, the 5408-token graph measured 3811 MiB, the
     // line said less, the pass ran at 8312 cells and its KV did not fit ("failed to prepare attention ubatches"). The line moves up through that point.
-    if (const auto ex = ap.need_tok.find((int32_t) cap); ex != ap.need_tok.end()) {
+    if (const auto ex = ap.need_tok.find((int32_t) cap); ex != ap.need_tok.end() && !(real_only && ap.need_est.count(ex->first))) {
         const double m = (double) need_at_cells(ap, ex->first, ex->second, cells_end);
         if (m > a + b * (double) cap) { cap = kvz_pass_cap(ap, cells_end, ub, m - b * (double) cap, b, pad, ap.mirror_b); }
     }

@@ -1851,6 +1851,9 @@ void llama_context::sched_reserve() {
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
     {
+        // fork, --moe staging=0: the reserve is the graph the fit measured, a prompt pass's stream into the cache's blocks (a plain call's graph of that size does
+        // not fit the lent blocks: the fit stepped down 32 tokens per failed reserve, from 7936 to the plain graph's 4704)
+        if (!moe_alias_bufs.empty()) { llama_moe_cache_measure_stream_fork(true); }
         auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(),
                 model.no_alloc(), model.no_alloc() ? backend_buf_exp_size.data() : nullptr);
         if (!gf) {
@@ -1861,6 +1864,7 @@ void llama_context::sched_reserve() {
                 apply_moe_alias();
                 gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
             }
+            llama_moe_cache_measure_stream_fork(false);
             if (!gf && !moe_alias_bufs.empty()) {   // the graph does not fit in the lent blocks: the largest that does (computed), or the alias off
                 // measure-only fits (fit_ub) can pass where the real reserve fails; every retry pins the host inputs again (GLM 3.0, mirror-pool=0: 3.7 s each, 11 steps of 32 tokens = 41 s of load)
                 // shortcut: a fixed 1/32 step gives up to 3% of the pass, replace with the real reserve's own shortfall when it reports one
@@ -1881,6 +1885,7 @@ void llama_context::sched_reserve() {
             }
         }
 
+        llama_moe_cache_measure_stream_fork(false);
         n_splits_pp        = ggml_backend_sched_get_n_splits(sched.get());
         n_nodes_pp         = ggml_graph_n_nodes(gf);
         n_inputs_pp        = get_gf_res_reserve()->inputs.size();
