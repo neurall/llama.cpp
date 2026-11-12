@@ -18,3 +18,5 @@ ring-ds-vstg,ds,1,pf12k,64,"--moe verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=
 ring-glm30-cs-verify,glm,1,pf12k,64,"--moe staging=0,pp-path=stream,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
 ring-glm30-cs,glm,2,pf12k,64,"--moe staging=0,pp-path=stream",--env GGML_PF_STATS=1
 ring-glm30-c2,glm,2,pf12k,64,"--moe staging=0,cs-chunks=2",--env GGML_PF_STATS=1
+ring-glm30-stg-tr,glm,2,pf12k,64,,--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
+ring-glm30-ns-tr,glm,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
