@@ -32,3 +32,43 @@ static inline int64_t ppx_ds_edge(int64_t n_tokens, int64_t min_tokens, double s
     const int64_t e = std::max<int64_t>(min_tokens, std::min<int64_t>(n_tokens - min_tokens, (int64_t) llround(share * (double) n_tokens)));
     return std::max<int64_t>(1, std::min<int64_t>(e, n_tokens - 1));
 }
+
+// ---- --moe staging=0: the stream into the cache's blocks (llama-moecache-fork.cpp cs_*) ----------------------------------------------------------------------------
+// The ring at the pool tail holds two entries of the most common size class (the one in the kernels, the next on its way), or one of the largest class when that is
+// more, plus two blocks (a grid block across the ring's start is not the ring's). unit bytes: an entry's experts x the class's block; an entry: a layer's experts / chunks.
+static inline size_t ppx_ring_reserve(size_t unit_max_b, size_t unit_com_b, size_t bmax) { return std::max(unit_max_b, 2 * unit_com_b) + 2 * bmax; }
+
+// The entries a card computes of one layer beyond the first, with the layer in `chunks` chunks and the card holding `share` of its experts (1: no expert split). A part
+// is cut only as far as an entry asks (llama-graph.cpp): half a layer at 2 chunks is one entry.
+static inline int ppx_extra_entries(int chunks, double share) { return std::max(1, (int) std::ceil(share * (double) chunks - 1e-9)) - 1; }
+
+// What a prompt of n tokens takes as equal stream passes of at most cap tokens (us): a pass uploads every expert beside its compute (up_us) and computes its tokens
+// (comp_us_tok each): the longer of the two. *pass: the pass size.
+static inline double ppx_stream_us(uint32_t n, uint32_t cap, double up_us, double comp_us_tok, uint32_t * pass = nullptr) {
+    if (n == 0 || cap == 0) { if (pass) { *pass = 0; } return 0.0; }
+    const uint32_t k = (n + cap - 1) / cap, p = (n + k - 1) / k;
+    if (pass) { *pass = p; }
+    return (double) k * std::max(up_us, comp_us_tok * (double) p);
+}
+
+// The chunk count of a stream call: candidate i (listed by rising chunk count) leaves passes of at most cap[i] tokens (0: it cannot run) and costs extra[i] entries
+// per layer, each one more pass over every token of the pass (entry_us_tok: zeroed outputs, quantized inputs, a sum). Among the candidates within 1% of the lowest
+// time: the fewest passes (the upload a pass really takes is what the links' rates promise or more, never less), then the fewest chunks. us[i] (if given): each
+// candidate's time, < 0 where it cannot run. -1: none can run.
+static inline int ppx_pick_chunks(uint32_t n, const uint32_t * cap, const int * extra, int n_cand, double up_us, double comp_us_tok, double entry_us_tok, double * us = nullptr) {
+    double t_min = -1.0;
+    for (int i = 0; i < n_cand; ++i) {
+        const double t = cap[i] > 0 ? ppx_stream_us(n, cap[i], up_us, comp_us_tok + entry_us_tok * (double) extra[i]) : -1.0;
+        if (us) { us[i] = t; }
+        if (t >= 0.0 && (t_min < 0.0 || t < t_min)) { t_min = t; }
+    }
+    int best = -1;
+    uint32_t kb = 0;
+    for (int i = 0; i < n_cand; ++i) {
+        if (cap[i] == 0) { continue; }
+        const double   t = ppx_stream_us(n, cap[i], up_us, comp_us_tok + entry_us_tok * (double) extra[i]);
+        const uint32_t k = (n + cap[i] - 1) / cap[i];
+        if (t <= 1.01 * t_min && (best < 0 || k < kb)) { best = i; kb = k; }
+    }
+    return best;
+}

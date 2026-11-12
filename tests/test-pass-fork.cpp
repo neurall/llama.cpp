@@ -4,6 +4,7 @@
 //   prefetch       ppx_stage_slots  : staging slots behind the graph (at least 2 or none, inside the lendable bytes, at most the configured number)
 //   prompt passes  ppx_equal_pass   : equal passes, never a nearly empty last pass
 //   dense split    ppx_ds_edge      : the token ranges of the cards (both non-empty, each at least the minimum when the pass allows)
+//   stream chunks  ppx_pick_chunks  : the chunk count of a staging=0 stream call (ring reserve against passes against entries)
 //
 // build: cmake --build <dir> --target test-pass-fork;  run: ctest -R test-pass-fork   or   test-pass-fork [iterations] [seed]
 #include "../src/llama-passplan-fork.h"
@@ -186,6 +187,68 @@ static void test_dense_split() {
     report("share is monotone: more share, no smaller first range", [&]() { int64_t prev = 0; for (int i = 0; i <= 100; ++i) { const int64_t e = ppx_ds_edge(5000, 512, i / 100.0); if (e < prev) { return false; } prev = e; } return true; }());
 }
 
+// ---- stream into the cache's blocks ------------------------------------------------------------------------------------------------------------
+static void test_stream_chunks() {
+    printf("Testing the stream's chunk count (--moe staging=0):\n");
+    std::mt19937_64 rng(g_seed + 4);
+    long bad = 0, n_first = 0, n_other = 0; std::string first;
+    auto fail = [&](const std::string & s) { if (bad++ == 0) { first = s; } };
+    for (long it = 0; it < g_iters; ++it) {
+        const int nc = 1 + (int) (rng() % 6);
+        uint32_t cap[6]; int extra[6]; double us[6];
+        const uint32_t n = 1 + (uint32_t) (rng() % 100000);
+        uint32_t c = 64 + (uint32_t) (rng() % 8000);
+        for (int i = 0; i < nc; ++i) {   // caps rise with the chunks (a smaller ring), entries too; now and then a candidate cannot run
+            cap[i]   = rng() % 7 == 0 ? 0 : c;
+            extra[i] = i == 0 ? 0 : extra[i - 1] + (int) (rng() % 2);
+            c += (uint32_t) (rng() % 3000);
+        }
+        const double up = (double) (rng() % 5000000), comp = (double) (rng() % 2000), ent = (double) (rng() % 200);
+        const int b = ppx_pick_chunks(n, cap, extra, nc, up, comp, ent, us);
+        bool any = false;
+        for (int i = 0; i < nc; ++i) { any = any || cap[i] > 0; }
+        if (!any) { if (b != -1) { fail("a pick though no candidate can run"); } continue; }
+        if (b < 0 || b >= nc || cap[b] == 0) { fail(fmt("pick %d cannot run", b)); continue; }
+        (b == 0 ? n_first : n_other)++;
+        double t_min = -1.0;
+        for (int i = 0; i < nc; ++i) { if (cap[i] > 0 && (t_min < 0.0 || us[i] < t_min)) { t_min = us[i]; } }
+        if (us[b] > 1.01 * t_min) { fail(fmt("the pick %d takes %.0f us, the fastest %.0f", b, us[b], t_min)); }
+        const uint32_t kb = (n + cap[b] - 1) / cap[b];
+        for (int i = 0; i < nc; ++i) {
+            if (cap[i] == 0) { if (us[i] >= 0.0) { fail("a time for a candidate that cannot run"); } continue; }
+            if (us[i] > 1.01 * t_min) { continue; }
+            const uint32_t k = (n + cap[i] - 1) / cap[i];
+            if (k < kb) { fail(fmt("candidate %d is as fast with %u passes, the pick %d runs %u", i, k, b, kb)); }
+            if (k == kb && i < b) { fail(fmt("candidate %d is as fast with as few passes and fewer chunks than the pick %d", i, b)); }
+        }
+        uint32_t p = 0;
+        const double t = ppx_stream_us(n, cap[b], up, comp + ent * extra[b], &p);
+        if (p == 0 || p > cap[b] || t != us[b]) { fail(fmt("pass %u of cap %u", p, cap[b])); }
+        if ((uint64_t) p * ((n + cap[b] - 1) / cap[b]) < n) { fail("the passes do not cover the prompt"); }
+    }
+    report("runnable; within 1% of the fastest; of those the fewest passes, then the fewest chunks; passes cover the prompt", bad == 0, first);
+    report("the run met both outcomes (fewest chunks, more chunks)", n_first > 100 && n_other > 100, fmt("%ld first, %ld other", n_first, n_other));
+    report("ring reserve: two common entries + two blocks; one of the largest when that is more",
+            ppx_ring_reserve(100, 100, 3) == 206 && ppx_ring_reserve(500, 100, 7) == 514 && ppx_ring_reserve(0, 0, 0) == 0);
+    report("entries beyond the first: whole layer 1/2/4 chunks -> 0/1/3; half a layer 1/2/3/4/8 -> 0/0/1/1/3",
+            ppx_extra_entries(1, 1.0) == 0 && ppx_extra_entries(2, 1.0) == 1 && ppx_extra_entries(4, 1.0) == 3 && ppx_extra_entries(1, 0.5) == 0 &&
+            ppx_extra_entries(2, 0.5) == 0 && ppx_extra_entries(3, 0.5) == 1 && ppx_extra_entries(4, 0.5) == 1 && ppx_extra_entries(8, 0.5) == 3);
+    {   // Qwen3.8 IQ4_XS, 13.7k prompt, 2 x 8 GiB, layers on one card each (rows 2026-11-12): upload 2.5 s a pass, 470 us a token, 47 us a further entry
+        const uint32_t cap[4] = { 4400, 6470, 7100, 7500 }; const int extra[4] = { 0, 1, 2, 3 }; double us[4];
+        const int b = ppx_pick_chunks(13720, cap, extra, 4, 2.5e6, 470.0, 47.0, us);
+        report("13.7k tokens, upload-bound at 1 chunk (4 passes): 2 chunks (3 passes) picked", b == 1, fmt("pick %d: %.1f %.1f %.1f %.1f s", b, us[0] / 1e6, us[1] / 1e6, us[2] / 1e6, us[3] / 1e6));
+        const uint32_t cap2[3] = { 3300, 5300, 6300 }; const int extra2[3] = { 0, 0, 1 };   // the expert split: half layers, 2 chunks cost no entry
+        report("expert split: 2 chunks (no further entry, 3 passes for 5) picked", ppx_pick_chunks(13720, cap2, extra2, 3, 1.3e6, 425.0, 85.0) == 1);
+        report("a prompt that fits one pass at 1 chunk keeps 1 chunk", ppx_pick_chunks(3000, cap, extra, 4, 2.5e6, 470.0, 47.0) == 0);
+        report("compute not measured yet (0): the fewest passes, then the fewest chunks", ppx_pick_chunks(13720, cap, extra, 4, 2.5e6, 0.0, 0.0) == 2);
+        {   // a compute read too high makes 5 small passes and 3 big ones look alike: the 3 win (the links never beat their rates, a pass under the upload bound costs more than planned)
+            const uint32_t cap3[2] = { 3300, 5300 }; const int extra3[2] = { 0, 0 }; double us3[2];
+            const int b3 = ppx_pick_chunks(13720, cap3, extra3, 2, 1.2e6, 503.0, 50.3, us3);
+            report("equal times (within 1%): the fewer passes", b3 == 1, fmt("pick %d: %.2f %.2f s", b3, us3[0] / 1e6, us3[1] / 1e6));
+        }
+    }
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -193,6 +256,7 @@ int main(int argc, char ** argv) {
     test_prefetch();
     test_passes();
     test_dense_split();
+    test_stream_chunks();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

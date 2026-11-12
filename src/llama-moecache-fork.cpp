@@ -392,6 +392,8 @@ struct moe_cache {
         size_t                tail_end  = 0;    // end of the last class's expert blocks (the zone never reaches the last two blocks before it)
         size_t                floor_end = 0;    // the most the lend and the KV zone reach (set with tail_end); --moe staging=0: the ring reserve lies behind it
         size_t                cs_byte   = 0;    // --moe staging=0: the ring's write cursor on this card (bytes; the next layer lands from here, class-blind)
+        struct ring_cls { int32_t pcls, E, gn; size_t B, gbase, members; };   // a size class under the ring: its pool, experts per layer, grid blocks, block bytes, grid start, layers
+        std::vector<ring_cls> rcls;             // --moe staging=0: the classes of this card, for the ring reserve of a call's chunk count (cs_ring_floor)
         size_t                span_full = 0;    // the lend's reach without a KV zone
         size_t                kv_row   = 0;     // bytes of one combined cell (the sum of the growing records' rows)
         size_t                kv_fixed = 0;     // bytes of the fixed records (fewer cells than the largest record, e.g. MiMo's sliding-window cache: laid out at full size, first in the zone)
@@ -506,6 +508,8 @@ struct moe_cache {
     std::vector<int32_t>     cs_pos, cs_li;
     size_t                   cs_done[MAX_LINKS] = {};
     size_t                   cs_next[MAX_LINKS] = {};
+    bool                     cs_rest = false;   // the ring reserve is the one between prompt calls (cs_rest_set)
+    int                      cs_req_pick = 0;   // the chunk count picked for the request in flight (llama_moe_request_pass_fork), 0 none
     size_t                   cs_hooked[MAX_LINKS] = {};   // 1 + the position of the card's last entry whose split met its hook (its kernels are queued by the card's next split)
     uint32_t                 cs_pass = 0;
     ggml_backend_event_t     cs_start_ev[MAX_LINKS] = {};
@@ -1221,14 +1225,84 @@ static bool pp_no_staging() {
 // --moe cs-chunks=N (with staging=0): a layer of a stream pass is cut into N chunks of experts, each with its own table and split (a card's first is the layer itself on
 // its home card, every other one a shadow of the layer), so the ring reserve holds two chunks instead of two layers and the graph gets the rest: bigger passes, fewer
 // uploads of the whole model (Qwen3.8 on 2 x 8 GiB: the two-layer reserve 2296 MiB cut the pass to 4032 tokens, staged ran 6860). 1: whole layers.
+static std::atomic<int> g_cs_n{0};   // the chunk count in force (cs_apply: a call's pick, or the one between prompt calls); 0 before the first prompt call
+static int g_cs_n_built = 0;         // the chunk count the last graph was built with (a stream graph's parts follow it)
+static std::atomic<bool> g_cs_pick_held{false};   // the chunk count is picked for the call in flight (the server's plan, or the call's first decision): kept until the call ends
+static int cs_forced() {   // --moe cs-chunks=N: every call; 0: picked per call (cs_pick)
+    static const int n = [] { const char * e = moe_opt("cs-chunks"); return e ? std::max(1, std::min(64, atoi(e))) : 0; }();
+    return n;
+}
+static double cs_share(const moe_cache * mc) { return g_split_enabled && mc->n_links > 1 ? 1.0 / (double) mc->n_links : 1.0; }   // of a layer's experts on one card (an expert split)
 static int cs_chunks() {
-    static const int n = [] { const char * e = moe_opt("cs-chunks"); return e ? std::max(1, std::min(64, atoi(e))) : 1; }();
-    return pp_no_staging() ? n : 1;
+    if (!pp_no_staging()) { return 1; }
+    const int n = g_cs_n.load(std::memory_order_relaxed);
+    return n > 0 ? n : std::max(1, cs_forced());
 }
 static int64_t cs_unit(int64_t E) { return (E + cs_chunks() - 1) / cs_chunks(); }   // the experts one ring entry of a layer of E experts holds
 static bool cs_release_on() {   // --moe cs-release=0: an entry's blocks are freed at the card's next entry, as before (cs_release)
     static const bool v = [] { const char * e = moe_opt("cs-release"); return !e || atoi(e) != 0; }();
     return v;
+}
+// The chunk counts a stream call may run with (cs_pick), rising. cs_ring_floor: where a card's ring reserve starts for a layer in N chunks, which is the most the lend and
+// the KV zone reach; false when a size class would hold less than one entry there. cs_ring_apply puts it in force (between prompt calls: nothing of the ring in flight).
+static const int cs_cand[] = { 1, 2, 3, 4, 6, 8 };
+static bool cs_ring_floor(const moe_cache::alias_pool & ap, int N, size_t & fe, const char ** why = nullptr) {
+    if (ap.rcls.empty() || N <= 0) { return false; }
+    size_t Lmax = 0, Lcom = 0, Bmax = 0, ncom = 0;
+    for (const auto & rc : ap.rcls) {
+        const size_t L = (size_t) ((rc.E + N - 1) / N) * rc.B;   // a ring entry: a layer, or one of its chunks
+        Lmax = std::max(Lmax, L);
+        Bmax = std::max(Bmax, rc.B);
+        if (rc.members > ncom) { ncom = rc.members; Lcom = L; }
+    }
+    // two entries of the most common class (one in the kernels, the next on its way), or the largest layer's if that is more, plus two of the largest blocks (a grid
+    // block across the floor is not the ring's). One entry when two take over half the pool (the uploads wait then).
+    size_t ring_b = ppx_ring_reserve(Lmax, Lcom, Bmax);
+    if (why) { *why = Lmax > 2 * Lcom ? "the largest layer" : "two layers of the most common class"; }
+    if (ring_b > ap.tail_end / 2) {
+        ring_b = Lmax + 2 * Bmax;
+        if (why) { *why = "one layer (two would take over half the pool: uploads wait for the layer before)"; }
+    }
+    fe = ap.tail_end - std::min(ring_b, ap.tail_end);
+    for (bool moved = true; moved; ) {   // on a block edge of the class whose blocks lie there: the lend and the KV rows mark whole blocks
+        moved = false;
+        for (const auto & sg : ap.segs) {
+            const size_t end = sg.base + (size_t) sg.n * sg.B;
+            if (sg.B == 0 || fe <= sg.base || fe >= end) { continue; }
+            const size_t edge = sg.base + (fe - sg.base) / sg.B * sg.B;
+            if (edge < fe) { fe = edge; moved = true; }
+        }
+    }
+    for (const auto & rc : ap.rcls) {
+        const int32_t lo = fe > rc.gbase ? (int32_t) ((fe - rc.gbase + rc.B - 1) / rc.B) : 0;
+        if (rc.gn - lo < (rc.E + N - 1) / N) { return false; }
+    }
+    return true;
+}
+static void cs_ring_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t fe) {
+    ap.floor_end = fe;
+    ap.cs_byte   = fe;
+    for (const auto & rc : ap.rcls) { mc->pool[rc.pcls].ring_lo = fe > rc.gbase ? (int32_t) ((fe - rc.gbase + rc.B - 1) / rc.B) : 0; }
+}
+// every card's ring for a layer in N chunks, and N for the graphs; false (nothing changed) when a card cannot hold it
+static bool cs_apply(moe_cache * mc, int N) {
+    std::vector<size_t> fe(mc->alias.size(), 0);
+    for (size_t k = 0; k < mc->alias.size(); ++k) { if (!mc->alias[k].rcls.empty() && !cs_ring_floor(mc->alias[k], N, fe[k])) { return false; } }
+    {
+        std::lock_guard<std::mutex> lock(mc->mtx);
+        for (size_t k = 0; k < mc->alias.size(); ++k) { if (!mc->alias[k].rcls.empty()) { cs_ring_apply(mc, mc->alias[k], fe[k]); } }
+    }
+    g_cs_n.store(N, std::memory_order_relaxed);
+    mc->cs_rest = false;
+    return true;
+}
+// between prompt calls: the smallest ring that works on every card (the most chunks), so the lend and the KV zone get the most of the pool
+static void cs_rest_set(moe_cache * mc) {
+    if (mc->cs_rest || !pp_no_staging()) { return; }
+    int n = cs_forced();
+    if (n <= 0) { for (int c : cs_cand) { size_t fe = 0; bool ok = true; for (const auto & a : mc->alias) { ok = ok && (a.rcls.empty() || cs_ring_floor(a, c, fe)); } if (ok) { n = c; } } }
+    if (n > 0) { cs_apply(mc, n); }
+    mc->cs_rest = true;
 }
 static bool              g_pp_dec_built = false; // the same when the last graph was finished
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
@@ -9540,24 +9614,25 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     ap.tail_end  = split ? ap.span : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
                     ap.floor_end = ap.tail_end;
-                    size_t ring_b = 0;
                     const char * ring_why = "";
+                    int ring_n = 0;
                     if (ring) {
-                        // the ring reserve: two layers of the most common class (one in the kernels, the next on its way), or the largest layer if that is more, plus two
-                        // of the largest blocks (a grid block across floor_end is not the ring's). One layer when two take over half the pool (the uploads wait then).
-                        // shortcut: a fixed rule; upgrade to a per-call estimate (pass tokens lost against upload overlap gained)
-                        size_t Lmax = 0, Lcom = 0, Bmax = 0, ncom = 0;
+                        // the ring reserve (cs_ring_floor). --moe cs-chunks=N: for a layer in N chunks, every call. Else the chunks are picked per call (cs_pick) and
+                        // between prompt calls the reserve is the smallest that works (the most chunks whose entry every class holds): the lend and the KV get the rest
                         for (size_t c : order) {
-                            const size_t L = (size_t) cs_unit(ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2]) * pl.cls[c].B;   // a ring entry: a layer, or one of its --moe cs-chunks
-                            Lmax = std::max(Lmax, L);
-                            Bmax = std::max(Bmax, pl.cls[c].B);
-                            if (pl.cls[c].members.size() > ncom) { ncom = pl.cls[c].members.size(); Lcom = L; }
+                            ap.rcls.push_back({ (int32_t) (pool0 + c), (int32_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2], gn[c], pl.cls[c].B, gbase[c], pl.cls[c].members.size() });
                         }
-                        ring_b   = std::max(Lmax, 2 * Lcom) + 2 * Bmax;
-                        ring_why = Lmax > 2 * Lcom ? "the largest layer" : "two layers of the most common class";
-                        if (ring_b > ap.tail_end / 2) { ring_b = Lmax + 2 * Bmax; ring_why = "one layer (two would take over half the pool: uploads wait for the layer before)"; }
-                        ring_b = std::min(ring_b, ap.tail_end);
-                        ap.floor_end = ap.tail_end - ring_b;
+                        size_t fe = 0;
+                        ring_n = cs_forced();
+                        if (ring_n <= 0) { for (int c : cs_cand) { if (cs_ring_floor(ap, c, fe)) { ring_n = c; } } }
+                        GGML_ASSERT(ring_n > 0 && cs_ring_floor(ap, ring_n, fe, &ring_why) && "moe-cache: the ring reserve holds less than one layer (or chunk) of a class");
+                        cs_ring_apply(mc, ap, fe);
+                        std::string fit;
+                        for (const auto & rc : ap.rcls) { fit += tr_fmt("%s%d of %d", fit.empty() ? "" : ", ", rc.gn - mc->pool[rc.pcls].ring_lo, (rc.E + ring_n - 1) / ring_n); }
+                        LLAMA_LOG_WARN("moe-cache: block pool on %s: ring reserve %.0f MiB at the tail (%s%s; blocks per class there against a layer%s: %s); the graph and the KV zone take up to %.0f MiB before it\n",
+                                ggml_backend_buft_name(buft), (ap.tail_end - ap.floor_end) / 1048576.0, ring_why,
+                                ring_n > 1 ? tr_fmt(", a layer in %d chunks (%s)", ring_n, cs_forced() > 0 ? "--moe cs-chunks" : "between prompt calls; a call picks its own").c_str() : "",
+                                ring_n > 1 ? "'s chunk" : "", fit.c_str(), ap.floor_end / 1048576.0);
                     } else {
                         for (const auto & sg : ap.segs) {
                             // staged prompts stream a short class through the staging slots: a floor there only cut the lend, the classes lie back to back and the first
@@ -9566,31 +9641,17 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             const int32_t E = (int32_t) ll[pl.cls[(size_t) (sg.pcls - (int32_t) pool0)].members[0]]->ffn_up_exps->ne[2];
                             if (sg.n >= E) { ap.floor_end = std::min(ap.floor_end, sg.base + (size_t) (sg.n - E) * sg.B); }
                         }
-                    }
-                    // on a block edge of the class whose blocks lie there: the lend and the KV rows mark whole blocks (the homes are disjoint, one class holds the edge)
-                    for (bool moved = true; moved; ) {
-                        moved = false;
-                        for (const auto & sg : ap.segs) {
-                            const size_t end = sg.base + (size_t) sg.n * sg.B;
-                            if (sg.B == 0 || ap.floor_end <= sg.base || ap.floor_end >= end) { continue; }
-                            const size_t edge = sg.base + (ap.floor_end - sg.base) / sg.B * sg.B;
-                            if (edge < ap.floor_end) { ap.floor_end = edge; moved = true; }
+                        // on a block edge of the class whose blocks lie there: the lend and the KV rows mark whole blocks (the homes are disjoint, one class holds the edge)
+                        for (bool moved = true; moved; ) {
+                            moved = false;
+                            for (const auto & sg : ap.segs) {
+                                const size_t end = sg.base + (size_t) sg.n * sg.B;
+                                if (sg.B == 0 || ap.floor_end <= sg.base || ap.floor_end >= end) { continue; }
+                                const size_t edge = sg.base + (ap.floor_end - sg.base) / sg.B * sg.B;
+                                if (edge < ap.floor_end) { ap.floor_end = edge; moved = true; }
+                            }
                         }
-                    }
-                    ap.cs_byte = ap.floor_end;
-                    if (ring) {
-                        std::string fit;
-                        for (size_t c : order) {
-                            auto & ps = mc->pool[pool0 + c];
-                            ps.ring_lo = ap.floor_end > gbase[c] ? (int32_t) ((ap.floor_end - gbase[c] + pl.cls[c].B - 1) / pl.cls[c].B) : 0;
-                            const int32_t E = (int32_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2];
-                            const int32_t nr = gn[c] - ps.ring_lo;
-                            fit += tr_fmt("%s%d of %d", fit.empty() ? "" : ", ", nr, (int) cs_unit(E));
-                            GGML_ASSERT(nr >= cs_unit(E) && "moe-cache: the ring reserve holds less than one layer (or chunk) of a class");
-                        }
-                        LLAMA_LOG_WARN("moe-cache: block pool on %s: ring reserve %.0f MiB at the tail (%s%s; blocks per class there against a layer%s: %s); the graph and the KV zone take up to %.0f MiB before it\n",
-                                ggml_backend_buft_name(buft), (ap.tail_end - ap.floor_end) / 1048576.0, ring_why, cs_chunks() > 1 ? tr_fmt(", a layer in %d chunks (--moe cs-chunks)", cs_chunks()).c_str() : "",
-                                cs_chunks() > 1 ? "'s chunk" : "", fit.c_str(), ap.floor_end / 1048576.0);
+                        ap.cs_byte = ap.floor_end;
                     }
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
@@ -13929,6 +13990,7 @@ static bool cpu_gpu_shape_on() {
 extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t dev, double gbs); }   // ggml-backend.cpp (declared there, no shared header)
 void llama_moe_cache_prompt_call_fork(bool on) {
     if (!on && g_cache) { cs_end(g_cache); }
+    if (!on && g_cache && g_cs_pick_held.exchange(false)) { cs_rest_set(g_cache); }   // the ring back to its smallest: the KV and the decode graphs get the pool
     if (!on) { g_pp_cstream_call = false; }
     g_prompt_call.store(on, std::memory_order_relaxed);
     g_pp_dec = false;
@@ -14472,6 +14534,7 @@ static uint32_t pp_record(moe_cache * mc, uint32_t n, uint32_t ub) {
         double E = 0.0, R = 0.0;
         pp_expert_bytes(mc, mc->link_dev[0], E, R);
         U = gbs > 0.0 ? std::max(0.0, E - R) / (gbs * 1e3) : 0.0;
+        if (pp_no_staging()) { U *= cs_share(mc); }   // an expert split's cards upload their shares side by side (as in pp_plan)
     }
     std::lock_guard<std::mutex> lk(g_pp_mu);
     pp_add(n, ub, U, -1);
@@ -14564,10 +14627,89 @@ uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub) {
 // The server's checkpoint cut (llama-fork-hooks.h): n tokens of a request are still to process before its tail and the request ends at cells_end cells.
 // Their pass size as equal passes under what every card's pool can lend at those last cells. The context's micro-batch is the cap at an empty KV: a call cut
 // at it no longer fits one pass once the KV has grown.
+// --moe staging=0: the chunks of a call's stream passes and the ring reserve that goes with them, per call (user 2026-11-12: computed per call by an estimator, metrics
+// in, seconds out; ppx_pick_chunks holds the formula). More chunks leave the graph more of the pool, so the passes get bigger and every expert is uploaded fewer times;
+// each chunk beyond a card's first is one more pass over every token. n tokens to plan for (the request's at the server's pass plan, else the call's) ending at
+// cells_end cells (0: the cells in use + n). False: no pick (a forced count, a call too small to stream, no candidate that runs): the caller leaves the ring at rest.
+// shortcut: a further entry costs this share of a token's compute (Qwen3.8 IQ4_XS on two 3090s, 2026-11-12: 47 of 470 us per token); measure it per model at load (a
+// chain over a table of -1 entries) when a model shows another ratio
+static const double CS_ENTRY_COST = 0.10;
+static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
+    enum { NC = (int) (sizeof(cs_cand) / sizeof(cs_cand[0])) };
+    if (!mc || !pp_no_staging() || cs_forced() > 0 || g_cs_live.load() || n < 64 || ub == 0) { return false; }
+    bool any = false;
+    for (const auto & a : mc->alias) { any = any || !a.rcls.empty(); }
+    if (!any) { return false; }
+    const double share = cs_share(mc);
+    uint32_t cap[NC];
+    int      extra[NC];
+    double   us[NC];
+    std::vector<size_t> old;
+    for (const auto & a : mc->alias) { old.push_back(a.floor_end); }
+    for (int i = 0; i < NC; ++i) {
+        cap[i]   = 0;
+        extra[i] = ppx_extra_entries(cs_cand[i], share);
+        std::vector<size_t> fe(mc->alias.size(), 0);
+        bool ok = true;
+        for (size_t k = 0; k < mc->alias.size() && ok; ++k) { fe[k] = old[k]; ok = mc->alias[k].rcls.empty() || cs_ring_floor(mc->alias[k], cs_cand[i], fe[k]); }
+        if (!ok) { continue; }
+        uint32_t c = ub;
+        for (size_t k = 0; k < mc->alias.size(); ++k) { mc->alias[k].floor_end = fe[k]; }   // the caps below read the floor
+        for (const auto & a : mc->alias) {
+            if (a.kvt.empty()) { continue; }
+            // the KV of the call's end and a decode graph's lend fit in front of this ring, or the candidate cannot run
+            size_t pad = 1, cells = cells_end > 0 ? cells_end : (size_t) n;
+            for (const auto & r : a.kvt) { if (!r.fixed) { pad = std::max<size_t>(pad, r.pad); if (cells_end == 0) { cells = std::max(cells, (r.rows ? r.rows() : 0) + (size_t) n); } } }
+            if (kvz_lend_potential(a, kvz_read_cells(std::max<size_t>(cells, a.kv_h), pad)) <= kv_lend_round(a, a.dec_need) + a.mirror_b) { ok = false; break; }
+            c = pp_cap_to_pool(a, n, c, cells_end);
+        }
+        for (size_t k = 0; k < mc->alias.size(); ++k) { mc->alias[k].floor_end = old[k]; }
+        cap[i] = ok ? c : 0;
+    }
+    double E = 0.0, R = 0.0;
+    pp_expert_bytes(mc, mc->link_dev[0], E, R);
+    const double gbs   = llama_moe_cache_link_gbs_fork(mc->link_dev[0]);
+    const double up_us = gbs > 0.0 ? E / (gbs * 1e3) * share : 0.0;   // every expert over the link, the cards' links side by side in an expert split
+    double c_us = 0.0;
+    {
+        std::lock_guard<std::mutex> lk(g_pp_mu);
+        const double cells = cells_end > 0 ? (double) cells_end : (double) g_pp_cells;
+        c_us = g_pp_c_us > 0.0 ? g_pp_c_us + g_pp_a_us * std::max(0.0, cells - 0.5 * (double) n) : 0.0;
+    }
+    // no compute measured yet: at most one further entry per layer (what an entry costs against a saved upload is not known; the fewest passes alone took 6 chunks)
+    if (c_us <= 0.0) { for (int i = 0; i < NC; ++i) { if (extra[i] > 1) { cap[i] = 0; } } }
+    const int b = ppx_pick_chunks(n, cap, extra, NC, up_us, c_us, CS_ENTRY_COST * c_us, us);
+    if (b < 0 || !cs_apply(mc, cs_cand[b])) { return false; }
+    std::string tab;
+    for (int i = 0; i < NC; ++i) {
+        if (cap[i] == 0) { tab += format("%s%d: %s", tab.empty() ? "" : "; ", cs_cand[i], c_us <= 0.0 && extra[i] > 1 ? "not tried before the compute is measured" : "cannot run"); continue; }
+        tab += format("%s%d: %u passes of at most %u, %.1f s", tab.empty() ? "" : "; ", cs_cand[i], (n + cap[i] - 1) / cap[i], cap[i], us[i] / 1e6);
+    }
+    size_t ring_b = 0, cells_log = cells_end;
+    for (const auto & a : mc->alias) { if (!a.rcls.empty()) { ring_b = std::max(ring_b, a.tail_end - a.floor_end); } }
+    if (cells_log == 0) { std::lock_guard<std::mutex> lk(g_pp_mu); cells_log = (size_t) g_pp_cells; }
+    const std::string line = format("stream of %u tokens to %zu cells: a layer in %d chunk%s (ring reserve %.0f MiB; by chunks: %s; upload %.0f ms a pass, compute %s, a card holds %.2f of a layer)",
+            n, cells_log, cs_cand[b], cs_cand[b] > 1 ? "s" : "", ring_b / 1048576.0, tab.c_str(), up_us / 1e3,
+            c_us > 0.0 ? format("%.0f us a token, %.0f a further entry", c_us, CS_ENTRY_COST * c_us).c_str() : "not measured yet: the fewest passes", share);
+    LLAMA_LOG_WARN("moe-cache: %s\n", line.c_str());
+    llama_moe_stats_log_fork("DEC", line.c_str());
+    return true;
+}
+
 int32_t llama_moe_request_pass_fork(int32_t n, int32_t cells_end, int32_t ub) {
     static const bool on = [] { const char * e = moe_opt("request-pass"); return !e || atoi(e) != 0; }();
     moe_cache * mc = g_cache;
     if (!on || !mc || mc->alias.empty() || n <= 0 || ub <= 0 || cells_end <= 0) { return 0; }
+    // the chunks of the request's stream passes, once per request: a later call of it (fewer tokens left, the same end) and the cut's second question keep the pick
+    static int32_t req_n = 0, req_cells = 0;
+    if (cells_end == req_cells && n < req_n && mc->cs_req_pick > 0) {
+        cs_apply(mc, mc->cs_req_pick);   // the last call's end put the ring back to rest
+    } else {
+        mc->cs_req_pick = cs_pick(mc, (uint32_t) n, (size_t) cells_end, (uint32_t) ub) ? g_cs_n.load(std::memory_order_relaxed) : 0;
+        if (mc->cs_req_pick == 0) { cs_rest_set(mc); }
+        req_n = n; req_cells = cells_end;
+    }
+    g_cs_pick_held = true;
     uint32_t cap = (uint32_t) ub;
     for (const auto & a : mc->alias) { cap = pp_cap_to_pool(a, (uint32_t) n, cap, (size_t) cells_end); }
     if (cap == 0) { return 0; }
@@ -14638,6 +14780,9 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
         best_P  = P;
         best_ub = u;
         best_U  = std::max(0.0, E - rho * (span_eff - L)) / (gbs * 1e3);   // the upload of the experts the pool does not hold after this lend (log)
+        // --moe staging=0, expert split: the cards upload their shares side by side. With the whole upload on one link a 4480-token pass of 2.3 s (compute-bound, both
+        // links at 12 of 20 GB/s) read as upload-bound beside 2.5 s and the compute was never measured (Qwen3.8, 2026-11-12)
+        if (pp_no_staging()) { best_U *= cs_share(mc); }
     }
     if (best_P == 0) {
         return pp_record(mc, n, ub_old);
@@ -14929,11 +15074,16 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     // totals over the calls since the last report (pp_add): with staging slots a pass takes max(U, C), without them U + C
     const double Usum = g_pp_Usum, nt = (double) g_pp_n, x = g_pp_xc / std::max(1.0, nt);
     double c_new = -1.0;
-    if (k >= 2) {   // slots hide uploads (2 is the least that overlaps, ppx_stage_slots)
-        if ((double) us > 1.3 * Usum) {
-            c_new = (double) us / nt;
+    // (a stream into the cache's blocks hides them too, without slots: read as "upload, then compute" a 3424-token pass of 2.55 s beside a 2.44 s upload gave 30 us
+    // per token; its further entries per layer are taken out, the chunk pick adds them per candidate)
+    const double ent = g_pp_cstream_built ? 1.0 + CS_ENTRY_COST * (double) ppx_extra_entries(std::max(1, g_cs_n_built), cs_share(mc)) : 1.0;
+    // (1.5 x for the stream into the blocks: its passes near the upload's time wait for uploads between chunks, read as compute they made the next pick keep
+    // small passes, where nothing measures the compute again)
+    if (k >= 2 || g_pp_cstream_built) {   // slots hide uploads (2 is the least that overlaps, ppx_stage_slots)
+        if ((double) us > (g_pp_cstream_built ? 1.5 : 1.3) * Usum) {
+            c_new = (double) us / nt / ent;
         } else if (g_pp_c_us > 0.0) {
-            c_new = std::min(g_pp_c_us + g_pp_a_us * x, (double) us / nt);
+            c_new = std::min(g_pp_c_us + g_pp_a_us * x, (double) us / nt / ent);
         }
     } else {
         c_new = std::max(0.0, (double) us - Usum) / nt;
@@ -14996,6 +15146,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     if (!mc || !pp_chain_on() || !g_prompt_call.load(std::memory_order_relaxed) || g_pp_dec.load(std::memory_order_relaxed) || !mb_is_auto() || ub_max == 0 || mc->n_links <= 0) {
         return;
     }
+    // --moe staging=0: the call's chunk count, once per call (the server's pass plan made it already for its requests), before anything below asks for a ring entry
+    if (!g_cs_pick_held.exchange(true) && !cs_pick(mc, n_tokens, 0, ub_max)) { cs_rest_set(mc); }
     const double R_read = llama_dsplit_read_rate_fork(mc->link_dev[0]);   // before any lock: it takes the split planner's (which calls into the cache under it)
     double A = 0.0;   // the expert bytes one token reads, all layers: what the decode chain's chunks read again for every token
     pp_sums sums((size_t) (PP_PATHS - PP_K));   // llama-estimate-fork.h: every expert added below, the same sums a simulated machine fills
@@ -15428,7 +15580,9 @@ uint32_t llama_moe_cache_prefill_ubatch_fork(uint32_t n, uint32_t ub_max) {
         uint32_t cap = ub_max;
         for (const auto & a : g_cache->alias) { cap = pp_cap_to_pool(a, n, cap); }
         const uint32_t passes = (n + cap - 1) / std::max<uint32_t>(1, cap);
-        return std::min<uint32_t>(cap, ((n + passes - 1) / passes + 31) / 32 * 32);   // equal passes under the cap
+        // equal passes under the cap; recorded as the planned calls are (pp_record): the compute per token is measured from them too (it never was under
+        // --moe staging=0: the chunk pick and the split planner had no compute to weigh)
+        return pp_record(g_cache, n, std::min<uint32_t>(cap, ((n + passes - 1) / passes + 31) / 32 * 32));
     }
     return on ? ppx_equal_pass(n, ub_max, mb) : ub_max;
 }
@@ -15806,7 +15960,8 @@ bool llama_moe_cache_graph_reusable_fork() {
            g_kv_epoch.load() == g_kv_epoch_built &&   // a moved KV zone: the old graph's views point at the old place
            g_lend_epoch.load() == g_lend_epoch_built &&   // a graph placed elsewhere in the pool since: the old graph's tensors sit at the old place
            (!g_pp_built || pp_chain_allowed()) && g_pp_dec_built == g_pp_dec.load(std::memory_order_relaxed) && (!g_pp_mix_built || pp_mix_allowed()) && g_pp_k_built == (ggml_backend_pred_get_fork() > 0.0) && g_pp_mix_call_built == g_pp_mix_call.load(std::memory_order_relaxed) &&
-           g_pp_cstream_built == (g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed));       // a graph of the prompt chain has no CPU chain: only a prompt call may run it
+           g_pp_cstream_built == (g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed)) &&       // a graph of the prompt chain has no CPU chain: only a prompt call may run it
+           (!g_pp_cstream_built || g_cs_n_built == cs_chunks());
 }
 
 int32_t llama_moe_cache_cpu_sat_threads_fork() {
@@ -15830,6 +15985,7 @@ void llama_moe_cache_graph_built_fork() {
     g_pp_mix_graph = false;
     g_pp_cstream_built = g_pp_cstream_graph;
     g_pp_cstream_graph = false;
+    g_cs_n_built = cs_chunks();
     g_cs_order_built.swap(g_cs_order_graph);
     g_cs_order_graph.clear();
     g_cs_rng_built.swap(g_cs_rng_graph);
