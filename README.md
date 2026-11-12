@@ -1,37 +1,38 @@
-# llama.cpp: fork with multi gpu acceleration even for models bigger than total gpu mem
+# llama.cpp MoE fork: large mixture-of-experts models on consumer GPUs
 
-Status Update:23:10:2026. Right now multi gpu decode is supported all models multigpu dense split 
-prefill is implemented for glm and gives gains only from prompts 7k up on 2x3090 at least on my rig.
+This fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) runs mixture-of-experts (MoE) models that do not fit in GPU memory, and models larger than system RAM, at many times the speed of upstream llama.cpp on the same hardware. On two RTX 3090 cards with dual-channel RAM: prompt processing up to **23x** faster, generation up to **2.5x** faster (MiMo-V2.6-Flash, GLM-5.3-Flash, Qwen3.8-Next, DeepSeek-V4.1-Flash); on an 8-channel workstation, where upstream itself runs twice as fast, MiMo's 12k prompt still runs **12.6x** faster.
 
-In other words tha gains you see bellow are not from multigpu yet just from more efficient vram mmgmt
-ie the same 20x speedup in mimo is happening on single 5090 too. In a sense its good news so people with one gpu will have fun too ;)
-And that multigpu fun is just starting too. For glm 2nd gpu is adding +30%  on pp so far
+It is a drop-in replacement for `llama-server` and `llama-cli`. The context, the micro-batch, the expert cache and the GPU split are all sized automatically per request, so no `-c`, `-ub`, `-ngl` or `--moe` flags are needed:
 
-For MoE models larger than VRAM: every expert stays in system RAM, and all VRAM left
-after the KV cache becomes a live cache of the experts actually being used. The GPUs
-compute cached experts while the CPU computes the rest, in parallel.
+```sh
+llama-server -m MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf
+```
 
-llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
+**Download:** the [latest release](https://github.com/neurall/llama.cpp/releases/latest) has one package per OS with CPU, CUDA, Vulkan and HIP backends (Linux `tar.gz`, Windows `zip`). NVIDIA cards also need the `cudart-` archive if CUDA 13 is not installed.
 
-## How it works
+## Results
 
-<img src="fork/docs/img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
+Each row: the official upstream binary (stock, its own defaults, `-np 1`) against this fork, same machine, same request, same day. **12k/1k** = 12.4k-13.8k-token code-review prompt, 1024 tokens out; **3k/1k** = about 3k-token source file plus an edit instruction, answer up to 1024 tokens; **short/1k** = one-line prompt, 1024 tokens out (too short to time the prompt). Decode = generated tokens/s, prompt = prompt tokens/s. Every answer is stored in [fork/outputs](fork/outputs) (`<id>.txt` ours, `<id>s.txt` stock).
 
-- **Expert cache.** All experts stay in RAM; each GPU's free VRAM is one buffer of expert blocks. The GPUs compute the cached (hot) experts while the CPU computes the misses, in parallel. A missed expert that keeps being used is uploaded and replaces a colder one. It started from the expert cache of llama.cpp PR #27861, then changed in two ways: LRU eviction was replaced by a window of recent use plus admission (a missed expert takes a slot only after repeated use within the last 64 tokens), and the fixed reserve per layer was replaced by one global pool of expert blocks shared by all layers.
-- **Learned hot experts, kept between runs.** Per model, the lifetime use of every expert is saved in `moe-state.ini` (`~/.cache/llama.cpp/`, Windows `%LOCALAPPDATA%\llama.cpp\`) and updated by every run; the next start preloads the hottest experts. The first run or two of a new model are slower (it is a cache). A pre-warmed state for the models in the table is in the repo: copy [fork/moe-state.ini](fork/moe-state.ini) there if you have none.
-- **Prompts in few big passes.** Every prompt pass streams the experts the GPU does not hold, so the micro-batch (`-ub`) is sized per request (up to 12288 tokens) and the graph borrows expert blocks only for that pass; decode gets them back.
-- **Next-layer prediction.** Each layer's router is one small matmul, so the next layer's router can run early, on the current layer's input. That finds 79% of the next layer's picks in its top 8 and 94% in its top 16 (21 captured Qwen 3.6 requests). The upload of those experts starts while the current layer still computes, and only those travel instead of everything the pass may touch; what the prediction missed is uploaded once the real picks are known. Prompt passes use it per size (`--moe pp-k`).
-- **The biggest VRAM efficiency change: a big micro-batch is no longer dead weight.** With a static `-ub`, the compute buffer of the largest micro-batch stays reserved through the whole session. A small `-ub` left the VRAM to the expert cache: great decode, weak prompt processing. A big `-ub` (4k, 8k, 12k) gave massive prompt processing but low decode, because the buffer left no room for the expert cache in the decode phase. Here the big buffer is lent only to the prompt pass. When the pass ends, that space goes back to the expert cache, refilled with the globally hot experts of the model (from `moe-state.ini`) and with the coldest ones the prompt pass has just used (prefill preheat), so decode starts with a full cache. So one expert cache is reused across the prompt and decode phases: the experts that stay resident serve the prompt pass too, and the blocks lent to it are rehydrated when decode begins. The refill continues during decode, so the longer the answer (past about 1k tokens), the closer decode speed gets to a run without a big prompt before it. This is the design expectation; I have not yet measured the recovery curve token by token.
-- **KV inside the same buffer.** With `-np 1` no context is reserved: each request claims the KV it needs and gives it back at its end, so a big `-c` costs nothing. A request whose KV does not fit in f16 converts it in place to q8_0, then q4_0, then moves whole layers' KV to host RAM. On by default (`--moe kv-fallback=k8v8,k4v4,ram`); skip q4_0 with `--moe kv-fallback=k8v8,ram` (q8_0 KV measured within noise of f16: OLMoE perplexity 2.1926 vs 2.1946; q4_0 +0.58%), turn it off with `--moe kv-fallback=none`.
-- **Two GPUs.** A planner picks per prompt size one card or a split of the dense layers over both, from measured link speed and compute.
+### Current machine (from 2026-11-12)
 
-Every setting and its default: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md). Internals and measurements per feature: [fork/docs/features.md](fork/docs/features.md).
+Lenovo P620: Threadripper PRO 3975WX (32 cores), 256 GB DDR4-3200 in 8 channels, 2x RTX 3090 on PCIe 4.0 x16, power-limited to 280 W each. Against the previous machine this has 4x the memory bandwidth and the full PCIe link on the second card.
 
-## Best gainers
-<img width="1591" height="1090" alt="image" src="https://github.com/user-attachments/assets/7968c9de-766b-4d23-9fa2-2d0673d19c16" />
+| model | test | stock decode (t/s) | ours decode (t/s) | stock prompt (t/s) | ours prompt (t/s) | decode gain | prompt gain | stock build | ours build | answers (ours, stock) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| MiMo-V2.6-Flash 3-bit | 12k/1k | 30.01 | **36.65** | 115.6 | **1458.0** | 1.22x | **12.6x** | b12317 | b15065 | [26477](fork/outputs/26477.txt), [26475s](fork/outputs/26475s.txt) |
+| MiMo-V2.6-Flash 3-bit | 3k/1k | - | 37.96 | - | 660.7 | - | - | - | b15065 | [26479](fork/outputs/26479.txt) |
+| MiMo-V2.6-Flash 3-bit | short/1k | - | 41.19 | - | - | - | - | - | b15065 | [26481](fork/outputs/26481.txt) |
 
+Measured 2026-11-12, two runs per cell, the faster one shown; `-` = not measured on this machine yet (the other models follow). Stock gained the most from this machine: it computes the experts on the CPU, so the 8-channel memory made it 2.1x faster in decode and 2.3x in prompt processing than on the previous machine (MiMo 12k/1k: 13.99 to 30.01 t/s, 49.4 to 115.6 prompt t/s); ours gained 1.38x and 1.42x (26.6 to 36.65 t/s, 1025 to 1458 prompt t/s).
 
-One run of ours (the run with the biggest single gain among the three builds, against the one official at that point newest stock (b11742, 2026-10-20) run closest to stock's median; every number is from those two runs, whose answers are in the output column (ours on top, stock below, so you can open both). Sorted by the bigger gain; rows where neither gain reaches +10% are left out (models that fit in VRAM and the dense 27B models run at stock speed). Upper number stock, lower ours. **12k/1k** = 12.4k-13.8k-token code-review prompt, 1024 tokens out; **3k/1k** = ~3k-token source file plus an edit instruction, answer up to 1024 tokens; **short/1k** = one-line prompt, 1024 tokens out (no prompt speed: too short to time). t/s = decode, pp = prompt processing, ppl = perplexity on b13600 (details below). Valid = same power limits as stock (x4 card 220 W, x16 card 280 W), answer not looped, decode only from answers of 256+ tokens. 2x RTX 3090 (x16 + x4), Ryzen 7 3700X, 128 GB DDR4-3200.
+### Previous machine (until 2026-11-11)
+
+Ryzen 7 3700X (8 cores), 128 GB DDR4-3200 in 2 channels, 2x RTX 3090 on PCIe x16 + x4, power-limited to 280 W (x16 card) and 220 W (x4 card).
+
+<img width="1591" height="1090" alt="Best gainers on the previous machine" src="https://github.com/user-attachments/assets/7968c9de-766b-4d23-9fa2-2d0673d19c16" />
+
+Upper number stock, lower ours; ppl = perplexity (see [Quality](#quality)). Stock is the official b11829 (rows of builds b13838 and b13842) or b11742 (older rows); each cell shows the build with the best run. Rows where neither gain reaches +10% are left out: models that fit in VRAM, and dense models, run at stock speed.
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | output |
 |---|---|---|---|---|---|---|---|---|
@@ -58,54 +59,32 @@ One run of ours (the run with the biggest single gain among the three builds, ag
 † Rows with a 64-token answer (/64): stock was asked for 64 tokens, below the 256 tokens a decode speed is taken from, so the decode gain of these rows is for information; the prompt gain stands. The new rows show the best decode speed and the best prompt speed among the runs of the cell (what the run list prints, two decimals); the linked answer is one of those runs, so its header can show a slower speed than the table.  
 \* GLM 3.5-bit (127.7 GiB) is larger than this machine's 128 GB RAM, so part of it runs from the SSD and the system swaps (up to about 4 GiB of swap in use during runs). Ours is faster than stock despite that.  
 
-Every answer behind the table is in [fork/outputs](fork/outputs) as `<id>.txt` (header: build, test, speeds, arguments, power); stock's answers as `<id>s.txt`. With the run database: `python3 fork/run.py out ID` (get it with `git fetch https://github.com/neurall/llama.cpp runs-db && git show FETCH_HEAD:runs.db > fork/runs.db`).
+## Where the speed comes from
 
-Our builds in the table are b13842 (this release) and b13838 (rows measured 2026-10-23 against stock b11829, the newest official stock that day), b13600 and two earlier builds (b13563, b13586) against stock b11742; each cell shows the build with the best run. Older tables (earlier releases, laptop and CPU rows): [fork/docs/perf-history.md](fork/docs/perf-history.md).
+Stock llama.cpp keeps whole layers on the GPU and computes every expert that does not fit on the CPU, for prompt processing as well as generation. This fork treats VRAM, RAM and the SSD as one memory hierarchy for the experts, and keeps the GPUs computing. Each change below was measured as a paired A/B on the same machine when it was added; the effects do not add up linearly.
 
-### Reproduce a row
-
-1. Binaries: ours [`llama-release-b13842-6d9b2b3f4-bin-ubuntu-cuda-13.4-x64.tar.gz`](https://github.com/neurall/llama.cpp/releases/download/release-b13842-6d9b2b3f4-split-fix/llama-release-b13842-6d9b2b3f4-bin-ubuntu-cuda-13.4-x64.tar.gz) (Windows zip on the [release page](https://github.com/neurall/llama.cpp/releases/tag/release-b13842-6d9b2b3f4-split-fix); add the `cudart-` archive if CUDA 13 is not installed); stock: `llama-b11829-bin-ubuntu-cuda-13.4-x64.tar.gz` from [ggml-org b11829](https://github.com/ggml-org/llama.cpp/releases/tag/b11829) for the b13838/b13842 rows, `llama-b11742-bin-ubuntu-cuda-13.4-x64.tar.gz` from [ggml-org b11742](https://github.com/ggml-org/llama.cpp/releases/tag/b11742) for the older rows.
-2. Start the server (port 9931). The `-c` values are the ones the table's runs used:
-
-| test | ours | stock |
+| change | what it does | measured effect |
 |---|---|---|
-| 12k/1k | `llama-server -m MODEL -np 1` | `llama-server -m MODEL -np 1 -c 16384` |
-| 3k/1k | `llama-server -m MODEL -np 1 -c 4096` | `llama-server -m MODEL -c 4096` |
-| short/1k | `llama-server -m MODEL -np 1 -c 1024` | `llama-server -m MODEL -c 1024` |
+| **Prompt passes on the GPUs** | Experts the GPU does not hold are streamed to it during the prompt, in passes of up to 16k tokens, so every upload serves many tokens; stock computes them on the CPU | 16x-23x prompt speed on GLM and MiMo on the previous machine (stock 42-49 prompt t/s, ours 700-1150), 12.6x on the current one (MiMo 12k: 115.6 to 1458 prompt t/s); micro-batch 1024 to 4096 alone: 2.1x (GLM 12k: 176.6 to 370.1 prompt t/s) |
+| **Expert cache in free VRAM (VRAM hot map)** | All free VRAM becomes one pool of expert blocks shared by all layers; the experts the tokens use most stay there, misses run on the CPU in parallel | decode +20% to +150% against stock on models that do not fit (table above); global pool against fixed slots per layer +2-4% |
+| **Learned hot map kept between runs** | Each expert's lifetime use is saved per model (`moe-state.ini`) and preloaded at the next start; after a prompt, the blocks it borrowed are refilled with the hottest experts | first request after a restart +4-6% decode; decode after a 12k prompt +12.7% (cache hits 43% to 55%) |
+| **RAM pool with direct SSD reads (RAM hot map)** | Experts live in a pinned RAM pool sized from free memory; experts outside it are read from the SSD with direct I/O, never through the page cache or a file mapping | DeepSeek generation +29-31%, first short prompt after a start 3-5x, MiMo edit prompt +28% (b14965 against b14929); models larger than RAM run at all |
+| **Dynamic context and KV in the same pool** | No context is reserved: each request claims the KV it needs from the same VRAM as the experts and gives it back; if it does not fit, the KV converts in place to q8_0, then q4_0, then moves layers to RAM | no `-c` to guess; prompts that stock refuses at its automatic context (30k, 60k) run at full speed; MiMo 200k-token prompt 794 prompt t/s, 400k 363 prompt t/s; Qwen3.6-35B 200k 3259 prompt t/s; q8_0 KV perplexity within noise of f16 |
+| **Compute buffer lent per pass** | The large prompt micro-batch borrows expert-cache blocks only for the pass and returns them for generation | +6.6% decode after a long prompt at the same prompt speed |
+| **Dense split over several GPUs** | Tensor-parallel split of the dense (attention, shared) layers over the cards for long prompts, experts streamed to each card, chosen per request by a planner from measured link and compute speed | prompt speed at 60k tokens: Qwen3.6-35B +44% (2890 to 4169 prompt t/s), Qwen3.8 IQ3_S +25%, GLM-5.3 3.0-bit +23-25%; GLM 12k +35-70% (b14965); MiMo 200k +39% |
+| **Expert split over several GPUs** | Each card computes its share of every layer's experts (MoE tensor parallelism), for models that do not fit the cards' memory | Qwen3.8 IQ4_XS 12k on 8 GiB cards: +19-23% prompt speed over one card (development build, next release) |
+| **Next-layer prediction** | The next layer's router runs early on the current layer's input, so the upload of its experts starts while the current layer computes | 79% of the next layer's experts found in its predicted top 8, 94% in its top 16 |
+| **Faster start** | Weights read with direct I/O at the drive's measured queue depth while earlier buffers are pinned | GLM-5.3 3.0-bit 69 s to 37 s until the server answers, DeepSeek-V4.1 71 s to 49.5 s (b15065) |
 
-   GLM 5.3 3.5-bit (137 GB) is larger than the 128 GB RAM here; our rows ran with `-lm mmap --moe pin-budget=108447924224` added (pin 101 GiB, map the rest).
-3. Send the exact request the harness sends ([fork/bench/req-*.json](fork/bench): 12k-1k, 3k-1k-a / -b (the two edit instructions), short-1k), twice on the same server like the harness:
-```sh
-curl -sL https://raw.githubusercontent.com/neurall/llama.cpp/release/fork/bench/req-12k-1k.json | curl -s localhost:9931/v1/chat/completions -H 'Content-Type: application/json' -d @- | grep -o '"timings":{[^}]*}'
-```
-   `prompt_per_second` is pp, `predicted_per_second` is t/s.
-4. Perplexity (same text and chunks as the table below; ours forces the expert-cache path even where the model fits VRAM):
-```sh
-llama-perplexity -m MODEL -f fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1024 -ub 1024 -nr                             # stock
-llama-perplexity -m MODEL -f fork/bench/longsrc.cpp -c 1024 --chunks 12 -b 1024 -ub 1024 -nr --cpu-moe --moe-expert-cache -1   # ours
-```
+To our knowledge no other engine splits the dense layers and the experts of a model over several GPUs when the model does not fit in their memory: upstream llama.cpp splits only the layers that fit, and vLLM and SGLang expect the model in VRAM.
 
-The whole table with the harness (stock and ours, 2 runs per cell, results into `fork/runs.db` and `fork/outputs/`): set the paths in [fork/local.toml.example](fork/local.toml.example) and the model files in [fork/models.ini](fork/models.ini), then the table above, biggest gains first, skipping cells that already ran today:
-```sh
-python3 fork/run.py run -c gainers -sc -nrt -from-best -r 2
-```
-`-sc` runs every cell on the newest official stock binary first (pulled, never built) and then on ours, so each row has its own stock run; `-n` lists the cells without running them; `-pl X4/X16` sets the card power limits in watts and `-nodl` skips the download of a newer stock binary. Perplexity: `python3 fork/run.py ppl -b b13600`. The table as a picture: `python3 fork/gainers_png.py`.
+<img src="fork/docs/img/vram-layout.svg" alt="One VRAM buffer per GPU: compute graph, KV and expert cache share it" width="100%">
 
+Older measurements and the per-feature A/B details: [fork/docs/features.md](fork/docs/features.md), [fork/docs/perf-history.md](fork/docs/perf-history.md).
 
+## What gain to expect
 
-Models: GLM original 3.0-bit GGUF [pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF](https://huggingface.co/pfeifferj/GLM-5.3-Flash-GSQ-RCO-GGUF)
-works as-is (reference quality); the Q4_K attention variant above (same experts,
-non-expert Q8_0 weights at Q4_K, +0.95% perplexity) decodes ~10% faster.
-
-**Same VRAM, different use.** Each GLM token uses 8 of 288 experts per layer. Stock
-fills VRAM with whole layers (~14 of 42), mostly experts the current token doesn't
-touch, so the CPU does most expert work and the GPUs wait. This fork fills the same
-VRAM with the ~100 most-used experts of every layer, so most expert work runs on the
-GPUs, at the same time as the CPU handles the misses.
-
-## What gain to expect from which model and hardware
-
-The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 (48 GiB of VRAM in total), 128 GB RAM; *VRAM share* is 48 GiB divided by the model file, before the KV cache, dense weights and compute buffers take their part. Gains are against the official stock b11742, from the rows of the table above (12k prompt for prompt speed, short prompt for decode speed).
+The gain depends on how much of the model fits in VRAM. Measured on the previous machine (2x RTX 3090, 48 GiB of VRAM, 128 GB RAM); *VRAM share* is 48 GiB divided by the model file. Prompt speed from the 12k prompt, decode speed from the short prompt, against stock b11742.
 
 | model | file | VRAM share | prompt speed | decode speed |
 |---|---|---|---|---|
@@ -119,66 +98,44 @@ The gain depends on how much of the model fits in VRAM. Measured on 2x RTX 3090 
 | GLM-5.3-Flash 3.0-bit | 109.4 GiB | 44% | 14.8x | +62% |
 | GLM-5.3-Flash 3.5-bit* | 127.7 GiB | 38% | 6.7x | +37% |
 
-- **MoE models whose experts don't fit in VRAM gain, for both prompt and decode speed.** Dense models and MoE models that fit fully in VRAM run at stock speed: the gains come from the expert cache and from sizing the prompt micro-batch so each expert upload serves more tokens, and a dense model has no experts to cache.
-- **The less of the model fits in VRAM, the more there is to gain.** The biggest gains here are at 44-45% nominal share. Models bigger than RAM run partly from SSD, where a few extra tokens per second decide between unusable and usable: GLM 3.5-bit (127.7 GiB, larger than this machine's 128 GB RAM) still gains +21% decode and 7x prompt speed over stock on the 3k prompt (b13563). I have not yet measured models that stock runs below 5 t/s; reports are welcome.
-- **On your hardware:** divide your total VRAM by the model file for the share, and expect the same shape: stock speed when it fits, the largest gains when the model fits in RAM but only a third to a half in VRAM. Only this one machine is measured so far; reports from others are welcome.
+- **Models that fit in VRAM, and dense models, run at stock speed.** The gains come from caching and streaming experts.
+- **The less of the model fits, the more there is to gain**, down to models larger than RAM, which run partly from the SSD: GLM-5.3 3.5-bit (127.7 GiB) on a 128 GB machine still ran 7x faster prompts and +21% decode on the 3k prompt.
+- **On your hardware:** divide total VRAM by the model file for the share. Reports from other machines are welcome (issues on this repository, with the startup log of `-lv 5`).
 
-## Other notable changes: the two-card prompt split
+## Usage
 
-**Where the two-card dense split starts to pay.** Per prompt, the planner measures one card and two cards and takes the faster; it does not use a fixed size. The medians of all runs since 2026-10-20 (220 + 280 W, answers not looped; each cell has 2 to 50 runs from several builds, so differences under 10% are noise) show where it wins:
+```sh
+llama-server -m MODEL.gguf                 # OpenAI-compatible server, everything automatic
+llama-cli    -m MODEL.gguf -p "hello"
+```
 
-| model | prompt | one card (pp t/s) | two cards (pp t/s) | official stock (pp t/s, build) | one card vs stock | two cards vs stock | best of our builds |
-|---|---|---|---|---|---|---|---|
-| Qwen3.8 Next IQ4_XS | 4k | 1684 | 1350 | 209, b11887 | 8.1x | 6.5x | pre7 |
-|  | 8k | 1663 | 1513 | 213 (9k prompt), b11829 | 7.8x | 7.1x | pre9 |
-|  | 11k | 1581 | 1824 | 211 (10k prompt), b11829 | 7.5x | 8.6x | rc5 |
-|  | 12k | 1498 | 1648 | 213, b11829 | 7.0x | 7.7x | spass15 |
-|  | 16k | 1543 | 1115 | 208, b11887 | 7.4x | 5.4x | pre9 |
-|  | 30k | 1553 | 1554 | fail: context too small | - | - | ncard6 |
-|  | 60k | 1600 | 1668 | fail: context too small | - | - | pre10 |
-| Qwen3.8 Next IQ3_S | 12k | 1443 | - | 379, b11829 | 3.8x | - | relfx1 |
-|  | 60k | 1546 | 1864 | fail: context too small | - | - | um6g |
-| GLM-5.3-Flash 3.0-bit | 4k | 703 | 639 | 42 (5k prompt), b11829 | 16.7x | 15.2x | pre9 |
-|  | 12k | 658 | 609 | 43, b11829 | 15.3x | 14.2x | ceil1 |
-|  | 16k | 660 | 775 | 42, b11887 | 15.7x | 18.4x | pre10 |
-|  | 30k | 557 | 686 | 42, b11887 | 13.3x | 16.3x | ncard6 |
-|  | 60k | 566 | 694 | - | - | - | pre10 |
-| MiMo-V2.6-Flash 3-bit | 4k | 905 | 903 | 48 (3.4k prompt), b11866 | 18.9x | 18.8x | pre13 |
-|  | 8k | 1062 | 999 | 50, b11866 | 21.2x | 20.0x | relmf1 |
-|  | 12k | 988 | 1150 (1 run) | 49, b11829 | 20.2x | 23.5x | rc5 |
-|  | 16k | 906 | 1094 | 49, b11887 | 18.5x | 22.3x | pre9 |
-|  | 60k | 846 | 841 | - | - | - | pre12 |
+The fork's defaults apply only when a MoE model is larger than the free VRAM of all GPUs; other models, and every setting you pass yourself, behave as in upstream. The chosen values are printed at startup (`-lv 5` prints all of them).
 
-Stock cells: official ggml-org binaries with their own defaults (`-np 1` only, micro-batch and context auto); where the stock prompt size differs from the row it is named. **fail: context too small** = stock sizes its context itself (32768 tokens at 30k, 63488 at 60k on Qwen) and refuses a prompt that does not fit (a 30k prompt is 33.6k tokens, a 60k prompt 68.3k): `request (68337 tokens) exceeds the available context size (63488 tokens)`. It needs `-c` set by hand, which was not done here, so stock cannot serve these prompts as shipped; ours sizes the context per request. Stock is CPU-bound, so its prompt speed is nearly the same at every size (GLM 42-43, MiMo 48-50, Qwen IQ4_XS 208-213). "-" = not measured (stock at 60k would take 20 minutes or more per cell on GLM and MiMo; GLM 30k took 12 minutes).
+| setting | upstream default | fork default |
+|---|---|---|
+| expert placement | whole layers on the GPU, the rest on the CPU | all experts in RAM, free VRAM as the expert cache |
+| `-ub` (tokens per prompt pass) | 512 | sized per request and card, up to 16384 |
+| `-c` (context) | model maximum, fitted to VRAM once | claimed per request; KV falls back f16, q8_0, q4_0, RAM |
+| `-t` (threads) | physical cores | tuned on measured decode time; prompt threads tuned separately |
+| GPU split | layers by memory | per request: one card, dense split or expert split, from measured speeds |
 
-- **The split starts to pay at about 11k-16k prompt tokens**: Qwen3.8 Next from 11k, GLM and MiMo from 16k (MiMo possibly 12k, one run). Below about 8k one card is as fast or faster (the second card sits in a x4 slot and the hand-offs between cards cost more than the shorter pass saves). The auto setup takes one card there.
-- **Largest gains: GLM +18% to +26% (16k to 60k), MiMo +21% at 16k, Qwen3.8 Next +15% at 11k.** Qwen3.6 and OLMoE fit in VRAM and show no split gain.
-- **Big contexts at full speed are one of the main benefits of this fork.** Stock sizes the context once at start from the free memory (32768 and 63488 tokens on the Qwen IQ4_XS and IQ3_S cells above); a longer prompt is refused. Ours claims the KV it needs per request from the same buffer as the experts and gives it back at the end of the request, so no `-c` has to be guessed and a big context costs nothing while it is not in use. Measured prompts, prompt speed (pp t/s), on this machine: Qwen3.8 Next IQ4_XS 60k 1600-1668 (stock: refused with its own context), Qwen3.6-35B 200k 3259 (decode 72.2 t/s), MiMo 200k 794 (decode 17.3 t/s) and 400k 363; the 200k cells with the antiloop sampler (repeat penalty 1.15) so the answers are real text, the speed is not touched by it. Details of the KV handling are in [fork/docs/features.md](fork/docs/features.md).
-- The split is chosen by the planner and needs no switch; `--moe dense-split=0` forces one card, `=1` forces the split.
+Useful switches:
 
-## What each feature contributes
+| switch | effect |
+|---|---|
+| `--fork off` | upstream behaviour for everything |
+| `-at off` | no automatic tuning (the fork's other defaults stay) |
+| `--moe fixed=1` | repeatable output for benchmarks (a cached expert runs on the GPU, a missed one on the CPU, and they round slightly differently) |
+| `--moe dense-split=0` / `=1` | force one card / the dense split |
+| `--moe kv-fallback=k8v8,ram` | skip the q4_0 KV step (`none` turns the fallback off) |
+| `--moe-expert-cache 0` | expert cache off |
+| `GET /status` | server phase (loading, prefill, generation) with live ms per token |
 
-Each row is one paired A/B on the same binary and settings, measured when the feature was added (2x RTX 3090 unless noted; older builds, one A/B each, so read them as the size of the effect, not as additive shares of the table above). Method and run notes per feature: [fork/docs/features.md](fork/docs/features.md).
+Every `--moe` key and its default: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md).
 
-| feature | test | without | with | change |
-|---|---|---|---|---|
-| Expert cache in free VRAM | decode, models that do not fit | stock (no expert cache) | the gainers table above | +20% to +130% decode |
-| Pinned weights (server default) | GLM 12k prompt, prompt speed | 180 pp t/s | 262 pp t/s | +45% |
-| | Qwen 3.8 Next 12k prompt, prompt speed | 372 pp t/s | 538 pp t/s | +45% |
-| Big micro-batch (`-ub` 1024 to 4096) | GLM 12k prompt, prompt speed | 176.6 pp t/s | 370.1 pp t/s | 2.1x |
-| Micro-batch buffer lent to the prompt pass only | GLM 12k prompt then decode, `-ub` 4096 | 17.81 t/s (static buffer) | 18.99 t/s | +6.6% decode, same prompt speed (368.9 vs 367.6) |
-| Prefill preheat | GLM 12k prompt then 256 tokens, 1 GPU, decode | 13.5 t/s (cache hits 43%) | 15.3 t/s (55%) | +12.7% |
-| Learned hot experts kept between runs | GLM first request after restart, decode | 20.5-20.9 t/s | 21.8 t/s | +4-6% |
-| Global expert pool (vs fixed slots per layer) | decode with 20-35% of the experts in VRAM | 132.5-177.5 t/s | 137.3-181.7 t/s | +2.1% to +3.6% (no change when most of the model fits) |
-| Dense split over two cards (forced path) | Qwen 3.8 Next 4k prompt, prompt speed, 180+220 W | 1065 and 1113 pp t/s (run ids 12190, 12191) | 1274 and 1275 pp t/s (12193, 12194) | +17% (held back by the second card sitting in a slow x4 slot, 6 GB/s against 13 GB/s on the x16 card; cards on equal links gain more) |
+## Quality
 
-Which features drive which number: the **expert cache** is what lifts decode over stock; **pinned weights and the big micro-batch** (with its buffer lent only to the prompt pass, so decode keeps its cache) are what lift prompt speed. The rest are smaller, single-digit effects.
-
-## Perplexity against stock
-
-Same text, same chunks, official stock `llama-perplexity` against ours. The number in brackets is the per-chunk difference to stock in percent of perplexity (mean ± standard error); 0.00 means identical to four decimals. *default* is what you get without settings (the planner decides per prompt size whether to use one card or both), *one card* and *two cards* force the path (`dense-split=0` / `dense-split=1`), *dense split only* is `split-experts=0` (see below). The plain Qwen3.8 27B models are dense with no split path, so their split columns are empty. The GLM two-card cell is not measured yet. About 10 chunks of 1024 tokens per model: differences under 0.2% are inside the noise.
-
-**What this measures.** `llama-perplexity` with 1024-token passes, so the prompt path: stock and ours both run the experts on the GPU with the same kernels there, which is why many cells are identical to four decimals (checked chunk by chunk). It does not test the decode path, where a cached expert runs on the GPU and a missed one on the CPU and the rounding differs slightly. Perplexity with one token per call exercises that path (`run ppl` can be pointed at it); between two of our own builds it differed in the 4th digit (Qwen3.6-35B: 1.5219 against 1.5209), and against stock (10 chunks for Qwen Next IQ3_S, 9 for GLM 3.5-bit, per-chunk difference, mean ± standard error): Qwen Next IQ3_S 1.3954 stock, 1.3975 ours (+0.15 ± 0.08%, 7 of 10 chunks worse); GLM 3.5-bit 1.6270 stock, 1.6335 ours (+0.40 ± 0.35%, 7 of 9 worse). Both are inside the spread that stock itself shows between micro-batch sizes (next section); only these two files were repeated at 10 chunks, the other models have 2-chunk decode-path numbers only, which cannot decide anything.
+Perplexity of the same text, same chunks, official stock `llama-perplexity` against ours; in brackets the per-chunk difference to stock (mean ± standard error). Differences under 0.2% are inside the noise; where the prompt is cut into passes of the same size, ours matches stock to four decimals. Build b13600 against stock b11742 (DeepSeek: b11887).
 
 | model | stock ppl | ours default | ours, one card | ours, dense split only | ours, two cards (f32 hand-offs) | chunks |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -194,92 +151,31 @@ Same text, same chunks, official stock `llama-perplexity` against ours. The numb
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002 | 1.3927 | 1.3927 (+0.00) | 1.3927 (+0.00) | 1.3969 (+0.30 ± 0.14%) | 1.3975 (+0.34 ± 0.16%) | 10 |
 | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003 | 1.4101 | 1.4101 (+0.00) | 1.4101 (+0.00) | 1.4114 (+0.09 ± 0.18%) | 1.4111 (+0.07 ± 0.14%) | 10 |
 
-Measured on build b13600 (12 chunks asked, 9 to 12 used where a text ended earlier), stock is the official b11742 binary.
+The two-card paths cut a prompt into token ranges per card, which moves perplexity like a smaller `-ub` does on stock itself (Qwen3.8 IQ3_S: stock 1.3927 at `-ub 1024`, 1.3946 at 512, 1.3996 at 256). Method, decode-path numbers and how to check it on any model: [fork/docs/perplexity.md](fork/docs/perplexity.md).
 
-DeepSeek 4.1 row: build dsfix1 (the fix for the all-zero token bug without `-c`), stock is the official b11887 binary, default path only, 10 chunks of 1024 tokens; 4 of 10 chunks are worse than stock, the cumulative difference shrinks from -0.31% after chunk 1 to -0.02% after chunk 10. Its decode speed rows are not in the tables yet: they come back after the gainers are rerun on this build.
+## Reproduce
 
-Reproduce: see [Reproduce a row](#reproduce-a-row), step 4.
-
-### Perplexity moves with the micro-batch size, in stock too
-
-The few cells above that differ from stock (Qwen 3.8 Next IQ3_S on the two-card paths, +0.3%) are not a loss of quality of the split. A prompt cut into smaller passes gives a slightly different perplexity on **official stock** as well, in either direction: the same text, same model, same binary, only `-ub` changed (10 chunks of 1024 tokens, one RTX 3090 or CPU):
-
-| model | -ub 1024 | 512 | 256 | 128 | 64 |
-| --- | --- | --- | --- | --- | --- |
-| Qwen3.8-Flash-Next IQ3_S (stock) | 1.3927 | 1.3946 (+0.14%) | 1.3996 (+0.50%) | 1.3983 (+0.40%) | 1.4005 (+0.56%) |
-| Qwen3.6-35B-A3B hybrid (stock) | 1.7843 | - | 1.7842 | 1.7855 | - |
-| OLMoE-1B-7B Q4_K_M (stock) | 2.1618 | - | 2.1627 | - | - |
-
-The two-card dense split cuts every prompt pass into token ranges, one per card, so it behaves like a smaller `-ub`: Qwen Next IQ3_S lands at 1.3969 / 1.3975, between stock's own 512 and 256 rows. With the same pass shape (one card, any `-ub`) ours is identical to stock to four decimals.
-
-**Why it moves.** Floating-point sums depend on the order of the additions, and the order depends on how many tokens a pass has: the quant dot-product kernels themselves (IQ3_S and the others) are the same at every pass size above 8 tokens (below that the CUDA backend switches to a matrix-vector kernel, `MMVQ_MAX_BATCH_SIZE`), but the tile shape and the split of the reduction over thread blocks follow the number of tokens; flash attention picks its kernel and tile width from the number of query tokens; the dense BF16/Q4_K weights, the router and the recurrent layers sum in an order that depends on the pass; the CPU backend blocks its matrix products by the batch size. Which of these dominates for a given model has not been traced op by op. The last bits differ, and normally nobody sees them. A mixture-of-experts model amplifies them: Qwen Next picks 10 of 512 experts per token (GLM and the sparse-attention models also pick top-k tokens), and a near-tie that flips changes the token's output, and from there every later token that sees it. Models without such picks hardly move (Qwen3.6 above, +0.00 to +0.07%), and the quant mix matters (IQ3_S is the most sensitive file measured, IQ1_M moves by 0.01%).
-
-Consequences: compare perplexities only at the same `-ub` (and the same number of chunks); a single chunk moves by up to ±1.2% on its own, so use 10 or more chunks and a paired per-chunk difference (`python3 fork/run.py ppl-table`); repeating the same run does not average anything out, it returns the same number.
-
-**Check it on any model** with official stock, no fork code involved. Only `-ub` changes (`-b` stays 1024 so the passes can be cut):
-```sh
-for ub in 1024 512 256 128 64; do
-  echo "ub=$ub"; llama-perplexity -m MODEL -f fork/bench/longsrc.cpp -c 1024 --chunks 10 -b 1024 -ub $ub -nr 2>&1 | grep "Final estimate"
-done
-```
-Add `-ngl 0` (CPU only) for a run that needs no GPU: OLMoE-1B-7B IQ3_S with one 256-token chunk gave 2.2241 (`-ub 256`), 2.2292 (64), 2.2140 (16), 2.2284 (1), and `-nr` (no weight repacking) made no difference, so the repacked CPU kernels are not the cause. A model that does not move (Qwen3.6 on CPU: 1.7850 at every `-ub`) is the control.
-
-## Run
+Ours from the [releases page](https://github.com/neurall/llama.cpp/releases), stock from [ggml-org releases](https://github.com/ggml-org/llama.cpp/releases) (the build named in the table). The exact requests are in [fork/bench](fork/bench) (`req-12k-1k.json`, `req-3k-1k-a.json` / `-b`, `req-short-1k.json`):
 
 ```sh
-llama-server -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf
-llama-cli    -m GLM-5.3-Flash-GSQ-RCO-3.0bit-q4kattn.gguf -p "hello"
+llama-server -m MODEL -np 1 --port 9931
+curl -s localhost:9931/v1/chat/completions -H 'Content-Type: application/json' -d @fork/bench/req-12k-1k.json | grep -o '"timings":{[^}]*}'
 ```
 
-**Automatic defaults that differ from stock llama.cpp.** They apply only when a MoE
-model's weights are larger than the free VRAM of all GPUs. Other models, and every
-setting you pass yourself, behave as in stock llama.cpp. The chosen values are
-printed at startup (`-lv 5` prints all of them).
-
-| setting | stock default | fork default | why |
-|---|---|---|---|
-| expert placement | autofit: whole layers on GPU, rest on CPU | all experts in RAM (`--cpu-moe`) | the VRAM is used for the expert cache instead of fixed layers |
-| expert cache | off | fills each GPU's free VRAM (`--moe-expert-cache -1`) | holds the experts tokens actually use, so most expert work runs on the GPUs |
-| CPU weight repacking | on | off (`-nr`) | repacked experts can't be copied to the GPU cache |
-| `-ub` (tokens per prompt step) | 512 | calculated per request and card: candidates up to 12288, each one's compute buffer is probed and weighed against the prompt time it saves (the buffer costs expert cache VRAM); a long prompt runs as equal passes | every expert upload serves more prompt tokens: ~2x faster long prompts at a small decode cost (about -3% per doubling on GLM-5.3-Flash) |
-| `-c` (context) | model maximum, fitted to VRAM | sized automatically: the largest context whose KV and context-scaled buffers take at most 30% of the expert cache VRAM, never above the model maximum; the KV moves down f16, q8_0, q4_0, host RAM if a request needs more | a bigger KV cache takes VRAM from the expert cache; `-c N` sets it yourself |
-| `-t` (threads) | all physical cores | starts at physical cores minus one per GPU (6 of 8 here), then tuned on measured decode time; prompt batches tuned separately, up to the logical cores | a free core per GPU keeps kernel launches and cache uploads fast; the tuner moves the count when another one measures faster (`-at off` keeps the start value) |
-
-Settings you pass always win, e.g. `--moe-expert-cache 0` turns the cache off. With your
-own placement (`-ngl`, `-ot`, `--cpu-moe`) the cache stays off unless you also pass
-`--moe-expert-cache -1`.
-- **Prompt processing is placed by upload speed.** The fork measures host->GPU upload speed per GPU at startup (here x16 13.2 GB/s vs chipset x4 6.1 GB/s). For each prompt a planner picks the fastest card alone or both cards (dense layers split between them, experts streamed to one or both); layers stay in bus order.
-- Output can differ between runs even at temperature 0: a cached expert runs on the
-  GPU, a missed one on the CPU, and they round slightly differently. For benchmarks,
-  `--moe fixed=1` makes a build repeat its output.
-- Optional tuning (defaults are measured best): every setting is a `--moe` key, there are no
-  environment variables for them, e.g. `vram-reserve-mb` (VRAM left free, 384), `wait-swaps`,
-  `swaps-per-step`, `swap-lead`, `policy`. All keys: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md).
-
-**More GPUs**: each GPU gets its own cache from its free VRAM, so more GPUs mean more
-cached experts, fewer CPU misses and faster decode, up to the point where every
-expert fits. Reports from 3+ GPU setups are welcome.
-
-### More
-
-Details moved to [fork/docs/features.md](fork/docs/features.md): pinned weights, persistent hot experts, prefill preheat, global expert pool, hot layers on the slower link, MTP, what's in it, known limits and next steps. Every `--moe` key: [fork/docs/fork-knobs.md](fork/docs/fork-knobs.md). Older measurements: [fork/docs/perf-history.md](fork/docs/perf-history.md).
-
+`prompt_per_second` is the prompt speed, `predicted_per_second` the decode speed. The whole table with the harness (stock first, then ours, two runs per cell, results into `fork/runs.db` and `fork/outputs/`): set the paths in [fork/local.toml.example](fork/local.toml.example) and the models in [fork/models.ini](fork/models.ini), then `python3 fork/run.py run gainers -sc -r 2`. Perplexity: `python3 fork/run.py ppl -b BUILD`.
 
 ## Known limits
 
-- **One machine measured:** 2x RTX 3090 (x16 + x4 slots), Ryzen 7 3700X, 128 GB DDR4. Other hardware, AMD/Intel GPUs and 3+ GPUs are untested; CUDA only for now (Vulkan and AMD binaries are next, see below). Windows binaries are smoke-tested only.
-- **The first runs of a model are slower.** The hot-expert state in `moe-state.ini` is learned from use (copy the pre-warmed [fork/moe-state.ini](fork/moe-state.ini) to start from it).
-- **Models larger than free RAM load lazily.** The server answers while the expert weights are still being pinned in the background (about 80 s for 100 GiB), so the first big prompt after start can be several times slower than the next ones (GLM 3.5-bit, 3k prompt: 26-147 prompt t/s on the first request, 225-267 on the second request on the same server). The table shows the steady-state speed.
-- **Perplexity:** equal to stock where the pass shape is the same; on the two-card paths Qwen 3.8 Next IQ3_S reads +0.3%, which is the size of stock's own change between `-ub 512` and `-ub 256` (see [Perplexity moves with the micro-batch size](#perplexity-moves-with-the-micro-batch-size-in-stock-too)).
-- **Output can differ between runs** even at temperature 0 (a cached expert runs on the GPU, a missed one on the CPU, and they round slightly differently).
-- **The gainers table takes each row from the best of three builds of this release line** (b13563, b13586, b13600); the build column says which.
+- **Measured on two machines with 2x RTX 3090**, plus a Radeon 780M laptop for HIP and Vulkan. Windows builds are smoke-tested only. 3+ GPU setups are untested.
+- **The first runs of a new model are slower:** the hot maps are learned from use. A pre-warmed state for the models above is in [fork/moe-state.ini](fork/moe-state.ini) (copy to `~/.cache/llama.cpp/`, Windows `%LOCALAPPDATA%\llama.cpp\`).
+- **Start-up takes longer on big models** while the RAM pool fills (GLM-5.3 3.0-bit: 37 s until the server answers).
+- **Output can differ between runs at temperature 0** (GPU and CPU round differently); `--moe fixed=1` makes it repeat.
 
-## What's next
+## Roadmap
 
-1. **Vulkan version and AMD binaries.** The top priority. Work is now allocated and scheduled dynamically from each card's compute speed and the bandwidth of the PCIe slot it sits in, so cards of different vendors should be able to share a model. In theory this works; I have not been able to test it.
-2. **One pool for the expert cache and the staging buffers.** Merging the two is expected to improve VRAM efficiency further.
-3. **Expert-cache lookup per topic and initialisation per request**, planned for later versions.
-4. **Testing on more hardware.** Everything here was measured on one X570 board (x16 + x4 slots) with two RTX 3090s, plus a notebook with an RTX 4060. Multi-GPU setups with fast slots on every card are the most wanted: send your numbers and the startup log (`-lv 5`).
+1. **Prompt passes without staging copies:** uploads land directly in expert-cache blocks, so the VRAM that staging held goes to larger passes (in progress; expert split +9-16% over staged on the development build).
+2. **Predicted expert fetch for very large models** (1 TB class, e.g. Kimi K3.1): the predictor's list is read from the SSD into RAM and VRAM ahead of the layer that needs it.
+3. **More hardware:** results from other GPUs, 3+ cards and AMD/Intel systems are welcome.
 
 ## Credits and thanks
 

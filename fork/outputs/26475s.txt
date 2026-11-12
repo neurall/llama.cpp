@@ -1,0 +1,55 @@
+run 26475 | stock-b12317-official | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.01 t/s | prompt 115.6 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-12 08:55:05
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` case. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1, "")`
+  - For `min_items=0, max_items=5`: inner is `build_repetition("(sep item)", 0, 4, "")` which returns `"(sep item){0,4}"` or `"(sep item)?"` if max is 1.
+  - Then result = `item (sep item){0,4}` and since min_items==0, wraps: `(item (sep item){0,4})?`
+  - This seems correct for 0-5 items with separator.
+
+- When `separator_rule` is non-empty and `min_items > 0`:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items - 1, max_items - 1, "")`
+  - For `min_items=2, max_items=5`: `item (sep item){1,4}` - correct, 2 items minimum.
+
+- Edge case: `min_items=0, max_items=0` returns "" - correct.
+- Edge case: `min_items=1, max_items=1` with separator: `item (sep item){0,0}` = `item` - correct.
+
+### build_min_max_int function
+- Complex recursive function. Let me check for issues:
+  - `decimals_left` parameter name is misleading - it's about digit depth, not decimals.
+  - The `top_level` parameter controls whether leading zeros are allowed.
+  - When `has_min && has_max` and both negative: negates both and recurses. Seems correct.
+  - When `has_min && has_max` and min negative, max positive: handles negative part then positive part. Seems correct.
+  - The `uniform_range` lambda is complex but appears to handle digit-by-digit range matching.
+
+- Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is too large for int64_t, but since it's derived from `std::to_string(min_value)` where min_value is int64_t, the substring should be fine.
+
+- The `less_decimals` variable: `std::max(decimals_left - 1, 1)` - if `decimals_left` is 1, this gives 1. Seems fine.
+
+- In the `has_min` case with `min_value <= 9`: `char c = '0' + min_value;` - this assumes min_value is between 0 and 9. The condition is `min_value <= 9` but also `min_value > 0` (since `min_value == 0` is handled separately). Wait, actually the condition chain is:
+  - `min_value < 0` - handled
+  - `min_value == 0` - handled
+  - `min_value <= 9` - so 1-9
+  - else - > 9
+  
+  So `c = '0' + min_value` where min_value is 1-9, giving '1'-'9'. Correct.
+
+- In the `has_min` case with `min_value > 9`: `auto c = min_s[0];` - first digit. Then `std::stoll(min_s.substr(1))` - rest of the number. This seems correct.
+
+- Potential issue: when `min_value` is very large (close to int64_t::max), `std::to_string` could produce a string that when we do `std::stoll(min_s.substr(1))` might overflow... but actually it shouldn't since we're removing the first digit.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- These are `static` non-const `unordered_map`s. They should be `const` to prevent accidental modification.
+- `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` are mutable statics - potential thread safety issue if accessed concurrently.
+
+### is_reserved_name
+- Uses a static local with lambda initialization - this is thread-safe in C++11+ (magic statics). Good.
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE("[^a-zA

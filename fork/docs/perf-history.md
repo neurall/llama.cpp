@@ -172,3 +172,75 @@ weights (the server default when the model fits in RAM) GLM-5.3-Flash is 1.21x s
 1.08x; with mmap both are 17-26% below stock.
 Decode speed depends on how often generated tokens reuse cached experts: ~75% of
 experts are hits on GLM chat, ~95% on Qwen.
+
+## Moved from the README on 2026-11-12 (measured on the previous machine: Ryzen 7 3700X, 128 GB DDR4-3200 dual channel, RTX 3090 on x16 + RTX 3090 on x4)
+
+### Status note of 2026-10-23
+
+Status Update:23:10:2026. Right now multi gpu decode is supported all models multigpu dense split 
+prefill is implemented for glm and gives gains only from prompts 7k up on 2x3090 at least on my rig.
+
+In other words tha gains you see bellow are not from multigpu yet just from more efficient vram mmgmt
+ie the same 20x speedup in mimo is happening on single 5090 too. In a sense its good news so people with one gpu will have fun too ;)
+And that multigpu fun is just starting too. For glm 2nd gpu is adding +30%  on pp so far
+
+**Same VRAM, different use.** Each GLM token uses 8 of 288 experts per layer. Stock
+fills VRAM with whole layers (~14 of 42), mostly experts the current token doesn't
+touch, so the CPU does most expert work and the GPUs wait. This fork fills the same
+VRAM with the ~100 most-used experts of every layer, so most expert work runs on the
+GPUs, at the same time as the CPU handles the misses.
+
+### Other notable changes: the two-card prompt split
+
+
+**Where the two-card dense split starts to pay.** Per prompt, the planner measures one card and two cards and takes the faster; it does not use a fixed size. The medians of all runs since 2026-10-20 (220 + 280 W, answers not looped; each cell has 2 to 50 runs from several builds, so differences under 10% are noise) show where it wins:
+
+| model | prompt | one card (pp t/s) | two cards (pp t/s) | official stock (pp t/s, build) | one card vs stock | two cards vs stock | best of our builds |
+|---|---|---|---|---|---|---|---|
+| Qwen3.8 Next IQ4_XS | 4k | 1684 | 1350 | 209, b11887 | 8.1x | 6.5x | pre7 |
+|  | 8k | 1663 | 1513 | 213 (9k prompt), b11829 | 7.8x | 7.1x | pre9 |
+|  | 11k | 1581 | 1824 | 211 (10k prompt), b11829 | 7.5x | 8.6x | rc5 |
+|  | 12k | 1498 | 1648 | 213, b11829 | 7.0x | 7.7x | spass15 |
+|  | 16k | 1543 | 1115 | 208, b11887 | 7.4x | 5.4x | pre9 |
+|  | 30k | 1553 | 1554 | fail: context too small | - | - | ncard6 |
+|  | 60k | 1600 | 1668 | fail: context too small | - | - | pre10 |
+| Qwen3.8 Next IQ3_S | 12k | 1443 | - | 379, b11829 | 3.8x | - | relfx1 |
+|  | 60k | 1546 | 1864 | fail: context too small | - | - | um6g |
+| GLM-5.3-Flash 3.0-bit | 4k | 703 | 639 | 42 (5k prompt), b11829 | 16.7x | 15.2x | pre9 |
+|  | 12k | 658 | 609 | 43, b11829 | 15.3x | 14.2x | ceil1 |
+|  | 16k | 660 | 775 | 42, b11887 | 15.7x | 18.4x | pre10 |
+|  | 30k | 557 | 686 | 42, b11887 | 13.3x | 16.3x | ncard6 |
+|  | 60k | 566 | 694 | - | - | - | pre10 |
+| MiMo-V2.6-Flash 3-bit | 4k | 905 | 903 | 48 (3.4k prompt), b11866 | 18.9x | 18.8x | pre13 |
+|  | 8k | 1062 | 999 | 50, b11866 | 21.2x | 20.0x | relmf1 |
+|  | 12k | 988 | 1150 (1 run) | 49, b11829 | 20.2x | 23.5x | rc5 |
+|  | 16k | 906 | 1094 | 49, b11887 | 18.5x | 22.3x | pre9 |
+|  | 60k | 846 | 841 | - | - | - | pre12 |
+
+Stock cells: official ggml-org binaries with their own defaults (`-np 1` only, micro-batch and context auto); where the stock prompt size differs from the row it is named. **fail: context too small** = stock sizes its context itself (32768 tokens at 30k, 63488 at 60k on Qwen) and refuses a prompt that does not fit (a 30k prompt is 33.6k tokens, a 60k prompt 68.3k): `request (68337 tokens) exceeds the available context size (63488 tokens)`. It needs `-c` set by hand, which was not done here, so stock cannot serve these prompts as shipped; ours sizes the context per request. Stock is CPU-bound, so its prompt speed is nearly the same at every size (GLM 42-43, MiMo 48-50, Qwen IQ4_XS 208-213). "-" = not measured (stock at 60k would take 20 minutes or more per cell on GLM and MiMo; GLM 30k took 12 minutes).
+
+- **The split starts to pay at about 11k-16k prompt tokens**: Qwen3.8 Next from 11k, GLM and MiMo from 16k (MiMo possibly 12k, one run). Below about 8k one card is as fast or faster (the second card sits in a x4 slot and the hand-offs between cards cost more than the shorter pass saves). The auto setup takes one card there.
+- **Largest gains: GLM +18% to +26% (16k to 60k), MiMo +21% at 16k, Qwen3.8 Next +15% at 11k.** Qwen3.6 and OLMoE fit in VRAM and show no split gain.
+- **Big contexts at full speed are one of the main benefits of this fork.** Stock sizes the context once at start from the free memory (32768 and 63488 tokens on the Qwen IQ4_XS and IQ3_S cells above); a longer prompt is refused. Ours claims the KV it needs per request from the same buffer as the experts and gives it back at the end of the request, so no `-c` has to be guessed and a big context costs nothing while it is not in use. Measured prompts, prompt speed (pp t/s), on this machine: Qwen3.8 Next IQ4_XS 60k 1600-1668 (stock: refused with its own context), Qwen3.6-35B 200k 3259 (decode 72.2 t/s), MiMo 200k 794 (decode 17.3 t/s) and 400k 363; the 200k cells with the antiloop sampler (repeat penalty 1.15) so the answers are real text, the speed is not touched by it. Details of the KV handling are in [fork/docs/features.md](fork/docs/features.md).
+- The split is chosen by the planner and needs no switch; `--moe dense-split=0` forces one card, `=1` forces the split.
+
+
+### What each feature contributes
+
+
+Each row is one paired A/B on the same binary and settings, measured when the feature was added (2x RTX 3090 unless noted; older builds, one A/B each, so read them as the size of the effect, not as additive shares of the table above). Method and run notes per feature: [fork/docs/features.md](fork/docs/features.md).
+
+| feature | test | without | with | change |
+|---|---|---|---|---|
+| Expert cache in free VRAM | decode, models that do not fit | stock (no expert cache) | the gainers table above | +20% to +130% decode |
+| Pinned weights (server default) | GLM 12k prompt, prompt speed | 180 pp t/s | 262 pp t/s | +45% |
+| | Qwen 3.8 Next 12k prompt, prompt speed | 372 pp t/s | 538 pp t/s | +45% |
+| Big micro-batch (`-ub` 1024 to 4096) | GLM 12k prompt, prompt speed | 176.6 pp t/s | 370.1 pp t/s | 2.1x |
+| Micro-batch buffer lent to the prompt pass only | GLM 12k prompt then decode, `-ub` 4096 | 17.81 t/s (static buffer) | 18.99 t/s | +6.6% decode, same prompt speed (368.9 vs 367.6) |
+| Prefill preheat | GLM 12k prompt then 256 tokens, 1 GPU, decode | 13.5 t/s (cache hits 43%) | 15.3 t/s (55%) | +12.7% |
+| Learned hot experts kept between runs | GLM first request after restart, decode | 20.5-20.9 t/s | 21.8 t/s | +4-6% |
+| Global expert pool (vs fixed slots per layer) | decode with 20-35% of the experts in VRAM | 132.5-177.5 t/s | 137.3-181.7 t/s | +2.1% to +3.6% (no change when most of the model fits) |
+| Dense split over two cards (forced path) | Qwen 3.8 Next 4k prompt, prompt speed, 180+220 W | 1065 and 1113 pp t/s (run ids 12190, 12191) | 1274 and 1275 pp t/s (12193, 12194) | +17% (held back by the second card sitting in a slow x4 slot, 6 GB/s against 13 GB/s on the x16 card; cards on equal links gain more) |
+
+Which features drive which number: the **expert cache** is what lifts decode over stock; **pinned weights and the big micro-batch** (with its buffer lent only to the prompt pass, so decode keeps its cache) are what lift prompt speed. The rest are smaller, single-digit effects.
+
