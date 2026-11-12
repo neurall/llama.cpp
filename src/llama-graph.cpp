@@ -35,6 +35,8 @@
 #include <sstream>
 
 int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used);   // src/llama-moecache-fork.cpp: the prompt chain
+const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t dev, int64_t n);   // the same: --moe staging=0 expert split
+void llama_moe_cache_cs_range_fork(const llama_moe_cache_layer_fork * part, int32_t lo, int32_t hi);
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
 bool llama_moe_cache_pp_pred_want_fork(int64_t n_tokens);   // the prompt chain's fetch list: the next layers' router logits come to the host in this pass
 void llama_moe_cache_pp_pred_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids, const ggml_tensor * pred);
@@ -3032,6 +3034,22 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // first (that copy syncs the GPU while only the router is queued), then
     // queue the GPU chain, then run the CPU chain on the copies only, so the
     // scheduler has no reason to wait for the GPU before computing on CPU.
+    // the cache chains' activation, the same op as the expert chain's for type_op LLM_FFN_SILU (the only one the cache path takes)
+    auto mc_act = [&](ggml_tensor * gate_t, ggml_tensor * up_t) -> ggml_tensor * {
+        const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
+        constexpr float eps = 1e-6f;
+        if (limit > eps) {
+            if (moe_uses_swiglu_clamp(arch, hparams)) {
+                // exactly the op the CPU chain uses for these archs
+                return ggml_swiglu_clamp(ctx0, gate_t, up_t, limit);
+            }
+            up_t = ggml_clamp(ctx0, up_t, -limit, limit);
+            ggml_tensor * ga = ggml_silu(ctx0, gate_t);
+            ga = ggml_clamp(ctx0, ga, -INFINITY, limit);
+            return ggml_mul(ctx0, ga, up_t);
+        }
+        return ggml_swiglu_split(ctx0, gate_t, up_t);
+    };
     ggml_tensor * down_g = nullptr;
     if (mcache) {
         ggml_backend_t cpu_backend = nullptr;
@@ -3254,21 +3272,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             if (mc_zero) { m->op_params[1] = 1; }
             if (n_tokens > 1) { m->src[3] = sel_dev; m->src[4] = table; }
             return m;
-        };
-        auto mc_act = [&](ggml_tensor * gate_t, ggml_tensor * up_t) -> ggml_tensor * {
-            const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
-            constexpr float eps = 1e-6f;
-            if (limit > eps) {
-                if (moe_uses_swiglu_clamp(arch, hparams)) {
-                    // exactly the op the CPU chain uses for these archs
-                    return ggml_swiglu_clamp(ctx0, gate_t, up_t, limit);
-                }
-                up_t = ggml_clamp(ctx0, up_t, -limit, limit);
-                ggml_tensor * ga = ggml_silu(ctx0, gate_t);
-                ga = ggml_clamp(ctx0, ga, -INFINITY, limit);
-                return ggml_mul(ctx0, ga, up_t);
-            }
-            return ggml_swiglu_split(ctx0, gate_t, up_t);
         };
         {
             ggml_tensor * up_g   = mc_mm(mcache->up_c,   mc_inp, mc_slot_ids, mcache->dev_table);
@@ -3505,9 +3508,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // (skipped, zero rows); each GPU weights and sums its experts and the partial outputs are added. Shares:
     // (1 - alpha) * [fastest link] + alpha * (link GB/s / sum), alpha measured by the MoE cache's prefill tuner
     // (1 = all GPUs by bandwidth, 0 = fastest only) or fixed by LLAMA_PREFILL_SPLIT
-    struct split_part { ggml_backend_t b; double gbs; int64_t lo, hi; };
+    // pc: --moe staging=0 (cstream): the cache layer whose blocks on the part's card hold its experts (the layer on its home card, a shadow of it on another card)
+    struct split_part { ggml_backend_t b; double gbs; int64_t lo, hi; const llama_moe_cache_layer_fork * pc = nullptr; };
     std::vector<split_part> parts;
-    if (!mcache && n_tokens >= 32 && sched && !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps_b && loras->empty()) {
+    if ((!mcache || mc_cstream) && n_tokens >= 32 && sched && !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps_b && loras->empty()) {
         const float alpha = llama_moe_cache_prefill_alpha_fork();
         // fork: a dense split pass (moe_ranges) shares the experts over the cards of its ranges by the live balance's per-card shares (all on the expert card
         // while the helpers hold none), whatever the expert-only split's alpha says. alpha is 0 by default since 2026-10-23 (MiMo fix), and this block then
@@ -3605,7 +3609,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 // waiting for the whole range (nsys, GLM 8k: the x16 card did no compute while a layer's tensor of 1.8 GB arrived, about 70 ms per tensor). The blocks of a
                 // card keep their order after the other card's blocks of the same layer; each is one more mask, one more MUL_MAT_ID per tensor and one more sum.
                 static const int chunks = [] { const char * e = llama_moe_get_opt("split-chunks"); return e ? std::max(1, atoi(e)) : 1; }();
-                if (chunks > 1) {
+                if (chunks > 1 && !mc_cstream) {   // a card's table holds one range (cstream)
                     std::vector<split_part> cut;
                     for (const auto & pt : parts) {
                         for (int ci = 0; ci < chunks; ++ci) {
@@ -3639,6 +3643,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
     if (!moe_ranges.empty() && parts.empty() && sched && !range_cache) {
         parts.push_back({ ds_r[llama_ds_xr_fork(ds_r)].b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(ds_r[llama_ds_xr_fork(ds_r)].b)), 0, n_expert });
+    }
+    // --moe staging=0: every card computes its range from its own blocks: the layer's on its home card, a shadow of the layer on another card, each with a table that
+    // holds only that range (llama_moe_cache_cs_shadow_fork, cs_copy). A card that cannot hold its range: the layer's own chain over every expert (mc_pp below).
+    if (mc_cstream && !parts.empty()) {
+        bool ok = parts.size() >= 2;
+        for (auto & pt : parts) { pt.pc = ok ? llama_moe_cache_cs_shadow_fork(mcache, ggml_backend_get_device(pt.b), pt.hi - pt.lo) : nullptr; ok = ok && pt.pc; }
+        if (!ok) { parts.clear(); }
+        for (const auto & pt : parts) { llama_moe_cache_cs_range_fork(pt.pc, (int32_t) pt.lo, (int32_t) pt.hi); }
     }
     if (mc_mix_b) {   // the fastest link's card: every expert id the home card does not hold
         parts.push_back({ mc_mix_b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(mc_mix_b)), 0, n_expert });
@@ -3674,9 +3686,16 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             std::stable_partition(parts.begin(), parts.end(), [&](const split_part & pt) { return pt.b != owner_b; });   // helpers first, the owner's chain(s) last
         }
         // id in [lo, hi) -> kept, else -1 (on the integer-valued floats: clamp(id - lo + 1, 0, 1) * clamp(hi - id, 0, 1))
-        ggml_tensor * f  = ggml_cast(ctx0, ggml_cont(ctx0, selected_experts), GGML_TYPE_F32);
-        ggml_tensor * f1 = ggml_scale_bias(ctx0, f, 1.0f, 1.0f);
-        ggml_build_forward_expand(gf, f1);   // rule 1
+        ggml_tensor * f  = mc_cstream ? nullptr : ggml_cast(ctx0, ggml_cont(ctx0, selected_experts), GGML_TYPE_F32);   // cstream parts: their tables mask the ids
+        ggml_tensor * f1 = f ? ggml_scale_bias(ctx0, f, 1.0f, 1.0f) : nullptr;
+        if (f1) { ggml_build_forward_expand(gf, f1); }   // rule 1
+        ggml_tensor * cs_ids = nullptr;   // cstream: every token's ids, flat, on the owner right behind the router (rule 1): each part's table read takes them
+        if (mc_cstream) {
+            ggml_tensor * c = ggml_cont(ctx0, selected_experts);
+            if (owner_b) { ggml_backend_sched_set_tensor_backend(sched, c, owner_b); }
+            ggml_build_forward_expand(gf, c);
+            cs_ids = ggml_reshape_1d(ctx0, c, n_expert_used*n_tokens);
+        }
         std::vector<ggml_tensor *> ids(parts.size());
         // Rule 4: a helper takes its own copy of the router weights together with its id mask, at the very start of its chain. Read straight from the owner by the
         // mul behind the helper's `down` matmul, the 110 KB copy was issued behind that matmul and stood on the helper's link behind the helper's own expert upload
@@ -3708,6 +3727,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // Every operation of a card's id mask is pinned to that card. Left free, the scheduler put them next to the first chain, so the second chain took
             // its ids from the first chain's split and had to wait for it (nsys, GLM 8k: the x16's chain started when the x4's ended).
             auto pin = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, parts[i].b); return t; };
+            if (!parts[i].pc) {
             ggml_tensor * lo_m = pin(ggml_clamp(ctx0, pin(ggml_scale_bias(ctx0, f,  1.0f, (float) (1 - parts[i].lo))), 0.0f, 1.0f));
             ggml_tensor * hi_m = pin(ggml_clamp(ctx0, pin(ggml_scale_bias(ctx0, f, -1.0f, (float) parts[i].hi)),       0.0f, 1.0f));
             ggml_tensor * m = pin(ggml_mul(ctx0, lo_m, hi_m));
@@ -3720,6 +3740,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // all id sets before any chain: the scheduler copies only the used experts of a host weight when the
             // MUL_MAT_ID is the first node of its split (the ids must exist before the split starts)
             ggml_build_forward_expand(gf, ids[i]);
+            }
             if (owner_b && parts[i].b != owner_b && !weight_before_ffn) {   // rule 4
                 w_part[i] = pin(ggml_cont(ctx0, weights));
                 ggml_build_forward_expand(gf, w_part[i]);
@@ -3787,13 +3808,30 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // waited 36 ms, then the x4 49 ms, per layer).
             for (size_t i = 0; i < parts.size(); ++i) { ggml_build_forward_expand(gf, range_in(parts[i].b)); }
         }
+        // cstream part: the card's chain over its blocks. Its table holds only its range (-1 elsewhere: those rows are zeroed and skipped), so it reads every token's ids;
+        // the table read starts the part's split, where cs_split_cb waits for the card's uploads ("-s": a shadow of the layer on that card)
+        auto cs_chain = [&](const split_part & pt, ggml_tensor * x) {
+            ggml_tensor * sl = ggml_get_rows(ctx0, pt.pc->dev_table, cs_ids);
+            ggml_format_name(sl, pt.pc == mcache ? "ffn_moe_cs_slots-%d" : "ffn_moe_cs_slots-%d-s", il);
+            sl = ggml_reshape_2d(ctx0, sl, n_expert_used, n_tokens);
+            auto mm = [&](ggml_tensor * w, ggml_tensor * in) {
+                ggml_tensor * m = ggml_mul_mat_id(ctx0, w, in, sl);
+                m->op_params[1] = 1;   // zero first: the ids of the other cards' ranges are -1
+                m->src[3] = selected_experts;
+                m->src[4] = pt.pc->dev_table;
+                return m;
+            };
+            ggml_tensor * up_t   = mm(pt.pc->up_c,   x);
+            ggml_tensor * gate_t = mm(pt.pc->gate_c, x);
+            return mm(pt.pc->down_c, mc_act(gate_t, up_t));
+        };
         std::vector<ggml_tensor *> partial(parts.size());
         for (size_t i = 0; i < parts.size(); ++i) {
             mm_id_backend = parts[i].b;
             mm_id_lo = (int32_t) parts[i].lo;
             mm_id_hi = (int32_t) parts[i].hi;
             ggml_tensor * chain_in = !moe_ranges.empty() ? range_in(parts[i].b) : (cur_part[i] ? cur_part[i] : cur);
-            partial[i] = reduce(expert_chain(chain_in, ids[i]), parts[i].b, w_part[i]);
+            partial[i] = reduce(parts[i].pc ? cs_chain(parts[i], chain_in) : expert_chain(chain_in, ids[i]), parts[i].b, w_part[i]);
             mm_id_backend = nullptr;
             mm_id_lo = mm_id_hi = 0;
             if (cur_part[i] && hop_f16_out) {   // rule 5: the partial sum leaves the helper as f16 and becomes f32 again on the owner

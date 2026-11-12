@@ -507,8 +507,16 @@ struct moe_cache {
     ggml_backend_event_t     cs_start_ev[MAX_LINKS] = {};
     bool                     cs_started[MAX_LINKS]  = {};
     size_t                   cs_waited[MAX_LINKS]   = {};
-    ggml_backend_buffer_t    cs_snap_buf = nullptr;   // pinned table snapshots of every layer (shortcut: never freed, one per process)
+    ggml_backend_buffer_t    cs_snap_buf = nullptr;   // pinned table snapshots of every layer and shadow (shortcut: never freed, one per process; grows with the shadows)
     int32_t *                cs_snap     = nullptr;
+    size_t                   cs_snap_n   = 0;
+    // --moe staging=0, expert split (llama_moe_cache_cs_shadow_fork): per (layer, card that is not its home) a shadow layer for the experts that card computes of it:
+    // blocks of a class of the layer's shape in that card's pool (owner -5 - index), its own table on that card, the views of a layer of that class there. Its blocks
+    // and entries live one pass (cs_shadow_drop). cs_order entries from layers.size() on are shadows; cs_rng: the expert ids [lo, hi) each entry computes in the pass
+    std::deque<layer_state>  shadows;
+    std::map<std::pair<size_t, int>, size_t> shadow_of;   // (layer, link) -> index into shadows, SIZE_MAX: that card has no class of the layer's shape
+    std::vector<std::pair<int32_t, int32_t>> cs_rng;
+    bool                     cs_masked = false;   // a pass of this call masked device tables to their range: the call's end writes every layer's table again
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
     uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
@@ -698,6 +706,11 @@ struct moe_cache {
     std::vector<ggml_context *>        pctxs;
     std::vector<ggml_backend_buffer_t> pbufs;
 };
+
+// cstream entries: index li < layers.size() is a layer, the rest are shadows (moe_cache::shadows); a block's owner code for an entry and back (-1: not an entry's)
+static layer_state & csl(moe_cache * mc, size_t li) { return li < mc->layers.size() ? mc->layers[li] : mc->shadows[li - mc->layers.size()]; }
+static int32_t cs_owner(const moe_cache * mc, size_t li) { return li < mc->layers.size() ? (int32_t) li : -5 - (int32_t) (li - mc->layers.size()); }
+static int64_t cs_li_of(const moe_cache * mc, int32_t o) { return o >= 0 ? (int64_t) o : o <= -5 ? (int64_t) mc->layers.size() + (-5 - o) : -1; }
 
 // Where a tensor's raw GGUF bytes live (recorded by the model loader).
 bool file_location(const llama_model & model, const ggml_tensor * t, int * fd, size_t * off) {
@@ -1224,6 +1237,7 @@ static bool              g_pp_cstream_graph = false; // the graph being built ha
 static bool              g_pp_cstream_built = false; // the same for the graph that runs: its experts go into blocks before it (llama_moe_cache_pp_freeze_fork)
 static std::vector<size_t> g_cs_order_graph;           // the cstream layers of the graph being built, in its order (llama_moe_cache_pp_chain_fork)
 static std::vector<size_t> g_cs_order_built;           // the same for the graph that runs (cs_begin)
+static std::vector<std::pair<int32_t, int32_t>> g_cs_rng_graph, g_cs_rng_built;   // per entry of those: the expert ids it computes (moe_cache::cs_rng)
 static std::atomic<bool>   g_cs_live{false};           // a cstream pass may be on the GPU: flush_tables leaves the device tables to cs_layer (its copies are ordered on the upload stream) until cs_end
 static void (*g_cs_hook_next)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t) = nullptr;   // the ledger's or the guard's hook, behind cs_split_cb
 static bool              g_pp_mix_built = false; // the same for the graph that runs: the staging fill leaves out what such a layer's home card holds
@@ -2172,15 +2186,15 @@ slot_pick pick_slot(moe_cache * mc, size_t li, Rank rank, double & best) {
 }
 
 // block b now belongs to layer li (the expert its previous owner cached there must be evicted first)
-void pool_take(moe_cache * mc, size_t li, int32_t b) {
-    layer_state & ls = mc->layers[li];
+void pool_take(moe_cache * mc, size_t li, int32_t b) {   // li: a layer, or a cstream shadow (csl)
+    layer_state & ls = csl(mc, li);
     if (ls.pcls < 0) {
         return;
     }
     auto & ps = mc->pool[ls.pcls];
     const int32_t o = ps.owner[b];
     GGML_ASSERT(o != -3 && "kv-tail: an expert is assigned to a block under the KV rows");
-    if (o == (int32_t) li) {
+    if (o == cs_owner(mc, li)) {
         return;
     }
     if (o < 0) {
@@ -2191,7 +2205,7 @@ void pool_take(moe_cache * mc, size_t li, int32_t b) {
     } else {
         mc->layers[o].n_own--;
     }
-    ps.owner[b] = (int32_t) li;
+    ps.owner[b] = cs_owner(mc, li);
     ls.n_own++;
 }
 
@@ -2816,8 +2830,8 @@ static const char * guard_owner_name(int32_t own) { return own == -1 ? "free" : 
 // an upload is overwriting)
 static void guard_tables(moe_cache * mc) {
     std::lock_guard<std::mutex> lk(g_gtbl_mu);
-    for (size_t li = 0; li < mc->layers.size(); ++li) {
-        const auto & L = mc->layers[li];
+    for (size_t li = 0; li < mc->layers.size() + mc->shadows.size(); ++li) {   // the cstream shadows' tables too (cs_copy)
+        const auto & L = csl(mc, li);
         const auto it = g_gtbl.find(&L.pub);
         if (it == g_gtbl.end() || L.pcls < 0 || L.pcls >= (int32_t) mc->pool.size()) { continue; }
         const auto & own = mc->pool[L.pcls].owner;
@@ -2826,7 +2840,7 @@ static void guard_tables(moe_cache * mc) {
             if (sl < 0) { continue; }
             const int32_t o  = sl < (int32_t) own.size() ? own[sl] : -9;
             const int32_t se = sl < (int32_t) L.slot_expert.size() ? L.slot_expert[sl] : -9;
-            if (o == (int32_t) li && se == e) { continue; }
+            if (o == cs_owner(mc, li) && se == e) { continue; }
             size_t lo = 0, hi = 0;
             const moe_cache::alias_pool * ap = led_block(mc, L.pcls, sl, lo, hi);
             if (!ap) { continue; }
@@ -6993,9 +7007,14 @@ void llama_moe_cache_alias_refused_fork(uint32_t n_tokens) {
     if (g_alias_err.empty()) { g_alias_err = "the compute graph of a " + std::to_string(n_tokens) + "-token pass did not fit the blocks the pool lent (its attention grows with the cells)"; }
 }
 
+static void cs_shadow_drop(moe_cache * mc);   // below
 bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     g_alias_err.clear();
     moe_cache * mc = g_cache;
+    if (mc && !mc->shadows.empty() && g_cs_live.load()) {   // the last pass's shadow blocks go back before this graph's lend and zone (cs_shadow_drop)
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        cs_shadow_drop(mc);
+    }
     if (mc && !mc->alias.empty() && !alias_on()) {
         // the pool could not lend the graph (separate compute buffers) but the KV zones still live in it: the pad rows the attention reads past the cells in use must be
         // zeroed all the same. Skipped, they held whatever the blocks held before (poison: NaN, so the first graph's attention was NaN; OLMoE at 0.786 GiB VRAM left,
@@ -10799,7 +10818,8 @@ static int64_t pp_blocks(moe_cache * mc, layer_state & ls, bool landed = false) 
         const auto & ps = mc->pool[ls.pcls];
         for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
             const int32_t o = ps.owner[b];
-            n += o == -1 || (landed && o == -4) || (o >= 0 && (landed || !mc->layers[o].slot_in_flight[b]) && !mc->layers[o].is_stream[b]);   // -4: the ring claims it (cls_claim)
+            n += o == -1 || (landed && o == -4) || (o >= 0 && (landed || !mc->layers[o].slot_in_flight[b]) && !mc->layers[o].is_stream[b])   // -4: the ring claims it (cls_claim)
+               || o <= -5;   // a shadow's: given back at the next pass (cs_shadow_drop)
         }
         return n;
     }
@@ -10845,6 +10865,94 @@ void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched) {
         }
     }
 }
+// --moe staging=0, expert split: the cache layer a graph's part of layer pub on card dev reads n of the layer's experts from: the layer itself on its home card, else its
+// shadow there (made at the first ask, moe_cache::shadows); nullptr when dev has no class of the layer's shape or too few blocks of it for n experts (the caller keeps
+// those experts on the home card). The views are a same-class layer's on dev (they span every block of the class, the table decides); the table is the shadow's own.
+const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t dev, int64_t n) {
+    moe_cache * mc = g_cache;
+    if (!mc || !pub || !dev) { return nullptr; }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    size_t li = mc->layers.size();
+    for (size_t i = 0; i < mc->layers.size(); ++i) { if (&mc->layers[i].pub == pub) { li = i; } }
+    if (li == mc->layers.size() || mc->layers[li].pcls < 0) { return nullptr; }
+    layer_state & L = mc->layers[li];
+    int k = -1;
+    for (int c = 0; c < mc->n_links; ++c) { if (mc->link_dev[c] == dev) { k = c; } }
+    if (k < 0) { return nullptr; }
+    if (k == L.link) { return pub; }
+    auto it = mc->shadow_of.find({ li, k });
+    if (it == mc->shadow_of.end()) {
+        const auto & pa = mc->pool[L.pcls];
+        const auto same_t = [](const ggml_tensor * a, const ggml_tensor * b) { return a->type == b->type && a->ne[0] == b->ne[0] && a->ne[1] == b->ne[1]; };
+        const layer_state * twin = nullptr;
+        for (const auto & l : mc->layers) {
+            if (l.link != k || l.pcls < 0 || !same_t(l.pub.up_c, L.pub.up_c) || !same_t(l.pub.gate_c, L.pub.gate_c) || !same_t(l.pub.down_c, L.pub.down_c)) { continue; }
+            const auto & pb = mc->pool[l.pcls];
+            bool same = pb.B == pa.B;
+            for (int t = 0; t < 3; ++t) { same = same && pb.off[t] == pa.off[t] && pb.len[t] == pa.len[t] && pb.past[t] == pa.past[t]; }
+            if (same) { twin = &l; break; }
+        }
+        size_t ix = SIZE_MAX;
+        const int64_t E = ggml_nelements(L.pub.dev_table);
+        ggml_context * hctx = twin ? ggml_init({ ggml_tensor_overhead() + (size_t) E*sizeof(int32_t) + 64, nullptr, false }) : nullptr;   // the host table's data in the context
+        ggml_context * dctx = twin ? ggml_init({ ggml_tensor_overhead(), nullptr, true }) : nullptr;
+        ggml_tensor *  dt   = dctx ? ggml_new_tensor_2d(dctx, GGML_TYPE_I32, 1, E) : nullptr;
+        ggml_backend_buffer_t tb = dt ? ggml_backend_alloc_ctx_tensors_from_buft(dctx, ggml_backend_dev_buffer_type(dev)) : nullptr;
+        if (tb && hctx) {
+            mc->ctxs.push_back(hctx); mc->ctxs.push_back(dctx); mc->bufs.push_back(tb);
+            mc->shadows.emplace_back();
+            layer_state & sh = mc->shadows.back();
+            sh.pub            = L.pub;   // the host sources (the RAM pool's keys), il
+            sh.pub.up_c       = twin->pub.up_c;
+            sh.pub.gate_c     = twin->pub.gate_c;
+            sh.pub.down_c     = twin->pub.down_c;
+            sh.pub.n_slots    = twin->pub.n_slots;
+            sh.pub.dev_table  = dt;
+            sh.pub.host_table = ggml_new_tensor_2d(hctx, GGML_TYPE_I32, 1, E);
+            sh.pub.jit_n = 0; sh.pub.up_m = sh.pub.gate_m = sh.pub.down_m = nullptr; sh.pub.pred_w = sh.pub.pred_all = sh.pub.pred_mu = sh.pub.pred_q = nullptr;
+            ggml_format_name(dt, "moe_cache_tbl.%d.s%d", L.pub.il, k);
+            int32_t * h = (int32_t *) sh.pub.host_table->data;
+            for (int64_t e = 0; e < E; ++e) { h[e] = sh.pub.n_slots; }
+            const std::vector<int32_t> none((size_t) E, -1);
+            ggml_backend_tensor_set(dt, none.data(), 0, (size_t) E*sizeof(int32_t));
+            sh.link = k;
+            sh.pcls = twin->pcls;
+            for (int t = 0; t < 3; ++t) { sh.src_fd[t] = L.src_fd[t]; sh.src_dfd[t] = L.src_dfd[t]; sh.src_offs[t] = L.src_offs[t]; sh.rp_tab[t] = L.rp_tab[t]; }
+            const size_t nb = mc->pool[sh.pcls].owner.size();
+            sh.slot_expert.assign(nb, -1); sh.slot_in_flight.assign(nb, false); sh.is_stream.assign(nb, 0); sh.slot_last_use.assign(nb, 0);
+            sh.expert_slot.assign((size_t) E, -1); sh.cached_since.assign((size_t) E, 0); sh.sticky.assign((size_t) E, false); sh.dropped.assign((size_t) E, false);
+            sh.up_t.assign((size_t) E, 0); sh.up_cost.assign((size_t) E, 0.0f); sh.up_hits.assign((size_t) E, 0);
+            ix = mc->shadows.size() - 1;
+        } else {
+            if (hctx) { ggml_free(hctx); }
+            if (dctx) { ggml_free(dctx); }
+        }
+        static std::set<int> told;
+        if (told.insert(k * 1000000 + (ix == SIZE_MAX ? 1 : 0)).second) {
+            LLAMA_LOG_WARN("moe-cache: cstream expert split: layer %d %s on %s%s\n", L.pub.il, ix == SIZE_MAX ? "has no shadow" : "computes a range of its experts also",
+                    ggml_backend_dev_name(dev), ix != SIZE_MAX ? " (a shadow over the blocks of its class there; further layers alike)" :
+                    twin ? ": no memory for its table" : ": no class of its shape there (its experts stay on the home card)");
+        }
+        it = mc->shadow_of.emplace(std::make_pair(li, k), ix).first;
+    }
+    if (it->second == SIZE_MAX) { return nullptr; }
+    layer_state & sh = mc->shadows[it->second];
+    return pp_blocks(mc, sh, true) >= n ? &sh.pub : nullptr;   // cs_plan's last resort: blocks of the class besides the lend and the KV rows
+}
+// the graph being built computes experts [lo, hi) of a layer from part's blocks (the layer itself or a shadow from llama_moe_cache_cs_shadow_fork)
+void llama_moe_cache_cs_range_fork(const llama_moe_cache_layer_fork * part, int32_t lo, int32_t hi) {
+    moe_cache * mc = g_cache;
+    if (!mc || !part) { return; }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    size_t x = SIZE_MAX;
+    for (size_t i = 0; i < mc->layers.size()  && x == SIZE_MAX; ++i) { if (&mc->layers[i].pub == part)  { x = i; } }
+    for (size_t i = 0; i < mc->shadows.size() && x == SIZE_MAX; ++i) { if (&mc->shadows[i].pub == part) { x = mc->layers.size() + i; } }
+    if (x == SIZE_MAX) { return; }
+    const auto at = std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), x);
+    if (at == g_cs_order_graph.end()) { g_cs_order_graph.push_back(x); g_cs_rng_graph.push_back({ lo, hi }); }
+    else { g_cs_rng_graph[(size_t) (at - g_cs_order_graph.begin())] = { lo, hi }; }
+}
+
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
     if (mc && g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed)) {   // 2: the stream into the cache's blocks (cs_begin, cs_layer)
@@ -10863,7 +10971,10 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
                 // the ring takes blocks of the layer's class only: a layer's worth must be there besides the lend and the KV rows (cs_plan's last resort), or the layer stages
                 if (l.pcls < 0) { return off(3, "no size class"); }
                 if (const int64_t nb = pp_blocks(mc, l, true); nb < (int64_t) l.expert_slot.size()) { return off(4, "too few blocks in its class", nb, (int64_t) l.expert_slot.size()); }
-                if (std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), li) == g_cs_order_graph.end()) { g_cs_order_graph.push_back(li); }
+                if (std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), li) == g_cs_order_graph.end()) {
+                    g_cs_order_graph.push_back(li);
+                    g_cs_rng_graph.push_back({ 0, (int32_t) l.expert_slot.size() });   // every expert, unless the graph splits them over the cards (llama_moe_cache_cs_range_fork)
+                }
                 g_pp_cstream_graph = true;
                 return 2;
             }
@@ -10970,12 +11081,13 @@ static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool 
     const bool ok = cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
         const int32_t o = mc->pool[qc].owner[x];
         if (o == -1 || o == -4) { return true; }
-        if (o < 0) { return false; }
-        layer_state & lo = mc->layers[o];
+        const int64_t lx = cs_li_of(mc, o);   // a layer's or a shadow's
+        if (lx < 0) { return false; }
+        layer_state & lo = csl(mc, (size_t) lx);
         if (lo.slot_in_flight[x] || lo.is_stream[x]) { return false; }
         const int32_t e = lo.slot_expert[x];
         if (e < 0) { return true; }
-        const int32_t q = (size_t) o < mc->cs_pos.size() ? mc->cs_pos[o] : -1;
+        const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
         if (q < 0 || (!force && pinned(mc, lo, e))) { return false; }
         if ((size_t) q < mc->cs_done[lo.link]) { fd = true; return true; }
         return (size_t) q > p;
@@ -10983,18 +11095,51 @@ static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool 
     from_done = ok && fd;
     return ok;
 }
+// a shadow's expert in block b out of its table (no eviction counts: a shadow lives one pass)
+static void cs_unmap(moe_cache * mc, size_t lx, int32_t b) {
+    layer_state & sh = csl(mc, lx);
+    const int32_t e = sh.slot_expert[b];
+    if (e >= 0) { sh.expert_slot[e] = -1; sh.slot_expert[b] = -1; ((int32_t *) sh.pub.host_table->data)[e] = sh.pub.n_slots; }
+}
+static void cs_evict(moe_cache * mc, size_t lx, int32_t b) {   // the expert entry lx (layer or shadow) holds in block b out
+    if (lx < mc->layers.size()) { evict_slot(mc, mc->layers[lx], b); } else { cs_unmap(mc, lx, b); }
+}
 static void cls_claim(moe_cache * mc, int32_t pc, int32_t b) {   // cache lock held, after cls_claimable
     cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
         auto & qs = mc->pool[qc];
         const int32_t o = qs.owner[x];
         if (o == -4) { return true; }
         if (o >= 0) { evict_slot(mc, mc->layers[o], x); mc->layers[o].n_own--; }
+        else if (o <= -5) { cs_unmap(mc, (size_t) cs_li_of(mc, o), x); }
         else { auto it = std::find(qs.free.begin(), qs.free.end(), x); if (it != qs.free.end()) { qs.free.erase(it); } }
         qs.owner[x] = -4;
         return true;
     });
     mc->pool[pc].owner[b] = -1;
     mc->pool[pc].free.push_back(b);
+}
+// a pass's shadow blocks back to their class (cache lock held; what reads or writes them next waits for the last pass: the ring's uploads for cs_start_ev, a lend or a
+// zone move for the scheduler's sync): free in the class's home, another class's bytes again outside it (-4), as cls_home leaves them
+static void cs_shadow_drop(moe_cache * mc) {
+    if (mc->shadows.empty()) { return; }
+    for (auto & ps : mc->pool) {
+        for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+            if (ps.owner[b] > -5) { continue; }
+            const bool home = b >= ps.home_lo && b < ps.home_hi;
+            ps.owner[b] = home ? -1 : -4;
+            if (home) { ps.free.push_back(b); }
+        }
+    }
+    if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); for (auto & sh : mc->shadows) { g_gtbl.erase(&sh.pub); } }   // read again only behind the next pass's copy
+    for (auto & sh : mc->shadows) {
+        std::fill(sh.slot_expert.begin(), sh.slot_expert.end(), -1);
+        std::fill(sh.expert_slot.begin(), sh.expert_slot.end(), -1);
+        std::fill(sh.slot_in_flight.begin(), sh.slot_in_flight.end(), false);
+        sh.ring_slots.clear();
+        sh.ring_pending = false;
+        int32_t * h = (int32_t *) sh.pub.host_table->data;
+        for (int64_t e = 0; e < ggml_nelements(sh.pub.host_table); ++e) { h[e] = sh.pub.n_slots; }
+    }
 }
 // the end of a prompt call: every class back to its home blocks (the decode paths know no claims). First everything outside a home goes, then the homes are whole again.
 static void cls_home(moe_cache * mc) {   // cache lock held, no kernel running
@@ -11018,26 +11163,27 @@ static void cls_home(moe_cache * mc) {   // cache lock held, no kernel running
 }
 // why the ring finds too few blocks for the layer at position p: its class's blocks by state, the -4 ones by what lies under them (cache lock held)
 static std::string cs_why(moe_cache * mc, size_t p) {
-    const layer_state & ls = mc->layers[mc->cs_order[p]];
+    const layer_state & ls = csl(mc, mc->cs_order[p]);
     const auto & ps = mc->pool[ls.pcls];
     int n[8] = {};   // 0 free, 1 lent, 2 KV, 3 in flight/stream, 4 outside the pass/pinned, 5 waits for kernels, 6 takeable (empty, done, ahead), 7 claimable
     auto kind = [&](int32_t qc, int32_t x) {
         const int32_t o = mc->pool[qc].owner[x];
         if (o == -1 || o == -4) { return o == -1 ? 0 : 7; }
         if (o == -2) { return 1; }
-        if (o < 0)   { return 2; }
-        const layer_state & lo = mc->layers[o];
+        const int64_t lx = cs_li_of(mc, o);
+        if (lx < 0)  { return 2; }
+        const layer_state & lo = csl(mc, (size_t) lx);
         if (lo.slot_in_flight[x] || lo.is_stream[x]) { return 3; }
         const int32_t e = lo.slot_expert[x];
         if (e < 0) { return 6; }
-        const int32_t q = (size_t) o < mc->cs_pos.size() ? mc->cs_pos[o] : -1;
+        const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
         if (q < 0 || pinned(mc, lo, e)) { return 4; }
         return ((size_t) q < mc->cs_done[lo.link] || (size_t) q > p) ? 6 : 5;
     };
     int claim_bl[8] = {};
     std::set<int> outl;   // the layers outside the pass (or pinned) that hold blocks of the class
     for (int32_t b = 0; b < ps.n_active(); ++b) {
-        if (ps.owner[b] != -4) { const int k = kind(ls.pcls, b); n[k]++; if (k == 4) { outl.insert(mc->layers[ps.owner[b]].pub.il); } continue; }
+        if (ps.owner[b] != -4) { const int k = kind(ls.pcls, b); n[k]++; if (k == 4) { outl.insert(csl(mc, (size_t) cs_li_of(mc, ps.owner[b])).pub.il); } continue; }
         int worst = 7;
         cls_over(mc, ls.pcls, b, [&](int32_t qc, int32_t x) { const int k = kind(qc, x); if (k >= 1 && k <= 5) { worst = std::min(worst, k); } return true; });
         n[7] += worst == 7;
@@ -11053,17 +11199,19 @@ static std::string cs_why(moe_cache * mc, size_t p) {
 }
 static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done) {   // cache lock held
     const size_t li = mc->cs_order[p];
-    layer_state & ls = mc->layers[li];
+    layer_state & ls = csl(mc, li);
     out.clear();
     from_done = false;
-    std::vector<int32_t> want;
-    for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) { if (ls.expert_slot[e] < 0) { want.push_back(e); } }
+    std::vector<int32_t> want;   // the uncached experts of the entry's range (an expert split: the card's share of the layer)
+    const int32_t e0 = p < mc->cs_rng.size() ? std::max(0, mc->cs_rng[p].first) : 0;
+    const int32_t e1 = p < mc->cs_rng.size() ? std::min((int32_t) ls.expert_slot.size(), mc->cs_rng[p].second) : (int32_t) ls.expert_slot.size();
+    for (int32_t e = e0; e < e1; ++e) { if (ls.expert_slot[e] < 0) { want.push_back(e); } }
     if (want.empty()) { return true; }
     auto & ps = mc->pool[ls.pcls];
     if (ps.cs_up.size() < ps.owner.size()) { ps.cs_up.resize(ps.owner.size(), 0); }
     // A ring (user 2026-11-12: "evict past not future"; the staged stream's whole-layer copies, only the destination differs): the blocks in order from the class's write
     // cursor, so a layer lands in one run over what was written longest ago. Never a block of a layer uploaded for in this pass whose kernels are not queued yet.
-    struct cand { int tier; int32_t b, o; };
+    struct cand { int tier; int32_t b; int64_t o; };   // o: the entry (layer or shadow) holding the block, -1 none
     std::vector<cand> c;
     const int32_t nb = ps.n_active();
     if (ps.cs_cur >= nb) { ps.cs_cur = 0; }
@@ -11079,17 +11227,18 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
             if (cls_claimable(mc, ls.pcls, b, p, fd, force)) { c.push_back({ fd ? 6 : 5, b, -1 }); }
             continue;
         }
-        if (o < 0) { continue; }   // lent to a graph, under the KV rows
-        layer_state & lo = mc->layers[o];
+        const int64_t lx = cs_li_of(mc, o);   // a layer's or a shadow's
+        if (lx < 0) { continue; }   // lent to a graph, under the KV rows
+        layer_state & lo = csl(mc, (size_t) lx);
         if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
         const int32_t x = lo.slot_expert[b];
-        if (x < 0) { c.push_back({ 1, b, o }); continue; }   // the layer's, empty
-        const int32_t q = (size_t) o < mc->cs_pos.size() ? mc->cs_pos[o] : -1;
+        if (x < 0) { c.push_back({ 1, b, lx }); continue; }   // the layer's, empty
+        const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
         if (q < 0 || (!force && pinned(mc, lo, x))) { continue; }   // a layer outside the cstream graph (its path may read the block), a pinned expert
         if ((size_t) q < mc->cs_done[lo.link]) {   // computed in this pass: its done event is on its card's compute stream
-            c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, o });
+            c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, lx });
         } else if ((size_t) q > p) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert comes back when its turn comes
-            c.push_back({ 4, b, o });
+            c.push_back({ 4, b, lx });
         }
     }
     }
@@ -11101,7 +11250,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     for (size_t i = 0; i < want.size(); ++i) {
         const int32_t e = want[i], b = c[i].b;
         if (c[i].tier >= 5) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; }
-        else if (c[i].tier >= 2) { evict_slot(mc, mc->layers[c[i].o], b); }
+        else if (c[i].tier >= 2) { cs_evict(mc, (size_t) c[i].o, b); }
         from_done |= c[i].tier == 2 || c[i].tier == 3 || c[i].tier == 6;
         mc->cs_n_free += c[i].tier <= 1; mc->cs_n_cold += c[i].tier == 2; mc->cs_n_done += c[i].tier == 3; mc->cs_n_ahead += c[i].tier == 4;
         pool_take(mc, li, b);
@@ -11118,7 +11267,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         ls.up_hits[e] = 0;
         ps.cs_up[b] = mc->cs_pass;
         mc->up_bytes += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S;
-        pu_note(mc, li, ls.link, S, false);
+        pu_note(mc, li < mc->layers.size() ? li : (size_t) mc->cs_li[(size_t) ls.pub.il], ls.link, S, false);   // a shadow's under its layer
         out.push_back({ e, b });
     }
     mc->cs_n_up += want.size();
@@ -11128,12 +11277,12 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
 
 // the copies of a planned layer on its card's upload stream, its table, its ready event (no cache lock: the RAM pool's reads may take ms; only the scheduler thread runs it)
 static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, bool from_done, size_t done_at) {
-    layer_state & ls = mc->layers[li];
+    layer_state & ls = csl(mc, li);
     const int link = ls.link;
     ggml_backend_t rb = mc->ring_be[link];
     if (!mc->cs_started[link]) { ggml_backend_event_wait(rb, mc->cs_start_ev[link]); mc->cs_started[link] = true; }   // the last pass's kernels read the blocks and tables
     if (from_done && done_at > mc->cs_waited[link]) {   // the card's latest done event covers every layer of the card before it (one compute stream per card)
-        ggml_backend_event_wait(rb, mc->layers[mc->cs_order[done_at - 1]].cs_done_ev);
+        ggml_backend_event_wait(rb, csl(mc, mc->cs_order[done_at - 1]).cs_done_ev);
         mc->cs_waited[link] = done_at;
     }
     const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
@@ -11163,11 +11312,15 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
         mc->cs_n_cp++;
         i += n;
     }
-    // the layer's table, every pass (a block given to a later layer left an entry that is stale only for layers already computed); uncached and JIT pool experts are -1
+    // the layer's table, every pass (a block given to a later layer left an entry that is stale only for layers already computed); uncached and JIT pool experts are -1,
+    // and so are the experts outside the entry's range (an expert split: another card computes them; cs_end writes the whole table again)
     const int64_t nt = ggml_nelements(ls.pub.dev_table);
     int32_t *       snap = mc->cs_snap + ls.cs_snap_off;
     const int32_t * h    = (const int32_t *) ls.pub.host_table->data;
-    for (int64_t i = 0; i < nt; ++i) { snap[i] = h[i] >= ls.pub.n_slots ? -1 : h[i]; }
+    const int32_t   pq   = li < mc->cs_pos.size() ? mc->cs_pos[li] : -1;
+    const int64_t   r0   = pq >= 0 && (size_t) pq < mc->cs_rng.size() ? mc->cs_rng[(size_t) pq].first  : 0;
+    const int64_t   r1   = pq >= 0 && (size_t) pq < mc->cs_rng.size() ? mc->cs_rng[(size_t) pq].second : nt;
+    for (int64_t i = 0; i < nt; ++i) { snap[i] = h[i] >= ls.pub.n_slots || i < r0 || i >= r1 ? -1 : h[i]; }
     ggml_backend_tensor_set_async(rb, ls.pub.dev_table, snap, 0, (size_t) nt*sizeof(int32_t));
     if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[&ls.pub].assign(snap, snap + nt); }
     ggml_backend_event_record(ls.ring_ev, rb);
@@ -11193,22 +11346,33 @@ static void cs_begin(moe_cache * mc) {
     }
     mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = 0;
     mc->cs_order = g_cs_order_built;
-    mc->cs_pos.assign(mc->layers.size(), -1);
+    mc->cs_rng   = g_cs_rng_built;
+    if (mc->cs_rng.size() != mc->cs_order.size()) { mc->cs_rng.assign(mc->cs_order.size(), { 0, INT32_MAX }); }
+    cs_shadow_drop(mc);   // normally done at the lend already (llama_moe_cache_alias_fork)
+    mc->cs_pos.assign(mc->layers.size() + mc->shadows.size(), -1);
     int max_il = 0;
     for (const auto & l : mc->layers) { max_il = std::max(max_il, l.pub.il); }
     mc->cs_li.assign((size_t) max_il + 1, -1);
     for (size_t li = 0; li < mc->layers.size(); ++li) { if (mc->layers[li].pub.il >= 0) { mc->cs_li[(size_t) mc->layers[li].pub.il] = (int32_t) li; } }
-    if (!mc->cs_snap_buf) {
-        size_t n = 0;
-        for (auto & l : mc->layers) { l.cs_snap_off = n; n += l.pub.dev_table ? (size_t) ggml_nelements(l.pub.dev_table) : 0; }
+    size_t n_snap = 0;
+    for (auto & l : mc->layers)  { n_snap += l.pub.dev_table ? (size_t) ggml_nelements(l.pub.dev_table) : 0; }
+    for (auto & l : mc->shadows) { n_snap += (size_t) ggml_nelements(l.pub.dev_table); }
+    if (!mc->cs_snap_buf || n_snap > mc->cs_snap_n) {   // the first pass, or new shadows: room for every table
+        for (int k = 0; k < mc->n_links; ++k) { if (mc->ring_be[k]) { ggml_backend_synchronize(mc->ring_be[k]); } }   // the old snapshots' copies are done
+        if (mc->cs_snap_buf) { ggml_backend_buffer_free(mc->cs_snap_buf); }
         ggml_backend_buffer_type_t hb = mc->link_dev[0] ? ggml_backend_dev_host_buffer_type(mc->link_dev[0]) : nullptr;
-        mc->cs_snap_buf = hb ? ggml_backend_buft_alloc_buffer(hb, std::max<size_t>(n, 1)*sizeof(int32_t)) : nullptr;
+        mc->cs_snap_buf = hb ? ggml_backend_buft_alloc_buffer(hb, std::max<size_t>(n_snap, 1)*sizeof(int32_t)) : nullptr;
         GGML_ASSERT(mc->cs_snap_buf && "cstream: no pinned host memory for the table snapshots");
-        mc->cs_snap = (int32_t *) ggml_backend_buffer_get_base(mc->cs_snap_buf);
+        mc->cs_snap   = (int32_t *) ggml_backend_buffer_get_base(mc->cs_snap_buf);
+        mc->cs_snap_n = n_snap;
+        size_t off = 0;
+        for (auto & l : mc->layers)  { l.cs_snap_off = off; off += l.pub.dev_table ? (size_t) ggml_nelements(l.pub.dev_table) : 0; }
+        for (auto & l : mc->shadows) { l.cs_snap_off = off; off += (size_t) ggml_nelements(l.pub.dev_table); }
     }
     for (size_t p = 0; p < mc->cs_order.size(); ++p) {
-        layer_state & ls = mc->layers[mc->cs_order[p]];
+        layer_state & ls = csl(mc, mc->cs_order[p]);
         mc->cs_pos[mc->cs_order[p]] = (int32_t) p;
+        if (mc->cs_rng[p].first > 0 || mc->cs_rng[p].second < (int32_t) ls.expert_slot.size()) { mc->cs_masked = true; }
         if (!ls.ring_ev)    { ls.ring_ev    = ggml_backend_event_new(mc->link_dev[ls.link]); }
         if (!ls.cs_done_ev) { ls.cs_done_ev = ggml_backend_event_new(mc->link_dev[ls.link]); }
         GGML_ASSERT(ls.ring_ev && ls.cs_done_ev && ring_backend(mc, ls.link) && "cstream: no events or upload stream");
@@ -11244,21 +11408,29 @@ static void cs_begin(moe_cache * mc) {
 }
 
 // the split of cstream layer il is about to be queued on compute stream cbe (scheduler thread)
-static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il) {
+static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, bool shadow) {   // shadow: the part of layer il on cbe's card that is not its home (expert split)
     struct job { size_t li; std::vector<cs_cp> cps; bool from_done; size_t done_at; };
     std::vector<job> jobs;
     size_t li = 0;
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
-        if (il < 0 || (size_t) il >= mc->cs_li.size() || mc->cs_li[(size_t) il] < 0 || mc->cs_pos[(size_t) mc->cs_li[(size_t) il]] < 0) { return; }
+        if (il < 0 || (size_t) il >= mc->cs_li.size() || mc->cs_li[(size_t) il] < 0) { return; }
         li = (size_t) mc->cs_li[(size_t) il];
+        if (shadow) {
+            int sk = -1;
+            for (int c = 0; c < mc->n_links; ++c) { if (mc->link_dev[c] == ggml_backend_get_device(cbe)) { sk = c; } }
+            const auto it = mc->shadow_of.find({ li, sk });
+            if (it == mc->shadow_of.end() || it->second == SIZE_MAX) { return; }
+            li = mc->layers.size() + it->second;
+        }
+        if (li >= mc->cs_pos.size() || mc->cs_pos[li] < 0) { return; }
         const size_t p = (size_t) mc->cs_pos[li];
         mc->cs_n_hook++;
-        const int k = mc->layers[li].link;
+        const int k = csl(mc, li).link;
         size_t q = p;   // 1 + the position of this card's last layer before it (two cards: the layer before it may be the other card's, its event lives there)
-        while (q > 0 && mc->layers[mc->cs_order[q - 1]].link != k) { --q; }
+        while (q > 0 && csl(mc, mc->cs_order[q - 1]).link != k) { --q; }
         if (q > mc->cs_done[k] && ggml_backend_get_device(cbe) == mc->link_dev[k]) {   // the card's layers before it are queued on cbe: one event behind them
-            ggml_backend_event_record(mc->layers[mc->cs_order[q - 1]].cs_done_ev, cbe);
+            ggml_backend_event_record(csl(mc, mc->cs_order[q - 1]).cs_done_ev, cbe);
             mc->cs_done[k] = q;
         }
         // each card's ring runs ahead over its own layers (one cursor over all layers held card 1's uploads back until card 0's ring reached its last layers: on a layer
@@ -11269,13 +11441,13 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il) {
                 if ((pass == 0) != (c == k)) { continue; }
                 size_t & nx = mc->cs_next[c];
                 for (int n_other = 0; c == k || n_other < 1; ++n_other) {
-                    while (nx < mc->cs_order.size() && mc->layers[mc->cs_order[nx]].link != c) { ++nx; }
+                    while (nx < mc->cs_order.size() && csl(mc, mc->cs_order[nx]).link != c) { ++nx; }
                     if (nx >= mc->cs_order.size()) { break; }
                     job j { mc->cs_order[nx], {}, false, mc->cs_done[c] };
                     if (!cs_plan(mc, nx, j.cps, j.from_done)) {
                         if (c == k && nx <= p) {
                             GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts (the class must hold a layer's worth besides the lend and the KV rows): %s",
-                                    mc->layers[mc->cs_order[nx]].pub.il, cs_why(mc, nx).c_str());
+                                    csl(mc, mc->cs_order[nx]).pub.il, cs_why(mc, nx).c_str());
                         }
                         break;   // the next split frees the blocks of this layer
                     }
@@ -11286,7 +11458,7 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il) {
         }
     }
     for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
-    layer_state & ls = mc->layers[li];
+    layer_state & ls = csl(mc, li);
     ggml_backend_event_wait(cbe, ls.ring_ev);   // its experts and table before its kernels
     std::lock_guard<std::mutex> lock(mc->mtx);
     for (int32_t b : ls.ring_slots) { ls.slot_in_flight[b] = false; }
@@ -11297,7 +11469,7 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il) {
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
     if (g_pp_cstream_built && g_cache && ggml_graph_n_nodes(g) > 0) {
         const char * nm = ggml_get_name(ggml_graph_node(g, 0));
-        if (strncmp(nm, "ffn_moe_cs_slots-", 17) == 0) { cs_layer(g_cache, be, atoi(nm + 17)); }
+        if (strncmp(nm, "ffn_moe_cs_slots-", 17) == 0) { const char * d = strchr(nm + 17, '-'); cs_layer(g_cache, be, atoi(nm + 17), d && d[1] == 's'); }   // "-<il>-s": a shadow
     }
     if (g_cs_hook_next) { g_cs_hook_next(be, g, split_id, n_splits, uid); }
 }
@@ -11316,7 +11488,13 @@ static void cs_end(moe_cache * mc) {
             l.ring_slots.clear();
             l.ring_pending = false;
         }
+        cs_shadow_drop(mc);
         cls_home(mc);
+        if (mc->cs_masked) {   // device tables held only their pass's range of experts: every layer's goes out again from its host table
+            mc->cs_masked = false;
+            std::lock_guard<std::mutex> lk(g_tbl_mtx);
+            for (auto & l : mc->layers) { if (l.pub.dev_table && std::find(g_tbl_dirty.begin(), g_tbl_dirty.end(), &l.pub) == g_tbl_dirty.end()) { g_tbl_dirty.push_back(&l.pub); } }
+        }
     }
     flush_tables();
 }
@@ -11364,8 +11542,8 @@ void llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     size_t n_read = 0, n_bad = 0, n_bad_past = 0;
     int said = 0;
     std::lock_guard<std::mutex> lk(mc->mtx);
-    for (size_t li = 0; li < mc->layers.size(); ++li) {
-        const layer_state & ls = mc->layers[li];
+    for (size_t li = 0; li < mc->layers.size() + mc->shadows.size(); ++li) {   // the cstream shadows too: their blocks hold this pass's experts until the next lend
+        const layer_state & ls = csl(mc, li);
         const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
         const ggml_tensor * dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
         for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
@@ -15502,6 +15680,7 @@ bool llama_moe_cache_pred_train_now_fork() {
 static bool g_starved_built = false;
 bool llama_moe_cache_graph_reusable_fork() {
     g_cs_order_graph.clear();   // asked right before a graph is built or reused: what a reserve graph's build listed is not the next graph's
+    g_cs_rng_graph.clear();
     const bool starved = g_cache && g_cache->starved.load();
     return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built && starved == g_starved_built &&
            g_kv_epoch.load() == g_kv_epoch_built &&   // a moved KV zone: the old graph's views point at the old place
@@ -15533,6 +15712,8 @@ void llama_moe_cache_graph_built_fork() {
     g_pp_cstream_graph = false;
     g_cs_order_built.swap(g_cs_order_graph);
     g_cs_order_graph.clear();
+    g_cs_rng_built.swap(g_cs_rng_graph);
+    g_cs_rng_graph.clear();
 }
 
 namespace {
