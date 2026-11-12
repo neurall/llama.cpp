@@ -496,13 +496,13 @@ struct moe_cache {
     ggml_backend_t           link_be[MAX_LINKS]  = {}; // its compute backend (seen at the split callback): JIT uploads go on its stream
     ggml_backend_t           ring_be[MAX_LINKS]  = {}; // pp-ahead: its upload stream, beside the compute stream (ring_backend)
     // --moe pp-path=cstream (cs_begin, cs_layer): the running graph's cstream layers in order, layer -> position (-1 none), model layer number -> layer; per link the
-    // positions below cs_done[link] have their done event recorded (a card's compute stream runs only its own layers: one done chain per card), cs_next is the next
-    // position to upload for; the pass number; per link the compute stream at the pass start (the last pass read every block), whether the upload stream waits for it
-    // already, and up to which position it waits for done events
+    // positions below cs_done[link] have their done event recorded (a card's compute stream runs only its own layers: one done chain per card), cs_next[link] the next
+    // position of that card's layers to upload for (each card's ring runs ahead on its own: its blocks are its own); the pass number; per link the compute stream at
+    // the pass start (the last pass read every block), whether the upload stream waits for it already, and up to which position it waits for done events
     std::vector<size_t>      cs_order;
     std::vector<int32_t>     cs_pos, cs_li;
     size_t                   cs_done[MAX_LINKS] = {};
-    size_t                   cs_next = 0;
+    size_t                   cs_next[MAX_LINKS] = {};
     uint32_t                 cs_pass = 0;
     ggml_backend_event_t     cs_start_ev[MAX_LINKS] = {};
     bool                     cs_started[MAX_LINKS]  = {};
@@ -1191,6 +1191,7 @@ static void pu_note(const moe_cache * mc, size_t li, int link, double bytes, boo
 static std::atomic<bool> g_prompt_call{false};   // inside a decode call that is a prompt (llama_moe_cache_prompt_call_fork, set by llama_context::decode)
 static std::atomic<int64_t> g_mb_auto { 0 };       // outside a prompt call, the largest pass on the cache path: experts per layer / experts per token, the tokens that can touch them all
 static std::atomic<bool> g_pp_short{false};      // the lend of this prompt call left a layer fewer blocks than its pass may use: its passes leave the prompt chain
+static std::atomic<bool> g_pp_ns_redo{false};    // --moe staging=0: the graph being built refused the chain at a layer; it is built again for the call decided without the chain
 static std::atomic<uint32_t> g_pp_last_n{0}, g_pp_last_ub{0};   // the last decision's call (tokens, pass ceiling): decided again when the chain is refused after it
 static std::atomic<bool> g_pp_dec{false};        // this prompt call runs on the decode chain, misses may stay on the CPU (llama_moe_cache_pp_decide_fork)
 static uint32_t g_pp_chain_refused = UINT32_MAX;  // the chain's graph refused a pass of this size or more (a fact per pass size, not a bucket)
@@ -10884,10 +10885,12 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
         if (!mc->link_be[l.link] || pp_blocks(mc, l) < want) {
             static int n_log = 0;
             if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt chain refused: layer %d has %lld blocks, wants %lld\n", pub->il, (long long) pp_blocks(mc, l), (long long) want); }
-            // --moe staging=0: never the stream. The call becomes the decode chain from this layer on (its CPU computes what finds no block; layers built before keep
-            // the chain, they had their blocks), and the size leaves the chain for good, as a refusal the stream ran for does after the call
+            // --moe staging=0: this graph finishes as the decode chain (it never runs), then the call is decided again without the chain and the graph built again
+            // (llama_moe_cache_pp_short_fork): the stream into the blocks. The size leaves the chain for good, as a refusal the stream ran for does after the call.
+            // Before the cstream ring the decode chain ran here: Qwen3.8 12k, 2 x 3090, first request 13.1 s for a 5408-token pass against 5.1 s streamed (2026-11-12)
             if (pp_no_staging()) {
                 g_pp_dec = true;
+                g_pp_ns_redo = true;
                 g_pp_chain_refused = std::min(g_pp_chain_refused, (uint32_t) n_tokens);
                 return 0;
             }
@@ -11226,9 +11229,9 @@ static void cs_begin(moe_cache * mc) {
             flush_tables();   // no kernel runs: the device tables say "uncached" before the layer's path reads them
         }
     }
-    mc->cs_next = 0;
     mc->cs_pass++;
     for (int k = 0; k < mc->n_links; ++k) {
+        mc->cs_next[k]    = 0;
         mc->cs_done[k]    = 0;
         mc->cs_started[k] = false;
         mc->cs_waited[k]  = 0;
@@ -11258,18 +11261,28 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il) {
             ggml_backend_event_record(mc->layers[mc->cs_order[q - 1]].cs_done_ev, cbe);
             mc->cs_done[k] = q;
         }
-        while (mc->cs_next < mc->cs_order.size()) {
-            job j { mc->cs_order[mc->cs_next], {}, false, mc->cs_done[mc->layers[mc->cs_order[mc->cs_next]].link] };
-            const bool last = mc->cs_next <= p;
-            if (!cs_plan(mc, mc->cs_next, j.cps, j.from_done)) {
-                if (last) {
-                    GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts (the class must hold a layer's worth besides the lend and the KV rows): %s",
-                            mc->layers[mc->cs_order[mc->cs_next]].pub.il, cs_why(mc, mc->cs_next).c_str());
+        // each card's ring runs ahead over its own layers (one cursor over all layers held card 1's uploads back until card 0's ring reached its last layers: on a layer
+        // split card 1's link started 0.5 s before its turn, Qwen3.8 12k 2 x 3090, 2026-11-12). This card's first, as far as its blocks allow; another card's one layer
+        // per call, so a layer whose experts the RAM pool still reads from the SSD does not hold this card's next split back for long
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int c = 0; c < mc->n_links; ++c) {
+                if ((pass == 0) != (c == k)) { continue; }
+                size_t & nx = mc->cs_next[c];
+                for (int n_other = 0; c == k || n_other < 1; ++n_other) {
+                    while (nx < mc->cs_order.size() && mc->layers[mc->cs_order[nx]].link != c) { ++nx; }
+                    if (nx >= mc->cs_order.size()) { break; }
+                    job j { mc->cs_order[nx], {}, false, mc->cs_done[c] };
+                    if (!cs_plan(mc, nx, j.cps, j.from_done)) {
+                        if (c == k && nx <= p) {
+                            GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts (the class must hold a layer's worth besides the lend and the KV rows): %s",
+                                    mc->layers[mc->cs_order[nx]].pub.il, cs_why(mc, nx).c_str());
+                        }
+                        break;   // the next split frees the blocks of this layer
+                    }
+                    jobs.push_back(std::move(j));
+                    nx++;
                 }
-                break;   // the next split frees the blocks of this layer
             }
-            jobs.push_back(std::move(j));
-            mc->cs_next++;
         }
     }
     for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
@@ -11409,11 +11422,17 @@ bool llama_moe_cache_pp_chain_takes_fork(int64_t n_tokens) {
 void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
 bool llama_moe_cache_pp_short_fork() {
     moe_cache * mc = g_cache;
-    if (!mc || !g_pp_built) {
+    std::string refused;
+    if (mc && g_pp_ns_redo.exchange(false)) {   // --moe staging=0: a layer refused the chain while the graph was built (llama_moe_cache_pp_chain_fork)
+        g_pp_short = true;
+        g_pp_built = false;
+        g_pp_dec   = false;
+        refused = "prompt chain: a layer has fewer blocks than the pass may use (--moe staging=0): the call is decided again without the chain";
+    }
+    if (!mc || (!g_pp_built && refused.empty())) {
         return false;
     }
-    std::string refused;
-    {
+    if (refused.empty()) {
         std::lock_guard<std::mutex> lock(mc->mtx);
         for (auto & l : mc->layers) {
             if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want) && !moe_opt("pp-off")) {   // --moe pp-off: misses go to the miss device, the chain is not short of blocks
@@ -13630,7 +13649,7 @@ void llama_moe_cache_prompt_call_fork(bool on) {
     if (!on) { g_pp_cstream_call = false; }
     g_prompt_call.store(on, std::memory_order_relaxed);
     g_pp_dec = false;
-    if (on) { g_pp_short = false; } else { ggml_backend_pred_set_fork(0.0); }
+    if (on) { g_pp_short = false; g_pp_ns_redo = false; } else { ggml_backend_pred_set_fork(0.0); }
     if (on && g_cache) {
         for (int k = 0; k < g_cache->n_links; ++k) {
             if (g_cache->link_dev[k]) { ggml_backend_set_link_rate_fork(g_cache->link_dev[k], g_cache->gbs_link[k]); }
@@ -13647,8 +13666,10 @@ int64_t llama_moe_cache_max_batch_fork() {
         return 1;
     }
     if (g_prompt_call.load(std::memory_order_relaxed) && pp_chain_on()) {   // a prompt call: the prompt chain, as far as it pays; none once the lend left it too few blocks
-        // a short chain (the lend left a layer too few blocks) leaves the cache path, unless the call was decided again for the decode chain: it was built as the stream
-        return g_pp_short.load(std::memory_order_relaxed) && !g_pp_dec.load(std::memory_order_relaxed) ? 0 : mb_fixed() >= 0 ? mb_fixed() : g_pp_mb.load(std::memory_order_relaxed);
+        // a short chain (the lend left a layer too few blocks) leaves the cache path, unless the call was decided again for the decode chain or the stream into the
+        // blocks (--moe staging=0): it was built as the stream
+        return g_pp_short.load(std::memory_order_relaxed) && !g_pp_dec.load(std::memory_order_relaxed) && !g_pp_cstream_call.load(std::memory_order_relaxed)
+             ? 0 : mb_fixed() >= 0 ? mb_fixed() : g_pp_mb.load(std::memory_order_relaxed);
     }
     if (mb_fixed() >= 0) {
         // with the prompt chain a fixed limit is the prompts' limit: other passes (a reserve, a pass with many outputs) keep the decode chain's own, or a test's forced chain would
