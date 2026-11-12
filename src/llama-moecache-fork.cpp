@@ -1227,6 +1227,7 @@ static bool pp_no_staging() {
 // uploads of the whole model (Qwen3.8 on 2 x 8 GiB: the two-layer reserve 2296 MiB cut the pass to 4032 tokens, staged ran 6860). 1: whole layers.
 static std::atomic<int> g_cs_n{0};   // the chunk count in force (cs_apply: a call's pick, or the one between prompt calls); 0 before the first prompt call
 static int g_cs_n_built = 0;         // the chunk count the last graph was built with (a stream graph's parts follow it)
+static std::atomic<bool> g_cs_measure{false};   // a start-up measure-only reserve builds the stream into the blocks (llama_moe_cache_measure_stream_fork)
 static std::atomic<bool> g_cs_pick_held{false};   // the chunk count is picked for the call in flight (the server's plan, or the call's first decision): kept until the call ends
 static int cs_forced() {   // --moe cs-chunks=N: every call; 0: picked per call (cs_pick)
     static const int n = [] { const char * e = moe_opt("cs-chunks"); return e ? std::max(1, std::min(64, atoi(e))) : 0; }();
@@ -11085,7 +11086,7 @@ void llama_moe_cache_cs_range_fork(const llama_moe_cache_layer_fork * part, int3
 
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
-    if (mc && g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed)) {   // 2: the stream into the cache's blocks (cs_begin, cs_layer)
+    if (mc && ((g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed)) || g_cs_measure.load(std::memory_order_relaxed))) {   // 2: the stream into the cache's blocks (cs_begin, cs_layer)
         static std::set<std::pair<int, int>> told;   // (layer, reason) logged once: the planner explains what stays off the ring
         auto off = [&](int why, const char * txt, int64_t a = 0, int64_t b = 0) {
             if (told.insert({ pub->il, why }).second) { LLAMA_LOG_WARN("moe-cache: cstream: layer %d stays off the ring: %s (%lld of %lld)\n", pub->il, txt, (long long) a, (long long) b); }
@@ -14003,6 +14004,7 @@ void llama_moe_cache_prompt_call_fork(bool on) {
 }
 
 int64_t llama_moe_cache_max_batch_fork() {
+    if (g_cs_measure.load(std::memory_order_relaxed)) { return (int64_t) 1 << 30; }   // the measured pass takes the cache's blocks whatever its size
     const int64_t p = g_mb_probe.load(std::memory_order_relaxed);
     if (p >= 0) {
         return p;
@@ -15949,6 +15951,16 @@ void llama_moe_cache_free_fork() {
 
 bool llama_moe_cache_pred_train_now_fork() {
     return g_pred_train_now;
+}
+
+// --moe staging=0: the start-up fit of the micro-batch (llama_context::sched_reserve, fit_ub) measures the graph a prompt pass builds, the stream into the cache's
+// blocks. It measured a call outside a prompt: the plain expert path, whose host weights the scheduler counts as inputs of the graph (a layer's experts, 1.1 to 1.7 GiB
+// on Qwen3.8): 3426 MiB for 4704 tokens where the pass lends 1.9 GiB. Those sizes capped the micro-batch and, kept as the largest seen per size, every pass of the
+// session: a 13.7k prompt on 2 x 8 GiB ran 4 passes where the pools hold 2 (2026-11-12). on: before the measure-only reserves; off: after them, the graph flags reset.
+void llama_moe_cache_measure_stream_fork(bool on) {
+    if (!g_cache || !pp_no_staging()) { return; }
+    g_cs_measure.store(on, std::memory_order_relaxed);
+    if (!on) { g_pp_cstream_graph = false; g_cs_order_graph.clear(); g_cs_rng_graph.clear(); }
 }
 
 static bool g_starved_built = false;

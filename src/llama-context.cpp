@@ -70,6 +70,7 @@ void     llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_token
 void     llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
 void     llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub);   // the pass size decided after the path: the path's features follow it
 void     llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes);   // src/llama-moecache-fork.cpp: a load-time measure-only reserve is a measured graph size for the pass planner
+void     llama_moe_cache_measure_stream_fork(bool on);   // src/llama-moecache-fork.cpp: --moe staging=0, the measure-only reserves of fit_ub build the stream into the cache's blocks
 size_t   llama_moe_cache_graph_scratch_fork(ggml_backend_sched_t sched, ggml_backend_dev_t dev);   // src/llama-moecache-fork.cpp: the computed CUDA scratch of the graph the scheduler split last, on dev's pool
 uint32_t llama_dsplit_pass_size_fork(uint32_t cap);   // the full pass of the split: the fastest card takes the limit
 uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub);
@@ -1751,6 +1752,7 @@ void llama_context::sched_reserve() {
         int probes = 0;
         auto fits = [&](uint32_t u) {
             std::fill(s.begin(), s.end(), 0);
+            llama_moe_cache_measure_stream_fork(true);    // --moe staging=0: the graph of a prompt pass, not a plain call's (whose host experts count as graph inputs)
             ggml_cgraph * mg = graph_reserve(u, n_seqs, n_seqs, mctx.get(), true, s.data());
             probes++;
             list_top(mg, u);
@@ -1769,6 +1771,7 @@ void llama_context::sched_reserve() {
             if (mg) {
                 for (const auto & [i, d] : gi) { s[i] += llama_moe_cache_graph_scratch_fork(sched.get(), d); }   // the reserve's splits are still in the scheduler
             }
+            llama_moe_cache_measure_stream_fork(false);   // behind the scratch: it is computed from the reserve's splits
             for (const auto & [i, d] : gi) { llama_moe_cache_note_graph_fork(d, u, s[i]); }
             for (const auto & [i, d] : gi) { if (s[i] > llama_moe_cache_alias_room_fork(d, u)) { return false; } }
             return true;
