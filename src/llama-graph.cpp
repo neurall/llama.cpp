@@ -3811,7 +3811,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // cstream part: the card's chain over its blocks. Its table holds only its range (-1 elsewhere: those rows are zeroed and skipped), so it reads every token's ids;
         // the table read starts the part's split, where cs_split_cb waits for the card's uploads ("-s": a shadow of the layer on that card)
         auto cs_chain = [&](const split_part & pt, ggml_tensor * x) {
-            ggml_tensor * sl = ggml_get_rows(ctx0, pt.pc->dev_table, cs_ids);
+            // every op on the part's card (the expert chain pins through mm_id_backend): left free, a shadow's matmul ran beside its input and the scheduler
+            // copied the whole class view there as an input (Qwen3.8 staging=0: an 8657 MiB graph at 3168 tokens against 3904 lent, passes cut to 384)
+            auto pin = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, pt.b); return t; };
+            ggml_tensor * sl = pin(ggml_get_rows(ctx0, pt.pc->dev_table, cs_ids));
             ggml_format_name(sl, pt.pc == mcache ? "ffn_moe_cs_slots-%d" : "ffn_moe_cs_slots-%d-s", il);
             sl = ggml_reshape_2d(ctx0, sl, n_expert_used, n_tokens);
             auto mm = [&](ggml_tensor * w, ggml_tensor * in) {
@@ -3819,11 +3822,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 m->op_params[1] = 1;   // zero first: the ids of the other cards' ranges are -1
                 m->src[3] = selected_experts;
                 m->src[4] = pt.pc->dev_table;
-                return m;
+                return pin(m);
             };
             ggml_tensor * up_t   = mm(pt.pc->up_c,   x);
             ggml_tensor * gate_t = mm(pt.pc->gate_c, x);
-            return mm(pt.pc->down_c, mc_act(gate_t, up_t));
+            return mm(pt.pc->down_c, pin(mc_act(gate_t, up_t)));
         };
         std::vector<ggml_tensor *> partial(parts.size());
         for (size_t i = 0; i < parts.size(); ++i) {
