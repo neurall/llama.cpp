@@ -1894,6 +1894,15 @@ struct dsplit_zw {
     std::string src;                       // where k came from (the log)
 };
 dsplit_zw g_zw;
+// --moe staging=0 with no experts shared out by the split: the stream into the cache's blocks runs every layer's experts on its home card for every token, so the
+// cards take turns at the experts and neither is the one the pass waits for: the pass is shortest when the cards' dense chains end together (factor 1). The
+// zero-wait rule's 0.75 start and its drop at every wait of the expert card are for a card that computes every expert (GLM 3.0 12k, staging=0: the expert card
+// waited 2.1 s with the helper's chain at 61% of its window and 4.2 s at 128%, both read as caused by the tokens: the factor fell 0.75, 0.68, 0.61 and the
+// helper's tokens went 42%, 54%, then 36%; passes of 16.9 s at 42% and 16.5 s at 54%, 200 W a card).
+static bool dsplit_zw_turns() {
+    static const bool ns = [] { const char * e = llama_moe_get_opt("staging"); return e && atoi(e) == 0; }();
+    return ns && llama_dsplit_experts_mode_fork() != 1;
+}
 bool dsplit_zw_pieces() {   // --moe split-pieces=1: each range's experts as their own op, the expert card's own range first
     static const bool on = [] { const char * e = llama_moe_get_opt("split-pieces"); return e && atoi(e) != 0; }();
     return on;
@@ -1940,7 +1949,7 @@ std::vector<double> dsplit_zw_shares(const std::vector<ggml_backend_dev_t> & dev
         // 0.75: measured (GLM 3.0 64k, 2026-11-08): a start of 1.0 with the drop below held off (chains under 105% of the window) kept the share at 0.52 and
         // the expert card waiting 19-26% of every pass, 628 prompt tokens/s against 748 with this start and the drop at every wait. The expert card's wait is
         // the pass's cost, the helper's idle time is free: the factor drifts down until the wait is near its floor.
-        g_zw.f.assign(dev.size(), 0.75);
+        g_zw.f.assign(dev.size(), dsplit_zw_turns() ? 1.0 : 0.75);
         g_zw.hist.assign(dev.size(), {});
         std::vector<double> stored_k;   // the k an earlier run of this model on these cards measured: it replaces the start-of-server estimate
         std::string v;
@@ -2005,6 +2014,7 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
     double w_home = 0.0;
     for (size_t i = 0; i < x; ++i) { if (i < B.f_run.size() && B.f_run[i] <= 0.0 && i < B.m.size()) { w_home += B.m[i]; } }
     const double w = std::max(0.0, (detail && x < B.xw.size() ? B.xw[x] : B.wd[x]) - w_home);
+    const bool turns = w_home > 0.0;   // measured: the cards took turns at whole layers' experts (dsplit_zw_turns): the chains are to end together, whatever the wait
     const double window = w_x * (double) B.tok[x] / 1e3;   // ms of the expert card's own work the other cards' chains run beside
     const std::vector<double> f0 = g_zw.f;
     // f is the target of a card's chain as a share of the expert card's window (k is measured every pass, so f x k x the expert card's tokens gives that share).
@@ -2023,10 +2033,12 @@ void dsplit_zw_step(const dsplit_bal & B, int64_t T) {
     std::string fx;
     for (size_t i = 0; i < x; ++i) {
         if (B.tok[i] <= 0) { continue; }   // no range this pass: its factor stays
-        const bool late = waited && window > 0.0 && chain[i] / window >= 0.9 * worst;
-        if (late) { g_zw.f[i] = std::max(0.05, g_zw.f[i] * 0.9); }
-        else      { g_zw.f[i] = std::min(1.0, g_zw.f[i] * 1.05); }
-        fx += format("%s %s %.2f -> %.2f%s", fx.empty() ? "" : ",", ggml_backend_dev_name(B.dev[i]), f0[i], g_zw.f[i], late ? " (waited for)" : "");
+        const bool late = !turns && waited && window > 0.0 && chain[i] / window >= 0.9 * worst;
+        if (turns)     { g_zw.f[i] = 1.0; }
+        else if (late) { g_zw.f[i] = std::max(0.05, g_zw.f[i] * 0.9); }
+        else           { g_zw.f[i] = std::min(1.0, g_zw.f[i] * 1.05); }
+        fx += format("%s %s %.2f -> %.2f%s", fx.empty() ? "" : ",", ggml_backend_dev_name(B.dev[i]), f0[i], g_zw.f[i],
+                turns ? " (the cards take turns at the experts: the dense chains are to end together)" : late ? " (waited for)" : "");
     }
     g_zw.k = k;
     g_zw.measured = true;
