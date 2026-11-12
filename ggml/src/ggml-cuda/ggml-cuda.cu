@@ -9057,11 +9057,25 @@ static void ggml_backend_cuda_thread_sync_fork() {
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
+// fork: the cuBLAS handles (each with its workspace) of every stream a graph's parallel branches run on, made before the MoE pool reads the free VRAM: streams 0..3
+// (ggml_backend_cuda_graph_optimize fans out to 3 branches). Made in the first prompt pass instead, they found the pool's ~95 MiB margin gone: "the resource allocation
+// failed ... cublasCreate_v2" (Qwen3.8 IQ3_S, 2 x 3090, 2026-11-12). shortcut: 3 is that function's max_fan_out, raise both together.
+static void ggml_backend_cuda_warm_cublas_fork(ggml_backend_t backend) {
+    if (!backend || !ggml_backend_is_cuda(backend)) { return; }
+    auto * ctx = (ggml_backend_cuda_context *) backend->context;
+    const int saved = ctx->curr_stream_no;
+    for (int s = 0; s <= 3; ++s) { ctx->curr_stream_no = s; (void) ctx->cublas_handle(); }
+    ctx->curr_stream_no = saved;
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     // fork: the core asks for hooks by the neutral name ggml_backend_fork_<x> (src/llama-backend-fork.h); here they are the ggml_backend_cuda_<x> functions
     if (strncmp(name, "ggml_backend_fork_", 18) == 0) {
         const std::string cuda_name = std::string("ggml_backend_cuda_") + (name + 18);
         return ggml_backend_cuda_reg_get_proc_address(reg, cuda_name.c_str());
+    }
+    if (strcmp(name, "ggml_backend_cuda_warm_cublas_fork") == 0) {
+        return (void *)ggml_backend_cuda_warm_cublas_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_last_oom_fork") == 0) {
         return (void *)ggml_backend_cuda_last_oom_fork;

@@ -4137,6 +4137,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             }
         }
         llama_moe_cache_kv_tail_detach_fork();   // --moe kv-tail=1: the KV records' small buffers go back to the card before the pool is sized
+        for (auto & be : backends) {   // every stream's cuBLAS handle before the pool reads the free VRAM (ggml_backend_cuda_warm_cublas_fork)
+            ggml_backend_dev_t d = ggml_backend_get_device(be.get());
+            ggml_backend_reg_t r = d ? ggml_backend_dev_backend_reg(d) : nullptr;
+            if (auto warm = r && ggml_backend_dev_is_gpu(d) ? (void (*)(ggml_backend_t)) ggml_backend_reg_get_proc_address(r, "ggml_backend_cuda_warm_cublas_fork") : nullptr) { warm(be.get()); }
+        }
         llama_moe_cache_init_fork(model, cparams.moe_cache_slots, cparams.moe_cache_inserts, cparams.prefetch_experts_slots < 0 ? 3 : cparams.prefetch_experts_slots, cparams.moe_cache_window,
                 cparams.moe_predict, cparams.moe_predict_train);
         if (alias) {
