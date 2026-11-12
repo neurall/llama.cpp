@@ -5788,6 +5788,7 @@ static void poison_free_blocks(moe_cache * mc, const moe_cache::alias_pool & ap)
     }
 }
 
+static std::map<int32_t, size_t>::const_iterator need_exact(const moe_cache::alias_pool & ap, int32_t n_tokens);   // below
 static bool kv_layout(moe_cache * mc, moe_cache::alias_pool & ap, size_t h, size_t l, size_t cells, bool dry, size_t lend_min = 0) {
     if (!dry) { ap.refused_b = 0; }   // the zone is laid out again: an earlier refusal no longer holds
     const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
@@ -5925,7 +5926,7 @@ static bool kv_tail_plan(moe_cache * mc, size_t plan_extra, bool reset_plan, boo
         size_t lr = ap.kv_start;
         size_t lend_min = kv_lend_round(ap, ap.dec_need);   // the least any graph borrows (a decode graph's, measured): the zone may go back down to here
         if (n_tokens > 0) {
-            const auto it = ap.need_tok.find(n_tokens);
+            const auto it = need_exact(ap, n_tokens);   // (not a start-up estimate once graphs that ran rule: its lend would push the zone past what the pass leaves)
             if (it != ap.need_tok.end()) {
                 const size_t nb = kv_lend_round(ap, need_at_cells(ap, n_tokens, it->second, eff));
                 lr = std::max(lr, nb); lend_min = std::max(lend_min, nb);
@@ -6228,12 +6229,34 @@ const char * llama_moe_cache_kv_arena_unplaced_fork() {
 // cells, as pp_cap_to_pool fits them), else what a decode graph borrows, plus three blocks (two stay the experts', one for the rounding). With quantized K/V the lend
 // grows with the cells (kv_lend_pc, the attention's f16 copies): this is the lend extrapolated to no cells, the growth is charged per cell (kv_prompt_cells). The KV
 // limit for prompts (find_slot), the tier capacities (kv-fit) and the "fits" line of a request all use it, so they cannot disagree.
+// The measured graph sizes every fit reads (64 tokens and more, at `cells`), one rule for all of them. --moe staging=0: once a prompt-sized pass ran (512 tokens
+// or more), only graphs that ran. The start-up estimates are measure-only reserves whose masks cover a growth step of cells: 0.61 MiB per token where the passes
+// lend 0.42 (Qwen3.8, 2 x 8 GiB, 2026-11-12); a line through one estimate and one real size gave 0.89 MiB per token, and find_slot refused a 6656-token pass the
+// pool holds ("n_tokens = 6656 > size = 0"). Staged calls keep the mixed points: their gate rows were measured with them.
+static bool need_real_only(const moe_cache::alias_pool & ap) {
+    if (!pp_no_staging()) { return false; }
+    for (const auto & kv : ap.need_tok) { if (kv.first >= 512 && !ap.need_est.count(kv.first)) { return true; } }
+    return false;
+}
+static std::vector<std::pair<int32_t, size_t>> need_pts(const moe_cache::alias_pool & ap, size_t cells) {
+    const bool real = need_real_only(ap);
+    std::vector<std::pair<int32_t, size_t>> pts;
+    for (const auto & kv : ap.need_tok) {
+        if (kv.first >= 64 && !(real && ap.need_est.count(kv.first))) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells) }); }
+    }
+    return pts;
+}
+// the size measured for exactly n tokens, or need_tok.end() (an estimate does not count once real sizes rule)
+static std::map<int32_t, size_t>::const_iterator need_exact(const moe_cache::alias_pool & ap, int32_t n_tokens) {
+    const auto it = ap.need_tok.find(n_tokens);
+    return it != ap.need_tok.end() && ap.need_est.count(n_tokens) && need_real_only(ap) ? ap.need_tok.end() : it;
+}
+
 static size_t kv_prompt_lend0(const moe_cache::alias_pool & ap) {
     const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
     size_t cells = 0;
     for (auto & q : ap.kvt) { if (!q.fixed) { cells = std::max(cells, q.rows ? q.rows() : 0); } }
-    std::vector<std::pair<int32_t, size_t>> pts;
-    for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells) }); } }
+    const std::vector<std::pair<int32_t, size_t>> pts = need_pts(ap, cells);
     const size_t dpc = ap.kv_lend_pc_dec * ap.dec_cells;
     size_t lend = ap.dec_need > dpc ? ap.dec_need - dpc : 0;   // no prompt graph seen yet: a decode graph's (measured)
     if (!pts.empty()) {
@@ -6925,10 +6948,10 @@ size_t llama_moe_cache_kv_tail_cap_n_fork(void * owner, uint32_t n_tokens) {
             auto lend_at = [&](size_t c) -> size_t {
                 // a size measured as this very pass size: the layout (kv_tail_plan) lends exactly that, so the fit must too (OLMoE 1900-token prompt retried with 512: the line
                 // through the two largest sizes gave less than the 121.6 MiB the 512 graph borrows, the zone was cut to 1481 under a read of 1536 cells)
-                const auto ex = ap.need_tok.find((int32_t) n_tokens);
+                const auto ex = need_exact(ap, (int32_t) n_tokens);
                 if (ex != ap.need_tok.end()) { return kv_lend_round(ap, need_at_cells(ap, ex->first, ex->second, c)); }
-                std::vector<std::pair<int32_t, size_t>> pts;
-                for (const auto & kv : ap.need_tok) { if (kv.first >= 64) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, c) }); } }
+                const std::vector<std::pair<int32_t, size_t>> pts = need_pts(ap, c);
+                if (pts.empty()) { return kv_lend_round(ap, ap.dec_need); }
                 double a = 0.0, b = 0.0;
                 const auto & p1 = pts.back();
                 if (pts.size() >= 2 && pts[pts.size() - 2].first != p1.first && p1.second > pts[pts.size() - 2].second) {
@@ -14588,16 +14611,8 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     };
     if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
-    // --moe staging=0: once a prompt-sized pass ran (512 tokens or more), only graphs that ran count. The start-up estimates are measure-only reserves whose masks
-    // cover a growth step of cells: 0.61 MiB per token where the passes lend 0.42 (Qwen3.8, 2 x 8 GiB, 2026-11-12), and the line through both kinds capped the
-    // passes of every later call by the estimates. (Staged calls keep the mixed fit: their gate rows were measured with it.)
-    bool ran = false;
-    for (const auto & kv : ap.need_tok) { ran = ran || (kv.first >= 512 && !ap.need_est.count(kv.first)); }
-    const bool real_only = ran && pp_no_staging();
-    std::vector<std::pair<int32_t, size_t>> pts;
-    for (const auto & kv : ap.need_tok) {
-        if (kv.first >= 64 && !(real_only && ap.need_est.count(kv.first))) { pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second, cells_end) }); }
-    }
+    const bool real_only = need_real_only(ap);   // (need_pts: the start-up estimates leave the fit once a prompt-sized pass ran)
+    const std::vector<std::pair<int32_t, size_t>> pts = need_pts(ap, cells_end);
     if (pts.empty()) { return seeded(); }
     // graph bytes = a + b x tokens, the least-squares line through every measured size (at the cells this call ends at). Not the line through the two largest
     // sizes: two passes of nearly the same size (GLM 3.0: 8995 and 8973 tokens) gave a slope of noise, negative, and the fallback (all bytes per token, a = 0)
