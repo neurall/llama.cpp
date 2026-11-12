@@ -35,7 +35,9 @@
 #include <sstream>
 
 int  llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used);   // src/llama-moecache-fork.cpp: the prompt chain
-const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t dev, int64_t n);   // the same: --moe staging=0 expert split
+const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t dev, int64_t n, int chunk);
+int llama_moe_cache_cs_chunks_fork();                                             // --moe cs-chunks: a layer's experts in that many parts per card
+int llama_moe_cache_cs_shadow_ix_fork(const llama_moe_cache_layer_fork * part);   // a part's shadow index, -1: the layer itself   // the same: --moe staging=0 expert split
 void llama_moe_cache_cs_range_fork(const llama_moe_cache_layer_fork * part, int32_t lo, int32_t hi);
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
 bool llama_moe_cache_pp_pred_want_fork(int64_t n_tokens);   // the prompt chain's fetch list: the next layers' router logits come to the host in this pass
@@ -3511,7 +3513,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // (1 - alpha) * [fastest link] + alpha * (link GB/s / sum), alpha measured by the MoE cache's prefill tuner
     // (1 = all GPUs by bandwidth, 0 = fastest only) or fixed by LLAMA_PREFILL_SPLIT
     // pc: --moe staging=0 (cstream): the cache layer whose blocks on the part's card hold its experts (the layer on its home card, a shadow of it on another card)
-    struct split_part { ggml_backend_t b; double gbs; int64_t lo, hi; const llama_moe_cache_layer_fork * pc = nullptr; };
+    struct split_part { ggml_backend_t b; double gbs; int64_t lo, hi; const llama_moe_cache_layer_fork * pc = nullptr; int chunk = 0; };
     std::vector<split_part> parts;
     if ((!mcache || mc_cstream) && n_tokens >= 32 && sched && !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps_b && loras->empty()) {
         const float alpha = llama_moe_cache_prefill_alpha_fork();
@@ -3648,9 +3650,28 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
     // --moe staging=0: every card computes its range from its own blocks: the layer's on its home card, a shadow of the layer on another card, each with a table that
     // holds only that range (llama_moe_cache_cs_shadow_fork, cs_copy). A card that cannot hold its range: the layer's own chain over every expert (mc_pp below).
+    // --moe cs-chunks=N: each card's range of the layer in N chunks, each a part with its own table and split, so the cache's ring holds chunks and not whole layers
+    // (the graph gets the bytes: bigger passes). A layer no split shares out: its chunks all on its home card.
+    if (const int nch = mc_cstream && sched ? llama_moe_cache_cs_chunks_fork() : 1; nch > 1) {
+        if (parts.empty()) {
+            const ggml_backend_dev_t home = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->dev_table->buffer));
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && parts.empty(); ++i) {
+                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+                if (ggml_backend_get_device(b) == home) { parts.push_back({ b, llama_moe_cache_link_gbs_fork(home), 0, n_expert }); }
+            }
+        }
+        std::vector<split_part> cut;
+        for (const auto & pt : parts) {
+            for (int ci = 0; ci < nch; ++ci) {
+                const int64_t clo = pt.lo + (pt.hi - pt.lo) * ci / nch, chi = pt.lo + (pt.hi - pt.lo) * (ci + 1) / nch;
+                if (chi > clo) { cut.push_back({ pt.b, pt.gbs, clo, chi, nullptr, ci }); }
+            }
+        }
+        parts = cut;
+    }
     if (mc_cstream && !parts.empty()) {
         bool ok = parts.size() >= 2;
-        for (auto & pt : parts) { pt.pc = ok ? llama_moe_cache_cs_shadow_fork(mcache, ggml_backend_get_device(pt.b), pt.hi - pt.lo) : nullptr; ok = ok && pt.pc; }
+        for (auto & pt : parts) { pt.pc = ok ? llama_moe_cache_cs_shadow_fork(mcache, ggml_backend_get_device(pt.b), pt.hi - pt.lo, pt.chunk) : nullptr; ok = ok && pt.pc; }
         if (!ok) { parts.clear(); }
         for (const auto & pt : parts) { llama_moe_cache_cs_range_fork(pt.pc, (int32_t) pt.lo, (int32_t) pt.hi); }
     }
@@ -3817,7 +3838,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // copied the whole class view there as an input (Qwen3.8 staging=0: an 8657 MiB graph at 3168 tokens against 3904 lent, passes cut to 384)
             auto pin = [&](ggml_tensor * t) { ggml_backend_sched_set_tensor_backend(sched, t, pt.b); return t; };
             ggml_tensor * sl = pin(ggml_get_rows(ctx0, pt.pc->dev_table, cs_ids));
-            ggml_format_name(sl, pt.pc == mcache ? "ffn_moe_cs_slots-%d" : "ffn_moe_cs_slots-%d-s", il);
+            if (const int six = llama_moe_cache_cs_shadow_ix_fork(pt.pc); six < 0) { ggml_format_name(sl, "ffn_moe_cs_slots-%d", il); }
+            else { ggml_format_name(sl, "ffn_moe_cs_slots-%d-s%d", il, six); }   // cs_split_cb finds the ring entry by the shadow's index
             sl = ggml_reshape_2d(ctx0, sl, n_expert_used, n_tokens);
             auto mm = [&](ggml_tensor * w, ggml_tensor * in) {
                 ggml_tensor * m = ggml_mul_mat_id(ctx0, w, in, sl);

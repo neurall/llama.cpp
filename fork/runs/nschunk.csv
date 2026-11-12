@@ -1,0 +1,12 @@
+name,model,n,test,tokens,args,extra
+ck-olmoe-c2-verify,olmoe,1,pf1k,64,"--moe mode=cache,sim-vram=1536,staging=0,cs-chunks=2,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ck-olmoe-c4-verify,olmoe,1,pf1k,64,"--moe mode=cache,sim-vram=1536,staging=0,cs-chunks=4,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ck-qni4-c4-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,cs-chunks=4,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ck-qni4-es-c4-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,cs-chunks=4,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ck-free-c1,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0",--env GGML_PF_STATS=1
+ck-free-c2,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,cs-chunks=2",--env GGML_PF_STATS=1
+ck-free-c4,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,cs-chunks=4",--env GGML_PF_STATS=1
+ck-free-c8,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,cs-chunks=8",--env GGML_PF_STATS=1
+ck-es-c2,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,cs-chunks=2",--env GGML_PF_STATS=1
+ck-es-c4,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,cs-chunks=4",--env GGML_PF_STATS=1
+ck-ds1-c4,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=1,staging=0,cs-chunks=4",--env GGML_PF_STATS=1

@@ -1217,6 +1217,14 @@ static bool pp_no_staging() {
     static const bool v = [] { const char * e = moe_opt("staging"); return e && atoi(e) == 0; }();
     return v;
 }
+// --moe cs-chunks=N (with staging=0): a layer of a stream pass is cut into N chunks of experts, each with its own table and split (a card's first is the layer itself on
+// its home card, every other one a shadow of the layer), so the ring reserve holds two chunks instead of two layers and the graph gets the rest: bigger passes, fewer
+// uploads of the whole model (Qwen3.8 on 2 x 8 GiB: the two-layer reserve 2296 MiB cut the pass to 4032 tokens, staged ran 6860). 1: whole layers.
+static int cs_chunks() {
+    static const int n = [] { const char * e = moe_opt("cs-chunks"); return e ? std::max(1, std::min(64, atoi(e))) : 1; }();
+    return pp_no_staging() ? n : 1;
+}
+static int64_t cs_unit(int64_t E) { return (E + cs_chunks() - 1) / cs_chunks(); }   // the experts one ring entry of a layer of E experts holds
 static bool              g_pp_dec_built = false; // the same when the last graph was finished
 static bool              g_pp_graph = false;     // the graph being built (or the one reused) has layers on the prompt chain
 static bool              g_pp_built = false;     // the same when the last graph was finished: a graph is reused only for the same chain
@@ -9535,7 +9543,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         // shortcut: a fixed rule; upgrade to a per-call estimate (pass tokens lost against upload overlap gained)
                         size_t Lmax = 0, Lcom = 0, Bmax = 0, ncom = 0;
                         for (size_t c : order) {
-                            const size_t L = (size_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2] * pl.cls[c].B;
+                            const size_t L = (size_t) cs_unit(ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2]) * pl.cls[c].B;   // a ring entry: a layer, or one of its --moe cs-chunks
                             Lmax = std::max(Lmax, L);
                             Bmax = std::max(Bmax, pl.cls[c].B);
                             if (pl.cls[c].members.size() > ncom) { ncom = pl.cls[c].members.size(); Lcom = L; }
@@ -9572,11 +9580,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             ps.ring_lo = ap.floor_end > gbase[c] ? (int32_t) ((ap.floor_end - gbase[c] + pl.cls[c].B - 1) / pl.cls[c].B) : 0;
                             const int32_t E = (int32_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2];
                             const int32_t nr = gn[c] - ps.ring_lo;
-                            fit += tr_fmt("%s%d of %d", fit.empty() ? "" : ", ", nr, E);
-                            GGML_ASSERT(nr >= E && "moe-cache: the ring reserve holds less than one layer of a class");
+                            fit += tr_fmt("%s%d of %d", fit.empty() ? "" : ", ", nr, (int) cs_unit(E));
+                            GGML_ASSERT(nr >= cs_unit(E) && "moe-cache: the ring reserve holds less than one layer (or chunk) of a class");
                         }
-                        LLAMA_LOG_WARN("moe-cache: block pool on %s: ring reserve %.0f MiB at the tail (%s; blocks per class there against a layer: %s); the graph and the KV zone take up to %.0f MiB before it\n",
-                                ggml_backend_buft_name(buft), (ap.tail_end - ap.floor_end) / 1048576.0, ring_why, fit.c_str(), ap.floor_end / 1048576.0);
+                        LLAMA_LOG_WARN("moe-cache: block pool on %s: ring reserve %.0f MiB at the tail (%s%s; blocks per class there against a layer%s: %s); the graph and the KV zone take up to %.0f MiB before it\n",
+                                ggml_backend_buft_name(buft), (ap.tail_end - ap.floor_end) / 1048576.0, ring_why, cs_chunks() > 1 ? tr_fmt(", a layer in %d chunks (--moe cs-chunks)", cs_chunks()).c_str() : "",
+                                cs_chunks() > 1 ? "'s chunk" : "", fit.c_str(), ap.floor_end / 1048576.0);
                     }
                     ap.span_full = ap.span;
                     kv_tail_bind(ap);
@@ -10911,7 +10920,8 @@ void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched) {
 // --moe staging=0, expert split: the cache layer a graph's part of layer pub on card dev reads n of the layer's experts from: the layer itself on its home card, else its
 // shadow there (made at the first ask, moe_cache::shadows); nullptr when dev has no class of the layer's shape or too few blocks of it for n experts (the caller keeps
 // those experts on the home card). The views are a same-class layer's on dev (they span every block of the class, the table decides); the table is the shadow's own.
-const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t dev, int64_t n) {
+// chunk (--moe cs-chunks): the card's chunk of the layer, each with a table of its own; the home card's chunk 0 is the layer itself.
+const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t dev, int64_t n, int chunk) {
     moe_cache * mc = g_cache;
     if (!mc || !pub || !dev) { return nullptr; }
     std::lock_guard<std::mutex> lock(mc->mtx);
@@ -10922,8 +10932,9 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
     int k = -1;
     for (int c = 0; c < mc->n_links; ++c) { if (mc->link_dev[c] == dev) { k = c; } }
     if (k < 0) { return nullptr; }
-    if (k == L.link) { return pub; }
-    auto it = mc->shadow_of.find({ li, k });
+    if (k == L.link && chunk == 0) { return pub; }
+    const int key = k + (chunk << 8);
+    auto it = mc->shadow_of.find({ li, key });
     if (it == mc->shadow_of.end()) {
         const auto & pa = mc->pool[L.pcls];
         const auto same_t = [](const ggml_tensor * a, const ggml_tensor * b) { return a->type == b->type && a->ne[0] == b->ne[0] && a->ne[1] == b->ne[1]; };
@@ -10953,7 +10964,7 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
             sh.pub.dev_table  = dt;
             sh.pub.host_table = ggml_new_tensor_2d(hctx, GGML_TYPE_I32, 1, E);
             sh.pub.jit_n = 0; sh.pub.up_m = sh.pub.gate_m = sh.pub.down_m = nullptr; sh.pub.pred_w = sh.pub.pred_all = sh.pub.pred_mu = sh.pub.pred_q = nullptr;
-            ggml_format_name(dt, "moe_cache_tbl.%d.s%d", L.pub.il, k);
+            ggml_format_name(dt, "moe_cache_tbl.%d.s%d.%d", L.pub.il, k, chunk);
             int32_t * h = (int32_t *) sh.pub.host_table->data;
             for (int64_t e = 0; e < E; ++e) { h[e] = sh.pub.n_slots; }
             const std::vector<int32_t> none((size_t) E, -1);
@@ -10976,11 +10987,21 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
                     ggml_backend_dev_name(dev), ix != SIZE_MAX ? " (a shadow over the blocks of its class there; further layers alike)" :
                     twin ? ": no memory for its table" : ": no class of its shape there (its experts stay on the home card)");
         }
-        it = mc->shadow_of.emplace(std::make_pair(li, k), ix).first;
+        it = mc->shadow_of.emplace(std::make_pair(li, key), ix).first;
     }
     if (it->second == SIZE_MAX) { return nullptr; }
     layer_state & sh = mc->shadows[it->second];
     return pp_blocks(mc, sh, true) >= n ? &sh.pub : nullptr;   // cs_plan's last resort: blocks of the class besides the lend and the KV rows
+}
+// --moe cs-chunks for the graph builder (1: whole layers), and the index of a part's shadow (-1: the layer itself): the name of the part's table read carries it,
+// cs_split_cb finds the ring entry by it
+int llama_moe_cache_cs_chunks_fork() { return g_cache ? cs_chunks() : 1; }
+int llama_moe_cache_cs_shadow_ix_fork(const llama_moe_cache_layer_fork * part) {
+    moe_cache * mc = g_cache;
+    if (!mc || !part) { return -1; }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    for (size_t i = 0; i < mc->shadows.size(); ++i) { if (&mc->shadows[i].pub == part) { return (int) i; } }
+    return -1;
 }
 // the graph being built computes experts [lo, hi) of a layer from part's blocks (the layer itself or a shadow from llama_moe_cache_cs_shadow_fork)
 void llama_moe_cache_cs_range_fork(const llama_moe_cache_layer_fork * part, int32_t lo, int32_t hi) {
@@ -11013,7 +11034,7 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
                 if (!mc->link_be[l.link]) { return off(2, "no upload backend yet (first graph)"); }   // the first graph of a run: no backend to upload with yet
                 // the ring takes blocks of the layer's class only: a layer's worth must be there besides the lend and the KV rows (cs_plan's last resort), or the layer stages
                 if (l.pcls < 0) { return off(3, "no size class"); }
-                if (const int64_t nb = pp_blocks(mc, l, true); nb < (int64_t) l.expert_slot.size()) { return off(4, "too few blocks in its class", nb, (int64_t) l.expert_slot.size()); }
+                if (const int64_t nb = pp_blocks(mc, l, true); nb < cs_unit((int64_t) l.expert_slot.size())) { return off(4, "too few blocks in its class", nb, cs_unit((int64_t) l.expert_slot.size())); }
                 if (std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), li) == g_cs_order_graph.end()) {
                     g_cs_order_graph.push_back(li);
                     g_cs_rng_graph.push_back({ 0, (int32_t) l.expert_slot.size() });   // every expert, unless the graph splits them over the cards (llama_moe_cache_cs_range_fork)
@@ -11462,7 +11483,7 @@ static void cs_begin(moe_cache * mc) {
 }
 
 // the split of cstream layer il is about to be queued on compute stream cbe (scheduler thread)
-static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, bool shadow) {   // shadow: the part of layer il on cbe's card that is not its home (expert split)
+static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {   // shadow: -1 the layer itself, else the index of its shadow (another card's part of an expert split, a further chunk)
     struct job { size_t li; std::vector<cs_cp> cps; bool from_done; size_t done_at; };
     std::vector<job> jobs;
     size_t li = 0;
@@ -11470,12 +11491,9 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, bool shadow) { 
         std::lock_guard<std::mutex> lock(mc->mtx);
         if (il < 0 || (size_t) il >= mc->cs_li.size() || mc->cs_li[(size_t) il] < 0) { return; }
         li = (size_t) mc->cs_li[(size_t) il];
-        if (shadow) {
-            int sk = -1;
-            for (int c = 0; c < mc->n_links; ++c) { if (mc->link_dev[c] == ggml_backend_get_device(cbe)) { sk = c; } }
-            const auto it = mc->shadow_of.find({ li, sk });
-            if (it == mc->shadow_of.end() || it->second == SIZE_MAX) { return; }
-            li = mc->layers.size() + it->second;
+        if (shadow >= 0) {
+            if ((size_t) shadow >= mc->shadows.size() || mc->shadows[(size_t) shadow].pub.il != il) { return; }
+            li = mc->layers.size() + (size_t) shadow;
         }
         if (li >= mc->cs_pos.size() || mc->cs_pos[li] < 0) { return; }
         const size_t p = (size_t) mc->cs_pos[li];
@@ -11523,7 +11541,7 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, bool shadow) { 
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
     if (g_pp_cstream_built && g_cache && ggml_graph_n_nodes(g) > 0) {
         const char * nm = ggml_get_name(ggml_graph_node(g, 0));
-        if (strncmp(nm, "ffn_moe_cs_slots-", 17) == 0) { const char * d = strchr(nm + 17, '-'); cs_layer(g_cache, be, atoi(nm + 17), d && d[1] == 's'); }   // "-<il>-s": a shadow
+        if (strncmp(nm, "ffn_moe_cs_slots-", 17) == 0) { const char * d = strchr(nm + 17, '-'); cs_layer(g_cache, be, atoi(nm + 17), d && d[1] == 's' ? atoi(d + 2) : -1); }   // "-<il>-s<index>": a shadow
     }
     if (g_cs_hook_next) { g_cs_hook_next(be, g, split_id, n_splits, uid); }
 }
@@ -14977,7 +14995,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             // a chain the graph then refuses falls to the decode chain's CPU side: DeepSeek, 62-token call, chain calculated 2.1 s, ran 18.5 s that way (2026-11-10)
             // the stream into the blocks takes a layer's worth of its class besides the lend and the KV rows (llama_moe_cache_pp_chain_fork, the same test)
             if (!cs_fits && !(l.pcls < 0 || !mc->link_be[l.link] || l.pub.jit_n > 0 || !experts_in_file_layout(&l.pub) ||
-                              pp_blocks(mc, const_cast<layer_state &>(l), true) < (int64_t) l.expert_slot.size())) {
+                              pp_blocks(mc, const_cast<layer_state &>(l), true) < cs_unit((int64_t) l.expert_slot.size()))) {
                 cs_fits = true;
             }
             if (chain_fits) {
