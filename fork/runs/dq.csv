@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+dq-def,qwen38,3,pf2k1k,1024,,
+dq-stockmode,qwen38,3,pf2k1k,1024,"--moe mode=stock",
+dq-def-nog,qwen38,3,pf2k1k,1024,,--env GGML_CUDA_DISABLE_GRAPHS=1
