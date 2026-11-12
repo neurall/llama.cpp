@@ -353,6 +353,8 @@ static std::vector<uint32_t> llama_memory_hybrid_idx_ns(const llama_kv_cache::sl
 }
 
 // Which cells of a sequence make up which pool, for the whole cache.
+uint32_t llama_kv_reserve_override_get_fork();   // llama-kv-cache.cpp (declared here, no header edit)
+
 struct llama_memory_hybrid_idx::kpool_layout {
     struct seq {
         llama_pos pos_min = 0;
@@ -506,7 +508,12 @@ llama_memory_hybrid_idx_context::llama_memory_hybrid_idx_context(llama_memory_hy
         const auto * idx = mem->get_mem_idx();
         const uint64_t n_pool_max = uint64_t(idx->get_size() / mem->get_kpool()) * idx->get_n_seq_max();
         GGML_ASSERT(n_pool_max <= UINT32_MAX - 64);
-        st.n_pool_real = std::max(st.n_pool_real, uint32_t(n_pool_max));
+        // fork: a reserve the fork sizes (kpool_build_sizes: the override, or one growth step with the KV in the expert pool) keeps its pools. The whole context's
+        // pools made every reserve score a pass at the context's end: Qwen3.8 262k, [65600, tokens] f32, the start-up probes 0.585 MiB per token where the passes
+        // lend 0.389, the host fit saw no growth with the cells (2026-11-12). Growth with the cells: llama_moe_cache_note_graph_cells_fork.
+        if (!llama_kv_reserve_override_get_fork() && idx->get_size_reserve() >= idx->get_size()) {
+            st.n_pool_real = std::max(st.n_pool_real, uint32_t(n_pool_max));
+        }
         st.n_new   = st.n_pool_real;
         st.n_new_g = std::max(st.n_new, 1u);
         kpool_st = std::make_unique<kpool_state>(std::move(st));
@@ -626,7 +633,6 @@ llama_memory_hybrid_idx_context::kpool_access llama_memory_hybrid_idx_context::g
 
 // k-pool DSA indexer (glm5-next, qwen4exp QSA)
 
-uint32_t llama_kv_reserve_override_get_fork();   // llama-kv-cache.cpp (declared here, no header edit)
 
 // Sizes only, used by the full cache context so get_n_kpool() works during graph reserve.
 // fork: the host-buffer calibration (llama-context.cpp) reserves graphs at a given number of cells; the pools then follow those cells (one per kpool

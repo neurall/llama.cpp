@@ -404,6 +404,8 @@ struct moe_cache {
         std::map<int32_t, size_t> need_tok;     // the most a graph of n tokens borrowed from the start of the buffer (graph + scratch + staging slots)
         std::map<int32_t, size_t> need_cells;   // the cells in use when that most was measured (the graph's inputs grow with them: need_at_cells)
         std::set<int32_t>     need_est;         // the sizes of need_tok that are start-up estimates (measure-only reserves), not graphs that ran: a lend replaces them
+        double                grow_p0 = 0.0, grow_p1 = 0.0;   // a graph's bytes per token at kv_step cells and at grow_c1 cells (start-up probes, llama_moe_cache_note_graph_cells_fork)
+        size_t                grow_c1 = 0;
         size_t                kv_blocks = 0;    // blocks under the KV zone now
         size_t                dec_need  = 0;    // the most a decode graph (< 64 tokens) borrowed from the start of the buffer: the KV never takes that
         size_t                dec_cells = 0;    // the cells in use when dec_need was measured
@@ -5370,6 +5372,20 @@ size_t llama_moe_cache_alias_room_fork(ggml_backend_dev_t dev, uint32_t n_tokens
 // the 16384-token graph (9962 MiB on a pool that lends 17139) and the next prompt, with two points, ran it as ONE pass (DS4.1 IQ2_XXS, 2026-10-26). The reserve's
 // bytes are the graph's tensors plus the CUDA scratch its nodes take on this card (the caller adds llama_moe_cache_graph_scratch_fork); a real graph of the same
 // size later replaces the point when it is bigger (alias, same rule as a graph that ran).
+// The start-up probes of one pass size at the reserve's cells (kv_step) and at the context's end (llama-context.cpp, after the micro-batch fit): what need_at_cells
+// takes at least, between them
+void llama_moe_cache_note_graph_cells_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t bytes_step, size_t bytes_end, size_t cells_end) {
+    moe_cache * mc = g_cache;
+    if (!mc || !alias_on() || n_tokens < 64 || bytes_step == 0) { return; }
+    for (auto & ap : mc->alias) {
+        if (ap.dev != dev) { continue; }
+        ap.grow_p0 = (double) bytes_step / n_tokens;
+        ap.grow_p1 = (double) std::max(bytes_end, bytes_step) / n_tokens;
+        ap.grow_c1 = cells_end;
+        LLAMA_LOG_WARN("moe-cache: %s: a %u-token graph lends %.4f MiB per token at %zu cells, %.4f at %zu (the context's end): what a pass at more cells takes at least\n",
+                ggml_backend_dev_name(dev), n_tokens, ap.grow_p0 / 1048576.0, ap.kv_step, ap.grow_p1 / 1048576.0, cells_end);
+    }
+}
 void llama_moe_cache_note_graph_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t graph_bytes) {
     moe_cache * mc = g_cache;
     if (!mc || !alias_on() || n_tokens < 64 || graph_bytes == 0) {
@@ -5709,14 +5725,23 @@ void llama_moe_cache_mask_tail_fork() { g_mask_tail.store(true, std::memory_orde
 static size_t need_at_cells(const moe_cache::alias_pool & ap, int32_t n_tokens, size_t need, size_t cells) {
     const auto it = ap.need_cells.find(n_tokens);
     const size_t c0 = it != ap.need_cells.end() ? it->second : cells;
-    if (cells <= c0) { return need; }
-    const double pc = (double) (n_tokens < 64 ? ap.kv_lend_pc_dec : ap.kv_lend_pc);   // the f16 copies of quantized K/V
-    double cols = (double) (cells - c0);   // the mask's columns the graph gains
-    if (g_mask_tail.load(std::memory_order_relaxed)) {   // never more than the pass's own cells and the padding on both sides
-        const double most = (double) GGML_PAD(n_tokens, 256) + 256.0;
-        cols = std::max(0.0, std::min((double) cells, most) - std::min((double) c0, most));
+    size_t r = need;
+    if (cells > c0) {
+        const double pc = (double) (n_tokens < 64 ? ap.kv_lend_pc_dec : ap.kv_lend_pc);   // the f16 copies of quantized K/V
+        double cols = (double) (cells - c0);   // the mask's columns the graph gains
+        if (g_mask_tail.load(std::memory_order_relaxed)) {   // never more than the pass's own cells and the padding on both sides
+            const double most = (double) GGML_PAD(n_tokens, 256) + 256.0;
+            cols = std::max(0.0, std::min((double) cells, most) - std::min((double) c0, most));
+        }
+        r = need + (size_t) (g_mask_bpc.load() * (double) n_tokens * cols + pc * (double) (cells - c0));
     }
-    return need + (size_t) (g_mask_bpc.load() * (double) n_tokens * cols + pc * (double) (cells - c0));
+    // at least the line between the start-up probes at kv_step cells and at the context's end: a graph's size grows convexly with the cells (the k-pool indexer's
+    // score [pools, tokens] f32 overtakes the rest only near the end: Qwen3.8 262k, 0.389 MiB per token to about 56k cells, 0.585 at 262k), the line is never below it
+    if (n_tokens >= 64 && ap.grow_c1 > ap.kv_step && cells > ap.kv_step) {
+        const double f = std::min(1.0, (double) (cells - ap.kv_step) / (double) (ap.grow_c1 - ap.kv_step));
+        r = std::max(r, (size_t) ((double) n_tokens * (ap.grow_p0 + f * std::max(0.0, ap.grow_p1 - ap.grow_p0))));
+    }
+    return r;
 }
 
 // where a lend of `bytes` from the start of the buffer really ends: it takes whole blocks of every size class its range overlaps (the classes are stacked in the buffer, each with its own

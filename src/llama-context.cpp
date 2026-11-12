@@ -251,6 +251,7 @@ static const llm_fused_op_probe llm_fused_op_dsv4_hc_post_probe = {
 GGML_API void ggml_backend_nvtx_set_fork(void (*)(const char *), void (*)(void));
 
 void llama_kv_reserve_override_fork(uint32_t n);   // llama-kv-cache.cpp
+void llama_moe_cache_note_graph_cells_fork(ggml_backend_dev_t dev, uint32_t n_tokens, size_t bytes_step, size_t bytes_end, size_t cells_end);   // llama-moecache-fork.cpp
 // host buffer of a pass: H(u, k) = u * (a * k + b) + c for u pass tokens and k cells, fitted from three small reserves at startup (host_calibrate), file level: one context per process
 static double g_host_a = 0.0, g_host_b = 0.0, g_host_c = 0.0, g_host_d = 0.0;
 void llama_moe_cache_pp_cells_fork(uint64_t cells_end);
@@ -1789,6 +1790,19 @@ void llama_context::sched_reserve() {
             }
             LLAMA_LOG_WARN("%s: micro-batch from the pools: %u tokens (%s, %d measure-only reserves)%s\n", __func__, u, how, probes, line.c_str());
             llama_moe_decision_fork("stage", "micro-batch size chosen", "");
+            if (u >= 512 && cparams.n_ctx > u) {   // the same pass at the context's end: a pass at more cells than the reserve's takes at least the line between the two
+                const std::vector<size_t> s0 = s;
+                std::fill(s.begin(), s.end(), 0);
+                llama_kv_reserve_override_fork(cparams.n_ctx);
+                auto mc_end = memory->init_full();
+                llama_moe_cache_measure_stream_fork(true);
+                ggml_cgraph * me = mc_end ? graph_reserve(u, n_seqs, n_seqs, mc_end.get(), true, s.data()) : nullptr;
+                if (me) { for (const auto & [i, d] : gi) { s[i] += llama_moe_cache_graph_scratch_fork(sched.get(), d); } }
+                llama_moe_cache_measure_stream_fork(false);
+                llama_kv_reserve_override_fork(0);
+                if (me) { for (const auto & [i, d] : gi) { llama_moe_cache_note_graph_cells_fork(d, u, s0[i], s[i], cparams.n_ctx); } }
+                s = s0;
+            }
         };
         if (fits(hi)) {
             // The free-VRAM cut of the first reserve is made before the pools lend anything and can sit well below what they hold (two cards, GLM 3.0: 10144 tokens where 13024 fit, so a
