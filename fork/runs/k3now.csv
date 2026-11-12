@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+k3n-1k,k31,2,pf1k,64,"--moe rp-grow=0",
+k3n-12k,k31,1,pf12k,64,"--moe rp-grow=0",
