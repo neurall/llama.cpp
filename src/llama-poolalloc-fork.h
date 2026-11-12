@@ -4,7 +4,7 @@
 //   lend granularity    poolx_lend_round      : where a lend of n bytes really ends (whole blocks of every class it overlaps)
 //                       poolx_lend_blocks     : blocks of one class a lend takes (never more than the class has)
 //   owner ledger        poolx_lend / poolx_release / poolx_zone_take / poolx_zone_give / poolx_claim_free: the block owner table + free stack
-//                       owner: >= 0 layer, -1 free, -2 lent to a graph, -3 under the KV zone
+//                       owner: >= 0 layer, -1 free, -2 lent to a graph, -3 under the KV zone, -4 another class's bytes (outside [home_lo, home_hi))
 //   region map          poolx_regions / poolx_gate_kind : where each region lies now, and the gate every expert write passes
 //   range use counts    poolx_ranges          : who touches which bytes (DMA, graph, zone move), movers wait for users, entrants wait for movers
 // Bugs these rules came from: fork/docs/bug-log.md (the tests name the entry they guard).
@@ -65,7 +65,7 @@ template <class S> static int32_t poolx_lend_blocks(const S & sg, size_t need_b)
 }
 
 // ---- owner ledger -----------------------------------------------------------------------------------------------------------------------------
-// ps: { std::vector<int32_t> owner, free; }. The caller holds the cache's mutex. evict(layer, block) takes an expert out of a block it owned (the caller's bookkeeping).
+// ps: { std::vector<int32_t> owner, free; int32_t home_lo, home_hi; }. The caller holds the cache's mutex. evict(layer, block) takes an expert out of a block it owned (the caller's bookkeeping).
 // Lend blocks [from, to) of a class to a graph. Returns the blocks that were under the KV zone (-3): they are NOT taken (a lend never goes over the zone; the caller reports).
 template <class PS, class F> static int poolx_lend(PS & ps, int32_t from, int32_t to, F evict) {
     int bad = 0;
@@ -81,11 +81,18 @@ template <class PS, class F> static int poolx_lend(PS & ps, int32_t from, int32_
     }
     return bad;
 }
-// Blocks [keep, blocked) go back to the experts (only the lent ones). Returns how many.
+// A block a lend or the zone gives back: free in the class's home, another class's bytes (-4) outside it (a grid over a neighbour's bytes, --moe staging=0:
+// freed there, two classes would own the same bytes and place two experts on them). Returns true when it went on the free list.
+template <class PS> static bool poolx_give_back(PS & ps, int32_t b) {
+    if (b >= ps.home_lo && b < ps.home_hi) { ps.owner[b] = -1; ps.free.push_back(b); return true; }
+    ps.owner[b] = -4;
+    return false;
+}
+// Blocks [keep, blocked) go back to the experts (only the lent ones). Returns how many went on the free list.
 template <class PS> static size_t poolx_release(PS & ps, int32_t keep, int32_t blocked) {
     size_t n = 0;
     for (int32_t b = keep; b < blocked; ++b) {
-        if (ps.owner[b] == -2) { ps.owner[b] = -1; ps.free.push_back(b); n++; }
+        if (ps.owner[b] == -2) { n += poolx_give_back(ps, b); }
     }
     return n;
 }
@@ -109,7 +116,7 @@ template <class PS, class F> static void poolx_zone_take(PS & ps, const std::vec
 // Blocks the zone left go back to the free list.
 template <class PS> static size_t poolx_zone_give(PS & ps, const std::vector<int32_t> & give) {
     size_t n = 0;
-    for (int32_t b : give) { if (ps.owner[b] != -3) { continue; } ps.owner[b] = -1; ps.free.push_back(b); n++; }   // only a block under the zone goes back: a lent or owned one is not free
+    for (int32_t b : give) { if (ps.owner[b] != -3) { continue; } n += poolx_give_back(ps, b); }   // only a block under the zone goes back: a lent or owned one is not free
     return n;
 }
 // An expert takes a free block for layer li: the block popped off the free stack, or -1. A block that is not free (stale entry) is dropped, never handed out.

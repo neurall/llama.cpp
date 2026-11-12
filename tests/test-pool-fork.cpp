@@ -43,12 +43,13 @@ static std::string fmt(const char * f, ...) {
 
 // ---- a pool shape like the engine's alias_pool / moe_cache::pool_state, with a few fields only -----------------------------------------------------
 struct tseg { int32_t pcls = -1; size_t base = 0, B = 0; int32_t n = 0, blocked = 0; };
-struct tps  { std::vector<int32_t> owner, free; };
+struct tps  { std::vector<int32_t> owner, free; int32_t home_lo = 0, home_hi = INT32_MAX; };   // home: the class's own blocks; owner past them: the grid over the ring reserve (-4)
 struct tpool {
     std::vector<tseg> segs; std::vector<tps> ps; std::vector<int> kvt;
     size_t tail_end = 0, floor_end = 0, kv_fixed = 0, kv_h = 0, kv_row = 0, kv_start = 0, span = 0, want_b = 0;
 };
-static tpool make_pool(std::mt19937_64 & rng, bool with_zone_rows) {
+// grids (--moe staging=0): a class's block grid runs on from its home to the pool's end; blocks past its home are -4 until the ring claims them
+static tpool make_pool(std::mt19937_64 & rng, bool with_zone_rows, bool grids = false) {
     auto R = [&](size_t lo, size_t hi) { return lo + (size_t) (rng() % (hi - lo + 1)); };
     tpool p;
     const size_t unit = 16;
@@ -59,10 +60,18 @@ static tpool make_pool(std::mt19937_64 & rng, bool with_zone_rows) {
         p.segs.push_back(sg);
         tps ps; ps.owner.assign((size_t) sg.n, -1);
         for (int b = sg.n - 1; b >= 0; --b) { ps.free.push_back(b); }
+        ps.home_lo = 0; ps.home_hi = sg.n;
         p.ps.push_back(ps);
         at += (size_t) sg.n * sg.B;   // the classes back to back (no zero block between them)
     }
     p.tail_end = at; p.floor_end = at;
+    if (grids) {   // the class's grid runs on from its home to the pool's end (the ring reserve); the lend and the zone walk the home only (segs)
+        for (size_t c = 0; c < p.segs.size(); ++c) {
+            auto & sg = p.segs[c]; auto & ps = p.ps[c];
+            const int32_t fwd = (int32_t) ((at - sg.base - (size_t) sg.n * sg.B) / sg.B);
+            ps.owner.resize((size_t) (sg.n + fwd), -4);
+        }
+    }
     p.span = p.segs.back().base + (size_t) p.segs.back().n * p.segs.back().B;
     if (with_zone_rows) { p.kvt.push_back(1); p.kv_row = R(1, 40); }
     return p;
@@ -77,6 +86,7 @@ static std::string check_pool(const tpool & p) {
         // owner / free consistency
         std::vector<int> in_free(sg.n, 0);
         for (int32_t b : ps.free) { if (b < 0 || b >= sg.n) { return "free list holds a block out of range"; } in_free[b]++; }
+        for (size_t b = (size_t) sg.n; b < ps.owner.size(); ++b) { if (ps.owner[b] != -4) { return fmt("class %zu grid block %zu past its home has owner %d", i, b, ps.owner[b]); } }
         for (int b = 0; b < sg.n; ++b) {
             const int32_t o = ps.owner[b];
             if (in_free[b] > 1) { return fmt("class %zu block %d on the free list twice", i, b); }
@@ -84,7 +94,9 @@ static std::string check_pool(const tpool & p) {
             if (o == -2 && b >= sg.blocked) { return fmt("class %zu block %d lent past `blocked` %d", i, b, sg.blocked); }
             if (b < sg.blocked && o != -2) { return fmt("class %zu block %d under `blocked` %d has owner %d", i, b, sg.blocked, o); }
             const size_t lo = sg.base + (size_t) b * sg.B;
-            if (o >= 0 || o == -3 || o == -2) { for (size_t x = lo; x < lo + sg.B; ++x) { claim[x]++; } }
+            // a byte is an expert's or free in exactly one class; lent and zone blocks of several classes may cover the same graph or zone bytes (grids)
+            if (o >= 0 || o == -1) { for (size_t x = lo; x < lo + sg.B; ++x) { claim[x]++; } }
+            if (o == -4) { return fmt("class %zu block %d in its home is -4", i, b); }
         }
     }
     // the zone claims its bytes itself; blocks under it are -3 (counted above through the owner), so count the zone only where no -3 block is: zone bytes must lie in -3 blocks
@@ -104,12 +116,15 @@ static std::string check_pool(const tpool & p) {
     }
     // the graph's own bytes [0, want_b): must be lent blocks; never expert or zone bytes
     for (size_t x = 0; x < p.want_b && x < p.tail_end; ++x) {
-        bool ok = false;
-        for (size_t i = 0; i < p.segs.size() && !ok; ++i) {
+        bool ok = false, bad_cover = false;
+        for (size_t i = 0; i < p.segs.size(); ++i) {
             const auto & sg = p.segs[i];
             if (x < sg.base || x >= sg.base + (size_t) sg.n * sg.B) { continue; }
-            ok = p.ps[i].owner[(x - sg.base) / sg.B] == -2;
+            const int32_t o = p.ps[i].owner[(x - sg.base) / sg.B];
+            ok |= o == -2;
+            bad_cover |= o >= 0 || o == -1;   // an expert or a free block over graph bytes
         }
+        ok &= !bad_cover;
         if (!ok) { return fmt("the graph's byte %zu (lend %zu) is not in a lent block", x, p.want_b); }
     }
     for (size_t x = 0; x < p.tail_end; ++x) { if (claim[x] > 1) { return fmt("byte %zu claimed %d times", x, claim[x]); } }
@@ -186,8 +201,8 @@ static void test_lend_granularity() {
 // ---- owner ledger under random operations -------------------------------------------------------------------------------------------------------
 // The operations the engine runs on the ledger: a graph lends blocks, a sync point releases them, the KV zone is placed in a gap (blocks under it taken, blocks it left
 // given back), experts claim free blocks and are evicted. After EVERY operation check_pool proves no byte has two claimants.
-static void ledger_run(std::mt19937_64 & rng, long steps, std::string & first, long & bad, long & n_ops, long & n_zone) {
-    tpool p = make_pool(rng, true);
+static void ledger_run(std::mt19937_64 & rng, long steps, std::string & first, long & bad, long & n_ops, long & n_zone, bool grids = false) {
+    tpool p = make_pool(rng, true, grids);
     auto R = [&](size_t lo, size_t hi) { return lo + (size_t) (rng() % (hi - lo + 1)); };
     const size_t bmax = std::max<size_t>(1, kvz_bmax(p));
     for (long st = 0; st < steps; ++st) {
@@ -250,7 +265,7 @@ static void ledger_run(std::mt19937_64 & rng, long steps, std::string & first, l
         } else {   // an expert is evicted
             const size_t i = R(0, p.segs.size() - 1);
             const int32_t b = (int32_t) R(0, (size_t) p.segs[i].n - 1);
-            if (p.ps[i].owner[b] >= 0) { p.ps[i].owner[b] = -1; p.ps[i].free.push_back(b); }
+            if (p.ps[i].owner[b] >= 0) { poolx_give_back(p.ps[i], b); }
         }
         n_ops++;
         const std::string e = check_pool(p);
@@ -265,6 +280,11 @@ static void test_ledger_random() {
     for (long it = 0; it < g_iters / 100 && !bad; ++it) { ledger_run(rng, 400, first, bad, n_ops, n_zone); }
     report("no byte has two claimants after any operation", bad == 0, first);
     report("the run placed zones and lent graphs (the test is not vacuous)", n_zone > 100 && n_ops > 5000, fmt("%ld ops, %ld zone placements", n_ops, n_zone));
+    // grids (--moe staging=0): the lend and the zone walk the homes only; the grid blocks past them stay -4
+    bad = 0; n_ops = 0; n_zone = 0; first.clear();
+    for (long it = 0; it < g_iters / 100 && !bad; ++it) { ledger_run(rng, 400, first, bad, n_ops, n_zone, true); }
+    report("grids: no byte free or an expert's in two classes after any operation", bad == 0, first);
+    report("grids: the run placed zones and lent graphs", n_zone > 100 && n_ops > 5000, fmt("%ld ops, %ld zone placements", n_ops, n_zone));
 }
 
 // the detector itself: break the layout on purpose, the check must see it (otherwise a green run proves nothing)
