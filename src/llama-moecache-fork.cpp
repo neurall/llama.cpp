@@ -9500,6 +9500,17 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         const int32_t E = (int32_t) ll[pl.cls[(size_t) (sg.pcls - (int32_t) pool0)].members[0]]->ffn_up_exps->ne[2];
                         if (sg.n >= E) { ap.floor_end = std::min(ap.floor_end, sg.base + (size_t) (sg.n - E) * sg.B); }
                     }
+                    // on a block edge of every class: the lend and the KV rows mark whole blocks, so a block across the floor's edge would put a grid's
+                    // first block under the KV (Qwen3.8 staging=0: "511 of another class claimable, not claimable under: 1 KV", a ring layer aborted)
+                    for (bool moved = true; moved; ) {
+                        moved = false;
+                        for (const auto & sg : ap.segs) {
+                            const size_t end = sg.base + (size_t) sg.n * sg.B;
+                            if (sg.B == 0 || ap.floor_end <= sg.base || ap.floor_end >= end) { continue; }
+                            const size_t edge = sg.base + (ap.floor_end - sg.base) / sg.B * sg.B;
+                            if (edge < ap.floor_end) { ap.floor_end = edge; moved = true; }
+                        }
+                    }
                     if (grids) {
                         LLAMA_LOG_WARN("moe-cache: block pool on %s: the experts' floor is %.0f MiB (a layer of each class, grids over shared bytes); the graph and the KV zone take up to %.0f MiB before it\n",
                                 ggml_backend_buft_name(buft), (ap.tail_end - ap.floor_end) / 1048576.0, ap.floor_end / 1048576.0);
@@ -14169,7 +14180,7 @@ static uint32_t pp_record(moe_cache * mc, uint32_t n, uint32_t ub) {
 // and need_b grows linearly with the tokens of the pass (graph tensors, CUDA scratch): a + b * tokens, taken from the two largest graph sizes the pool has lent for so far
 // (a single size: b = need / tokens, a = 0, which is not below the real slope). The largest pass is the biggest u with that inequality, no margin; a graph that still
 // misses (the staging slots are variable) meets the same check in moe_alias.
-static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prompt, uint32_t ub) {
+static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prompt, uint32_t ub, size_t end_cells = 0) {   // end_cells: the cells after the pass (0: in use + n_prompt)
     if (ap.kvt.empty()) { return ub; }
     size_t pad = 1;
     for (const auto & r : ap.kvt) { if (!r.fixed) { pad = std::max<size_t>(pad, r.pad); } }
@@ -14182,8 +14193,8 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     // server retries it smaller, which only small cards (3 GiB free per card) met.
     // the cells this call ends at: the zone must hold them behind the pass (2026-11-12: the call's own tokens were passed as the zone's rows, Qwen3.8 staging=0 ran
     // a 5056-token call as one pass at 8664 cells, its KV did not fit behind the graph and find_slot refused it: "failed to prepare attention ubatches")
-    size_t cells_end = (size_t) n_prompt;
-    for (auto & r : ap.kvt) { if (!r.fixed) { cells_end = std::max(cells_end, (r.rows ? r.rows() : 0) + (size_t) n_prompt); } }
+    size_t cells_end = end_cells > 0 ? end_cells : (size_t) n_prompt;
+    for (auto & r : ap.kvt) { if (!r.fixed && end_cells == 0) { cells_end = std::max(cells_end, (r.rows ? r.rows() : 0) + (size_t) n_prompt); } }
     auto seeded = [&]() -> uint32_t {   // the graph alone: the staging slots take what the pool holds behind it (ppx_stage_slots), they never cut a pass
         return ap.graph_tok > 0 ? kvz_pass_cap(ap, cells_end, ub, 0.0, (double) (ap.graph_tok + ap.scr_tok), pad, ap.mirror_b) : ub;
     };
@@ -14225,7 +14236,14 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
                 (size_t) kvz_lend_potential(ap, kvz_read_cells(std::max<size_t>(cells_end, ap.kv_h), pad)), kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b));
         for (const auto & p : pts) { LLAMA_LOG_WARN("moe-cache: pass cap point: %d tokens -> %zu B\n", p.first, p.second); }
     }
-    return kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b);   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
+    unsigned cap = kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b);
+    // a graph measured at this very size is the truth, not the line (find_slot checks with it): Qwen3.8 staging=0, the 5408-token graph measured 3811 MiB, the
+    // line said less, the pass ran at 8312 cells and its KV did not fit ("failed to prepare attention ubatches"). The line moves up through that point.
+    if (const auto ex = ap.need_tok.find((int32_t) cap); ex != ap.need_tok.end()) {
+        const double m = (double) need_at_cells(ap, ex->first, ex->second, cells_end);
+        if (m > a + b * (double) cap) { cap = kvz_pass_cap(ap, cells_end, ub, m - b * (double) cap, b, pad, ap.mirror_b); }
+    }
+    return cap;   // the zone for the padded prompt rows lies in a gap: the lend can reach only what kvz_lend_potential says (OLMoE 3440-token prompt, 1.0 GiB free: planned from the pool end, the zone then held 2962 cells behind a 451-token pass: no slot, 2026-10-18)
 }
 
 // The dense split's pass loop (llama_context::decode, --moe split-pass) sizes each pass itself and runs it as one sub-call, so the planner's pool cap (pp_plan)
@@ -14235,7 +14253,7 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
 uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub) {
     moe_cache * mc = g_cache;
     if (!mc || mc->alias.empty()) { return ub; }
-    for (const auto & a : mc->alias) { ub = pp_cap_to_pool(a, cells, ub); }
+    for (const auto & a : mc->alias) { ub = pp_cap_to_pool(a, cells, ub, cells); }
     return ub;
 }
 
