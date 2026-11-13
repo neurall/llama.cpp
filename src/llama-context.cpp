@@ -3719,7 +3719,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         for (int i = 0; i < ggml_graph_n_nodes(res->get_gf()); ++i) {
             ggml_tensor * t = ggml_graph_node(res->get_gf(), i);
             int il = -1;
-            if (sscanf(t->name, "ffn_moe_topk-%d", &il) != 1 || il < 0 || t->type != GGML_TYPE_I32 || t->buffer == nullptr) { continue; }
+            if (sscanf(t->name, "ffn_moe_topk-%d", &il) != 1 || il < 0 || t->type != GGML_TYPE_I32 || t->buffer == nullptr ||
+                !(t->flags & GGML_TENSOR_FLAG_OUTPUT)) { continue; }   // not an output (a one-token pass): its memory may hold a later node's data
             const int64_t k = t->ne[0], n = std::min<int64_t>(t->ne[1], ubatch.n_tokens);
             ids.resize((size_t) (k*n));
             for (int64_t r = 0; r < n; ++r) {   // rows may be strided (a view of the top-k)

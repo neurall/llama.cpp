@@ -2922,7 +2922,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     cb(selected_experts, "ffn_moe_topk", il);
     static const bool tokheat_on = [] { const char * e = moe_opt("tokheat"); return e && *e; }();
     static const bool tree_on = [] { const char * e = moe_opt("dynhot"); return e && strcmp(e, "tree") == 0; }();
-    if (tokheat_on || tree_on) { ggml_set_output(selected_experts); }   // --moe tokheat=DIR, dynhot=tree: the picks stay readable after the graph ran (llama-context.cpp)
+    // --moe tokheat=DIR, dynhot=tree: the picks stay readable after the graph ran (llama-context.cpp). The tree reads prompt passes only, and an output
+    // node is never fused (ggml_can_fuse): flagged in a decode step it unfuses the top-k MoE routing of every layer, -6% decode t/s on Qwen3.6
+    if (tokheat_on || (tree_on && n_tokens > 1)) { ggml_set_output(selected_experts); }
 
     if (arch == LLM_ARCH_GROVEMOE && n_expert != hparams.n_expert) {
         // TODO: Use scalar div instead when/if implemented
