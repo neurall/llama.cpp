@@ -1308,6 +1308,7 @@ STAT_COLS = ["prompt", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_
 RUN_COLS += STAT_COLS + PRESSURE_COLS
 RUN_COLS += ["pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end"]   # predictor outcomes of the run, from cache.csv (see cache_csv_totals)
 RUN_COLS += ["up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms"]   # per GPU: mean upload time of one expert on the fast / slow link (engine log) and the effective speed MiB per expert / that time; the startup link speed of each CUDA device; admit-pred builds also: uploads, MiB and copy time per link from cache.csv
+RUN_COLS += ["state_snap"]   # the learned state (moe-state.ini, the model's globalhot.ini) the row's server started from, when the row beat its cell's best: --state-from DIR repeats it
 RUN_COLS += ["repro"]   # the run.py command line that made the row (the outermost process; cells started by it inherit it): paste it to repeat the run
 RUN_COLS += ["bestpp"]   # every run, better or worse (regressions show): the run as a models.ini bestpp tuple (total VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s)
 RUN_COLS += ["up_ms_expert", "up_gbs_eff"]   # from the engine log: mean upload time of one expert (all three tensors) over the second half of the run, and the effective speed of one upload = MiB per expert / that time
@@ -1964,6 +1965,61 @@ def drop_moe_flag(build, env, args):
 
 
 STATE_FILE = {"v": None}   # --clean-state: the learned-state file of the running cell (empty before its first repetition, kept for the next)
+STATE_SNAP = {"v": None}   # the learned state this cell's server started from: kept with a row that beats its cell's best (column state_snap)
+SNAP_DIR = os.path.join(os.path.dirname(QDIR), "state-snaps")
+RUNS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
+
+
+def state_paths(args):
+    """the learned-state file a start reads (its --moe state=, the clean-state file, else the default) and the model's dirs beside it (globalhot.ini)"""
+    st = None
+    for i, x in enumerate(args):
+        if x == "--moe" and i + 1 < len(args):
+            st = next((kv[6:] for kv in args[i + 1].split(",") if kv.startswith("state=")), st)
+    st = st or STATE_FILE["v"] or os.path.expanduser("~/.cache/llama.cpp/moe-state.ini")
+    return st, [d for d in glob.glob(os.path.join(os.path.dirname(st), glob.escape(os.path.basename(MODEL)) + "_*")) if os.path.isdir(d)]
+
+
+def state_snapshot(args, build):
+    """user 2026-11-13 (K3 decode 3.05 -> 1.1 t/s on the same binary, a drifted learned state): "store hotmoe ini files for best runs again to be able to repro
+    hotmoes". A copy of the state file and the model's heat as this start reads them; --state-from DIR puts such a copy back first. Copies no row claims
+    (a row claims one when it beats its cell's best, snap_if_best) are dropped at the model's next start"""
+    import sqlite3
+    st, dirs = state_paths(args)
+    src = OVR.get("state_from")
+    if src:
+        if os.path.exists(os.path.join(src, os.path.basename(st))): shutil.copy2(os.path.join(src, os.path.basename(st)), st)
+        for d in (x for x in glob.glob(os.path.join(src, "*")) if os.path.isdir(x)):
+            to = os.path.join(os.path.dirname(st), os.path.basename(d))
+            os.makedirs(to, exist_ok=True)
+            for f in glob.glob(os.path.join(d, "*.ini")): shutil.copy2(f, os.path.join(to, os.path.basename(f)))
+        print(f"state from {src}", flush=True)
+        st, dirs = state_paths(args)
+    base = os.path.join(SNAP_DIR, os.path.basename(MODEL).split(".gguf")[0])
+    try:
+        used = {r[0] for r in sqlite3.connect(RUNS_DB).execute("SELECT DISTINCT state_snap FROM runs WHERE state_snap IS NOT NULL")}
+        for d in glob.glob(os.path.join(base, "*")):
+            if d not in used: shutil.rmtree(d, ignore_errors=True)
+    except sqlite3.Error:
+        pass   # no state_snap column yet: nothing is dropped
+    dst = os.path.join(base, time.strftime("%Y%m%d-%H%M%S") + "-" + build)
+    os.makedirs(dst, exist_ok=True)
+    if os.path.exists(st): shutil.copy2(st, os.path.join(dst, os.path.basename(st)))
+    for d in dirs:
+        os.makedirs(os.path.join(dst, os.path.basename(d)), exist_ok=True)
+        for f in glob.glob(os.path.join(d, "*.ini")): shutil.copy2(f, os.path.join(dst, os.path.basename(d), os.path.basename(f)))
+    STATE_SNAP["v"] = dst
+
+
+def snap_if_best(model, test, args, hw, tps):
+    """the start's state copy when this row beats every earlier row of its cell (model, test, args, machine; any build), else none"""
+    import sqlite3
+    if not STATE_SNAP["v"] or not tps: return None
+    try:
+        r = sqlite3.connect(RUNS_DB).execute("SELECT max(tps) FROM runs WHERE model=? AND test=? AND args=? AND hw=?", (model, test, args, hw)).fetchone()
+    except sqlite3.Error:
+        return STATE_SNAP["v"]
+    return STATE_SNAP["v"] if r[0] is None or float(tps) > float(r[0]) else None
 
 
 def merge_moe(args):
@@ -1996,6 +2052,7 @@ def _server_start_once(build, env, args):
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
     env, args = drop_moe_flag(build, env, args)
     args = merge_moe(args)
+    if not build.startswith("stock"): state_snapshot(args, build)
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
     if os.path.exists(logf): os.replace(logf, logf + ".prev")   # the previous start's log stays readable: in a clean-state cell the cold run is the start before the warm one
     global WATCH_LOG; WATCH_LOG = logf   # post() watches this file
@@ -3749,7 +3806,8 @@ def store(row, build, test, rec, note, hw, vstr):
         note=row["note"], ppl=row.get("ppl"), spp=row.get("s_per_pass"), n_gen=row.get("n_gen"), bno=row["build_no"], origin=row["origin"],
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "driver", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
-        branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"), **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "judge", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
+        branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"),
+        state_snap=snap_if_best(row["model"], test, rec.get("args", ""), hw, row.get("tps")) if row.get("ok", 1) else None, **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "judge", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     save_output_file(row["ts"], build, test, row["model"])   # fork/outputs/<run id>.txt: the answer, readable on GitHub without runs.db
     global _EMB_OFF
     try:
@@ -4088,7 +4146,7 @@ def set_overrides(a):
             GREEDY[k] = json.loads(v)   # numbers, true / false
         except ValueError:
             GREEDY[k] = v
-    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink", "gen", "canary"):
+    for k in ("prompt", "tokens", "ctx", "pidx", "repeat", "clamp", "vary", "par", "lead", "chat", "nothink", "gen", "canary", "state_from"):
         if getattr(a, k, None) is not None:
             OVR[k] = getattr(a, k)
     if OVR.get("gen") is not None: a.test = "gen"   # --gen on any run: generated prompts in place of the test's own
@@ -5156,6 +5214,7 @@ def add_overrides(sub):
     sub.add_argument("--gen", help="generated prompts in place of the test's own, repetition k = prompt k: in=A:B,out=A:B,task=kinds of GEN_TASKS (latin|french|german|medical|legal|equations|scifi|py|js|cpp|java|html|code|prose|explain|data|math|chat) or free text,topic=a|b,seed=N,first=K (see gen_prompt; '' = defaults)")
     sub.add_argument("--canary", type=lambda v: int(float(v[:-1]) * 1000) if v.lower().endswith("k") else int(v), metavar="N[k]",
                      help="pf tests: about N tokens of the source with 5 record codes hidden in it and a question at the end; the answer is checked exactly (a wrong code fails the row)")
+    sub.add_argument("--state-from", metavar="DIR", help="put a saved learned state back before the server starts (a state_snap path of runs.db: moe-state.ini and the model's globalhot.ini of a best run)")
     sub.add_argument("--nothink", action="store_const", const=True, help="chat tests (tetrisc, edit4c ...): reasoning off (chat_template_kwargs enable_thinking=false), the answer is the text itself")
     sub.add_argument("--lead", type=int, help="first a request with a prompt of about N tokens to the same server, then the measured one (the KV grows, then shrinks)")
     sub.add_argument("--repeat", type=int, help="send the request this many times to the same server and report the last one (warm: kernels loaded, pinned buffers touched, pages mapped); the first one's speed goes to the note as first_pp")
