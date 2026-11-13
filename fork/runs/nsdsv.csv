@@ -21,3 +21,9 @@ nd-mimo-ds0-stg,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=0,staging=1",
 nd-mimo-ds0-ns,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=0,staging=0",--env GGML_PF_STATS=1
 nd-mimo-ds1-stg,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=1,staging=1",--env GGML_PF_STATS=1
 nd-mimo-ds1-ns,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=1,staging=0",--env GGML_PF_STATS=1
+nd-ds0-lp,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,split-experts=0,staging=0,moe-split=home",
+nd-glm-ds0-lp,glm,1,pf12k,64,"--moe dense-split=1,split-experts=0,staging=0,moe-split=home",
+nd-glm35-lp,glm35,2,pf12k,64,"--moe dense-split=0,staging=0,moe-split=home",--env GGML_PF_STATS=1
+nd-glm35-ds0-lp,glm35,2,pf12k,64,"--moe dense-split=1,split-experts=0,staging=0,moe-split=home",--env GGML_PF_STATS=1
+nd-mimo-lp,mimo,2,pf12k,64,"--moe dense-split=0,staging=0,moe-split=home",--env GGML_PF_STATS=1
+nd-mimo-ds0-lp,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=0,staging=0,moe-split=home",--env GGML_PF_STATS=1
