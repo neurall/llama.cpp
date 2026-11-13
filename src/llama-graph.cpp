@@ -2997,7 +2997,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     if (cparams.moe_cache && n_tokens > 0 && n_tokens <= llama_moe_cache_max_batch_fork() && !gate_up_exps && gate_exps && down_exps &&
         !up_exps_b && !gate_exps_b && !down_exps_b &&
         !up_exps_s && !gate_exps_s && !down_exps_s &&
-        type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
+        (type_op == LLM_FFN_SILU || type_op == LLM_FFN_SITU) && !weight_before_ffn && loras->empty()) {   // (SITU: Kimi K3, see mc_act; without it K3 ran the scheduler's staged copies only)
         mcache = llama_moe_cache_lookup_fork(up_exps);
         if (mcache && sched) { llama_moe_cache_link_backends_fork(sched); }
         // a prompt call: the prompt chain, or the prompt path for a layer whose blocks cannot hold the pass (a dense split keeps its own path, which stages,
@@ -3016,7 +3016,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // expert of such a layer over the fastest link, whatever the home card holds (Qwen3.6, 2 x 3090: 19 of 40 layers, 2.9 GB of 8.8 GB per pass held and not used).
     ggml_backend_t mc_mix_b = nullptr;
     if (!mcache && cparams.moe_cache && n_tokens >= 2 && sched && moe_ranges.empty() && !gate_up_exps && gate_exps && down_exps && !up_exps_b && !gate_exps_b && !down_exps_b &&
-            !up_exps_s && !gate_exps_s && !down_exps_s && type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
+            !up_exps_s && !gate_exps_s && !down_exps_s && (type_op == LLM_FFN_SILU || type_op == LLM_FFN_SITU) && !weight_before_ffn && loras->empty()) {
         const llama_moe_cache_layer_fork * m = llama_moe_cache_lookup_fork(up_exps);
         const ggml_backend_dev_t fd = m ? llama_moe_cache_pp_mix_fork(m) : nullptr;
         for (int i = 0; fd && i < ggml_backend_sched_get_n_backends(sched); ++i) {
@@ -3036,8 +3036,22 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // first (that copy syncs the GPU while only the router is queued), then
     // queue the GPU chain, then run the CPU chain on the copies only, so the
     // scheduler has no reason to wait for the GPU before computing on CPU.
-    // the cache chains' activation, the same op as the expert chain's for type_op LLM_FFN_SILU (the only one the cache path takes)
+    // the router's weights: gate_inp, or the matmul behind probs_in (Kimi K3 scores the full-width input outside, the experts take the latent one); the layer's home card is where they live
+    ggml_tensor * router_w = gate_inp ? gate_inp : probs_in && probs_in->op == GGML_OP_MUL_MAT ? probs_in->src[0] : nullptr;
+    // kimi-k3: situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb), one helper for the expert chain below and the cache chains
+    auto situ = [&](ggml_tensor * g, ggml_tensor * u) -> ggml_tensor * {
+        const float beta = hparams.situ_beta;
+        const float lb   = hparams.situ_linear_beta;
+        ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, g, 1.0f/beta)), beta);
+        act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, g));
+        if (lb > 0.0f) {
+            u = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, u, 1.0f/lb)), lb);
+        }
+        return ggml_mul(ctx0, act, u);
+    };
+    // the cache chains' activation, the same op as the expert chain's for type_op LLM_FFN_SILU and LLM_FFN_SITU (the ones the cache path takes)
     auto mc_act = [&](ggml_tensor * gate_t, ggml_tensor * up_t) -> ggml_tensor * {
+        if (type_op == LLM_FFN_SITU) { return situ(gate_t, up_t); }
         const float limit = il >= 0 ? hparams.swiglu_clamp_exp[il] : 0.0f;
         constexpr float eps = 1e-6f;
         if (limit > eps) {
@@ -3448,17 +3462,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 } break;
             case LLM_FFN_SITU:
                 {
-                    // situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb)
                     GGML_ASSERT(has_gate);
-                    const float beta = hparams.situ_beta;
-                    const float lb   = hparams.situ_linear_beta;
-
-                    ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
-                    act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
-                    if (lb > 0.0f) {
-                        up = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, up, 1.0f/lb)), lb);
-                    }
-                    cur = ggml_mul(ctx0, act, up);
+                    cur = situ(cur, up);
                     cb(cur, "ffn_moe_situ", il);
                 } break;
             case LLM_FFN_GELU:
@@ -3559,10 +3564,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 // hand; otherwise from the upload rates as before.
                 static const bool ctl_on = split_opt("split-chunks", 1) <= 1;   // --moe split-auto=0 stops the tuning (llama_split_ctl_poll_fork), not the table
                 std::vector<int64_t> n_of;
-                if (ctl_on && slow_share < 0.0 && gate_inp && gate_inp->buffer) {
+                if (ctl_on && slow_share < 0.0 && router_w && router_w->buffer) {
                     // range mode (dense split): every card hands its partial results on, the router runs on the expert card's range: that card is the reference
                     const ggml_backend_dev_t od = !moe_ranges.empty() ? ggml_backend_get_device(ds_r[llama_ds_xr_fork(ds_r)].b)
-                                                                      : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(gate_inp->buffer));
+                                                                      : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(router_w->buffer));
                     std::vector<std::pair<ggml_backend_dev_t, double>> cards;
                     size_t owner_i = parts.size();
                     for (size_t i = 0; i < parts.size(); ++i) {
@@ -3714,8 +3719,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         //  3. The partial sums are added on the owner AFTER its own chain: sum = owner's part, then + each helper's part. The scheduler starts a new split at an add
         //     that reads another card's tensor (see pass 5 in ggml_backend_sched_split_graph), so the owner's own matmuls never wait for a helper's result.
         ggml_backend_t owner_b = nullptr;
-        if (gate_inp && gate_inp->buffer) {
-            const ggml_backend_dev_t owner_dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(gate_inp->buffer));
+        if (router_w && router_w->buffer) {
+            const ggml_backend_dev_t owner_dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(router_w->buffer));
             for (const auto & pt : parts) { if (owner_dev && ggml_backend_get_device(pt.b) == owner_dev) { owner_b = pt.b; } }
         }
         if (!moe_ranges.empty()) {
