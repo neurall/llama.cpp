@@ -542,7 +542,7 @@ struct moe_cache {
     std::vector<std::pair<int32_t, int32_t>> cs_rng;
     bool                     cs_masked = false;   // a pass of this call masked device tables to their range: the call's end writes every layer's table again
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
-    uint64_t                 cs_n_pred = 0, cs_n_late = 0, cs_n_used = 0, cs_n_listed = 0, cs_n_noids = 0;   // the k arm, the pass so far: uploaded by the rankings, by the late fix; experts the entries used, of those in their list; entries without ids (whole range)
+    uint64_t                 cs_n_pred = 0, cs_n_late = 0, cs_n_used = 0, cs_n_listed = 0, cs_n_noids = 0, cs_n_steal = 0;   // the k arm, the pass so far: uploaded by the rankings, by the late fix; experts the entries used, of those in their list; entries without ids (whole range); predicted blocks the late fix took back
     uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
     std::vector<double>      layer_dt;
@@ -12228,7 +12228,7 @@ static const std::vector<uint8_t> * cs_used(moe_cache * mc, int il, int64_t ne) 
 }
 
 // sel: null = every uncached expert of the entry's range (the stream), else only those with sel[e] != 0 (the k arm's predicted or used experts)
-static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done, const std::vector<uint8_t> * sel = nullptr) {   // cache lock held
+static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done, const std::vector<uint8_t> * sel = nullptr, bool late = false) {   // cache lock held
     const size_t li = mc->cs_order[p];
     layer_state & ls = csl(mc, li);
     out.clear();
@@ -12282,15 +12282,47 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         }
     }
     }
+    // late (the k arm's late fix, at the entry's own split): with every block taken, the predictions give way, those of the entries after this one first (the
+    // furthest first; their turn plans them again), then this entry's own its tokens do not use. Their copies are on the same ring stream, so the late copies
+    // land after them, and no kernel read them yet. The staged k arm had its layer's staging slots for this; on the ring, the layers ahead held all 66 blocks
+    // of the class and the late fix aborted (Qwen3.6 sim-vram=3072, 15 tokens, build k_arm_ring)
+    const size_t n_ring = c.size();
+    if (late && c.size() < want.size()) {
+        std::vector<std::pair<int32_t, int32_t>> fl;   // (position, block); -1: this entry's own
+        for (int32_t b = r0; b < nb; ++b) {
+            const int32_t o = ps.owner[b];
+            if (o == -1 || o == -2 || o == -4) { continue; }
+            const int64_t lx = cs_li_of(mc, o);
+            if (lx < 0) { continue; }
+            const layer_state & lo = csl(mc, (size_t) lx);
+            const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1, x = lo.slot_expert[b];
+            if (!lo.slot_in_flight[b] || lo.is_stream[b] || x < 0) { continue; }
+            if (q > (int32_t) p) { fl.push_back({ q, b }); }
+            else if ((size_t) lx == li && sel && ((size_t) x >= sel->size() || !(*sel)[(size_t) x])) { fl.push_back({ -1, b }); }
+        }
+        std::stable_sort(fl.begin(), fl.end(), [](const std::pair<int32_t, int32_t> & x, const std::pair<int32_t, int32_t> & y) { return x.first > y.first; });
+        for (size_t i = 0; i < fl.size() && c.size() < want.size(); ++i) { c.push_back({ 7, fl[i].second, cs_li_of(mc, ps.owner[fl[i].second]) }); }
+    }
     if (c.size() < want.size()) { return false; }
-    ps.cs_cur = (c.back().b + 1 - r0) % nr;
-    if (r0 > 0 && card) { card->cs_byte = cbase + (size_t) (c.back().b + 1) * ps.B; if (card->cs_byte >= card->tail_end) { card->cs_byte = card->floor_end; } }
+    if (n_ring > 0) {
+        ps.cs_cur = (c[n_ring - 1].b + 1 - r0) % nr;
+        if (r0 > 0 && card) { card->cs_byte = cbase + (size_t) (c[n_ring - 1].b + 1) * ps.B; if (card->cs_byte >= card->tail_end) { card->cs_byte = card->floor_end; } }
+    }
     std::sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return x.b < y.b; });   // ascending blocks for ascending experts: runs of both, one 2D copy each
     const double S   = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
     const double rlb = mc->gbs_link[ls.link] * 1e3;
     for (size_t i = 0; i < want.size(); ++i) {
         const int32_t e = want[i], b = c[i].b;
-        if (c[i].tier >= 5) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; }
+        if (c[i].tier == 7) {   // a prediction gives way: out of its entry's blocks in flight; an entry after this one plans it again from its turn
+            layer_state & lo = csl(mc, (size_t) c[i].o);
+            lo.slot_in_flight[b] = false;
+            lo.ring_slots.erase(std::remove(lo.ring_slots.begin(), lo.ring_slots.end(), b), lo.ring_slots.end());
+            cs_evict(mc, (size_t) c[i].o, b);
+            const int32_t q = mc->cs_pos[(size_t) c[i].o];
+            if (q > (int32_t) p) { mc->cs_next[lo.link] = std::min(mc->cs_next[lo.link], (size_t) q); }
+            mc->cs_n_steal++;
+        }
+        else if (c[i].tier >= 5) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; }
         else if (c[i].tier >= 2) { cs_evict(mc, (size_t) c[i].o, b); }
         from_done |= c[i].tier == 2 || c[i].tier == 3 || c[i].tier == 6;
         mc->cs_n_free += c[i].tier <= 1; mc->cs_n_cold += c[i].tier == 2; mc->cs_n_done += c[i].tier == 3; mc->cs_n_ahead += c[i].tier == 4;
@@ -12390,12 +12422,12 @@ static void cs_begin(moe_cache * mc) {
     static int n_log_k = 0;
     if (mc->cs_pass > 0 && g_cs_k_pass > 0.0 && (n_log_k < 6 || mc->cs_pass % 64 == 0)) {
         n_log_k++;
-        LLAMA_LOG_WARN("moe-cache: cstream: pass %u, k x%g: %llu experts uploaded by the rankings, %llu at their layer's split from its ids (late); the entries used %llu experts, %.1f%% of them in their predicted list; %llu entries without ids took their whole range\n",
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u, k x%g: %llu experts uploaded by the rankings, %llu at their layer's split from its ids (late); the entries used %llu experts, %.1f%% of them in their predicted list; %llu entries without ids took their whole range; %llu predicted blocks given back to a late fix\n",
                 mc->cs_pass, g_cs_k_pass, (unsigned long long) mc->cs_n_pred, (unsigned long long) mc->cs_n_late, (unsigned long long) mc->cs_n_used,
-                mc->cs_n_used ? 100.0 * (double) mc->cs_n_listed / (double) mc->cs_n_used : 0.0, (unsigned long long) mc->cs_n_noids);
+                mc->cs_n_used ? 100.0 * (double) mc->cs_n_listed / (double) mc->cs_n_used : 0.0, (unsigned long long) mc->cs_n_noids, (unsigned long long) mc->cs_n_steal);
     }
     mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = 0;
-    mc->cs_n_pred = mc->cs_n_late = mc->cs_n_used = mc->cs_n_listed = mc->cs_n_noids = 0;
+    mc->cs_n_pred = mc->cs_n_late = mc->cs_n_used = mc->cs_n_listed = mc->cs_n_noids = mc->cs_n_steal = 0;
     g_cs_k_pass = g_cs_pred_built ? cs_k_call() : 0.0;
     g_cs_pio.pend.clear();
     mc->cs_order = g_cs_order_built;
@@ -12536,12 +12568,12 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
             for (; nx < p; ++nx) {
                 if (csl(mc, mc->cs_order[nx]).link != k) { continue; }
                 cs_job jx { mc->cs_order[nx], {}, false, mc->cs_done[k] };
-                if (!cs_plan(mc, nx, jx.cps, jx.from_done)) { GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts: %s", csl(mc, mc->cs_order[nx]).pub.il, cs_why(mc, nx).c_str()); }
+                if (!cs_plan(mc, nx, jx.cps, jx.from_done, nullptr, true)) { GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts: %s", csl(mc, mc->cs_order[nx]).pub.il, cs_why(mc, nx).c_str()); }
                 mc->cs_n_late += jx.cps.size();
                 jobs.push_back(std::move(jx));
             }
             cs_job j { li, {}, false, mc->cs_done[k] };
-            if (!cs_plan(mc, p, j.cps, j.from_done, used)) {
+            if (!cs_plan(mc, p, j.cps, j.from_done, used, true)) {
                 GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for the experts its tokens use (the class must hold a layer's worth besides the lend and the KV rows): %s", il, cs_why(mc, p).c_str());
             }
             mc->cs_n_late += j.cps.size();

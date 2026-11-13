@@ -1,0 +1,30 @@
+name,model,n,test,tokens,args,extra
+q36-ans-stream,qwen36,1,tetrisc,256,"--moe sim-vram=3072,pp-path=stream,pp-k=0,dense-split=0",--nothink
+q36-ans-k1,qwen36,1,tetrisc,256,"--moe sim-vram=3072,pp-path=stream,pp-k=1,dense-split=0",--nothink
+q36-ans-k2,qwen36,1,tetrisc,256,"--moe sim-vram=3072,pp-path=stream,pp-k=2,dense-split=0",--nothink
+q36-ans-k1-edit,qwen36,1,100in_128out_edit_src,128,"--moe sim-vram=3072,pp-path=stream,pp-k=1,dense-split=0",--nothink
+q38-ans-k1,qwen38,1,tetrisc,256,"--moe pp-path=stream,pp-k=1,dense-split=0",--nothink
+q36-stream-200,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 200 --vary --ctx 8192
+q36-k1-200,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 200 --vary --ctx 8192
+q36-k2-200,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=2,dense-split=0",--clamp 200 --vary --ctx 8192
+q36-auto-200,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1",--clamp 200 --vary --ctx 8192
+q36-stream-500,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 500 --vary --ctx 8192
+q36-k1-500,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 500 --vary --ctx 8192
+q36-k2-500,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=2,dense-split=0",--clamp 500 --vary --ctx 8192
+q36-auto-500,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1",--clamp 500 --vary --ctx 8192
+q36-stream-1000,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 1000 --vary --ctx 8192
+q36-k1-1000,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 1000 --vary --ctx 8192
+q36-k2-1000,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1,pp-path=stream,pp-k=2,dense-split=0",--clamp 1000 --vary --ctx 8192
+q36-auto-1000,qwen36,3,pf128k,1,"--moe sim-vram=3072,pp-only=1",--clamp 1000 --vary --ctx 8192
+q38-stream-200,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 200 --vary --ctx 8192
+q38-k1-200,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 200 --vary --ctx 8192
+q38-k2-200,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=2,dense-split=0",--clamp 200 --vary --ctx 8192
+q38-auto-200,qwen38,3,pf128k,1,"--moe pp-only=1",--clamp 200 --vary --ctx 8192
+q38-stream-500,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 500 --vary --ctx 8192
+q38-k1-500,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 500 --vary --ctx 8192
+q38-k2-500,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=2,dense-split=0",--clamp 500 --vary --ctx 8192
+q38-auto-500,qwen38,3,pf128k,1,"--moe pp-only=1",--clamp 500 --vary --ctx 8192
+q38-stream-1000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 1000 --vary --ctx 8192
+q38-k1-1000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=1,dense-split=0",--clamp 1000 --vary --ctx 8192
+q38-k2-1000,qwen38,3,pf128k,1,"--moe pp-only=1,pp-path=stream,pp-k=2,dense-split=0",--clamp 1000 --vary --ctx 8192
+q38-auto-1000,qwen38,3,pf128k,1,"--moe pp-only=1",--clamp 1000 --vary --ctx 8192
