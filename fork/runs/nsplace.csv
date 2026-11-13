@@ -1,0 +1,31 @@
+name,model,n,test,tokens,args,extra
+np-free-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1
+np-ds-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1
+np-glm35-verify,glm35,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1
+np-q36-128-stg,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 140000 --hog-gpu 4.5
+np-q36-128-ns,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 140000 --hog-gpu 4.5
+np-glm35-stg,glm35,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1
+np-glm35-ns,glm35,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
+np-mimo-stg,mimo,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1
+np-mimo-ns,mimo,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
+np-free-stg,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=1",
+np-free-ns,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0",
+np-ds-stg,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,staging=1",
+np-ds-ns,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,staging=0",
+np-es-stg,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=1",
+np-es-ns,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0",
+np-mix-stg,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,pp-path=mix,staging=1",
+np-mix-ns,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,pp-path=mix,staging=0",
+np-def-stg,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,staging=1",
+np-def-ns,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,staging=0",
+np-glm-verify,glm,1,pf12k,64,"--moe dense-split=0,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1
+np-glm-one-stg,glm,1,pf12k,64,"--moe dense-split=0,staging=1",
+np-glm-one-ns,glm,1,pf12k,64,"--moe dense-split=0,staging=0",
+np-glm-ds-stg,glm,1,pf12k,64,"--moe dense-split=1,staging=1",
+np-glm-ds-ns,glm,1,pf12k,64,"--moe dense-split=1,staging=0",
+np-glm-es-stg,glm,1,pf12k,64,"--moe dense-split=0,prefill-split=0.5,staging=1",
+np-glm-es-ns,glm,1,pf12k,64,"--moe dense-split=0,prefill-split=0.5,staging=0",
+np-free-home,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,moe-split=home",
+np-ds-home,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,staging=0,moe-split=home",
+np-glm-one-home,glm,1,pf12k,64,"--moe dense-split=0,staging=0,moe-split=home",
+np-q36-128-home,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0,moe-split=home",--ctx 140000 --hog-gpu 4.5

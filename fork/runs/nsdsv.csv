@@ -1,0 +1,23 @@
+name,model,n,test,tokens,args,extra
+nd-ds0-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,split-experts=0,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1
+nd-ds1-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,split-experts=1,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1
+nd-ds0-stg,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,split-experts=0,staging=1",
+nd-ds0-ns,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,split-experts=0,staging=0",
+nd-ds1-stg,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,split-experts=1,staging=1",
+nd-ds1-ns,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,split-experts=1,staging=0",
+nd-glm-ds0-stg,glm,1,pf12k,64,"--moe dense-split=1,split-experts=0,staging=1",
+nd-glm-ds0-ns,glm,1,pf12k,64,"--moe dense-split=1,split-experts=0,staging=0",
+nd-glm-ds1-stg,glm,1,pf12k,64,"--moe dense-split=1,split-experts=1,staging=1",
+nd-glm-ds1-ns,glm,1,pf12k,64,"--moe dense-split=1,split-experts=1,staging=0",
+nd-glm35-dsa-stg,glm35,2,pf12k,64,"--moe dense-split=1,staging=1",--env GGML_PF_STATS=1
+nd-glm35-dsa-ns,glm35,2,pf12k,64,"--moe dense-split=1,staging=0",--env GGML_PF_STATS=1
+nd-glm35-ds0-stg,glm35,2,pf12k,64,"--moe dense-split=1,split-experts=0,staging=1",--env GGML_PF_STATS=1
+nd-glm35-ds0-ns,glm35,2,pf12k,64,"--moe dense-split=1,split-experts=0,staging=0",--env GGML_PF_STATS=1
+nd-glm35-ds1-stg,glm35,2,pf12k,64,"--moe dense-split=1,split-experts=1,staging=1",--env GGML_PF_STATS=1
+nd-glm35-ds1-ns,glm35,2,pf12k,64,"--moe dense-split=1,split-experts=1,staging=0",--env GGML_PF_STATS=1
+nd-mimo-dsa-stg,mimo,2,pf12k,64,"--moe dense-split=1,staging=1",--env GGML_PF_STATS=1
+nd-mimo-dsa-ns,mimo,2,pf12k,64,"--moe dense-split=1,staging=0",--env GGML_PF_STATS=1
+nd-mimo-ds0-stg,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=0,staging=1",--env GGML_PF_STATS=1
+nd-mimo-ds0-ns,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=0,staging=0",--env GGML_PF_STATS=1
+nd-mimo-ds1-stg,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=1,staging=1",--env GGML_PF_STATS=1
+nd-mimo-ds1-ns,mimo,2,pf12k,64,"--moe dense-split=1,split-experts=1,staging=0",--env GGML_PF_STATS=1
