@@ -2997,7 +2997,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     if (cparams.moe_cache && n_tokens > 0 && n_tokens <= llama_moe_cache_max_batch_fork() && !gate_up_exps && gate_exps && down_exps &&
         !up_exps_b && !gate_exps_b && !down_exps_b &&
         !up_exps_s && !gate_exps_s && !down_exps_s &&
-        (type_op == LLM_FFN_SILU || type_op == LLM_FFN_SITU) && !weight_before_ffn && loras->empty()) {   // (SITU: Kimi K3, see mc_act; without it K3 ran the scheduler's staged copies only)
+        // (SITU: Kimi K3, see mc_act; without it K3 ran the scheduler's staged copies only.) shortcut: SITU takes the cache path for decode steps only: its prompt stream
+        // into the blocks read one expert at a time (Kimi K3.1 1k tokens: 486 GB from the SSD at 1.8 GB/s, 270 s against 77 staged); prompts too once the stream's
+        // reads run ahead of the ring (task #308)
+        (type_op == LLM_FFN_SILU || (type_op == LLM_FFN_SITU && n_tokens == 1)) && !weight_before_ffn && loras->empty()) {
         mcache = llama_moe_cache_lookup_fork(up_exps);
         if (mcache && sched) { llama_moe_cache_link_backends_fork(sched); }
         // a prompt call: the prompt chain, or the prompt path for a layer whose blocks cannot hold the pass (a dense split keeps its own path, which stages,
@@ -3016,7 +3019,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // expert of such a layer over the fastest link, whatever the home card holds (Qwen3.6, 2 x 3090: 19 of 40 layers, 2.9 GB of 8.8 GB per pass held and not used).
     ggml_backend_t mc_mix_b = nullptr;
     if (!mcache && cparams.moe_cache && n_tokens >= 2 && sched && moe_ranges.empty() && !gate_up_exps && gate_exps && down_exps && !up_exps_b && !gate_exps_b && !down_exps_b &&
-            !up_exps_s && !gate_exps_s && !down_exps_s && (type_op == LLM_FFN_SILU || type_op == LLM_FFN_SITU) && !weight_before_ffn && loras->empty()) {
+            !up_exps_s && !gate_exps_s && !down_exps_s && type_op == LLM_FFN_SILU && !weight_before_ffn && loras->empty()) {
         const llama_moe_cache_layer_fork * m = llama_moe_cache_lookup_fork(up_exps);
         const ggml_backend_dev_t fd = m ? llama_moe_cache_pp_mix_fork(m) : nullptr;
         for (int i = 0; fd && i < ggml_backend_sched_get_n_backends(sched); ++i) {
