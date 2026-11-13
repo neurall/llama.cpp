@@ -526,6 +526,10 @@ struct moe_cache {
     // and entries live one pass (cs_shadow_drop). cs_order entries from layers.size() on are shadows; cs_rng: the expert ids [lo, hi) each entry computes in the pass
     std::deque<layer_state>  shadows;
     std::map<std::pair<size_t, int>, size_t> shadow_of;   // (layer, link) -> index into shadows, SIZE_MAX: that card has no class of the layer's shape
+    // a class WITHOUT home blocks on a card (alloc_group): the shape of another card's layers that no layer of this card has. A grid over the card's whole pool
+    // (owner -4: another class's bytes until the ring claims them) and its own views, so a shadow of such a layer has blocks here too
+    struct fcls_t { ggml_backend_dev_t dev = nullptr; int32_t pcls = -1, n = 0; ggml_tensor * t3[3] = { nullptr, nullptr, nullptr }; };
+    std::vector<fcls_t>      fcls;
     std::vector<std::pair<int32_t, int32_t>> cs_rng;
     bool                     cs_masked = false;   // a pass of this call masked device tables to their range: the call's end writes every layer's table again
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
@@ -9682,6 +9686,66 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     cls_txt += tr_fmt("%s%d x %.2f MiB (%zu layers%s)", c ? ", " : "", nblk[c], pl.cls[c].B / 1048576.0, pl.cls[c].members.size(),
                             gn[c] > nblk[c] ? tr_fmt(", grid of %d", gn[c]).c_str() : "");
                 }
+                // Classes without home blocks (--moe staging=0, the expert split's shadows): a layer of another card whose experts have a type or size no layer of this
+                // card has got no shadow here ("no class of its shape there"), so every expert of it stayed on its home card while this card waited. Forced dense +
+                // expert split, 12k, 200 W a card, staged against staging=0: GLM 3.0 925 / 889 prompt t/s (6 of 46 layers), GLM 3.5 942 / 874, MiMo 1376 / 1301. Such a
+                // shape gets a class here with a grid over the card's whole pool and no block of its own: the ring claims its blocks as it claims any grid block
+                // (cls_claim), the lend and the KV zone never see it (a seg of 0 blocks).
+                struct fgn_t { int32_t pcls, E, gn; size_t B; };
+                std::vector<fgn_t> foreign;
+                if (ring && !order.empty()) {
+                    std::vector<const llama_layer *> fl;
+                    for (const auto & c : all) {
+                        bool own = false;
+                        for (const auto & o : cands) { own = own || o.il == c.il; }
+                        if (!own) { fl.push_back(c.l); }
+                    }
+                    const pool_layout_t pf = pool_layout(fl);
+                    const size_t tail = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    for (const pool_class & fc : pf.cls) {
+                        const llama_layer * fp    = fl[fc.members[0]];
+                        const ggml_tensor * ft[3] = { fp->ffn_up_exps, fp->ffn_gate_exps, fp->ffn_down_exps };
+                        bool have = false;
+                        for (const pool_class & oc : pl.cls) {
+                            const llama_layer * op    = ll[oc.members[0]];
+                            const ggml_tensor * ot[3] = { op->ffn_up_exps, op->ffn_gate_exps, op->ffn_down_exps };
+                            bool same = oc.B == fc.B;
+                            for (int k = 0; k < 3; ++k) {
+                                same = same && ot[k]->type == ft[k]->type && ot[k]->ne[0] == ft[k]->ne[0] && ot[k]->ne[1] == ft[k]->ne[1] &&
+                                       oc.off[k] == fc.off[k] && oc.len[k] == fc.len[k] && oc.past[k] == fc.past[k];
+                            }
+                            have = have || same;
+                        }
+                        const int32_t gnf = (int32_t) (tail / fc.B);
+                        if (have || gnf <= 0) { continue; }
+                        moe_cache::pool_state ps;
+                        ps.dev = ggml_backend_buft_get_device(buft);
+                        ps.B   = fc.B;
+                        for (int k = 0; k < 3; ++k) { ps.off[k] = fc.off[k]; ps.len[k] = fc.len[k]; ps.past[k] = fc.past[k]; }
+                        ps.owner.assign(gnf, -4);
+                        ps.home_lo = ps.home_hi = 0;
+                        mc->pool.push_back(std::move(ps));
+                        moe_cache::fcls_t f;
+                        f.dev  = ggml_backend_buft_get_device(buft);
+                        f.pcls = (int32_t) mc->pool.size() - 1;
+                        f.n    = gnf;
+                        ggml_context * vctx = ggml_init({ ggml_tensor_overhead() * 4, nullptr, true });
+                        mc->ctxs.push_back(vctx);
+                        for (int k = 0; k < 3; ++k) {   // the class's views, set by hand as the layers' are below
+                            ggml_tensor * v = ggml_new_tensor_3d(vctx, ft[k]->type, ft[k]->ne[0], ft[k]->ne[1], 1);
+                            v->ne[2]  = gnf;
+                            v->nb[2]  = fc.B;
+                            v->nb[3]  = fc.B * (size_t) gnf;
+                            v->buffer = pbuf;
+                            v->data   = (uint8_t *) ggml_backend_buffer_get_base(pbuf) + fc.off[k];
+                            ggml_format_name(v, "moe_cache_%s.f%d", k == 0 ? "up" : k == 1 ? "gate" : "down", f.pcls);
+                            f.t3[k] = v;
+                        }
+                        mc->fcls.push_back(f);
+                        foreign.push_back({ f.pcls, (int32_t) ft[0]->ne[2], gnf, fc.B });
+                        cls_txt += tr_fmt(", 0 x %.2f MiB (%zu layers of other cards, grid of %d)", fc.B / 1048576.0, fc.members.size(), gnf);
+                    }
+                }
                 for (size_t i = 0; i < cands.size(); ++i) {
                     layer_state * ls = nullptr;
                     for (auto & l : mc->layers) {
@@ -9723,6 +9787,14 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         ap.span = sg.base + (size_t) sg.n * sg.B;
                         if (!alias_all || split) { break; }
                     }
+                    for (const auto & f : foreign) {   // behind the card's own: no block of theirs is a home, cls_over finds their grid by the seg
+                        moe_cache::alias_pool::seg sg;
+                        sg.pcls = f.pcls;
+                        sg.base = 0;
+                        sg.B    = f.B;
+                        sg.n    = 0;
+                        ap.segs.push_back(sg);
+                    }
                     ap.tail_end  = split ? ap.span : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
                     ap.floor_end = ap.tail_end;
                     const char * ring_why = "";
@@ -9733,6 +9805,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         for (size_t c : order) {
                             ap.rcls.push_back({ (int32_t) (pool0 + c), (int32_t) ll[pl.cls[c].members[0]]->ffn_up_exps->ne[2], gn[c], pl.cls[c].B, gbase[c], pl.cls[c].members.size() });
                         }
+                        for (const auto & f : foreign) { ap.rcls.push_back({ f.pcls, f.E, f.gn, f.B, 0, 0 }); }   // no layer of the card: never the most common class
                         size_t fe = 0;
                         ring_n = cs_forced();
                         if (ring_n <= 0) { for (int c : cs_cand) { if (cs_ring_floor(ap, c, fe)) { ring_n = c; } } }
@@ -11123,10 +11196,19 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
             for (int t = 0; t < 3; ++t) { same = same && pb.off[t] == pa.off[t] && pb.len[t] == pa.len[t] && pb.past[t] == pa.past[t]; }
             if (same) { twin = &l; break; }
         }
+        const moe_cache::fcls_t * ftw = nullptr;   // no layer of that card has the shape: its class without home blocks (alloc_group)
+        for (const auto & f : mc->fcls) {
+            if (twin || ftw || f.dev != dev || !same_t(f.t3[0], L.pub.up_c) || !same_t(f.t3[1], L.pub.gate_c) || !same_t(f.t3[2], L.pub.down_c)) { continue; }
+            const auto & pb = mc->pool[f.pcls];
+            bool same = pb.B == pa.B;
+            for (int t = 0; t < 3; ++t) { same = same && pb.off[t] == pa.off[t] && pb.len[t] == pa.len[t] && pb.past[t] == pa.past[t]; }
+            if (same) { ftw = &f; }
+        }
+        const bool have = twin || ftw;
         size_t ix = SIZE_MAX;
         const int64_t E = ggml_nelements(L.pub.dev_table);
-        ggml_context * hctx = twin ? ggml_init({ ggml_tensor_overhead() + (size_t) E*sizeof(int32_t) + 64, nullptr, false }) : nullptr;   // the host table's data in the context
-        ggml_context * dctx = twin ? ggml_init({ ggml_tensor_overhead(), nullptr, true }) : nullptr;
+        ggml_context * hctx = have ? ggml_init({ ggml_tensor_overhead() + (size_t) E*sizeof(int32_t) + 64, nullptr, false }) : nullptr;   // the host table's data in the context
+        ggml_context * dctx = have ? ggml_init({ ggml_tensor_overhead(), nullptr, true }) : nullptr;
         ggml_tensor *  dt   = dctx ? ggml_new_tensor_2d(dctx, GGML_TYPE_I32, 1, E) : nullptr;
         ggml_backend_buffer_t tb = dt ? ggml_backend_alloc_ctx_tensors_from_buft(dctx, ggml_backend_dev_buffer_type(dev)) : nullptr;
         if (tb && hctx) {
@@ -11134,10 +11216,10 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
             mc->shadows.emplace_back();
             layer_state & sh = mc->shadows.back();
             sh.pub            = L.pub;   // the host sources (the RAM pool's keys), il
-            sh.pub.up_c       = twin->pub.up_c;
-            sh.pub.gate_c     = twin->pub.gate_c;
-            sh.pub.down_c     = twin->pub.down_c;
-            sh.pub.n_slots    = twin->pub.n_slots;
+            sh.pub.up_c       = twin ? twin->pub.up_c   : ftw->t3[0];
+            sh.pub.gate_c     = twin ? twin->pub.gate_c : ftw->t3[1];
+            sh.pub.down_c     = twin ? twin->pub.down_c : ftw->t3[2];
+            sh.pub.n_slots    = twin ? twin->pub.n_slots : ftw->n;
             sh.pub.dev_table  = dt;
             sh.pub.host_table = ggml_new_tensor_2d(hctx, GGML_TYPE_I32, 1, E);
             sh.pub.jit_n = 0; sh.pub.up_m = sh.pub.gate_m = sh.pub.down_m = nullptr; sh.pub.pred_w = sh.pub.pred_all = sh.pub.pred_mu = sh.pub.pred_q = nullptr;
@@ -11147,7 +11229,7 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
             const std::vector<int32_t> none((size_t) E, -1);
             ggml_backend_tensor_set(dt, none.data(), 0, (size_t) E*sizeof(int32_t));
             sh.link = k;
-            sh.pcls = twin->pcls;
+            sh.pcls = twin ? twin->pcls : ftw->pcls;
             for (int t = 0; t < 3; ++t) { sh.src_fd[t] = L.src_fd[t]; sh.src_dfd[t] = L.src_dfd[t]; sh.src_offs[t] = L.src_offs[t]; sh.rp_tab[t] = L.rp_tab[t]; }
             const size_t nb = mc->pool[sh.pcls].owner.size();
             sh.slot_expert.assign(nb, -1); sh.slot_in_flight.assign(nb, false); sh.is_stream.assign(nb, 0); sh.slot_last_use.assign(nb, 0);
@@ -11162,7 +11244,7 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
         if (told.insert(k * 1000000 + (ix == SIZE_MAX ? 1 : 0)).second) {
             LLAMA_LOG_WARN("moe-cache: cstream expert split: layer %d %s on %s%s\n", L.pub.il, ix == SIZE_MAX ? "has no shadow" : "computes a range of its experts also",
                     ggml_backend_dev_name(dev), ix != SIZE_MAX ? " (a shadow over the blocks of its class there; further layers alike)" :
-                    twin ? ": no memory for its table" : ": no class of its shape there (its experts stay on the home card)");
+                    have ? ": no memory for its table" : ": no class of its shape there (its experts stay on the home card)");
         }
         it = mc->shadow_of.emplace(std::make_pair(li, key), ix).first;
     }
