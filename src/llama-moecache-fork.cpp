@@ -7693,7 +7693,8 @@ static int tree_ph(const char * phase) { return strcmp(phase, "pp") == 0 ? 0 : 1
 // (embeddings?) and pool all prompt token acts without running model ... prompts with simmilar text or meaning will yeld close distance", "on prefill end walk
 // all prompt tokens embedings and pool them to get key to store pp preheat map under. thats it nothing needs to be in memory"). The key: the prompt's own
 // tokens' embedding rows (the model's table, layer 0's input), each at unit length, averaged, at unit length; its path (tree_act_path) is a dir under
-// <hot map dir>/<model>/pre holding map.hot, the experts the last prefill under that path used (tree_pre_store, tree_pp_preheat)
+// <hot map dir>/<model>/pre holding pp.live.hot (the experts of every prefill under that path, summed) and pp.best.hot (a copy of live when a prefill's prompt
+// copies came from RAM more often than the best's did), written at the prefill's end (tree_prompt_end), read at a prompt's start (tree_pp_preheat)
 static std::vector<float> tree_emb_key(const llama_model & model, const int32_t * t, int32_t n) {
     const ggml_tensor * te = model.tok_embd;
     if (te == nullptr || n <= 0) { return {}; }
@@ -9132,11 +9133,33 @@ void llama_moe_request_end_fork(void) {
 static void topic_phase(const llama_model & model, const int32_t * ids, int32_t n, bool first);   // below: the thinking phase
 
 static std::filesystem::path tree_pre_dir() { return std::filesystem::path(g_topic_tree.dir).parent_path() / "pre"; }   // <hot map dir>/<model>/pre
+// a map file's cells (empty: none) and its head value ("n=" phases or "hit=" rate; -1: none)
+static std::vector<uint32_t> tree_file_cells(const std::filesystem::path & f, double * head) {
+    std::vector<uint32_t> v;
+    if (head) { *head = -1.0; }
+    std::ifstream in(f);
+    for (std::string line; std::getline(in, line); ) {
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) { continue; }
+        const std::string k = line.substr(0, eq);
+        if (k == "n" || k == "hit") { if (head) { *head = atof(line.c_str() + eq + 1); } continue; }
+        if (k != "cells") { continue; }
+        v.assign(g_topic.store.rec_cells(), 0u);
+        std::istringstream is(line.substr(eq + 1));
+        for (std::string t; is >> t; ) {   // cell:count
+            const size_t c = t.find(':');
+            const size_t i = c == std::string::npos ? SIZE_MAX : (size_t) strtoull(t.c_str(), nullptr, 10);
+            if (i < v.size()) { v[i] = (uint32_t) strtoul(t.c_str() + c + 1, nullptr, 10); }
+        }
+    }
+    return v;
+}
 
 // --moe dynhot=tree, before the prompt's first pass (user 2026-11-13: "ram pool preheat prior prefill ... if same req load to ram all moes it needed in last
-// similar req", "that preheat was just guess that will reduce what predictor needs to pull from ssd", "we dont need any 0.5 threshold"): the map.hot under the
-// path of this prompt's pooled embedding key, else the one whose path shares the most entries level by level (the first level decides first; tree_near's rule,
-// no gate: a guess is all it is), read from the disk, fills the RAM pool with the experts its prefill used, the most used first, those the cards do not hold
+// similar req", "that preheat was just guess that will reduce what predictor needs to pull from ssd", "we dont need any 0.5 threshold", "calc that key before
+// prefill so you can look it up and load from tree and store updated and/or best one after prefill end"): the dir of this prompt's pooled embedding key's path,
+// else the one whose path shares the most entries level by level (the first level decides first; tree_near's rule, no gate: a guess is all it is): its best
+// map (pp.best.hot), else its live one (pp.live.hot), read from the disk, fills the RAM pool with the experts its prefill used, the most used first, those the cards do not hold
 // and the pool lacks, as far as its blocks go (the coldest residents go, never this fill's own); behind every demand read, then the pool's own rules.
 // --moe rp-pre=0 (or rp-steer=0): off
 static void tree_pp_preheat(moe_cache * mc) {
@@ -9148,13 +9171,13 @@ static void tree_pp_preheat(moe_cache * mc) {
     std::array<int, TREE_LEVELS> bo{};
     std::error_code ec;
     size_t n_dirs = 0;
-    if (std::filesystem::exists(root / p / "map.hot", ec)) {
+    if (std::filesystem::exists(root / p / "pp.live.hot", ec)) {
         at = p;
         for (int l = 0; l < TREE_LEVELS; ++l) { bo[l] = TREE_N[l]; }
     } else {   // shortcut: a walk of the dirs at each prompt's start (a few ms at thousands of prompts); an index file when K3's count shows the cost
         const auto q = tree_levels(p);
         for (auto it = std::filesystem::recursive_directory_iterator(root, ec); !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-            if (it->path().filename() != "map.hot") { continue; }
+            if (it->path().filename() != "pp.live.hot") { continue; }
             n_dirs++;
             const std::string key = std::filesystem::relative(it->path().parent_path(), root, ec).generic_string();
             const auto L = tree_levels(key);
@@ -9164,21 +9187,13 @@ static void tree_pp_preheat(moe_cache * mc) {
         }
     }
     std::vector<uint32_t> src;
+    double best_hit = -1.0;
     if (!at.empty()) {
-        std::ifstream in(root / at / "map.hot");
-        for (std::string line; std::getline(in, line); ) {
-            if (line.rfind("cells=", 0) != 0) { continue; }
-            src.assign(g_topic.store.rec_cells(), 0u);
-            std::istringstream is(line.substr(6));
-            for (std::string t; is >> t; ) {   // cell:count
-                const size_t c = t.find(':');
-                const size_t i = c == std::string::npos ? SIZE_MAX : (size_t) strtoull(t.c_str(), nullptr, 10);
-                if (i < src.size()) { src[i] = (uint32_t) strtoul(t.c_str() + c + 1, nullptr, 10); }
-            }
-        }
+        src = tree_file_cells(root / at / "pp.best.hot", &best_hit);
+        if (src.empty()) { src = tree_file_cells(root / at / "pp.live.hot", nullptr); best_hit = -1.0; }
     }
     if (src.empty()) {
-        LLAMA_LOG_WARN("moe-cache: hottree: prompt start: no RAM pool preheat (%s)\n", at.empty() ? "no stored prefill shares a first-level entry with this prompt's key" : "its map.hot holds no cells");
+        LLAMA_LOG_WARN("moe-cache: hottree: prompt start: no RAM pool preheat (%s)\n", at.empty() ? "no stored prefill shares a first-level entry with this prompt's key" : "its maps hold no cells");
         return;
     }
     const uint32_t nx = g_topic.store.n_exp;
@@ -9209,9 +9224,10 @@ static void tree_pp_preheat(moe_cache * mc) {
     }
     t_rp_fill = false;
     ggml_rampool_ahead_stats_fork(&s1, &u1, false);
-    LLAMA_LOG_WARN("moe-cache: hottree: prompt start: the stored prefill under %s (%s; %s) used %zu experts; the RAM pool reads ahead %llu slices of the %zu "
-            "the cards lack, the most used first, as far as its blocks go (%.1f ms)\n", tree_short(at).c_str(), at == p ? "this prompt's own path" :
-            tr_fmt("the nearest of %zu stored", n_dirs).c_str(), tree_shares(bo.data()).c_str(), rated, (unsigned long long) (s1 - s0), want.size(), (ggml_time_us() - t0) / 1e3);
+    LLAMA_LOG_WARN("moe-cache: hottree: prompt start: the stored prefills under %s (%s; %s): their %s map rates %zu experts; the RAM pool reads ahead %llu slices "
+            "of the %zu the cards lack, the most used first, as far as its blocks go (%.1f ms)\n", tree_short(at).c_str(), at == p ? "this prompt's own path" :
+            tr_fmt("the nearest of %zu stored", n_dirs).c_str(), tree_shares(bo.data()).c_str(), best_hit >= 0.0 ? tr_fmt("best (prompt copies %.1f%% from RAM)", 100.0 * best_hit).c_str() : "live",
+            rated, (unsigned long long) (s1 - s0), want.size(), (ggml_time_us() - t0) / 1e3);
 }
 
 void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t * ids, int32_t n) {
@@ -9605,7 +9621,19 @@ static void tree_prompt_end(moe_cache * mc, std::vector<float> key) {
     if (!g_topic_tree.ekey.empty()) {   // the prefill is done: the experts it used under its pooled embedding key's path, for the next similar prompt's start
         size_t nz = 0;
         for (const uint32_t u : uses) { nz += u > 0; }
-        if (nz > 0) { tree_write(tree_pre_dir() / tree_act_path(g_topic_tree.ekey) / "map.hot", "n=1", uses); }   // the last prefill under that path
+        if (nz > 0) {   // live: every prefill under the path summed; best: a copy of live when this prefill's prompt copies came from RAM more often than the best's did
+            const std::filesystem::path d = tree_pre_dir() / tree_act_path(g_topic_tree.ekey);
+            double n = 0.0, bh = -1.0;
+            std::vector<uint32_t> live = tree_file_cells(d / "pp.live.hot", &n);
+            (void) tree_file_cells(d / "pp.best.hot", &bh);
+            if (live.size() != uses.size()) { live.assign(uses.size(), 0u); }
+            for (size_t i = 0; i < uses.size(); ++i) { live[i] += uses[i]; }
+            tree_write(d / "pp.live.hot", "n=" + std::to_string((uint64_t) std::max(0.0, n) + 1), live);
+            struct ggml_rampool_stats st;
+            ggml_rampool_stats_fork(&st, false);   // since the last request's end (rp_log): this prompt's copies
+            const double q = st.pp_hit + st.pp_miss > 0 ? (double) st.pp_hit / (double) (st.pp_hit + st.pp_miss) : -1.0;
+            if (q >= 0.0 && q > bh) { tree_write(d / "pp.best.hot", "hit=" + format("%.4f", q), live); }
+        }
         g_topic_tree.ekey.clear();
     }
     uint64_t h = 0, m = 0;
