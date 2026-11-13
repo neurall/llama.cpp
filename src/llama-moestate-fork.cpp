@@ -164,6 +164,13 @@ static std::string g_place_prefix;
 void moe_state_set_place(const std::string & prefix) {
     std::lock_guard<std::mutex> lk(g_mtx);
     g_place_prefix = prefix;
+    // --moe simlink=16,4 (GGML_CUDA_SIMLINK): a simulated link is another machine, what it learns stays under its own keys (2026-11-13: the x4 rows' stored VRAM need
+    // gave the equal-link rows after them a 618 MiB margin against 484, their pools shrank and the mix ran 128-token passes)
+    if (const char * sl = getenv("GGML_CUDA_SIMLINK"); sl && *sl) {
+        std::string s = sl;
+        for (char & c : s) { if (c == ',') { c = '-'; } }
+        g_place_prefix += (g_place_prefix.empty() ? "sl" : ".sl") + s;
+    }
 }
 
 const std::string & moe_state_place() {
