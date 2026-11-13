@@ -12420,15 +12420,17 @@ static void cs_begin(moe_cache * mc) {
                 mc->cs_pass, (unsigned long long) mc->cs_n_hook, mc->cs_order.size());
     }
     static int n_log_k = 0;
-    if (mc->cs_pass > 0 && g_cs_k_pass > 0.0 && (n_log_k < 6 || mc->cs_pass % 64 == 0)) {
+    static double k_last = 0.0;   // the logged pass's multiplier: cs_end zeroes g_cs_k_pass at each call's end, before this logs that call's last pass
+    if (mc->cs_pass > 0 && k_last > 0.0 && (n_log_k < 6 || mc->cs_pass % 64 == 0)) {
         n_log_k++;
         LLAMA_LOG_WARN("moe-cache: cstream: pass %u, k x%g: %llu experts uploaded by the rankings, %llu at their layer's split from its ids (late); the entries used %llu experts, %.1f%% of them in their predicted list; %llu entries without ids took their whole range; %llu predicted blocks given back to a late fix\n",
-                mc->cs_pass, g_cs_k_pass, (unsigned long long) mc->cs_n_pred, (unsigned long long) mc->cs_n_late, (unsigned long long) mc->cs_n_used,
+                mc->cs_pass, k_last, (unsigned long long) mc->cs_n_pred, (unsigned long long) mc->cs_n_late, (unsigned long long) mc->cs_n_used,
                 mc->cs_n_used ? 100.0 * (double) mc->cs_n_listed / (double) mc->cs_n_used : 0.0, (unsigned long long) mc->cs_n_noids, (unsigned long long) mc->cs_n_steal);
     }
     mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = 0;
     mc->cs_n_pred = mc->cs_n_late = mc->cs_n_used = mc->cs_n_listed = mc->cs_n_noids = mc->cs_n_steal = 0;
     g_cs_k_pass = g_cs_pred_built ? cs_k_call() : 0.0;
+    k_last = g_cs_k_pass;
     g_cs_pio.pend.clear();
     mc->cs_order = g_cs_order_built;
     mc->cs_rng   = g_cs_rng_built;
