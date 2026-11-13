@@ -7689,32 +7689,54 @@ struct tree_map {
 };
 struct tree_leaf { tree_map ph[2]; };   // [0] the prompts' uses (pp), [1] the answers' (tg)
 static int tree_ph(const char * phase) { return strcmp(phase, "pp") == 0 ? 0 : 1; }
-// a prompt's tokens before any layer ran (the prompt start's key, tree_pp_preheat): each token id with its count, by id; a token weighs sqrt(count), norm = sqrt(sum of counts)
-struct tree_bag { std::vector<std::pair<int32_t, uint32_t>> c; double norm = 0.0; };
-static tree_bag tree_bag_of(const int32_t * t, int32_t n) {
-    std::map<int32_t, uint32_t> m;
-    for (int32_t i = 0; i < n; ++i) { m[t[i]]++; }
-    tree_bag b;
-    b.c.assign(m.begin(), m.end());
-    uint64_t s = 0;
-    for (const auto & x : b.c) { s += x.second; }
-    b.norm = std::sqrt((double) s);
-    return b;
-}
-static double tree_bag_cos(const tree_bag & a, const tree_bag & b) {
-    if (a.norm <= 0.0 || b.norm <= 0.0) { return 0.0; }
-    double d = 0.0;
-    for (size_t i = 0, j = 0; i < a.c.size() && j < b.c.size(); ) {
-        if (a.c[i].first < b.c[j].first) { ++i; } else if (a.c[i].first > b.c[j].first) { ++j; } else { d += std::sqrt((double) a.c[i].second * b.c[j].second); ++i; ++j; }
+// The prompt start's store (user 2026-11-13: "at req start we dont have much info. but we have prompt and tokens and we can gen layer 0 acts for each token
+// (embeddings?) and pool all prompt token acts without running model ... prompts with simmilar text or meaning will yeld close distance", "as soon as any
+// prefill is done we store it under that pooled emb key so it can be retrieved when simmilar prompt arrives so we know which moes to load"). A prompt's key:
+// its own tokens' embedding rows (the model's table, layer 0's input), each at unit length, averaged, at unit length. Its record: the experts its prefill used,
+// a cell per layer x expert (0 unused, else 1 + 24 log2 of its uses, to 255). <tree dir>/prefill.bin; the last 1024 in RAM; the same prompt again replaces its own
+struct tree_pre { std::vector<float> key; std::vector<uint8_t> map; };
+static std::vector<float> tree_emb_key(const llama_model & model, const int32_t * t, int32_t n) {
+    const ggml_tensor * te = model.tok_embd;
+    if (te == nullptr || n <= 0) { return {}; }
+    const int64_t ne0 = te->ne[0], nv = te->ne[1];
+    const auto * tt = ggml_get_type_traits(te->type);
+    if (te->type != GGML_TYPE_F32 && (tt == nullptr || tt->to_float == nullptr)) { return {}; }
+    const bool host = te->buffer != nullptr && ggml_backend_buffer_is_host(te->buffer) && te->data != nullptr;
+    std::map<int32_t, uint32_t> cnt;
+    for (int32_t i = 0; i < n; ++i) { if (t[i] >= 0 && t[i] < nv) { cnt[t[i]]++; } }
+    std::vector<float>   k((size_t) ne0, 0.0f), row((size_t) ne0);
+    std::vector<uint8_t> raw;
+    for (const auto & [id, c] : cnt) {   // each token's row once, weighed by its count
+        const size_t off = (size_t) id * te->nb[1];
+        const void * src = nullptr;
+        if (host) { src = (const char *) te->data + off; }
+        else { raw.resize(te->nb[1]); ggml_backend_tensor_get(te, raw.data(), off, te->nb[1]); src = raw.data(); }
+        if (te->type == GGML_TYPE_F32) { memcpy(row.data(), src, (size_t) ne0 * sizeof(float)); } else { tt->to_float(src, row.data(), ne0); }
+        double q = 0.0;
+        for (float v : row) { q += (double) v * v; }
+        if (q <= 0.0) { continue; }
+        const float f = (float) ((double) c / std::sqrt(q));
+        for (int64_t i = 0; i < ne0; ++i) { k[(size_t) i] += row[(size_t) i] * f; }
     }
-    return d / (a.norm * b.norm);
+    double q = 0.0;
+    for (float v : k) { q += (double) v * v; }
+    if (q <= 0.0) { return {}; }
+    const float f = (float) (1.0 / std::sqrt(q));
+    for (float & v : k) { v *= f; }
+    return k;
 }
-struct tree_arrival { tree_bag bag; std::string leaf; };   // a stored prompt's tokens and the leaf its maps went to (<tree dir>/arrivals.txt)
+static double tree_dot(const std::vector<float> & a, const std::vector<float> & b) {   // the cosine of two unit keys
+    if (a.size() != b.size()) { return -2.0; }
+    double d = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) { d += (double) a[i] * b[i]; }
+    return d;
+}
+static uint8_t tree_q(uint32_t u) { return u == 0 ? 0 : (uint8_t) std::min(255.0, 1.0 + std::round(24.0 * std::log2((double) u))); }
 static struct {
     std::string                       dir;
     std::map<std::string, tree_leaf>  leaves;
-    std::vector<tree_arrival>         arr;         // the stored prompts, oldest first (the last 1024)
-    tree_bag                          bag;         // this prompt's
+    std::vector<tree_pre>             pre;         // the stored prefills, oldest first (the last 1024)
+    std::vector<float>                ekey;        // this prompt's pooled embedding key (tree_emb_key)
     std::vector<uint32_t>             pp;          // the prompt's router picks per cell, read back after each prompt pass (GPU passes never reach moe_obs_cb)
     int                               k_ids = 0;   // tree-key=ids: experts a token picks (the ids a path holds)
 } g_topic_tree;
@@ -7892,24 +7914,28 @@ static void tree_open(const std::string & dir, int k_ids) {
         for (tree_map & m : it->second.ph) { if (m.live.empty()) { m = tree_map(); } }
         it = it->second.ph[0].live.empty() && it->second.ph[1].live.empty() ? g_topic_tree.leaves.erase(it) : std::next(it);
     }
-    g_topic_tree.arr.clear();   // arrivals.txt: a line a stored prompt, "<leaf> id:count ..." (tree_prompt_end)
-    std::ifstream in(std::filesystem::path(dir) / "arrivals.txt");
-    for (std::string line; std::getline(in, line); ) {
-        std::istringstream is(line);
-        tree_arrival a;
-        if (!(is >> a.leaf)) { continue; }
-        uint64_t s = 0;
-        for (std::string t; is >> t; ) {
-            const size_t c = t.find(':');
-            if (c == std::string::npos) { continue; }
-            a.bag.c.push_back({ (int32_t) strtol(t.c_str(), nullptr, 10), (uint32_t) strtoul(t.c_str() + c + 1, nullptr, 10) });
-            s += a.bag.c.back().second;
-        }
-        a.bag.norm = std::sqrt((double) s);
-        g_topic_tree.arr.push_back(std::move(a));
+    g_topic_tree.pre.clear();   // prefill.bin: "PREFILL1", n_embd, cells (uint32 each), then records of n_embd fp16 and cells bytes (tree_prompt_end)
+    size_t n_bad = 0;
+    if (FILE * fp = fopen((std::filesystem::path(dir) / "prefill.bin").string().c_str(), "rb")) {
+        char mg[8] = {};
+        uint32_t ne = 0, nc = 0;
+        if (fread(mg, 1, 8, fp) == 8 && memcmp(mg, "PREFILL1", 8) == 0 && fread(&ne, 4, 1, fp) == 1 && fread(&nc, 4, 1, fp) == 1 && ne > 0 && nc > 0) {
+            std::vector<ggml_fp16_t> h(ne);
+            for (;;) {
+                tree_pre r;
+                r.key.resize(ne);
+                r.map.resize(nc);
+                if (fread(h.data(), sizeof(ggml_fp16_t), ne, fp) != ne || fread(r.map.data(), 1, nc, fp) != nc) { break; }
+                ggml_fp16_to_fp32_row(h.data(), r.key.data(), ne);
+                g_topic_tree.pre.push_back(std::move(r));
+                if (g_topic_tree.pre.size() > 2048) { g_topic_tree.pre.erase(g_topic_tree.pre.begin(), g_topic_tree.pre.begin() + 1024); }
+            }
+        } else { n_bad = 1; }
+        fclose(fp);
     }
-    if (g_topic_tree.arr.size() > 1024) { g_topic_tree.arr.erase(g_topic_tree.arr.begin(), g_topic_tree.arr.end() - 1024); }
-    LLAMA_LOG_WARN("moe-cache: hottree: %zu leaves in %s, %zu stored prompts' tokens for the preheat at a prompt's start\n", g_topic_tree.leaves.size(), dir.c_str(), g_topic_tree.arr.size());
+    if (g_topic_tree.pre.size() > 1024) { g_topic_tree.pre.erase(g_topic_tree.pre.begin(), g_topic_tree.pre.end() - 1024); }
+    LLAMA_LOG_WARN("moe-cache: hottree: %zu leaves in %s; %zu stored prefills for the RAM pool's preheat at a prompt's start%s\n", g_topic_tree.leaves.size(), dir.c_str(),
+            g_topic_tree.pre.size(), n_bad ? " (prefill.bin of another layout: not read)" : "");
 }
 
 static void tree_write(const std::filesystem::path & f, const std::string & head, const std::vector<uint32_t> & v) {
@@ -9133,25 +9159,22 @@ void llama_moe_request_end_fork(void) {
 static void topic_phase(const llama_model & model, const int32_t * ids, int32_t n, bool first);   // below: the thinking phase
 
 // --moe dynhot=tree, before the prompt's first pass (user 2026-11-13: "ram pool preheat prior prefill ... if same req load to ram all moes it needed in last
-// similar req", "thats why we store hot moes active only during prefill", "that preheat was just guess that will reduce what predictor needs to pull from ssd"):
-// the stored prompt nearest to this one by its tokens (tree_bag_cos; no gate: a guess is all it is) names its leaf, and that leaf's prompts' map (best, else
-// live) fills the RAM pool, the most used first, the experts the cards do not hold and the pool lacks, while blocks can be had (the coldest residents go, never
-// this fill's own); behind every demand read, then the pool's own rules. --moe rp-pre=0 (or rp-steer=0): off
+// similar req", "that preheat was just guess that will reduce what predictor needs to pull from ssd", "we dont need any 0.5 threshold"): the stored prefill
+// nearest to this prompt by its pooled embedding key (tree_emb_key, tree_pre; no gate: a guess is all it is) fills the RAM pool with the experts it used, the
+// most used first, those the cards do not hold and the pool lacks, as far as its blocks go (the coldest residents go, never this fill's own); behind every
+// demand read, then the pool's own rules. --moe rp-pre=0 (or rp-steer=0): off
 static void tree_pp_preheat(moe_cache * mc) {
-    if (!rp_steer_on() || !rp_pre_on() || !mc->rp_on || g_topic_tree.bag.c.empty()) { return; }
+    if (!rp_steer_on() || !rp_pre_on() || !mc->rp_on || g_topic_tree.ekey.empty()) { return; }
     const int64_t t0 = ggml_time_us();
-    double bc = -1.0;
-    const tree_arrival * ba = nullptr;
-    for (const auto & a : g_topic_tree.arr) { const double c = tree_bag_cos(g_topic_tree.bag, a.bag); if (c >= bc) { bc = c; ba = &a; } }   // a tie: the newest
-    const auto it = ba ? g_topic_tree.leaves.find(ba->leaf) : g_topic_tree.leaves.end();
-    if (it == g_topic_tree.leaves.end() || it->second.ph[0].live.empty()) {
-        LLAMA_LOG_WARN("moe-cache: hottree: prompt start: no RAM pool preheat (%s)\n", !ba ? "no prompt stored yet" : "the nearest stored prompt's leaf holds no prompts' map");
+    double bc = -2.0;
+    const tree_pre * bp = nullptr;
+    for (const auto & r : g_topic_tree.pre) { const double c = tree_dot(g_topic_tree.ekey, r.key); if (c >= bc) { bc = c; bp = &r; } }   // a tie: the newest
+    if (bp == nullptr || bc < -1.5) {
+        LLAMA_LOG_WARN("moe-cache: hottree: prompt start: no RAM pool preheat (no prefill stored yet)\n");
         return;
     }
-    const tree_map & lf = it->second.ph[0];
-    const std::vector<uint32_t> & src = lf.best_hit >= 0.0f && !lf.best.empty() ? lf.best : lf.live;
     const uint32_t nx = g_topic.store.n_exp;
-    struct w_t { uint32_t u; size_t li; int32_t e; };
+    struct w_t { uint8_t q; size_t li; int32_t e; };
     std::vector<w_t> want;
     size_t rated = 0;
     {
@@ -9161,13 +9184,13 @@ static void tree_pp_preheat(moe_cache * mc) {
             if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers || !ls.rp_tab[0]) { continue; }
             for (size_t e = 0; e < ls.expert_slot.size() && e < nx; ++e) {
                 const size_t c = (size_t) ls.pub.il * nx + e;
-                if (c >= src.size() || src[c] == 0) { continue; }
+                if (c >= bp->map.size() || bp->map[c] == 0) { continue; }
                 rated++;
-                if (ls.expert_slot[e] < 0) { want.push_back({ src[c], li, (int32_t) e }); }
+                if (ls.expert_slot[e] < 0) { want.push_back({ bp->map[c], li, (int32_t) e }); }
             }
         }
     }
-    std::stable_sort(want.begin(), want.end(), [](const w_t & a, const w_t & b) { return a.u > b.u; });
+    std::stable_sort(want.begin(), want.end(), [](const w_t & a, const w_t & b) { return a.q > b.q; });
     uint64_t s0 = 0, u0 = 0, s1 = 0, u1 = 0;
     ggml_rampool_ahead_stats_fork(&s0, &u0, false);
     t_rp_fill = true;
@@ -9178,10 +9201,9 @@ static void tree_pp_preheat(moe_cache * mc) {
     }
     t_rp_fill = false;
     ggml_rampool_ahead_stats_fork(&s1, &u1, false);
-    LLAMA_LOG_WARN("moe-cache: hottree: prompt start: the stored prompt nearest by its tokens (cosine %.3f of %zu stored) names leaf %s (%u prompts): its prompts' map (%s) "
-            "rates %zu experts; the RAM pool reads ahead %llu slices of the %zu the cards lack, the most used first, as far as its blocks go (%.1f ms)\n",
-            bc, g_topic_tree.arr.size(), tree_short(ba->leaf).c_str(), lf.n, &src == &lf.best ? "best" : "live", rated, (unsigned long long) (s1 - s0), want.size(),
-            (ggml_time_us() - t0) / 1e3);
+    LLAMA_LOG_WARN("moe-cache: hottree: prompt start: the stored prefill nearest by the pooled embedding key (cosine %.3f of %zu stored) used %zu experts; the RAM pool "
+            "reads ahead %llu slices of the %zu the cards lack, the most used first, as far as its blocks go (%.1f ms)\n",
+            bc, g_topic_tree.pre.size(), rated, (unsigned long long) (s1 - s0), want.size(), (ggml_time_us() - t0) / 1e3);
 }
 
 void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t * ids, int32_t n) {
@@ -9287,7 +9309,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     g_topic.n_prompt     = kn;
     g_topic.own          = !whole.empty() && g_req_own;
     if (g_topic.mode == topic_t::TREE) {
-        g_topic_tree.bag = tree_bag_of(kt, kn);
+        g_topic_tree.ekey = tree_emb_key(model, kt, kn);
         tree_pp_preheat(mc);
     }
 }
@@ -9572,6 +9594,31 @@ static bool tree_recall(moe_cache * mc, const std::vector<float> & key, const st
 static void tree_prompt_end(moe_cache * mc, std::vector<float> key) {
     // the prompt's uses: every pass's router picks, read back after the pass (llama_moe_topic_pp_ids_fork; topic_cnt misses the GPU passes)
     std::vector<uint32_t> uses = g_topic_tree.pp.size() == g_topic.store.rec_cells() ? g_topic_tree.pp : std::vector<uint32_t>(g_topic.store.rec_cells(), 0u);
+    if (!g_topic_tree.ekey.empty()) {   // the prefill is done: its experts under its pooled embedding key, for the next similar prompt's start (tree_pp_preheat)
+        tree_pre r { std::move(g_topic_tree.ekey), std::vector<uint8_t>(uses.size(), 0) };
+        g_topic_tree.ekey.clear();
+        size_t nz = 0;
+        for (size_t c = 0; c < uses.size(); ++c) { r.map[c] = tree_q(uses[c]); nz += r.map[c] > 0; }
+        if (nz > 0) {
+            const std::filesystem::path f = std::filesystem::path(g_topic_tree.dir) / "prefill.bin";
+            std::error_code ec;
+            std::filesystem::create_directories(g_topic_tree.dir, ec);
+            const bool fresh = !std::filesystem::exists(f, ec);
+            if (FILE * fp = fopen(f.string().c_str(), "ab")) {
+                if (fresh) { const uint32_t ne = (uint32_t) r.key.size(), nc = (uint32_t) r.map.size(); fwrite("PREFILL1", 1, 8, fp); fwrite(&ne, 4, 1, fp); fwrite(&nc, 4, 1, fp); }
+                std::vector<ggml_fp16_t> h(r.key.size());
+                ggml_fp32_to_fp16_row(r.key.data(), h.data(), (int64_t) r.key.size());
+                fwrite(h.data(), sizeof(ggml_fp16_t), h.size(), fp);
+                fwrite(r.map.data(), 1, r.map.size(), fp);
+                fclose(fp);
+            }
+            size_t same = SIZE_MAX;   // the same prompt again (cosine 0.999 and up): its record is replaced, the newest prefill is what it needs
+            for (size_t i = 0; i < g_topic_tree.pre.size(); ++i) { if (tree_dot(r.key, g_topic_tree.pre[i].key) >= 0.999) { same = i; } }
+            if (same != SIZE_MAX) { g_topic_tree.pre.erase(g_topic_tree.pre.begin() + (ptrdiff_t) same); }
+            g_topic_tree.pre.push_back(std::move(r));
+            if (g_topic_tree.pre.size() > 1024) { g_topic_tree.pre.erase(g_topic_tree.pre.begin()); }
+        }
+    }
     uint64_t h = 0, m = 0;
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
@@ -9590,18 +9637,6 @@ static void tree_prompt_end(moe_cache * mc, std::vector<float> key) {
     const bool use = tree_recall(mc, g_topic.key, uses, "pp");
     tree_read(mc, g_topic.key, "tg", use);
     tree_store(g_topic.key, uses, hit, "pp");
-    if (!g_topic_tree.bag.c.empty()) {   // the next prompt's start finds this leaf by these tokens
-        tree_arrival a { std::move(g_topic_tree.bag), tree_path(g_topic.key) };
-        g_topic_tree.bag = tree_bag();
-        std::string o = a.leaf;
-        for (const auto & x : a.bag.c) { o += " " + std::to_string(x.first) + ":" + std::to_string(x.second); }
-        o += "\n";
-        std::error_code ec;
-        std::filesystem::create_directories(g_topic_tree.dir, ec);
-        if (FILE * fp = fopen((std::filesystem::path(g_topic_tree.dir) / "arrivals.txt").string().c_str(), "ab")) { fwrite(o.data(), 1, o.size(), fp); fclose(fp); }
-        g_topic_tree.arr.push_back(std::move(a));
-        if (g_topic_tree.arr.size() > 1024) { g_topic_tree.arr.erase(g_topic_tree.arr.begin()); }
-    }
 }
 
 // the prompt's last pass is over: its last token's router input of every MoE layer in layer order and then its final hidden state (rows, n_rows of
