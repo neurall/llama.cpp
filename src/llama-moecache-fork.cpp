@@ -15280,28 +15280,37 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     // totals over the calls since the last report (pp_add): with staging slots a pass takes max(U, C), without them U + C
     const double Usum = g_pp_Usum, nt = (double) g_pp_n, x = g_pp_xc / std::max(1.0, nt);
     double c_new = -1.0;
+    std::string how;   // which rule gave c_new (logged)
+    // the call's own mark (llama_moe_cache_pp_decide_fork), not the last graph's flag: Kimi K3.1's stream passes read the flag false here (2026-11-13), the staged
+    // rule below took (time - upload estimate) / tokens = 57 ms a token (1.6 calculated) and the next request cut its 999 tokens into 3 calls, 190 s against 77
+    const bool cs = g_pp_cs_reported;
     // (a stream into the cache's blocks hides them too, without slots: read as "upload, then compute" a 3424-token pass of 2.55 s beside a 2.44 s upload gave 30 us
     // per token; its further entries per layer are taken out, the chunk pick adds them per candidate)
-    const double ent = g_pp_cstream_built ? 1.0 + CS_ENTRY_COST * (double) ppx_extra_entries(std::max(1, g_cs_n_built), cs_share(mc)) : 1.0;
+    const double ent = cs ? 1.0 + CS_ENTRY_COST * (double) ppx_extra_entries(std::max(1, g_cs_n_built), cs_share(mc)) : 1.0;
     // (1.5 x for the stream into the blocks: its passes near the upload's time wait for uploads between chunks, read as compute they made the next pick keep
     // small passes, where nothing measures the compute again)
     // the stream into the blocks: the cards' kernel share of the pass (scheduler stamps) is its compute; its waits for reads are not (the estimate Usum counts the
     // link only: Kimi K3.1's 81 s pass, 306 GB of it from the SSD, was read as 61 ms of compute a token, so the next request cut its prompt into 3 streams)
     long ks_gen = 0;
-    const double ks = g_pp_cstream_built ? llama_dsplit_kernel_share_fork(&ks_gen) : 0.0;
+    const double ks = cs ? llama_dsplit_kernel_share_fork(&ks_gen) : 0.0;
     static long ks_seen = -1;
     if (ks > 0.0 && ks_gen != ks_seen) {
         ks_seen = ks_gen;
         c_new = (double) us * ks / nt / ent;
-    } else if (k >= 2 || g_pp_cstream_built) {   // slots hide uploads (2 is the least that overlaps, ppx_stage_slots)
-        if ((double) us > (g_pp_cstream_built ? 1.5 : 1.3) * Usum) {
+        how = format("the cards' kernel share %.2f of the pass", ks);
+    } else if (k >= 2 || cs) {   // slots hide uploads (2 is the least that overlaps, ppx_stage_slots)
+        if ((double) us > (cs ? 1.5 : 1.3) * Usum) {
             c_new = (double) us / nt / ent;
+            how = "the pass time (no kernel share)";
         } else if (g_pp_c_us > 0.0) {
             c_new = std::min(g_pp_c_us + g_pp_a_us * x, (double) us / nt / ent);
+            how = "the pass time, at most the fit";
         }
     } else {
         c_new = std::max(0.0, (double) us - Usum) / nt;
+        how = "the pass time less the upload estimate";
     }
+    if (cs != g_pp_cstream_built) { how += format("; the last graph's stream flag says %d", (int) g_pp_cstream_built); }
     if (c_new >= 0.0) {
         // the fit c = c0 + a x cells over the measurements, older ones decayed (x 0.7 each): the slope only from points at least 8k cells apart; a stays >= 0
         for (double & f : g_fit) { f *= 0.7; }
@@ -15312,8 +15321,8 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         }
         const double c0_new = std::max(0.0, c_new - g_pp_a_us * x);
         g_pp_c_us = g_pp_c_us > 0.0 ? 0.5 * (g_pp_c_us + c0_new) : c0_new;
-        LLAMA_LOG_WARN("moe-cache: prompt compute measured: %.0f tokens in %.0f ms over %u passes (upload estimate %.0f ms) at %.0f cells: %.1f us per token -> c0 %.1f us + %.5f us per cell\n",
-                nt, us / 1e3, g_pp_P, Usum / 1e3, x, c_new, g_pp_c_us, g_pp_a_us);
+        LLAMA_LOG_WARN("moe-cache: prompt compute measured: %.0f tokens in %.0f ms over %u passes (upload estimate %.0f ms) at %.0f cells: %.1f us per token -> c0 %.1f us + %.5f us per cell (from %s)\n",
+                nt, us / 1e3, g_pp_P, Usum / 1e3, x, c_new, g_pp_c_us, g_pp_a_us, how.c_str());
         // ini-fix (2026-10-22): not written to the state file any more (see pp_c_us_stored): a start plans from its own measurement only
     }
     g_pp_n = 0; g_pp_P = 0; g_pp_Usum = 0.0; g_pp_xc = 0.0;   // read once

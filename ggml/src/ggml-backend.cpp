@@ -4811,8 +4811,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
         if (g_split_hook_fork) { g_split_hook_fork(split_backend, &split->graph, split_id, sched->n_splits, split->graph.uid); }
-        // the stream into the cache's blocks: the hook queued the wait for this layer's experts on the compute stream (an event), so the wait for the upload ends here
-        if (cs_set >= 0 && cs_idx[split_id] >= 0 && split->graph.n_nodes > 0 && ggml_sched_cs_split(split->graph.nodes[0]) && ggml_backend_sched_pass_detail()) {
+        // the stream into the cache's blocks: the hook queued the wait for this layer's experts on the compute stream (an event), so the wait for the upload ends here.
+        // Always stamped (not only with the pass statistics): the prompt planner's compute per token is the cards' kernel share, which without this stamp counts the
+        // waits for the uploads as kernel time (llama_dsplit_kernel_share_fork)
+        if (cs_set >= 0 && cs_idx[split_id] >= 0 && split->graph.n_nodes > 0 && ggml_sched_cs_split(split->graph.nodes[0])) {
             g_stamp_fn(split_backend, &g_card_buf[cs_set][cs_idx[split_id]].tw);
         }
         if (!sched->callback_eval) {
