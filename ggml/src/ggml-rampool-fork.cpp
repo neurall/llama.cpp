@@ -598,7 +598,16 @@ void ggml_rampool_fill_fork(void) {
     const double s = std::max(1e-3, (rp_now_us() - t0) / 1e6);
     GGML_LOG_WARN("rampool: fill %.1f GiB read in %.1f s (%.2f GB/s, %d threads, the async engine at %zu KiB blocks x %d in flight, edge sectors in %zu KiB reads%s), %llu of %llu slices a card holds also in RAM (the blocks left after all others)\n", bytes / 1073741824.0, s, bytes / 1e9 / s,
             p->n_threads, sr_blk() >> 10, sr_qd(), p->rq >> 10, p->tensors.empty() || p->tensors[0]->dfd >= 0 ? "" : ", no O_DIRECT here", (unsigned long long) n_card_in, (unsigned long long) n_card);
-    for (int i = 0; i < p->n_threads; ++i) { p->readers.emplace_back(rp_reader, p); }
+    // readers: a reader reads one slice at a time, its pieces in flight together, so the drive's measured depth (sr_qd blocks of sr_blk) needs depth / pieces
+    // readers. Qwen3.6 slices of about 0.5 MiB on the 4 stored read threads kept 8 blocks in flight: stream passes read 1.5-1.9 GB/s where fio read the same file
+    // at 5.2-5.4 (2026-11-13); K3's slices of several MiB keep 4
+    size_t esz_min = SIZE_MAX;
+    for (const auto & t : p->tensors) { esz_min = std::min(esz_min, t->esz); }
+    const size_t pieces = esz_min == SIZE_MAX ? 1 : std::max<size_t>(1, (esz_min + sr_blk() - 1) / sr_blk());
+    const int n_rd = std::max(p->n_threads, (int) std::min<size_t>(64, ((size_t) sr_qd() + pieces - 1) / pieces));
+    GGML_LOG_WARN("rampool: %d readers (slices from %.2f MiB: %zu blocks of %zu KiB each, %d in flight wanted)\n", n_rd, esz_min == SIZE_MAX ? 0.0 : esz_min / 1048576.0,
+            pieces, sr_blk() >> 10, sr_qd());
+    for (int i = 0; i < n_rd; ++i) { p->readers.emplace_back(rp_reader, p); }
 }
 
 void ggml_rampool_close_fork(void) {
