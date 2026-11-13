@@ -19,13 +19,36 @@ int main() {
     auto none = [](int32_t, int32_t) { return false; };
 
     auto l = moe_fetch_list(x.data(), nt, nb, nb, ne, nullptr, 1, 1, none, 100);
-    // depth 0 picks {4 x2, 1 x1}, oversampled {2 x2, 3 x1}; depth 1 picks {0 x3}, oversampled {5 x3}
-    const int32_t want[][3] = { {0, 4, 0}, {0, 1, 0}, {0, 2, 1}, {0, 3, 1}, {1, 0, 0}, {1, 5, 1} };
-    assert(l.size() == 6);
+    // depth 0 picks {4 x2, 1 x1}, oversampled {2 x2, 3 x1}; depth 1 (twice the oversampled) picks {0 x3}, oversampled {5 x3, then 1 x3: the lowest id of the ties}
+    const int32_t want[][3] = { {0, 4, 0}, {0, 1, 0}, {0, 2, 1}, {0, 3, 1}, {1, 0, 0}, {1, 5, 1}, {1, 1, 1} };
+    assert(l.size() == 7);
     for (size_t i = 0; i < l.size(); ++i) {
         assert(l[i].depth == want[i][0] && l[i].e == want[i][1] && l[i].rank == want[i][2]);
     }
     assert(l[0].votes == 2 && l[4].votes == 3);
+
+    // the same ranked on the device (argsort, best first; ties by the lower id): the same list
+    {
+        std::vector<int32_t> rk(nt*nb*ne);
+        for (int64_t r = 0; r < nt*nb; ++r) {
+            for (int32_t e = 0; e < ne; ++e) { rk[r*ne + e] = e; }
+            std::sort(rk.begin() + r*ne, rk.begin() + (r + 1)*ne, [&](int32_t a, int32_t c) { return x[r*ne + a] > x[r*ne + c] || (x[r*ne + a] == x[r*ne + c] && a < c); });
+        }
+        const auto lr = moe_fetch_list(nullptr, nt, nb, nb, ne, nullptr, 1, 1, none, 100, rk.data());
+        assert(lr.size() == l.size());
+        for (size_t i = 0; i < l.size(); ++i) { assert(lr[i].depth == l[i].depth && lr[i].e == l[i].e && lr[i].rank == l[i].rank && lr[i].votes == l[i].votes); }
+    }
+
+    // twice the oversampled at each further depth: 1 token, 3 depths, 1 pick and 1 extra: extras 1, 2, 4
+    {
+        const int64_t nd = 3, n8 = 8;
+        std::vector<float> y(nd*n8);
+        for (int64_t d = 0; d < nd; ++d) { for (int64_t e = 0; e < n8; ++e) { y[d*n8 + e] = (float) (n8 - e); } }
+        const auto ld = moe_fetch_list(y.data(), 1, nd, nd, n8, nullptr, 1, 1, none, 100);
+        int per[3][2] = {};
+        for (const auto & en : ld) { per[en.depth][en.rank]++; }
+        assert(ld.size() == 2 + 3 + 5 && per[0][0] == 1 && per[0][1] == 1 && per[1][1] == 2 && per[2][1] == 4);
+    }
 
     // an expert that is a pick of one token and oversampled of another is listed once, as a pick
     at(2, 0, 4) = 6.5f;   // token 2: 1 (7), then 4 (6.5)
@@ -35,7 +58,7 @@ int main() {
 
     // cached entries are dropped, the order of the rest stays
     l = moe_fetch_list(x.data(), nt, nb, nb, ne, nullptr, 1, 1, [](int32_t d, int32_t e) { return d == 0 && e == 4; }, 100);
-    assert(l.size() == 5 && l[0].e == 1 && l[1].e == 2);
+    assert(l.size() == 6 && l[0].e == 1 && l[1].e == 2);
 
     // the budget cuts the deepest entries
     l = moe_fetch_list(x.data(), nt, nb, nb, ne, nullptr, 1, 1, none, 4);

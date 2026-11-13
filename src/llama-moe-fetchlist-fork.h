@@ -16,27 +16,36 @@ struct moe_fetch_ent {
 
 // x: [n_tok][n_blk][ne] logits (the predictor's stacked layout), n_use <= n_blk depths are listed.
 // bias: null, or n_use vectors (empty = raw logits; else sigmoid(logit) + bias[e], as the learned predictors score).
+// m_over: the oversampled per token at the next layer, twice as many at each further one (user 2026-11-13: "each next layer 2x oversample of prev",
+// the recall falls with depth; K3 with k 16, m_over 16: top 32, 48, 80, 144).
 // cached(depth, e): true = no fetch needed. budget: the list is cut there (the deepest layers go first, they come last).
 // Inside one rank: most tokens first, then the higher score; one token gives plain score order.
+// rk: null, or the same layout ranked on the device (expert ids, best first per token and depth: the graph's argsort): x and bias are not read, a rank stands for the score.
 template <class Cached>
 static inline std::vector<moe_fetch_ent> moe_fetch_list(const float * x, int64_t n_tok, int64_t n_blk, int64_t n_use, int64_t ne,
-        const std::vector<float> * bias, int32_t k_pick, int32_t m_over, Cached cached, size_t budget) {
+        const std::vector<float> * bias, int32_t k_pick, int32_t m_over, Cached cached, size_t budget, const int32_t * rk = nullptr) {
     std::vector<moe_fetch_ent> out;
     const int32_t k = (int32_t) std::min<int64_t>(std::max(k_pick, 0), ne);
-    const int32_t m = (int32_t) std::min<int64_t>((int64_t) k + std::max(m_over, 0), ne);
-    if (m <= 0) { return out; }
     std::vector<float>   lg(ne), best(ne);
     std::vector<int32_t> idx(ne), vp(ne), vo(ne), ord;
     for (int64_t d = 0; d < std::min(n_use, n_blk) && out.size() < budget; ++d) {
+        const int32_t m = (int32_t) std::min<int64_t>((int64_t) k + ((int64_t) std::max(m_over, 0) << std::min<int64_t>(d, 20)), ne);
+        if (m <= 0) { break; }
         const std::vector<float> * b = bias && !bias[d].empty() ? &bias[d] : nullptr;
         std::fill(vp.begin(), vp.end(), 0);
         std::fill(vo.begin(), vo.end(), 0);
         std::fill(best.begin(), best.end(), -INFINITY);
         for (int64_t t = 0; t < n_tok; ++t) {
-            const float * src = x + (t*n_blk + d)*ne;
-            for (int32_t e = 0; e < ne; ++e) { lg[e] = b ? 1.0f/(1.0f + expf(-src[e])) + (*b)[e] : src[e]; idx[e] = e; }
-            std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c] || (lg[a] == lg[c] && a < c); });
+            if (rk) {
+                const int32_t * r = rk + (t*n_blk + d)*ne;
+                for (int32_t j = 0; j < m; ++j) { idx[j] = r[j] >= 0 && r[j] < ne ? r[j] : -1; if (idx[j] >= 0) { lg[idx[j]] = (float) -j; } }
+            } else {
+                const float * src = x + (t*n_blk + d)*ne;
+                for (int32_t e = 0; e < ne; ++e) { lg[e] = b ? 1.0f/(1.0f + expf(-src[e])) + (*b)[e] : src[e]; idx[e] = e; }
+                std::partial_sort(idx.begin(), idx.begin() + m, idx.end(), [&](int32_t a, int32_t c) { return lg[a] > lg[c] || (lg[a] == lg[c] && a < c); });
+            }
             for (int32_t j = 0; j < m; ++j) {
+                if (idx[j] < 0) { continue; }
                 (j < k ? vp : vo)[idx[j]]++;
                 best[idx[j]] = std::max(best[idx[j]], lg[idx[j]]);
             }

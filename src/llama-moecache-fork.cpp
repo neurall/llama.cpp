@@ -542,6 +542,7 @@ struct moe_cache {
     std::vector<std::pair<int32_t, int32_t>> cs_rng;
     bool                     cs_masked = false;   // a pass of this call masked device tables to their range: the call's end writes every layer's table again
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
+    uint64_t                 cs_n_pred = 0, cs_n_late = 0, cs_n_used = 0, cs_n_listed = 0, cs_n_noids = 0;   // the k arm, the pass so far: uploaded by the rankings, by the late fix; experts the entries used, of those in their list; entries without ids (whole range)
     uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
     std::vector<double>      layer_dt;
@@ -1358,6 +1359,8 @@ static std::vector<size_t> g_cs_order_graph;           // the cstream layers of 
 static std::vector<size_t> g_cs_order_built;           // the same for the graph that runs (cs_begin)
 static std::vector<std::pair<int32_t, int32_t>> g_cs_rng_graph, g_cs_rng_built;   // per entry of those: the expert ids it computes (moe_cache::cs_rng)
 static std::atomic<bool>   g_cs_live{false};           // a cstream pass may be on the GPU: flush_tables leaves the device tables to cs_layer (its copies are ordered on the upload stream) until cs_end
+static bool                g_cs_pred_built = false;    // the graph that runs carries the k arm's rankings (llama_moe_cache_cs_pred_fork when it was built)
+static double              g_cs_k_pass = 0.0;          // the running cstream pass's prediction multiplier (cs_begin): 0 = the stream, every expert of an entry's range
 static void (*g_cs_hook_next)(ggml_backend_t, struct ggml_cgraph *, int, int, uint64_t) = nullptr;   // the ledger's or the guard's hook, behind cs_split_cb
 static bool              g_pp_mix_built = false; // the same for the graph that runs: the staging fill leaves out what such a layer's home card holds
 static std::atomic<double>  g_pp_up_us{0.0};     // upload time of the misses of the prompt chain's passes since the last report: the pass's time without it is its compute
@@ -12115,7 +12118,117 @@ static std::string cs_why(moe_cache * mc, size_t p) {
         return t;
     }();
 }
-static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done) {   // cache lock held
+// The k arm on the ring (the scheduler's predicted staging, its destination the cache's blocks; user 2026-11-13: "your task was to adapt from fixed staging format to
+// moe slots thats all"). Layer T's ranking (moe_pred_ids-T: T's router on the layer before's expert input, every expert per token, best first) and T's real ids
+// (ffn_moe_topk-T) come back to pinned host memory behind the split that computes them. Behind the layer before's expert matmuls (cs_release) moe_fetch_list ranks
+// what the pass's tokens will pick (the list decode and the prompt chain rank by too: q1 a token's picks, q2 up to m x them, most tokens first) and the ring uploads
+// those into blocks; at T's own split (cs_layer) the experts its real ids use that no block holds yet are uploaded before its kernels (the late fix). m = 0: the stream.
+static double cs_k_call() {   // this call's multiplier: the planner's (ggml_backend_pred_set_fork), or --moe pp-k=M
+    // shortcut: pp-k=auto (every rank, the time left decides on the staged ring) has no time cap on the ring yet: x2, upgrade with a cap from the layer's measured time
+    static const double forced = [] { const char * e = moe_opt("pp-k"); return e ? (strcmp(e, "auto") == 0 ? 2.0 : std::max(0.0, atof(e))) : -1.0; }();
+    return forced >= 0.0 ? forced : ggml_backend_pred_get_fork();
+}
+bool llama_moe_cache_cs_pred_fork() {   // llama-graph.cpp: the graph of this call carries the rankings
+    return g_cache && g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed) && cs_k_call() > 0.0;
+}
+static constexpr int CS_PIO = 4;   // rankings and ids per kind in flight: T's ranking is read at the release of T-1, its ids at its own split
+struct cs_pio_rec  { int32_t * h = nullptr; int64_t ne0 = 0, ne1 = 0, s1 = 0; ggml_backend_event_t ev = nullptr; ggml_backend_dev_t dev = nullptr; uint32_t pass = 0; };
+struct cs_pio_pend { const ggml_tensor * t; ggml_backend_t be; int kind, il; };
+struct cs_pio_sel  { std::vector<uint8_t> v; uint32_t pass = 0; };
+static struct {
+    ggml_backend_buffer_t    buf  = nullptr;   // pinned: 2 x CS_PIO slots (shortcut: grows, never freed)
+    size_t                   slot = 0;
+    std::vector<cs_pio_pend> pend;             // seen in the split before this hook
+    std::vector<cs_pio_rec>  rec[2];           // per model layer: 0 its ranking, 1 its ids
+    std::vector<cs_pio_sel>  sel, used;        // per model layer, this pass: the predicted experts (1 q1, 2 q2), the used ones
+    int                      owner[2][CS_PIO] = {};   // 1 + the layer whose record a slot holds, 0: none
+} g_cs_pio;
+
+// a split hook (scheduler thread): the rankings and ids of the split before it come back behind its kernels, each with an event; this split's are noted
+static void cs_pio_hook(moe_cache * mc, ggml_backend_t be, struct ggml_cgraph * g) {
+    auto & io = g_cs_pio;
+    size_t nb_max = 0;
+    for (const auto & q : io.pend) { nb_max = std::max(nb_max, ggml_nbytes(q.t)); }
+    if (nb_max > io.slot) {   // more room: what is on its way lands first; the records so far are dropped (their layers fall back to the whole range)
+        for (auto & v : io.rec) { for (auto & r : v) { if (r.ev && r.h) { ggml_backend_event_synchronize(r.ev); } r.h = nullptr; r.pass = 0; } }
+        if (io.buf) { ggml_backend_buffer_free(io.buf); io.buf = nullptr; }
+        ggml_backend_buffer_type_t hb = mc->link_dev[0] ? ggml_backend_dev_host_buffer_type(mc->link_dev[0]) : nullptr;
+        io.slot = GGML_PAD(nb_max, 4096);
+        io.buf  = hb ? ggml_backend_buft_alloc_buffer(hb, 2 * CS_PIO * io.slot) : nullptr;
+        if (!io.buf) { io.slot = 0; io.pend.clear(); }
+    }
+    for (const auto & q : io.pend) {
+        const size_t nb = ggml_nbytes(q.t);
+        auto & v = io.rec[q.kind];
+        if (v.size() <= (size_t) q.il) { v.resize((size_t) q.il + 1); }
+        int & ow = io.owner[q.kind][q.il % CS_PIO];
+        if (ow > 0 && ow - 1 != q.il && (size_t) (ow - 1) < v.size()) { v[(size_t) (ow - 1)].pass = 0; }   // the slot's last layer is not read from it again
+        ow = q.il + 1;
+        auto & r = v[(size_t) q.il];
+        r.h = (int32_t *) ((char *) ggml_backend_buffer_get_base(io.buf) + (size_t) (q.kind * CS_PIO + q.il % CS_PIO) * io.slot);
+        ggml_backend_tensor_get_async(q.be, q.t, r.h, 0, nb);
+        ggml_backend_dev_t dev = ggml_backend_get_device(q.be);
+        if (r.dev != dev) { if (r.ev) { ggml_backend_event_free(r.ev); } r.ev = ggml_backend_event_new(dev); r.dev = dev; }
+        if (!r.ev) { r.h = nullptr; continue; }
+        ggml_backend_event_record(r.ev, q.be);
+        r.ne0 = q.t->ne[0]; r.ne1 = q.t->ne[1]; r.s1 = (int64_t) (q.t->nb[1] / sizeof(int32_t)); r.pass = mc->cs_pass;
+    }
+    io.pend.clear();
+    for (int i = 0; i < ggml_graph_n_nodes(g); ++i) {
+        const ggml_tensor * t = ggml_graph_node(g, i);
+        const char * nm = ggml_get_name(t);
+        // the ids as the parts' table reads take them (llama-graph.cpp: a copy right behind the router, alive until those reads; the top-k view's buffer may be reused within its split)
+        const int kind = strncmp(nm, "moe_pred_ids-", 13) == 0 ? 0 : strncmp(nm, "ffn_moe_cs_ids-", 15) == 0 ? 1 : -1;
+        if (kind < 0 || t->type != GGML_TYPE_I32) { continue; }
+        const char * num = nm + (kind == 0 ? 13 : 15);
+        char * end = nullptr;
+        const long il = strtol(num, &end, 10);
+        if (end != num && *end == '\0' && il >= 0 && il < 4096) { io.pend.push_back({ t, be, kind, (int) il }); }
+    }
+}
+// entry p's predicted experts this pass; null: its layer's ranking has not come back (its split plans it from the real ids)
+static const std::vector<uint8_t> * cs_sel(moe_cache * mc, size_t p) {   // cache lock held
+    const layer_state & ls = csl(mc, mc->cs_order[p]);
+    const int il = ls.pub.il;
+    const int64_t ne = (int64_t) ls.expert_slot.size();
+    if (il < 0) { return nullptr; }
+    auto & sv = g_cs_pio.sel;
+    if (sv.size() <= (size_t) il) { sv.resize((size_t) il + 1); }
+    cs_pio_sel & s = sv[(size_t) il];
+    if (s.pass == mc->cs_pass) { return &s.v; }
+    auto & rv = g_cs_pio.rec[0];
+    if ((size_t) il >= rv.size() || rv[(size_t) il].pass != mc->cs_pass || !rv[(size_t) il].h || rv[(size_t) il].ne0 != ne || rv[(size_t) il].s1 != ne) { return nullptr; }
+    const cs_pio_rec & r = rv[(size_t) il];
+    ggml_backend_event_synchronize(r.ev);
+    const int32_t kp   = (int32_t) mc->n_expert_used;
+    const int32_t over = (int32_t) std::min<double>((double) ne, std::max(0.0, (g_cs_k_pass - 1.0) * kp + 0.5));
+    const auto list = moe_fetch_list(nullptr, r.ne1, 1, 1, ne, nullptr, kp, over, [](int32_t, int32_t) { return false; }, SIZE_MAX, r.h);
+    s.v.assign((size_t) ne, 0);
+    for (const auto & en : list) { s.v[(size_t) en.e] = (uint8_t) (en.rank + 1); }
+    s.pass = mc->cs_pass;
+    return &s.v;
+}
+// layer il's experts its tokens use this pass, from its real ids; null: not back (scheduler thread, no lock: the GPU runs the router while this waits)
+static const std::vector<uint8_t> * cs_used(moe_cache * mc, int il, int64_t ne) {
+    if (il < 0) { return nullptr; }
+    auto & uv = g_cs_pio.used;
+    if (uv.size() <= (size_t) il) { uv.resize((size_t) il + 1); }
+    cs_pio_sel & u = uv[(size_t) il];
+    if (u.pass == mc->cs_pass) { return &u.v; }
+    auto & rv = g_cs_pio.rec[1];
+    if ((size_t) il >= rv.size() || rv[(size_t) il].pass != mc->cs_pass || !rv[(size_t) il].h) { return nullptr; }
+    const cs_pio_rec & r = rv[(size_t) il];
+    ggml_backend_event_synchronize(r.ev);
+    u.v.assign((size_t) ne, 0);
+    for (int64_t t = 0; t < r.ne1; ++t) {
+        for (int64_t i = 0; i < r.ne0; ++i) { const int32_t e = r.h[t*r.s1 + i]; if (e >= 0 && e < ne) { u.v[(size_t) e] = 1; } }
+    }
+    u.pass = mc->cs_pass;
+    return &u.v;
+}
+
+// sel: null = every uncached expert of the entry's range (the stream), else only those with sel[e] != 0 (the k arm's predicted or used experts)
+static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done, const std::vector<uint8_t> * sel = nullptr) {   // cache lock held
     const size_t li = mc->cs_order[p];
     layer_state & ls = csl(mc, li);
     out.clear();
@@ -12123,7 +12236,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     std::vector<int32_t> want;   // the uncached experts of the entry's range (an expert split: the card's share of the layer)
     const int32_t e0 = p < mc->cs_rng.size() ? std::max(0, mc->cs_rng[p].first) : 0;
     const int32_t e1 = p < mc->cs_rng.size() ? std::min((int32_t) ls.expert_slot.size(), mc->cs_rng[p].second) : (int32_t) ls.expert_slot.size();
-    for (int32_t e = e0; e < e1; ++e) { if (ls.expert_slot[e] < 0) { want.push_back(e); } }
+    for (int32_t e = e0; e < e1; ++e) { if (ls.expert_slot[e] < 0 && (!sel || ((size_t) e < sel->size() && (*sel)[(size_t) e]))) { want.push_back(e); } }
     if (want.empty()) { return true; }
     auto & ps = mc->pool[ls.pcls];
     if (ps.cs_up.size() < ps.owner.size()) { ps.cs_up.resize(ps.owner.size(), 0); }
@@ -12274,7 +12387,17 @@ static void cs_begin(moe_cache * mc) {
         LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu of %zu layers met their split hook: the others computed without waiting for their experts\n",
                 mc->cs_pass, (unsigned long long) mc->cs_n_hook, mc->cs_order.size());
     }
+    static int n_log_k = 0;
+    if (mc->cs_pass > 0 && g_cs_k_pass > 0.0 && (n_log_k < 6 || mc->cs_pass % 64 == 0)) {
+        n_log_k++;
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u, k x%g: %llu experts uploaded by the rankings, %llu at their layer's split from its ids (late); the entries used %llu experts, %.1f%% of them in their predicted list; %llu entries without ids took their whole range\n",
+                mc->cs_pass, g_cs_k_pass, (unsigned long long) mc->cs_n_pred, (unsigned long long) mc->cs_n_late, (unsigned long long) mc->cs_n_used,
+                mc->cs_n_used ? 100.0 * (double) mc->cs_n_listed / (double) mc->cs_n_used : 0.0, (unsigned long long) mc->cs_n_noids);
+    }
     mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = 0;
+    mc->cs_n_pred = mc->cs_n_late = mc->cs_n_used = mc->cs_n_listed = mc->cs_n_noids = 0;
+    g_cs_k_pass = g_cs_pred_built ? cs_k_call() : 0.0;
+    g_cs_pio.pend.clear();
     mc->cs_order = g_cs_order_built;
     mc->cs_rng   = g_cs_rng_built;
     if (mc->cs_rng.size() != mc->cs_order.size()) { mc->cs_rng.assign(mc->cs_order.size(), { 0, INT32_MAX }); }
@@ -12353,7 +12476,17 @@ static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & j
                 while (nx < mc->cs_order.size() && csl(mc, mc->cs_order[nx]).link != c) { ++nx; }
                 if (nx >= mc->cs_order.size()) { mc->cs_why[c] = 2; break; }
                 cs_job j { mc->cs_order[nx], {}, false, mc->cs_done[c] };
-                if (!cs_plan(mc, nx, j.cps, j.from_done)) {
+                // the k arm: only an entry whose layer's ranking came back, its predicted experts (q1 alone when the blocks hold no more); else its split plans it
+                const std::vector<uint8_t> * sel = g_cs_k_pass > 0.0 ? cs_sel(mc, nx) : nullptr;
+                if (g_cs_k_pass > 0.0 && !sel) { mc->cs_why[c] = 1; break; }
+                bool ok = cs_plan(mc, nx, j.cps, j.from_done, sel);
+                if (!ok && sel) {
+                    std::vector<uint8_t> q1(*sel);
+                    for (auto & x : q1) { x = x == 1; }
+                    ok = cs_plan(mc, nx, j.cps, j.from_done, &q1);
+                }
+                mc->cs_n_pred += sel ? j.cps.size() : 0;
+                if (!ok) {
                     mc->cs_why[c] = 1;
                     if (c == k && must != SIZE_MAX && nx <= must) {
                         GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts (the class must hold a layer's worth besides the lend and the KV rows): %s",
@@ -12372,6 +12505,11 @@ static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & j
 static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {   // shadow: -1 the layer itself, else the index of its shadow (another card's part of an expert split, a further chunk)
     std::vector<cs_job> jobs;
     size_t li = 0;
+    // the k arm: the layer's real ids, read before the lock (its kernels wait for this hook anyway)
+    const std::vector<uint8_t> * used = nullptr;
+    if (g_cs_k_pass > 0.0 && il >= 0 && (size_t) il < mc->cs_li.size() && mc->cs_li[(size_t) il] >= 0) {
+        used = cs_used(mc, il, (int64_t) mc->layers[(size_t) mc->cs_li[(size_t) il]].expert_slot.size());
+    }
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
         if (il < 0 || (size_t) il >= mc->cs_li.size() || mc->cs_li[(size_t) il] < 0) { return; }
@@ -12391,7 +12529,39 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
             mc->cs_done[k] = q;
         }
         if (ggml_backend_get_device(cbe) == mc->link_dev[k]) { mc->cs_hooked[k] = p + 1; mc->cs_hook_us[k] = ggml_time_us(); }
-        cs_ahead(mc, k, p, jobs);
+        if (g_cs_k_pass > 0.0) {
+            // the late fix: what this entry's tokens use and no block holds yet (its whole range when its ids are not back). An entry of this card whose hook
+            // never came is planned whole first, as the stream would have.
+            size_t & nx = mc->cs_next[k];
+            for (; nx < p; ++nx) {
+                if (csl(mc, mc->cs_order[nx]).link != k) { continue; }
+                cs_job jx { mc->cs_order[nx], {}, false, mc->cs_done[k] };
+                if (!cs_plan(mc, nx, jx.cps, jx.from_done)) { GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for its experts: %s", csl(mc, mc->cs_order[nx]).pub.il, cs_why(mc, nx).c_str()); }
+                mc->cs_n_late += jx.cps.size();
+                jobs.push_back(std::move(jx));
+            }
+            cs_job j { li, {}, false, mc->cs_done[k] };
+            if (!cs_plan(mc, p, j.cps, j.from_done, used)) {
+                GGML_ABORT("moe-cache: cstream: layer %d finds too few blocks for the experts its tokens use (the class must hold a layer's worth besides the lend and the KV rows): %s", il, cs_why(mc, p).c_str());
+            }
+            mc->cs_n_late += j.cps.size();
+            if (used) {
+                const auto & sv = g_cs_pio.sel;
+                const std::vector<uint8_t> * s = (size_t) il < sv.size() && sv[(size_t) il].pass == mc->cs_pass ? &sv[(size_t) il].v : nullptr;
+                const int32_t ne = (int32_t) used->size();
+                const int32_t e0 = p < mc->cs_rng.size() ? std::max(0, mc->cs_rng[p].first) : 0, e1 = p < mc->cs_rng.size() ? std::min(ne, mc->cs_rng[p].second) : ne;
+                for (int32_t e = e0; e < e1; ++e) {
+                    if ((*used)[(size_t) e]) { mc->cs_n_used++; mc->cs_n_listed += s && (*s)[(size_t) e]; }
+                }
+            } else {
+                mc->cs_n_noids++;
+            }
+            if (nx == p) { nx = p + 1; }
+            jobs.push_back(std::move(j));
+            if (!cs_release_on()) { cs_ahead(mc, k, SIZE_MAX, jobs); }
+        } else {
+            cs_ahead(mc, k, p, jobs);
+        }
     }
     for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
     layer_state & ls = csl(mc, li);
@@ -12423,6 +12593,7 @@ static void cs_release(moe_cache * mc, ggml_backend_t cbe) {
 
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
     if (g_pp_cstream_built && g_cache && ggml_graph_n_nodes(g) > 0) {
+        if (g_cs_k_pass > 0.0) { cs_pio_hook(g_cache, be, g); }   // before the layer's own hook: its ids came back behind the split before
         const char * nm = ggml_get_name(ggml_graph_node(g, 0));
         if (strncmp(nm, "ffn_moe_cs_slots-", 17) == 0) { const char * d = strchr(nm + 17, '-'); cs_layer(g_cache, be, atoi(nm + 17), d && d[1] == 's' ? atoi(d + 2) : -1); }   // "-<il>-s<index>": a shadow
         else if (strncmp(nm, "ffn_moe_cs_rel-", 15) == 0 && g_cs_live.load() && cs_release_on()) { cs_release(g_cache, be); }   // behind an entry's last expert matmul
@@ -12433,6 +12604,7 @@ static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id,
 // the end of a prompt call: the last pass's kernels done, the tables of every layer the passes changed written (flush_tables waited for this)
 static void cs_end(moe_cache * mc) {
     if (!g_cs_live.exchange(false)) { return; }
+    g_cs_k_pass = 0.0;
     for (int k = 0; k < mc->n_links; ++k) {
         mc->cs_why[k] = 0;
         if (mc->link_be[k]) { ggml_backend_synchronize(mc->link_be[k]); }
@@ -16230,10 +16402,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // So no try of a mix not known here while uploads run; a known one keeps its mean.
         if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
         for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
-        if (pp_no_staging()) {   // --moe staging=0: the stream competes and runs into the cache's blocks (cstream, below); the mix and the predictions' k arms still stage
+        if (pp_no_staging()) {   // --moe staging=0: the stream and the predictions' k arms run into the cache's blocks (cstream, below); the mix still stages
             ok[PP_MIX] = false;
-            for (int p = PP_K; p < PP_PATHS; ++p) { ok[p] = false; }
-            if (!cs_fits) { ok[PP_RING] = false; }
+            if (!cs_fits) { ok[PP_RING] = false; for (int p = PP_K; p < PP_PATHS; ++p) { ok[p] = false; } }
         }
         // Router or full stream (user 2026-11-10): time per token of the path that ran here against the estimate of the other, and the stream as soon as it costs the same or less.
         // A path measured at this size counts with its real time. The estimates: the router waits for its ids, uploads its picks and computes; the full stream uploads every expert
@@ -16273,21 +16444,22 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     g_pp_dec = dec;
     g_pp_mb = chain || dec ? ub_max : 0;
     const char * why_mix = "";
-    // --moe staging=0: the mix and the predictions' k arms still stage, so neither is picked; the stream runs into the cache's blocks (below)
+    // --moe staging=0: the mix still stages, so it is not picked; the stream and the predictions' k arms run into the cache's blocks (below)
     mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && !dec && !pp_no_staging() && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
     g_pp_mix_call = mix;
     if (why_mix[0]) { why = why_mix; }
     const double r = pp_took_us(mix ? PP_MIX : PP_RING, n);
-    m = k_auto && !force && !chain && !dec && !why_mix[0] && !pp_no_staging() ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
+    m = k_auto && !force && !chain && !dec && !why_mix[0] && (!pp_no_staging() || cs_fits) ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
     if (pp_no_staging() && !force && !chain && !dec && !mix && !cs_fits) {   // no stream into the blocks for this call (a layer has fewer blocks than experts): the decode chain
         dec = true; g_pp_dec = true; g_pp_mb = ub_max; why = "--moe staging=0: no layer has a layer's worth of blocks for the stream into the cache";
     }
     }
     // The stream into the cache's blocks (cs_begin, cs_layer): the stream's own copies (whole layers, ahead of compute, on the expert card's upload stream) with the cache's
     // blocks as their destination, the kernels reading the tables. --moe pp-path=cstream forces it; with --moe staging=0 every stream pick is it (user 2026-11-12: the
-    // staging removal changes only where the stream uploads to; 11-11 had dropped the stream for the chains instead, which upload one expert at a time, 3x slower at 12k)
+    // staging removal changes only where the stream uploads to; 11-11 had dropped the stream for the chains instead, which upload one expert at a time, 3x slower at 12k).
+    // A k arm (m > 0) is the same stream with only the predicted experts and the late fix (cs_sel, cs_layer); 11-12 had switched those off under staging=0 (user 11-13).
     const bool cstream = force ? strcmp(force, "cstream") == 0 || (pp_no_staging() && strcmp(force, "stream") == 0)
-                               : pp_no_staging() && !chain && !dec && !mix && m <= 0.0;
+                               : pp_no_staging() && !chain && !dec && !mix;
     g_pp_cstream_call = cstream;
     g_pp_cs_split = false;
     g_pp_cs_reported = cstream;
@@ -16854,6 +17026,7 @@ void llama_moe_cache_graph_built_fork() {
     g_pp_graph = false;
     g_pp_mix_built = g_pp_mix_graph;
     g_pp_mix_graph = false;
+    g_cs_pred_built = g_pp_cstream_graph && llama_moe_cache_cs_pred_fork();
     g_pp_cstream_built = g_pp_cstream_graph;
     g_pp_cstream_graph = false;
     g_cs_n_built = cs_chunks();

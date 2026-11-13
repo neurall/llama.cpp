@@ -41,6 +41,7 @@ int llama_moe_cache_cs_shadow_ix_fork(const llama_moe_cache_layer_fork * part); 
 void llama_moe_cache_cs_range_fork(const llama_moe_cache_layer_fork * part, int32_t lo, int32_t hi);
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
 bool llama_moe_cache_pp_pred_want_fork(int64_t n_tokens);   // the prompt chain's fetch list: the next layers' router logits come to the host in this pass
+bool llama_moe_cache_cs_pred_fork();   // the stream into the blocks takes the k arm this call: the graph carries the rankings (cs_sel, cs_layer)
 void llama_moe_cache_pp_pred_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids, const ggml_tensor * pred);
 void llama_moe_cache_link_backends_fork(ggml_backend_sched_t sched);
 ggml_backend_dev_t llama_moe_cache_pp_mix_fork(const llama_moe_cache_layer_fork * pub);
@@ -2744,13 +2745,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         static const int pred_lag = std::max(1, getenv("GGML_PRED_LAG") ? atoi(getenv("GGML_PRED_LAG")) : 1);
         static const int pred_depth = std::max(1, std::min(3, getenv("GGML_PRED_DEPTH") ? atoi(getenv("GGML_PRED_DEPTH")) : 1));   // rankings from lag, lag+1, lag+2 layers back
         static struct { const void * g; ggml_tensor * cur[256]; int il; } hist = { nullptr, {}, -2 };
-        if ((pred_k > 0 || ggml_backend_pred_get_fork() > 0.0) && il >= 0 && il < 256) {
+        // the k arm on the stream into the cache's blocks (--moe staging=0) reads the same rankings: the cache, not the scheduler (llama-moecache-fork.cpp cs_sel)
+        const bool cs_pred = cparams.moe_cache && llama_moe_cache_cs_pred_fork();
+        if ((pred_k > 0 || ggml_backend_pred_get_fork() > 0.0 || cs_pred) && il >= 0 && il < 256) {
             if (hist.g != this || il == 0) { hist.g = this; std::fill(std::begin(hist.cur), std::end(hist.cur), nullptr); }
             for (int d = 0; d < pred_depth; ++d) {
                 const int from = d == 0 ? std::max(il - pred_lag, 0) : il - (pred_lag + d);
                 ggml_tensor * src = il > 0 && from >= 0 ? hist.cur[from] : nullptr;
                 if (src && gate_inp && n_tokens > 1 && selected_experts_in == nullptr &&
-                        !(cparams.moe_cache && n_tokens <= llama_moe_cache_max_batch_fork())) {   // a pass on the cache chain computes with the cache, no staging
+                        (cs_pred || !(cparams.moe_cache && n_tokens <= llama_moe_cache_max_batch_fork()))) {   // a pass on the cache chain computes with the cache, no staging
                     const int n0 = ggml_graph_n_nodes(gf);
                     ggml_tensor * pl = ggml_mul_mat(ctx0, gate_inp, src);   // [n_expert, n_tokens]
                     if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
@@ -3750,6 +3753,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         ggml_tensor * cs_ids = nullptr;   // cstream: every token's ids, flat, on the owner right behind the router (rule 1): each part's table read takes them
         if (mc_cstream) {
             ggml_tensor * c = ggml_cont(ctx0, selected_experts);
+            ggml_format_name(c, "ffn_moe_cs_ids-%d", il);   // the k arm's late fix reads it back behind its split (cs_pio_hook)
             if (owner_b) { ggml_backend_sched_set_tensor_backend(sched, c, owner_b); }
             ggml_build_forward_expand(gf, c);
             cs_ids = ggml_reshape_1d(ctx0, c, n_expert_used*n_tokens);
