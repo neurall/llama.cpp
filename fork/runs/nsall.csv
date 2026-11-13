@@ -1,0 +1,25 @@
+name,model,n,test,tokens,args,extra
+nsall-free-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsall-free-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0",--env GGML_PF_STATS=1
+nsall-free-ns,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=0",--env GGML_PF_STATS=1
+nsall-mix-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,pp-path=mix,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsall-mix-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,pp-path=mix",--env GGML_PF_STATS=1
+nsall-mix-ns,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,pp-path=mix,staging=0",--env GGML_PF_STATS=1
+nsall-es-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsall-es-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5",--env GGML_PF_STATS=1
+nsall-es-ns,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0",--env GGML_PF_STATS=1
+nsall-def-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsall-def-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192",--env GGML_PF_STATS=1
+nsall-def-ns,qn_iq4xs,2,pf12k,64,"--moe sim-vram=8192,staging=0",--env GGML_PF_STATS=1
+nsall-4k-verify,qn_iq4xs,1,pf4k,64,"--moe sim-vram=8192,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsall-4k-stg,qn_iq4xs,2,pf4k,64,"--moe sim-vram=8192",--env GGML_PF_STATS=1
+nsall-4k-ns,qn_iq4xs,2,pf4k,64,"--moe sim-vram=8192,staging=0",--env GGML_PF_STATS=1
+nsall-1g12-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=12288,staging=0,verify=2,poison=3",--env CUDA_VISIBLE_DEVICES=0 --env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsall-1g12-stg,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288",--env CUDA_VISIBLE_DEVICES=0 --env GGML_PF_STATS=1
+nsall-1g12-ns,qn_iq4xs,2,pf12k,64,"--moe sim-vram=12288,staging=0",--env CUDA_VISIBLE_DEVICES=0 --env GGML_PF_STATS=1
+nsall-glm30-one-verify,glm,1,pf12k,64,"--moe dense-split=0,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsall-glm30-one-stg,glm,2,pf12k,64,"--moe dense-split=0",--env GGML_PF_STATS=1
+nsall-glm30-one-ns,glm,2,pf12k,64,"--moe dense-split=0,staging=0",--env GGML_PF_STATS=1
+nsall-glm30-es-verify,glm,1,pf12k,64,"--moe dense-split=0,prefill-split=0.5,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsall-glm30-es-stg,glm,2,pf12k,64,"--moe dense-split=0,prefill-split=0.5",--env GGML_PF_STATS=1
+nsall-glm30-es-ns,glm,2,pf12k,64,"--moe dense-split=0,prefill-split=0.5,staging=0",--env GGML_PF_STATS=1
