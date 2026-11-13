@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+sx-glm-stg,glm,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 140000
+sx-glm-noctx,glm,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini",
+sx-glm-ns,glm,1,pf60k,1000,"--moe state=/p/bw/data/state_sane.ini",--ctx 140000

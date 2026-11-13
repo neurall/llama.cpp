@@ -2104,7 +2104,10 @@ static void common_moe_cache_auto(common_params & params) {
         // staged against staging=0, 12k prompts: Qwen3.8 at 8 GiB a card 1181 / 1507 prompt tokens/s on one card, 1390 / 1729 expert split; GLM 3.0 576 / 571 on
         // one card, 642 / 642 expert split, 16.9 / 16.4 s a dense split pass; DeepSeek 532 / 533.
         std::string st = opt("staging");
-        if (st.empty()) { st = "0"; params.moe_opts += ",staging=0"; params.prefetch_experts_slots = 0; }
+        // (set in the engine at once, as arg.cpp sets a key it parses: the model loads before llama_moe_set_options passes this string on, and with the key only in
+        // the string the code that ran during the load saw the staged default while the context was built without staging: the start-up probe measured 58.5 GiB for
+        // a 16384-token graph where an explicit --moe staging=0 measures 7.0, every prompt ran in passes of at most 3744 tokens, GLM 3.0 60k 214 prompt t/s)
+        if (st.empty()) { st = "0"; params.moe_opts += ",staging=0"; params.prefetch_experts_slots = 0; llama_moe_set_opt("staging", "0"); }
         params.moe_opts += std::string(",regime=rp") + (rp.empty() ? "0" : rp) + ".lm-" + llama_load_mode_name(params.load_mode) + (sv.empty() ? "" : ".sv" + sv) + (sr.empty() ? "" : ".sr" + sr) +
                            (st.empty() ? "" : ".st" + st);
     }
