@@ -27,3 +27,9 @@ ring-ds-stg-tr,ds,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1 --env GGML_SC
 ring-ds-ns-tr,ds,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
 ring-glm30-r4-stg,glm,4,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1
 ring-glm30-r4-ns,glm,4,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
+ring-ds-es-verify,ds,1,pf12k,64,"--moe prefill-split=1,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-ds-es-stg,ds,2,pf12k,64,"--moe prefill-split=1,staging=1",--env GGML_PF_STATS=1
+ring-ds-es-ns,ds,2,pf12k,64,"--moe prefill-split=1",--env GGML_PF_STATS=1
+ring-glm35-sr48-verify,glm35,1,pf12k,64,"--moe sim-ram=48,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+ring-glm35-sr48-stg,glm35,2,pf12k,64,"--moe sim-ram=48,staging=1",--env GGML_PF_STATS=1
+ring-glm35-sr48-ns,glm35,2,pf12k,64,"--moe sim-ram=48",--env GGML_PF_STATS=1
