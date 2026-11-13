@@ -4313,7 +4313,7 @@ void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
     }
 }
 
-extern "C" GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n);   // ggml-rampool-fork.cpp, no header edit; returns the elements refused
+extern "C" GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n, bool upto = false);   // ggml-rampool-fork.cpp, no header edit; returns the elements refused
 extern "C" GGML_API void ggml_rampool_done_fork(const void * const * keys, int nk, const int32_t * ids, int n);   // their copies landed: their blocks may go now
 extern "C" GGML_API void ggml_rampool_ahead_stats_fork(uint64_t * started, uint64_t * used, bool reset);
 void pred_loop(moe_cache * mc) {
@@ -12470,7 +12470,7 @@ static void cs_read_ahead(moe_cache * mc, int link, size_t from) {
         ids.clear();
         for (int32_t e = r0; e < r1; ++e) { if (ls.expert_slot[e] < 0) { ids.push_back(e); } }
         const void * keys[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
-        if (!ids.empty() && ggml_rampool_ahead_fork(keys, 3, ids.data(), (int) ids.size()) > 0) { break; }   // the pool's blocks ran out: this entry again next time
+        if (!ids.empty() && ggml_rampool_ahead_fork(keys, 3, ids.data(), (int) ids.size(), true) > 0) { break; }   // the pool's blocks ran out: this entry again next time
     }
 }
 

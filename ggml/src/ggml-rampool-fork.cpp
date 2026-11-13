@@ -639,8 +639,9 @@ GGML_API void ggml_rampool_admit_stats_fork(uint64_t * admitted, uint64_t * decl
 
 // Reads ahead for a later layer the predictor expects (--moe pred-top): queued behind every demand, no wait (user 2026-11-10: the SSD reads layer after layer, nonstop;
 // the step waits only for what its own layer still lacks). A block only as the admission allows (else a probation block), never a resident's for a guess; an element
-// starts in all of its tensors or in none, as in rp_need. Returns the elements refused (no block).
-GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n) {
+// starts in all of its tensors or in none, as in rp_need. Returns the elements refused (no block). upto: stop at the first refusal (the stream's reads ahead,
+// one class: the rest would be refused too, and each refusal samples 64 victims under the lock while the scheduler thread waits; 30% slower passes, rdahead rd2)
+GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n, bool upto) {
     rp_pool * p = g_rp;
     if (p == nullptr || n <= 0 || !p->evict) { return 0; }
     rp_tensor * ts[8];
@@ -658,8 +659,11 @@ GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const in
             if (e < 0 || e >= t->n || t->rec[e].state != RP_OUT) { continue; }
             if (rp_start(p, *t, e, false, false, true)) { t->rec[e].graph = g; begun[nb++] = k; } else { fail = true; }   // stamped: not evicted before its layer asks
         }
-        if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } refused++; }
-        else { started += nb; }
+        if (fail) {
+            for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); }
+            refused++;
+            if (upto) { refused += n - i - 1; break; }
+        } else { started += nb; }
     }
     p->st_ahead += (uint64_t) started;
     if (started > 0) { p->work_cv.notify_all(); }
