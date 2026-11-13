@@ -1565,6 +1565,16 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
     const double nxt = last + med;
     return std::min(by_count, nxt >= now ? nxt : now + (now - nxt));
 }
+// --moe dynhot=tree: the answer's preheat steers the RAM pool as it steers the cards (user 2026-11-13, K3: "the leaf's best should drive and protect the RAM
+// pool"): an expert the nearest leaf's answers' map rates is expected now, a higher rated one sooner, before every other (vis_next is now or later), so
+// eviction takes it last and the admission lets it in. --moe rp-steer=0: the pool as before (the A/B arm)
+static bool rp_steer_on() { static const bool on = [] { const char * v = moe_opt("rp-steer"); return !v || atoi(v) != 0; }(); return on; }
+static double rp_next(const moe_cache * mc, const layer_state & ls, int32_t e) {
+    if (rp_steer_on() && g_topic_on.load(std::memory_order_relaxed) && (size_t) e < ls.topic_heat.size() && ls.topic_heat[e] > 0.0f) {
+        return (double) mc->vis_now.load(std::memory_order_relaxed) - (double) ls.topic_heat[e];
+    }
+    return vis_next(mc, ls, e);
+}
 static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
     const moe_cache * mc = (const moe_cache *) ud;
     const auto it = mc->by_src.find((const ggml_tensor *) key);
@@ -1576,7 +1586,7 @@ static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool read
     // pool). Without eviction the fill ranks card-held experts by heat too: a hot one left out would never come back (rampool3: 17 GiB of card-held slices out of the pool).
     if (mc->rp_evict && mc->rp_filling && (ls.expert_slot[e] >= 0 || ls.queued[e])) { return HUGE_VAL; }
     if (mc->rp_filling && mc->fill_layers) { return (double) ls.pub.il * 1e6 + (double) e; }   // --moe fill=layers: whole layers from model layer 0 on (mc->layers runs per card group), after what the cards took
-    return vis_next(mc, ls, (int32_t) e);
+    return rp_next(mc, ls, (int32_t) e);
 }
 // --moe rampool admission (user 2026-11-10: "admission as vram has", "consider the last 10 revisits"): a newcomer that would evict a resident needs the VRAM cache's ADMIT uses
 // in the last 64 tokens, and its expected next use (median gap of its last RP_VIS visits) before the victim's. A declined one goes on probation (ggml-rampool-fork.cpp
@@ -1586,7 +1596,9 @@ static bool rp_admit(const void * key, int64_t e, double victim, void * ud) {
     const auto it = mc->by_src.find((const ggml_tensor *) key);
     if (it == mc->by_src.end()) { return true; }
     const layer_state & ls = mc->layers[it->second.first];
-    return (double) ls.win_count[e] >= knobs().admit && vis_next(mc, ls, (int32_t) e) < victim;
+    const double nx = rp_next(mc, ls, (int32_t) e);
+    const bool   steered = nx < (double) mc->vis_now.load(std::memory_order_relaxed);   // the answer's leaf rates it (rp_next): no recent use needed
+    return (steered || (double) ls.win_count[e] >= knobs().admit) && nx < victim;
 }
 
 // The heat file (user 2026-11-07: expert heat in its own file, not mixed with tuning values): <state dir>/<model>/globalhot.ini, lines clock=N, hot.<layer>=uses..., vis.<layer>=stamps...
@@ -9375,7 +9387,30 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
         g_topic_on.store(g_topic.steer);
     }
     g_topic.after_prompt = g_topic.steer;
-    LLAMA_LOG_WARN("moe-cache: hottree: %s read, key: %s at the prompt's last token (%zu values): %s (%zu leaves, %.1f ms)\n", phase,
+    // the RAM pool reads ahead what the leaf rates, the cards do not hold and the pool lacks, the most rated first, behind every demand read (rp_next keeps
+    // them in; a read the admission refuses takes a probation block). shortcut: one call per expert, each takes the pool's lock (82k on K3 at most, ~0.1 s)
+    size_t n_ahead = 0;
+    if (g_topic.steer && mc->rp_on && rp_steer_on()) {
+        std::vector<std::pair<float, std::pair<size_t, int32_t>>> want;   // (rating, (layer, expert))
+        {
+            std::lock_guard<std::mutex> lk(mc->mtx);
+            for (size_t li = 0; li < mc->layers.size(); ++li) {
+                const layer_state & ls = mc->layers[li];
+                if (!ls.rp_tab[0]) { continue; }
+                for (size_t e = 0; e < ls.topic_heat.size(); ++e) {
+                    if (ls.topic_heat[e] > 0.0f && ls.expert_slot[e] < 0) { want.push_back({ ls.topic_heat[e], { li, (int32_t) e } }); }
+                }
+            }
+        }
+        std::stable_sort(want.begin(), want.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+        for (const auto & w : want) {
+            const layer_state & ls = mc->layers[w.second.first];
+            const void * keys[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+            ggml_rampool_ahead_fork(keys, 3, &w.second.second, 1);
+        }
+        n_ahead = want.size();
+    }
+    LLAMA_LOG_WARN("moe-cache: hottree: %s read, key: %s at the prompt's last token (%zu values): %s%s (%zu leaves, %.1f ms)\n", phase,
             tree_kind() == 2 ? "the prompt's most picked experts of the first MoE layer" : tree_kind() == 3 ? "the prompt's expert map (top k a layer)" :
             tree_key_pool() ? "all MoE layers' inputs pooled" :
             "the first MoE layer's input", key.size(),
@@ -9384,6 +9419,7 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
                     src == &lf->best ? "best" : "live", rated).c_str()
                : leaf ? tr_fmt("leaf %s holds no %s map yet: the ini's hot experts pick the cache's", tree_short(at).c_str(), phase).c_str()
                : use ? "no leaf shares an entry of the first level: the ini's hot experts pick the cache's" : "the ini's hot experts pick the cache's (see the line above)",
+            n_ahead ? tr_fmt("; the RAM pool keeps them and reads ahead those of the %zu the cards lack it has not", n_ahead).c_str() : "",
             g_topic_tree.leaves.size(), (ggml_time_us() - t0) / 1e3);
 }
 
