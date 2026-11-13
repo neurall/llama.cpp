@@ -25,3 +25,5 @@ ring-glm30-x-stg,glm,2,pf12k,64,"--moe split-experts=1",--env GGML_PF_STATS=1 --
 ring-glm30-x-ns,glm,2,pf12k,64,"--moe staging=0,split-experts=1",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
 ring-ds-stg-tr,ds,2,pf12k,64,,--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
 ring-ds-ns-tr,ds,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
+ring-glm30-r4-stg,glm,4,pf12k,64,,--env GGML_PF_STATS=1
+ring-glm30-r4-ns,glm,4,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1

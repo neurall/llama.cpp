@@ -1812,7 +1812,10 @@ long                            g_card_seen = 0;
 const char * dsplit_bal_phase(int p) {
     return p == 0 ? "balancing the token shares" : p == 1 ? "experts on trial" : p == 2 ? "dense split alone" : p == 4 ? "one card" : p == 5 ? "reference pass of the expert trial" : "dense split with experts";
 }
-struct dsplit_xtrial { int phase = 2; int wait = 2; double ref_v = 0.0, exp_v = 0.0, exp_cm = -1.0; std::vector<double> exp_f, f; };   // f: the helpers' expert shares in force (a new pass-size bucket starts from them)
+// f: the helpers' expert shares in force (a new pass-size bucket starts from them); exp_idle: each helper's wait for the other cards in the experts pass, as a
+// share of that pass. wait 1: the first measured pass starts the trial (2 until 2026-11-13: a session of two requests never saw the experts on the helpers; the
+// start is capped at the even share, so a cold first pass's long idle time cannot overshoot it)
+struct dsplit_xtrial { int phase = 2; int wait = 1; double ref_v = 0.0, exp_v = 0.0, exp_cm = -1.0; std::vector<double> exp_f, exp_idle, f; };
 static dsplit_xtrial g_xt;
 dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) {
     auto it = g_bal.find(b);
@@ -1907,6 +1910,11 @@ bool dsplit_zw_pieces() {   // --moe split-pieces=1: each range's experts as the
     static const bool on = [] { const char * e = llama_moe_get_opt("split-pieces"); return e && atoi(e) != 0; }();
     return on;
 }
+// a card's probed quantised-matmul rate (llama-gpu-probe-fork.cpp; the sustained one where measured), 0: not probed
+static double dsplit_card_rate(ggml_backend_dev_t d) {
+    const auto * p = llama_gpu_probe_find_fork(d);
+    return p ? (p->compute_sust > 0.0 ? p->compute_sust : p->compute) : 0.0;
+}
 // k of every card from the start-of-server measurements (see above); without the compute per token (not timed yet) the hand-offs cannot be put in time and are
 // left out (k too high by their share): the 0.75 start and the first pass's wait take that back
 void dsplit_zw_prior(const std::vector<ggml_backend_dev_t> & dev, std::vector<double> & k, std::string & src) {
@@ -1916,10 +1924,9 @@ void dsplit_zw_prior(const std::vector<ggml_backend_dev_t> & dev, std::vector<do
     const double xf = g_xf_avg > 0.0 && g_xf_avg < 1.0 ? g_xf_avg : 0.5;
     const double wf = dsplit_zw_pieces() ? xf : 1.0 - xf;   // the expert card's window: its own experts (pieces) or its own dense part, as a share of its compute
     const double c_us = llama_moe_cache_compute_us_fork();
-    const auto rate = [](ggml_backend_dev_t d) { const auto * p = llama_gpu_probe_find_fork(d); return p ? (p->compute_sust > 0.0 ? p->compute_sust : p->compute) : 0.0; };
-    const double sx = rate(dev[x]), bx = dsplit_link(dev[x]);
+    const double sx = dsplit_card_rate(dev[x]), bx = dsplit_link(dev[x]);
     for (size_t i = 0; i < x; ++i) {
-        const double si = rate(dev[i]), bi = dsplit_link(dev[i]);
+        const double si = dsplit_card_rate(dev[i]), bi = dsplit_link(dev[i]);
         const double slow = si > 0.0 && sx > 0.0 ? sx / si : 1.0;   // card i's dense time per token against the expert card's
         // the expert card's compute per token: the pass planner's timed batches, else the model's weight bytes a token reads over the expert card's probed
         // quantised-matmul rate (weight bytes x tokens per second, llama-gpu-probe-fork.cpp); the hand-offs need it to be put in time (2026-10-24: left out
@@ -2077,6 +2084,30 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
             C.f[x] = 1.0 - sum;
         }
     };
+    // The shares that end the cards' expert chains together, from a pass of the dense split alone: the most a helper is given. A layer's experts start when every
+    // card's dense part is done and the layer ends with the last card's chain, so past its even share a helper is the long pole. A card's time for every expert
+    // of the pass: the measured expert time (the expert card's; under --moe staging=0 each card's home layers) at the card's probed matmul rate against the expert
+    // card's (experts are quantised matmuls; the dense times per token where a card was not probed: they carry the ranges' attention, 0.77 between two equal
+    // cards), or the expert uploads over the card's link when that is longer.
+    // The idle rule below alone gave an idle helper on an equal card every expert (GLM 3.0 12k, 2 x 3090 on x16: idle 13.0 s, all experts would add 6.5 s: start
+    // 100%, the roles swapped), where half each ran 12.6 s against 16.9 s.
+    const auto even_shares = [&]() {
+        double E = 0.0;
+        for (size_t i = 0; i < n; ++i) { if (i == x || B.f_run[i] <= 0.0) { E += B.m[i]; } }
+        const double rx = dsplit_card_rate(B.dev[x]);
+        std::vector<double> ev(n, 0.0);
+        double inv = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            const double link = dsplit_link_once(B.dev[i]), ri = dsplit_card_rate(B.dev[i]);
+            // shortcut: under --moe staging=0 the stream's bytes are not in gb_up (0): compute alone decides; a helper on a much slower link needs them here
+            const double upl  = link > 0.0 && x < B.gb_up.size() ? B.gb_up[x] / link * 1e3 : 0.0;
+            const double slow = i == x ? 1.0 : ri > 0.0 && rx > 0.0 ? rx / ri : B.c[x] > 0.0 ? B.c[i] / B.c[x] : 0.0;
+            ev[i] = std::max(E * slow, upl);   // ms for the experts
+            if (ev[i] > 0.0) { inv += 1.0 / ev[i]; }
+        }
+        for (double & v : ev) { v = v > 0.0 && inv > 0.0 ? 1.0 / v / inv : 0.0; }
+        return ev;
+    };
     std::string why;
     // The trial is paired (A B A B, fork/docs/planner-crossovers.md 4.3): a pass with experts on the helpers is judged against the dense-split-alone pass right
     // after it, not against a reference from earlier in the prompt. A long prompt's passes get slower per token as the context grows (GLM 3.0 64k, 2026-11-07:
@@ -2092,9 +2123,13 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
         const bool better = g_xt.exp_v > 0.0 && g_xt.exp_v < g_xt.ref_v * 0.99;
         double tot = 0.0;
         if (better) {
+            // more while the helper idled in the EXPERTS pass (this pass is the dense split alone, where a helper always waits: read here, every faster pair
+            // grew the share to 100% and the trial never settled), up to its even share
+            const std::vector<double> ev = even_shares();
             bool idle = false;
             for (size_t i = 0; i < x; ++i) {
-                if (fi[i] > 0.0 && i < B.xw.size() && B.xw[i] > 0.10 * B.span) { fi[i] = std::min(1.0, fi[i] * 1.5); idle = true; }
+                const double cap = ev[i] > 0.0 ? ev[i] : 1.0;
+                if (fi[i] > 0.0 && fi[i] < cap && i < g_xt.exp_idle.size() && g_xt.exp_idle[i] > 0.10) { fi[i] = std::min(cap, fi[i] * 1.5); idle = true; }
             }
             g_xt.phase = idle ? 1 : 3;
             if (!idle) { g_xt.wait = 8; }
@@ -2130,6 +2165,7 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
             return;
         }
         std::vector<double> fi(x, 0.0);
+        const std::vector<double> ev = even_shares();
         bool any = false;
         std::string calc;
         for (size_t i = 0; i < x; ++i) {
@@ -2140,8 +2176,10 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
             const double hand = B.hop[i] * (double) (T - B.tok[i]) / 1e3;    // ms: the other cards' tokens crossing to card i
             const double extra = std::max(comp, upl) + hand;
             fi[i] = extra > 0.0 ? std::min(1.0, 0.5 * B.xw[i] / extra) : 0.0;
-            calc += format("%s%s idle %.0f ms, all experts would add %.0f ms (compute %.0f, upload %.0f, hand-offs %.0f): start %.0f%%", calc.empty() ? "" : "; ",
-                    ggml_backend_dev_name(B.dev[i]), B.xw[i], extra, comp, upl, hand, 100.0 * fi[i]);
+            const bool capped = ev[i] > 0.0 && fi[i] > ev[i];
+            if (capped) { fi[i] = ev[i]; }
+            calc += format("%s%s idle %.0f ms, all experts would add %.0f ms (compute %.0f, upload %.0f, hand-offs %.0f): start %.0f%%%s", calc.empty() ? "" : "; ",
+                    ggml_backend_dev_name(B.dev[i]), B.xw[i], extra, comp, upl, hand, 100.0 * fi[i], capped ? " (its even share: the cards' expert chains end together)" : "");
             any = any || fi[i] >= 0.02;
         }
         if (!any) { g_xt.wait = 8; LLAMA_LOG_WARN("split experts: the helpers keep none (%s)\n", calc.empty() ? "nothing measured on them" : calc.c_str()); return; }
@@ -2155,6 +2193,8 @@ static void dsplit_expert_trial_impl(dsplit_bal & B, int64_t T) {
     g_xt.exp_v = B.v;
     g_xt.exp_cm = g_dsf_ps.pos0 >= 0 ? (double) g_dsf_ps.pos0 + 0.5 * (double) g_dsf_ps.T : -1.0;
     g_xt.exp_f.assign(B.f_run.begin(), B.f_run.begin() + x);
+    g_xt.exp_idle.assign(x, 0.0);
+    for (size_t i = 0; i < x; ++i) { g_xt.exp_idle[i] = B.span > 0.0 ? B.xw[i] / B.span : 0.0; }
     set_f(std::vector<double>(x, 0.0));
     g_xt.phase = 5;
     LLAMA_LOG_WARN("split experts: pass with %.0f%% of the experts on the helpers took %.1f us/token; the next pass runs the dense split alone as its reference\n", 100.0 * fh, B.v);
