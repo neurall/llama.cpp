@@ -3281,8 +3281,11 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
     const int64_t n_ids    = ids->ne[0];
     const int64_t n_tokens = ids->ne[1];
     // big-batch prefill ids are observed too: they warm the cache before decode
-    // (hits aren't counted there, the cache graph isn't built for big batches)
-    const bool prefill = n_tokens > llama_moe_cache_max_batch_fork() || g_pp_obs;
+    // (hits aren't counted there, the cache graph isn't built for big batches). A call planned as the stream into the cache's blocks keeps the cache path at any size
+    // (llama_moe_cache_max_batch_fork): its passes are a prompt's too. Seen as decode steps they wrote every prompt token into the RAM pool's heat (Kimi K3.1 1k prompt,
+    // 2026-11-13: 16x the decode's own counts per run, the next fill held the prompt's experts, decode 3.5 -> 1 t/s)
+    const bool prefill = n_tokens > llama_moe_cache_max_batch_fork() || g_pp_obs ||
+                         (g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed));
 
     const int il = parse_layer_from_name(name);
     if (il < 0) {
