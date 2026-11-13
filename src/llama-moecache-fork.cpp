@@ -1289,14 +1289,12 @@ static bool cs_ring_floor(const moe_cache::alias_pool & ap, int N, size_t & fe, 
         Bmax = std::max(Bmax, rc.B);
         if (rc.members > ncom) { ncom = rc.members; Lcom = L; }
     }
-    // two entries of the most common class (one in the kernels, the next on its way), or the largest layer's if that is more, plus two of the largest blocks (a grid
-    // block across the floor is not the ring's). One entry when two take over half the pool (the uploads wait then).
-    size_t ring_b = ppx_ring_reserve(Lmax, Lcom, Bmax);
-    if (why) { *why = Lmax > 2 * Lcom ? "the largest layer" : "two layers of the most common class"; }
-    if (ring_b > ap.tail_end / 2) {
-        ring_b = Lmax + 2 * Bmax;
-        if (why) { *why = "one layer (two would take over half the pool: uploads wait for the layer before)"; }
-    }
+    // Nothing is set aside for the stream (user 2026-11-13: "you just introduced staging under different name"): the lend and the KV zone stop only one entry of the
+    // largest class (plus two of the largest blocks: a grid block across the floor) short of the tail, the least the stream needs to place an entry at all; every further
+    // block it takes from the cache itself (cs_layer: free, then its own computed writes, then cached experts by value). Was two entries of the most common class.
+    (void) Lcom;
+    const size_t ring_b = Lmax + 2 * Bmax;
+    if (why) { *why = "one entry of the largest class, the least the stream needs; further blocks come from the cache"; }
     fe = ap.tail_end - std::min(ring_b, ap.tail_end);
     for (bool moved = true; moved; ) {   // on a block edge of the class whose blocks lie there: the lend and the KV rows mark whole blocks
         moved = false;
@@ -1316,7 +1314,8 @@ static bool cs_ring_floor(const moe_cache::alias_pool & ap, int N, size_t & fe, 
 static void cs_ring_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t fe) {
     ap.floor_end = fe;
     ap.cs_byte   = fe;
-    for (const auto & rc : ap.rcls) { mc->pool[rc.pcls].ring_lo = fe > rc.gbase ? (int32_t) ((fe - rc.gbase + rc.B - 1) / rc.B) : 0; }
+    // the stream writes over the class's whole cache (ring_lo 0), not only behind the floor: the floor only keeps the lend and the KV out of its last entry's room
+    for (const auto & rc : ap.rcls) { mc->pool[rc.pcls].ring_lo = 0; }
 }
 // every card's ring for a layer in N chunks, and N for the graphs; false (nothing changed) when a card cannot hold it
 static bool cs_apply(moe_cache * mc, int N) {
@@ -1346,6 +1345,8 @@ static std::atomic<bool> g_pp_no_dense{false};   // this prompt call stays on on
 static std::atomic<int>    g_pp_path_call{0};    // this prompt call's one-card path (PP_*, below), set by llama_moe_cache_pp_decide_fork: what the dense split is weighed against
 static std::atomic<double> g_pp_save_us{0.0};    // what that path is calculated to save over the stream (us): the dense split planner's one-card time less this
 static bool              g_pp_mix_call_built = true;   // the same when the last graph was finished
+static std::atomic<bool> g_pp_lp_call{false};    // this prompt call's stream runs layer parallel: each card computes its own layers' experts (llama_moe_cache_pp_decide_fork, PP_LP)
+static bool              g_pp_lp_built = false;  // the same when the last graph was finished
 static bool              g_pp_k_built = false;   // the last graph carries the rankings of predicted staging
 static double            g_pp_k_m = 0.0;         // and its multiplier (ggml_backend_pred_get_fork when it was built): the report comes after the prompt call ended
 extern "C" {
@@ -10518,7 +10519,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         cs_ring_apply(mc, ap, fe);
                         std::string fit;
                         for (const auto & rc : ap.rcls) { fit += tr_fmt("%s%d of %d", fit.empty() ? "" : ", ", rc.gn - mc->pool[rc.pcls].ring_lo, (rc.E + ring_n - 1) / ring_n); }
-                        LLAMA_LOG_WARN("moe-cache: block pool on %s: ring reserve %.0f MiB at the tail (%s%s; blocks per class there against a layer%s: %s); the graph and the KV zone take up to %.0f MiB before it\n",
+                        LLAMA_LOG_WARN("moe-cache: block pool on %s: nothing set aside for the stream; the graph and the KV zone stop %.0f MiB short of the tail (%s%s; the stream's blocks per class, the whole cache, against a layer%s: %s), up to %.0f MiB\n",
                                 ggml_backend_buft_name(buft), (ap.tail_end - ap.floor_end) / 1048576.0, ring_why,
                                 ring_n > 1 ? tr_fmt(", a layer in %d chunks (%s)", ring_n, cs_forced() > 0 ? "--moe cs-chunks" : "between prompt calls; a call picks its own").c_str() : "",
                                 ring_n > 1 ? "'s chunk" : "", fit.c_str(), ap.floor_end / 1048576.0);
@@ -12002,13 +12003,14 @@ ggml_backend_dev_t llama_moe_cache_cs_mix_dev_fork(const llama_moe_cache_layer_f
 // split and no mix puts every layer's experts on the expert card, the fastest link's (a dense split pass: the split's expert card, passed as `expert`), the layers of other
 // cards from shadows there; their own cards keep their blocks for decode. --moe moe-split=home: every layer on its own card instead, each card streaming its own layers.
 // The card for layer pub, nullptr when the layer already lives there (or home, or not a stream layer).
-static bool moe_split_home() {
-    static const bool v = [] { const char * e = moe_opt("moe-split"); return e && strcmp(e, "home") == 0; }();
+// --moe moe-split=home (or layers): every stream call layer parallel; moe-split=expert: never; unset: the planner picks per call (PP_LP, estimate_layerparallel_time)
+static int moe_split_mode() {
+    static const int v = [] { const char * e = moe_opt("moe-split"); return !e ? -1 : strcmp(e, "home") == 0 || strcmp(e, "layers") == 0 ? 1 : 0; }();
     return v;
 }
 ggml_backend_dev_t llama_moe_cache_cs_expert_dev_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t expert) {
     moe_cache * mc = g_cache;
-    if (!mc || !pub || !pp_no_staging() || moe_split_home() || pub->jit_n > 0) { return nullptr; }
+    if (!mc || !pub || !pp_no_staging() || moe_split_mode() == 1 || g_pp_lp_call.load(std::memory_order_relaxed) || pub->jit_n > 0) { return nullptr; }
     if (!expert) { expert = mc->link_dev[0]; }
     for (const auto & l : mc->layers) {
         if (&l.pub == pub) { return expert && mc->link_dev[l.link] != expert ? expert : nullptr; }
@@ -12427,7 +12429,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     if (ps.cs_up.size() < ps.owner.size()) { ps.cs_up.resize(ps.owner.size(), 0); }
     // A ring (user 2026-11-12: "evict past not future"; the staged stream's whole-layer copies, only the destination differs): the blocks in order from the class's write
     // cursor, so a layer lands in one run over what was written longest ago. Never a block of a layer uploaded for in this pass whose kernels are not queued yet.
-    struct cand { int tier; int32_t b; int64_t o; };   // o: the entry (layer or shadow) holding the block, -1 none
+    struct cand { int tier; int32_t b; int64_t o; int32_t at; };   // o: the entry (layer or shadow) holding the block, -1 none; at: its place from the cursor
     std::vector<cand> c;
     // the layer ring (staging=0): the class's blocks in the reserve behind floor_end, from the card's cursor (bytes, class-blind: the layers of every class follow
     // one another there, first in first out); without a reserve the class's own cursor over all its blocks
@@ -12443,13 +12445,13 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     // a second scan when the first finds too few: pinned experts give way (a pin keeps a decode favourite, it must not keep a layer out of its class's blocks)
     for (int force = 0; force < 2 && c.size() < want.size(); ++force) {
     c.clear();
-    for (int32_t i = 0; i < nr && c.size() < want.size(); ++i) {
+    for (int32_t i = 0; i < nr; ++i) {   // the whole class: every block the stream may take, the best ones picked below
         const int32_t b = r0 + (ps.cs_cur + i) % nr;
         const int32_t o = ps.owner[b];
-        if (o == -1) { c.push_back({ 0, b, -1 }); continue; }
+        if (o == -1) { c.push_back({ 0, b, -1, i }); continue; }
         if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: none of it computed in this pass, 6: some)
             bool fd = false;
-            if (cls_claimable(mc, ls.pcls, b, p, fd, force)) { c.push_back({ fd ? 6 : 5, b, -1 }); }
+            if (cls_claimable(mc, ls.pcls, b, p, fd, force)) { c.push_back({ fd ? 6 : 5, b, -1, i }); }
             continue;
         }
         const int64_t lx = cs_li_of(mc, o);   // a layer's or a shadow's
@@ -12457,16 +12459,22 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         layer_state & lo = csl(mc, (size_t) lx);
         if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
         const int32_t x = lo.slot_expert[b];
-        if (x < 0) { c.push_back({ 1, b, lx }); continue; }   // the layer's, empty
+        if (x < 0) { c.push_back({ 1, b, lx, i }); continue; }   // the layer's, empty
         const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
         if (q < 0 || (!force && pinned(mc, lo, x))) { continue; }   // a layer outside the cstream graph (its path may read the block), a pinned expert
         if ((size_t) q < mc->cs_done[lo.link]) {   // computed in this pass: its done event is on its card's compute stream
-            c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, lx });
+            c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, lx, i });
         } else if ((size_t) q > p && !((size_t) q < mc->cs_mix.size() && mc->cs_mix[(size_t) q] == 1)) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert
-            c.push_back({ 4, b, lx });                                                                         // comes back when its turn comes; never a mix home's (its shadow left those out)
+            c.push_back({ 4, b, lx, i });                                                                         // comes back when its turn comes; never a mix home's (its shadow left those out)
         }
     }
     }
+    // The stream takes the cache's own blocks (user 2026-11-13: nothing set aside for it), so it keeps what the cache holds: free blocks first, then empty ones of a
+    // layer, its own writes of this pass already computed, another class's bytes, then cached experts already computed in this pass, last the experts of layers still to
+    // come (they come back when their turn comes; "evict past not future", user 2026-11-12). Same tier: the cursor's order, what was written longest ago first.
+    static const int tier_rank[8] = { 0, 1, 2, 5, 6, 3, 4, 7 };
+    std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return tier_rank[x.tier] < tier_rank[y.tier]; });
+    if (c.size() > want.size()) { c.resize(want.size()); }
     // late (the k arm's late fix, at the entry's own split): with every block taken, the predictions give way, those of the entries after this one first (the
     // furthest first; their turn plans them again), then this entry's own its tokens do not use. Their copies are on the same ring stream, so the late copies
     // land after them, and no kernel read them yet. The staged k arm had its layer's staging slots for this; on the ring, the layers ahead held all 66 blocks
@@ -12490,7 +12498,9 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     }
     if (c.size() < want.size()) { return false; }
     if (n_ring > 0) {
-        ps.cs_cur = (c[n_ring - 1].b + 1 - r0) % nr;
+        int32_t far = 0;   // past the furthest block taken from the cursor: the next entry starts behind it
+        for (size_t i = 0; i < n_ring; ++i) { far = std::max(far, c[i].at); }
+        ps.cs_cur = (ps.cs_cur + far + 1) % nr;
         if (r0 > 0 && card) { card->cs_byte = cbase + (size_t) (c[n_ring - 1].b + 1) * ps.B; if (card->cs_byte >= card->tail_end) { card->cs_byte = card->floor_end; } }
     }
     std::sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return x.b < y.b; });   // ascending blocks for ascending experts: runs of both, one 2D copy each
@@ -15486,7 +15496,8 @@ static double pp_pass_floor(double n) {
 // The time of a whole prompt pass, per path and size: the last measurement per power of two of the tokens (in memory, never stored: what the cards hold changes it, and a try costs one
 // pass). This is what auto decides by (user 2026-11-01: per size, from measured values). The paths are told apart by the graph that ran, a forced path measures as well.
 // PP_RING: the stream, every expert staged on the fastest link's card. PP_MIX: the stream with the prompt mix. PP_DEC: the decode chain. PP_K + i: the stream with predicted staging, q2 up to 2^i x a token's picks.
-enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_PATHS = PP_K + 8 };
+// PP_LP: the stream layer parallel, each card its own layers' experts (staging=0 only).
+enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_KN = 8, PP_LP = PP_K + PP_KN, PP_PATHS = PP_LP + 1 };
 static constexpr double PP_MIX_COLD = 4096.0;   // below it the prompt mix competes on its mean from the first request, above it only a trial (shortcut: a fixed size, the data has wins to 4.5k and losses at 12k; compute it from the cross-card traffic when 5-10k is measured)
 static constexpr double PP_MIN_BATCH = 32.0;   // GGML_OP_OFFLOAD_MIN_BATCH's default: under it a pass's experts run on the CPU, whichever path was planned
 static constexpr double PP_K_LATE = 1.3;   // predicted staging's real cost over the upload of the experts it calculates; the forced sweep's break-even at 77% of a layer's experts needed (2026-10-31, campaign predictor-upload-bw-reducer)
@@ -15561,7 +15572,8 @@ static dsf_rls & pp_rls(int p) {
     return r;
 }
 static std::string pp_path_name(int p) {
-    return p == PP_RING ? "stream" : p == PP_MIX ? "stream, mix" : p == PP_CHAIN ? "prompt chain" : p == PP_DENSE ? "dense" : p == PP_DEC ? "decode chain" : format("stream, k x%d", 1 << (p - PP_K));
+    return p == PP_RING ? "stream" : p == PP_MIX ? "stream, mix" : p == PP_CHAIN ? "prompt chain" : p == PP_DENSE ? "dense" : p == PP_DEC ? "decode chain" : p == PP_LP ? "stream, layer parallel" :
+           format("stream, k x%d", 1 << (p - PP_K));
 }
 // What a try may risk (user 2026-11-02: "often smaller changes ... with big changes to react faster ... to not lose too much perf if decisions were bad"). A running pass cannot change its path, so a
 // try that loses costs its whole call: DeepSeek's mix tried first on 16384 tokens, 134 s against 120 s. So a try runs when the call takes at most 1 s anyway, or at most 5% of this server's
@@ -15643,7 +15655,7 @@ static bool pp_mix_pick(double n, int n_used, int n_expert, const char ** why) {
 static double pp_k_pick(double n, double r, double U, int n_used, int n_expert, const char ** why) {
     double best = 0.0, t_best = r > 0.0 ? r : std::numeric_limits<double>::max();
     bool last_won = true;
-    for (int i = 0; PP_K + i < PP_PATHS && (double) n_used * (double) (1 << i) < (double) n_expert; ++i) {
+    for (int i = 0; i < PP_KN && (double) n_used * (double) (1 << i) < (double) n_expert; ++i) {
         const double t = pp_took_us(PP_K + i, n);
         if (t <= 0.0) {
             if (last_won && U > pp_pass_floor(n) && (n * (double) n_used < (double) n_expert || pp_try_ok(best > 0.0 ? t_best : r))) { *why = "one try of a prediction"; return (double) (1 << i); }
@@ -15928,7 +15940,7 @@ static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
     size_t ring_b = 0, cells_log = cells_end;
     for (const auto & a : mc->alias) { if (!a.rcls.empty()) { ring_b = std::max(ring_b, a.tail_end - a.floor_end); } }
     if (cells_log == 0) { std::lock_guard<std::mutex> lk(g_pp_mu); cells_log = (size_t) g_pp_cells; }
-    const std::string line = format("stream of %u tokens to %zu cells: a layer in %d chunk%s (ring reserve %.0f MiB; by chunks: %s; upload %.0f ms a pass, compute %s, a card holds %.2f of a layer)",
+    const std::string line = format("stream of %u tokens to %zu cells: a layer in %d chunk%s (the graph and the KV stop %.0f MiB short of the tail, one entry; by chunks: %s; upload %.0f ms a pass, compute %s, a card holds %.2f of a layer)",
             n, cells_log, cs_cand[b], cs_cand[b] > 1 ? "s" : "", ring_b / 1048576.0, tab.c_str(), up_us / 1e3,
             c_us > 0.0 ? format("%.0f us a token, %.0f a further entry", c_us, CS_ENTRY_COST * c_us).c_str() : "not measured yet: the fewest passes", share);
     LLAMA_LOG_WARN("moe-cache: %s\n", line.c_str());
@@ -16121,6 +16133,7 @@ static int pp_cur_path() {
         path = PP_K;
         for (double m = g_pp_k_m; m > 1.0; m /= 2.0) { ++path; }
     }
+    if (path == PP_RING && g_pp_cstream_built && g_pp_lp_built) { path = PP_LP; }
     return path;
 }
 static int g_pp_pass_learned = 0;   // passes of this call that taught their path (the call's end then adds no second sample)
@@ -16426,6 +16439,7 @@ double llama_dsplit_compute_calc_us_fork(ggml_backend_dev_t d);   // llama-dspli
 void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     moe_cache * mc = g_cache;
     g_pp_path_call = PP_RING;   // until decided: the stream, nothing saved against it
+    g_pp_lp_call = false;       // and on the expert card (--moe moe-split=home keeps layer parallel on, llama_moe_cache_cs_expert_dev_fork)
     g_pp_save_us = 0.0;
     g_pp_cs_reported = false;
     g_pp_last_n.store(n_tokens, std::memory_order_relaxed); g_pp_last_ub.store(ub_max, std::memory_order_relaxed);
@@ -16441,7 +16455,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // (2026-11-12). The staged router path fetches ahead through its slots, so its sum is no model of it: left as it was there.
     const double C_calc = pp_no_staging() ? llama_dsplit_compute_calc_us_fork(mc->link_dev[0]) : 0.0;   // same lock rule as R_read
     double A = 0.0;   // the expert bytes one token reads, all layers: what the decode chain's chunks read again for every token
-    pp_sums sums((size_t) (PP_PATHS - PP_K));   // llama-estimate-fork.h: every expert added below, the same sums a simulated machine fills
+    pp_sums sums((size_t) PP_KN, (size_t) std::max(0, mc->n_links));   // llama-estimate-fork.h: every expert added below, the same sums a simulated machine fills
     std::vector<pp_miss> & v = sums.miss;      // the experts no card holds
     double & U = sums.U, & Um = sums.Um;       // the stream's upload, without and with the prompt mix
     double & M = sums.M, & Mm = sums.Mm;       // of those bytes, the ones only the SSD has
@@ -16497,7 +16511,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
                 const bool on_card = l.expert_slot[e] >= 0;
                 const double Sm = pp_mapped_expert_bytes(l, pinned_buft, (int64_t) e);   // what the SSD delivers of it: nothing where it is pinned or in the RAM pool
                 // its share of one token's picks: k (count + 1) / (all counts + experts), so a model nobody ran yet counts as uniform
-                pp_sums_add(sums, n, S, Sm, on_card, l.link == 0, (double) mc->n_expert_used * (picks_of(e) + 1.0) / all, r0, rl, rc);
+                pp_sums_add(sums, n, S, Sm, on_card, l.link == 0, (double) mc->n_expert_used * (picks_of(e) + 1.0) / all, r0, rl, rc, (size_t) l.link);
             }
         }
     }
@@ -16602,7 +16616,12 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     pm.U = U; pm.M = M; pm.Um = Um; pm.Mm = Mm; pm.up = up; pm.cpu = cpu; pm.ssd_miss = ssd_miss;
     pm.wait_us = pp_wait_us(n); pm.chunk_us = chunk_at(n); pm.dec_f = dec_f; pm.dec_r = dec_r; pm.dec_kc = g_pp_dec_kc;
     pm.Uk = Uk; pm.Mk = Mk;
+    pp_metrics_cards(pm, sums);
     cand(PP_RING, estimate_fullstream_upload_time(pm));
+    // layer parallel (user 2026-11-13: the old staging=0 layout as a planner option, priced by its own estimator and weighed on every call): staging=0 with layers on two
+    // or more cards; each card computes its own layers' experts, the cached ones where they sit, the others over its own link, the cards in turns. --moe moe-split=expert: never.
+    const double lp_us = pp_no_staging() && has_slower && moe_split_mode() != 0 ? estimate_layerparallel_time(pm) : 0.0;
+    if (lp_us > 0.0) { cand(PP_LP, estimate_layerparallel_upload_time(pm)); }
     // (--moe staging=0: the mix's share on the fastest link's card is that card's shadow of the layer, filled by the stream like any other entry: llama_moe_cache_cs_mix_dev_fork.
     // It was switched off on 2026-11-13 while that share still ran as plain graph inputs with no fetch ahead: 1113 prompt t/s against the stream's 1507.)
     if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(pm)); }
@@ -16615,7 +16634,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // a prediction of 2^i x the picks uploads what the call's tokens rank that high (the same SSD rule as Ts), not the whole layer: the stream's upload at a
     // long prompt where every expert is touched, a fraction at a short one. x PP_K_LATE: what the forced sweep shows it pays beyond that (late fixes, the ranking nodes).
     // Was the stream's upload x (1 - 2^i x picks / experts), upside down: k x32 cost nothing, the planner tried it first (rows 2026-11-08: 57 k x32 picks against 5 k x1).
-    for (int i = 0; k_auto && PP_K + i < PP_PATHS && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) {
+    for (int i = 0; k_auto && i < PP_KN && (double) mc->n_expert_used * (double) (1 << i) < (double) n_expert; ++i) {
         cand(PP_K + i, estimate_predictor_upload_time(pm, i, PP_K_LATE));
     }
     int best_mu = -1;
@@ -16672,10 +16691,13 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // way, and the fast card stays cold for the session (2026-11-08 forced mix cells, Qwen3.8: 24% of the asked experts found on it against 44%, every pass slower than the stream).
         // So no try of a mix not known here while uploads run; a known one keeps its mean.
         if (busy && ok[PP_MIX] && !known[PP_MIX]) { ok[PP_MIX] = false; }
-        for (int p = PP_K + 1; p < PP_PATHS; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
-        if (pp_no_staging()) {   // --moe staging=0: the stream and the predictions' k arms run into the cache's blocks (cstream, below); the mix still stages
-            ok[PP_MIX] = false;
-            if (!cs_fits) { ok[PP_RING] = false; for (int p = PP_K; p < PP_PATHS; ++p) { ok[p] = false; } }
+        for (int p = PP_K + 1; p < PP_K + PP_KN; ++p) { if (ok[p] && g_pp_rls[p - 1].n == 0) { ok[p] = false; } }
+        // --moe staging=0: the stream, the mix, layer parallel and the predictions' k arms all run into the cache's blocks (cstream, below). The mix was struck out here
+        // while its fast card's share had no fetch ahead (1113 prompt t/s against the stream's 1507); with its shadow on the stream (mix_zero_first) it beat the stream
+        // by 6-12% at 4k on five models, and the strike-out left it to forced rows only (user 2026-11-13: "there for sure will be situations where it wins").
+        if (pp_no_staging()) {
+            if (!cs_fits) { ok[PP_RING] = false; ok[PP_MIX] = false; for (int p = PP_K; p < PP_PATHS; ++p) { ok[p] = false; } }
+            if (moe_split_mode() == 1 && ok[PP_LP]) { ok[PP_RING] = false; }   // --moe moe-split=home: the stream runs layer parallel
         }
         // Router or full stream (user 2026-11-10): time per token of the path that ran here against the estimate of the other, and the stream as soon as it costs the same or less.
         // A path measured at this size counts with its real time. The estimates: the router waits for its ids, uploads its picks and computes; the full stream uploads every expert
@@ -16695,17 +16717,19 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
         best_mu   = rls_argmin(g_pp_pmu, ok, PP_PATHS);
     }
-    bool chain, dec, mix;
+    bool chain, dec, mix, lp;
     double m;
     if (learned && g_pp_pick >= 0) {
         chain = g_pp_pick == PP_CHAIN;
         dec   = g_pp_pick == PP_DEC;
         mix   = g_pp_pick == PP_MIX;
-        m     = g_pp_pick >= PP_K ? (double) (1 << (g_pp_pick - PP_K)) : 0.0;
+        lp    = g_pp_pick == PP_LP;
+        m     = g_pp_pick >= PP_K && g_pp_pick < PP_K + PP_KN ? (double) (1 << (g_pp_pick - PP_K)) : 0.0;
         why   = g_pp_trial ? "trial: its expected gain over the calls of this size beats its expected loss" : g_pp_pick == best_mu ? "lowest mean" : "lowest mean among the paths known here";
         g_pp_dec = dec;
         g_pp_mb = chain || dec ? ub_max : 0;
         g_pp_mix_call = mix;
+        g_pp_lp_call = lp;
     } else {
     g_pp_pick = -1;   // the old rules decide: no regret is booked against the draws
     const bool dec_ok = cpu_known && de < ot;
@@ -16725,6 +16749,8 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         dec = true; g_pp_dec = true; g_pp_mb = ub_max; why = "--moe staging=0: no layer has a layer's worth of blocks for the stream into the cache";
         mix = false; g_pp_mix_call = false;
     }
+    lp = pp_no_staging() && moe_split_mode() == 1 && !chain && !dec && !mix && m <= 0.0;   // the old rules weigh no layer parallel: only --moe moe-split=home runs it
+    g_pp_lp_call = lp;
     }
     // The stream into the cache's blocks (cs_begin, cs_layer): the stream's own copies (whole layers, ahead of compute, on the expert card's upload stream) with the cache's
     // blocks as their destination, the kernels reading the tables. --moe pp-path=cstream forces it; with --moe staging=0 every stream pick is it (user 2026-11-12: the
@@ -16750,21 +16776,26 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     // measured at this size where it ran; else the decode chain's calculation, the chain's compute plus its misses' uploads; a first try of a prediction saves nothing yet
     {
         int pth = PP_RING;
-        if (chain) { pth = PP_CHAIN; } else if (dec) { pth = PP_DEC; } else if (m > 0.0) { pth = PP_K; for (double q = m; q > 1.0; q /= 2.0) { ++pth; } } else if (mix) { pth = PP_MIX; }
+        if (chain) { pth = PP_CHAIN; } else if (dec) { pth = PP_DEC; } else if (m > 0.0) { pth = PP_K; for (double q = m; q > 1.0; q /= 2.0) { ++pth; } } else if (mix) { pth = PP_MIX; } else if (lp) { pth = PP_LP; }
         const double tm = pp_took_us(pth, n);
         const double tp = tm > 0.0 ? tm : pth == PP_DEC ? de : pth == PP_CHAIN ? comp_at(n) + up : ot;
         g_pp_path_call = pth;
         g_pp_save_us = std::max(0.0, ot - tp);
     }
     std::string ks;
-    for (int i = 0; i < PP_PATHS - PP_K; ++i) {
+    for (int i = 0; i < PP_KN; ++i) {
         if (const double t = pp_took_us(PP_K + i, n); t > 0.0) { ks += format(", k x%d %.0f ms", 1 << i, t / 1e3); }
     }
+    if (const double t = pp_took_us(PP_LP, n); t > 0.0) { ks += format(", layer parallel %.0f ms", t / 1e3); }
+    const std::string sname = format("stream%s%s%s", mix ? ", mix" : "", lp ? ", layer parallel" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "");
+    // every stream layout's calculated time per pass beside each other (user 2026-11-13: each planner option has its estimator, consulted on every call)
+    const std::string est = format("calculated per pass: stream %.0f ms, mix %.0f ms, layer parallel %s", std::max(Ts, comp_at(n)) / 1e3, estimate_mix_time_per_token(pm) * n / 1e3,
+            lp_us > 0.0 ? format("%.0f ms", lp_us / 1e3).c_str() : "-");
     std::string links;
     for (int k = 0; k < mc->n_links; ++k) { links += format("%s%.1f", k ? "/" : "", mc->gbs_link[k]); }
-    const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s; stream reads %.1f GB from the SSD at %.2f GB/s; decode chain: misses x%.2f, 4-token chunks %.0f ms x%.2f at %.0f GB/s weight read, fixed %.0f ms; compute %.0f ms)",
-            n, chain ? "prompt chain" : dec ? "decode chain" : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "").c_str(), why, std::min(dec_max, (double) ub_max), de / 1e3, ot / 1e3, td / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
-            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, ssd_rate, dec_r, g_pp_dec_chunk / 1e3, g_pp_dec_kc, R_read / 1e9, dec_f / 1e3, comp_at(n) / 1e3);
+    const std::string pick = format("prompt call of %.0f tokens: %s (%s; decode chain to %.0f tokens, %.0f ms calculated against %.0f; took: decode chain %.0f ms, chain %.0f ms, stream %.0f ms, mix %.0f ms, dense %.0f ms%s; %s; streaming upload %.0f ms, with the mix %.0f ms, misses uploaded %.0f ms or on the CPU %.0f ms over %zu experts off the card; links %s GB/s, CPU %.1f GB/s; stream reads %.1f GB from the SSD at %.2f GB/s; decode chain: misses x%.2f, 4-token chunks %.0f ms x%.2f at %.0f GB/s weight read, fixed %.0f ms; compute %.0f ms)",
+            n, chain ? "prompt chain" : dec ? "decode chain" : sname.c_str(), why, std::min(dec_max, (double) ub_max), de / 1e3, ot / 1e3, td / 1e3, pp_took_us(PP_CHAIN, n) / 1e3, pp_took_us(PP_RING, n) / 1e3, pp_took_us(PP_MIX, n) / 1e3,
+            pp_took_us(PP_DENSE, n) / 1e3, ks.c_str(), est.c_str(), U / 1e3, Um / 1e3, up / 1e3, cpu / 1e3, v.size(), links.c_str(), mc->cpu_gbs_meas > 0 ? mc->cpu_gbs_meas : knobs().cpu_gbs, M / 1e9, ssd_rate, dec_r, g_pp_dec_chunk / 1e3, g_pp_dec_kc, R_read / 1e9, dec_f / 1e3, comp_at(n) / 1e3);
     LLAMA_LOG_WARN("moe-cache: %s\n", pick.c_str());
     llama_moe_stats_log_fork("CAL", pick.c_str());
     {   // every candidate's posterior and draw (feedback_planner_explains_picks): what the pick saw
@@ -16775,7 +16806,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
                     g_pp_drw[p] / 1e3, g_pp_rls[p].n, g_pp_rls[p].nis);
         }
         const std::string pl = format("plan: prompt call of %.0f tokens at %.0f cells: %s; %s%s", n, cells_mid, cs.c_str(), learned ? "picked " : "old rules (split-model=0 or a forced path) picked ",
-                (chain ? std::string("prompt chain") : dec ? std::string("decode chain") : format("stream%s%s", mix ? ", mix" : "", m > 0.0 ? format(", k x%.0f", m).c_str() : "")).c_str());
+                (chain ? std::string("prompt chain") : dec ? std::string("decode chain") : sname).c_str());
         LLAMA_LOG_WARN("moe-cache: %s\n", pl.c_str());
         llama_moe_stats_log_fork("PLN", pl.c_str());
     }
@@ -16848,7 +16879,7 @@ bool llama_moe_cache_pp_yield_fork(const char * why) {
     g_pp_dec = false;
     if (!cs) { g_pp_mb = 0; }
     if (k_auto) { ggml_backend_pred_set_fork(0.0); }
-    g_pp_path_call = g_pp_mix_call.load(std::memory_order_relaxed) ? PP_MIX : PP_RING;
+    g_pp_path_call = g_pp_mix_call.load(std::memory_order_relaxed) ? PP_MIX : g_pp_lp_call.load(std::memory_order_relaxed) ? PP_LP : PP_RING;
     g_pp_save_us = 0.0;
     const std::string s = format("prompt call: the dense split takes it from its one-card path (%s)", why);
     LLAMA_LOG_WARN("moe-cache: %s\n", s.c_str());
@@ -17276,6 +17307,7 @@ bool llama_moe_cache_graph_reusable_fork() {
            g_kv_epoch.load() == g_kv_epoch_built &&   // a moved KV zone: the old graph's views point at the old place
            g_lend_epoch.load() == g_lend_epoch_built &&   // a graph placed elsewhere in the pool since: the old graph's tensors sit at the old place
            (!g_pp_built || pp_chain_allowed()) && g_pp_dec_built == g_pp_dec.load(std::memory_order_relaxed) && (!g_pp_mix_built || pp_mix_allowed()) && g_pp_k_built == (ggml_backend_pred_get_fork() > 0.0) && g_pp_mix_call_built == g_pp_mix_call.load(std::memory_order_relaxed) &&
+           g_pp_lp_built == g_pp_lp_call.load(std::memory_order_relaxed) &&   // layer parallel places the experts elsewhere
            g_pp_cstream_built == (g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed)) &&       // a graph of the prompt chain has no CPU chain: only a prompt call may run it
            (!g_pp_cstream_built || g_cs_n_built == cs_chunks());
 }
@@ -17296,6 +17328,7 @@ void llama_moe_cache_graph_built_fork() {
     g_pp_k_m = ggml_backend_pred_get_fork();
     g_pp_k_built = g_pp_k_m > 0.0;
     g_pp_mix_call_built = g_pp_mix_call.load(std::memory_order_relaxed);
+    g_pp_lp_built = g_pp_lp_call.load(std::memory_order_relaxed);
     g_pp_graph = false;
     g_pp_mix_built = g_pp_mix_graph;
     g_pp_mix_graph = false;

@@ -44,6 +44,16 @@ int main() {
     // no SSD rate: the link alone; no compute measured: the upload alone
     m.ssd_gbs = 0.0; m.comp_us_tok = 0.0;
     near("full stream without an SSD rate", estimate_fullstream_time_per_token(m), 40.0);
+    // layer parallel: each card's turn is its own uploads (its link or the SSD) or its own compute, whichever is longer, the turns in a row
+    {
+        pp_metrics l; l.n = 100.0; l.comp_us_tok = 10.0; l.ssd_gbs = 2.0;
+        l.Ul = { 3000.0, 1000.0 }; l.Ml = { 8e6, 0.0 }; l.share = { 0.5, 0.5 };   // card 0: 3 ms over its link, 4 ms from the SSD; card 1: 1 ms
+        near("layer parallel upload: each card's link or the SSD", estimate_layerparallel_upload_time(l), 4000.0 + 1000.0);
+        near("layer parallel: each turn its longest part", estimate_layerparallel_time(l), 4000.0 + 1000.0);
+        l.comp_us_tok = 100.0;   // 10 ms of compute, 5 ms a turn
+        near("layer parallel compute-bound: the turns add up to the compute", estimate_layerparallel_time(l), 5000.0 + 5000.0);
+        near("layer parallel per token", estimate_layerparallel_time_per_token(l), 100.0);
+    }
     // the crossover the planner looks for: a short pass favours the router, a long one the stream
     pp_metrics a; a.n = 64.0; a.comp_us_tok = 100.0; a.U = 4e6; a.up = 1e6; a.wait_us = 2e5;
     pp_metrics b = a; b.n = 4096.0; b.up = 3.9e6; b.wait_us = 4e5;
@@ -107,6 +117,19 @@ int main() {
         check("more card memory: stream not slower", estimate_fullstream_time_per_token(m16) <= estimate_fullstream_time_per_token(m4));
         check("more card memory: router not slower", estimate_router_time_per_token(m16) <= estimate_router_time_per_token(m4));
         check("more card memory: decode chain not slower", estimate_decodechain_time_per_token(m16) <= estimate_decodechain_time_per_token(m4));
+    }
+
+    // layer parallel on two cards with equal links, everything in RAM: it uploads no more than the stream (each card's cached experts stay where they are) and never
+    // beats the compute (the cards take turns)
+    {
+        pp_machine eq = pc; eq.link_gbs = { 26.0, 26.0 }; eq.ram_gb = 200.0;
+        for (const double n : { 512.0, 4096.0, 16384.0 }) {
+            const pp_metrics mm = pp_metrics_for(eq, ds, n);
+            check("layer parallel uploads no more than the stream", estimate_layerparallel_upload_time(mm) <= estimate_fullstream_upload_time(mm) + 1e-6);
+            check("layer parallel never under the compute", estimate_layerparallel_time(mm) >= mm.comp_us_tok * n - 1e-6);
+            printf("  equal links, %5.0f tokens: stream %.3f, mix %.3f, layer parallel %.3f ms per token\n", n, estimate_fullstream_time_per_token(mm) / 1e3,
+                   estimate_mix_time_per_token(mm) / 1e3, estimate_layerparallel_time_per_token(mm) / 1e3);
+        }
     }
 
     // uneven picks: the cold experts are touched late, so the router keeps winning longer (the real models are far from uniform)

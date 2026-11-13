@@ -15,12 +15,17 @@ struct pp_sums {
     double U = 0.0, M = 0.0;     // every expert the fastest card does not hold: upload over that link (us), bytes only the SSD has
     double Um = 0.0, Mm = 0.0;   // the same for the experts no card holds
     std::vector<double> Uk, Mk;  // the same for a prediction of 2^i x the picks, per i: what the pass's tokens rank that high
+    std::vector<double> Ul, Ml, Lb;   // layer parallel, per card: what its layers' card does not hold, over that card's link (us); of it the bytes only the SSD has; all its layers' expert bytes
     std::vector<pp_miss> miss;
-    explicit pp_sums(size_t n_predictions = 0) : Uk(n_predictions, 0.0), Mk(n_predictions, 0.0) {}
+    explicit pp_sums(size_t n_predictions = 0, size_t n_cards = 0) : Uk(n_predictions, 0.0), Mk(n_predictions, 0.0), Ul(n_cards, 0.0), Ml(n_cards, 0.0), Lb(n_cards, 0.0) {}
 };
 // One expert: S its bytes, Sm the part only the SSD has, on_card whether its layer's card holds it, fastest whether that card has the fastest link, p1 its share of one token's
-// picks; r0, rl, rc the fastest link's, its layer's link's and the CPU's rate in bytes per us (0: not known, the term is left out)
-static inline void pp_sums_add(pp_sums & s, double n, double S, double Sm, bool on_card, bool fastest, double p1, double r0, double rl, double rc) {
+// picks; r0, rl, rc the fastest link's, its layer's link's and the CPU's rate in bytes per us (0: not known, the term is left out); card its layer's card (index of its link)
+static inline void pp_sums_add(pp_sums & s, double n, double S, double Sm, bool on_card, bool fastest, double p1, double r0, double rl, double rc, size_t card) {
+    if (card < s.Lb.size()) {
+        s.Lb[card] += S;
+        if (!on_card && rl > 0.0) { s.Ul[card] += S / rl; s.Ml[card] += Sm; }
+    }
     if (r0 > 0.0 && !(on_card && fastest)) {   // the fastest link's card holds it: copied there, else it streams
         s.U += S / r0; s.M += Sm;
         for (size_t i = 0; i < s.Uk.size(); ++i) {
@@ -55,7 +60,15 @@ struct pp_metrics {
     double chunk_us = 0.0;      // decode chain: the weight reads of its 4-token chunks at this size (us)
     double dec_f = 0.0, dec_r = 1.0, dec_kc = 1.0;   // decode chain, learned: fixed part (us), misses ratio, chunks ratio
     const double * Uk = nullptr, * Mk = nullptr;      // prediction of 2^i x the picks: upload (us) and SSD bytes, per i
+    std::vector<double> Ul, Ml, share;                // layer parallel, per card: upload over its own link (us), bytes only the SSD has, its layers' share of the compute
 };
+// the per-card part of the sums into the metrics (both pp_metrics_for and the planner)
+static inline void pp_metrics_cards(pp_metrics & m, const pp_sums & s) {
+    double all = 0.0;
+    for (const double b : s.Lb) { all += b; }
+    m.Ul = s.Ul; m.Ml = s.Ml; m.share.assign(s.Lb.size(), 0.0);
+    for (size_t c = 0; c < s.Lb.size(); ++c) { m.share[c] = all > 0.0 ? s.Lb[c] / all : 0.0; }
+}
 static inline double pp_ssd_us(const pp_metrics & m, double bytes) { return m.ssd_gbs > 0.0 ? bytes / (m.ssd_gbs * 1e3) : 0.0; }
 // The misses of one pass on the card (us): the link and the SSD deliver side by side, the slower one is the time.
 static inline double estimate_moe_miss_ongpu_time(const pp_metrics & m) { return std::max(m.up, m.ssd_miss); }
@@ -78,6 +91,22 @@ static inline double estimate_decodechain_time_per_token(const pp_metrics & m) {
 // Predictor: 2^i x the picks uploaded ahead of the routers, what the tokens rank that high; late_factor is what the late fixes and the ranking nodes cost on top (PP_K_LATE).
 static inline double estimate_predictor_upload_time(const pp_metrics & m, int i, double late_factor) { return late_factor * std::max(m.Uk[i], pp_ssd_us(m, m.Mk[i])); }
 static inline double estimate_predictor_time_per_token(const pp_metrics & m, int i, double late_factor) { return std::max(estimate_predictor_upload_time(m, i, late_factor), m.comp_us_tok * m.n) / m.n; }
+// Layer parallel (the old staging=0 layout, --moe moe-split=home): each card computes its own layers' experts, the ones it holds where they sit, the others over its own link.
+// The cards take turns, so a pass is each card's turn in a row, a turn as long as its uploads (link or SSD) or its compute, whichever is longer.
+// shortcut: no head start counted (a card's ring fills its first layers during the other card's turn), so this is the upper bound; count the ring's depth if picks show it too high.
+static inline double estimate_layerparallel_upload_time(const pp_metrics & m) {
+    double t = 0.0;
+    for (size_t c = 0; c < m.Ul.size(); ++c) { t += std::max(m.Ul[c], pp_ssd_us(m, c < m.Ml.size() ? m.Ml[c] : 0.0)); }
+    return t;
+}
+static inline double estimate_layerparallel_time(const pp_metrics & m) {
+    double t = 0.0;
+    for (size_t c = 0; c < m.Ul.size(); ++c) {
+        t += std::max({ m.Ul[c], pp_ssd_us(m, c < m.Ml.size() ? m.Ml[c] : 0.0), m.comp_us_tok * m.n * (c < m.share.size() ? m.share[c] : 0.0) });
+    }
+    return t;
+}
+static inline double estimate_layerparallel_time_per_token(const pp_metrics & m) { return estimate_layerparallel_time(m) / m.n; }
 
 // ---- a machine and a model as numbers (user 2026-11-10: tune on unit tests without a model: simulated SSD, memory and PCIe rates, card count, card memory, compute speed) ----
 // pp_metrics_for builds a pass's metrics from them through the same sums llama_moe_cache_pp_decide_fork fills from the loaded model (pp_sums_add): the layers go to the cards,
@@ -98,8 +127,8 @@ struct pp_model {
 };
 static inline pp_metrics pp_metrics_for(const pp_machine & hw, const pp_model & md, double n, pp_sums * sums_out = nullptr) {
     pp_metrics m;
-    pp_sums s(6);
     const size_t n_cards = std::max<size_t>(1, hw.vram_gb.size());
+    pp_sums s(6, n_cards);
     const double layer_bytes = (double) md.experts * md.expert_bytes, total = (double) md.layers * layer_bytes;
     double vram_all = 0.0, held = 0.0;
     for (const double v : hw.vram_gb) { vram_all += v * 1e9; held += std::min(v * 1e9, total / (double) n_cards); }
@@ -119,7 +148,7 @@ static inline pp_metrics pp_metrics_for(const pp_machine & hw, const pp_model & 
         const double rl = card < hw.link_gbs.size() ? hw.link_gbs[card] * 1e3 : r0;
         for (int e = 0; e < md.experts; ++e) {
             const bool on_card = e < n_on_card, in_ram = !on_card && e < n_on_card + n_in_ram;
-            pp_sums_add(s, n, md.expert_bytes, on_card || in_ram ? 0.0 : md.expert_bytes, on_card, card == 0, (double) md.used * w[e] / w_all, r0, rl, rc);
+            pp_sums_add(s, n, md.expert_bytes, on_card || in_ram ? 0.0 : md.expert_bytes, on_card, card == 0, (double) md.used * w[e] / w_all, r0, rl, rc, card);
         }
     }
     double ssd_bytes = 0.0;
@@ -128,6 +157,7 @@ static inline pp_metrics pp_metrics_for(const pp_machine & hw, const pp_model & 
     m.comp_us_tok = hw.comp_us_tok.empty() ? 0.0 : hw.comp_us_tok[0];
     m.ssd_gbs = hw.ssd_gbs;
     m.U = s.U; m.M = s.M; m.Um = s.Um; m.Mm = s.Mm;
+    pp_metrics_cards(m, s);
     m.ssd_miss = pp_ssd_us(m, ssd_bytes);
     m.wait_us = hw.router_wait_us_layer * md.layers;
     if (sums_out) { *sums_out = s; m.Uk = sums_out->Uk.data(); m.Mk = sums_out->Mk.data(); }
