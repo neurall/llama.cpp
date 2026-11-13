@@ -671,6 +671,11 @@ static std::string dsplit_hw_key(const llama_model & model, bool log = true, boo
         std::string ven = dsplit_pci_file(bus, "vendor"), dev = dsplit_pci_file(bus, "device"), spd = dsplit_pci_file(bus, "current_link_speed"), wid = dsplit_pci_file(bus, "current_link_width");
         if (ven.compare(0, 2, "0x") == 0) { ven = ven.substr(2); }
         if (dev.compare(0, 2, "0x") == 0) { dev = dev.substr(2); }
+        // --moe simlink=16,4 (lanes per CUDA card, ggml-cuda.cu caps the copies): what is learned on the simulated link goes under the simulated machine's key
+        if (const char * sl = llama_moe_get_opt("simlink"); sl && p.name && strncmp(p.name, "CUDA", 4) == 0) {
+            for (int i = atoi(p.name + 4); i > 0 && sl; --i) { sl = strchr(sl, ','); sl = sl ? sl + 1 : nullptr; }
+            if (sl && atoi(sl) > 0 && atoi(sl) < 16) { wid = std::to_string(atoi(sl)); }
+        }
         const double gt = atof(spd.c_str());   // "16.0 GT/s PCIe"
         const int gen = gt >= 31.0 ? 5 : gt >= 15.0 ? 4 : gt >= 7.0 ? 3 : gt >= 4.0 ? 2 : gt > 0.0 ? 1 : 0;
         std::string one = ven.empty() ? std::string(p.name ? p.name : "?") : ven + dev;   // no sysfs (Windows): the name stands in

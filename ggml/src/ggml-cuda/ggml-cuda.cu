@@ -1061,43 +1061,110 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
 // Diagnostic, for testing only: GGML_CUDA_H2D_CAP=<device>:<GB/s>[,<device>:<GB/s>...] caps the host->device copy rate of a GPU, e.g. GGML_CUDA_H2D_CAP=0:1.5
 // makes device 0 behave like a card on a narrow link. Why it exists: users will have cards on x4 slots, PCIe 2/3 links or x1 risers, and the prefill GPU selection
 // (which cards take part in a prompt pass) must be tested on such links without owning the hardware. The value is the allowed upload bandwidth, not a slot type.
-// How: a token bucket per device. Each copy of `size` bytes may start no earlier than the end of the previous one at the capped rate, so the CPU thread issuing
-// the copy sleeps until then; the copy itself then runs at full speed. The average rate over many copies (the expert uploads of a prefill pass are thousands of
-// copies of a few MB) is the cap; a single large copy still finishes at wire speed, so the cap is not exact for one-off transfers. The startup upload probe in
-// llama.cpp goes through the same path (ggml_backend_tensor_set), so the automatic selection sees the capped bandwidth like a real narrow link.
+// How: a token bucket per device and direction. Each copy of `size` bytes holds the link from when its stream reaches it (or the end of the copy before it, the later)
+// for size / cap; a host function queued after the copy on the same stream waits until then, so the stream, its events and everything queued behind them wait as
+// behind a narrow link, while the thread that queued the copy goes on queuing kernels (the old wait on that thread also held back the cache's compute: the cache
+// queues its uploads between a layer's kernels). A single copy takes size / cap too, so every probe (llama.cpp's device order, early_link_gbs, the GPU probe) measures the cap.
+// fork, --moe simlink=16,4 (GGML_CUDA_SIMLINK, common/arg.cpp): PCIe lanes per device in device order; a card below 16 is capped at its measured upload rate x lanes/16,
+// measured here before the first copy (user 2026-11-13: PC1's x4 card is gone, "whatever was measured as pcie bw for 2nd gpu div it by 4"). The cap holds each way: copies
+// into the card (uploads, the arriving half of a copy between cards) and out of it (the leaving half) are paced separately, as PCIe carries both directions at once.
 // fork: the bytes each card took from host memory so far, whichever path queued the copy (GET /moe/stats: the live view's link rate). Counted here because the three
 // entry points that carry every weight upload all pass through this function.
 static std::atomic<uint64_t> g_h2d_bytes_fork[GGML_CUDA_MAX_DEVICES];
-static void ggml_cuda_h2d_pace(int device, size_t size) {
-    if (device >= 0 && device < GGML_CUDA_MAX_DEVICES) { g_h2d_bytes_fork[device].fetch_add(size, std::memory_order_relaxed); }
-    static const std::vector<double> caps = [] {
-        std::vector<double> c(GGML_CUDA_MAX_DEVICES, 0.0);
+static double ggml_cuda_link_measure(int device) {   // pinned host to device GB/s, the fastest of three 64 MiB copies after a warm-up (as early_link_gbs), 0 when it cannot allocate
+    int cur = 0;
+    CUDA_CHECK(cudaGetDevice(&cur));
+    CUDA_CHECK(cudaSetDevice(device));
+    const size_t n = 64u << 20;
+    void * h = nullptr, * d = nullptr;
+    double best = 0.0;
+    if (cudaMallocHost(&h, n) == cudaSuccess && cudaMalloc(&d, n) == cudaSuccess) {
+        for (int r = 0; r < 4; ++r) {
+            const int64_t t0 = ggml_time_us();
+            CUDA_CHECK(cudaMemcpy(d, h, n, cudaMemcpyHostToDevice));
+            if (r > 0) { best = std::max(best, (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3); }
+        }
+    }
+    if (d) { CUDA_CHECK(cudaFree(d)); }
+    if (h) { CUDA_CHECK(cudaFreeHost(h)); }
+    (void) cudaGetLastError();   // a failed allocation leaves no error behind for the next kernel launch's check
+    CUDA_CHECK(cudaSetDevice(cur));
+    return best;
+}
+static const double * ggml_cuda_link_caps() {   // GB/s each way per device, 0: no cap. Set once, before the first copy is paced.
+    static double caps[GGML_CUDA_MAX_DEVICES] = {};
+    static std::once_flag once;
+    std::call_once(once, [] {
         if (const char * e = getenv("GGML_CUDA_H2D_CAP")) {
             for (const char * p = e; p && *p; ) {
                 int d = -1; double g = 0; int n = 0;
-                if (sscanf(p, "%d:%lf%n", &d, &g, &n) >= 2 && d >= 0 && d < GGML_CUDA_MAX_DEVICES && g > 0) { c[d] = g; }
+                if (sscanf(p, "%d:%lf%n", &d, &g, &n) >= 2 && d >= 0 && d < GGML_CUDA_MAX_DEVICES && g > 0) { caps[d] = g; }
                 p = strchr(p + (n > 0 ? n : 1), ',');
                 if (p) { ++p; }
             }
         }
-        return c;
-    }();
-    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || caps[device] <= 0.0) {
-        return;
-    }
+        const char * s = getenv("GGML_CUDA_SIMLINK");
+        for (int d = 0; s && *s && d < ggml_cuda_info().device_count; ++d) {
+            const int lanes = atoi(s);
+            if (lanes > 0 && lanes < 16) {
+                const double m = ggml_cuda_link_measure(d);
+                if (m > 0.0) { caps[d] = m * lanes / 16.0; }
+                GGML_LOG_WARN("simlink: CUDA%d copies capped at %.2f GB/s each way (measured %.2f GB/s, x%d of x16)\n", d, caps[d], m, lanes);
+            }
+            s = strchr(s, ',');
+            s = s ? s + 1 : nullptr;
+        }
+    });
+    return caps;
+}
+struct ggml_cuda_link_use { int device, out; size_t size; int64_t t0; };
+static void CUDART_CB ggml_cuda_link_begin_cb(void * p) { ((ggml_cuda_link_use *) p)->t0 = ggml_time_us(); }   // the stream reached the copy
+static void CUDART_CB ggml_cuda_link_end_cb(void * p) {
+    const ggml_cuda_link_use u = *(const ggml_cuda_link_use *) p;
+    delete (ggml_cuda_link_use *) p;
     static std::mutex mu;
-    static int64_t next_us[GGML_CUDA_MAX_DEVICES] = {};
+    static int64_t busy_until[GGML_CUDA_MAX_DEVICES][2] = {};
     int64_t wait_us;
     {
         std::lock_guard<std::mutex> lk(mu);
-        const int64_t now = ggml_time_us();
-        const int64_t start = std::max(now, next_us[device]);
-        next_us[device] = start + (int64_t) ((double) size / (caps[device] * 1e3));
-        wait_us = start - now;
+        const int64_t start = std::max(u.t0, busy_until[u.device][u.out]);
+        busy_until[u.device][u.out] = start + (int64_t) ((double) u.size / (ggml_cuda_link_caps()[u.device] * 1e3));
+        wait_us = busy_until[u.device][u.out] - ggml_time_us();
     }
     if (wait_us > 0) {
         std::this_thread::sleep_for(std::chrono::microseconds(wait_us));
     }
+}
+// Before a copy over a card's link (out = 1 the bytes leave the card, 0 they arrive), paired with ggml_cuda_link_end after it. nullptr: nothing queued (no cap on the card).
+static ggml_cuda_link_use * ggml_cuda_link_begin(cudaStream_t stream, int device, int out, size_t size) {
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES || ggml_cuda_link_caps()[device] <= 0.0) {
+        return nullptr;
+    }
+    auto * u = new ggml_cuda_link_use{ device, out, size, 0 };
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
+    const bool on_stream = cudaStreamIsCapturing(stream, &st) == cudaSuccess && st == cudaStreamCaptureStatusNone;
+    (void) cudaGetLastError();
+    if (on_stream) {
+        CUDA_CHECK(cudaLaunchHostFunc(stream, ggml_cuda_link_begin_cb, u));
+        return u;
+    }
+#endif
+    // shortcut: HIP/MUSA and a stream inside a graph capture wait here, on the queuing thread (it also holds back the kernels it queues next); upgrade if a capped run needs either
+    GGML_UNUSED(stream);
+    ggml_cuda_link_begin_cb(u);
+    ggml_cuda_link_end_cb(u);
+    return nullptr;
+}
+static void ggml_cuda_link_end(cudaStream_t stream, ggml_cuda_link_use * u) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (u) { CUDA_CHECK(cudaLaunchHostFunc(stream, ggml_cuda_link_end_cb, u)); }
+#endif
+    GGML_UNUSED(stream); GGML_UNUSED(u);
+}
+static ggml_cuda_link_use * ggml_cuda_h2d_pace(cudaStream_t stream, int device, size_t size) {
+    if (device >= 0 && device < GGML_CUDA_MAX_DEVICES) { g_h2d_bytes_fork[device].fetch_add(size, std::memory_order_relaxed); }
+    return ggml_cuda_link_begin(stream, device, 0, size);
 }
 
 // fork, --moe ledger (pool_ledger.py --dma): a copy queued on a stream runs later, behind everything the stream already holds. Two host functions around it on that stream say when it
@@ -1138,10 +1205,11 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    ggml_cuda_h2d_pace(ctx->device, size);
+    ggml_cuda_link_use * lu = ggml_cuda_h2d_pace(cudaStreamPerThread, ctx->device, size);
     ggml_cuda_dma(cudaStreamPerThread, ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
         CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     });
+    ggml_cuda_link_end(cudaStreamPerThread, lu);
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
@@ -1158,9 +1226,10 @@ static void ggml_backend_cuda_buffer_set_tensor_2d(ggml_backend_buffer_t buffer,
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    ggml_cuda_h2d_pace(ctx->device, size * n_copies);
+    ggml_cuda_link_use * lu = ggml_cuda_h2d_pace(cudaStreamPerThread, ctx->device, size * n_copies);
     CUDA_CHECK(cudaMemcpy2DAsync(
         (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    ggml_cuda_link_end(cudaStreamPerThread, lu);
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
@@ -4550,11 +4619,12 @@ static void ggml_backend_cuda_set_tensor_async(ggml_backend_t backend, ggml_tens
     }
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    ggml_cuda_h2d_pace(cuda_ctx->device, size);
+    ggml_cuda_link_use * lu = ggml_cuda_h2d_pace(cuda_ctx->stream(), cuda_ctx->device, size);
     ggml_cuda_dma(cuda_ctx->stream(), cuda_ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
         // one copy, not inline pieces: this path carries the expert uploads, nothing waits for them piece by piece (35B, 0.281 MiB tensors in 64 KiB pieces: link 17 -> 13 GB/s, a 1.5 s pass 117 ms longer)
         CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cuda_ctx->stream()));
     });
+    ggml_cuda_link_end(cuda_ctx->stream(), lu);
 }
 
 static void ggml_backend_cuda_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
@@ -4573,9 +4643,10 @@ static void ggml_backend_cuda_set_tensor_2d_async(ggml_backend_t backend, struct
 
     GGML_ASSERT(buf->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device) && "unsupported buffer type");
 
-    ggml_cuda_h2d_pace(cuda_ctx->device, size * n_copies);   // fork: the cache's ring uploads its experts here (cs_copy): counted and paced as every other upload
+    ggml_cuda_link_use * lu = ggml_cuda_h2d_pace(cuda_ctx->stream(), cuda_ctx->device, size * n_copies);   // fork: the cache's ring uploads its experts here (cs_copy): counted and paced as every other upload
     CUDA_CHECK(cudaMemcpy2DAsync(
         (char *) tensor->data + offset, stride_tensor, data, stride_data, size, n_copies, cudaMemcpyHostToDevice, cuda_ctx->stream()));
+    ggml_cuda_link_end(cuda_ctx->stream(), lu);
 }
 
 static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data,
@@ -4762,15 +4833,19 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
     if (e.used) {
         CUDA_CHECK(cudaStreamWaitEvent(ctx_src->stream(), e.h2d_done, 0));   // the previous user of this block has written it out
     }
+    ggml_cuda_link_use * lu = ggml_cuda_link_begin(ctx_src->stream(), ctx_src->device, 1, n);   // the two halves cross both cards' links (--moe simlink)
     CUDA_CHECK(cudaMemcpyAsync(e.host, src_data, n, cudaMemcpyDeviceToHost, ctx_src->stream()));
+    ggml_cuda_link_end(ctx_src->stream(), lu);
     CUDA_CHECK(cudaEventRecord(e.d2h_done, ctx_src->stream()));
     ggml_cuda_set_device(ctx_dst->device);
     CUDA_CHECK(cudaStreamWaitEvent(ctx_dst->stream(), e.d2h_done, 0));
+    lu = ggml_cuda_link_begin(ctx_dst->stream(), ctx_dst->device, 0, n);
     if (e.dev != nullptr) {
         ggml_cuda_xstage_read(dst_data, e.dev, n, ctx_dst->stream());   // zero-copy: the destination card reads the block itself, the copy engine stays with the uploads
     } else {
         ggml_cuda_dma(ctx_dst->stream(), ctx_dst->device, dst_data, n, "xstage", [&] { CUDA_CHECK(cudaMemcpyAsync(dst_data, e.host, n, cudaMemcpyHostToDevice, ctx_dst->stream())); });
     }
+    ggml_cuda_link_end(ctx_dst->stream(), lu);
     CUDA_CHECK(cudaEventRecord(e.h2d_done, ctx_dst->stream()));
     e.used = true;
     return true;
@@ -4841,7 +4916,11 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
 #ifdef GGML_CUDA_NO_PEER_COPY
             return false;
 #else
+            ggml_cuda_link_use * lu_out = ggml_cuda_link_begin(cuda_ctx_src->stream(), cuda_ctx_src->device, 1, ggml_nbytes(dst));   // through both cards' links (--moe simlink)
+            ggml_cuda_link_use * lu_in  = ggml_cuda_link_begin(cuda_ctx_src->stream(), cuda_ctx_dst->device, 0, ggml_nbytes(dst));
             ggml_cuda_dma(cuda_ctx_src->stream(), cuda_ctx_dst->device, dst->data, ggml_nbytes(dst), dst->name, [&] { CUDA_CHECK(cudaMemcpyPeerAsync(dst->data, dst_physical, sdata, src_physical, ggml_nbytes(dst), cuda_ctx_src->stream())); });
+            ggml_cuda_link_end(cuda_ctx_src->stream(), lu_in);
+            ggml_cuda_link_end(cuda_ctx_src->stream(), lu_out);
 #endif // GGML_CUDA_NO_PEER_COPY
         }
 
@@ -9055,10 +9134,11 @@ static void ggml_backend_cuda_set_tensor_nosync_fork(ggml_tensor * tensor, const
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buf->context;
     ggml_cuda_set_device(ctx->device);
-    ggml_cuda_h2d_pace(ctx->device, size);
+    ggml_cuda_link_use * lu = ggml_cuda_h2d_pace(cudaStreamPerThread, ctx->device, size);
     ggml_cuda_dma(cudaStreamPerThread, ctx->device, (char *) tensor->data + offset, size, tensor->name, [&] {
         CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     });
+    ggml_cuda_link_end(cudaStreamPerThread, lu);
 }
 static void ggml_backend_cuda_thread_sync_fork() {
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));

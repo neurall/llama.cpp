@@ -2575,6 +2575,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 else if (key == "sim-vram") { setenv("GGML_SIM_VRAM_MB", std::to_string(v).c_str(), 1); } // every card reports v MiB free at start (ggml-backend.cpp): faked, nothing held
                 else if (key == "sim-ram")  { setenv("GGML_SIM_RAM_MB", std::to_string(v).c_str(), 1); }  // pretend v MiB of RAM can be pinned (test runs); the available RAM is faked (common_hog)
                 else if (key == "sim") { setenv("GGML_SIM_VRAM_MB", std::to_string((long) v * 1024).c_str(), 1); } // = sim-vram in GiB
+                else if (key == "simlink") { setenv("GGML_CUDA_SIMLINK", val.c_str(), 1); } // PCIe lanes per CUDA card, e.g. 16,4: a card below 16 copies at its measured rate x lanes/16 (ggml-cuda.cu)
                 else if (key == "chain-fuse") { if (v == 0) { setenv("GGML_CUDA_NO_CHAIN_FUSE", "1", 1); } } // 0: the expert cache chain keeps gate and up as two matmuls (A/B of the fused MMQ kernel)
                 else if (key == "fuse-off") { setenv("GGML_CUDA_FUSE_OFF", val.c_str(), 1); } // debug: the CUDA fusions that start at these ops (GLU+MUL+ROPE) stay apart, to name the one a bug needs
                 else if (key == "autotune") { params.autotune = v != 0; }

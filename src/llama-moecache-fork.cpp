@@ -4109,7 +4109,7 @@ void resource_probe(moe_cache * mc, const llama_model & model) {
     for (const auto & m : meas) {
         if (m.second.first >= 0.95 * cpu_alone) { n_sat = m.first; break; }
     }
-    moe_state_set("machine", {{ pkey, format("%.3f %.3f %d", cpu_alone, total, n_sat) }});
+    if (!moe_opt("simlink")) { moe_state_set("machine", {{ pkey, format("%.3f %.3f %d", cpu_alone, total, n_sat) }}); }   // the links' share was measured on a simulated link
     }   // !probe_stored
     mc->cpu_sat_threads = n_sat;
     if (!moe_opt("cpu-ram-gbs")) { knobs().cpu_gbs = cpu_alone; }
@@ -13832,7 +13832,7 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
             const std::string key = format("h2d_gbs.%zu.%s", i, ggml_backend_dev_name(d));
             std::string old;
             moe_state_get(sec, key, old);
-            moe_state_set(sec, {{ key, format("%.3f", g) }});
+            if (!moe_opt("simlink")) { moe_state_set(sec, {{ key, format("%.3f", g) }}); }   // a simulated link is not the machine's
             LLAMA_LOG_WARN("moe-cache: machine: PCIe upload to %s %.2f GB/s (stored before: %s)\n", ggml_backend_dev_name(d), g, old.empty() ? "none" : old.c_str());
             const std::string kv = format("vram_gbs.%zu.%s", i, ggml_backend_dev_name(d));   // the memory speed of a card does not change: measured once, then stored
             double vg = moe_state_get(sec, kv, old) ? atof(old.c_str()) : 0.0;
