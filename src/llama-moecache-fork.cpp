@@ -544,6 +544,7 @@ struct moe_cache {
     std::vector<fcls_t>      fcls;
     std::vector<std::pair<int32_t, int32_t>> cs_rng;
     bool                     cs_masked = false;   // a pass of this call masked device tables to their range: the call's end writes every layer's table again
+    uint64_t                 cs_n_direct = 0, cs_n_map = 0;   // the pass so far: slices the RAM pool refused, read O_DIRECT into a pinned slot; slices copied from the mapping (should stay 0)
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
     uint64_t                 cs_n_pred = 0, cs_n_late = 0, cs_n_used = 0, cs_n_listed = 0, cs_n_noids = 0, cs_n_steal = 0;   // the k arm, the pass so far: uploaded by the rankings, by the late fix; experts the entries used, of those in their list; entries without ids (whole range); predicted blocks the late fix took back
     uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
@@ -12516,14 +12517,22 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
         for (int k = 0; k < 3; ++k) {
             const size_t sz = srcs[k]->nb[2], B = dsts[k]->nb[2];
             const char * rpp = rp ? ggml_rampool_use_fork(srcs[k], cps[i].e) : nullptr;   // shortcut: the pool block is not held until the copy lands (no pool eviction while it fits in RAM)
-            ggml_backend_tensor_set_2d_async(rb, dsts[k], rpp ? rpp : (const char *) srcs[k]->data + (size_t) cps[i].e*sz, (size_t) cps[i].b*B, sz, n, B, sz);
+            // a slice the pool refused (n is 1 with the pool): an O_DIRECT read into one of the JIT path's pinned slots, with the bytes past it when they are the next
+            // expert's, never the mapping (user 2026-11-13: misses are read from the SSD and kept in RAM only if they earn their place)
+            const char * nx = nullptr;
+            const size_t pb0 = rp && !rpp ? expert_past(mc, ls, k, cps[i].e, srcs[k], nx) : 0;
+            const bool past_next = pb0 > 0 && nx == (const char *) srcs[k]->data + (size_t) (cps[i].e + 1)*sz;
+            const char * dr = rp && !rpp ? jit_direct_src(mc, rb, srcs[k], (size_t) cps[i].e*sz, sz + (past_next ? pb0 : 0), (int) mc->n_expert_used) : nullptr;
+            if (rp && !rpp) { (dr ? mc->cs_n_direct : mc->cs_n_map)++; }
+            ggml_backend_tensor_set_2d_async(rb, dsts[k], rpp ? rpp : dr ? dr : (const char *) srcs[k]->data + (size_t) cps[i].e*sz, (size_t) cps[i].b*B, sz, n, B, sz);
             for (size_t m = 0; m < n; ++m) {   // what a matmul reads past each slice (classes with rows not a multiple of 512 values)
                 const char * from = nullptr;
                 if (const size_t pb = expert_past(mc, ls, k, cps[i + m].e, srcs[k], from)) {
                     ggml_tensor z = expert_past_view(dsts[k], (size_t) cps[i + m].b*B + sz, pb);
-                    ggml_backend_tensor_set_async(rb, &z, rpp ? rpp + sz : from, 0, pb);
+                    ggml_backend_tensor_set_async(rb, &z, rpp ? rpp + sz : dr && past_next ? dr + sz : from, 0, pb);
                 }
             }
+            if (dr) { jit_direct_done(mc, rb); }
         }
         mc->cs_n_cp++;
         i += n;
@@ -12552,10 +12561,12 @@ static void cs_begin(moe_cache * mc) {
     static int n_log = 0;
     if (mc->cs_pass > 0 && (n_log < 6 || mc->cs_pass % 64 == 0)) {
         n_log++;
-        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies: %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of layers ahead, %llu claimed from other size classes\n",
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies: %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of layers ahead, %llu claimed from other size classes; slices the RAM pool refused: %llu read O_DIRECT into pinned slots, %llu from the mapping\n",
                 mc->cs_pass, (unsigned long long) mc->cs_n_up, (unsigned long long) mc->cs_n_cp, (unsigned long long) mc->cs_n_free, (unsigned long long) mc->cs_n_cold,
-                (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim);
+                (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim,
+                (unsigned long long) mc->cs_n_direct, (unsigned long long) mc->cs_n_map);
     }
+    mc->cs_n_direct = mc->cs_n_map = 0;
     if (mc->cs_pass > 0 && mc->cs_n_hook != mc->cs_order.size()) {   // a layer whose split did not start at its table read ran without waiting for its uploads
         LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu of %zu layers met their split hook: the others computed without waiting for their experts\n",
                 mc->cs_pass, (unsigned long long) mc->cs_n_hook, mc->cs_order.size());
