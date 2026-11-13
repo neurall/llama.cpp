@@ -692,7 +692,10 @@ GGML_API void ggml_rampool_done_fork(const void * const * keys, int nk, const in
     for (int k = 0; k < nt; ++k) {
         for (int i = 0; i < n; ++i) {
             const int64_t e = ids[i];
-            if (e >= 0 && e < ts[k]->n && ts[k]->rec[e].state == RP_IN && ts[k]->rec[e].holds == 0) { ts[k]->rec[e].graph = 0; }
+            // only the misses on probation (user 2026-11-13: "read all misses from ssd and let [go] unless they earn their place by evicting rarer ones in ram"):
+            // a resident the stream hit keeps its stamp; the 11-13 first cut released those too, and the next request found 53% in RAM against 59%
+            const rp_rec & r = ts[k]->rec[e < 0 || e >= ts[k]->n ? 0 : e];
+            if (e >= 0 && e < ts[k]->n && r.state == RP_IN && r.holds == 0 && r.prob) { ts[k]->rec[e].graph = 0; }
         }
     }
 }
@@ -707,13 +710,16 @@ void ggml_rampool_graph_fork(void) {
     if (g_rp) { g_rp->graph.fetch_add(1, std::memory_order_relaxed); }
 }
 
-static void rp_need(const void * const * keys, int nk, const int32_t * ids, int n, bool force);
+static void rp_need(const void * const * keys, int nk, const int32_t * ids, int n, bool force, bool cpu = true);
 void ggml_rampool_need_fork(const void * const * keys, int nk, const int32_t * ids, int n) { rp_need(keys, nk, ids, n, false); }
+// an upload's ask (the stream): a newcomer gets a block only by the admission rule (it evicts a rarer one) or a probation block (another miss's), never a
+// resident's without admission; otherwise it stays out (refused). Declared where it is used (llama-moecache-fork.cpp), no header edit
+GGML_API void ggml_rampool_need_upload_fork(const void * const * keys, int nk, const int32_t * ids, int n) { rp_need(keys, nk, ids, n, false, false); }
 // A CPU kernel's demand: the element is read into the pool whatever the fill's set or the eviction switch (DeepSeek 12k map-guard, build short-paths 2026-11-08:
 // the tail call's missed experts found no VRAM block, the CPU computed them, and 22 of 123 GiB of experts were out of the pool with eviction off, so
 // ggml_vec_dot_iq1_m read blk.3's down tensor through the mapping). The block comes from the sampled coldest of the class.
 void ggml_rampool_demand_fork(const void * const * keys, int nk, const int32_t * ids, int n) { rp_need(keys, nk, ids, n, true); }
-static void rp_need(const void * const * keys, int nk, const int32_t * ids, int n, bool force) {
+static void rp_need(const void * const * keys, int nk, const int32_t * ids, int n, bool force, bool cpu) {
     rp_pool * p = g_rp;
     if (p == nullptr || n <= 0) { return; }
     rp_tensor * ts[8];
@@ -744,7 +750,7 @@ static void rp_need(const void * const * keys, int nk, const int32_t * ids, int 
                 continue;
             }
             n_out++;
-            if (!fail && rp_start(p, *t, e, force, true)) { begun[nb++] = k; } else { fail = true; }
+            if (!fail && rp_start(p, *t, e, force, cpu)) { begun[nb++] = k; } else { fail = true; }
         }
         if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } refused += n_out; }
         else { started += nb; reading += nb; }
