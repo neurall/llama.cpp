@@ -3286,6 +3286,8 @@ static void fork_idx_check(ggml_backend_sched_t sched, ggml_cgraph * gf, const c
 // Other graphs stay as they were: an eval callback would turn the scheduler's prefetch off.
 bool llama_moe_topic_key_wanted_fork(void);
 int  llama_moe_topic_key_rows_fork(void);
+bool llama_moe_topic_pp_ids_wanted_fork(void);
+void llama_moe_topic_pp_ids_fork(int il, const int32_t * ids, int64_t k, int64_t n);
 void llama_moe_topic_act_fork(const float * const * rows, int n_rows, int64_t n_embd);
 namespace {
 struct dynkey_state {
@@ -3710,6 +3712,21 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
     if (want_key) {
         dynkey_fetch(sched.get(), res->get_gf());
+    }
+    if (cparams.moe_cache_started && !cparams.ctx_other && llama_moe_topic_pp_ids_wanted_fork()) {   // fork (--moe dynhot=tree): this prompt pass's router picks into the prompt's map
+        synchronize();
+        std::vector<int32_t> ids;
+        for (int i = 0; i < ggml_graph_n_nodes(res->get_gf()); ++i) {
+            ggml_tensor * t = ggml_graph_node(res->get_gf(), i);
+            int il = -1;
+            if (sscanf(t->name, "ffn_moe_topk-%d", &il) != 1 || il < 0 || t->type != GGML_TYPE_I32 || t->buffer == nullptr) { continue; }
+            const int64_t k = t->ne[0], n = std::min<int64_t>(t->ne[1], ubatch.n_tokens);
+            ids.resize((size_t) (k*n));
+            for (int64_t r = 0; r < n; ++r) {   // rows may be strided (a view of the top-k)
+                ggml_backend_tensor_get(t, ids.data() + r*k, (size_t) r*t->nb[1], (size_t) k*sizeof(int32_t));
+            }
+            llama_moe_topic_pp_ids_fork(il, ids.data(), k, n);
+        }
     }
     static const char * tokheat_dir = moe_opt("tokheat");
     if (tokheat_dir && *tokheat_dir && model.hparams.n_expert > 0) {

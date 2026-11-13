@@ -7671,6 +7671,7 @@ static struct {
     std::map<std::string, tree_leaf>  leaves;
     std::vector<float>                tail;            // the latest decode step's key: the answer's last token's when the request ends
     bool                              first = false;   // the answer's first key is still to come: it reads the tree
+    std::vector<uint32_t>             pp;              // the prompt's router picks per cell, read back after each prompt pass (GPU passes never reach moe_obs_cb)
 } g_topic_tree;
 
 static std::string tree_path(const std::vector<float> & k) {
@@ -9062,6 +9063,7 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
             ls.topic_max = 0;
         }
         g_topic_tmax.store(1);
+        std::fill(g_topic_tree.pp.begin(), g_topic_tree.pp.end(), 0u);   // the tree: this prompt's picks count from here
         g_topic.steer = false;   // the prompt runs on the ini's hot experts: the maps are looked up at its last pass (llama_moe_topic_act_fork)
         g_topic_on.store(false);
         g_topic.h0 = g_topic.m0 = 0;   // the decode hits so far: this request's hit rate is what comes after
@@ -9157,6 +9159,19 @@ bool llama_moe_topic_key_wanted_fork(void) {
 static bool tree_key_pool() {
     static const bool p = [] { const char * v = moe_opt("tree-key"); return v != nullptr && strcmp(v, "pool") == 0; }();
     return p;
+}
+
+// the tree: each prompt pass's router picks (llama-context.cpp reads them back after the pass) make the prompt's map
+bool llama_moe_topic_pp_ids_wanted_fork(void) {
+    return g_cache != nullptr && g_topic.on == 1 && g_topic.mode == topic_t::TREE && g_topic.act_wait;
+}
+
+void llama_moe_topic_pp_ids_fork(int il, const int32_t * ids, int64_t k, int64_t n) {
+    const uint32_t nx = g_topic.store.n_exp;
+    if (il < 0 || (uint32_t) il >= g_topic.store.n_layers || nx == 0) { return; }
+    if (g_topic_tree.pp.size() != g_topic.store.rec_cells()) { g_topic_tree.pp.assign(g_topic.store.rec_cells(), 0u); }
+    uint32_t * row = g_topic_tree.pp.data() + (size_t) il * nx;
+    for (int64_t i = 0; i < k * n; ++i) { if (ids[i] >= 0 && (uint32_t) ids[i] < nx) { row[ids[i]]++; } }
 }
 
 // how many MoE layers' rows the key copies (0: all, and the final hidden state): the tree keys by the first MoE layer's only, unless it pools
@@ -9285,16 +9300,12 @@ static void tree_recall(moe_cache * mc, const std::vector<float> & key, const st
 // the prompt is over (its last pass's key came at the first decode step): its uses (topic_cnt holds the prompt's only until the answer starts) and its hit
 // rate into the leaf of its last token's key; the answer's first decode step brings the answer's read (llama_moe_topic_act_fork)
 static void tree_prompt_end(moe_cache * mc, std::vector<float> key) {
-    std::vector<uint32_t> uses(g_topic.store.rec_cells(), 0u);
+    // the prompt's uses: every pass's router picks, read back after the pass (llama_moe_topic_pp_ids_fork; topic_cnt misses the GPU passes)
+    std::vector<uint32_t> uses = g_topic_tree.pp.size() == g_topic.store.rec_cells() ? g_topic_tree.pp : std::vector<uint32_t>(g_topic.store.rec_cells(), 0u);
     uint64_t h = 0, m = 0;
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
-        for (const auto & ls : mc->layers) {
-            h += ls.n_hit;
-            m += ls.n_miss;
-            if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers) { continue; }
-            for (size_t e = 0; e < ls.topic_cnt.size() && e < g_topic.store.n_exp; ++e) { uses[(size_t) ls.pub.il * g_topic.store.n_exp + e] = ls.topic_cnt[e]; }
-        }
+        for (const auto & ls : mc->layers) { h += ls.n_hit; m += ls.n_miss; }
     }
     // h0/m0: the counts at the request's start (topic_answer_begin sets them anew for the answer)
     const float hit = h >= g_topic.h0 && m >= g_topic.m0 && h + m > g_topic.h0 + g_topic.m0 ? (float) ((double) (h - g_topic.h0) / (double) (h + m - g_topic.h0 - g_topic.m0)) : -1.0f;
