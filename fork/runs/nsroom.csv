@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+nr-q36-128-stg,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1,log=w",--ctx 140000 --hog-gpu 4.5
+nr-q36-128-ns,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0,log=w",--ctx 140000 --hog-gpu 4.5
+nr-q36-128-ns-se0,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0,split-experts=0,log=w",--ctx 140000 --hog-gpu 4.5
+nr-q36-128-stg-se1,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1,split-experts=1,log=w",--ctx 140000 --hog-gpu 4.5
