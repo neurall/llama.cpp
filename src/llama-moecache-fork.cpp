@@ -14814,6 +14814,7 @@ uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub) {
 // shortcut: a further entry costs this share of a token's compute (Qwen3.8 IQ4_XS on two 3090s, 2026-11-12: 47 of 470 us per token); measure it per model at load (a
 // chain over a table of -1 entries) when a model shows another ratio
 static const double CS_ENTRY_COST = 0.10;
+double llama_dsplit_compute_calc_us_fork(ggml_backend_dev_t d);   // llama-dsplit-fork.cpp: a prompt pass's compute per token from the matmul rate probed at load (us), 0 = not probed
 // The largest stream pass every card's pool holds with a layer in N chunks: pp_cap_to_pool, less what a card's further entries keep until the layer's sum (one
 // [n_embd, tokens] f32 each; the start-up sizes are measured with whole layers)
 static uint32_t cs_cap(moe_cache * mc, uint32_t n, uint32_t ub, size_t cells_end, int N) {
@@ -14874,7 +14875,10 @@ static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
         const double cells = cells_end > 0 ? (double) cells_end : (double) g_pp_cells;
         c_us = g_pp_c_us > 0.0 ? g_pp_c_us + g_pp_a_us * std::max(0.0, cells - 0.5 * (double) n) : 0.0;
     }
-    // no compute measured yet: at most one further entry per layer (what an entry costs against a saved upload is not known; the fewest passes alone took 6 chunks)
+    // no compute measured yet (a start's first prompt; dense split passes never measure it): the calculated one, so every candidate is weighed. Dropping those with
+    // more than one further entry instead left Kimi K3.1 (a layer 5.5 GiB, pools of 6.3 GiB) 2 chunks: its 995-token prompt as 16 passes of 64 tokens, 27 s
+    // each (13 t/s staged, 2026-11-13). Only with no figure at all (no probe): at most one further entry per layer (the fewest passes alone took 6 chunks)
+    if (c_us <= 0.0) { c_us = llama_dsplit_compute_calc_us_fork(mc->link_dev[0]); }
     if (c_us <= 0.0) { for (int i = 0; i < NC; ++i) { if (extra[i] > 1) { cap[i] = 0; } } }
     const int b = ppx_pick_chunks(n, cap, extra, NC, up_us, c_us, CS_ENTRY_COST * c_us, us);
     if (b < 0 || !cs_apply(mc, cs_cand[b])) { return false; }
@@ -15319,7 +15323,6 @@ static void pp_c_us_stored() {
 // The smallest prompt pass that costs no time: a streamed pass uploads every expert beside its compute, so under (upload of a pass) / (compute per token) tokens the
 // upload sets its length and every token costs more the smaller the pass is. Upload: the expert bytes over the link (an expert split: the links side by side);
 // compute: measured, at the request's middle cells, else calculated (llama_dsplit_compute_calc_us_fork). 0: not known (no link rate, no compute figure).
-double llama_dsplit_compute_calc_us_fork(ggml_backend_dev_t d);   // llama-dsplit-fork.cpp
 uint32_t llama_moe_cache_pp_even_pass_fork(uint32_t n_tokens) {
     moe_cache * mc = g_cache;
     if (!mc || !mc->link_dev[0] || n_tokens < 64) { return 0; }
