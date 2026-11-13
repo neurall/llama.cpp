@@ -3281,11 +3281,11 @@ void moe_obs_cb(const char * name, const struct ggml_tensor * ids, const struct 
     const int64_t n_ids    = ids->ne[0];
     const int64_t n_tokens = ids->ne[1];
     // big-batch prefill ids are observed too: they warm the cache before decode
-    // (hits aren't counted there, the cache graph isn't built for big batches). A call planned as the stream into the cache's blocks keeps the cache path at any size
-    // (llama_moe_cache_max_batch_fork): its passes are a prompt's too. Seen as decode steps they wrote every prompt token into the RAM pool's heat (Kimi K3.1 1k prompt,
-    // 2026-11-13: 16x the decode's own counts per run, the next fill held the prompt's experts, decode 3.5 -> 1 t/s)
-    const bool prefill = n_tokens > llama_moe_cache_max_batch_fork() || g_pp_obs ||
-                         (g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed));
+    // (hits aren't counted there, the cache graph isn't built for big batches). Every pass of a prompt call is a prompt's, whatever its size: a call planned as the
+    // stream into the cache's blocks keeps the cache path at any size (llama_moe_cache_max_batch_fork), a short prompt runs on the decode chain. Seen as decode steps
+    // they wrote every prompt token into the RAM pool's heat (Kimi K3.1 1k prompt, 2026-11-13: 16x the decode's own counts per run, decode 3.5 -> 1 t/s); the
+    // question's experts are not the answer's (Qwen3.6, 12 prompts: a prompt's top-96 experts a layer cover 52% of its answer's uses)
+    const bool prefill = n_tokens > llama_moe_cache_max_batch_fork() || g_pp_obs || g_prompt_call.load(std::memory_order_relaxed);
 
     const int il = parse_layer_from_name(name);
     if (il < 0) {
@@ -14398,7 +14398,8 @@ void llama_moe_cache_step_fork() {
     uint32_t tmax = 1;
     for (const auto & l : mc->layers) { mc->gmax_all = std::max(mc->gmax_all, l.glob_max); tmax = std::max(tmax, l.topic_max); }
     g_topic_tmax.store(tmax, std::memory_order_relaxed);
-    const bool decode_graph = mc->graph_tokens_last <= (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork());
+    // the step runs at the end of a decode call (llama_context::decode), inside a prompt call's guard: a prompt graph is never a decode graph, whatever its size
+    const bool decode_graph = !g_prompt_call.load(std::memory_order_relaxed) && mc->graph_tokens_last <= (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork());
     // hot maps per topic: the first decode step after a prompt drops the cached experts neither the topic's map nor the request used; the refill below
     // fills their blocks too
     size_t n_drop = 0;
