@@ -9338,11 +9338,11 @@ static void topic_answer_begin(moe_cache * mc) {
 // its best map, else its live one, as the nearest records' maps do in full mode (topic_heat, then topic_drop_foreign and the refill at the next decode step).
 // (The first answer token's key, the earlier rule, found its own prompt's earlier answer 2 of 5 times on OLMoE: a phase's last and the next one's first token
 // differ, and layer 0 is mostly the token)
-static void tree_read(moe_cache * mc, const std::vector<float> & key, const char * phase) {
+static void tree_read(moe_cache * mc, const std::vector<float> & key, const char * phase, bool use) {
     const int64_t t0 = ggml_time_us();
     std::string at;
     int ov[TREE_LEVELS] = {};
-    const tree_leaf * lf = tree_near(tree_path(key), &at, ov);
+    const tree_leaf * lf = use ? tree_near(tree_path(key), &at, ov) : nullptr;   // !use: the leaf lost to the ini on the prompt's own uses (tree_recall)
     const std::vector<uint32_t> * src = lf == nullptr ? nullptr : lf->best_hit >= 0.0f && !lf->best.empty() ? &lf->best : &lf->live;
     uint32_t mx = 0;
     if (src) { for (uint32_t c : *src) { mx = std::max(mx, c); } }
@@ -9369,54 +9369,64 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
             lf ? tr_fmt("leaf %s (%s; %s), %u phases, best hit %.1f%%: its %s map rates %zu experts", tree_short(at).c_str(),
                     at == tree_path(key) ? "the key's own" : "the nearest", tree_shares(ov).c_str(), lf->n, 100.0 * std::max(0.0f, lf->best_hit),
                     src == &lf->best ? "best" : "live", rated).c_str()
-               : "no leaf shares an entry of the first level: the ini's hot experts pick the cache's",
+               : use ? "no leaf shares an entry of the first level: the ini's hot experts pick the cache's" : "the ini's hot experts pick the cache's (see the line above)",
             g_topic_tree.leaves.size(), (ggml_time_us() - t0) / 1e3);
 }
 
-// what the prompt's read would have covered (shortcut: the prompt's read is not wired, it needs its first pass's layer-0 act before layer 1 runs; upgrade
-// with the prefetch of the prompt's layers ahead): of the prompt's uses, the share at the experts the nearest leaf's map rates, and at as many of the ini's
-// hottest experts a layer (the lifetime counts before this request). Logged only, before the prompt itself is stored (else it finds its own leaf)
-static void tree_recall(moe_cache * mc, const std::vector<float> & key, const std::vector<uint32_t> & uses, const char * phase) {
+// what the nearest leaf's map would cover of the prompt's own uses, against the ini's hot set (the lifetime counts before this request): each at its as
+// many hottest experts a layer as the layer's cache has slots (a fill of the cache from it). Before the prompt itself is stored (else it finds its own leaf).
+// True when the leaf covers more: only then does the answer read it (hottree-q36 on hot_tree5, round 1: a leaf of another topic, 84.1% against the ini's
+// 84.3% at the old "as many as the map rates" measure, cost 5-15% more uploads and 2-6% decode t/s). (shortcut: the prompt's own read is not wired, it needs
+// its first pass's layer-0 act before layer 1 runs; upgrade with the prefetch of the prompt's layers ahead)
+static bool tree_recall(moe_cache * mc, const std::vector<float> & key, const std::vector<uint32_t> & uses, const char * phase) {
     std::string at;
     int ov[TREE_LEVELS] = {};
     const tree_leaf * lf = tree_near(tree_path(key), &at, ov);
     if (lf == nullptr) {
         LLAMA_LOG_WARN("moe-cache: hottree: %s read would find no leaf (%zu leaves)\n", phase, g_topic_tree.leaves.size());
-        return;
+        return false;
     }
     const std::vector<uint32_t> & m = lf->best_hit >= 0.0f && !lf->best.empty() ? lf->best : lf->live;
     const uint32_t nx = g_topic.store.n_exp;
-    std::vector<uint32_t> ini(uses.size(), 0u);
+    std::vector<uint32_t> ini(uses.size(), 0u), slots(g_topic.store.n_layers, 0u);
     {
         std::lock_guard<std::mutex> lk(mc->mtx);
         for (const auto & ls : mc->layers) {
             if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers) { continue; }
+            slots[ls.pub.il] = (uint32_t) std::max(0, ls.pub.n_slots);
             for (size_t e = 0; e < ls.glob_count.size() && e < nx; ++e) {
                 const uint32_t own = e < ls.topic_cnt.size() ? ls.topic_cnt[e] : 0u;   // count-prompt=1 (default): the lifetime counts hold this prompt's uses too
                 ini[(size_t) ls.pub.il * nx + e] = ls.glob_count[e] > own ? ls.glob_count[e] - own : 0u;
             }
         }
     }
-    uint64_t all = 0, h_t = 0, h_i = 0;
-    size_t rated = 0;
     std::vector<uint32_t> ord(nx);
+    auto at_top = [&](const uint32_t * v, const uint32_t * u, uint32_t n) {   // uses u at the n most counted experts of v (counted ones only)
+        std::iota(ord.begin(), ord.end(), 0u);
+        const size_t k = std::min<size_t>(n, nx);
+        std::partial_sort(ord.begin(), ord.begin() + (ptrdiff_t) k, ord.end(), [&](uint32_t x, uint32_t y) { return v[x] > v[y]; });
+        uint64_t h = 0;
+        for (size_t j = 0; j < k && v[ord[j]] > 0; ++j) { h += u[ord[j]]; }
+        return h;
+    };
+    uint64_t all = 0, h_t = 0, h_i = 0;
+    uint32_t s_lo = UINT32_MAX, s_hi = 0;
     for (uint32_t l = 0; l < g_topic.store.n_layers; ++l) {
         const size_t b = (size_t) l * nx;
         if (b + nx > uses.size() || b + nx > m.size()) { break; }
-        size_t k = 0;
-        for (uint32_t e = 0; e < nx; ++e) {
-            all += uses[b + e];
-            if (m[b + e] > 0) { k++; h_t += uses[b + e]; }
-        }
-        std::iota(ord.begin(), ord.end(), 0u);
-        std::partial_sort(ord.begin(), ord.begin() + (ptrdiff_t) k, ord.end(), [&](uint32_t x, uint32_t y) { return ini[b + x] > ini[b + y]; });
-        for (size_t j = 0; j < k; ++j) { h_i += uses[b + ord[j]]; }
-        rated += k;
+        if (slots[l] == 0) { continue; }   // not a cached layer
+        for (uint32_t e = 0; e < nx; ++e) { all += uses[b + e]; }
+        h_t += at_top(m.data() + b, uses.data() + b, slots[l]);
+        h_i += at_top(ini.data() + b, uses.data() + b, slots[l]);
+        s_lo = std::min(s_lo, slots[l]); s_hi = std::max(s_hi, slots[l]);
     }
     const double d = (double) std::max<uint64_t>(1, all);
-    LLAMA_LOG_WARN("moe-cache: hottree: %s read would cover %.1f%% of its uses with leaf %s (%s; %s, %u phases, its %s map: "
-            "%zu experts), the ini's hottest as many a layer %.1f%%\n", phase, 100.0 * (double) h_t / d, tree_short(at).c_str(),
-            at == tree_path(key) ? "the key's own" : "the nearest", tree_shares(ov).c_str(), lf->n, &m == &lf->best ? "best" : "live", rated, 100.0 * (double) h_i / d);
+    const bool better = h_t > h_i;
+    LLAMA_LOG_WARN("moe-cache: hottree: %s read would cover %.1f%% of its uses with leaf %s (%s; %s, %u phases, its %s map), the ini's hot set %.1f%%, "
+            "each at the cache's %u..%u slots a layer: %s\n", phase, 100.0 * (double) h_t / d, tree_short(at).c_str(),
+            at == tree_path(key) ? "the key's own" : "the nearest", tree_shares(ov).c_str(), lf->n, &m == &lf->best ? "best" : "live", 100.0 * (double) h_i / d,
+            s_lo == UINT32_MAX ? 0u : s_lo, s_hi, better ? "the answer reads the leaf" : "the leaf serves the prompt no better, the answer keeps the ini's hot set");
+    return better;
 }
 
 // the prompt is over (its last pass's key came at the first decode step): the answer's read under its key (before the prompt's own uses join that leaf, so
@@ -9439,8 +9449,8 @@ static void tree_prompt_end(moe_cache * mc, std::vector<float> key) {
     g_topic.key = std::move(key);
     g_topic.n_rows = 1;
     g_topic.act_ok = true;
-    tree_recall(mc, g_topic.key, uses, "pp");
-    tree_read(mc, g_topic.key, "tg");
+    const bool use = tree_recall(mc, g_topic.key, uses, "pp");
+    tree_read(mc, g_topic.key, "tg", use);
     tree_store(g_topic.key, uses, hit, "pp");
 }
 
