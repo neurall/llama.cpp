@@ -11998,6 +11998,40 @@ ggml_backend_dev_t llama_moe_cache_cs_mix_dev_fork(const llama_moe_cache_layer_f
     }
     return nullptr;
 }
+// --moe staging=0 computes a pass's experts where the staged path did (user 2026-11-13: staging removal changes where the copies land, nothing else): a pass that is no
+// split and no mix puts every layer's experts on the expert card, the fastest link's (a dense split pass: the split's expert card, passed as `expert`), the layers of other
+// cards from shadows there; their own cards keep their blocks for decode. --moe moe-split=home: every layer on its own card instead, each card streaming its own layers.
+// The card for layer pub, nullptr when the layer already lives there (or home, or not a stream layer).
+static bool moe_split_home() {
+    static const bool v = [] { const char * e = moe_opt("moe-split"); return e && strcmp(e, "home") == 0; }();
+    return v;
+}
+ggml_backend_dev_t llama_moe_cache_cs_expert_dev_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t expert) {
+    moe_cache * mc = g_cache;
+    if (!mc || !pub || !pp_no_staging() || moe_split_home() || pub->jit_n > 0) { return nullptr; }
+    if (!expert) { expert = mc->link_dev[0]; }
+    for (const auto & l : mc->layers) {
+        if (&l.pub == pub) { return expert && mc->link_dev[l.link] != expert ? expert : nullptr; }
+    }
+    return nullptr;
+}
+// a layer whose experts all run in parts on another card: its own entry (queued by llama_moe_cache_pp_chain_fork) leaves the ring's order, its card uploads nothing for it
+// (left in, it took ring blocks for nothing: GLM 3.5, 2 chunks, the ring ran out of blocks)
+void llama_moe_cache_cs_drop_fork(const llama_moe_cache_layer_fork * pub) {
+    moe_cache * mc = g_cache;
+    if (!mc || !pub) { return; }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        if (&mc->layers[li].pub != pub) { continue; }
+        const auto at = std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), li);
+        if (at == g_cs_order_graph.end()) { return; }
+        const auto i = at - g_cs_order_graph.begin();
+        g_cs_order_graph.erase(at);
+        if ((size_t) i < g_cs_rng_graph.size()) { g_cs_rng_graph.erase(g_cs_rng_graph.begin() + i); }
+        if ((size_t) i < g_cs_mix_graph.size()) { g_cs_mix_graph.erase(g_cs_mix_graph.begin() + i); }
+        return;
+    }
+}
 // the part of an entry registered by llama_moe_cache_cs_range_fork in the mix: 1 the home (its held experts, no copies), 2 the shadow (every expert the home does not hold)
 void llama_moe_cache_cs_mix_fork(const llama_moe_cache_layer_fork * part, int role) {
     moe_cache * mc = g_cache;
