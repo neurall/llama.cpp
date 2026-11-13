@@ -4,3 +4,4 @@ k3n-12k,k31,1,pf12k,64,"--moe rp-grow=0",
 k3n-1k-stg,k31,2,pf1k,64,"--moe rp-grow=0,staging=1",
 k3n-s,k31,2,chatv,32,"--moe rp-grow=0",--prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt
 k3n-s-stg,k31,2,chatv,32,"--moe rp-grow=0,staging=1",--prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt
+k3n-1k-one,k31,2,pf1k,64,"--moe rp-grow=0,dense-split=0",
