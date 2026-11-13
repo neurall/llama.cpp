@@ -15367,9 +15367,16 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     const double Usum = g_pp_Usum, nt = (double) g_pp_n, x = g_pp_xc / std::max(1.0, nt);
     double c_new = -1.0;
     std::string how;   // which rule gave c_new (logged)
-    // the call's own mark (llama_moe_cache_pp_decide_fork), not the last graph's flag: Kimi K3.1's stream passes read the flag false here (2026-11-13), the staged
-    // rule below took (time - upload estimate) / tokens = 57 ms a token (1.6 calculated) and the next request cut its 999 tokens into 3 calls, 190 s against 77
-    const bool cs = g_pp_cs_reported;
+    // A call planned as the stream into the blocks whose graph has no stream layer ran another path (Kimi K3.1 before its SITU activation reached the cache
+    // path, and its prompts after: the scheduler's copies): its time is reads, not the stream's compute. Taken as compute by the staged rule it was 57 ms a
+    // token (1.6 calculated) and the next request cut its 999 tokens into 3 calls, 190 s against 77 (2026-11-13). Nothing is learned from such a call.
+    const bool cs = g_pp_cstream_built;
+    if (g_pp_cs_reported && !cs) {
+        static int told = 0;
+        if (told++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt compute not measured: %.0f tokens in %.0f ms planned as the stream into the blocks, but its graph has no stream layer\n", (double) g_pp_n, us / 1e3); }
+        g_pp_n = 0; g_pp_P = 0; g_pp_Usum = 0.0; g_pp_xc = 0.0;
+        return;
+    }
     // (a stream into the cache's blocks hides them too, without slots: read as "upload, then compute" a 3424-token pass of 2.55 s beside a 2.44 s upload gave 30 us
     // per token; its further entries per layer are taken out, the chunk pick adds them per candidate)
     const double ent = cs ? 1.0 + CS_ENTRY_COST * (double) ppx_extra_entries(std::max(1, g_cs_n_built), cs_share(mc)) : 1.0;
@@ -15396,7 +15403,6 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
         c_new = std::max(0.0, (double) us - Usum) / nt;
         how = "the pass time less the upload estimate";
     }
-    if (cs != g_pp_cstream_built) { how += format("; the last graph's stream flag says %d", (int) g_pp_cstream_built); }
     if (c_new >= 0.0) {
         // the fit c = c0 + a x cells over the measurements, older ones decayed (x 0.7 each): the slope only from points at least 8k cells apart; a stays >= 0
         for (double & f : g_fit) { f *= 0.7; }
