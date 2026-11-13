@@ -197,7 +197,8 @@ void llama_moe_cache_kv_tail_rebind_fork();
 // qkv-ram-fallback (fork/docs/qkv-ram-fallback.md): the tokens the pool can hold as KV with the expert cache at its floor, per tier, the smallest over the cards,
 // from the exact row layouts of each tier. valid is false before the pool exists. row_f16: bytes of one token's KV over all cards as f16.
 struct llama_kv_fit_caps { bool valid = false; size_t f16 = 0, k8v8 = 0, k4v4 = 0, row_f16 = 0, ram = 0, pool = 0; };   // ram: tokens with every growing layer's KV (tier 2 types) in host memory, from free RAM less 4 GiB
-llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork();
+llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork(int32_t n_pass = 0);   // n_pass > 64: beside a prompt pass of that many tokens (0: the least pass)
+uint32_t llama_moe_cache_pp_even_pass_fork(uint32_t n_tokens);             // the smallest prompt pass whose upload hides behind its compute (0: not known)
 // qkv-ram-fallback in place: the convertible records of every card take K type tk and V type tv inside the pool. The rows in use are converted on the card
 // (through a staging range borrowed at the front of the pool), the zone takes the new rows' size and the blocks it leaves go back to the experts (converting up,
 // it takes the blocks it needs first). No cache object, graph buffer or allocation is made or freed; the next graphs are built with the new types. false: nothing

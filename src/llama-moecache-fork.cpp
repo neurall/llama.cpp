@@ -6292,7 +6292,7 @@ static std::map<int32_t, size_t>::const_iterator need_exact(const moe_cache::ali
     return it != ap.need_tok.end() && ap.need_est.count(n_tokens) && need_real_only(ap) ? ap.need_tok.end() : it;
 }
 
-static size_t kv_prompt_lend0(const moe_cache::alias_pool & ap) {
+static size_t kv_prompt_lend0(const moe_cache::alias_pool & ap, int32_t n_pass = 64) {   // n_pass: the pass the lend is for (64: the least pass)
     const size_t bmax = std::max<size_t>(1, kv_bmax(ap));
     size_t cells = 0;
     for (auto & q : ap.kvt) { if (!q.fixed) { cells = std::max(cells, q.rows ? q.rows() : 0); } }
@@ -6301,7 +6301,7 @@ static size_t kv_prompt_lend0(const moe_cache::alias_pool & ap) {
     size_t lend = ap.dec_need > dpc ? ap.dec_need - dpc : 0;   // no prompt graph seen yet: a decode graph's (measured)
     double a = 0.0, b = 0.0;
     if (ppx_lend_line(pts, a, b)) {
-        const size_t l64 = (size_t) (a + 64.0 * b), pcc = ap.kv_lend_pc * cells;
+        const size_t l64 = (size_t) (a + (double) std::max(64, n_pass) * b), pcc = ap.kv_lend_pc * cells;
         lend = std::max(lend, l64 > pcc ? l64 - pcc : 0);
     }
     (void) bmax;
@@ -6309,8 +6309,8 @@ static size_t kv_prompt_lend0(const moe_cache::alias_pool & ap) {
 }
 // the cells a prompt's KV can grow to on this card with a zone of fixed part F and combined row R while the lend grows by pc per cell (not capped by the model's
 // context: the log shows what really fits)
-static size_t kv_prompt_cells(const moe_cache::alias_pool & ap, size_t F, size_t R, size_t pc) {
-    return kvx_cells(ap.floor_end, kv_prompt_lend0(ap), F, R, pc);
+static size_t kv_prompt_cells(const moe_cache::alias_pool & ap, size_t F, size_t R, size_t pc, int32_t n_pass = 64) {
+    return kvx_cells(ap.floor_end, kv_prompt_lend0(ap, n_pass), F, R, pc);
 }
 static bool kv_any_out(const moe_cache::alias_pool & ap);
 static size_t kv_mem_available();
@@ -6328,7 +6328,8 @@ static size_t kv_prompt_room(const moe_cache::alias_pool & ap) {
 }
 
 // the tier capacities from the exact layouts each tier would give the records (whole-block rows, the fixed ring converted too, the attention's f16 copies in the lend)
-llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
+// n_pass > 64: beside a prompt pass of that many tokens (the layers ahead kept: kv_fit_select tries every quant tier with it before the passes shrink)
+llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork(int32_t n_pass) {
     llama_kv_fit_caps out;
     moe_cache * mc = g_cache;
     if (!mc) { return out; }
@@ -6344,7 +6345,7 @@ llama_kv_fit_caps llama_moe_cache_kv_fit_caps_fork() {
             kv_lend_pc_of(v, pc, pcd);
             size_t pad = 1;   // the zone grows in whole pads (kv_tail_plan): a tier holds only whole pads, or the pick passes a request the growth then refuses
             for (const auto & q : ap.kvt) { if (!q.fixed) { pad = std::max<size_t>(pad, q.pad); } }
-            cap[t] = std::min(cap[t], kv_prompt_cells(ap, F, R, pc) / pad * pad);
+            cap[t] = std::min(cap[t], kv_prompt_cells(ap, F, R, pc, n_pass) / pad * pad);
             if (t == 0) { row0 += R; }
         }
     }
@@ -15315,6 +15316,26 @@ static void pp_c_us_stored() {
     // planner read as truth; the session measures its own (llama_moe_cache_prefill_report_fork) and nothing is written for the next start.
 }
 
+// The smallest prompt pass that costs no time: a streamed pass uploads every expert beside its compute, so under (upload of a pass) / (compute per token) tokens the
+// upload sets its length and every token costs more the smaller the pass is. Upload: the expert bytes over the link (an expert split: the links side by side);
+// compute: measured, at the request's middle cells, else calculated (llama_dsplit_compute_calc_us_fork). 0: not known (no link rate, no compute figure).
+double llama_dsplit_compute_calc_us_fork(ggml_backend_dev_t d);   // llama-dsplit-fork.cpp
+uint32_t llama_moe_cache_pp_even_pass_fork(uint32_t n_tokens) {
+    moe_cache * mc = g_cache;
+    if (!mc || !mc->link_dev[0] || n_tokens < 64) { return 0; }
+    double E = 0.0, R = 0.0;
+    pp_expert_bytes(mc, mc->link_dev[0], E, R);
+    const double gbs   = llama_moe_cache_link_gbs_fork(mc->link_dev[0]);
+    const double up_us = gbs > 0.0 ? E / (gbs * 1e3) * cs_share(mc) : 0.0;
+    double c_us = 0.0;
+    {
+        std::lock_guard<std::mutex> lk(g_pp_mu);
+        c_us = g_pp_c_us > 0.0 ? g_pp_c_us + g_pp_a_us * 0.5 * (double) n_tokens : 0.0;
+    }
+    if (c_us <= 0.0) { c_us = llama_dsplit_compute_calc_us_fork(mc->link_dev[0]); }
+    if (up_us <= 0.0 || c_us <= 0.0) { return 0; }
+    return (uint32_t) std::min<double>((double) n_tokens, std::max(64.0, up_us / c_us));
+}
 // the pass planner's measured compute of one prompt token on the offload card, all layers, us (0 = not measured yet)
 double llama_moe_cache_compute_us_fork() {
     std::lock_guard<std::mutex> lk(g_pp_mu);

@@ -50,6 +50,19 @@ template <class C> static int kvx_select(const C & cp, const std::vector<int> & 
     return -1;
 }
 
+// The same with the layers ahead kept (user 2026-11-11: f16, q8_0, q4_0 in place, THEN shrink the layers held ahead, RAM last): cw holds each tier's tokens beside a
+// prompt pass of the wanted size, cp beside the least pass. The lowest in-place tier that holds the request beside the wanted pass; none: the passes shrink, at the
+// smallest KV the list allows in place (the last in-place tier that holds it at all); then RAM. With cp alone f16 was kept until not even a 64-token pass fitted
+// (Qwen3.6 128k at 4.5 GiB a card: 485 passes of 64 tokens, 293 prompt tokens/s against 2194 with the KV at q8_0).
+template <class C> static int kvx_select_pass(const C & cw, const C & cp, const std::vector<int> & allowed, int kv_tier, int min_tier, size_t n_tokens) {
+    const int lo = min_tier < 0 ? std::min(kv_tier + 1, 3) : min_tier;
+    const auto cap = [](const C & c, int t) { return t == 0 ? c.f16 : t == 1 ? c.k8v8 : t == 2 ? c.k4v4 : c.ram; };
+    for (int t : allowed) { if (t >= lo && t < 3 && n_tokens <= cap(cw, t)) { return t; } }
+    for (auto it = allowed.rbegin(); it != allowed.rend(); ++it) { if (*it >= lo && *it < 3 && n_tokens <= cap(cp, *it)) { return *it; } }
+    for (int t : allowed) { if (t >= lo && t == 3 && n_tokens <= cp.ram) { return t; } }
+    return -1;
+}
+
 // no tier in the pool (the list is "ram" alone): the RAM tier moves every layer's KV, not only as many as the request needs
 static inline bool kvx_ram_only(const std::vector<int> & allowed) { return !allowed.empty() && allowed.front() == 3; }
 

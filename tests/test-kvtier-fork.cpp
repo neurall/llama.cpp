@@ -153,11 +153,45 @@ static void test_capacity_and_host() {
     report("a budget below the padding slack holds no cells", kvx_host_cells(100, 10, 50, 1000) == 0);
 }
 
+// the tier beside a prompt pass of the wanted size: quant tiers before the passes shrink, RAM last
+static void test_select_pass() {
+    printf("Testing the tier beside a prompt pass (layers ahead kept):\n");
+    std::mt19937_64 rng(g_seed + 7);
+    long bad = 0; std::string first;
+    for (long it = 0; it < g_iters; ++it) {
+        caps_t c; c.f16 = rng() % 5000; c.k8v8 = c.f16 + rng() % 5000; c.k4v4 = c.k8v8 + rng() % 8000; c.ram = c.k4v4 + rng() % 100000;
+        caps_t w = c; w.f16 = c.f16 * (rng() % 101) / 100; w.k8v8 = c.k8v8 * (rng() % 101) / 100; w.k4v4 = c.k4v4 * (rng() % 101) / 100;   // beside the pass: never more
+        const unsigned mask = (unsigned) (rng() % 16);
+        std::string list; for (int t = 0; t < 4; ++t) { if (mask >> t & 1) { list += (list.empty() ? "" : ","); list += t == 0 ? "f16" : t == 1 ? "k8v8" : t == 2 ? "k4v4" : "ram"; } }
+        const auto allowed = kvx_allowed(mask ? list : "none");
+        const size_t n = rng() % 120000;
+        const int t = kvx_select_pass(w, c, allowed, 0, 0, n), t0 = kvx_select(c, allowed, 0, 0, n);
+        const auto cap = [](const caps_t & x, int k) { return k == 0 ? x.f16 : k == 1 ? x.k8v8 : k == 2 ? x.k4v4 : x.ram; };
+        bool ok = (t < 0) == (t0 < 0);                                       // it holds the request exactly when some tier holds it at all
+        if (ok && t >= 0) {
+            ok = n <= cap(c, t);                                             // the tier holds it
+            if (t < 3 && n > cap(w, t)) {                                    // not beside the wanted pass: then no in-place tier is, and none below it holds it at all
+                for (int k : allowed) { if (k < 3 && (n <= cap(w, k) || (k > t && n <= cap(c, k)))) { ok = false; } }
+            }
+            if (t < 3 && n <= cap(w, t)) { for (int k : allowed) { if (k < t && n <= cap(w, k)) { ok = false; } } }   // the lowest that holds it beside the pass
+            if (t == 3) { for (int k : allowed) { if (k < 3 && n <= cap(c, k)) { ok = false; } } }                      // RAM only when no in-place tier holds it
+        }
+        if (!ok && bad++ == 0) { first = fmt("n %zu list %s: tier %d (least pass %d)", n, list.c_str(), t, t0); }
+    }
+    report("holds it; lowest tier beside the pass, else the smallest KV in place, RAM last", bad == 0, first);
+    caps_t c { 275200, 376576, 572160, 1000000 }, w { 40000, 90000, 160000, 1000000 };   // Qwen3.6 at 4.5 GiB a card: what a break-even pass leaves
+    const auto all = kvx_allowed("f16,k8v8,k4v4");
+    report("137k tokens: q4_0 beside the pass (f16 alone held it with 64-token passes); 30k: f16; 80k: q8_0; 300k: q4_0 with smaller passes",
+            kvx_select_pass(w, c, all, 0, 0, 137000) == 2 && kvx_select(c, all, 0, 0, 137000) == 0 && kvx_select_pass(w, c, all, 0, 0, 30000) == 0 &&
+            kvx_select_pass(w, c, all, 0, 0, 80000) == 1 && kvx_select_pass(w, c, all, 0, 0, 300000) == 2);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
     test_list();
     test_select_properties();
+    test_select_pass();
     test_ladder();
     test_capacity_and_host();
     if (n_failed > 0) {

@@ -1570,7 +1570,10 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     }   // the listed tiers, cheapest first: f16, q8_0, q4_0 in place in the pool, then whole layers' KV in host memory (llama-kvtier-fork.h)
     // the cheapest listed tier that holds the request with the experts at their floor (one layer per size class kept: f16, then q8_0 and q4_0 in place, RAM last;
     // user 2026-11-11). The zone grows with the cells, so there is no start size to fill first (the zone-first rule went with the growth steps).
-    const int tier = kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
+    // ... beside a prompt pass that costs no time, where its size is known (llama_moe_cache_pp_even_pass_fork): the quant tiers come before the passes shrink
+    const uint32_t n_pass = llama_moe_cache_pp_even_pass_fork(n_tokens);
+    const llama_kv_fit_caps cw = n_pass > 64 ? llama_moe_cache_kv_fit_caps_fork((int32_t) n_pass) : cp;
+    const int tier = n_pass > 64 && cw.valid ? kvx_select_pass(cw, cp, allowed, kv_tier, min_tier, n_tokens) : kvx_select(cp, allowed, kv_tier, min_tier, n_tokens);
     if (tier < 0) {
         say("kv-fit: %u tokens fit no enabled tier: f16 %zu, q8_0 %zu, q4_0 %zu, RAM %zu tokens (list %s; --moe kv-fallback=f16,k8v8,k4v4)", n_tokens, cp.f16, cp.k8v8, cp.k4v4, cp.ram, list.c_str());
         return -1;
@@ -1602,8 +1605,10 @@ int32_t llama_context::kv_fit_select(uint32_t n_tokens, int32_t min_tier, char *
     }
     kv_tier = tier;
     static const char * names[] = { "f16", "q8_0/q8_0", "q4_0/q4_0" };
-    say("kv-fit: %u tokens: KV now %s in place (f16 holds %zu, q8_0 %zu, q4_0 %zu)%s", n_tokens, names[tier], cp.f16, cp.k8v8, cp.k4v4, tier ? ", small quality loss" : "");
-    { char why[160]; snprintf(why, sizeof why, "%u tokens: f16 holds %zu, q8_0 %zu, q4_0 %zu tokens%s", n_tokens, cp.f16, cp.k8v8, cp.k4v4, tier ? " (small quality loss)" : "");
+    char pass[160] = { 0 };   // the planner explains its pick: what each tier holds beside the pass that costs no time
+    if (n_pass > 64) { snprintf(pass, sizeof pass, "; beside a prompt pass of %u tokens (its upload hidden behind its compute): f16 %zu, q8_0 %zu, q4_0 %zu", n_pass, cw.f16, cw.k8v8, cw.k4v4); }
+    say("kv-fit: %u tokens: KV now %s in place (f16 holds %zu, q8_0 %zu, q4_0 %zu%s)%s", n_tokens, names[tier], cp.f16, cp.k8v8, cp.k4v4, pass, tier ? ", small quality loss" : "");
+    { char why[320]; snprintf(why, sizeof why, "%u tokens: f16 holds %zu, q8_0 %zu, q4_0 %zu tokens%s%s", n_tokens, cp.f16, cp.k8v8, cp.k4v4, pass, tier ? " (small quality loss)" : "");
       llama_moe_decision_fork("kv", names[tier], why); }
     return tier | 256;
 }
