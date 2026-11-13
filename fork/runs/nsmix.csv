@@ -1,0 +1,22 @@
+name,model,n,test,tokens,args,extra
+nm-x4-mix-verify,qn_iq4xs,1,pf12k,64,"--moe pp-path=mix,dense-split=0,simlink=16,4,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1
+nm-x4-qn-mix-stg,qn_iq4xs,1,pf12k,64,"--moe pp-path=mix,dense-split=0,simlink=16,4,staging=1",
+nm-x4-qn-mix-ns,qn_iq4xs,1,pf12k,64,"--moe pp-path=mix,dense-split=0,simlink=16,4,staging=0",
+nm-x4-qn-st-stg,qn_iq4xs,1,pf12k,64,"--moe pp-path=stream,dense-split=0,simlink=16,4,staging=1",
+nm-x4-qn-st-ns,qn_iq4xs,1,pf12k,64,"--moe pp-path=stream,dense-split=0,simlink=16,4,staging=0",
+nm-x4-qn-au-stg,qn_iq4xs,1,pf12k,64,"--moe simlink=16,4,staging=1",
+nm-x4-qn-au-ns,qn_iq4xs,1,pf12k,64,"--moe simlink=16,4,staging=0",
+nm-x4-glm-mix-stg,glm,1,pf12k,64,"--moe pp-path=mix,dense-split=0,simlink=16,4,staging=1",
+nm-x4-glm-mix-ns,glm,1,pf12k,64,"--moe pp-path=mix,dense-split=0,simlink=16,4,staging=0",
+nm-x4-glm-st-stg,glm,1,pf12k,64,"--moe pp-path=stream,dense-split=0,simlink=16,4,staging=1",
+nm-x4-glm-st-ns,glm,1,pf12k,64,"--moe pp-path=stream,dense-split=0,simlink=16,4,staging=0",
+nm-x4-glm-au-stg,glm,1,pf12k,64,"--moe simlink=16,4,staging=1",
+nm-x4-glm-au-ns,glm,1,pf12k,64,"--moe simlink=16,4,staging=0",
+nm-glm-mix-stg,glm,1,pf12k,64,"--moe pp-path=mix,dense-split=0,staging=1",
+nm-glm-mix-ns,glm,1,pf12k,64,"--moe pp-path=mix,dense-split=0,staging=0",
+nm-glm35-mix-stg,glm35,2,pf12k,64,"--moe pp-path=mix,dense-split=0,staging=1",--env GGML_PF_STATS=1
+nm-glm35-mix-ns,glm35,2,pf12k,64,"--moe pp-path=mix,dense-split=0,staging=0",--env GGML_PF_STATS=1
+nm-mimo-mix-stg,mimo,2,pf12k,64,"--moe pp-path=mix,dense-split=0,staging=1",--env GGML_PF_STATS=1
+nm-mimo-mix-ns,mimo,2,pf12k,64,"--moe pp-path=mix,dense-split=0,staging=0",--env GGML_PF_STATS=1
+nm-ds-mix-stg,ds,1,pf12k,64,"--moe pp-path=mix,dense-split=0,staging=1",
+nm-ds-mix-ns,ds,1,pf12k,64,"--moe pp-path=mix,dense-split=0,staging=0",
