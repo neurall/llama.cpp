@@ -3149,6 +3149,23 @@ static void dsplit_one_report(const dsf_pass & p) {
     g_one_t_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+// The share of the last stamped pass's span the cards spent in kernels (every card's dense + expert kernel time over the span from its first stamp to its
+// last; at most 1) and that pass's generation; 0 when no pass was stamped. The time of a pass that waits for its reads is not compute (llama-moecache-fork.cpp
+// reads a stream call's compute per token from it: Kimi K3.1's SSD-bound pass of 81 s gave 61 ms a token as compute, the kernels took about 1.6 s of it)
+double llama_dsplit_kernel_share_fork(long * gen) {
+    dsplit_card_stat st[16]; long g = 0;
+    const int nst = ggml_backend_sched_card_stats(st, 16, &g);
+    if (gen) { *gen = g; }
+    int64_t k = 0, t0 = 0, t1 = 0;
+    for (int j = 0; j < nst; ++j) {
+        if (!st[j].backend || st[j].last_us <= st[j].first_us) { continue; }
+        k += st[j].dense_us + st[j].moe_us;
+        t0 = t0 ? std::min(t0, st[j].first_us) : st[j].first_us;
+        t1 = std::max(t1, st[j].last_us);
+    }
+    return t1 > t0 && k > 0 ? std::min(1.0, (double) k / (double) (t1 - t0)) : 0.0;
+}
+
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (n_tokens >= 64) {   // the load-time timing's lines, once (they were written while the parameter fit muted the log)

@@ -14815,6 +14815,7 @@ uint32_t llama_moe_cache_pass_fit_fork(uint32_t cells, uint32_t ub) {
 // chain over a table of -1 entries) when a model shows another ratio
 static const double CS_ENTRY_COST = 0.10;
 double llama_dsplit_compute_calc_us_fork(ggml_backend_dev_t d);   // llama-dsplit-fork.cpp: a prompt pass's compute per token from the matmul rate probed at load (us), 0 = not probed
+double llama_dsplit_kernel_share_fork(long * gen);   // llama-dsplit-fork.cpp: the cards' kernel share of the last stamped pass (0: none)
 // The largest stream pass every card's pool holds with a layer in N chunks: pp_cap_to_pool, less what a card's further entries keep until the layer's sum (one
 // [n_embd, tokens] f32 each; the start-up sizes are measured with whole layers)
 static uint32_t cs_cap(moe_cache * mc, uint32_t n, uint32_t ub, size_t cells_end, int N) {
@@ -15284,7 +15285,15 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     const double ent = g_pp_cstream_built ? 1.0 + CS_ENTRY_COST * (double) ppx_extra_entries(std::max(1, g_cs_n_built), cs_share(mc)) : 1.0;
     // (1.5 x for the stream into the blocks: its passes near the upload's time wait for uploads between chunks, read as compute they made the next pick keep
     // small passes, where nothing measures the compute again)
-    if (k >= 2 || g_pp_cstream_built) {   // slots hide uploads (2 is the least that overlaps, ppx_stage_slots)
+    // the stream into the blocks: the cards' kernel share of the pass (scheduler stamps) is its compute; its waits for reads are not (the estimate Usum counts the
+    // link only: Kimi K3.1's 81 s pass, 306 GB of it from the SSD, was read as 61 ms of compute a token, so the next request cut its prompt into 3 streams)
+    long ks_gen = 0;
+    const double ks = g_pp_cstream_built ? llama_dsplit_kernel_share_fork(&ks_gen) : 0.0;
+    static long ks_seen = -1;
+    if (ks > 0.0 && ks_gen != ks_seen) {
+        ks_seen = ks_gen;
+        c_new = (double) us * ks / nt / ent;
+    } else if (k >= 2 || g_pp_cstream_built) {   // slots hide uploads (2 is the least that overlaps, ppx_stage_slots)
         if ((double) us > (g_pp_cstream_built ? 1.5 : 1.3) * Usum) {
             c_new = (double) us / nt / ent;
         } else if (g_pp_c_us > 0.0) {
