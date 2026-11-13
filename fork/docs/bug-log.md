@@ -14,9 +14,9 @@ Added 2026-11-12 (user: "keep storing all the found bugs in bug list so later we
 
 | class | what it is | entries, 2026-11-10 evening to 2026-11-12 |
 |---|---|---|
-| stale-number | a capacity, estimate, key or stored/learned value computed at another moment, state or path than where it is used | 15 |
+| stale-number | a capacity, estimate, key or stored/learned value computed at another moment, state or path than where it is used | 17 |
 | flag-coupling | a global switch or mode set in one layer whose side effect another layer relies on, so a path changes silently | 12 |
-| harness | the test tool or a debug switch changes or misreports what it measures | 15 |
+| harness | the test tool or a debug switch changes or misreports what it measures | 18 |
 | pool-owner | two users of the same pool bytes with no single owner or ledger (lend, KV zone, expert blocks, ring, class grid) | 7 |
 | card-asymmetry | code written for one card or the first card meeting another layout (home card, expert card, links) | 11 |
 | past-end | a read or write past an allocation's used end at the access granularity (row padding, tiles, pad rows, a view cleared at its nominal size) | 3 |
@@ -24,9 +24,10 @@ Added 2026-11-12 (user: "keep storing all the found bugs in bug list so later we
 | request-carryover | state left by one request, call or pass that the next one reads | 0 |
 | kernel | a GPU kernel's own arithmetic or bounds | 0 |
 | twin-path | one step implemented in two code paths (the layer's own chain and the parts, staged and stream): a rule or a fix added to one of them only | 3 |
-| other | named in the entry | 8 |
+| cold-start | a decision taken before its input is measured (a start's first prompt, a path that never measures it) takes a fixed rule or veto instead of the calculated value | 2 |
+| other | named in the entry | 9 |
 
-First reading of the first 55 entries (three days, to be redone once the older entries are classified; 61 after the batch of 2026-11-12 night, 71 after 2026-11-13 01:50, 75 after 05:00, 76 after 06:00): three classes hold 29 of them, each with one shared cause.
+First reading of the first 55 entries (three days, to be redone once the older entries are classified; 61 after the batch of 2026-11-12 night, 71 after 2026-11-13 01:50, 75 after 05:00, 76 after 06:00, 84 after 2026-11-13 08:00): three classes hold 29 of them, each with one shared cause.
 
 - stale-number: one quantity is computed in several places from different inputs (start-up fit, pass cap, lend line, stored needs, learned times). One function per quantity, fed the live state where it is used; a stored value keyed by everything it depends on.
 - flag-coupling: the path of a prompt call lives in global flags (`g_pp_mb`, `g_pp_dec`, the staging mode) that other layers read a meaning into. One plan object per call, handed to the graph builder, which logs what it built against it.
@@ -542,3 +543,16 @@ Verified on `glu_zero_late`, 100-token prompt, two requests each: MiMo, GLM and 
 | `--moe staging=0` as the default (common.cpp) | flipped-default build, no key given: start-up probe 58.5 GiB for a 16384-token GLM 3.0 graph (7.0 GiB with the explicit key), micro-batch 3744, GLM 3.0 60k prompt in 14 to 26 passes at 214 t/s against 520, the answer a repetition loop twice; the verify list (short prompts) passed on that build | the default was appended to the option string, which reaches the engine after the model has loaded; an explicit key is set in the engine while the arguments are parsed. Code that ran during the load saw the staged path, the context was built without staging | bf485009c1 FIXED (set in the engine at the same place); found by the long-prompt list, which had not run since 2026-11-07 | flag-coupling |
 
 Commits of these three days whose message did not say whether they fix a fault (not entered): 2b93165564, 5430bf5cf6, 34fb708aae, 045d09a0e2, bd94e23ce6, 08758800de.
+
+## 2026-11-13 morning
+
+| where | symptom | cause | fix / state | class |
+|---|---|---|---|---|
+| KV tier pick (`kv_fit_select`, `kvx_select`, `llama_moe_cache_kv_fit_caps_fork`) | Qwen3.6 128k at 4.5 GiB a card, build ns_gate1: 485 passes of 64 tokens, 399 / 293 prompt t/s (2194 on 11-07), the KV kept f16 | each tier's cap was the KV a 64-token pass leaves room for (`kv_prompt_lend0` at 64 tokens): f16 "fit" while a 64-token pass did, so the passes shrank before the KV was quantized, against the order of 2026-11-11 (f16, q8, q4 in place, then smaller passes) | f7f2327523 FIXED: the tier is picked against the break-even pass (a pass's upload over the compute per token, `llama_moe_cache_pp_even_pass_fork`); ns_gate2 3209 / 3096 t/s, q4_0 chosen | stale-number |
+| `run.py run LIST` while another run is active | a rerun of sx-glm-ns never ran; its log showed the running list's output | a second `run run` becomes a viewer of the active run and does not say the list was not started | OPEN (check for an active run before starting one) | harness |
+| A/B order on a fresh build (stored VRAM need, key `vram_need.<gpu>.drv<driver>.b<build>`) | sx-q36-ns, the first row on ns_gate2: "margin 484 MiB (no stored need, cold start)", pool 405 MiB a card smaller than sx-q36-stg right after it (margin 79): passes 5536..1440 against 9216..5440, read as staging=0 -28% | a build's first start of a model sizes the pool with the cold margin (484 MiB, a fixed constant); the row after it finds the need stored, so the first row of an A/B pays it | gate.sh: warm-up rows on the new build for the models the verify list does not start; rerun with the need stored: -15% (task #302) | harness |
+| staged path (`--moe staging=1`), Qwen3.6 128k at 4.5 GiB a card | ns_gate2 run 1 at 109824 cells fell to 64-token passes: 428 passes, 692 t/s; run 2 (KV q4_0) 4286 t/s | not analysed (staged is no longer the default) | OPEN | other (not analysed) |
+| staging=0 chunk pick (`cs_pick`) | Kimi K3.1 1k prompt, ns_gate2: "a layer in 2 chunks ... 2: 16 passes of at most 64 ... 3: not tried before the compute is measured", pass 1 64 tokens in 27.4 s (staged on 11-12: 995 tokens in 77 s) | with no measured prompt compute (a start's first prompt; dense split passes never measure it) every candidate with more than one further entry per layer was dropped; with a 5.5 GiB layer and 6.3 GiB pools 2 chunks leave a 64-token pass | 8e4cd8c56c FIXED: the split planner's calculated compute stands in; ns_gate3: one pass, 995 tokens in 81.1 s (12 t/s) | cold-start |
+| prompt compute measurement (report after a planned call, early return on `llama_dsplit_cur_fork() == 1`) | Qwen3.6 128k rows, staged and staging=0: no "prompt compute measured" line in two requests of 137k tokens | dense split passes are left out (their time holds hand-offs and waits) and nothing measures them instead: every decision that reads the compute per token stays on its prior | OPEN (task #302; the calculated compute stands in since 8e4cd8c56c) | cold-start |
+| stream pass upload estimate (`cs_pick`, `llama_moe_cache_pp_even_pass_fork`: `E / link rate x share`) | K3 1k prompt, ns_gate3: planned "1 pass, 20.5 s", took 81.1 s; the same call's decision line says "stream reads 312.0 GB from the SSD at 6.60 GB/s" | the upload of a pass counts the link only, not the SSD reads of the experts RAM does not hold; break-even pass and chunk pick read a 4x short upload when the stream is SSD-bound | OPEN (loop item 3, SSD-bound stream) | stale-number |
+| run lists naming deleted models | user 2026-11-13: the Qwen3.8 IQ1_M files are gone (`/m/q/1/`); gainers rows qn1-i/io/o would fail | lists are not checked against the model dir | 40ad8a700f gainers rows removed; pipe2, pipe3, onepass, threadsab, threadsab8, reg and a run.py campaign still name `qn_iq1m` (OPEN) | harness |
