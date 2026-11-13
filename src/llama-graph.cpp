@@ -39,6 +39,9 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
 int llama_moe_cache_cs_chunks_fork();                                             // --moe cs-chunks: a layer's experts in that many parts per card
 int llama_moe_cache_cs_shadow_ix_fork(const llama_moe_cache_layer_fork * part);   // a part's shadow index, -1: the layer itself   // the same: --moe staging=0 expert split
 void llama_moe_cache_cs_range_fork(const llama_moe_cache_layer_fork * part, int32_t lo, int32_t hi);
+bool llama_moe_cache_cs_mix_call_fork();                                                    // --moe staging=0: the planner gave this call the prompt mix
+ggml_backend_dev_t llama_moe_cache_cs_mix_dev_fork(const llama_moe_cache_layer_fork * pub);   // the mix's fastest link card for a layer behind a slower one, else null
+void llama_moe_cache_cs_mix_fork(const llama_moe_cache_layer_fork * part, int role);        // 1: the mix's home part, 2: its shadow on the fastest link's card
 void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, const ggml_tensor * ids);
 bool llama_moe_cache_pp_pred_want_fork(int64_t n_tokens);   // the prompt chain's fetch list: the next layers' router logits come to the host in this pass
 bool llama_moe_cache_cs_pred_fork();   // the stream into the blocks takes the k arm this call: the graph carries the rankings (cs_sel, cs_layer)
@@ -3690,6 +3693,21 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // ring's order unused (GLM 3.5, 2 chunks: the ring ran out of blocks, abort).
     const bool cs_home = mc_cstream && sched;
     if (cs_home && parts.size() <= 1) { parts.clear(); }
+    // --moe staging=0, the prompt mix (llama_moe_cache_cs_mix_dev_fork): a layer behind a slower link computes on its home card what its blocks hold (an entry that
+    // copies nothing) and on the fastest link's card every other expert, from its shadow there, which the stream fills ahead like any entry; the two sums meet on the
+    // home card (the owner). A layer on the fastest link runs whole on it in a mix call: an expert split would upload to the home cards, whose blocks the mix keeps.
+    const ggml_backend_dev_t mix_dev = cs_home && moe_ranges.empty() ? llama_moe_cache_cs_mix_dev_fork(mcache) : nullptr;
+    if (cs_home && moe_ranges.empty() && llama_moe_cache_cs_mix_call_fork()) {
+        parts.clear();
+        if (mix_dev) {
+            home_part();
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched) && parts.size() == 1; ++i) {
+                ggml_backend_t b = ggml_backend_sched_get_backend(sched, i);
+                if (ggml_backend_get_device(b) == mix_dev && b != parts[0].b) { parts.push_back({ b, llama_moe_cache_link_gbs_fork(mix_dev), 0, n_expert }); }
+            }
+            if (parts.size() < 2) { parts.clear(); }
+        }
+    }
     for (int attempt = 0; mc_cstream && attempt < 2; ++attempt) {
         if (parts.empty() && cs_home) { home_part(); }
         if (nch > 1) {
@@ -3698,7 +3716,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             const int64_t unit = (n_expert + nch - 1) / nch;
             std::vector<split_part> cut;
             for (const auto & pt : parts) {
-                const int64_t n = (pt.hi - pt.lo + unit - 1) / unit;
+                // the mix's home part copies nothing and computes what the layer's own blocks hold: one entry, the layer itself (its shadow's chunks mask by those)
+                const int64_t n = attempt == 0 && mix_dev && ggml_backend_get_device(pt.b) != mix_dev ? 1 : (pt.hi - pt.lo + unit - 1) / unit;
                 for (int64_t ci = 0; ci < n; ++ci) {
                     const int64_t clo = pt.lo + (pt.hi - pt.lo) * ci / n, chi = pt.lo + (pt.hi - pt.lo) * (ci + 1) / n;
                     if (chi > clo) { cut.push_back({ pt.b, pt.gbs, clo, chi, nullptr, (int) ci }); }
@@ -3713,6 +3732,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         parts.clear();   // a part without its blocks: once more with the layer on its home card alone, then the layer's own chain over every expert (mc_pp below)
     }
     for (const auto & pt : parts) { if (pt.pc) { llama_moe_cache_cs_range_fork(pt.pc, (int32_t) pt.lo, (int32_t) pt.hi); } }
+    if (mix_dev) {   // the mix's roles, when both cards kept their parts (else the layer runs whole on its home card, the second try above)
+        bool on_fast = false, on_home = false;
+        for (const auto & pt : parts) { (ggml_backend_get_device(pt.b) == mix_dev ? on_fast : on_home) = true; }
+        for (const auto & pt : parts) { if (pt.pc && on_fast && on_home) { llama_moe_cache_cs_mix_fork(pt.pc, ggml_backend_get_device(pt.b) == mix_dev ? 2 : 1); } }
+    }
     if (mc_mix_b) {   // the fastest link's card: every expert id the home card does not hold
         parts.push_back({ mc_mix_b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(mc_mix_b)), 0, n_expert });
     }

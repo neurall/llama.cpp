@@ -204,6 +204,7 @@ constexpr int MAX_LINKS = 16; // GPUs with a cache (their host->GPU links are me
 
 struct layer_state {
     llama_moe_cache_layer_fork pub;
+    int32_t home_li = -1;   // a shadow (llama_moe_cache_cs_shadow_fork): the layer it computes a part of (moe_cache::layers)
 
     // LRU bookkeeping (host side; the tables mirror expert_slot)
     std::vector<int32_t>  slot_expert;   // slot -> expert id, -1 when empty
@@ -543,6 +544,7 @@ struct moe_cache {
     struct fcls_t { ggml_backend_dev_t dev = nullptr; int32_t pcls = -1, n = 0; ggml_tensor * t3[3] = { nullptr, nullptr, nullptr }; };
     std::vector<fcls_t>      fcls;
     std::vector<std::pair<int32_t, int32_t>> cs_rng;
+    std::vector<uint8_t>     cs_mix;   // per entry of cs_order: 0, 1 the prompt mix's home (computes what its blocks hold, copies nothing), 2 its shadow on the fastest link's card (the rest)
     bool                     cs_masked = false;   // a pass of this call masked device tables to their range: the call's end writes every layer's table again
     uint64_t                 cs_n_direct = 0, cs_n_map = 0;   // the pass so far: slices the RAM pool refused, read O_DIRECT into a pinned slot; slices copied from the mapping (should stay 0)
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
@@ -1362,6 +1364,7 @@ static bool              g_pp_cstream_built = false; // the same for the graph t
 static std::vector<size_t> g_cs_order_graph;           // the cstream layers of the graph being built, in its order (llama_moe_cache_pp_chain_fork)
 static std::vector<size_t> g_cs_order_built;           // the same for the graph that runs (cs_begin)
 static std::vector<std::pair<int32_t, int32_t>> g_cs_rng_graph, g_cs_rng_built;   // per entry of those: the expert ids it computes (moe_cache::cs_rng)
+static std::vector<uint8_t> g_cs_mix_graph, g_cs_mix_built;   // per entry of those: its part in the prompt mix (moe_cache::cs_mix)
 static std::atomic<bool>   g_cs_live{false};           // a cstream pass may be on the GPU: flush_tables leaves the device tables to cs_layer (its copies are ordered on the upload stream) until cs_end
 static bool                g_cs_pred_built = false;    // the graph that runs carries the k arm's rankings (llama_moe_cache_cs_pred_fork when it was built)
 static double              g_cs_k_pass = 0.0;          // the running cstream pass's prediction multiplier (cs_begin): 0 = the stream, every expert of an entry's range
@@ -11931,6 +11934,7 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
             const std::vector<int32_t> none((size_t) E, -1);
             ggml_backend_tensor_set(dt, none.data(), 0, (size_t) E*sizeof(int32_t));
             sh.link = k;
+            sh.home_li = (int32_t) li;
             sh.pcls = twin ? twin->pcls : ftw->pcls;
             for (int t = 0; t < 3; ++t) { sh.src_fd[t] = L.src_fd[t]; sh.src_dfd[t] = L.src_dfd[t]; sh.src_offs[t] = L.src_offs[t]; sh.rp_tab[t] = L.rp_tab[t]; }
             const size_t nb = mc->pool[sh.pcls].owner.size();
@@ -11976,6 +11980,42 @@ void llama_moe_cache_cs_range_fork(const llama_moe_cache_layer_fork * part, int3
     const auto at = std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), x);
     if (at == g_cs_order_graph.end()) { g_cs_order_graph.push_back(x); g_cs_rng_graph.push_back({ lo, hi }); }
     else { g_cs_rng_graph[(size_t) (at - g_cs_order_graph.begin())] = { lo, hi }; }
+    g_cs_mix_graph.resize(g_cs_order_graph.size(), 0);
+}
+// --moe staging=0, the prompt mix (user 2026-11-13: ported, not switched off; the staged mix stages the fastest link's share): a call the planner gave the mix
+static bool pp_mix_allowed();   // below, with the staged mix
+static bool cs_mix_call() { return pp_no_staging() && pp_mix_allowed(); }
+bool llama_moe_cache_cs_mix_call_fork() { return g_cache && cs_mix_call(); }
+// the card that computes what layer pub's home card does not hold, in a mix call (the fastest link's), nullptr for a layer on that link or outside the mix
+ggml_backend_dev_t llama_moe_cache_cs_mix_dev_fork(const llama_moe_cache_layer_fork * pub) {
+    moe_cache * mc = g_cache;
+    if (!mc || !pub || !cs_mix_call() || pub->jit_n > 0) { return nullptr; }
+    for (const auto & l : mc->layers) {
+        if (&l.pub != pub) { continue; }
+        if (l.link == 0 || !mc->link_dev[0]) { return nullptr; }
+        g_pp_mix_graph = true;
+        return mc->link_dev[0];
+    }
+    return nullptr;
+}
+// the part of an entry registered by llama_moe_cache_cs_range_fork in the mix: 1 the home (its held experts, no copies), 2 the shadow (every expert the home does not hold)
+void llama_moe_cache_cs_mix_fork(const llama_moe_cache_layer_fork * part, int role) {
+    moe_cache * mc = g_cache;
+    if (!mc || !part) { return; }
+    std::lock_guard<std::mutex> lock(mc->mtx);
+    size_t x = SIZE_MAX;
+    for (size_t i = 0; i < mc->layers.size()  && x == SIZE_MAX; ++i) { if (&mc->layers[i].pub == part)  { x = i; } }
+    for (size_t i = 0; i < mc->shadows.size() && x == SIZE_MAX; ++i) { if (&mc->shadows[i].pub == part) { x = mc->layers.size() + i; } }
+    const auto at = std::find(g_cs_order_graph.begin(), g_cs_order_graph.end(), x);
+    if (at == g_cs_order_graph.end()) { return; }
+    g_cs_mix_graph.resize(g_cs_order_graph.size(), 0);
+    g_cs_mix_graph[(size_t) (at - g_cs_order_graph.begin())] = (uint8_t) role;
+    static int n_log = 0;
+    if (role == 2 && x >= mc->layers.size() && n_log++ < 2) {
+        const layer_state & sh = mc->shadows[x - mc->layers.size()];
+        LLAMA_LOG_WARN("moe-cache: cstream mix: layer %d computes what its home card's blocks hold there and every other expert on %s, from a shadow the stream fills (further layers alike)\n",
+                sh.pub.il, ggml_backend_dev_name(mc->link_dev[sh.link]));
+    }
 }
 
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
@@ -12342,7 +12382,12 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     std::vector<int32_t> want;   // the uncached experts of the entry's range (an expert split: the card's share of the layer)
     const int32_t e0 = p < mc->cs_rng.size() ? std::max(0, mc->cs_rng[p].first) : 0;
     const int32_t e1 = p < mc->cs_rng.size() ? std::min((int32_t) ls.expert_slot.size(), mc->cs_rng[p].second) : (int32_t) ls.expert_slot.size();
-    for (int32_t e = e0; e < e1; ++e) { if (ls.expert_slot[e] < 0 && (!sel || ((size_t) e < sel->size() && (*sel)[(size_t) e]))) { want.push_back(e); } }
+    const uint8_t mix = p < mc->cs_mix.size() ? mc->cs_mix[p] : 0;   // the prompt mix: its home copies nothing (it computes what it holds), its shadow skips what the home holds
+    if (mix == 1) { return true; }
+    const layer_state * home = mix == 2 && ls.home_li >= 0 && (size_t) ls.home_li < mc->layers.size() ? &mc->layers[(size_t) ls.home_li] : nullptr;
+    for (int32_t e = e0; e < e1; ++e) {
+        if (ls.expert_slot[e] < 0 && (!home || home->expert_slot[e] < 0) && (!sel || ((size_t) e < sel->size() && (*sel)[(size_t) e]))) { want.push_back(e); }
+    }
     if (want.empty()) { return true; }
     auto & ps = mc->pool[ls.pcls];
     if (ps.cs_up.size() < ps.owner.size()) { ps.cs_up.resize(ps.owner.size(), 0); }
@@ -12383,8 +12428,8 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         if (q < 0 || (!force && pinned(mc, lo, x))) { continue; }   // a layer outside the cstream graph (its path may read the block), a pinned expert
         if ((size_t) q < mc->cs_done[lo.link]) {   // computed in this pass: its done event is on its card's compute stream
             c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, lx });
-        } else if ((size_t) q > p) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert comes back when its turn comes
-            c.push_back({ 4, b, lx });
+        } else if ((size_t) q > p && !((size_t) q < mc->cs_mix.size() && mc->cs_mix[(size_t) q] == 1)) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert
+            c.push_back({ 4, b, lx });                                                                         // comes back when its turn comes; never a mix home's (its shadow left those out)
         }
     }
     }
@@ -12545,7 +12590,9 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
     const int32_t   pq   = li < mc->cs_pos.size() ? mc->cs_pos[li] : -1;
     const int64_t   r0   = pq >= 0 && (size_t) pq < mc->cs_rng.size() ? mc->cs_rng[(size_t) pq].first  : 0;
     const int64_t   r1   = pq >= 0 && (size_t) pq < mc->cs_rng.size() ? mc->cs_rng[(size_t) pq].second : nt;
-    for (int64_t i = 0; i < nt; ++i) { snap[i] = h[i] >= ls.pub.n_slots || i < r0 || i >= r1 ? -1 : h[i]; }
+    const uint8_t mix = pq >= 0 && (size_t) pq < mc->cs_mix.size() ? mc->cs_mix[(size_t) pq] : 0;
+    const layer_state * home = mix == 2 && ls.home_li >= 0 && (size_t) ls.home_li < mc->layers.size() ? &mc->layers[(size_t) ls.home_li] : nullptr;   // the mix's shadow: the home's held are the home's
+    for (int64_t i = 0; i < nt; ++i) { snap[i] = h[i] >= ls.pub.n_slots || i < r0 || i >= r1 || (home && home->expert_slot[i] >= 0) ? -1 : h[i]; }
     ggml_backend_tensor_set_async(rb, ls.pub.dev_table, snap, 0, (size_t) nt*sizeof(int32_t));
     if (guard_level() > 0) { std::lock_guard<std::mutex> lk(g_gtbl_mu); g_gtbl[&ls.pub].assign(snap, snap + nt); }
     ggml_backend_event_record(ls.ring_ev, rb);
@@ -12587,6 +12634,8 @@ static void cs_begin(moe_cache * mc) {
     mc->cs_order = g_cs_order_built;
     mc->cs_rng   = g_cs_rng_built;
     if (mc->cs_rng.size() != mc->cs_order.size()) { mc->cs_rng.assign(mc->cs_order.size(), { 0, INT32_MAX }); }
+    mc->cs_mix   = g_cs_mix_built;
+    if (mc->cs_mix.size() != mc->cs_order.size()) { mc->cs_mix.assign(mc->cs_order.size(), 0); }
     cs_shadow_drop(mc);   // normally done at the lend already (llama_moe_cache_alias_fork)
     mc->cs_pos.assign(mc->layers.size() + mc->shadows.size(), -1);
     int max_il = 0;
@@ -16520,9 +16569,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     pm.wait_us = pp_wait_us(n); pm.chunk_us = chunk_at(n); pm.dec_f = dec_f; pm.dec_r = dec_r; pm.dec_kc = g_pp_dec_kc;
     pm.Uk = Uk; pm.Mk = Mk;
     cand(PP_RING, estimate_fullstream_upload_time(pm));
-    // (not under --moe staging=0: the mix's share on the fastest link's card is a staged chain, and with no staging slots its experts are plain graph inputs with
-    // no fetch ahead: Qwen3.8 at 8 GiB, forced, 1113 prompt t/s against the stream's 1507. --moe pp-path=mix still runs it.)
-    if (has_slower && pp_mix_opt() && !pp_no_staging() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(pm)); }
+    // (--moe staging=0: the mix's share on the fastest link's card is that card's shadow of the layer, filled by the stream like any other entry: llama_moe_cache_cs_mix_dev_fork.
+    // It was switched off on 2026-11-13 while that share still ran as plain graph inputs with no fetch ahead: 1113 prompt t/s against the stream's 1507.)
+    if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(pm)); }
     // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
     // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed). The prompt chain's uploads wait for the same SSD reads.
     if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, estimate_moe_miss_ongpu_time(pm)); }
@@ -16632,22 +16681,23 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     g_pp_dec = dec;
     g_pp_mb = chain || dec ? ub_max : 0;
     const char * why_mix = "";
-    // --moe staging=0: the mix still stages, so it is not picked; the stream and the predictions' k arms run into the cache's blocks (below)
-    mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && !dec && !pp_no_staging() && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
+    // --moe staging=0: the mix is a stream call too, its fast card's share a shadow the stream fills (below: cstream)
+    mix = force ? strcmp(force, "mix") == 0 && has_slower && pp_mix_opt() : !chain && !dec && has_slower && pp_mix_opt() && pp_mix_pick(n, (int) mc->n_expert_used, n_expert, &why_mix);
     g_pp_mix_call = mix;
     if (why_mix[0]) { why = why_mix; }
     const double r = pp_took_us(mix ? PP_MIX : PP_RING, n);
     m = k_auto && !force && !chain && !dec && !why_mix[0] && (!pp_no_staging() || cs_fits) ? pp_k_pick(n, r, mix ? Um : U, (int) mc->n_expert_used, n_expert, &why) : 0.0;
-    if (pp_no_staging() && !force && !chain && !dec && !mix && !cs_fits) {   // no stream into the blocks for this call (a layer has fewer blocks than experts): the decode chain
+    if (pp_no_staging() && !force && !chain && !dec && !cs_fits) {   // no stream into the blocks for this call (a layer has fewer blocks than experts): the decode chain
         dec = true; g_pp_dec = true; g_pp_mb = ub_max; why = "--moe staging=0: no layer has a layer's worth of blocks for the stream into the cache";
+        mix = false; g_pp_mix_call = false;
     }
     }
     // The stream into the cache's blocks (cs_begin, cs_layer): the stream's own copies (whole layers, ahead of compute, on the expert card's upload stream) with the cache's
     // blocks as their destination, the kernels reading the tables. --moe pp-path=cstream forces it; with --moe staging=0 every stream pick is it (user 2026-11-12: the
     // staging removal changes only where the stream uploads to; 11-11 had dropped the stream for the chains instead, which upload one expert at a time, 3x slower at 12k).
     // A k arm (m > 0) is the same stream with only the predicted experts and the late fix (cs_sel, cs_layer); 11-12 had switched those off under staging=0 (user 11-13).
-    const bool cstream = force ? strcmp(force, "cstream") == 0 || (pp_no_staging() && strcmp(force, "stream") == 0)
-                               : pp_no_staging() && !chain && !dec && !mix;
+    const bool cstream = force ? strcmp(force, "cstream") == 0 || (pp_no_staging() && (strcmp(force, "stream") == 0 || strcmp(force, "mix") == 0))
+                               : pp_no_staging() && !chain && !dec;   // the mix too: its fast card's share is a shadow on the stream (llama_moe_cache_cs_mix_dev_fork)
     g_pp_cstream_call = cstream;
     g_pp_cs_split = false;
     g_pp_cs_reported = cstream;
@@ -17179,13 +17229,14 @@ bool llama_moe_cache_pred_train_now_fork() {
 void llama_moe_cache_measure_stream_fork(bool on) {
     if (!g_cache || !pp_no_staging()) { return; }
     g_cs_measure.store(on, std::memory_order_relaxed);
-    if (!on) { g_pp_cstream_graph = false; g_cs_order_graph.clear(); g_cs_rng_graph.clear(); }
+    if (!on) { g_pp_cstream_graph = false; g_cs_order_graph.clear(); g_cs_rng_graph.clear(); g_cs_mix_graph.clear(); }
 }
 
 static bool g_starved_built = false;
 bool llama_moe_cache_graph_reusable_fork() {
     g_cs_order_graph.clear();   // asked right before a graph is built or reused: what a reserve graph's build listed is not the next graph's
     g_cs_rng_graph.clear();
+    g_cs_mix_graph.clear();
     const bool starved = g_cache && g_cache->starved.load();
     return g_pred_train_now == g_pred_train_built && g_pred_epoch == g_pred_epoch_built && g_split_epoch == g_split_epoch_built && starved == g_starved_built &&
            g_kv_epoch.load() == g_kv_epoch_built &&   // a moved KV zone: the old graph's views point at the old place
@@ -17222,6 +17273,8 @@ void llama_moe_cache_graph_built_fork() {
     g_cs_order_graph.clear();
     g_cs_rng_built.swap(g_cs_rng_graph);
     g_cs_rng_graph.clear();
+    g_cs_mix_built.swap(g_cs_mix_graph);
+    g_cs_mix_graph.clear();
 }
 
 namespace {
