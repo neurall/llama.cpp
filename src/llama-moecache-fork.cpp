@@ -15436,7 +15436,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     pm.wait_us = pp_wait_us(n); pm.chunk_us = chunk_at(n); pm.dec_f = dec_f; pm.dec_r = dec_r; pm.dec_kc = g_pp_dec_kc;
     pm.Uk = Uk; pm.Mk = Mk;
     cand(PP_RING, estimate_fullstream_upload_time(pm));
-    if (has_slower && pp_mix_opt() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(pm)); }
+    // (not under --moe staging=0: the mix's share on the fastest link's card is a staged chain, and with no staging slots its experts are plain graph inputs with
+    // no fetch ahead: Qwen3.8 at 8 GiB, forced, 1113 prompt t/s against the stream's 1507. --moe pp-path=mix still runs it.)
+    if (has_slower && pp_mix_opt() && !pp_no_staging() && n * (double) mc->n_expert_used >= (double) n_expert) { cand(PP_MIX, estimate_mix_upload_time(pm)); }
     // (the chains at any size are candidates again: the calculated crossover dec_max overruled their learned estimates; an unknown chain is now only a
     // trial whose stake pays, and a known slow one loses on its mean - replay: no pick changed). The prompt chain's uploads wait for the same SSD reads.
     if (!busy && (uint32_t) n < g_pp_chain_refused && chain_fits) { cand(PP_CHAIN, estimate_moe_miss_ongpu_time(pm)); }
