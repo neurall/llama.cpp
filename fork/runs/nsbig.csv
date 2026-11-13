@@ -1,7 +1,13 @@
 name,model,n,test,tokens,args,extra
 nsbig-glm35-verify,glm35,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
-nsbig-glm35-stg,glm35,2,pf12k,64,,--env GGML_PF_STATS=1
+nsbig-glm35-stg,glm35,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1
 nsbig-glm35-ns,glm35,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
 nsbig-mimo-verify,mimo,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
-nsbig-mimo-stg,mimo,2,pf12k,64,,--env GGML_PF_STATS=1
+nsbig-mimo-stg,mimo,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1
 nsbig-mimo-ns,mimo,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
+nsbig-mimo-x-verify,mimo,1,pf12k,64,"--moe staging=0,split-experts=1,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsbig-mimo-x-stg,mimo,2,pf12k,64,"--moe split-experts=1,staging=1",--env GGML_PF_STATS=1
+nsbig-mimo-x-ns,mimo,2,pf12k,64,"--moe staging=0,split-experts=1",--env GGML_PF_STATS=1
+nsbig-glm35-x-verify,glm35,1,pf12k,64,"--moe staging=0,split-experts=1,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
+nsbig-glm35-x-stg,glm35,2,pf12k,64,"--moe split-experts=1,staging=1",--env GGML_PF_STATS=1
+nsbig-glm35-x-ns,glm35,2,pf12k,64,"--moe staging=0,split-experts=1",--env GGML_PF_STATS=1

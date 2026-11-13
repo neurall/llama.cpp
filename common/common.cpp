@@ -2098,7 +2098,13 @@ static void common_moe_cache_auto(common_params & params) {
             return i == std::string::npos ? "" : o.substr(i + key.size(), o.find(',', i + key.size()) - i - key.size());
         };
         // staging=0 too: a split pass streams into the cache's blocks there (GLM 3.0 12k: the staged split's 11.6 s stood as the prediction of a pass that took 15.5 s)
-        const std::string rp = opt("rampool"), sv = opt("sim-vram"), sr = opt("sim-ram"), st = opt("staging");
+        const std::string rp = opt("rampool"), sv = opt("sim-vram"), sr = opt("sim-ram");
+        // --moe staging=0 is the default since 2026-11-13: a prompt streams into the cache's own blocks, no staging slots (--moe staging=1 keeps them). The engine
+        // reads the key in several places, so the default is written into the options here, once, with what arg.cpp does for the key. Measured at 200 W a card,
+        // staged against staging=0, 12k prompts: Qwen3.8 at 8 GiB a card 1181 / 1507 prompt tokens/s on one card, 1390 / 1729 expert split; GLM 3.0 576 / 571 on
+        // one card, 642 / 642 expert split, 16.9 / 16.4 s a dense split pass; DeepSeek 532 / 533.
+        std::string st = opt("staging");
+        if (st.empty()) { st = "0"; params.moe_opts += ",staging=0"; params.prefetch_experts_slots = 0; }
         params.moe_opts += std::string(",regime=rp") + (rp.empty() ? "0" : rp) + ".lm-" + llama_load_mode_name(params.load_mode) + (sv.empty() ? "" : ".sv" + sv) + (sr.empty() ? "" : ".sr" + sr) +
                            (st.empty() ? "" : ".st" + st);
     }

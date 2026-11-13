@@ -4,10 +4,10 @@ ring-qni4-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,staging=
 ring-qni4-es-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=0,prefill-split=0.5,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
 ring-qni4-ds1-verify,qn_iq4xs,1,pf12k,64,"--moe sim-vram=8192,dense-split=1,staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
 ring-glm30-verify,glm,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
-ring-glm30-stg,glm,2,pf12k,64,,--env GGML_PF_STATS=1
+ring-glm30-stg,glm,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1
 ring-glm30-ns,glm,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
 ring-ds-verify,ds,1,pf12k,64,"--moe staging=0,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
-ring-ds-stg,ds,2,pf12k,64,,--env GGML_PF_STATS=1
+ring-ds-stg,ds,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1
 ring-ds-ns,ds,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
 tail-mimo-io-0,mimo,2,edit4c,1024,"--moe tail-refill=0",
 tail-mimo-io-1,mimo,2,edit4c,1024,"--moe tail-refill=1",
@@ -18,12 +18,12 @@ ring-ds-vstg,ds,1,pf12k,64,"--moe verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=
 ring-glm30-cs-verify,glm,1,pf12k,64,"--moe staging=0,pp-path=stream,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
 ring-glm30-cs,glm,2,pf12k,64,"--moe staging=0,pp-path=stream",--env GGML_PF_STATS=1
 ring-glm30-c2,glm,2,pf12k,64,"--moe staging=0,cs-chunks=2",--env GGML_PF_STATS=1
-ring-glm30-stg-tr,glm,2,pf12k,64,,--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
+ring-glm30-stg-tr,glm,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
 ring-glm30-ns-tr,glm,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
 ring-glm30-x-verify,glm,1,pf12k,64,"--moe staging=0,split-experts=1,verify=2,poison=3",--env GGML_SCHED_NAN_CHECK=1 --env GGML_PF_STATS=1
-ring-glm30-x-stg,glm,2,pf12k,64,"--moe split-experts=1",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
+ring-glm30-x-stg,glm,2,pf12k,64,"--moe split-experts=1,staging=1",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
 ring-glm30-x-ns,glm,2,pf12k,64,"--moe staging=0,split-experts=1",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
-ring-ds-stg-tr,ds,2,pf12k,64,,--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
+ring-ds-stg-tr,ds,2,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
 ring-ds-ns-tr,ds,2,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1 --env GGML_SCHED_PASS_TRACE=4
-ring-glm30-r4-stg,glm,4,pf12k,64,,--env GGML_PF_STATS=1
+ring-glm30-r4-stg,glm,4,pf12k,64,--moe staging=1,--env GGML_PF_STATS=1
 ring-glm30-r4-ns,glm,4,pf12k,64,"--moe staging=0",--env GGML_PF_STATS=1
