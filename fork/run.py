@@ -5596,7 +5596,8 @@ def cmd_build(a):
         sys.exit(0 if ok else 1)
     tmp = None
     if a.commit:
-        rev = _git(a.repo, "rev-parse", a.commit)
+        # a ref (HEAD, a branch) is the tree this run.py is in, not BUILD_REPO's checkout: --commit HEAD from wt-mb built BUILD_REPO's 13275f8173 (2026-11-03) twice (11-12, 11-13)
+        rev = _git(os.path.dirname(os.path.realpath(__file__)), "rev-parse", a.commit)
         tmp = os.path.join(BUILD_TMP, name)
         if os.path.exists(tmp):
             _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
