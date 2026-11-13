@@ -520,6 +520,7 @@ struct moe_cache {
     std::vector<int32_t>     cs_pos, cs_li;
     size_t                   cs_done[MAX_LINKS] = {};
     size_t                   cs_next[MAX_LINKS] = {};
+    size_t                   cs_rd[MAX_LINKS]   = {};   // per link the next position whose experts the RAM pool has not been asked to read ahead (cs_read_ahead)
     bool                     cs_rest = false;   // the ring reserve is the one between prompt calls (cs_rest_set)
     int                      cs_req_pick = 0;   // the chunk count picked for the request in flight (llama_moe_request_pass_fork), 0 none
     size_t                   cs_hooked[MAX_LINKS] = {};   // 1 + the position of the card's last entry whose split met its hook (its kernels are queued by the card's next split)
@@ -4310,7 +4311,7 @@ void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
     }
 }
 
-extern "C" GGML_API void ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n);   // ggml-rampool-fork.cpp, no header edit
+extern "C" GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n);   // ggml-rampool-fork.cpp, no header edit; returns the elements refused
 extern "C" GGML_API void ggml_rampool_ahead_stats_fork(uint64_t * started, uint64_t * used, bool reset);
 void pred_loop(moe_cache * mc) {
     unpin_helper();
@@ -12449,6 +12450,27 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     return true;
 }
 
+// The stream's reads ahead (task #308; K3 2026-11-13: cs_copy waited for each layer's reads, then queued its uploads, and no read was in flight meanwhile: 3.2 of
+// the drive's 5.4 GB/s): the uncached experts of the card's next entries, in pass order, are asked of the RAM pool without waiting, as far as its blocks go (a read
+// ahead takes a free block, an admitted victim or an old probation block, never a resident for a guess, and stays until its layer asks); an entry the pool could
+// not start whole is asked again at the next copy. Readers take every demand first. No cache lock: a stale slot only asks one read too many or too few.
+// --moe cs-read=0: off (each layer's reads start at its copy, as before)
+static void cs_read_ahead(moe_cache * mc, int link, size_t from) {
+    static const bool on = [] { const char * v = moe_opt("cs-read"); return !v || atoi(v) != 0; }();
+    if (!on || g_cs_k_pass > 0.0) { return; }   // the k arm: its lists come with the rankings, its copies' own reads take them
+    size_t & q = mc->cs_rd[link];
+    std::vector<int32_t> ids;
+    for (q = std::max(q, from); q < mc->cs_order.size(); ++q) {
+        const layer_state & ls = csl(mc, mc->cs_order[q]);
+        if (ls.link != link || !ls.rp_tab[0]) { continue; }
+        const int32_t r0 = std::max<int32_t>(0, mc->cs_rng[q].first), r1 = std::min<int32_t>((int32_t) ls.expert_slot.size(), mc->cs_rng[q].second);
+        ids.clear();
+        for (int32_t e = r0; e < r1; ++e) { if (ls.expert_slot[e] < 0) { ids.push_back(e); } }
+        const void * keys[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+        if (!ids.empty() && ggml_rampool_ahead_fork(keys, 3, ids.data(), (int) ids.size()) > 0) { break; }   // the pool's blocks ran out: this entry again next time
+    }
+}
+
 // the copies of a planned layer on its card's upload stream, its table, its ready event (no cache lock: the RAM pool's reads may take ms; only the scheduler thread runs it)
 static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, bool from_done, size_t done_at) {
     layer_state & ls = csl(mc, li);
@@ -12462,6 +12484,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
     const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
     ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
     const bool rp = mc->rp_on && ls.rp_tab[0];
+    if (mc->rp_on && li < mc->cs_pos.size() && mc->cs_pos[li] >= 0) { cs_read_ahead(mc, link, (size_t) mc->cs_pos[li] + 1); }
     if (rp && !cps.empty()) {   // into the RAM pool first: the uploads below are DMAs from its pinned blocks
         std::vector<int32_t> need;
         for (const auto & a : cps) { need.push_back(a.e); }
@@ -12584,6 +12607,7 @@ static void cs_begin(moe_cache * mc) {
     mc->cs_pass++;
     for (int k = 0; k < mc->n_links; ++k) {
         mc->cs_next[k]    = 0;
+        mc->cs_rd[k]      = 0;
         mc->cs_done[k]    = 0;
         mc->cs_hooked[k]  = 0;
         mc->cs_started[k] = false;

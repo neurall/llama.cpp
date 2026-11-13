@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+rd-ans,qwen36,1,pf4k,64,"--moe sim-vram=3072,sim-ram=10240,pp-path=stream,pp-k=0,dense-split=0",--nothink
+rd-on,qwen36,3,pf128k,1,"--moe sim-vram=3072,sim-ram=10240,pp-only=1,pp-path=stream,pp-k=0,dense-split=0",--clamp 4000 --vary --ctx 8192
+rd-off,qwen36,3,pf128k,1,"--moe sim-vram=3072,sim-ram=10240,pp-only=1,pp-path=stream,pp-k=0,dense-split=0,cs-read=0",--clamp 4000 --vary --ctx 8192

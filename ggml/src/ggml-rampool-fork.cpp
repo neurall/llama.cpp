@@ -639,16 +639,16 @@ GGML_API void ggml_rampool_admit_stats_fork(uint64_t * admitted, uint64_t * decl
 
 // Reads ahead for a later layer the predictor expects (--moe pred-top): queued behind every demand, no wait (user 2026-11-10: the SSD reads layer after layer, nonstop;
 // the step waits only for what its own layer still lacks). A block only as the admission allows (else a probation block), never a resident's for a guess; an element
-// starts in all of its tensors or in none, as in rp_need.
-GGML_API void ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n) {
+// starts in all of its tensors or in none, as in rp_need. Returns the elements refused (no block).
+GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n) {
     rp_pool * p = g_rp;
-    if (p == nullptr || n <= 0 || !p->evict) { return; }
+    if (p == nullptr || n <= 0 || !p->evict) { return 0; }
     rp_tensor * ts[8];
     int nt = 0;
     for (int k = 0; k < nk && nt < 8; ++k) { if (rp_tensor * t = rp_find(keys[k])) { ts[nt++] = t; } }
-    if (nt == 0) { return; }
+    if (nt == 0) { return 0; }
     const uint32_t g = p->graph.load(std::memory_order_relaxed);
-    int started = 0;
+    int started = 0, refused = 0;
     std::lock_guard<std::mutex> lk(p->mu);
     for (int i = 0; i < n; ++i) {
         const int64_t e = ids[i];
@@ -658,11 +658,12 @@ GGML_API void ggml_rampool_ahead_fork(const void * const * keys, int nk, const i
             if (e < 0 || e >= t->n || t->rec[e].state != RP_OUT) { continue; }
             if (rp_start(p, *t, e, false, false, true)) { t->rec[e].graph = g; begun[nb++] = k; } else { fail = true; }   // stamped: not evicted before its layer asks
         }
-        if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } }
+        if (fail) { for (int j = 0; j < nb; ++j) { rp_unstart(p, *ts[begun[j]], e); } refused++; }
         else { started += nb; }
     }
     p->st_ahead += (uint64_t) started;
     if (started > 0) { p->work_cv.notify_all(); }
+    return refused;
 }
 
 GGML_API void ggml_rampool_ahead_stats_fork(uint64_t * started, uint64_t * used, bool reset) {
