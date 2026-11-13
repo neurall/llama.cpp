@@ -9373,7 +9373,7 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
             g_topic_tree.leaves.size(), (ggml_time_us() - t0) / 1e3);
 }
 
-// what the nearest leaf's map would cover of the prompt's own uses, against the ini's hot set (the lifetime counts before this request): each at its as
+// what the nearest leaf's map would cover of the prompt's own uses, against the ini's hot set (the heat the cache fills from): each at its as
 // many hottest experts a layer as the layer's cache has slots (a fill of the cache from it). Before the prompt itself is stored (else it finds its own leaf).
 // True when the leaf covers more: only then does the answer read it (hottree-q36 on hot_tree5, round 1: a leaf of another topic, 84.1% against the ini's
 // 84.3% at the old "as many as the map rates" measure, cost 5-15% more uploads and 2-6% decode t/s). (shortcut: the prompt's own read is not wired, it needs
@@ -9395,8 +9395,12 @@ static bool tree_recall(moe_cache * mc, const std::vector<float> & key, const st
             if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers) { continue; }
             slots[ls.pub.il] = (uint32_t) std::max(0, ls.pcls >= 0 ? ls.n_own : ls.pub.n_slots);   // a class layer's own blocks (pub.n_slots: its class pool's)
             for (size_t e = 0; e < ls.glob_count.size() && e < nx; ++e) {
-                const uint32_t own = e < ls.topic_cnt.size() ? ls.topic_cnt[e] : 0u;   // count-prompt=1 (default): the lifetime counts hold this prompt's uses too
-                ini[(size_t) ls.pub.il * nx + e] = ls.glob_count[e] > own ? ls.glob_count[e] - own : 0u;
+                // what the cache fills from without the tree (vis_next): the heat, decode visits only, so none of this prompt's; else the lifetime counts
+                // less this prompt's (count-prompt=1, the default, counts it). hot_tree6/7 compared the lifetime counts only: they miss the GPU passes,
+                // 7-12% coverage against the leaf's 30-44%, so the gate never kept the ini
+                const uint32_t own = e < ls.topic_cnt.size() ? ls.topic_cnt[e] : 0u;
+                ini[(size_t) ls.pub.il * nx + e] = e < ls.heat_cnt.size() ? (uint32_t) std::min<uint64_t>(ls.heat_cnt[e], UINT32_MAX)
+                                                                         : ls.glob_count[e] > own ? ls.glob_count[e] - own : 0u;
             }
         }
     }
