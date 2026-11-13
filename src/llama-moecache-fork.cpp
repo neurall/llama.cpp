@@ -1568,16 +1568,14 @@ static double vis_next(const moe_cache * mc, const layer_state & ls, int32_t e) 
     const double nxt = last + med;
     return std::min(by_count, nxt >= now ? nxt : now + (now - nxt));
 }
-// --moe dynhot=tree: the answer's preheat steers the RAM pool as it steers the cards (user 2026-11-13, K3: "the leaf's best should drive and protect the RAM
-// pool"): an expert the nearest leaf's answers' map rates is expected now, a higher rated one sooner, before every other (vis_next is now or later), so
-// eviction takes it last and the admission lets it in. --moe rp-steer=0: the pool as before (the A/B arm)
+// --moe dynhot=tree: the leaf's maps preheat the RAM pool, a guess that cuts what the passes and steps then read from the SSD (user 2026-11-13: "preheat just
+// fills initial state max what fits. rest is evicted as needed by predictor layer by layer token by token ... no need to force stay anything"): at the prompt's
+// start its prompts' map (tree_pp_preheat), at its end its answers' map (tree_read), each read ahead the most used first while blocks can be had, then the pool's
+// own rules. --moe rp-steer=0: neither (the A/B arm); rp-pre=0: not the prompt start's
 static bool rp_steer_on() { static const bool on = [] { const char * v = moe_opt("rp-steer"); return !v || atoi(v) != 0; }(); return on; }
-static double rp_next(const moe_cache * mc, const layer_state & ls, int32_t e) {
-    if (rp_steer_on() && g_topic_on.load(std::memory_order_relaxed) && (size_t) e < ls.topic_heat.size() && ls.topic_heat[e] > 0.0f) {
-        return (double) mc->vis_now.load(std::memory_order_relaxed) - (double) ls.topic_heat[e];
-    }
-    return vis_next(mc, ls, e);
-}
+static bool rp_pre_on() { static const bool on = [] { const char * v = moe_opt("rp-pre"); return !v || atoi(v) != 0; }(); return on; }
+static thread_local bool t_rp_fill = false;   // a preheat's reads ahead are being queued: the admission lets each take a resident's block (rp_admit)
+static double rp_next(const moe_cache * mc, const layer_state & ls, int32_t e) { return vis_next(mc, ls, e); }
 static double rp_heat(const void * key, int64_t e, void * ud) {   // a pool reader's thread, the pool's lock held: never takes mc->mtx (racy reads of plain ints)
     const moe_cache * mc = (const moe_cache *) ud;
     const auto it = mc->by_src.find((const ggml_tensor *) key);
@@ -1598,10 +1596,9 @@ static bool rp_admit(const void * key, int64_t e, double victim, void * ud) {
     const moe_cache * mc = (const moe_cache *) ud;
     const auto it = mc->by_src.find((const ggml_tensor *) key);
     if (it == mc->by_src.end()) { return true; }
+    if (t_rp_fill) { return true; }   // a preheat fills: the sampled coldest resident goes (its own reads are stamped, not evictable while it fills)
     const layer_state & ls = mc->layers[it->second.first];
-    const double nx = rp_next(mc, ls, (int32_t) e);
-    const bool   steered = nx < (double) mc->vis_now.load(std::memory_order_relaxed);   // the answer's leaf rates it (rp_next): no recent use needed
-    return (steered || (double) ls.win_count[e] >= knobs().admit) && nx < victim;
+    return (double) ls.win_count[e] >= knobs().admit && rp_next(mc, ls, (int32_t) e) < victim;
 }
 
 // The heat file (user 2026-11-07: expert heat in its own file, not mixed with tuning values): <state dir>/<model>/globalhot.ini, lines clock=N, hot.<layer>=uses..., vis.<layer>=stamps...
@@ -7692,9 +7689,32 @@ struct tree_map {
 };
 struct tree_leaf { tree_map ph[2]; };   // [0] the prompts' uses (pp), [1] the answers' (tg)
 static int tree_ph(const char * phase) { return strcmp(phase, "pp") == 0 ? 0 : 1; }
+// a prompt's tokens before any layer ran (the prompt start's key, tree_pp_preheat): each token id with its count, by id; a token weighs sqrt(count), norm = sqrt(sum of counts)
+struct tree_bag { std::vector<std::pair<int32_t, uint32_t>> c; double norm = 0.0; };
+static tree_bag tree_bag_of(const int32_t * t, int32_t n) {
+    std::map<int32_t, uint32_t> m;
+    for (int32_t i = 0; i < n; ++i) { m[t[i]]++; }
+    tree_bag b;
+    b.c.assign(m.begin(), m.end());
+    uint64_t s = 0;
+    for (const auto & x : b.c) { s += x.second; }
+    b.norm = std::sqrt((double) s);
+    return b;
+}
+static double tree_bag_cos(const tree_bag & a, const tree_bag & b) {
+    if (a.norm <= 0.0 || b.norm <= 0.0) { return 0.0; }
+    double d = 0.0;
+    for (size_t i = 0, j = 0; i < a.c.size() && j < b.c.size(); ) {
+        if (a.c[i].first < b.c[j].first) { ++i; } else if (a.c[i].first > b.c[j].first) { ++j; } else { d += std::sqrt((double) a.c[i].second * b.c[j].second); ++i; ++j; }
+    }
+    return d / (a.norm * b.norm);
+}
+struct tree_arrival { tree_bag bag; std::string leaf; };   // a stored prompt's tokens and the leaf its maps went to (<tree dir>/arrivals.txt)
 static struct {
     std::string                       dir;
     std::map<std::string, tree_leaf>  leaves;
+    std::vector<tree_arrival>         arr;         // the stored prompts, oldest first (the last 1024)
+    tree_bag                          bag;         // this prompt's
     std::vector<uint32_t>             pp;          // the prompt's router picks per cell, read back after each prompt pass (GPU passes never reach moe_obs_cb)
     int                               k_ids = 0;   // tree-key=ids: experts a token picks (the ids a path holds)
 } g_topic_tree;
@@ -7872,7 +7892,24 @@ static void tree_open(const std::string & dir, int k_ids) {
         for (tree_map & m : it->second.ph) { if (m.live.empty()) { m = tree_map(); } }
         it = it->second.ph[0].live.empty() && it->second.ph[1].live.empty() ? g_topic_tree.leaves.erase(it) : std::next(it);
     }
-    LLAMA_LOG_WARN("moe-cache: hottree: %zu leaves in %s\n", g_topic_tree.leaves.size(), dir.c_str());
+    g_topic_tree.arr.clear();   // arrivals.txt: a line a stored prompt, "<leaf> id:count ..." (tree_prompt_end)
+    std::ifstream in(std::filesystem::path(dir) / "arrivals.txt");
+    for (std::string line; std::getline(in, line); ) {
+        std::istringstream is(line);
+        tree_arrival a;
+        if (!(is >> a.leaf)) { continue; }
+        uint64_t s = 0;
+        for (std::string t; is >> t; ) {
+            const size_t c = t.find(':');
+            if (c == std::string::npos) { continue; }
+            a.bag.c.push_back({ (int32_t) strtol(t.c_str(), nullptr, 10), (uint32_t) strtoul(t.c_str() + c + 1, nullptr, 10) });
+            s += a.bag.c.back().second;
+        }
+        a.bag.norm = std::sqrt((double) s);
+        g_topic_tree.arr.push_back(std::move(a));
+    }
+    if (g_topic_tree.arr.size() > 1024) { g_topic_tree.arr.erase(g_topic_tree.arr.begin(), g_topic_tree.arr.end() - 1024); }
+    LLAMA_LOG_WARN("moe-cache: hottree: %zu leaves in %s, %zu stored prompts' tokens for the preheat at a prompt's start\n", g_topic_tree.leaves.size(), dir.c_str(), g_topic_tree.arr.size());
 }
 
 static void tree_write(const std::filesystem::path & f, const std::string & head, const std::vector<uint32_t> & v) {
@@ -9095,6 +9132,58 @@ void llama_moe_request_end_fork(void) {
 
 static void topic_phase(const llama_model & model, const int32_t * ids, int32_t n, bool first);   // below: the thinking phase
 
+// --moe dynhot=tree, before the prompt's first pass (user 2026-11-13: "ram pool preheat prior prefill ... if same req load to ram all moes it needed in last
+// similar req", "thats why we store hot moes active only during prefill", "that preheat was just guess that will reduce what predictor needs to pull from ssd"):
+// the stored prompt nearest to this one by its tokens (tree_bag_cos; no gate: a guess is all it is) names its leaf, and that leaf's prompts' map (best, else
+// live) fills the RAM pool, the most used first, the experts the cards do not hold and the pool lacks, while blocks can be had (the coldest residents go, never
+// this fill's own); behind every demand read, then the pool's own rules. --moe rp-pre=0 (or rp-steer=0): off
+static void tree_pp_preheat(moe_cache * mc) {
+    if (!rp_steer_on() || !rp_pre_on() || !mc->rp_on || g_topic_tree.bag.c.empty()) { return; }
+    const int64_t t0 = ggml_time_us();
+    double bc = -1.0;
+    const tree_arrival * ba = nullptr;
+    for (const auto & a : g_topic_tree.arr) { const double c = tree_bag_cos(g_topic_tree.bag, a.bag); if (c >= bc) { bc = c; ba = &a; } }   // a tie: the newest
+    const auto it = ba ? g_topic_tree.leaves.find(ba->leaf) : g_topic_tree.leaves.end();
+    if (it == g_topic_tree.leaves.end() || it->second.ph[0].live.empty()) {
+        LLAMA_LOG_WARN("moe-cache: hottree: prompt start: no RAM pool preheat (%s)\n", !ba ? "no prompt stored yet" : "the nearest stored prompt's leaf holds no prompts' map");
+        return;
+    }
+    const tree_map & lf = it->second.ph[0];
+    const std::vector<uint32_t> & src = lf.best_hit >= 0.0f && !lf.best.empty() ? lf.best : lf.live;
+    const uint32_t nx = g_topic.store.n_exp;
+    struct w_t { uint32_t u; size_t li; int32_t e; };
+    std::vector<w_t> want;
+    size_t rated = 0;
+    {
+        std::lock_guard<std::mutex> lk(mc->mtx);
+        for (size_t li = 0; li < mc->layers.size(); ++li) {
+            const layer_state & ls = mc->layers[li];
+            if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers || !ls.rp_tab[0]) { continue; }
+            for (size_t e = 0; e < ls.expert_slot.size() && e < nx; ++e) {
+                const size_t c = (size_t) ls.pub.il * nx + e;
+                if (c >= src.size() || src[c] == 0) { continue; }
+                rated++;
+                if (ls.expert_slot[e] < 0) { want.push_back({ src[c], li, (int32_t) e }); }
+            }
+        }
+    }
+    std::stable_sort(want.begin(), want.end(), [](const w_t & a, const w_t & b) { return a.u > b.u; });
+    uint64_t s0 = 0, u0 = 0, s1 = 0, u1 = 0;
+    ggml_rampool_ahead_stats_fork(&s0, &u0, false);
+    t_rp_fill = true;
+    for (const auto & w : want) {   // shortcut: one call (one pool lock) per expert, as tree_read; a batch call per layer when K3 shows the cost
+        const layer_state & ls = mc->layers[w.li];
+        const void * keys[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
+        ggml_rampool_ahead_fork(keys, 3, &w.e, 1);
+    }
+    t_rp_fill = false;
+    ggml_rampool_ahead_stats_fork(&s1, &u1, false);
+    LLAMA_LOG_WARN("moe-cache: hottree: prompt start: the stored prompt nearest by its tokens (cosine %.3f of %zu stored) names leaf %s (%u prompts): its prompts' map (%s) "
+            "rates %zu experts; the RAM pool reads ahead %llu slices of the %zu the cards lack, the most used first, as far as its blocks go (%.1f ms)\n",
+            bc, g_topic_tree.arr.size(), tree_short(ba->leaf).c_str(), lf.n, &src == &lf.best ? "best" : "live", rated, (unsigned long long) (s1 - s0), want.size(),
+            (ggml_time_us() - t0) / 1e3);
+}
+
 void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t * ids, int32_t n) {
     moe_cache * mc = g_cache;
     const int32_t mb = (int32_t) std::max<int64_t>(8, llama_moe_cache_max_batch_fork());
@@ -9197,6 +9286,10 @@ void llama_moe_cache_topic_begin_fork(const llama_model & model, const int32_t *
     g_topic.after_prompt = false;
     g_topic.n_prompt     = kn;
     g_topic.own          = !whole.empty() && g_req_own;
+    if (g_topic.mode == topic_t::TREE) {
+        g_topic_tree.bag = tree_bag_of(kt, kn);
+        tree_pp_preheat(mc);
+    }
 }
 
 // --moe dynhot=full|read: the maps of the records nearest to the request's key (their thinking maps or their answer maps) into the cache's score, and the
@@ -9390,8 +9483,8 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
         g_topic_on.store(g_topic.steer);
     }
     g_topic.after_prompt = g_topic.steer;
-    // the RAM pool reads ahead what the leaf rates, the cards do not hold and the pool lacks, the most rated first, behind every demand read (rp_next keeps
-    // them in; a read the admission refuses takes a probation block). shortcut: one call per expert, each takes the pool's lock (82k on K3 at most, ~0.1 s)
+    // the RAM pool fills with what the leaf rates, the cards do not hold and the pool lacks, the most rated first, as far as its blocks go (the coldest
+    // residents go, never this fill's own), behind every demand read; then its own rules. shortcut: one call per expert, each takes the pool's lock (82k on K3 at most, ~0.1 s)
     size_t n_ahead = 0;
     if (g_topic.steer && mc->rp_on && rp_steer_on()) {
         std::vector<std::pair<float, std::pair<size_t, int32_t>>> want;   // (rating, (layer, expert))
@@ -9406,11 +9499,13 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
             }
         }
         std::stable_sort(want.begin(), want.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+        t_rp_fill = true;
         for (const auto & w : want) {
             const layer_state & ls = mc->layers[w.second.first];
             const void * keys[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
             ggml_rampool_ahead_fork(keys, 3, &w.second.second, 1);
         }
+        t_rp_fill = false;
         n_ahead = want.size();
     }
     LLAMA_LOG_WARN("moe-cache: hottree: %s read, key: %s at the prompt's last token (%zu values): %s%s (%zu leaves, %.1f ms)\n", phase,
@@ -9422,7 +9517,7 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
                     src == &lf->best ? "best" : "live", rated).c_str()
                : leaf ? tr_fmt("leaf %s holds no %s map yet: the ini's hot experts pick the cache's", tree_short(at).c_str(), phase).c_str()
                : use ? "no leaf shares an entry of the first level: the ini's hot experts pick the cache's" : "the ini's hot experts pick the cache's (see the line above)",
-            n_ahead ? tr_fmt("; the RAM pool keeps them and reads ahead those of the %zu the cards lack it has not", n_ahead).c_str() : "",
+            n_ahead ? tr_fmt("; the RAM pool fills with those of the %zu the cards lack it has not, as far as its blocks go", n_ahead).c_str() : "",
             g_topic_tree.leaves.size(), (ggml_time_us() - t0) / 1e3);
 }
 
@@ -9495,6 +9590,18 @@ static void tree_prompt_end(moe_cache * mc, std::vector<float> key) {
     const bool use = tree_recall(mc, g_topic.key, uses, "pp");
     tree_read(mc, g_topic.key, "tg", use);
     tree_store(g_topic.key, uses, hit, "pp");
+    if (!g_topic_tree.bag.c.empty()) {   // the next prompt's start finds this leaf by these tokens
+        tree_arrival a { std::move(g_topic_tree.bag), tree_path(g_topic.key) };
+        g_topic_tree.bag = tree_bag();
+        std::string o = a.leaf;
+        for (const auto & x : a.bag.c) { o += " " + std::to_string(x.first) + ":" + std::to_string(x.second); }
+        o += "\n";
+        std::error_code ec;
+        std::filesystem::create_directories(g_topic_tree.dir, ec);
+        if (FILE * fp = fopen((std::filesystem::path(g_topic_tree.dir) / "arrivals.txt").string().c_str(), "ab")) { fwrite(o.data(), 1, o.size(), fp); fclose(fp); }
+        g_topic_tree.arr.push_back(std::move(a));
+        if (g_topic_tree.arr.size() > 1024) { g_topic_tree.arr.erase(g_topic_tree.arr.begin()); }
+    }
 }
 
 // the prompt's last pass is over: its last token's router input of every MoE layer in layer order and then its final hidden state (rows, n_rows of
