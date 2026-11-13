@@ -666,6 +666,24 @@ GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const in
     return refused;
 }
 
+// The copies of these elements have landed (a stream layer's uploads, their event synchronized by the caller): their blocks may go now, inside the graph that asked
+// for them. Without it a pass larger than the pool found every block stamped by its own earlier layers, and the pool refused the rest (cs_copy then read the
+// mapping: Qwen3.6 4k-token stream at a 2-3 GiB pool, 60-70k refused a request). The pool's own rules pick among them; a later ask stamps them again.
+GGML_API void ggml_rampool_done_fork(const void * const * keys, int nk, const int32_t * ids, int n) {
+    rp_pool * p = g_rp;
+    if (p == nullptr || n <= 0) { return; }
+    rp_tensor * ts[8];
+    int nt = 0;
+    for (int k = 0; k < nk && nt < 8; ++k) { if (rp_tensor * t = rp_find(keys[k])) { ts[nt++] = t; } }
+    std::lock_guard<std::mutex> lk(p->mu);
+    for (int k = 0; k < nt; ++k) {
+        for (int i = 0; i < n; ++i) {
+            const int64_t e = ids[i];
+            if (e >= 0 && e < ts[k]->n && ts[k]->rec[e].state == RP_IN && ts[k]->rec[e].holds == 0) { ts[k]->rec[e].graph = 0; }
+        }
+    }
+}
+
 GGML_API void ggml_rampool_ahead_stats_fork(uint64_t * started, uint64_t * used, bool reset) {
     *started = g_rp ? g_rp->st_ahead.load() : 0;
     *used    = g_rp ? g_rp->st_ahead_used.load() : 0;

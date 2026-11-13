@@ -521,6 +521,8 @@ struct moe_cache {
     size_t                   cs_done[MAX_LINKS] = {};
     size_t                   cs_next[MAX_LINKS] = {};
     size_t                   cs_rd[MAX_LINKS]   = {};   // per link the next position whose experts the RAM pool has not been asked to read ahead (cs_read_ahead)
+    struct cs_rel_t { size_t li; const void * keys[3]; std::vector<int32_t> ids; };
+    std::deque<cs_rel_t>     cs_rel[MAX_LINKS];   // per link the entries copied from pool blocks, oldest first (cs_release_pool; keys kept: a shadow is gone after its pass)
     bool                     cs_rest = false;   // the ring reserve is the one between prompt calls (cs_rest_set)
     int                      cs_req_pick = 0;   // the chunk count picked for the request in flight (llama_moe_request_pass_fork), 0 none
     size_t                   cs_hooked[MAX_LINKS] = {};   // 1 + the position of the card's last entry whose split met its hook (its kernels are queued by the card's next split)
@@ -4312,6 +4314,7 @@ void l3pf_loop(moe_cache * mc, int side, int n_dom, int cpu) {
 }
 
 extern "C" GGML_API int ggml_rampool_ahead_fork(const void * const * keys, int nk, const int32_t * ids, int n);   // ggml-rampool-fork.cpp, no header edit; returns the elements refused
+extern "C" GGML_API void ggml_rampool_done_fork(const void * const * keys, int nk, const int32_t * ids, int n);   // their copies landed: their blocks may go now
 extern "C" GGML_API void ggml_rampool_ahead_stats_fork(uint64_t * started, uint64_t * used, bool reset);
 void pred_loop(moe_cache * mc) {
     unpin_helper();
@@ -12471,6 +12474,18 @@ static void cs_read_ahead(moe_cache * mc, int link, size_t from) {
     }
 }
 
+// The pool blocks of the card's layers copied before the last one go back to the pool's own rules (ggml_rampool_done_fork) once their uploads landed: their ready
+// events are synchronized, the last layer's is left in flight. So one pass cycles through the pool's blocks (reads ahead, uploads, done) instead of stamping
+// every block it touched until the graph after next. keep: entries left pending (1 inside a pass, 0 at a pass start, after the upload streams were synchronized)
+static void cs_release_pool(moe_cache * mc, int link, size_t keep) {
+    auto & q = mc->cs_rel[link];
+    while (q.size() > keep) {
+        if (keep > 0) { const layer_state & ls = csl(mc, q.front().li); if (ls.ring_ev) { ggml_backend_event_synchronize(ls.ring_ev); } }   // inside the pass: alive
+        ggml_rampool_done_fork(q.front().keys, 3, q.front().ids.data(), (int) q.front().ids.size());
+        q.pop_front();
+    }
+}
+
 // the copies of a planned layer on its card's upload stream, its table, its ready event (no cache lock: the RAM pool's reads may take ms; only the scheduler thread runs it)
 static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, bool from_done, size_t done_at) {
     layer_state & ls = csl(mc, li);
@@ -12484,6 +12499,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
     const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
     ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
     const bool rp = mc->rp_on && ls.rp_tab[0];
+    if (mc->rp_on) { cs_release_pool(mc, link, 1); }
     if (mc->rp_on && li < mc->cs_pos.size() && mc->cs_pos[li] >= 0) { cs_read_ahead(mc, link, (size_t) mc->cs_pos[li] + 1); }
     if (rp && !cps.empty()) {   // into the RAM pool first: the uploads below are DMAs from its pinned blocks
         std::vector<int32_t> need;
@@ -12492,6 +12508,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
         mc->cs_read[link] = true;
         ggml_rampool_need_fork(keys, 3, need.data(), (int) need.size());
         mc->cs_read[link] = false;
+        mc->cs_rel[link].push_back({ li, { keys[0], keys[1], keys[2] }, std::move(need) });   // its blocks go back once its uploads landed (cs_release_pool)
     }
     for (size_t i = 0; i < cps.size(); ) {
         size_t n = 1;   // a run: consecutive experts into consecutive blocks (host weights are one array per tensor; the RAM pool's blocks are not)
@@ -12613,8 +12630,9 @@ static void cs_begin(moe_cache * mc) {
         mc->cs_started[k] = false;
         mc->cs_waited[k]  = 0;
         mc->cs_why[k]     = 0;
-        if (!mc->link_be[k] || !mc->ring_be[k]) { continue; }
+        if (!mc->link_be[k] || !mc->ring_be[k]) { mc->cs_rel[k].clear(); continue; }
         ggml_backend_synchronize(mc->ring_be[k]);   // the last pass's table copies are done with their snapshots
+        cs_release_pool(mc, k, 0);                  // and its uploads from the pool's blocks
         if (!mc->cs_start_ev[k]) { mc->cs_start_ev[k] = ggml_backend_event_new(mc->link_dev[k]); }
         ggml_backend_event_record(mc->cs_start_ev[k], mc->link_be[k]);
     }
