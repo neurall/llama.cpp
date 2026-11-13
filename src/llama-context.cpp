@@ -3285,6 +3285,7 @@ static void fork_idx_check(ggml_backend_sched_t sched, ggml_cgraph * gf, const c
 // small outputs (dynkey-0.., dynkey-final); after the pass they are fetched, and the next call hands them to the MoE cache (llama_moe_topic_act_fork).
 // Other graphs stay as they were: an eval callback would turn the scheduler's prefetch off.
 bool llama_moe_topic_key_wanted_fork(void);
+int  llama_moe_topic_key_rows_fork(void);
 void llama_moe_topic_act_fork(const float * const * rows, int n_rows, int64_t n_embd);
 namespace {
 struct dynkey_state {
@@ -3316,13 +3317,15 @@ void dynkey_add(ggml_context * ctx, ggml_cgraph * gf, int n_layer) {
         if (!seen) { rin.emplace_back(il, t->src[1]); }
     }
     std::sort(rin.begin(), rin.end(), [](const auto & a, const auto & b) { return a.first < b.first; });
+    const int max_rows = llama_moe_topic_key_rows_fork();   // 0: every MoE layer's and the final state; the hot-MoE tree: the first MoE layer's only (every decode step)
     int n = 0;
     for (const auto & r : rin) {
+        if (max_rows > 0 && n >= max_rows) { break; }
         char name[32];
         snprintf(name, sizeof(name), "dynkey-%d", n);
         n += dynkey_out(ctx, gf, r.second, name);
     }
-    dynkey_out(ctx, gf, ggml_graph_get_tensor(gf, "result_norm"), "dynkey-final");
+    if (max_rows == 0) { dynkey_out(ctx, gf, ggml_graph_get_tensor(gf, "result_norm"), "dynkey-final"); }
 }
 
 // after the pass: the copies into host rows, queued on their backends (the next call synchronizes before it hands them over)
