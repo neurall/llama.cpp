@@ -3732,10 +3732,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         parts.clear();   // a part without its blocks: once more with the layer on its home card alone, then the layer's own chain over every expert (mc_pp below)
     }
     for (const auto & pt : parts) { if (pt.pc) { llama_moe_cache_cs_range_fork(pt.pc, (int32_t) pt.lo, (int32_t) pt.hi); } }
+    bool mix_on = false;   // the mix's two parts are in place: each one's table masks the other's experts (-1 ids over the full range)
     if (mix_dev) {   // the mix's roles, when both cards kept their parts (else the layer runs whole on its home card, the second try above)
         bool on_fast = false, on_home = false;
         for (const auto & pt : parts) { (ggml_backend_get_device(pt.b) == mix_dev ? on_fast : on_home) = true; }
-        for (const auto & pt : parts) { if (pt.pc && on_fast && on_home) { llama_moe_cache_cs_mix_fork(pt.pc, ggml_backend_get_device(pt.b) == mix_dev ? 2 : 1); } }
+        mix_on = on_fast && on_home;
+        for (const auto & pt : parts) { if (pt.pc && mix_on) { llama_moe_cache_cs_mix_fork(pt.pc, ggml_backend_get_device(pt.b) == mix_dev ? 2 : 1); } }
     }
     if (mc_mix_b) {   // the fastest link's card: every expert id the home card does not hold
         parts.push_back({ mc_mix_b, llama_moe_cache_link_gbs_fork(ggml_backend_get_device(mc_mix_b)), 0, n_expert });
@@ -3919,7 +3921,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             sl = ggml_reshape_2d(ctx0, sl, n_expert_used, n_tokens);
             auto mm = [&](ggml_tensor * w, ggml_tensor * in) {
                 ggml_tensor * m = ggml_mul_mat_id(ctx0, w, in, sl);
-                if (pt.lo > 0 || pt.hi < n_expert) { m->op_params[1] = 1; }   // zero first: the ids of the other parts' ranges are -1 (a part with every expert has none)
+                // zero first: the ids of the other parts' ranges are -1 (a part with every expert has none, unless the mix's table masks the other card's: NaN on
+                // Qwen3.6, mix_on_stream: the home part's down matmul left 148 output values unwritten, the weighted sum made NaN logits of them)
+                if (pt.lo > 0 || pt.hi < n_expert || mix_on) { m->op_params[1] = 1; }
                 m->src[3] = selected_experts;
                 m->src[4] = pt.pc->dev_table;
                 return pin(m);
