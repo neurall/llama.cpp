@@ -15,7 +15,7 @@ Added 2026-11-12 (user: "keep storing all the found bugs in bug list so later we
 | class | what it is | entries, 2026-11-10 evening to 2026-11-12 |
 |---|---|---|
 | stale-number | a capacity, estimate, key or stored/learned value computed at another moment, state or path than where it is used | 15 |
-| flag-coupling | a global switch or mode set in one layer whose side effect another layer relies on, so a path changes silently | 11 |
+| flag-coupling | a global switch or mode set in one layer whose side effect another layer relies on, so a path changes silently | 12 |
 | harness | the test tool or a debug switch changes or misreports what it measures | 15 |
 | pool-owner | two users of the same pool bytes with no single owner or ledger (lend, KV zone, expert blocks, ring, class grid) | 7 |
 | card-asymmetry | code written for one card or the first card meeting another layout (home card, expert card, links) | 11 |
@@ -26,7 +26,7 @@ Added 2026-11-12 (user: "keep storing all the found bugs in bug list so later we
 | twin-path | one step implemented in two code paths (the layer's own chain and the parts, staged and stream): a rule or a fix added to one of them only | 3 |
 | other | named in the entry | 8 |
 
-First reading of the first 55 entries (three days, to be redone once the older entries are classified; 61 after the batch of 2026-11-12 night, 71 after 2026-11-13 01:50, 75 after 05:00): three classes hold 29 of them, each with one shared cause.
+First reading of the first 55 entries (three days, to be redone once the older entries are classified; 61 after the batch of 2026-11-12 night, 71 after 2026-11-13 01:50, 75 after 05:00, 76 after 06:00): three classes hold 29 of them, each with one shared cause.
 
 - stale-number: one quantity is computed in several places from different inputs (start-up fit, pass cap, lend line, stored needs, learned times). One function per quantity, fed the live state where it is used; a stored value keyed by everything it depends on.
 - flag-coupling: the path of a prompt call lives in global flags (`g_pp_mb`, `g_pp_dec`, the staging mode) that other layers read a meaning into. One plan object per call, handed to the graph builder, which logs what it built against it.
@@ -539,5 +539,6 @@ Verified on `glu_zero_late`, 100-token prompt, two requests each: MiMo, GLM and 
 | prompt mix under `--moe staging=0` | Qwen3.8 at 8 GiB a card, forced: 1113 prompt t/s against 1507 for the stream (staged: mix 1174, stream 1181); the planner could draw it | the mix stages its second card's share; with no staging slots those experts were plain graph inputs with no fetch ahead | caee28d5b0 FIXED (no candidate under staging=0; `pp-path=mix` still runs it) | flag-coupling |
 | expert split shadows (`llama_moe_cache_cs_shadow_fork`), shapes one card only has | forced dense + expert split, staged against staging=0: GLM 3.0 925 / 889 t/s (6 of 46 layers not split), GLM 3.5 942 / 874, MiMo 1376 / 1301: "no class of its shape there (its experts stay on the home card)" | a shadow takes the views and blocks of a layer of the same shape on the other card; a shape only one card's layers have had none there | 53bf3e1c77 FIXED (a class without home blocks per such shape: grid over the pool, own views; GLM 3.0 873 / 864, GLM 3.5 891 / 879, MiMo 1388 / 1385) | card-asymmetry |
 | run list column `n` | rows `ring-glm30-r4-*` (n=4) ran two requests like every row: the trial's third and fourth pass were never seen in a row | n is not the request count of a cell (two requests, cold and warm, whatever n says); the rows were named for four | OPEN (rows keep their name; a longer session needs `-r` or a list of its own) | harness |
+| `--moe staging=0` as the default (common.cpp) | flipped-default build, no key given: start-up probe 58.5 GiB for a 16384-token GLM 3.0 graph (7.0 GiB with the explicit key), micro-batch 3744, GLM 3.0 60k prompt in 14 to 26 passes at 214 t/s against 520, the answer a repetition loop twice; the verify list (short prompts) passed on that build | the default was appended to the option string, which reaches the engine after the model has loaded; an explicit key is set in the engine while the arguments are parsed. Code that ran during the load saw the staged path, the context was built without staging | bf485009c1 FIXED (set in the engine at the same place); found by the long-prompt list, which had not run since 2026-11-07 | flag-coupling |
 
 Commits of these three days whose message did not say whether they fix a fault (not entered): 2b93165564, 5430bf5cf6, 34fb708aae, 045d09a0e2, bd94e23ce6, 08758800de.
