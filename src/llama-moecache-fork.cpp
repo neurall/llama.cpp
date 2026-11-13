@@ -7680,8 +7680,13 @@ static struct {
 // 2 ids: the prompt's most picked experts of the first MoE layer, as many as a token picks, sorted by id, each id a dir (user 2026-11-13: "stored not under
 // activations but only under those router selected layer 0 ... ids", "sorted by ids and each id as subdir"; pooled over the prompt's tokens, since its last
 // token is the template's own and would put every prompt in one dir)
+// 3 map: the prompt's own expert map (every MoE layer's picks over its tokens), each layer cut to its k most picked (user 2026-11-13: "key was that prefill
+// or decode moe counts themselves ... way more expressive"; "skip the noisy half ... take just top n per layer"); its hottest cells make the path
 static int tree_kind() {
-    static const int k = [] { const char * v = moe_opt("tree-key"); return v == nullptr ? 0 : strcmp(v, "pool") == 0 ? 1 : strcmp(v, "ids") == 0 ? 2 : 0; }();
+    static const int k = [] {
+        const char * v = moe_opt("tree-key");
+        return v == nullptr ? 0 : strcmp(v, "pool") == 0 ? 1 : strcmp(v, "ids") == 0 ? 2 : strcmp(v, "map") == 0 ? 3 : 0;
+    }();
     return k;
 }
 
@@ -9245,6 +9250,23 @@ static bool tree_key_pool() {
     return tree_kind() == 1;
 }
 
+// tree-key=map: the prompt's picks of every MoE layer, each layer cut to its k_ids most picked (shortcut: k = experts a token picks, until the offline
+// check on the per-phase maps picks the cut)
+static std::vector<float> tree_map_key() {
+    const uint32_t nx = g_topic.store.n_exp;
+    const size_t   k  = (size_t) std::max(1, g_topic_tree.k_ids);
+    if (nx == 0 || g_topic_tree.pp.size() != g_topic.store.rec_cells()) { return {}; }
+    std::vector<float> m(g_topic_tree.pp.size(), 0.0f);
+    std::vector<uint32_t> ord(nx);
+    for (size_t b = 0; b + nx <= m.size(); b += nx) {
+        std::iota(ord.begin(), ord.end(), 0u);
+        const uint32_t * row = g_topic_tree.pp.data() + b;
+        std::partial_sort(ord.begin(), ord.begin() + (ptrdiff_t) std::min<size_t>(k, nx), ord.end(), [&](uint32_t x, uint32_t y) { return row[x] > row[y] || (row[x] == row[y] && x < y); });
+        for (size_t j = 0; j < std::min<size_t>(k, nx); ++j) { m[b + ord[j]] = (float) row[ord[j]]; }
+    }
+    return m;
+}
+
 // tree-key=ids: the prompt's pick histogram of its first MoE layer (every pass's picks, llama_moe_topic_pp_ids_fork); tree_path keeps its most picked
 static std::vector<float> tree_ids_key(moe_cache * mc) {
     int il0 = -1;
@@ -9341,7 +9363,8 @@ static void tree_read(moe_cache * mc, const std::vector<float> & key, const char
     }
     g_topic.after_prompt = g_topic.steer;
     LLAMA_LOG_WARN("moe-cache: hottree: %s read, key: %s at the prompt's last token (%zu values): %s (%zu leaves, %.1f ms)\n", phase,
-            tree_kind() == 2 ? "the prompt's most picked experts of the first MoE layer" : tree_key_pool() ? "all MoE layers' inputs pooled" :
+            tree_kind() == 2 ? "the prompt's most picked experts of the first MoE layer" : tree_kind() == 3 ? "the prompt's expert map (top k a layer)" :
+            tree_key_pool() ? "all MoE layers' inputs pooled" :
             "the first MoE layer's input", key.size(),
             lf ? tr_fmt("leaf %s (%s; %s), %u phases, best hit %.1f%%: its %s map rates %zu experts", tree_short(at).c_str(),
                     at == tree_path(key) ? "the key's own" : "the nearest", tree_shares(ov).c_str(), lf->n, 100.0 * std::max(0.0f, lf->best_hit),
@@ -9434,7 +9457,7 @@ void llama_moe_topic_act_fork(const float * const * rows, int n_rows, int64_t n_
     }
     g_topic.act_wait = false;
     if (g_topic.mode == topic_t::TREE) {
-        tree_prompt_end(mc, tree_kind() == 2 ? tree_ids_key(mc) : tree_key(rows, n_rows, n_embd));
+        tree_prompt_end(mc, tree_kind() == 2 ? tree_ids_key(mc) : tree_kind() == 3 ? tree_map_key() : tree_key(rows, n_rows, n_embd));
         return;
     }
     topic_answer_begin(mc);
