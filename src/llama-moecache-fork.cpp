@@ -9393,7 +9393,7 @@ static bool tree_recall(moe_cache * mc, const std::vector<float> & key, const st
         std::lock_guard<std::mutex> lk(mc->mtx);
         for (const auto & ls : mc->layers) {
             if (ls.pub.il < 0 || (uint32_t) ls.pub.il >= g_topic.store.n_layers) { continue; }
-            slots[ls.pub.il] = (uint32_t) std::max(0, ls.pub.n_slots);
+            slots[ls.pub.il] = (uint32_t) std::max(0, ls.pcls >= 0 ? ls.n_own : ls.pub.n_slots);   // a class layer's own blocks (pub.n_slots: its class pool's)
             for (size_t e = 0; e < ls.glob_count.size() && e < nx; ++e) {
                 const uint32_t own = e < ls.topic_cnt.size() ? ls.topic_cnt[e] : 0u;   // count-prompt=1 (default): the lifetime counts hold this prompt's uses too
                 ini[(size_t) ls.pub.il * nx + e] = ls.glob_count[e] > own ? ls.glob_count[e] - own : 0u;
