@@ -463,6 +463,14 @@ struct moe_cache {
     void (*rp_unpin)(void *) = nullptr;
     uint32_t                   vis_base = 0;       // the heat clock where the heat file left it
     std::string                heat_file;          // <state dir>/<model>/globalhot.ini: the pool's heat, apart from the state file (whose values get reset or rolled back by policy)
+    // the heat file's [best] section (user 2026-11-13: "one ini 2 hotmoes per model ... one live updated one snapshot of last best"): the live heat learns every run, the
+    // best is a copy of it taken at the end of the request with the best decode RAM share so far, and the start's fill reads the best. A live heat that only drifts made
+    // every later start slower with no code change (Kimi K3.1, same build: decode 2.13 t/s at 07:55, 0.94 at 09:00, pool evictions per request 6938 -> 88950)
+    std::vector<std::vector<uint64_t>> best_cnt;   // per layer, as heat_cnt
+    std::vector<std::vector<uint32_t>> best_vis;   // per layer, as vis
+    uint32_t                   best_clock = 0;     // the heat clock when it was taken
+    double                     best_score = -1.0;  // its request's share of the decode's pool asks found in RAM (-1: no best yet)
+    int64_t                    best_when  = 0;     // unix seconds
     std::atomic<uint32_t>      vis_now{1};         // the heat clock: vis_base + decode steps
     ggml_backend_buffer_type_t lazy_buft = nullptr;   // --moe pin-lazy: the GPU's pinned host buffer type
     size_t                     pin_budget = 0, pin_used = 0, pin_left = 0;
@@ -1592,16 +1600,26 @@ struct heat_lock {
     }
     ~heat_lock() { if (fd >= 0) { close(fd); } }
 };
+static void heat_lines(std::string & o, const moe_cache * mc, const std::vector<std::vector<uint64_t>> * cnt, const std::vector<std::vector<uint32_t>> * vis) {   // null: the live heat
+    for (size_t li = 0; li < mc->layers.size(); ++li) {
+        const auto & ls = mc->layers[li];
+        const std::vector<uint64_t> & h = cnt ? (*cnt)[li] : ls.heat_cnt;
+        const std::vector<uint32_t> & v = vis ? (*vis)[li] : ls.vis;
+        const std::string l = std::to_string(parse_layer_from_name(ls.pub.up_src->name));
+        o += "hot." + l + "=";
+        for (size_t e = 0; e < h.size(); ++e) { o += (e ? " " : "") + std::to_string(h[e]); }
+        o += "\nvis." + l + "=";
+        for (size_t i = 0; i < v.size(); ++i) { o += (i ? " " : "") + std::to_string(v[i]); }
+        o += "\n";
+    }
+}
 static void rp_heat_save(const moe_cache * mc) {
     if (!mc->rp_on || mc->heat_file.empty()) { return; }
     std::string o = "clock=" + std::to_string(mc->vis_now.load()) + "\n";
-    for (const auto & ls : mc->layers) {
-        const std::string l = std::to_string(parse_layer_from_name(ls.pub.up_src->name));
-        o += "hot." + l + "=";
-        for (size_t e = 0; e < ls.heat_cnt.size(); ++e) { o += (e ? " " : "") + std::to_string(ls.heat_cnt[e]); }
-        o += "\nvis." + l + "=";
-        for (size_t i = 0; i < ls.vis.size(); ++i) { o += (i ? " " : "") + std::to_string(ls.vis[i]); }
-        o += "\n";
+    heat_lines(o, mc, nullptr, nullptr);
+    if (mc->best_score >= 0.0 && mc->best_cnt.size() == mc->layers.size() && mc->best_vis.size() == mc->layers.size()) {
+        o += "[best]\nscore=" + format("%.4f", mc->best_score) + "\nwhen=" + std::to_string(mc->best_when) + "\nclock=" + std::to_string(mc->best_clock) + "\n";
+        heat_lines(o, mc, &mc->best_cnt, &mc->best_vis);
     }
     heat_lock lk(mc->heat_file);
     const std::string tmp = mc->heat_file + ".tmp";
@@ -1613,14 +1631,37 @@ static void rp_heat_save(const moe_cache * mc) {
 }
 // false: no file (the counts start from the state's lifetime counts, once); a line of another layout is skipped (that layer starts empty)
 static bool rp_heat_load(moe_cache * mc) {
-    std::map<std::string, std::string> kv;
+    std::map<std::string, std::string> kv, bk;   // the live heat, the [best] section
     {
         heat_lock lk(mc->heat_file);
         std::ifstream in(mc->heat_file);
         if (!in) { return false; }
+        bool best = false;
         for (std::string line; std::getline(in, line); ) {
+            if (line == "[best]") { best = true; continue; }
             const size_t eq = line.find('=');
-            if (eq != std::string::npos) { kv[line.substr(0, eq)] = line.substr(eq + 1); }
+            if (eq != std::string::npos) { (best ? bk : kv)[line.substr(0, eq)] = line.substr(eq + 1); }
+        }
+    }
+    // the best set: only whole (every layer's counts and rings at today's sizes), else none and the fill reads the live heat
+    if (bk.count("score")) {
+        mc->best_cnt.assign(mc->layers.size(), {});
+        mc->best_vis.assign(mc->layers.size(), {});
+        bool whole = true;
+        for (size_t li = 0; li < mc->layers.size() && whole; ++li) {
+            const auto & ls = mc->layers[li];
+            const std::string l = std::to_string(parse_layer_from_name(ls.pub.up_src->name));
+            { std::istringstream is(bk["hot." + l]); for (uint64_t x; is >> x; ) { mc->best_cnt[li].push_back(x); } }
+            { std::istringstream is(bk["vis." + l]); for (uint32_t x; is >> x; ) { mc->best_vis[li].push_back(x); } }
+            whole = mc->best_cnt[li].size() == ls.heat_cnt.size() && mc->best_vis[li].size() == ls.vis.size();
+        }
+        if (whole) {
+            mc->best_score = strtod(bk["score"].c_str(), nullptr);
+            mc->best_when  = strtoll(bk["when"].c_str(), nullptr, 10);
+            mc->best_clock = (uint32_t) strtoul(bk["clock"].c_str(), nullptr, 10);
+        } else {
+            mc->best_cnt.clear(); mc->best_vis.clear();
+            LLAMA_LOG_WARN("moe-cache: rampool: the heat file's best set does not match the model's layers: not used\n");
         }
     }
     if (kv.count("clock")) { mc->vis_base = (uint32_t) strtoul(kv["clock"].c_str(), nullptr, 10); mc->vis_now.store(mc->vis_base + 1); }
@@ -8606,7 +8647,16 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
     mc->rp_filling = true;
     rp_pinner pp;
     rp_pin_start(mc, pp);
+    // the fill reads the heat file's best set when there is one (see best_cnt): swapped in for the fill (stamps against its own clock), the live heat back for the
+    // run's eviction and learning
+    const bool fill_best = !mc->best_cnt.empty();
+    const uint32_t clock_live = mc->vis_now.load();
+    auto swap_best = [&] { for (size_t li = 0; li < mc->layers.size(); ++li) { mc->layers[li].heat_cnt.swap(mc->best_cnt[li]); mc->layers[li].vis.swap(mc->best_vis[li]); } };
+    if (fill_best) { swap_best(); mc->vis_now.store(mc->best_clock + 1); }
+    size_t ringed = 0;   // experts with a visit ring in the set the fill reads
+    for (const auto & ls : mc->layers) { for (size_t i = RP_VIS - 1; i < ls.vis.size(); i += RP_VIS) { ringed += ls.vis[i] != 0; } }
     ggml_rampool_fill_fork();
+    if (fill_best) { swap_best(); mc->vis_now.store(clock_live); }
     mc->rp_filling = false;
     rp_pin_raw(mc, pp);   // before the tables below: nothing copies from the pool until then
     struct ggml_rampool_stats st;
@@ -8651,13 +8701,17 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
         for (int fd : fds) { posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED); }
     }
 #endif
-    size_t ringed = 0;
-    for (const auto & ls : mc->layers) { for (size_t i = RP_VIS - 1; i < ls.vis.size(); i += RP_VIS) { ringed += ls.vis[i] != 0; } }
+    std::string heat_src = heat_from_file ? mc->heat_file : "no heat file yet, the state's lifetime counts";
+    if (fill_best) {
+        heat_src += format(", its best set (taken %.1f h ago: decode asks found in RAM %.1f%%)", ((double) time(nullptr) - (double) mc->best_when) / 3600.0, 100.0 * mc->best_score);
+    } else if (heat_from_file) {
+        heat_src += ", live set (no best set yet)";
+    }
     LLAMA_LOG_WARN("moe-cache: rampool: %.1f of %.1f GiB expert slices in RAM (%.1f GiB filled, %d size classes, %zu tensors) = pin budget %.1f - pinned by the loader %.1f GiB%s, RAM available %.1f GiB, in %.1f s; "
             "picked by heat (%s): %zu experts with a visit ring (clock %u), the rest by lifetime count; %zu tensors read past their slice (their blocks carry those bytes)\n",
             st.bytes / 1073741824.0, bytes / 1073741824.0, st.used / 1073741824.0, st.classes, n_t, budget / 1073741824.0, used / 1073741824.0,
             want != (budget > used ? budget - used : 0) ? tr_fmt(" (learned start %.1f GiB, rp_start_want)", want / 1073741824.0).c_str() : "", avail / 1073741824.0, (ggml_time_us() - t0) / 1e6,
-            heat_from_file ? mc->heat_file.c_str() : "no heat file yet, the state's lifetime counts", ringed, mc->vis_now.load(), n_past);
+            heat_src.c_str(), ringed, fill_best ? mc->best_clock : mc->vis_now.load(), n_past);
     llama_moe_decision_fork("stage", "rampool fill", "");
 }
 // stats.log RPL and the log: what the pool served since the last line (per request, at exit). RAM share = asked found in the pool; SSD = read into the pool now + refused (old path)
@@ -8692,8 +8746,39 @@ static bool tail_refill_now(moe_cache * mc) {   // cache lock held
     return true;
 }
 
+// the request's decode part of the pool's asks: the counters at the end of its last prompt call (llama_moe_cache_prompt_call_fork), read again at the request's end
+static uint64_t g_dec0_asked = 0, g_dec0_hit = 0;
+static bool     g_dec0_set   = false;
+static void rp_dec_mark() {
+    struct ggml_rampool_stats st;
+    ggml_rampool_stats_fork(&st, false);
+    g_dec0_asked = st.asked; g_dec0_hit = st.hit; g_dec0_set = true;
+}
+// the score of the heat file's sets (see best_cnt): the share of the request's decode pool asks found in RAM. A better one than the best set's makes the live heat the best.
+static void rp_best_note(moe_cache * mc) {
+    if (!mc || !mc->rp_on || !g_dec0_set) { return; }
+    g_dec0_set = false;
+    struct ggml_rampool_stats st;
+    ggml_rampool_stats_fork(&st, false);
+    if (st.asked < g_dec0_asked || st.asked - g_dec0_asked < 1000) { return; }   // too few asks to judge (the cards hold the model, a short answer)
+    const uint64_t asked = st.asked - g_dec0_asked, hit = st.hit - g_dec0_hit;
+    const double score = (double) hit / (double) asked;
+    if (score <= mc->best_score) { return; }
+    std::lock_guard<std::mutex> lock(mc->mtx);   // the steps change the heat under it
+    mc->best_cnt.resize(mc->layers.size());
+    mc->best_vis.resize(mc->layers.size());
+    for (size_t li = 0; li < mc->layers.size(); ++li) { mc->best_cnt[li] = mc->layers[li].heat_cnt; mc->best_vis[li] = mc->layers[li].vis; }
+    mc->best_clock = mc->vis_now.load();
+    LLAMA_LOG_WARN("moe-cache: rampool: heat best set replaced by the live one: this request's decode found %.1f%% of %llu pool asks in RAM, the best set before %s\n",
+            100.0 * score, (unsigned long long) asked, mc->best_score < 0.0 ? "none" : format("%.1f%%", 100.0 * mc->best_score).c_str());
+    mc->best_score = score;
+    mc->best_when  = (int64_t) time(nullptr);
+    rp_heat_save(mc);
+}
+
 void llama_moe_request_end_fork(void) {
     llama_moe_stats_log_fork("REQ", "end");
+    rp_best_note(g_cache);   // before rp_log resets the pool's counters
     rp_log("request");
     pp_pred_log(g_cache);
     rp_resize(g_cache);
@@ -14193,6 +14278,7 @@ void llama_moe_cache_prompt_call_fork(bool on) {
     if (!on && g_cache) { cs_end(g_cache); }
     if (!on && g_cache && g_cs_pick_held.exchange(false)) { cs_rest_set(g_cache); }   // the ring back to its smallest: the KV and the decode graphs get the pool
     if (!on) { g_pp_cstream_call = false; }
+    if (!on && g_prompt_call.load(std::memory_order_relaxed) && g_cache && g_cache->rp_on) { rp_dec_mark(); }   // a prompt call ended: the decode part of the request starts
     g_prompt_call.store(on, std::memory_order_relaxed);
     g_pp_dec = false;
     if (on) { g_pp_short = false; g_pp_ns_redo = false; } else { ggml_backend_pred_set_fork(0.0); }
