@@ -760,30 +760,98 @@ static void test_regress_ring_depth() {
 
 // staging=0 ring: which blocks a stream entry takes first. Qwen3.8 IQ4_XS 12k, 2 x 3090, build rel_moe_class, pass 1: 2825 of 23013 blocks held cached experts of
 // layers still to come and 4510 were other classes' bytes that could hold them too; each such expert went up twice (55.9 GB against staged's 47.9)
+// A ring pass as cs_ahead and cs_plan run it, on the engine's own rules (poolx_ring_cheap, poolx_ring_tier, poolx_ring_victim, poolx_ring_before), one card: n layers of
+// e experts, d of each cached before the first pass (the decode set), blocks for cap experts; every hook plans as far ahead as the blocks allow. old: the rule before
+// ring_cheap_ahead (every entry may take a layer to come's expert). up: uploads per pass; churn: experts of layers to come taken (each goes up again at its turn);
+// bad: such a take by an entry planned beyond the one needed now and the card's next; starved: the entry needed now found too few blocks (the engine aborts)
+struct ring_sim { std::vector<int> up; int churn = 0, bad = 0, starved = 0, busy = 0; };
+static ring_sim ring_sim_run(int n, int e, int d, int cap, int passes, bool old) {
+    struct blk { int lay = -1, ex = -1, pass = -1; };
+    std::vector<blk> bl((size_t) cap);
+    std::vector<std::vector<int>> slot((size_t) n, std::vector<int>((size_t) e, -1));   // expert -> block
+    for (int l = 0, b = 0; l < n; ++l) { for (int x = 0; x < d && b < cap; ++x, ++b) { bl[(size_t) b] = { l, x, -1 }; slot[(size_t) l][(size_t) x] = b; } }
+    ring_sim r;
+    for (int ps = 0; ps < passes; ++ps) {
+        int ups = 0;
+        size_t nx = 0;
+        for (size_t p = 0; p < (size_t) n; ++p) {   // entry p's hook: the entries before it are queued (done = p), p is needed now, p + 1 is the card's next
+            const size_t done = p, lead = p + 1 < (size_t) n ? p + 1 : SIZE_MAX;
+            for (; nx < (size_t) n; ++nx) {
+                const bool cheap = !old && poolx_ring_cheap(p, nx, lead);
+                std::vector<int> want;
+                for (int x = 0; x < e; ++x) { if (slot[nx][(size_t) x] < 0) { want.push_back(x); } }
+                struct cand { int tier; int b; double rk; };
+                std::vector<cand> c;
+                for (int b = 0; b < cap; ++b) {
+                    const blk & k = bl[(size_t) b];
+                    if (k.lay < 0) { c.push_back({ 0, b, 0.0 }); continue; }
+                    const int t = poolx_ring_tier((size_t) k.lay, done, nx, k.pass == ps, false, cheap);
+                    if (t >= 0) { c.push_back({ t, b, poolx_ring_victim((size_t) k.lay, nx, (size_t) n, (double) (e - k.ex), k.pass == ps) }); }   // expert 0 the hottest
+                }
+                std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return poolx_ring_before(x.tier, x.rk, y.tier, y.rk); });
+                if (c.size() < want.size()) { r.starved += nx == p; break; }
+                for (size_t i = 0; i < want.size(); ++i) {
+                    blk & k = bl[(size_t) c[i].b];
+                    if (poolx_ring_costly(c[i].tier)) { r.churn++; r.bad += nx != p && nx != lead; }
+                    r.busy += c[i].tier == 8;
+                    if (k.lay >= 0) { slot[(size_t) k.lay][(size_t) k.ex] = -1; }
+                    k = { (int) nx, want[i], ps };
+                    slot[nx][(size_t) want[i]] = c[i].b;
+                    ups++;
+                }
+            }
+        }
+        r.up.push_back(ups);
+    }
+    return r;
+}
+
 static void test_regress_ring_costly() {
     printf("Testing the ring's block order (an expert of a layer still to come goes up twice):\n");
     bool order = true;
-    for (int t = 0; t < 8; ++t) {
-        for (int u = 0; u < 8; ++u) {
+    for (int t = 0; t < 9; ++t) {
+        for (int u = 0; u < 9; ++u) {
             if (t != 7 && !poolx_ring_costly(t) && poolx_ring_costly(u) && poolx_ring_rank(t) >= poolx_ring_rank(u)) { order = false; }
+            if (t != 7 && poolx_ring_rank(t) >= poolx_ring_rank(7)) { order = false; }
         }
     }
-    report("every cheap block ranks before every costly one", order);
+    report("every cheap block ranks before every costly one, a prediction giving way last", order);
     report("costly: a layer ahead's cached expert, another class's bytes over one", poolx_ring_costly(4) && poolx_ring_costly(6));
-    report("cheap: free, empty, computed in this pass, another class's bytes without one", !poolx_ring_costly(0) && !poolx_ring_costly(1) && !poolx_ring_costly(2) && !poolx_ring_costly(3) && !poolx_ring_costly(5));
-    report("free first, a prediction giving way last", poolx_ring_rank(0) == 0 && poolx_ring_rank(7) == 7);
-    // user 2026-11-14: "why not use the same [rules as the decode cache]" + "past or farthest layers coldest moes first": within a tier the decode cache's own
-    // prompt victim rank (poolx_victim_rank, default mode; layer = pass position, jli = the entry planned), lowest first
+    report("cheap: free, empty, computed in this pass, the layer still computing, another class's bytes without one",
+           !poolx_ring_costly(0) && !poolx_ring_costly(1) && !poolx_ring_costly(2) && !poolx_ring_costly(3) && !poolx_ring_costly(5) && !poolx_ring_costly(8));
+    // user 2026-11-14: "remember to not evict any moe selected [by] this processed layer": the card's last queued entry may still compute; its experts go after
+    // every other computed block, before any layer to come's (that one goes up twice, this one only waits for its compute)
+    report("the layer still computing after every other computed block and claim", poolx_ring_rank(8) > poolx_ring_rank(2) && poolx_ring_rank(8) > poolx_ring_rank(3) && poolx_ring_rank(8) > poolx_ring_rank(5));
+    report("the layer still computing before any layer to come", poolx_ring_rank(8) < poolx_ring_rank(4) && poolx_ring_rank(8) < poolx_ring_rank(6));
+    report("tiers: computed 2/3, still computing 8, to come 4, queued or own -1",
+           poolx_ring_tier(3, 9, 12, true, false, false) == 2 && poolx_ring_tier(3, 9, 12, false, false, false) == 3 && poolx_ring_tier(8, 9, 12, true, false, false) == 8 &&
+           poolx_ring_tier(20, 9, 12, false, false, false) == 4 && poolx_ring_tier(10, 9, 12, true, false, false) == -1 && poolx_ring_tier(12, 9, 12, false, false, false) == -1);
+    report("an entry planned ahead of its need takes no layer to come's expert, nor a mix home's", poolx_ring_tier(20, 9, 12, false, false, true) == -1 && poolx_ring_tier(20, 9, 12, false, true, false) == -1);
+    report("planned ahead: beyond the entry needed now and the card's next", !poolx_ring_cheap(5, 5, 6) && !poolx_ring_cheap(5, 6, 6) && poolx_ring_cheap(5, 7, 6) && poolx_ring_cheap(SIZE_MAX, 0, SIZE_MAX));
+    // the shared parts (user 2026-11-14: "have adapted prefill copy sharing just same parts so both benefit"): next use, and the decode cache's score within a layer
+    report("next use: later in this pass, else at its turn in the next one", poolx_next_use(30, 20, 48) == 10 && poolx_next_use(5, 20, 48) == 33 && poolx_next_use(20, 20, 48) == 48);
+    bool same = true;   // the decode cache's all-visited prompt rank is the shared next-use rank
+    for (size_t o = 0; o < 48; ++o) { if (poolx_victim_rank(true, true, o, 20, 48, 7.0) != poolx_rank_next_use(o, 20, 48, 7.0, 2)) { same = false; } }
+    report("decode's prompt rank (all visited) is the shared next-use rank", same);
+    // decode's own weighting (default): the coldest first wherever, layers to come furthest first
     const auto vr = [](size_t o, double s) { return poolx_victim_rank(false, true, o, 20, 48, s); };
-    report("computed layers: the coldest expert first, whichever layer", vr(3, 5.0) < vr(17, 50.0) && vr(17, 5.0) < vr(3, 50.0));
-    report("layers to come: the furthest layer first, however hot", vr(40, 800.0) < vr(22, 1.0));
-    report("layers to come, one layer: the coldest first", vr(40, 1.0) < vr(40, 800.0));
-    report("every computed layer's expert before any layer to come's", vr(19, 9e5) < vr(47, 0.0));
-    report("same tier: the lower victim rank first", poolx_ring_before(3, vr(5, 1.0), 3, vr(5, 9.0)) && !poolx_ring_before(3, vr(5, 9.0), 3, vr(5, 1.0)));
-    report("pending: the furthest layer's expert first", poolx_ring_before(4, vr(40, 800.0), 4, vr(22, 1.0)));
-    report("a pending layer's expert before a claim over one (tier rank)", poolx_ring_before(4, 9e12, 6, -1e12));
+    report("decode: computed layers' coldest expert first, whichever layer", vr(3, 5.0) < vr(17, 50.0) && vr(17, 5.0) < vr(3, 50.0));
+    report("decode: every computed layer's expert before any layer to come's", vr(19, 9e5) < vr(47, 0.0));
+    // prefill's weighting (user 2026-11-14: "prioritize moes that are to be used soon first", "the load and priorities are way different in prefill"): next use first
+    const auto rv = [](size_t o, double s, bool st) { return poolx_ring_victim(o, 20, 48, s, st); };
+    report("prefill: the most recent computed layer first (its next use is the latest)", rv(17, 1.0, false) < rv(3, 800.0, false));
+    report("prefill: layers to come furthest first, the next two last", rv(40, 800.0, false) < rv(25, 1.0, false) && rv(25, 800.0, false) < rv(21, 1.0, false));
+    report("prefill: one layer's cached experts coldest first", rv(17, 1.0, false) < rv(17, 800.0, false));
+    report("prefill: one layer's streamed blocks keep the cursor's order (copies in runs)", rv(17, 1.0, true) == rv(17, 800.0, true) && rv(17, 0.0, true) <= rv(17, 1.0, false));
+    report("same tier: the lower rank first; equal ranks keep the cursor's order", poolx_ring_before(3, 1.0, 3, 9.0) && !poolx_ring_before(3, 9.0, 3, 1.0) && !poolx_ring_before(2, 0.0, 2, 0.0));
     report("cheap before pending, whatever the rank", poolx_ring_before(3, 9e12, 4, -1e12) && !poolx_ring_before(4, -1e12, 3, 9e12));
-    report("equal ranks keep the cursor's order", !poolx_ring_before(2, 0.0, 2, 0.0));
+    // the churn (Qwen3.8 IQ4_XS 12k staging=0, 2026-11-14: entries planned far ahead took layers to come's experts, 55.9 GB a pass against staged 47.9)
+    const ring_sim nw = ring_sim_run(8, 16, 4, 64, 3, false), od = ring_sim_run(8, 16, 4, 64, 3, true);
+    printf("  sim: uploads a pass %d %d %d (old rule %d %d %d), churn %d (old %d), still-computing blocks taken %d\n", nw.up[0], nw.up[1], nw.up[2], od.up[0], od.up[1], od.up[2], nw.churn, od.churn, nw.busy);
+    report("sim: no entry planned ahead takes a layer to come's expert", nw.bad == 0);
+    report("sim: the entry needed now always finds its blocks", nw.starved == 0);
+    report("sim: the old rule churns, the rule does not in the first pass", od.churn > nw.churn && nw.up[0] == 8 * 12);
+    report("sim: fewer uploads than the old rule", nw.up[0] + nw.up[1] + nw.up[2] < od.up[0] + od.up[1] + od.up[2]);
     std::string src;
     {
         std::string path = __FILE__;
@@ -791,16 +859,11 @@ static void test_regress_ring_costly() {
         FILE * fp = fopen(path.c_str(), "r");
         if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
     }
-    const size_t a = src.find("\nstatic void cs_ahead(");
-    const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
-    const std::string ah = b == std::string::npos ? std::string() : src.substr(a, b - a);
-    report("an entry planned ahead of its need takes cheap blocks only", ah.find("nx > must") != std::string::npos && ah.find("cs_plan(") != std::string::npos);
-    const size_t pa = src.find("\nstatic bool cs_plan(");
-    const size_t pb = pa == std::string::npos ? pa : src.find("\n}\n", pa);
-    const std::string pl = pb == std::string::npos ? std::string() : src.substr(pa, pb - pa);
-    report("the ring ranks cached experts by the decode cache's victim rank", pl.find("prompt_victim_rank(") != std::string::npos);
-    const size_t va = src.find("inline double prompt_victim_rank(");
-    report("the decode cache's victim rank is poolx_victim_rank", va != std::string::npos && src.find("poolx_victim_rank(", va) < src.find("\n}\n", va));
+    const auto body = [&](const char * head) { const size_t x = src.find(head), y = x == std::string::npos ? x : src.find("\n}\n", x); return y == std::string::npos ? std::string() : src.substr(x, y - x); };
+    const std::string ah = body("\nstatic void cs_ahead("), pl = body("\nstatic bool cs_plan("), pv = body("inline double prompt_victim_rank(");
+    report("the engine: cs_ahead plans by poolx_ring_cheap", ah.find("poolx_ring_cheap(") != std::string::npos && ah.find("cs_plan(") != std::string::npos);
+    report("the engine: cs_plan ranks by poolx_ring_tier and poolx_ring_victim", pl.find("poolx_ring_tier(") != std::string::npos && pl.find("poolx_ring_victim(") != std::string::npos);
+    report("the engine: decode's prompt rank is poolx_victim_rank", pv.find("poolx_victim_rank(") != std::string::npos);
 }
 
 int main(int argc, char ** argv) {

@@ -87,24 +87,48 @@ static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return 
 
 // staging=0 ring: what a block a stream entry may take holds (cs_plan's tiers): 0 free, 1 a layer's empty block, 2 an expert streamed this pass whose layer is computed,
 // 3 an expert cached before the pass whose layer is computed, 4 a cached expert of a layer still to come in this pass, 5 another class's bytes over nothing of a layer
-// to come, 6 another class's bytes over an expert of a layer to come, 7 a prediction giving way (the k arm's late fix). Costly (4, 6): that expert goes up again when its
-// layer comes (Qwen3.8 IQ4_XS 12k staging=0, 2026-11-14: 2825 of pass 1's 23013 blocks were layers ahead and 4510 were claims ranked before computed experts; 55.9 GB
-// uploaded against staged's 47.9). Rank: the order taken, cheap before costly; a costly block only for an entry needed now (cs_ahead).
+// to come, 6 another class's bytes over an expert of a layer to come, 7 a prediction giving way (the k arm's late fix), 8 an expert of the card's last queued entry
+// (it may still compute: its copy waits for that compute; user 2026-11-14 "not evict any moe selected [by] this processed layer"). Costly (4, 6): that expert goes up
+// again when its layer comes (Qwen3.8 IQ4_XS 12k staging=0, 2026-11-14: 2825 of pass 1's 23013 blocks were layers ahead and 4510 were claims ranked before computed
+// experts; 55.9 GB uploaded against staged's 47.9). Rank: the order taken, cheap before costly, the layer still computing after every other cheap block; a costly
+// block only for an entry needed now (poolx_ring_cheap).
 static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6; }
-static inline int  poolx_ring_rank(int tier) { static const int r[8] = { 0, 1, 2, 4, 5, 3, 6, 7 }; return tier >= 0 && tier < 8 ? r[tier] : 8; }
-// A prompt pass's victim rank, lowest taken first: the arithmetic of prompt_victim_rank (llama-moecache-fork.cpp), shared by the decode cache's prompt misses and
-// the staging=0 ring. s: the decode cache's score of expert x of layer o, bounded under 9e5; jli: the layer the pass is at. off (default): the layers done coldest
-// first wherever they lie, then the layers to come, the furthest first and the coldest within. on (--moe prompt-victim=1): the next two layers last; all (the pass
-// visits nearly every expert): the layer just finished first, then the furthest ahead; else the coldest wherever (equal: the later layer).
+static inline int  poolx_ring_rank(int tier) { static const int r[9] = { 0, 1, 2, 4, 6, 3, 7, 8, 5 }; return tier >= 0 && tier < 9 ? r[tier] : 9; }
+// an entry planned beyond the one needed now (must) and the card's next (lead) takes cheap blocks only: it waits for computed layers' blocks or its own turn
+// (SIZE_MAX: none needed now, as at a pass edge)
+static inline bool poolx_ring_cheap(size_t must, size_t nx, size_t lead) { return must == SIZE_MAX || (nx > must && nx != lead); }
+// the tier of a cached expert's block for the entry at pass position p, -1 when the entry may not take it. q: the position of the layer (or shadow) holding it;
+// done: the card's entries queued; up_now: streamed in this pass; mix_home: a mix home's (its shadow left those out); cheap: poolx_ring_cheap
+static inline int poolx_ring_tier(size_t q, size_t done, size_t p, bool up_now, bool mix_home, bool cheap) {
+    if (q < done) { return q + 1 == done ? 8 : up_now ? 2 : 3; }
+    if (q > p && !mix_home) { return cheap ? -1 : 4; }
+    return -1;   // uploaded for in this pass and not queued yet, or the entry's own
+}
+// The parts a cached expert's victim rank is built from, shared by the decode cache's prompt misses (prompt_victim_rank) and the staging=0 ring (cs_plan), each
+// weighing them by its own load. A prompt's passes walk the layers in order: a layer's experts are used again at its turn, later in this pass or in the next one.
+// layer steps until layer (or pass position) o is used again, the pass being at jli of n
+static inline size_t poolx_next_use(size_t o, size_t jli, size_t n) { return o > jli ? o - jli : n - jli + o; }
+// by next use: the furthest first, one layer's coldest first (s: the decode cache's score, bounded under 9e5); the next `soon` layers last of all
+static inline double poolx_rank_next_use(size_t o, size_t jli, size_t n, double s, size_t soon) {
+    const size_t d = poolx_next_use(o, jli, n);
+    return (d <= soon ? 2e12 : 1e12) - (double) d * 1e6 + s;
+}
+// The decode cache's prompt victim rank (prompt_victim_rank), lowest taken first; jli: the layer the pass is at. off (default): the layers done coldest first
+// wherever they lie, then the layers to come, the furthest first and the coldest within. on (--moe prompt-victim=1), all (the pass visits nearly every expert): by
+// next use, the next two layers last; on, a smaller pass: the coldest wherever (equal: the later layer), the next two layers last.
 static inline double poolx_victim_rank(bool on, bool all, size_t o, size_t jli, size_t n_layers, double s) {
     if (!on) { return o > jli ? 1e12 - (double) o * 1e6 + s : s; }
+    if (all) { return poolx_rank_next_use(o, jli, n_layers, s, 2); }
     if (o > jli && o <= jli + 2) { return 1e12 - (double) o * 1e6 + s; }
-    if (all) { return o <= jli ? (double) (jli - o) * 1e6 + s : 1e11 - (double) o * 1e6 + s; }
     return s + 1e-3 * (1.0 - (double) o / (double) n_layers);
 }
-// the order taken: by tier rank, then the lower victim rank (cs_plan: cached experts by poolx_victim_rank, user 2026-11-14 "why not use the same" [as the decode
-// cache] and "past or farthest layers coldest moes first"; a claim over a pending expert by its nearest pending layer, the furthest first); equal ranks keep the
-// cursor's order (stable sort)
+// The staging=0 ring's rank (prefill: every expert of every layer streams each pass, so when a block's expert is used again decides, not how hot it is; user
+// 2026-11-14 "prioritize moes that are to be used soon first", "the load and priorities are way different in prefill"): by next use over pass positions (n: the
+// pass's entries), the next two entries last; a block streamed in this pass ranks by its layer alone (s ignored: one layer's blocks go in the cursor's order, so an
+// entry's copies stay in runs), a cached one coldest first within its layer.
+static inline double poolx_ring_victim(size_t o, size_t jli, size_t n, double s, bool streamed) { return poolx_rank_next_use(o, jli, n, streamed ? 0.0 : s, 2); }
+// the order taken: by tier rank, then the lower rank (poolx_ring_victim; a claim over a pending expert by its nearest pending layer, the furthest first); equal
+// ranks keep the cursor's order (stable sort)
 static inline bool poolx_ring_before(int tier_x, double rank_x, int tier_y, double rank_y) {
     const int rx = poolx_ring_rank(tier_x), ry = poolx_ring_rank(tier_y);
     if (rx != ry) { return rx < ry; }
