@@ -3550,9 +3550,15 @@ def judge_local_stop():
 
 
 def judge_local_kick():
-    """after a stored row: W10's server does not answer, so this machine reads it"""
+    """after a stored row: the judge server does not answer. This machine never starts reading by itself: a stored row means a run is on, and its RAM and
+    CPU belong to the rows (user 2026-11-15: "we shall be not running judge during runs ... ram cpu scarce and taints benchmarks"); `run.py judge --local` after the runs"""
     url = (fcfg.get("hosts", "gen_url") or "").rstrip("/")
-    if url and not judge_w10.server_up(url): judge_local_start()
+    if url and not _JUDGE_TOLD and not judge_w10.server_up(url):
+        _JUDGE_TOLD.append(1)
+        print(f"judge: {url} does not answer: rows wait unread (run.py judge --local reads them on this machine after the runs)", flush=True)
+
+
+_JUDGE_TOLD = []
 
 
 def judge_card():
@@ -11404,7 +11410,7 @@ if __name__ == "__main__":
     jd.add_argument("--dry", action="store_true", help="show the verdicts, change no row")
     jd.add_argument("--file", default="", help="read this text file instead of rows")
     jd.add_argument("--ask", default="", help="with --file: the request it answered")
-    jd.add_argument("--local", action="store_true", help="read on this machine, on the card -ng 1 leaves free; rows on that card come first. Starts by itself when W10 does not answer. Ends after 10 minutes with nothing left to read")
+    jd.add_argument("--local", action="store_true", help="read on this machine, on the card -ng 1 leaves free; rows on that card come first. Never starts by itself (rows own the RAM and CPU). Ends after 10 minutes with nothing left to read")
     jd.add_argument("--local-stop", action="store_true", help="stop reading on this machine")
     jd.add_argument("--local-loop", action="store_true", help=argparse.SUPPRESS)
     jd.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
