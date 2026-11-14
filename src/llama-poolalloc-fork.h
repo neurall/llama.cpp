@@ -66,6 +66,20 @@ static inline int32_t poolx_first_window(const std::vector<uint8_t> & ok, int32_
     return -1;
 }
 
+// staging=0 ring: where a stream entry's n experts go, given each block's rank (-1 unusable: in flight, pinned, lent; else cs_plan's tier rank, 6 = a layer still to
+// come). The best ranks first (free, empty, own computed, other class), then cached experts already computed, then a layer to come: at a pass's start every block
+// holds one, and the window must still form there (2026-11-14, Qwen3.8 12k: gated on "the tiered pick would take them too", 0 of 123 entries found a run, the
+// scattered picks kept the class scattered). -1: no run that long, the caller picks blocks one by one.
+static inline int32_t poolx_ring_window(const std::vector<int8_t> & rank, int32_t from, int32_t n) {
+    for (int lim : { 3, 5, 6 }) {
+        std::vector<uint8_t> ok(rank.size());
+        for (size_t j = 0; j < rank.size(); ++j) { ok[j] = rank[j] >= 0 && rank[j] <= lim; }
+        const int32_t j0 = poolx_first_window(ok, from, n);
+        if (j0 >= 0) { return j0; }
+    }
+    return -1;
+}
+
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
     for (const auto & sg : ap.segs) {
         const size_t end = sg.base + (size_t) sg.n * sg.B;

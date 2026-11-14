@@ -12525,24 +12525,19 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     static const int tier_rank[8] = { 0, 1, 2, 5, 6, 3, 4, 7 };
     // The stream (not the k arm's lists or its late fix, not the mix): the layer's experts into ONE run of blocks, the first run from the cursor long enough, so each
     // tensor goes up in as few copies as its cached experts allow (user 2026-11-14: "sort and coalesce and upload moes needed for compute as one n size class coalesced
-    // upload"; scattered picks made 8323 copies of 22894 experts a Qwen3.8 12k pass). The run may take cached experts already computed in this pass (rank 5) and,
-    // only when the tiered pick would too, those of the layers to come; else the tiered pick below.
+    // upload"; scattered picks made 8323 copies of 22894 experts a Qwen3.8 12k pass). The run takes the best ranks it can (poolx_ring_window), down to the experts
+    // of layers to come: those fill the class at every pass's start. Else the tiered pick below.
     bool win = false;
     if (!sel && !late && mix == 0 && c.size() >= want.size() && nr > 0) {
         std::vector<int32_t> ci((size_t) nr, -1);   // block (from the ring's start) -> its candidate
-        int n_keep = 0;   // candidates that are no layer to come's
-        for (size_t x = 0; x < c.size(); ++x) { ci[(size_t) (c[x].b - r0)] = (int32_t) x; n_keep += tier_rank[c[x].tier] <= 5; }
-        for (int lim : { 3, 5, 6 }) {
-            if (lim == 6 && n_keep >= (int) want.size()) { break; }
-            std::vector<uint8_t> ok((size_t) nr);
-            for (int32_t j = 0; j < nr; ++j) { ok[(size_t) j] = ci[(size_t) j] >= 0 && tier_rank[c[(size_t) ci[(size_t) j]].tier] <= lim; }
-            const int32_t j0 = poolx_first_window(ok, ps.cs_cur, (int32_t) want.size());
-            if (j0 < 0) { continue; }
+        std::vector<int8_t>  rk((size_t) nr, -1);
+        for (size_t x = 0; x < c.size(); ++x) { ci[(size_t) (c[x].b - r0)] = (int32_t) x; rk[(size_t) (c[x].b - r0)] = (int8_t) tier_rank[c[x].tier]; }
+        const int32_t j0 = poolx_ring_window(rk, ps.cs_cur, (int32_t) want.size());
+        if (j0 >= 0) {
             std::vector<cand> run;
             for (int32_t j = j0; j < j0 + (int32_t) want.size(); ++j) { run.push_back(c[(size_t) ci[(size_t) j]]); }
             c.swap(run);
             win = true;
-            break;
         }
     }
     if (!win) {

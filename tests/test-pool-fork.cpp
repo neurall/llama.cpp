@@ -705,6 +705,15 @@ static void test_regress_coalesced_ring() {
     report("a window never wraps the class end", poolx_first_window(all, 8, 4) == 0);
     report("holes: the first run long enough from the cursor", poolx_first_window(holes, 0, 4) == 3 && poolx_first_window(holes, 8, 2) == 8 && poolx_first_window(holes, 8, 3) == 3);
     report("no run long enough: none (the tiered pick takes over)", poolx_first_window(holes, 0, 5) == -1 && poolx_first_window(all, 0, 11) == -1);
+    // ring_window_worker, Qwen3.8 12k pass 1: every block held a layer to come (rank 6) or another class's claimable bytes (rank 3), interleaved; 0 of 123 entries found a run
+    std::vector<int8_t> start(40);
+    for (size_t j = 0; j < start.size(); ++j) { start[j] = j % 2 ? 6 : 3; }
+    report("a pass's start (layers to come between other classes' bytes): the window still forms at the cursor", poolx_ring_window(start, 7, 10) == 7);
+    std::vector<int8_t> mixed(40, 6);
+    for (int j = 20; j < 32; ++j) { mixed[(size_t) j] = 2; }
+    report("a run of the best ranks wins over the cursor's layers to come", poolx_ring_window(mixed, 0, 10) == 20);
+    mixed[25] = -1;
+    report("a block in flight breaks a run", poolx_ring_window(mixed, 0, 10) == 0 && poolx_ring_window(mixed, 26, 6) == 26);
     std::string src;
     {
         std::string path = __FILE__;
@@ -713,7 +722,7 @@ static void test_regress_coalesced_ring() {
         if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
     }
     auto body = [&](const char * head) { const size_t a = src.find(head); const size_t b = a == std::string::npos ? a : src.find("\n}\n", a); return b == std::string::npos ? std::string() : src.substr(a, b - a); };
-    report("cs_plan places a layer in one window", body("\nstatic bool cs_plan(").find("poolx_first_window(") != std::string::npos);
+    report("cs_plan places a layer in one window", body("\nstatic bool cs_plan(").find("poolx_ring_window(") != std::string::npos);
     const std::string lay = body("\nstatic void cs_layer("), rel = body("\nstatic void cs_release(");
     report("the hooks hand their copies to the cards' workers", lay.find("cs_issue(") != std::string::npos && rel.find("cs_issue(") != std::string::npos
            && lay.find("cs_copy(") == std::string::npos && rel.find("cs_copy(") == std::string::npos && body("\nstatic void cs_issue(").find("g_cs_q[") != std::string::npos);
