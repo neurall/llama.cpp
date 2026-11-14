@@ -1783,12 +1783,14 @@ void llama_context::sched_reserve() {
                     for (const ggml_tensor * s : n->src) {
                         if (!s) { continue; }
                         const ggml_tensor * r = root(s);
-                        if (r != s && !r->buffer && !r->data && ggml_backend_sched_get_tensor_backend(sched.get(), n) == backend_ptrs[bi] && bare.insert(r).second) { bsum += ggml_nbytes(r); }
+                        if (r != s && r->op == GGML_OP_NONE && !r->buffer && !r->data && ggml_backend_sched_get_tensor_backend(sched.get(), n) == backend_ptrs[bi] && bare.insert(r).second) { bsum += ggml_nbytes(r); }
                     }
-                    if (n->view_src) { const ggml_tensor * r = root(n); if (!r->buffer && !r->data && ggml_backend_sched_get_tensor_backend(sched.get(), n) == backend_ptrs[bi] && bare.insert(r).second) { bsum += ggml_nbytes(r); } }
+                    if (n->view_src) { const ggml_tensor * r = root(n); if (r->op == GGML_OP_NONE && !r->buffer && !r->data && ggml_backend_sched_get_tensor_backend(sched.get(), n) == backend_ptrs[bi] && bare.insert(r).second) { bsum += ggml_nbytes(r); } }
                 }
-                at_peak += format("| view parents with no memory yet: %zu, %.0f MiB", bare.size(), bsum / 1048576.0);
-                for (auto it = bare.begin(); it != bare.end() && std::distance(bare.begin(), it) < 4; ++it) { at_peak += format("; %s %.0f MiB", (*it)->name, ggml_nbytes(*it) / 1048576.0); }
+                std::vector<const ggml_tensor *> bv(bare.begin(), bare.end());
+                std::sort(bv.begin(), bv.end(), [](const ggml_tensor * x, const ggml_tensor * y) { return ggml_nbytes(x) > ggml_nbytes(y); });
+                at_peak += format("| leaves under views with no memory yet: %zu, %.0f MiB", bv.size(), bsum / 1048576.0);
+                for (size_t k = 0; k < bv.size() && k < 4; ++k) { at_peak += format("; %s %.0f MiB", bv[k]->name, ggml_nbytes(bv[k]) / 1048576.0); }
                 std::vector<std::pair<const ggml_tensor *, size_t>> xv(xin.begin(), xin.end());
                 std::sort(xv.begin(), xv.end(), [](const auto & x, const auto & y) { return x.second > y.second; });
                 size_t xsum = 0; for (const auto & x : xv) { xsum += x.second; }
