@@ -19,10 +19,11 @@ static void log_cb(ggml_log_level, const char * text, void *) { g_log += text; }
 static int g_fails = 0;
 #define CHECK(c, ...) do { if (!(c)) { g_fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } } while (0)
 
-enum leak { NONE, UNREAD, UNREAD_VIEW, SMALL };
+enum leak { NONE, UNREAD, UNREAD_VIEW, SMALL, SELECT };
 
 // x -> a = x*x -> out = a + x (32 MiB each); UNREAD adds b = x + x that no node reads, UNREAD_VIEW a view of c = x*x that no node reads (it keeps c to the end),
-// SMALL an unread tensor of 4 MiB (the fork's hook nodes reach a MiB on big passes: under 16 MiB a tensor is left alone)
+// SMALL an unread tensor of 4 MiB (the fork's hook nodes reach a MiB on big passes: under 16 MiB a tensor is left alone), SELECT the input branch
+// ggml_build_forward_select leaves in the graph without computing it (llama-graph.cpp build_inp_embd: the mixed-input copy, 256 MiB at 16384 tokens on MiMo)
 static std::string plan(leak k) {
     ggml_init_params ip = { 32 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
     ggml_context * ctx = ggml_init(ip);
@@ -53,6 +54,18 @@ static std::string plan(leak k) {
         ggml_set_name(b, "small_unread");
         ggml_build_forward_expand(gf, b);
     }
+    if (k == SELECT) {
+        ggml_tensor * x2 = ggml_reshape_2d(ctx, x, 4096, 2048);
+        ggml_tensor * rows = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4096, 1), * idx = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, 1);
+        ggml_set_input(rows); ggml_set_input(idx);
+        ggml_tensor * alt[2] = { ggml_mul(ctx, x2, x2), ggml_set_rows(ctx, ggml_dup(ctx, x2), rows, idx) };
+        ggml_set_name(alt[0], "selected");
+        ggml_set_name(alt[1]->view_src ? alt[1]->view_src : alt[1], "not_selected");
+        ggml_tensor * sel = ggml_build_forward_select(gf, alt, 2, 0);
+        ggml_tensor * o2 = ggml_add(ctx, sel, x2);
+        ggml_set_output(o2);
+        ggml_build_forward_expand(gf, o2);
+    }
     ggml_build_forward_expand(gf, out);
     ggml_gallocr_t ga = ggml_gallocr_new(ggml_backend_cpu_buffer_type());
     g_log.clear();
@@ -81,6 +94,10 @@ int main() {
     {
         const std::string l = plan(UNREAD_VIEW);
         CHECK(has(l, "galloc: UNREAD") && has(l, "kept_by_view") && has(l, "unread_view"), "a source kept by an unread view not named with its view: [%s]", l.c_str());
+    }
+    {
+        const std::string l = plan(SELECT);
+        CHECK(!has(l, "galloc: UNREAD"), "a branch ggml_build_forward_select does not compute reported: [%s]", l.c_str());
     }
     {
         const std::string l = plan(SMALL);

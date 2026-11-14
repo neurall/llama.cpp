@@ -942,7 +942,8 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
             struct ggml_tensor * t = graph->nodes[i];
             struct hash_node * hn = ggml_gallocr_hash_get(galloc, t);
             const size_t b = ggml_nbytes(t);
-            if (ggml_impl_is_view(t) || !hn->allocated || (t->flags & GGML_TENSOR_FLAG_OUTPUT) || b < ((size_t) 16 << 20)) {
+            // (a branch ggml_build_forward_select leaves in the graph uncomputed, so the graph keeps one layout for every input type, is no leak: llama-graph.cpp build_inp_embd)
+            if (ggml_impl_is_view(t) || !hn->allocated || (t->flags & GGML_TENSOR_FLAG_OUTPUT) || !(t->flags & GGML_TENSOR_FLAG_COMPUTE) || b < ((size_t) 16 << 20)) {
                 continue;
             }
             sum += b;
