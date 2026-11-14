@@ -733,11 +733,37 @@ static void test_regress_coalesced_ring() {
     report("the JIT path's pinned slots are taken under one lock", body("\nstatic void cs_copy(").find("jit_mu") != std::string::npos);
 }
 
+// staging=0 ring on the upload worker: how many layers' copies a card's ring stream holds queued. nsys, Qwen3.8 IQ4_XS 12k, 2 x 3090, build ring_diag, the expert
+// split's first pass: CUDA1's worker queued 23 layers (14 GB) at once; the driver's queue filled, the worker's copy calls blocked 155 + 48 + 140 ms, and the scheduler
+// thread launched nothing meanwhile (CUDA0's worker idled 344 ms with no job, both cards waited).
+static void test_regress_ring_depth() {
+    printf("Testing the ring's depth on the upload worker (one job on the link, the next queued):\n");
+    report("nothing in flight: nothing to wait for", poolx_ring_retire(0, 2) == 0);
+    report("one in flight: the next is queued behind it", poolx_ring_retire(1, 2) == 0);
+    report("two in flight: the oldest lands before a third is queued", poolx_ring_retire(2, 2) == 1);
+    report("more in flight (a depth lowered meanwhile): down to one below the depth", poolx_ring_retire(5, 2) == 4);
+    report("depth 0: no bound", poolx_ring_retire(30, 0) == 0);
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-moecache-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    size_t a = src.find("\nstatic void cs_worker_run(");   // the definition, not the forward declaration
+    while (a != std::string::npos && src.substr(a + 1, src.find('\n', a + 1) - a - 1).find(") {") == std::string::npos) { a = src.find("\nstatic void cs_worker_run(", a + 1); }
+    const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
+    const std::string run = b == std::string::npos ? std::string() : src.substr(a, b - a);
+    const size_t w = run.find("ggml_backend_event_synchronize("), c = run.find("cs_copy(");
+    report("the worker waits for its oldest job before it queues another", run.find("poolx_ring_retire(") != std::string::npos && w != std::string::npos && c != std::string::npos && w < c);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
     test_regress_past_rows();
     test_regress_coalesced_ring();
+    test_regress_ring_depth();
     test_block_sizing();
     test_lend_granularity();
     test_ledger_random();

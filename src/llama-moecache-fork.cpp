@@ -12768,12 +12768,22 @@ static bool cs_async(const moe_cache * mc) {
     return on && g_cs_k_pass <= 0.0 && !mc->workers.empty();
 }
 static bool cs_worker_has(int link) { return link >= 0 && link < MAX_LINKS && !g_cs_q[link].empty(); }   // wmtx held
+// the ready events of the jobs a link's worker queued and that may not have landed yet, oldest first (only that worker touches its link's; cs_drain empties them)
+static std::deque<ggml_backend_event_t> g_cs_fly[MAX_LINKS];
+static size_t cs_depth() {   // --moe cs-depth=N: jobs a ring stream holds queued (0: no bound, as before)
+    static const size_t d = [] { const char * v = moe_opt("cs-depth"); return v ? (size_t) atoi(v) : (size_t) 2; }();
+    return d;
+}
 static void cs_worker_run(moe_cache * mc, int link, std::unique_lock<std::mutex> & lk) {   // wmtx held on entry and on return
     cs_job j = std::move(g_cs_q[link].front());
     g_cs_q[link].pop_front();
     g_cs_busy[link] = true;
     lk.unlock();
+    // one job on the link and the next queued (poolx_ring_retire): the wait is here on the host, outside the driver, so the scheduler thread's launches go on
+    auto & fly = g_cs_fly[link];
+    for (size_t r = poolx_ring_retire(fly.size(), cs_depth()); r > 0; --r) { ggml_backend_event_synchronize(fly.front()); fly.pop_front(); }
     cs_copy(mc, j.li, j.cps, j.from_done, j.done_at);
+    fly.push_back(csl(mc, j.li).ring_ev);
     lk.lock();
     g_cs_busy[link] = false;
     const int32_t q = j.li < mc->cs_pos.size() ? mc->cs_pos[j.li] : -1;
@@ -12803,6 +12813,7 @@ static void cs_drain(moe_cache * mc) {   // every planned job copied: a pass's s
         for (int k = 0; k < MAX_LINKS; ++k) { if (!g_cs_q[k].empty() || g_cs_busy[k]) { return false; } }
         return true;
     });
+    for (int k = 0; k < MAX_LINKS; ++k) { g_cs_fly[k].clear(); }   // the workers are idle; a lend may drop the shadows whose events these are
 }
 
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid);   // below

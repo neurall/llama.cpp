@@ -80,6 +80,11 @@ static inline int32_t poolx_ring_window(const std::vector<int8_t> & rank, int32_
     return -1;
 }
 
+// staging=0 ring on a card's upload worker: how many of its oldest queued jobs must land before one more is queued, with depth jobs allowed in flight (0: no bound).
+// Depth 2 is double buffering: one job on the link, the next queued behind it, so the link never idles; a deeper queue only fills the driver's, whose blocked
+// submissions then hold everyone's calls (2026-11-14, Qwen3.8 12k: 14 GB queued on one ring, the scheduler thread's launches sat 343 ms behind it).
+static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return depth > 0 && in_flight >= depth ? in_flight - depth + 1 : 0; }
+
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
     for (const auto & sg : ap.segs) {
         const size_t end = sg.base + (size_t) sg.n * sg.B;
