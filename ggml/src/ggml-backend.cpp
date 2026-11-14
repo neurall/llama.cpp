@@ -35,6 +35,9 @@
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #endif
+#if defined(__linux__) && defined(__GLIBC__)
+#include <execinfo.h>   // vram_guard_check: the allocating caller
+#endif
 
 
 // backend buffer type
@@ -91,8 +94,11 @@ static void vram_guard_check(ggml_backend_buffer_type_t buft, size_t size) {
     if (mode >= 2) {
         GGML_ABORT("VRAM outside the block pool (--moe vram-guard=2)");
     }
-    if (n <= 16) {
-        ggml_print_backtrace();
+    if (n <= 16) {   // who allocated, in microseconds: ggml_print_backtrace attaches gdb, 0.35 s a call (6 s added to a K3 start, 2026-11-14)
+#if defined(__linux__) && defined(__GLIBC__)
+        void * tr[12];
+        backtrace_symbols_fd(tr, backtrace(tr, 12), 2);
+#endif
     }
 }
 

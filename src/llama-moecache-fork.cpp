@@ -516,6 +516,8 @@ struct moe_cache {
     std::vector<int>         worker_link; // worker -> upload link it serves (layer_state::link), -1: all
     int                      n_links = 1; // GPUs holding cache layers
     ggml_backend_dev_t       link_dev[MAX_LINKS] = {}; // the GPU behind each link
+    ggml_tensor *            stbl[MAX_LINKS] = {};      // the stream shadows' device tables, carved at init before the pool takes the card (llama_moe_cache_cs_shadow_fork)
+    int64_t                  stbl_used[MAX_LINKS] = {}; // its int32 entries handed out
     ggml_backend_t           link_be[MAX_LINKS]  = {}; // its compute backend (seen at the split callback): JIT uploads go on its stream
     ggml_backend_t           ring_be[MAX_LINKS]  = {}; // pp-ahead: its upload stream, beside the compute stream (ring_backend)
     // --moe pp-path=cstream (cs_begin, cs_layer): the running graph's cstream layers in order, layer -> position (-1 none), model layer number -> layer; per link the
@@ -1288,6 +1290,7 @@ static bool cs_release_on() {   // --moe cs-release=0: an entry's blocks are fre
 // The chunk counts a stream call may run with (cs_pick), rising. cs_ring_floor: where a card's ring reserve starts for a layer in N chunks, which is the most the lend and
 // the KV zone reach; false when a size class would hold less than one entry there. cs_ring_apply puts it in force (between prompt calls: nothing of the ring in flight).
 static const int cs_cand[] = { 1, 2, 3, 4, 6, 8 };
+static int cs_chunks_max() { return std::max(cs_cand[sizeof(cs_cand) / sizeof(cs_cand[0]) - 1], cs_forced()); }   // the most chunks a call cuts a layer into: a shadow per chunk
 static bool cs_ring_floor(const moe_cache::alias_pool & ap, int N, size_t & fe, const char ** why = nullptr) {
     if (ap.rcls.empty() || N <= 0) { return false; }
     size_t Lmax = 0, Lcom = 0, Bmax = 0, ncom = 0;
@@ -10586,6 +10589,15 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 for (auto * b : ubufs) { mc->bufs.push_back(b); }
             }
+            // the stream shadows' device tables (llama_moe_cache_cs_shadow_fork): any layer x every chunk a call may cut it into, carved here before the VRAM guard arms,
+            // not one device buffer per shadow after it (K3 16k prompt: 736 buffers, 2.5 MiB outside the pool, 2026-11-14)
+            ggml_tensor * stbl = nullptr;
+            if (pool_on && !tables_only) {
+                int64_t n_all = 0, E = 0;
+                for (const auto & g2 : groups) { n_all += (int64_t) g2.second.size(); for (const auto & c : g2.second) { E = std::max<int64_t>(E, c.l->ffn_up_exps->ne[2]); } }
+                stbl = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_all * cs_chunks_max() * GGML_PAD(E, 64));
+                ggml_format_name(stbl, "moe_cache_stbl");
+            }
             ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
             if (!buf) {
                 LLAMA_LOG_WARN("%s: failed to allocate MoE cache buffer on %s - cache disabled\n",
@@ -10597,6 +10609,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 // the scheduler places ops by the residency of weight buffers only;
                 // without this the cache chain follows its neighbours onto the CPU
                 ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            }
+            for (int k = 0; stbl && k < mc->n_links; ++k) {
+                if (mc->link_dev[k] == ggml_backend_buft_get_device(buft)) { mc->stbl[k] = stbl; mc->stbl_used[k] = 0; }
             }
             mc->bufs.push_back(buf);
             return true;
@@ -11967,9 +11982,16 @@ const llama_moe_cache_layer_fork * llama_moe_cache_cs_shadow_fork(const llama_mo
         ggml_context * hctx = have ? ggml_init({ ggml_tensor_overhead() + (size_t) E*sizeof(int32_t) + 64, nullptr, false }) : nullptr;   // the host table's data in the context
         ggml_context * dctx = have ? ggml_init({ ggml_tensor_overhead(), nullptr, true }) : nullptr;
         ggml_tensor *  dt   = dctx ? ggml_new_tensor_2d(dctx, GGML_TYPE_I32, 1, E) : nullptr;
-        ggml_backend_buffer_t tb = dt ? ggml_backend_alloc_ctx_tensors_from_buft(dctx, ggml_backend_dev_buffer_type(dev)) : nullptr;
+        ggml_backend_buffer_t tb = nullptr;
+        bool own = false;   // the card's carved table space (init) first; past it a buffer of its own, which the VRAM guard names
+        if (dt && mc->stbl[k] && mc->stbl_used[k] + GGML_PAD(E, 64) <= ggml_nelements(mc->stbl[k]) &&
+            ggml_backend_tensor_alloc(mc->stbl[k]->buffer, dt, (int32_t *) mc->stbl[k]->data + mc->stbl_used[k]) == GGML_STATUS_SUCCESS) {
+            tb = mc->stbl[k]->buffer;
+            mc->stbl_used[k] += GGML_PAD(E, 64);
+        }
+        if (dt && !tb) { tb = ggml_backend_alloc_ctx_tensors_from_buft(dctx, ggml_backend_dev_buffer_type(dev)); own = tb != nullptr; }
         if (tb && hctx) {
-            mc->ctxs.push_back(hctx); mc->ctxs.push_back(dctx); mc->bufs.push_back(tb);
+            mc->ctxs.push_back(hctx); mc->ctxs.push_back(dctx); if (own) { mc->bufs.push_back(tb); }
             mc->shadows.emplace_back();
             layer_state & sh = mc->shadows.back();
             sh.pub            = L.pub;   // the host sources (the RAM pool's keys), il
