@@ -3005,14 +3005,15 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor *  mc_cpu_ids     = nullptr;   // --moe pp-off: the CPU's misses (the device's are -1)
     ggml_tensor *  mc_miss_ids    = nullptr;   // --moe miss-dev: the misses' ids (the rest -1), computed on the device holding up_m
     ggml_tensor *  mc_pred        = nullptr;
-    // --moe situ-pp=1: Kimi K3's prompts take the stream into the blocks too (A/B against the staged copies after the stream's reads ahead, fbfb7a7979)
-    static const bool situ_pp = [] { const char * e = llama_moe_get_opt("situ-pp"); return e && atoi(e) != 0; }();
+    // Kimi K3's prompts take the cache path too (the stream into the blocks, the chains, the predictions). Since the stream reads layers ahead (fbfb7a7979) it beats
+    // the scheduler's staged copies: K3.1 1k, 2 x 3090, 2026-11-14: 73.3 / 72.2 s against 88.7 / 82.6, and the pass graph loses the two whole expert tensors
+    // the copies held on CUDA0 (6336 tokens: 6188 MiB against 7252; 3168: 3094 against 5457). --moe situ-pp=0: the staged copies, as before.
+    static const bool situ_pp = [] { const char * e = llama_moe_get_opt("situ-pp"); return !e || atoi(e) != 0; }();
     if (cparams.moe_cache && n_tokens > 0 && n_tokens <= llama_moe_cache_max_batch_fork() && !gate_up_exps && gate_exps && down_exps &&
         !up_exps_b && !gate_exps_b && !down_exps_b &&
         !up_exps_s && !gate_exps_s && !down_exps_s &&
-        // (SITU: Kimi K3, see mc_act; without it K3 ran the scheduler's staged copies only.) shortcut: SITU takes the cache path for decode steps only: its prompt stream
-        // into the blocks read one expert at a time (Kimi K3.1 1k tokens: 486 GB from the SSD at 1.8 GB/s, 270 s against 77 staged); prompts too once the stream's
-        // reads run ahead of the ring (task #308)
+        // (SITU: Kimi K3, see mc_act; without it K3 ran the scheduler's staged copies only. Its prompts took them until 2026-11-14: the stream into the blocks read
+        // one expert at a time then, 486 GB at 1.8 GB/s, 270 s against 77 staged; see situ_pp above)
         (type_op == LLM_FFN_SILU || (type_op == LLM_FFN_SITU && (n_tokens == 1 || situ_pp))) && !weight_before_ffn && loras->empty()) {
         mcache = llama_moe_cache_lookup_fork(up_exps);
         if (mcache && sched) { llama_moe_cache_link_backends_fork(sched); }
