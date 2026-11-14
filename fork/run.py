@@ -2045,7 +2045,7 @@ def _server_start_once(build, env, args):
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
                              + f",stats=/tmp/perf-{build}{LOGTAG}.stats.log"   # every event and status sample of the run, one a line, with timestamps: tail -f it during a run; the cell keeps it as TAG.stats.log
                              + f",hotmaps={HOTMAPS}"   # the hot maps per topic of every model (--moe dynhot) in the repo's fork/hotmaps, published with runs.db (branch runs-db); a cell's own hotmaps= comes after and wins
-                             + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): cells turn it on, see cmd_cell
+                             + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): `run LIST --ledger` turns it on, see cmd_cell
                              + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
                              + ("" if NOSTATS[0] else ",pass-stats=1")]   # the split pass report per card (extra stream stamps, off in the engine by default): -ns leaves it off
     elif not build.startswith("stock") and STATE_FILE["v"]:
@@ -7820,6 +7820,7 @@ def run_list(name, argv):
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
+    ap.add_argument("-ledger", "--ledger", action="store_true", help="the pool write ledger on in every cell (who wrote which bytes of a card's pool, when): a debug record, about 25%% slower decode; printed at the start, recorded in the row (PERF_LEDGER=1); off by default, never turned on by a build name")
     ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state) on a server of its own: run 1 is the cold start of a new user, run 2 runs on the same server (warm). Two builds compared this way learn from zero on the same prompt, so they should arrive at the same speed (reg tests); the user's state file is not touched. No cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
     ap.add_argument("-nk", "-x", "--kill", action="store_true", help="kill the server after every run (default: it stays up and the next run, also of the next cell, uses it when model, build and args are the same; later runs then start with what the earlier ones cached)")
     ap.add_argument("-r", "--runs", default="2", help="measured runs per cell (default 2: one run can be an outlier; 0 = the list's n)")
@@ -8037,6 +8038,7 @@ def run_list(name, argv):
     if any(not r["_b"].startswith("stock") for r in rows) and os.path.islink(os.path.join(DEVBUILDS, "stock-latest")):   # the stock the gains compare against
         sl = os.path.realpath(os.path.join(DEVBUILDS, "stock-latest")); print(f"{col(36, 'stock')}: {os.path.basename(sl)}  {col(33, time.strftime('%F %H:%M', time.localtime(os.path.getmtime(os.path.join(sl, 'llama-server')))))}  {col(94, 'b' + own_build_no(os.path.basename(sl)))}", flush=True)
     if not o.dry: CUR_HWL[0] = hw_line(); print(col(1, CUR_HWL[0]), flush=True)
+    print(col(33, "ledger: ON (--ledger): every cell records the pool write ledger; decode about 25% slower; rows carry PERF_LEDGER=1") if o.ledger else col(90, "ledger: off (--ledger turns it on)"), flush=True)
     NAMEW[0] = max((len(("s" if r["_b"].startswith("stock") else "") + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
     exp_all = [cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) for r in rows]
     known = [x for x in exp_all if x]; fill = (sum(known) / len(known)) if known else 600.0   # a cell without history counts the average of the known ones, so the whole-run bar and its time cover every cell of the list
@@ -8055,7 +8057,7 @@ def run_list(name, argv):
                 else: run_list_pool(size(r))
             if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)   # after the pool line: which model the next cells run
             tag = f"{r['_b']}-{r['name']}"
-            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else [])
+            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else []) + (["--ledger"] if o.ledger else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
             if o.dry: print(f"[{name}] {tag}: {re.sub(r' pf(?=\d+k)', ' ', shlex.join(cmd[3:]))}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
@@ -8471,9 +8473,9 @@ def cmd_cell(a):
     env = dict(os.environ, PERF_LD_EXTRA=U, NVIDIA_SMI=SMI, PERF_LOG=LOG_LETTERS)   # r unless the caller set PERF_LOG (PERF_LOG=rp run ...: the periodic cache stats reach the server's --moe log=)
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
-    fix_build = any(os.path.basename(b.rstrip("/")).startswith("fix_") for b in re.split(r"[,\s]+", str(a.builds or "")) if b)
     env.setdefault("LLAMA_RAM_FLOOR_GB", f"{float(os.environ.get('PERF_GUARD_AVAIL_GB') or 3.0) + 0.5:.1f}")   # the RAM pool grows between requests down to this floor: half a GiB above the line memwatch kills at
-    env.setdefault("PERF_LEDGER", "1" if fix_build else "0")   # fix builds (fix_*) keep the ledger on: a fix-validation run records who wrote what when (user 2026-10-28); the pool write ledger is a debug tool and off in cells (it cost our side a few percent that stock never pays); --env PERF_LEDGER=1 records it: kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
+    env["PERF_LEDGER"] = "1" if a.ledger else "0"   # the pool write ledger (who wrote which bytes of a card's pool, when): on only by `run LIST --ledger` (cell --ledger), never by a build's name or an inherited environment (a fix_ build name turned it on silently and cost ~25% decode, 2026-11-14); kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
+    if a.ledger: print("ledger: ON (--ledger): the pool write ledger records every pool write; decode about 25% slower, the row carries PERF_LEDGER=1", flush=True)
     for kv in (a.env or []):
         k, _, v = kv.partition("="); env[k] = v
     # the cell's --env values are this bench process's own environment, so server_run's key (env that differs from it) never saw them: a cell that
@@ -11318,6 +11320,7 @@ if __name__ == "__main__":
     ce.add_argument("--keep-server", action="store_true", help="bench --keep-server")
     ce.add_argument("--clean-state", action="store_true", help="bench --clean-state: an empty learned state for this build and cell; run 1 cold, run 2 warm")
     ce.add_argument("--keep-loops", action="store_true", help="do not discard and repeat a looping or garbled answer (bench --keep-loops): one server run per cell")
+    ce.add_argument("--ledger", action="store_true", help="the pool write ledger on (PERF_LEDGER=1: who wrote which bytes of a card's pool); about 25%% slower decode; off by default")
     ce.add_argument("--warm", action="store_true", help="a discarded run before each measured one: the first run after a server start is cold (nothing learned yet, the planner still guesses) and a gate does not compare it")
     ce.add_argument("--hog-gpu", help="GiB left free on every GPU (faked by the server, nothing held: --moe sim-vram=MiB), simulates a smaller card")
     ce.add_argument("--hog-ram", help="GiB of RAM left free (--moe sim-ram=MiB)")

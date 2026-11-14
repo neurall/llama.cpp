@@ -1,7 +1,9 @@
 #pragma once
 // fork: lock order for the planner's mutexes (tests/test-lockrank-fork.cpp). The order lived only in comments, and g_pp_mu was taken a second time on one thread:
 // build lp_not_under_xsplit (2026-11-14) hung at start for 600 s. A thread takes ranked mutexes in rising rank only:
-//   g_plan_mu (dense split planner) 10  <  g_pp_mu (prompt planner) 20  <  g_dsf_mu (split estimator, innermost) 30
+//   g_plan_mu (dense split planner) 10  <  g_dsf_mu (split estimator) 20  <  g_pp_mu (prompt planner) 30
+// (g_dsf_mu's decide reads the prompt planner's cells and one-card draw under it; the first ranking, from a comment that called g_dsf_mu innermost, had
+// these two the other way and failed every row of its first run)
 // A second lock of a mutex the thread holds aborts at once with its name (a std::mutex hangs there for good). A lock below a held rank logs one
 // "moe-cache: INV lock order" line per mutex, which fails the row (run.py ENGINE_CHECK); the lock is still taken (two threads must interleave to deadlock).
 // Cost: a scan of the few ranks the thread holds, per lock.

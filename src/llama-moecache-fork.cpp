@@ -15423,7 +15423,7 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
 //   prompt P passes of ceil(n / P) tokens: P x pass; P from the fewest (n / ub_max) up to four more, the cheapest wins.
 // Measured on MiMo, 4k prompt, one x16: 8 passes with 6 slots 127 t/s, 2 passes with 2 slots 471, one pass without slots 544: one pass wins when the upload
 // dominates; Qwen3.8-Flash-Next at 8k (compute 6.4 s against 1.3 s of upload) wins with two staged passes. --moe pass-plan=0: equal passes as before.
-static llama_ranked_mutex g_pp_mu(20, "g_pp_mu");   // rank: under g_plan_mu, over g_dsf_mu (llama-lockrank-fork.h)
+static llama_ranked_mutex g_pp_mu(30, "g_pp_mu");   // rank: the innermost planner lock, under g_plan_mu and g_dsf_mu (llama-lockrank-fork.h)
 // What a stream pass reads from the SSD (user 2026-11-03: "count the stream's compute and SSD read in its calculated time, using the measured rates"). DeepSeek (232 GiB on 125 GiB of RAM) streamed
 // 30 to 49 GB through the mapping in a 277-token call, 13.6 to 17.5 s at 2.1 to 2.9 GB/s, where the upload over the link alone said 4.5 s. g_pp_ssd_m: the bytes of the experts this call's stream
 // takes from tensors that are still mapped (set where the call is decided, used where it ends); g_pp_ssd_gbs: the mapped bytes per second the stream passes got through (read_bytes over 1 GiB says the SSD was read at all).

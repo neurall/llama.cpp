@@ -736,7 +736,7 @@ struct dsf_pt {
     int n = 0;
     double us = 0.0;   // the median of s
 };
-static llama_ranked_mutex g_dsf_mu(30, "g_dsf_mu");   // innermost lock (taken under g_mu and g_plan_mu, never the other way)
+static llama_ranked_mutex g_dsf_mu(20, "g_dsf_mu");   // under g_mu and g_plan_mu, never the other way; g_pp_mu is taken under it (dsf_decide reads the cells, one_draw)
 static std::map<int, dsf_pt> g_dsf_one, g_dsf_split;
 static std::map<std::string, std::map<int, dsf_pt>> g_dsf_dense;
 static std::map<std::string, dsf_pt> g_dsf_hop;
