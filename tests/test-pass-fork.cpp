@@ -9,6 +9,7 @@
 // build: cmake --build <dir> --target test-pass-fork;  run: ctest -R test-pass-fork   or   test-pass-fork [iterations] [seed]
 #include "../src/llama-passplan-fork.h"
 #include "../src/llama-poolalloc-fork.h"
+#include "../ggml/src/ggml-sched-fork.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -291,6 +292,19 @@ static void test_lend_line() {
     report("any sizes: fixed part >= 0, 0 < slope <= least bytes per token, through the mean", bad == 0, first);
 }
 
+// ---- card stamps: which splits are expert time ---------------------------------------------------------------------------------------------------
+static void test_split_class() {
+    printf("Testing the card stamps' expert/dense class of a split (by its first node):\n");
+    // Qwen3.8 IQ4_XS 12k staging=0, 2026-11-14: the stream part's reduce over all tokens (ffn_moe_cs_rel) read as dense on the expert card, 324 us/token against staged's 270
+    report("a stream part's reduce (ffn_moe_cs_rel) is expert time", ggml_sched_split_moe(false, true, false, "ffn_moe_cs_rel-12"));
+    report("a stream part's start (ffn_moe_cs_slots) is expert time", ggml_sched_split_moe(false, true, false, "ffn_moe_cs_slots-3"));
+    report("an expert matmul first in a stream pass is expert time", ggml_sched_split_moe(true, true, false, "ffn_moe_up-3"));
+    report("an expert matmul over an expert range is expert time", ggml_sched_split_moe(true, false, true, "ffn_moe_up-3"));
+    report("an expert matmul first in a cache pass without a range is dense", !ggml_sched_split_moe(true, false, false, "ffn_moe_up-3"));
+    report("an attention node is dense", !ggml_sched_split_moe(false, true, false, "attn_norm-3"));
+    report("a stream split is named by its slots, not by its reduce", ggml_sched_cs_split_name("ffn_moe_cs_slots-0") && !ggml_sched_cs_split_name("ffn_moe_cs_rel-0"));
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -300,6 +314,7 @@ int main(int argc, char ** argv) {
     test_dense_split();
     test_stream_chunks();
     test_lend_line();
+    test_split_class();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

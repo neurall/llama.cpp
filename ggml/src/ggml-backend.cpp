@@ -12,6 +12,7 @@
 #include "ggml-backend-impl.h"
 #include "ggml-alloc.h"
 #include "ggml-rampool-fork.h"
+#include "ggml-sched-fork.h"
 #include "ggml-impl.h"
 
 #include <assert.h>
@@ -1212,7 +1213,7 @@ struct ggml_sched_card_stat  { ggml_backend_t backend; int64_t dense_us, moe_us,
 #define GGML_SCHED_CARD_MAX_BE     16
 static struct ggml_sched_card_stamp g_card_buf[2][GGML_SCHED_MAX_CARD_STAMPS];
 // an expert split of a pass that streams into the cache's blocks: it starts at the layer's table read (llama-graph.cpp, "ffn_moe_cs_slots-<layer>[-s<shadow>]")
-static bool ggml_sched_cs_split(const struct ggml_tensor * n0) { return strncmp(n0->name, "ffn_moe_cs_slots-", 17) == 0; }
+static bool ggml_sched_cs_split(const struct ggml_tensor * n0) { return ggml_sched_cs_split_name(n0->name); }
 static ggml_backend_t g_card_be[2][GGML_SCHED_CARD_MAX_BE];
 static int  g_card_n[2]  = { 0, 0 };
 static int  g_card_live  = -1;
@@ -4454,7 +4455,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 c.backend_id = sj->backend_id;
                 // (a stream pass: the layer's chain on a card that is not the router's starts a split of its own at its first MUL_MAT_ID, behind the copy of the
                 // hidden state: counted as dense, GLM 3.0's helper read 1247 us per token of dense where it computes 690, and its token share fell to a third)
-                c.moe = (n0->op == GGML_OP_MUL_MAT_ID && (cs_pass || n0->op_params[9] > n0->op_params[8])) || ggml_sched_cs_split(n0) ? 1 : 0;
+                c.moe = ggml_sched_split_moe(n0->op == GGML_OP_MUL_MAT_ID, cs_pass, n0->op_params[9] > n0->op_params[8], n0->name) ? 1 : 0;
                 c.xin = 0; c.upin = 0;
                 c.nn = sj->graph.n_nodes;
                 snprintf(c.nf, sizeof c.nf, "%s", ggml_op_name(n0->op)); snprintf(c.nl, sizeof c.nl, "%s", ggml_op_name(sj->graph.nodes[sj->graph.n_nodes - 1]->op)); c.ni[0] = 0;
