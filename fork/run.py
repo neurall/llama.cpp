@@ -1704,7 +1704,8 @@ def cmd_nsys(a):
         if s - ce > 50e6: cl.append((cs, ce)); cs, ce = s, e
         else: ce = max(ce, e)
     cl.append((cs, ce))
-    w0, w1 = max(cl, key=lambda x: x[1] - x[0])
+    big = [x for x in cl if x[1] - x[0] > 1e9]   # the requests' stretches, in time order (--pass N picks one: request 2's trial pass is not always the longest)
+    w0, w1 = big[a.pass_n - 1] if 0 < a.pass_n <= len(big) else max(cl, key=lambda x: x[1] - x[0])
     W = (w1 - w0) / 1e9
     def union(iv):   # seconds covered by a list of (start, end)
         t, end = 0, None
@@ -11410,6 +11411,7 @@ if __name__ == "__main__":
     ns.add_argument("rep", help="the .nsys-rep file")
     ns.add_argument("--top", type=int, default=8, help="kernels listed per card")
     ns.add_argument("--gaps", type=int, default=0, help="list the N longest compute-stream waits per card with the kernels around them")
+    ns.add_argument("--pass", dest="pass_n", type=int, default=0, help="the Nth request's stretch (kernel stretches over 1 s in time order) instead of the longest")
     if len(sys.argv) > 1 and (sys.argv[1] in ("-h", "--help") or sys.argv[1] == "run" and len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help")): run_list_help()
     if len(sys.argv) > 2 and sys.argv[1] == "bg" and not os.environ.get("RUN_DAEMON"):   # `bg build NAME ...`: any run.py command as the detached run, so `run` attaches and `run stop` sees it (user 2026-11-09: "run attachable")
         sys.exit(run_list_detached("bg " + " ".join(sys.argv[2:4]), [], cmd=sys.argv[2:]))
