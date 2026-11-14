@@ -1,5 +1,8 @@
 name,model,n,test,tokens,args,extra
-pmx-off,k31,2,chatv,512,"--moe rp-grow=0",--env PERF_LEDGER=0
-pmx-t4,k31,2,chatv,512,"--moe rp-grow=0,pred-top=4,predict-ahead=0,pred=1",--env PERF_LEDGER=0
-pmx-t8,k31,2,chatv,512,"--moe rp-grow=0,pred-top=8,predict-ahead=0,pred=1",--env PERF_LEDGER=0
-pmx-t16,k31,2,chatv,512,"--moe rp-grow=0,pred-top=16,predict-ahead=0,pred=1",--env PERF_LEDGER=0
+pmx-off,k31,2,chatv,256,"--moe rp-grow=0",--env PERF_LEDGER=0
+pmx-d1,k31,2,chatv,256,"--moe rp-grow=0,pred-top=16,predict-ahead=0,pred=1",--env PERF_LEDGER=0
+pmx-d1o,k31,2,chatv,256,"--moe rp-grow=0,pred-top=16,predict-ahead=0,pred=1,pred-over=16",--env PERF_LEDGER=0
+pmx-d2,k31,2,chatv,256,"--moe rp-grow=0,pred-top=16,predict-ahead=2,pred=1",--env PERF_LEDGER=0
+pmx-d2o,k31,2,chatv,256,"--moe rp-grow=0,pred-top=16,predict-ahead=2,pred=1,pred-over=16",--env PERF_LEDGER=0
+pmx-d3,k31,2,chatv,256,"--moe rp-grow=0,pred-top=16,predict-ahead=3,pred=1",--env PERF_LEDGER=0
+pmx-d3o,k31,2,chatv,256,"--moe rp-grow=0,pred-top=16,predict-ahead=3,pred=1,pred-over=16",--env PERF_LEDGER=0

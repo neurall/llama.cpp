@@ -4349,8 +4349,9 @@ void pred_loop(moe_cache * mc) {
             // One ordered list for decode and prompt passes (llama-moe-fetchlist-fork.h): per layer ahead its picks, then its oversampled, most tokens first.
             // shortcut: a prompt pass on a model that fits in RAM only scores its list (no predicted upload yet), upgrade with the VRAM stage of the list.
             static const int32_t pp_over = [] { const char * e = moe_opt("pp-over"); return e ? std::max(0, atoi(e)) : 0; }();   // --moe pp-over=M: M oversampled per token and layer
+            static const int32_t dec_over = [] { const char * e = moe_opt("pred-over"); return e ? std::max(0, atoi(e)) : 0; }();   // --moe pred-over=M: the same for decode
             const int64_t n_use = std::min<int64_t>(r.n_blk, (int64_t) mc->layers.size() - 1 - (int64_t) r.li);
-            const auto list = moe_fetch_list(r.x.data(), r.n_tok, r.n_blk, n_use, ne, &mc->pred_b[r.li + 1], r.pp ? r.n_used : mc->pred_m, r.pp ? pp_over : 0,
+            const auto list = moe_fetch_list(r.x.data(), r.n_tok, r.n_blk, n_use, ne, &mc->pred_b[r.li + 1], r.pp ? r.n_used : mc->pred_m, r.pp ? pp_over : dec_over,
                     [&](int32_t d, int32_t e) { return !r.pp && mc->layers[r.li + 1 + d].expert_slot[e] >= 0; }, SIZE_MAX);
             if (r.pp) {
                 std::lock_guard<std::mutex> lk(mc->pp_ps_mtx);
