@@ -675,9 +675,30 @@ static void test_regress_least_over_cards() {
     report("the pool of card 1 holds more than card 2: the request is limited by card 2", cb > cs && *std::min_element(caps.begin(), caps.end()) == cs, fmt("%zu vs %zu cells", cb, cs));
 }
 
+// The bytes a matmul reads past each slice (Qwen3.8's down rows of 640) for a run of n experts e..e+n-1 copied into consecutive blocks: the next expert's first bytes,
+// so one strided copy covers the rows whose next expert exists (poolx_past_rows), and only the tensor's last expert takes zeros on its own. Qwen3.8 IQ4_XS 12k, 2026-11-14:
+// one copy per expert per tensor, 12461 copies before a split pass's first kernel (650 ms of the scheduler thread, both cards idle 1.29 s against 0.62 staged).
+static void test_regress_past_rows() {
+    printf("Testing the bytes past a run's slices in one copy:\n");
+    report("a run inside the tensor: every row from the next expert", poolx_past_rows(0, 4, 512) == 4 && poolx_past_rows(100, 1, 512) == 1);
+    report("a run ending at the last expert: that one row takes zeros", poolx_past_rows(508, 4, 512) == 3 && poolx_past_rows(511, 1, 512) == 0);
+    report("an empty run: none", poolx_past_rows(0, 0, 512) == 0);
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-moecache-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    const size_t a = src.find("\nstatic void cs_copy(");
+    const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
+    report("cs_copy writes a run's past bytes with one strided copy", b != std::string::npos && src.substr(a, b - a).find("poolx_past_rows(") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
+    test_regress_past_rows();
     test_block_sizing();
     test_lend_granularity();
     test_ledger_random();

@@ -12652,7 +12652,22 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
             const char * dr = rp && !rpp ? jit_direct_src(mc, rb, srcs[k], (size_t) cps[i].e*sz, sz + (past_next ? pb0 : 0), (int) mc->n_expert_used) : nullptr;
             if (rp && !rpp) { (dr ? mc->cs_n_direct : mc->cs_n_map)++; }
             ggml_backend_tensor_set_2d_async(rb, dsts[k], rpp ? rpp : dr ? dr : (const char *) srcs[k]->data + (size_t) cps[i].e*sz, (size_t) cps[i].b*B, sz, n, B, sz);
-            for (size_t m = 0; m < n; ++m) {   // what a matmul reads past each slice (classes with rows not a multiple of 512 values)
+            // a run from the tensor itself: each slice's past bytes are the next expert's first bytes, one strided copy for the run (one copy per expert was 12461 copies
+            // before a Qwen3.8 12k split pass's first kernel: 650 ms of the scheduler thread). The tensor's last expert, when in the run, takes its zeros below.
+            size_t m0 = 0;
+            if (!rpp && !dr && n > 1 && ggml_backend_buffer_is_host(srcs[k]->buffer)) {
+                const char * from = nullptr;
+                if (const size_t pb = expert_past(mc, ls, k, cps[i].e, srcs[k], from)) {
+                    m0 = poolx_past_rows(cps[i].e, n, srcs[k]->ne[2]);
+                    if (m0 > 0) {
+                        ggml_tensor z = expert_past_view(dsts[k], (size_t) cps[i].b*B + sz, (m0 - 1)*B + pb);
+                        ggml_backend_tensor_set_2d_async(rb, &z, (const char *) srcs[k]->data + (size_t) (cps[i].e + 1)*sz, 0, pb, m0, B, sz);
+                    }
+                } else {
+                    m0 = n;   // the class reads nothing past its slices
+                }
+            }
+            for (size_t m = m0; m < n; ++m) {   // what a matmul reads past each slice (classes with rows not a multiple of 512 values)
                 const char * from = nullptr;
                 if (const size_t pb = expert_past(mc, ls, k, cps[i + m].e, srcs[k], from)) {
                     ggml_tensor z = expert_past_view(dsts[k], (size_t) cps[i + m].b*B + sz, pb);

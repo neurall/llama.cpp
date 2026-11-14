@@ -51,6 +51,10 @@ static inline poolx_block poolx_block_class(const poolx_slice s[3]) {
 // back, each with its own block size; the ones before it are covered whole); a lend that ends on a block edge or past the blocks ends where it ends. Every edge of
 // the pool layout (the lend's end, the KV zone's start) uses this rule. Rounding by the LARGEST block size is wrong when a smaller-block class sits at the start
 // (MiMo: class 0 has 9.2 MB blocks, the largest class 12.6 MB sits at the end: a 10.8 MB lend ended at 18.3 MB, not 12.6 MB)
+// A run of n experts e..e+n-1 of a tensor with ne2 experts, copied into consecutive blocks: the bytes past each slice are the next expert's first bytes, so the rows whose
+// next expert exists go up as one strided copy (source pitch the slice, destination pitch the block); the tensor's last expert, when in the run, reads zeros past it.
+static inline size_t poolx_past_rows(int64_t e, size_t n, int64_t ne2) { return n == 0 ? 0 : e + (int64_t) n < ne2 ? n : n - 1; }
+
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
     for (const auto & sg : ap.segs) {
         const size_t end = sg.base + (size_t) sg.n * sg.B;
