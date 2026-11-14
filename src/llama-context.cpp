@@ -1775,6 +1775,20 @@ void llama_context::sched_reserve() {
                 std::sort(dang.begin(), dang.end(), [](const ggml_tensor * x, const ggml_tensor * y) { return ggml_nbytes(x) > ggml_nbytes(y); });
                 at_peak += format("| never read: %zu tensors, %.0f MiB: ", dang.size(), dsum / 1048576.0);
                 for (size_t k = 0; k < dang.size() && k < 8; ++k) { at_peak += format("%s %s %.0f MiB; ", dang[k]->name, ggml_op_desc(dang[k]), ggml_nbytes(dang[k]) / 1048576.0); }
+                // parents of views that have no memory yet (no buffer, no data): the allocator places them in the graph's buffer, e.g. a KV the pool has not attached yet
+                std::set<const ggml_tensor *> bare;
+                size_t bsum = 0;
+                for (int k = 0; k < nn; ++k) {
+                    ggml_tensor * n = ggml_graph_node(mg, k);
+                    for (const ggml_tensor * s : n->src) {
+                        if (!s) { continue; }
+                        const ggml_tensor * r = root(s);
+                        if (r != s && !r->buffer && !r->data && ggml_backend_sched_get_tensor_backend(sched.get(), n) == backend_ptrs[bi] && bare.insert(r).second) { bsum += ggml_nbytes(r); }
+                    }
+                    if (n->view_src) { const ggml_tensor * r = root(n); if (!r->buffer && !r->data && ggml_backend_sched_get_tensor_backend(sched.get(), n) == backend_ptrs[bi] && bare.insert(r).second) { bsum += ggml_nbytes(r); } }
+                }
+                at_peak += format("| view parents with no memory yet: %zu, %.0f MiB", bare.size(), bsum / 1048576.0);
+                for (auto it = bare.begin(); it != bare.end() && std::distance(bare.begin(), it) < 4; ++it) { at_peak += format("; %s %.0f MiB", (*it)->name, ggml_nbytes(*it) / 1048576.0); }
                 std::vector<std::pair<const ggml_tensor *, size_t>> xv(xin.begin(), xin.end());
                 std::sort(xv.begin(), xv.end(), [](const auto & x, const auto & y) { return x.second > y.second; });
                 size_t xsum = 0; for (const auto & x : xv) { xsum += x.second; }
