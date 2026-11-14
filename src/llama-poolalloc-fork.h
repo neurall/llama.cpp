@@ -94,6 +94,18 @@ static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return 
 // block only for an entry needed now (poolx_ring_cheap).
 static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6; }
 static inline int  poolx_ring_rank(int tier) { static const int r[9] = { 0, 1, 2, 4, 6, 3, 7, 8, 5 }; return tier >= 0 && tier < 9 ? r[tier] : 9; }
+// what taking a block of a tier does to what lies there: nothing (free, empty), its cached expert leaves the table (cs_evict: 2, 3, 4, 8), the other classes'
+// experts over its bytes leave (cls_claim: 5, 6), a prediction gives way (7). Never by comparing tiers: tier 8 once went down the claim branch and its expert stayed
+// in the table over the new expert's bytes (vf-qni3 on ring_cover_all, 1830 slices bad)
+enum poolx_take_kind { POOLX_TAKE_NONE, POOLX_TAKE_EVICT, POOLX_TAKE_CLAIM, POOLX_TAKE_YIELD };
+static inline poolx_take_kind poolx_ring_take(int tier) {
+    switch (tier) {
+        case 0: case 1:         return POOLX_TAKE_NONE;
+        case 5: case 6:         return POOLX_TAKE_CLAIM;
+        case 7:                 return POOLX_TAKE_YIELD;
+        default:                return POOLX_TAKE_EVICT;
+    }
+}
 // an entry planned beyond the one needed now (must) and the card's next (lead) takes cheap blocks only: it waits for computed layers' blocks or its own turn
 // (SIZE_MAX: none needed now, as at a pass edge)
 static inline bool poolx_ring_cheap(size_t must, size_t nx, size_t lead) { return must == SIZE_MAX || (nx > must && nx != lead); }

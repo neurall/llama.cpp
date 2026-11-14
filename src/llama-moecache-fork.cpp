@@ -12521,7 +12521,8 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
         const size_t done = mc->cs_done[lo.link];
         const int t = poolx_ring_tier((size_t) q, done, p, ps.cs_up[b] == mc->cs_pass, (size_t) q < mc->cs_mix.size() && mc->cs_mix[(size_t) q] == 1, cheap);
         if (t < 0) { n_sk[5] += !(cheap && (size_t) q > p); continue; }
-        c.push_back({ t, b, lx, i, (size_t) q < done ? q : -1, poolx_ring_victim((size_t) q, p, mc->cs_order.size(), t == 2 ? 0.0 : victim_score(mc, lo, x, true), t == 2) });
+        const double s = t != 2 && (size_t) lx < mc->layers.size() ? victim_score(mc, lo, x, true) : 0.0;   // a shadow lives one pass and has no decode heat
+        c.push_back({ t, b, lx, i, (size_t) q < done ? q : -1, poolx_ring_victim((size_t) q, p, mc->cs_order.size(), s, t == 2) });
     }
     }
     // The stream takes the cache's own blocks (user 2026-11-13: nothing set aside for it), so it keeps what the cache holds: free blocks first, then empty ones of a
@@ -12601,7 +12602,8 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
     const double rlb = mc->gbs_link[ls.link] * 1e3;
     for (size_t i = 0; i < want.size(); ++i) {
         const int32_t e = want[i], b = c[i].b;
-        if (c[i].tier == 7) {   // a prediction gives way: out of its entry's blocks in flight; an entry after this one plans it again from its turn
+        const poolx_take_kind kind = poolx_ring_take(c[i].tier);
+        if (kind == POOLX_TAKE_YIELD) {   // a prediction gives way: out of its entry's blocks in flight; an entry after this one plans it again from its turn
             layer_state & lo = csl(mc, (size_t) c[i].o);
             lo.slot_in_flight[b] = false;
             lo.ring_slots.erase(std::remove(lo.ring_slots.begin(), lo.ring_slots.end(), b), lo.ring_slots.end());
@@ -12610,8 +12612,8 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
             if (q > (int32_t) p) { mc->cs_next[lo.link] = std::min(mc->cs_next[lo.link], (size_t) q); }
             mc->cs_n_steal++;
         }
-        else if (c[i].tier >= 5) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; mc->cs_n_claim_fut += c[i].tier == 6; }
-        else if (c[i].tier >= 2) { cs_evict(mc, (size_t) c[i].o, b); }
+        else if (kind == POOLX_TAKE_CLAIM) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; mc->cs_n_claim_fut += c[i].tier == 6; }
+        else if (kind == POOLX_TAKE_EVICT) { cs_evict(mc, (size_t) c[i].o, b); }
         if (c[i].wq >= 0) { GGML_ASSERT((size_t) c[i].wq < mc->cs_cov.size() && mc->cs_cov[(size_t) c[i].wq] >= c[i].wq); wait_at = std::max(wait_at, (size_t) mc->cs_cov[(size_t) c[i].wq] + 1); }
         mc->cs_n_free += c[i].tier <= 1; mc->cs_n_cold += c[i].tier == 2; mc->cs_n_done += c[i].tier == 3; mc->cs_n_ahead += c[i].tier == 4; mc->cs_n_busy += c[i].tier == 8;
         pool_take(mc, li, b);

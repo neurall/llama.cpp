@@ -764,7 +764,7 @@ static void test_regress_ring_depth() {
 // e experts, d of each cached before the first pass (the decode set), blocks for cap experts; every hook plans as far ahead as the blocks allow. old: the rule before
 // ring_cheap_ahead (every entry may take a layer to come's expert). up: uploads per pass; churn: experts of layers to come taken (each goes up again at its turn);
 // bad: such a take by an entry planned beyond the one needed now and the card's next; starved: the entry needed now found too few blocks (the engine aborts)
-struct ring_sim { std::vector<int> up; int churn = 0, bad = 0, starved = 0, busy = 0; };
+struct ring_sim { std::vector<int> up; int churn = 0, bad = 0, starved = 0, busy = 0, stale = 0; };   // stale: a taken block whose expert would stay in its table
 static ring_sim ring_sim_run(int n, int e, int d, int cap, int passes, bool old) {
     struct blk { int lay = -1, ex = -1, pass = -1; };
     std::vector<blk> bl((size_t) cap);
@@ -794,7 +794,10 @@ static ring_sim ring_sim_run(int n, int e, int d, int cap, int passes, bool old)
                     blk & k = bl[(size_t) c[i].b];
                     if (poolx_ring_costly(c[i].tier)) { r.churn++; r.bad += nx != p && nx != lead; }
                     r.busy += c[i].tier == 8;
-                    if (k.lay >= 0) { slot[(size_t) k.lay][(size_t) k.ex] = -1; }
+                    if (k.lay >= 0) {
+                        if (poolx_ring_take(c[i].tier) != POOLX_TAKE_EVICT) { r.stale++; continue; }   // the engine would leave its table entry on the new expert's bytes
+                        slot[(size_t) k.lay][(size_t) k.ex] = -1;
+                    }
                     k = { (int) nx, want[i], ps };
                     slot[nx][(size_t) want[i]] = c[i].b;
                     ups++;
@@ -852,6 +855,11 @@ static void test_regress_ring_costly() {
     report("sim: the entry needed now always finds its blocks", nw.starved == 0);
     report("sim: the old rule churns, the rule does not in the first pass", od.churn > nw.churn && nw.up[0] == 8 * 12);
     report("sim: fewer uploads than the old rule", nw.up[0] + nw.up[1] + nw.up[2] < od.up[0] + od.up[1] + od.up[2]);
+    report("sim: every taken block's expert leaves its table", nw.stale == 0 && od.stale == 0);
+    // what a take does to the block (vf-qni3 on ring_cover_all: tier 8 went down the claim branch, its expert stayed in the table over another expert's bytes: 1830 slices bad)
+    bool kinds = poolx_ring_take(0) == POOLX_TAKE_NONE && poolx_ring_take(1) == POOLX_TAKE_NONE && poolx_ring_take(5) == POOLX_TAKE_CLAIM && poolx_ring_take(6) == POOLX_TAKE_CLAIM && poolx_ring_take(7) == POOLX_TAKE_YIELD;
+    for (int t : { 2, 3, 4, 8 }) { kinds = kinds && poolx_ring_take(t) == POOLX_TAKE_EVICT; }
+    report("take: a cached expert's block evicts it (2, 3, 4, 8), claims (5, 6), a prediction yields (7)", kinds);
     std::string src;
     {
         std::string path = __FILE__;
@@ -863,6 +871,9 @@ static void test_regress_ring_costly() {
     const std::string ah = body("\nstatic void cs_ahead("), pl = body("\nstatic bool cs_plan("), pv = body("inline double prompt_victim_rank(");
     report("the engine: cs_ahead plans by poolx_ring_cheap", ah.find("poolx_ring_cheap(") != std::string::npos && ah.find("cs_plan(") != std::string::npos);
     report("the engine: cs_plan ranks by poolx_ring_tier and poolx_ring_victim", pl.find("poolx_ring_tier(") != std::string::npos && pl.find("poolx_ring_victim(") != std::string::npos);
+    report("the engine: cs_plan takes by poolx_ring_take, no tier comparison picks the branch", pl.find("poolx_ring_take(") != std::string::npos && pl.find("tier >= 5") == std::string::npos && pl.find("tier >= 2") == std::string::npos);
+    // a shadow (one pass's part of another card's layer) has no decode heat (vf-ds on ring_cover_all: segfault in score() from the ring's rank)
+    report("the engine: cs_plan scores real layers only", pl.find("victim_score(") != std::string::npos && pl.find("mc->layers.size() ? victim_score(") != std::string::npos);
     report("the engine: decode's prompt rank is poolx_victim_rank", pv.find("poolx_victim_rank(") != std::string::npos);
     // a copy over a computed entry's block waits for the done event recorded over it (cs_cov), so cs_done moves only where that event is recorded: cs_mark_done
     // (vf-ds and vf-qni3 on ring_next_use: the reduce split's hook moved it on its own, "GGML_ASSERT ... cs_cov[wq] >= wq")
