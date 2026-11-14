@@ -4690,9 +4690,11 @@ struct ggml_cuda_xstage_ring {
     ggml_cuda_xstage_block small[GGML_CUDA_XSTAGE_N_SMALL];
     ggml_cuda_xstage_block big[GGML_CUDA_XSTAGE_N_BIG];
     unsigned cur_small = 0, cur_big = 0;
+    std::vector<ggml_cuda_xstage_block> retired;   // blocks a bigger one replaced inside a pass: freed by ggml_cuda_xstage_reap (a card's synchronize), never in the copy
 };
 static std::mutex            g_xstage_mu;
 static ggml_cuda_xstage_ring g_xstage[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_DEVICES];
+static std::atomic<int>      g_xstage_n_retired{0};
 
 // The write half of the staged copy is a KERNEL on the destination card that reads the pinned host block over PCIe (zero-copy), not an upload on the copy
 // engine. A card's uploads run one after the other on its copy engine, first in, first out, and the prefetch ring queues the next layers' expert uploads there
@@ -4760,6 +4762,14 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
             break;
         }
     }
+    if (e.cap < n && e.host != nullptr) {
+        // the block grows (a longer batch than any before). The old one is retired with its events, not freed here: unregistering pinned memory drains the cards' queues,
+        // 72-150 ms of the scheduler thread each, 9 in one Qwen3.8 12k request whose expert trial moved bigger hand-offs (nsys 2026-11-14: both cards idle 56 and
+        // 72 ms). ggml_cuda_xstage_reap frees it at a card's synchronize, once its last read and write are done.
+        R.retired.push_back(e);
+        g_xstage_n_retired.fetch_add(1);
+        e = ggml_cuda_xstage_block();
+    }
     if (e.d2h_done == nullptr) {
         ggml_cuda_set_device(ctx_src->device);
         CUDA_CHECK(cudaEventCreateWithFlags(&e.d2h_done, cudaEventDisableTiming));
@@ -4767,16 +4777,6 @@ static bool ggml_cuda_xstage_copy(ggml_backend_cuda_context * ctx_src, ggml_back
         CUDA_CHECK(cudaEventCreateWithFlags(&e.h2d_done, cudaEventDisableTiming));
     }
     if (e.cap < n) {
-        if (e.host != nullptr) {
-            // the block grows (a longer batch than any before): the write still reading the old block must finish first. Rare, so a host wait is fine here.
-            ggml_cuda_set_device(ctx_dst->device);
-            if (e.used) { CUDA_CHECK(cudaEventSynchronize(e.h2d_done)); }
-#ifdef __linux__
-            if (e.mapped) { CUDA_CHECK(cudaHostUnregister(e.host)); munmap(e.host, e.cap); } else
-#endif
-            { CUDA_CHECK(cudaFreeHost(e.host)); }
-            e.host = nullptr; e.dev = nullptr; e.cap = 0; e.used = false; e.mapped = false;
-        }
         const size_t cap = small ? GGML_CUDA_XSTAGE_SMALL : GGML_PAD(n, (size_t) 2 << 20);
         ggml_cuda_set_device(ctx_src->device);
         const int64_t t_pin = ggml_time_us();   // the whole pin (THP register or the cudaHostAlloc fallback), counted in ggml_backend_xstage_pin_add_fork
@@ -5011,10 +5011,44 @@ static void ggml_backend_cuda_stamp(ggml_backend_t backend, int64_t * dst) {
 }
 #endif
 
+// The hand-off blocks a bigger one replaced (ggml_cuda_xstage_copy): freed once the read into them (source card) and the write out of them (destination card) are done.
+// Runs at a card's synchronize, between graphs, where unregistering pinned memory stalls no queued work.
+static void ggml_cuda_xstage_reap(int restore_device) {
+    std::lock_guard<std::mutex> lk(g_xstage_mu);
+    for (int s = 0; s < GGML_CUDA_MAX_DEVICES; ++s) {
+        for (int d = 0; d < GGML_CUDA_MAX_DEVICES; ++d) {
+            auto & v = g_xstage[s][d].retired;
+            for (size_t i = 0; i < v.size(); ) {
+                ggml_cuda_xstage_block & e = v[i];
+                bool done = true;
+                if (e.used) {
+                    ggml_cuda_set_device(s);
+                    const cudaError_t q0 = cudaEventQuery(e.d2h_done);
+                    ggml_cuda_set_device(d);
+                    const cudaError_t q1 = cudaEventQuery(e.h2d_done);
+                    if (q0 == cudaErrorNotReady || q1 == cudaErrorNotReady) { (void) cudaGetLastError(); done = false; }
+                    else { CUDA_CHECK(q0); CUDA_CHECK(q1); }
+                }
+                if (!done) { ++i; continue; }
+#ifdef __linux__
+                if (e.mapped) { CUDA_CHECK(cudaHostUnregister(e.host)); munmap(e.host, e.cap); } else
+#endif
+                { CUDA_CHECK(cudaFreeHost(e.host)); }
+                ggml_cuda_set_device(s); CUDA_CHECK(cudaEventDestroy(e.d2h_done));
+                ggml_cuda_set_device(d); CUDA_CHECK(cudaEventDestroy(e.h2d_done));
+                v.erase(v.begin() + (ptrdiff_t) i);
+                g_xstage_n_retired.fetch_sub(1);
+            }
+        }
+    }
+    ggml_cuda_set_device(restore_device);
+}
+
 static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
 
     CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+    if (g_xstage_n_retired.load(std::memory_order_relaxed) > 0) { ggml_cuda_xstage_reap(cuda_ctx->device); }
 
     GGML_UNUSED(backend);
 }

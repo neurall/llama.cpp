@@ -413,6 +413,27 @@ static void test_cs_bytes_counted() {
     report("cs_copy adds its bytes to the card's uploads", b != std::string::npos && src.substr(a, b - a).find("ggml_backend_sched_upload_add_fork(") != std::string::npos);
 }
 
+// The split's hand-off blocks (pinned host memory between two cards, ggml_cuda_xstage_copy) grow inside a pass when a bigger tensor crosses. Freeing the old block there
+// (cudaHostUnregister) drains the cards' queues: Qwen3.8 IQ4_XS 12k, request 2 (the expert trial), nsys 2026-11-14: 9 calls of 72-150 ms on the scheduler thread, both
+// cards idle 56 and 72 ms. The old block is retired and freed at a card's synchronize instead.
+static void test_xstage_no_free_in_pass() {
+    printf("hand-off blocks are not freed inside a pass:\n");
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../ggml/src/ggml-cuda/ggml-cuda.cu";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    const size_t a = src.find("\nstatic bool ggml_cuda_xstage_copy(");
+    const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
+    const std::string body = b != std::string::npos ? src.substr(a, b - a) : std::string();
+    report("the copy never unregisters or frees a block", !body.empty() && body.find("cudaHostUnregister") == std::string::npos && body.find("cudaFreeHost") == std::string::npos);
+    const size_t c = src.find("\nstatic void ggml_backend_cuda_synchronize(");
+    const size_t d = c == std::string::npos ? c : src.find("\n}\n", c);
+    report("a card's synchronize frees the retired blocks", d != std::string::npos && src.substr(c, d - c).find("ggml_cuda_xstage_reap(") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -426,6 +447,7 @@ int main(int argc, char ** argv) {
     test_may_take_call();
     test_turns();
     test_cs_bytes_counted();
+    test_xstage_no_free_in_pass();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;
