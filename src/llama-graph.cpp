@@ -3347,6 +3347,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         static const bool chain_merge = [] { const char * e = moe_opt("chain-merge"); return e && atoi(e) != 0; }();
         const bool mc_late = chain_merge && n_tokens == 1 && mc_cpu_backend && !mc_pp && !mc_ppk && !mc_ids_all && !mc_miss_ids && !mc_mix_b && !mc_cstream;
         if (!mc_mix_b && !mc_cstream && !mc_late) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
+            if (!moe_ranges.empty()) {   // diagnostic (probe leak, 2026-11-14): which path expands the card's chain in a dense split graph
+                static int n_log = 0;
+                if (n_log++ < 6) { LLAMA_LOG_WARN("%s: dense split graph of %lld tokens, layer %d: card chain expanded (mc_pp %d, mc_cstream %d, no_staging %d)\n", __func__, (long long) n_tokens, il, (int) mc_pp, (int) mc_cstream, (int) no_staging); }
+            }
             ggml_build_forward_expand(gf, down_g);
         }
     }

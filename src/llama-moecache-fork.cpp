@@ -17334,7 +17334,11 @@ bool llama_moe_cache_pred_train_now_fork() {
 // on Qwen3.8): 3426 MiB for 4704 tokens where the pass lends 1.9 GiB. Those sizes capped the micro-batch and, kept as the largest seen per size, every pass of the
 // session: a 13.7k prompt on 2 x 8 GiB ran 4 passes where the pools hold 2 (2026-11-12). on: before the measure-only reserves; off: after them, the graph flags reset.
 void llama_moe_cache_measure_stream_fork(bool on) {
-    if (!g_cache || !pp_no_staging()) { return; }
+    if (!g_cache || !pp_no_staging()) {
+        static int n_log = 0;   // diagnostic (probe leak, 2026-11-14)
+        if (on && n_log++ < 2) { LLAMA_LOG_WARN("%s: measure stays off: cache %d, staging=0 %d\n", __func__, (int) (g_cache != nullptr), (int) pp_no_staging()); }
+        return;
+    }
     g_cs_measure.store(on, std::memory_order_relaxed);
     if (!on) { g_pp_cstream_graph = false; g_cs_order_graph.clear(); g_cs_rng_graph.clear(); g_cs_mix_graph.clear(); }
 }
