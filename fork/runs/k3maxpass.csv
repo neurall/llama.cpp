@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+k3mp-4k,k31,1,pf128k,32,"--moe rp-grow=0",--clamp 4096 --ctx 40000 --env PERF_LEDGER=0
+k3mp-8k,k31,1,pf128k,32,"--moe rp-grow=0",--clamp 8192 --ctx 40000 --env PERF_LEDGER=0
+k3mp-16k,k31,1,pf128k,32,"--moe rp-grow=0",--clamp 16384 --ctx 40000 --env PERF_LEDGER=0
+k3mp-32k,k31,1,pf128k,32,"--moe rp-grow=0",--clamp 32768 --ctx 40000 --env PERF_LEDGER=0
