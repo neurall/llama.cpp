@@ -5669,6 +5669,9 @@ def cmd_build(a):
         shutil.copytree(binp, dst, symlinks=True)
     with open(os.path.join(dst, "BUILD_INFO"), "w") as f:
         f.write(info)
+    # the commit built is the one asked for (bug log: --commit HEAD built a 9-day-old commit of another checkout, twice); a mismatch fails the build
+    if a.commit and _git(W, "rev-parse", "HEAD") != rev:
+        sys.exit(f"build {name}: built {_git(W, 'rev-parse', '--short', 'HEAD')}, asked for {a.commit} = {rev[:10]} in this run.py's tree")
     if tmp:
         _git(a.repo, "worktree", "remove", "--force", tmp, check=False)
     print(f"build {name}: OK in {time.time() - t0:.0f} s -> {dst} ({open(os.path.join(dst, 'BUILD_INFO')).read().split()[0]})", flush=True)
