@@ -76,6 +76,17 @@ static inline size_t kvx_cells(size_t tail_end, size_t lend0, size_t F, size_t R
     const size_t fl = lend0 + F;
     return R && tail_end > fl ? (tail_end - fl) / (R + pc) : 0;
 }
+// at most c_plain (kvx_cells' answer) beside a prompt pass of n tokens whose own lend grows with the cells: above c0 cells it borrows n x (p0 + (cells - c0) x s),
+// s = (p1 - p0) / (c1 - c0) (the line between the start-up probes at c0 and c1 cells, p0 and p1 bytes per token; the pass cap reads the same line)
+static inline size_t kvx_cells_grow(size_t tail_end, size_t F, size_t R, size_t pc, double n, double p0, double p1, size_t c0, size_t c1, size_t c_plain) {
+    if (n <= 0.0 || R == 0 || c1 <= c0 || p1 <= p0 || c_plain <= c0) { return c_plain; }
+    const double s    = (p1 - p0) / (double) (c1 - c0);
+    const double room = (double) tail_end - (double) F - n * (p0 - s * (double) c0);
+    const double cl   = room > 0.0 ? room / ((double) R + (double) pc + n * s) : 0.0;
+    if (cl >= (double) c0) { return std::min(c_plain, (size_t) cl); }
+    const double r0 = (double) tail_end - (double) F - n * p0;   // no room even at c0 cells: below them the pass borrows at most n x p0
+    return std::min(c_plain, std::min(c0, r0 > 0.0 ? (size_t) (r0 / ((double) R + (double) pc)) : (size_t) 0));
+}
 
 // The host buffer of the RAM tier (allocated once): cells it holds for a budget of bytes when one cell of every layer takes r_all bytes and each of n_seg arrays is padded to
 // 256 bytes (slack), at most cmax. 0 when the budget does not even cover the slack.

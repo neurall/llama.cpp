@@ -6376,7 +6376,12 @@ static size_t kv_prompt_lend0(const moe_cache::alias_pool & ap, int32_t n_pass =
 // the cells a prompt's KV can grow to on this card with a zone of fixed part F and combined row R while the lend grows by pc per cell (not capped by the model's
 // context: the log shows what really fits)
 static size_t kv_prompt_cells(const moe_cache::alias_pool & ap, size_t F, size_t R, size_t pc, int32_t n_pass = 64) {
-    return kvx_cells(ap.floor_end, kv_prompt_lend0(ap, n_pass), F, R, pc);
+    if (n_pass <= 64) { return kvx_cells(ap.floor_end, kv_prompt_lend0(ap, n_pass), F, R, pc); }
+    // beside a prompt pass: the terms the pass cap reads too (pp_cap_to_pool), the dense split's copies in front of the graph and the pass's own growth with the cells
+    // (need_at_cells' line between the start-up probes), not only the f16 copies of quantized K/V. Without them f16 "held" 137078 tokens beside a 6436-token pass
+    // (Qwen3.6 128k at 4.5 GiB a card, 720 / 798 MiB of copies) whose cap at the end cells was 2528: the KV stayed f16, 1790 prompt t/s against 3017 on q8_0
+    const size_t Fm = F + ap.mirror_b;
+    return kvx_cells_grow(ap.floor_end, Fm, R, pc, (double) n_pass, ap.grow_p0, ap.grow_p1, ap.kv_step, ap.grow_c1, kvx_cells(ap.floor_end, kv_prompt_lend0(ap, n_pass), Fm, R, pc));
 }
 static bool kv_any_out(const moe_cache::alias_pool & ap);
 static size_t kv_mem_available();

@@ -135,6 +135,16 @@ static void test_capacity_and_host() {
     report("cells grow down the ladder: f16 < q8_0 < q4_0 (about 1.9x and 3.5x)", c16 < c8 && c8 < c4 && c8 * 10 > c16 * 17 && c4 * 10 > c16 * 33, fmt("%zu / %zu / %zu", c16, c8, c4));
     report("a lend that grows per cell (the attention's f16 copies of quantized K/V) takes cells off", kvx_cells(tail, lend0, F, R16, 2000) < c16);
     report("no room behind the lend and the fixed part: 0 cells", kvx_cells(1000, 5000, 0, 100, 0) == 0 && kvx_cells(1000, 500, 600, 100, 0) == 0 && kvx_cells(1000, 0, 0, 0, 0) == 0);
+    {   // beside a 6000-token pass whose lend grows 1 byte a token and cell above 10000 cells (250000 -> 380000 bytes a token at 140000): 3 GB pool, 10 kB rows
+        const size_t tl = 3000000000ull, Rg = 10000, plain = kvx_cells(tl, 6000 * 250000, 0, Rg, 0);   // 150000: the lend kept at its 10000-cell size
+        const size_t g = kvx_cells_grow(tl, 0, Rg, 0, 6000.0, 250000.0, 380000.0, 10000, 140000, plain);
+        const double at = 6000.0 * (250000.0 + ((double) g - 10000.0)) + (double) g * Rg;   // the pass and the KV at those cells
+        report("a pass that grows with the cells leaves the KV fewer cells, and pass + KV fill the pool there", plain == 150000 && g == 97500 && at <= (double) tl && at > 0.999 * (double) tl, fmt("%zu -> %zu", plain, g));
+        report("no growth line (or the pass alone): the plain answer", kvx_cells_grow(tl, 0, Rg, 0, 6000.0, 250000.0, 250000.0, 10000, 140000, plain) == plain && kvx_cells_grow(tl, 0, Rg, 0, 0.0, 250000.0, 380000.0, 10000, 140000, plain) == plain);
+        const size_t small = kvx_cells(1550000000ull, 6000 * 250000, 0, Rg, 0);   // 5000 cells: below the line's start, the plain answer holds
+        report("under the line's first probe: the plain answer", kvx_cells_grow(1550000000ull, 0, Rg, 0, 6000.0, 250000.0, 380000.0, 10000, 140000, small) == small && small == 5000);
+        report("the fixed part counts (the dense split's copies): fewer cells", kvx_cells_grow(tl, 500000000, Rg, 0, 6000.0, 250000.0, 380000.0, 10000, 140000, plain) < g);
+    }
     std::mt19937_64 rng(g_seed + 1);
     long bad = 0; std::string first;
     for (long it = 0; it < g_iters; ++it) {

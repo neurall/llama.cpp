@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+nq-ns,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0,log=w",--ctx 140000 --hog-gpu 4.5
+nq-ns-x,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0,moe-split=expert,log=w",--ctx 140000 --hog-gpu 4.5
