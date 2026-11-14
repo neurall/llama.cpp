@@ -4148,9 +4148,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     // aggregate experts
     ggml_tensor * moe_out = cur_experts[0];
+    // range_cache: the sum stays on the cache's card, where the experts were computed, and only each range's rows cross (below). Left to the scheduler it ran on
+    // the last range's card, and each of the k strided views of the experts crossed as a copy with its parent's layout: 2 GiB each at 16384 tokens on GLM 3.0,
+    // 58 GiB reserved on CUDA0 against a 5.4 GiB peak of the graph's own tensors, passes capped at 3776 tokens
+    ggml_backend_t sum_b = range_cache && sched && moe_cache ? moe_cache->backend(il) : nullptr;
 
     for (uint32_t i = 1; i < n_expert_used_il; ++i) {
         moe_out = ggml_add(ctx0, moe_out, cur_experts[i]);
+        if (sum_b) { ggml_backend_sched_set_tensor_backend(sched, moe_out, sum_b); }
 
         ggml_build_forward_expand(gf, moe_out);
     }
