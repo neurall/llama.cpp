@@ -5696,6 +5696,7 @@ void llama_moe_cache_kv_tail_detach_fork() {
 // [kv_start, kv_start + kv_h * kv_row) of the pool buffer holds the combined rows of the card's records (kv_row = the sum of their rows, row c = cell c). The
 // blocks under it belong to the KV (owner -3): experts in blocks the zone takes are evicted (uploads into them dropped or awaited, as the compute alias does),
 // blocks it leaves go back to the free list.
+static void cls_take_bytes(moe_cache * mc, int32_t pc, int32_t b);   // below (grids): another class's block over these bytes gives them back
 static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t lo, size_t hi, bool do_take, bool do_give,
                             size_t & n_take, size_t & n_give, size_t & n_evict) {
     std::vector<std::pair<size_t, size_t>> rng;
@@ -5764,7 +5765,7 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
             evict_slot(mc, lo, b);
             lo.n_own--;
             n_evict++;
-        });
+        }, [&](int32_t b) { cls_take_bytes(mc, sg.pcls, b); });
         n_take += take.size();
     }
 }
@@ -7510,7 +7511,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                     evict_slot(mc, lo, b);
                     lo.n_own--;
                     g_ac.evict_n++;
-                }) > 0) {
+                }, [&](int32_t b) { cls_take_bytes(mc, sg.pcls, b); }) > 0) {
                 LLAMA_LOG_WARN("pool-gate: a lend of blocks %d-%d of class %d reached blocks under the KV zone on %s (not taken)\n", (int) blocked, (int) need, (int) sg.pcls, ggml_backend_dev_name(ap.dev));
                 // the graph is placed over those blocks all the same: it would overwrite live KV rows ('!!!!' / NaN many tokens later). Refuse this pass (the caller fails the decode).
                 ap.refused_b = ap.refused_b ? std::min(ap.refused_b, need_b) : need_b;
@@ -12176,22 +12177,11 @@ static ggml_backend_t ring_backend(moe_cache * mc, int link);   // pp-ahead's up
 // its bytes are another class's now. The ring may claim it when every block of the card's other classes over those bytes could be taken by the ring's own rule (free,
 // empty, of a layer computed in this pass or not uploaded for yet; never lent, under the KV rows, in flight, pinned, or of a layer waiting for its kernels).
 // cls_over calls f(other class, its block) for each block over the bytes; false from f stops it.
-template <class F> static bool cls_over(moe_cache * mc, int32_t pc, int32_t b, const F & f) {
+template <class F> static bool cls_over(moe_cache * mc, int32_t pc, int32_t b, const F & f) {   // llama-poolalloc-fork.h poolx_over, on the card of class pc
     for (auto & ap : mc->alias) {
-        const moe_cache::alias_pool::seg * me = nullptr;
-        for (const auto & sg : ap.segs) { if (sg.pcls == pc) { me = &sg; } }
-        if (!me) { continue; }
-        const size_t lo = me->base + (size_t) b * me->B, hi = lo + me->B;
         for (const auto & sg : ap.segs) {
-            if (sg.pcls == pc || sg.B == 0) { continue; }
-            const size_t gnb = mc->pool[sg.pcls].owner.size();   // its whole grid: past its home it may hold experts the ring claimed in the reserve
-            const size_t end = sg.base + gnb * sg.B;
-            if (hi <= sg.base || lo >= end) { continue; }
-            const int32_t x0 = lo > sg.base ? (int32_t) ((lo - sg.base) / sg.B) : 0;
-            const int32_t x1 = (int32_t) std::min<size_t>(gnb, (hi - sg.base + sg.B - 1) / sg.B);
-            for (int32_t x = x0; x < x1; ++x) { if (!f(sg.pcls, x)) { return false; } }
+            if (sg.pcls == pc) { return poolx_over(ap.segs, [&](int32_t q) { return (int32_t) mc->pool[q].owner.size(); }, pc, b, f); }
         }
-        return true;
     }
     return false;
 }
@@ -12223,17 +12213,29 @@ static void cs_unmap(moe_cache * mc, size_t lx, int32_t b) {
 static void cs_evict(moe_cache * mc, size_t lx, int32_t b) {   // the expert entry lx (layer or shadow) holds in block b out
     if (lx < mc->layers.size()) { evict_slot(mc, mc->layers[lx], b); } else { cs_unmap(mc, lx, b); }
 }
+// the bytes of class pc's block b back from every other class's block over them (cache lock held): their experts out of their tables, free ones off their
+// lists (llama-poolalloc-fork.h poolx_take_bytes). Before a claim, a lend and the KV zone take the block. An upload still writing into such a block would land
+// on the new owner's bytes: logged as an INV line (fails the row), never seen so far
+static void cls_take_bytes(moe_cache * mc, int32_t pc, int32_t b) {
+    for (auto & ap : mc->alias) {
+        bool mine = false;
+        for (const auto & sg : ap.segs) { mine = mine || sg.pcls == pc; }
+        if (!mine) { continue; }
+        poolx_take_bytes(ap.segs, mc->pool, pc, b, [&](int32_t q, int32_t x) {
+            const int32_t o = mc->pool[q].owner[x];
+            const int64_t lx = cs_li_of(mc, o);
+            if (lx < 0) { return; }
+            layer_state & lo = csl(mc, (size_t) lx);
+            if (lo.slot_in_flight[x]) {
+                LLAMA_LOG_ERROR("moe-cache: INV class %d block %d takes bytes an upload into class %d block %d is still writing\n", (int) pc, (int) b, (int) q, (int) x);
+            }
+            if (o >= 0) { evict_slot(mc, mc->layers[o], x); mc->layers[o].n_own--; } else { cs_unmap(mc, (size_t) lx, x); }
+        });
+        return;
+    }
+}
 static void cls_claim(moe_cache * mc, int32_t pc, int32_t b) {   // cache lock held, after cls_claimable
-    cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
-        auto & qs = mc->pool[qc];
-        const int32_t o = qs.owner[x];
-        if (o == -4) { return true; }
-        if (o >= 0) { evict_slot(mc, mc->layers[o], x); mc->layers[o].n_own--; }
-        else if (o <= -5) { cs_unmap(mc, (size_t) cs_li_of(mc, o), x); }
-        else { auto it = std::find(qs.free.begin(), qs.free.end(), x); if (it != qs.free.end()) { qs.free.erase(it); } }
-        qs.owner[x] = -4;
-        return true;
-    });
+    cls_take_bytes(mc, pc, b);
     mc->pool[pc].owner[b] = -1;
     mc->pool[pc].free.push_back(b);
 }
@@ -12261,22 +12263,10 @@ static void cs_shadow_drop(moe_cache * mc) {
     }
 }
 // the end of a prompt call: every class back to its home blocks (the decode paths know no claims). First everything outside a home goes, then the homes are whole again.
-static void cls_home(moe_cache * mc) {   // cache lock held, no kernel running
+static void cls_home(moe_cache * mc) {   // cache lock held, no kernel running (llama-poolalloc-fork.h poolx_home_pass)
     for (int pass = 0; pass < 2; ++pass) {
         for (auto & ps : mc->pool) {
-            for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
-                const bool home = b >= ps.home_lo && b < ps.home_hi;
-                const int32_t o = ps.owner[b];
-                if (pass == 0 && !home && o != -4) {
-                    if (o < -1) { continue; }   // lent or under the KV rows: never outside a home (the floor), left alone
-                    if (o >= 0) { evict_slot(mc, mc->layers[o], b); mc->layers[o].n_own--; }
-                    else { auto it = std::find(ps.free.begin(), ps.free.end(), b); if (it != ps.free.end()) { ps.free.erase(it); } }
-                    ps.owner[b] = -4;
-                } else if (pass == 1 && home && o == -4) {
-                    ps.owner[b] = -1;
-                    ps.free.push_back(b);
-                }
-            }
+            poolx_home_pass(ps, pass, [&](int32_t b, int32_t o) { evict_slot(mc, mc->layers[o], b); mc->layers[o].n_own--; });
         }
     }
 }

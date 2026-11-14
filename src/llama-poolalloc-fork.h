@@ -67,11 +67,12 @@ template <class S> static int32_t poolx_lend_blocks(const S & sg, size_t need_b)
 // ---- owner ledger -----------------------------------------------------------------------------------------------------------------------------
 // ps: { std::vector<int32_t> owner, free; int32_t home_lo, home_hi; }. The caller holds the cache's mutex. evict(layer, block) takes an expert out of a block it owned (the caller's bookkeeping).
 // Lend blocks [from, to) of a class to a graph. Returns the blocks that were under the KV zone (-3): they are NOT taken (a lend never goes over the zone; the caller reports).
-template <class PS, class F> static int poolx_lend(PS & ps, int32_t from, int32_t to, F evict) {
+template <class PS, class F, class G> static int poolx_lend(PS & ps, int32_t from, int32_t to, F evict, G take_bytes) {
     int bad = 0;
     for (int32_t b = from; b < to; ++b) {
         const int32_t o = ps.owner[b];
         if (o == -3) { bad++; continue; }
+        if (o == -4) { take_bytes(b); }   // another class's grid holds these bytes (staging=0): its block goes first (poolx_take_bytes)
         if (o >= 0) { evict(o, b); }
         else if (o == -1) {
             auto it = std::find(ps.free.begin(), ps.free.end(), b);
@@ -98,10 +99,11 @@ template <class PS> static size_t poolx_release(PS & ps, int32_t keep, int32_t b
 }
 // The KV zone takes `take` (ascending block numbers): experts out, free blocks off the free list, lent blocks marked (*blocked drops to the lowest: the lend of this graph starts
 // over below the KV). The owner becomes -3.
-template <class PS, class F> static void poolx_zone_take(PS & ps, const std::vector<int32_t> & take, int32_t * blocked, F evict) {
+template <class PS, class F, class G> static void poolx_zone_take(PS & ps, const std::vector<int32_t> & take, int32_t * blocked, F evict, G take_bytes) {
     std::vector<char> free_mark;
     for (int32_t b : take) {
         const int32_t o = ps.owner[b];
+        if (o == -4) { take_bytes(b); }   // another class's grid holds these bytes (staging=0): its block goes first (poolx_take_bytes)
         if (o >= 0) { evict(o, b); }
         else if (o == -1) {
             if (free_mark.empty()) { free_mark.assign(ps.owner.size(), 0); }
@@ -126,6 +128,62 @@ template <class PS> static int32_t poolx_claim_free(PS & ps, int32_t li) {
         if (ps.owner[b] == -1) { ps.owner[b] = li; return b; }
     }
     return -1;
+}
+
+// ---- grids (--moe staging=0): a class's blocks over other classes' bytes ----------------------------------------------------------------------
+// Every class's block grid runs on from its home over the pool's other bytes (the layer ring). A block past a class's home is -4 (another class's bytes) until
+// it claims them; a home block whose bytes another class claimed is -4 too. A byte has one owner at a time: an expert or a free block of one class, a lent
+// block, or the KV zone. tests/test-pool-fork.cpp (test_grid_claims) checks that byte by byte under random lends, zones, claims, evictions and returns home.
+//
+// every block of another class over the bytes of class pc's block b: f(class, block), false from f stops it (and the call returns false). segs: one per
+// class with its pcls, base and block size B; grid_n(class): the blocks of that class's grid (its home and the blocks past it).
+template <class SEGS, class GN, class F> static bool poolx_over(const SEGS & segs, GN grid_n, int32_t pc, int32_t b, F f) {
+    const typename SEGS::value_type * me = nullptr;
+    for (const auto & sg : segs) { if (sg.pcls == pc) { me = &sg; } }
+    if (!me) { return false; }
+    const size_t lo = me->base + (size_t) b * me->B, hi = lo + me->B;
+    for (const auto & sg : segs) {
+        if (sg.pcls == pc || sg.B == 0) { continue; }
+        const size_t gnb = (size_t) grid_n(sg.pcls);
+        const size_t end = sg.base + gnb * sg.B;
+        if (hi <= sg.base || lo >= end) { continue; }
+        const int32_t x0 = lo > sg.base ? (int32_t) ((lo - sg.base) / sg.B) : 0;
+        const int32_t x1 = (int32_t) std::min<size_t>(gnb, (hi - sg.base + sg.B - 1) / sg.B);
+        for (int32_t x = x0; x < x1; ++x) { if (!f(sg.pcls, x)) { return false; } }
+    }
+    return true;
+}
+// The bytes of class pc's block b back from every other class: an expert there is evicted (evict(class, block); the caller drops it from its layer's table),
+// a free block leaves its free list; each becomes -4. Lent or zone blocks of another class are left (a lend or zone of its own over the same bytes). Called
+// before a claim (pc's block then free), a lend (-2) or the KV zone (-3) takes block b: without it a lend or zone over bytes another class's grid held an
+// expert in wrote over that expert while its table still pointed there (found 2026-11-14 reading the code; latent in the ring's calls).
+template <class SEGS, class PSV, class F> static void poolx_take_bytes(const SEGS & segs, PSV & ps, int32_t pc, int32_t b, F evict) {
+    poolx_over(segs, [&](int32_t q) { return (int32_t) ps[q].owner.size(); }, pc, b, [&](int32_t q, int32_t x) {
+        auto & qs = ps[q];
+        const int32_t o = qs.owner[x];
+        if (o == -4 || o == -2 || o == -3) { return true; }
+        if (o == -1) { auto it = std::find(qs.free.begin(), qs.free.end(), x); if (it != qs.free.end()) { qs.free.erase(it); } }
+        else { evict(q, x); }   // an expert (o >= 0) or a one-pass shadow's (o <= -5)
+        qs.owner[x] = -4;
+        return true;
+    });
+}
+// The end of a prompt call: every class back to its home. Pass 0 (over every class first): a block outside its home that holds bytes goes (an expert evicted:
+// evict(block, owner), a free one off the list) and is -4 again; lent or zone blocks are never outside a home. Pass 1: a home block another class held is free.
+template <class PS, class F> static void poolx_home_pass(PS & ps, int pass, F evict) {
+    for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+        const bool home = b >= ps.home_lo && b < ps.home_hi;
+        const int32_t o = ps.owner[b];
+        if (pass == 0 && !home && o != -4) {
+            if (o < -1) { continue; }
+            if (o >= 0) { evict(b, o); }
+            else { auto it = std::find(ps.free.begin(), ps.free.end(), b); if (it != ps.free.end()) { ps.free.erase(it); } }
+            ps.owner[b] = -4;
+        } else if (pass == 1 && home && o == -4) {
+            ps.owner[b] = -1;
+            ps.free.push_back(b);
+        }
+    }
 }
 
 // ---- region map and gate ----------------------------------------------------------------------------------------------------------------------

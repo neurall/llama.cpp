@@ -217,7 +217,7 @@ static void ledger_run(std::mt19937_64 & rng, long steps, std::string & first, l
                 auto & sg = p.segs[i];
                 const int32_t need = poolx_lend_blocks(sg, bytes);
                 if (need > sg.blocked) {
-                    if (poolx_lend(p.ps[i], sg.blocked, need, evict) != 0) { if (bad++ == 0) { first = "a lend went over the zone"; } }
+                    if (poolx_lend(p.ps[i], sg.blocked, need, evict, [&](int32_t b) { poolx_take_bytes(p.segs, p.ps, (int32_t) i, b, evict); }) != 0) { if (bad++ == 0) { first = "a lend went over the zone"; } }
                     sg.blocked = need;
                 }
             }
@@ -250,7 +250,7 @@ static void ledger_run(std::mt19937_64 & rng, long steps, std::string & first, l
                     if (want) { if (o != -3) { take.push_back(b); } } else if (o == -3) { give.push_back(b); }
                 }
                 poolx_zone_give(p.ps[i], give);
-                poolx_zone_take(p.ps[i], take, &sg.blocked, evict);
+                poolx_zone_take(p.ps[i], take, &sg.blocked, evict, [&](int32_t b) { poolx_take_bytes(p.segs, p.ps, (int32_t) i, b, evict); });
             }
             if (const char * why = kvz_bad(p, lend_end)) { if (bad++ == 0) { first = std::string("kvz_bad after placing: ") + why; } }
         } else if (op == 5) {   // experts claim free blocks
@@ -287,6 +287,119 @@ static void test_ledger_random() {
     report("grids: the run placed zones and lent graphs", n_zone > 100 && n_ops > 5000, fmt("%ld ops, %ld zone placements", n_ops, n_zone));
 }
 
+// ---- grids with claims (--moe staging=0) ---------------------------------------------------------------------------------------------------------
+// A class's grid block takes other classes' bytes (the ring's cls_claim, the chain's misses), the lend and the KV zone walk the homes, an expert leaves a block,
+// the end of a prompt call returns every class home. Checked after every operation, byte by byte: at most one block (an expert's or a free one, any class,
+// home or grid) holds a byte, and none lies over the graph's bytes or the zone's. Negative control: the same runs with the lend and the zone NOT taking claimed
+// bytes back (the code before 2026-11-14) must break that, or the run proves nothing.
+static std::string check_grid_pool(const tpool & p) {
+    std::vector<int> held(p.tail_end, 0);
+    const size_t z0 = p.kv_h > 0 ? p.kv_start : 0, z1 = p.kv_h > 0 ? poolx_kv_end(p) : 0;
+    for (size_t i = 0; i < p.segs.size(); ++i) {
+        const auto & sg = p.segs[i]; const auto & ps = p.ps[i];
+        std::vector<int> in_free(ps.owner.size(), 0);
+        for (int32_t b : ps.free) { if (b < 0 || b >= (int32_t) ps.owner.size()) { return "free list holds a block out of range"; } in_free[b]++; }
+        for (size_t b = 0; b < ps.owner.size(); ++b) {
+            const int32_t o = ps.owner[b];
+            if (in_free[b] > 1) { return fmt("class %zu block %zu on the free list twice", i, b); }
+            if ((o == -1) != (in_free[b] == 1)) { return fmt("class %zu block %zu owner %d but %d free entries", i, b, o, in_free[b]); }
+            if ((int32_t) b >= sg.n && (o == -2 || o == -3)) { return fmt("class %zu grid block %zu past its home is lent or under the zone", i, b); }
+            if (o < -1) { continue; }
+            const size_t lo = sg.base + b * sg.B, hi = std::min(lo + sg.B, p.tail_end);
+            for (size_t x = lo; x < hi; ++x) {
+                if (++held[x] > 1) { return fmt("byte %zu held by two blocks (class %zu block %zu owner %d is the second)", x, i, b, o); }
+                if (x < p.want_b) { return fmt("class %zu block %zu (owner %d) over the graph's byte %zu", i, b, o, x); }
+                if (x >= z0 && x < z1) { return fmt("class %zu block %zu (owner %d) over the zone's byte %zu", i, b, o, x); }
+            }
+        }
+    }
+    return "";
+}
+static void grid_run(std::mt19937_64 & rng, long steps, bool take_back, std::string & first, long & bad, long & n_claim, long & n_over) {
+    tpool p = make_pool(rng, true, true);
+    if (p.segs.size() < 2) { return; }
+    auto R = [&](size_t lo, size_t hi) { return lo + (size_t) (rng() % (hi - lo + 1)); };
+    const size_t bmax = std::max<size_t>(1, kvz_bmax(p));
+    auto gn = [&](int32_t q) { return (int32_t) p.ps[q].owner.size(); };
+    auto evict = [&](int32_t, int32_t) {};
+    auto take_for = [&](size_t i) {
+        return [&, i](int32_t b) { n_over++; if (take_back) { poolx_take_bytes(p.segs, p.ps, (int32_t) i, b, evict); } };
+    };
+    int32_t li = 0;
+    for (long st = 0; st < steps; ++st) {
+        const int op = (int) (rng() % 10);
+        const size_t lend_end = poolx_lend_round(p, p.want_b);
+        if (op <= 1) {   // a graph lends `bytes` (below the zone, as the engine)
+            const size_t bytes = R(0, p.span);
+            if (p.kv_h > 0 && poolx_lend_round(p, bytes) > p.kv_start) { continue; }
+            for (size_t i = 0; i < p.segs.size(); ++i) {
+                auto & sg = p.segs[i];
+                const int32_t need = poolx_lend_blocks(sg, bytes);
+                if (need > sg.blocked) { poolx_lend(p.ps[i], sg.blocked, need, evict, take_for(i)); sg.blocked = need; }
+            }
+            p.want_b = std::max(p.want_b, bytes);
+        } else if (op == 2) {   // a sync point: the blocks above what the last graph needed come back
+            p.want_b = R(0, p.want_b);
+            for (size_t i = 0; i < p.segs.size(); ++i) {
+                auto & sg = p.segs[i];
+                const size_t cov = p.want_b > sg.base ? p.want_b - sg.base : 0;
+                const int32_t keep = (int32_t) std::min<size_t>((size_t) sg.n, (cov + sg.B - 1) / sg.B);
+                if (keep < sg.blocked) { poolx_release(p.ps[i], keep, sg.blocked); sg.blocked = keep; }
+            }
+        } else if (op == 3) {   // the zone for h cells behind the lend
+            const size_t h = R(0, 80), zone = p.kv_fixed + h * p.kv_row;
+            if (zone == 0) { continue; }
+            const size_t s = kvz_gap_place(p, bmax, lend_end, lend_end, zone);
+            if (s == (size_t) -1) { continue; }
+            p.kv_start = s; p.kv_h = h;
+            for (size_t i = 0; i < p.segs.size(); ++i) {
+                auto & sg = p.segs[i];
+                std::vector<int32_t> take, give;
+                for (int32_t b = 0; b < sg.n; ++b) {
+                    const size_t b0 = sg.base + (size_t) b * sg.B, b1 = b0 + sg.B;
+                    const bool want = s < b1 && s + zone > b0;
+                    const int32_t o = p.ps[i].owner[b];
+                    if (want) { if (o != -3) { take.push_back(b); } } else if (o == -3) { give.push_back(b); }
+                }
+                poolx_zone_give(p.ps[i], give);
+                poolx_zone_take(p.ps[i], take, &sg.blocked, evict, take_for(i));
+            }
+        } else if (op <= 6) {   // a grid block claims other classes' bytes: none of them lent or under the zone (the ring's and the chain's rule)
+            const size_t i = R(0, p.segs.size() - 1);
+            auto & ps = p.ps[i];
+            const int32_t b = (int32_t) R(0, ps.owner.size() - 1);
+            if (ps.owner[b] != -4) { continue; }
+            if (!poolx_over(p.segs, gn, (int32_t) i, b, [&](int32_t q, int32_t x) { const int32_t o = p.ps[q].owner[x]; return o != -2 && o != -3; })) { continue; }
+            poolx_take_bytes(p.segs, p.ps, (int32_t) i, b, evict);
+            ps.owner[b] = -1; ps.free.push_back(b);
+            n_claim++;
+        } else if (op == 7) {   // experts take free blocks (home or claimed)
+            poolx_claim_free(p.ps[R(0, p.segs.size() - 1)], li++ % 4);
+        } else if (op == 8) {   // an expert leaves its block
+            const size_t i = R(0, p.segs.size() - 1);
+            const int32_t b = (int32_t) R(0, p.ps[i].owner.size() - 1);
+            if (p.ps[i].owner[b] >= 0) { poolx_give_back(p.ps[i], b); }
+        } else {   // the end of a prompt call (cls_home): every class back home
+            if (rng() % 4) { continue; }
+            for (int pass = 0; pass < 2; ++pass) { for (auto & ps : p.ps) { poolx_home_pass(ps, pass, [](int32_t, int32_t) {}); } }
+        }
+        const std::string e = check_grid_pool(p);
+        if (!e.empty() && bad++ == 0) { first = fmt("after op %d (step %ld): %s", op, st, e.c_str()); }
+        if (bad) { return; }
+    }
+}
+static void test_grid_claims() {
+    printf("Testing grids with claims (staging=0: a class's blocks over other classes' bytes; lend, zone, evict, home):\n");
+    std::mt19937_64 rng(g_seed + 9);
+    long bad = 0, n_claim = 0, n_over = 0; std::string first;
+    for (long it = 0; it < g_iters / 50 && !bad; ++it) { grid_run(rng, 300, true, first, bad, n_claim, n_over); }
+    report("no byte held twice, none over the graph or the zone", bad == 0, first);
+    report("the runs claimed bytes and lent or zoned over claimed bytes (not vacuous)", n_claim > 1000 && n_over > 100, fmt("%ld claims, %ld lends/zones over claimed bytes", n_claim, n_over));
+    long bad_neg = 0, c2 = 0, o2 = 0; std::string first_neg;
+    for (long it = 0; it < g_iters / 50 && !bad_neg; ++it) { grid_run(rng, 300, false, first_neg, bad_neg, c2, o2); }
+    report("negative control: a lend or zone that keeps the claimant breaks the check", bad_neg > 0, first_neg.empty() ? "no violation found" : first_neg.substr(0, 90));
+}
+
 // the detector itself: break the layout on purpose, the check must see it (otherwise a green run proves nothing)
 static void test_detectors() {
     printf("Testing that the checks catch a broken pool (negative controls):\n");
@@ -311,7 +424,7 @@ static void test_detectors() {
     // poolx_lend never takes a block under the zone
     tpool p; p.segs = { { 0, 0, 16, 4, 0 } }; p.ps = { tps{ { -1, -3, -3, -1 }, { 3, 0 } } };
     int32_t evicted = 0;
-    const int bad = poolx_lend(p.ps[0], 0, 4, [&](int32_t, int32_t) { evicted++; });
+    const int bad = poolx_lend(p.ps[0], 0, 4, [&](int32_t, int32_t) { evicted++; }, [](int32_t) {});
     report("a lend reaching blocks under the zone leaves them under the zone", bad == 2 && p.ps[0].owner[1] == -3 && p.ps[0].owner[2] == -3 && p.ps[0].owner[0] == -2);
 }
 
@@ -568,6 +681,7 @@ int main(int argc, char ** argv) {
     test_block_sizing();
     test_lend_granularity();
     test_ledger_random();
+    test_grid_claims();
     test_detectors();
     test_gate();
     test_range_collision();
