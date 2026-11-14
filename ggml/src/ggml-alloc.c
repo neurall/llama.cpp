@@ -199,6 +199,12 @@ static void remove_allocated_tensor(struct ggml_dyn_tallocr * alloc, struct buff
 }
 #endif
 
+static int galloc_hw_on(void) {   // fork: GGML_GALLOC_HW=1, allocator diagnostics (high water, alive at the end of a graph)
+    static int hw = -1;
+    if (hw < 0) { const char * e = getenv("GGML_GALLOC_HW"); hw = e && atoi(e) != 0; }
+    return hw;
+}
+
 static struct buffer_address ggml_dyn_tallocr_alloc(struct ggml_dyn_tallocr * alloc, size_t size, const struct ggml_tensor * tensor) {
     size = aligned_offset(NULL, size, alloc->alignment);
 
@@ -304,9 +310,7 @@ static struct buffer_address ggml_dyn_tallocr_alloc(struct ggml_dyn_tallocr * al
     // fork: GGML_GALLOC_HW=1 names each tensor that raises a buffer's high-water mark by 64 MiB or more (the pass-size probe of 2026-11-14 reserved 58 GiB
     // against a 5.4 GiB peak of the graph's own tensors)
     if (tensor && addr.offset + size > chunk->max_size + ((size_t) 64 << 20)) {
-        static int hw = -1;
-        if (hw < 0) { const char * e = getenv("GGML_GALLOC_HW"); hw = e && atoi(e) != 0; }
-        if (hw) {
+        if (galloc_hw_on()) {
             GGML_LOG_WARN("galloc: high water %.0f -> %.0f MiB (chunk %d) by %s %s %.0f MiB at offset %.0f MiB\n", chunk->max_size / 1048576.0,
                 (addr.offset + size) / 1048576.0, addr.chunk, tensor->name, ggml_op_desc(tensor), size / 1048576.0, addr.offset / 1048576.0);
         }
@@ -922,6 +926,43 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
                 }
             }
             AT_PRINTF("\n");
+        }
+    }
+
+    // fork: GGML_GALLOC_HW=1 lists what is still allocated at the graph's end and why: a tensor no node reads is never freed, and a view no node
+    // reads keeps its source to the end (the pass-size probe of 2026-11-14 reserved 58 GiB on CUDA0 for a 7.7 GiB graph)
+    if (galloc_hw_on()) {
+        size_t sum = 0, top_b[12] = { 0 };
+        const struct ggml_tensor * top_t[12] = { NULL };
+        const struct ggml_tensor * top_v[12] = { NULL };
+        for (int i = 0; i < graph->n_nodes; i++) {
+            struct ggml_tensor * t = graph->nodes[i];
+            struct hash_node * hn = ggml_gallocr_hash_get(galloc, t);
+            if (ggml_impl_is_view(t) || !hn->allocated || (t->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+                continue;
+            }
+            const size_t b = ggml_nbytes(t);
+            sum += b;
+            const struct ggml_tensor * pin = NULL;   // the unread view that holds it
+            for (int k = 0; hn->n_views > 0 && k < graph->n_nodes && !pin; k++) {
+                struct ggml_tensor * v = graph->nodes[k];
+                if (v->view_src == t && ggml_gallocr_hash_get(galloc, v)->n_children == 0) { pin = v; }
+            }
+            for (int k = 0; k < 12; k++) {
+                if (b > top_b[k]) {
+                    for (int m = 11; m > k; m--) { top_b[m] = top_b[m - 1]; top_t[m] = top_t[m - 1]; top_v[m] = top_v[m - 1]; }
+                    top_b[k] = b; top_t[k] = t; top_v[k] = pin;
+                    break;
+                }
+            }
+        }
+        if (sum > ((size_t) 256 << 20)) {
+            GGML_LOG_WARN("galloc: %.0f MiB still allocated at the end of a graph of %d nodes (not outputs), largest:\n", sum / 1048576.0, graph->n_nodes);
+            for (int k = 0; k < 12 && top_t[k]; k++) {
+                GGML_LOG_WARN("galloc:   %s %s %.0f MiB (buffer %d): %s%s%s\n", top_t[k]->name, ggml_op_desc(top_t[k]), top_b[k] / 1048576.0,
+                    ggml_gallocr_hash_get(galloc, top_t[k])->buffer_id, top_v[k] ? "kept by the unread view " : "no node reads it",
+                    top_v[k] ? top_v[k]->name : "", top_v[k] ? ggml_op_desc(top_v[k]) : "");
+            }
         }
     }
 }
