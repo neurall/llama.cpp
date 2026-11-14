@@ -105,6 +105,13 @@ static void test_rows() {
         uint64_t v[10]; double turn = 0;
         ggml_rampool_rows_stats_fork(&key, v, &turn);
         CHECK(v[0] == 100 && v[2] == 1000 && v[3] == 100 && v[4] == 100 && v[5] == 100);
+        // admissions per row recalled, by rows: 100 of 100, then 100 hits (the first faded by e^-0.1): a stay lasts about 2105 rows recalled
+        CHECK(turn > 2000 && turn < 2200);
+        // 50 decode-sized calls of 2 rows that all hit weigh 100 rows, not 50 calls: the stay grows only to about 3000
+        std::vector<int32_t> two(rows.begin(), rows.begin() + 2);
+        for (int c = 0; c < 50; ++c) { rows_call(&key, rs, two, &bad); }
+        ggml_rampool_rows_stats_fork(&key, v, &turn);
+        CHECK(turn > 2500 && turn < 3500);
     }
     // amnesia: the tier is full of rows read once. A hot set that starts later is declined at its first recall (nothing known) but remembered, so its second
     // recall gets it in over the one-offs (they served nothing), and from then on it hits. One-offs never hit. Calls of 300 rows: capacity 3000.

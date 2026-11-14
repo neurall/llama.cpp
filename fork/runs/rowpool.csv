@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+qni4-pool,qn_iq4xs,3,pf128k,512,,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1
+qni4-nopool,qn_iq4xs,3,pf128k,512,,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1 --env LLAMA_ROWREAD_POOL=0
+qni4-map,qn_iq4xs,3,pf128k,512,,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1 --env LLAMA_ROWREAD=0
+ds-pool,ds,3,pf128k,512,,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1
+ds-nopool,ds,3,pf128k,512,,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1 --env LLAMA_ROWREAD_POOL=0
+ds-map,ds,3,pf128k,512,,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1 --env LLAMA_ROWREAD=0

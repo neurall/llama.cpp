@@ -1038,8 +1038,7 @@ struct rp_rows {
     std::vector<uint32_t>   slot_free;
     uint64_t cap_slots = 0, cap_ents = 0;
     uint32_t clock = 0, sample = 0, esample = 0;
-    size_t   n_last = 0, adm_last = 0;              // rows the last get recalled, admissions since
-    double   adm_per_row = 1.0;                     // admissions per row recalled (EMA over calls); a resident stays cap_slots / this
+    double   dec_adm = 0, dec_rows = 0;             // admissions and rows recalled, fading over the last ~capacity rows recalled (a 16-row decode step weighs 16 rows, not one call)
     uint64_t st_hit = 0, st_miss = 0, st_adm = 0, st_dec = 0, st_evict = 0, st_forget = 0;
     char * at(int32_t s) const { return chunks[(size_t) s / per_chunk] + (size_t) (s % per_chunk) * rs; }
     ~rp_rows() { for (char * c : chunks) { free(c); } }
@@ -1052,7 +1051,8 @@ rp_rows * rows_find(const void * key) {
     return it == g_rows.end() ? nullptr : it->second.get();
 }
 
-double rows_turnover(const rp_rows & t) { return (double) t.cap_slots / std::max(t.adm_per_row, 1e-3); }
+// rows recalled while a resident stays: the capacity over admissions per row recalled lately (none measured yet: one admission a row)
+double rows_turnover(const rp_rows & t) { return (double) t.cap_slots / std::max(t.dec_rows > 0 ? t.dec_adm / t.dec_rows : 1.0, 1e-3); }
 
 // a free block, a new chunk when the last one is full and the capacity allows; -1: none
 // shortcut: chunks come from malloc beside the pinned pool and are counted only in the rows' line, not in rp_resize's floor; fold them into the floor when small-RAM rows show pressure
@@ -1139,9 +1139,9 @@ GGML_API size_t ggml_rampool_rows_get_fork(const void * key, const int32_t * row
         }
     }
     t->clock += (uint32_t) n;
-    if (t->n_last > 0) { t->adm_per_row = 0.8 * t->adm_per_row + 0.2 * (double) t->adm_last / (double) t->n_last; }   // the call before, with its put (or none: all hit)
-    t->n_last = n;
-    t->adm_last = 0;
+    const double d = std::exp(-(double) n / (double) std::max<uint64_t>(t->cap_slots, 1));
+    t->dec_adm  = t->dec_adm * d;
+    t->dec_rows = t->dec_rows * d + (double) n;
     t->st_hit += nh;
     t->st_miss += n - nh;
     return nh;
@@ -1187,7 +1187,7 @@ GGML_API void ggml_rampool_rows_put_fork(const void * key, const int32_t * rows,
         adm++;
         t->st_adm++;
     }
-    t->adm_last += adm;
+    t->dec_adm += (double) adm;
 }
 
 // which rows are in RAM now, nothing recorded (a read-ahead skips them)
