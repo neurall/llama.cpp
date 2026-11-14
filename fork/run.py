@@ -8515,27 +8515,30 @@ def cmd_cell(a):
     # a request without a result (show_row's FAIL) fails the cell even when another request of it answered: a server that died on its second request left
     # "cells, failed: none" (nsbig-glm35-verify, 2026-11-12: the ring ran out of blocks, the first request's speed was the cell's result)
     lost = [l.rstrip()[:200] for l in open(out, errors="replace") if re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d .* FAIL( |$)", l)]
-    # graph checks (ggml-alloc.c "galloc: UNREAD", llama-context.cpp "GRAPH JUMP"; tests/test-graphcheck-fork.cpp) fail the cell: a graph tensor no node reads, or a
-    # pass-size probe far above the first reserve (2026-11-14: a dense split probe reserved 58 GiB for a 7-8 GiB graph, passes capped at 3776 tokens, found a day late)
-    gchk = graph_check_lines((os.path.join(Q5, a.tag + ".server.log"), os.path.join(Q5, a.tag + ".server.prev.log")), t_cell0)
+    # engine checks fail the cell (ENGINE_CHECK): a graph tensor no node reads, a pass-size probe far above the first reserve (2026-11-14: a 58 GiB probe for a 7-8 GiB
+    # graph capped passes at 3776 tokens, found a day late), invariants, overlaps, guard violations, a short scratch, NaN
+    gchk = engine_check_lines((os.path.join(Q5, a.tag + ".server.log"), os.path.join(Q5, a.tag + ".server.prev.log")), t_cell0)
     if gchk:
         with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
-            f.write("".join(f"GRAPH CHECK FAIL {l}\n" for l in gchk[:4]))
-        print(f"{a.tag}: GRAPH CHECK FAIL ({len(gchk)} lines in the server log): {gchk[0]}", file=sys.stderr)
-        lost += [f"graph check: {l}" for l in gchk[:2]]
+            f.write("".join(f"ENGINE CHECK FAIL {l}\n" for l in gchk[:6]))
+        print(f"{a.tag}: ENGINE CHECK FAIL ({len(gchk)} lines in the server log): {gchk[0]}", file=sys.stderr)
+        lost += [f"engine check: {l}" for l in gchk[:2]]
     if not lines or lost:
         errs = lost[-2:] + [l.rstrip()[:240] for l in open(out, errors="replace") if re.search(r"FAIL|Traceback|Error|error:|PIN_FAIL|out of memory|Compute error|Segmentation|abort|Killed", l)][-4:]
         with open(os.path.join(Q5, "queue", "errors.log"), "a") as f:
             f.write(f"{time.strftime('%F %T')} ERROR {a.tag} {a.test} builds={a.builds} model={os.path.basename(a.model)} run.py exit={rc}\n" + "".join(e + "\n" for e in errs))
         return 1
     return 0
-def graph_check_lines(paths, t0):
-    """The graph checks' lines (ggml-alloc.c "galloc: UNREAD ... largest:", llama-context.cpp "GRAPH JUMP") in the server logs written since t0."""
+# lines that fail a cell (robustness review 2026-11-14: a check that only logs caught nothing): the graph planner's unread tensors and a probe far above the first
+# reserve (tests/test-graphcheck-fork.cpp), the cache's and the split planner's invariants, the pool ledger's overlaps, the pool guard, a short CUDA scratch, NaN checks
+ENGINE_CHECK = re.compile(r"galloc: UNREAD .*largest|GRAPH JUMP|moe-cache: INV |split planner: INV |pool-ledger: OVERLAP|pool-guard: VIOLATION|SCRATCH SHORT|nan-check: graph |pool-dump: first NaN")
+def engine_check_lines(paths, t0):
+    """The lines of ENGINE_CHECK in the server logs written since t0."""
     found = []
     for p in paths:
         try:
             if os.path.getmtime(p) >= t0:
-                found += [l.rstrip()[:240] for l in open(p, errors="replace") if ("galloc: UNREAD" in l and "largest" in l) or "GRAPH JUMP" in l]
+                found += [l.rstrip()[:240] for l in open(p, errors="replace") if ENGINE_CHECK.search(l)]
         except OSError: pass
     return found
 def cmd_tokpred(a):
