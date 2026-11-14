@@ -12612,6 +12612,7 @@ static void cs_release_pool(moe_cache * mc, int link, size_t keep) {
     }
 }
 
+extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
 // the copies of a planned layer on its card's upload stream, its table, its ready event (no cache lock: the RAM pool's reads may take ms; only the scheduler thread runs it)
 static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, bool from_done, size_t done_at) {
     layer_state & ls = csl(mc, li);
@@ -12636,6 +12637,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
         mc->cs_read[link] = false;
         mc->cs_rel[link].push_back({ li, { keys[0], keys[1], keys[2] }, std::move(need) });   // its blocks go back once its uploads landed (cs_release_pool)
     }
+    uint64_t up_bytes = 0;
     for (size_t i = 0; i < cps.size(); ) {
         size_t n = 1;   // a run: consecutive experts into consecutive blocks (host weights are one array per tensor; the RAM pool's blocks are not)
         while (!rp && i + n < cps.size() && cps[i + n].e == cps[i].e + (int32_t) n && cps[i + n].b == cps[i].b + (int32_t) n) { ++n; }
@@ -12658,10 +12660,12 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
                 }
             }
             if (dr) { jit_direct_done(mc, rb); }
+            up_bytes += sz*n;
         }
         mc->cs_n_cp++;
         i += n;
     }
+    ggml_backend_sched_upload_add_fork(mc->link_dev[link], up_bytes);   // the pass statistics' "link GB: experts" (staged uploads count there too)
     // the layer's table, every pass (a block given to a later layer left an entry that is stale only for layers already computed); uncached and JIT pool experts are -1,
     // and so are the experts outside the entry's range (an expert split: another card computes them; cs_end writes the whole table again)
     const int64_t nt = ggml_nelements(ls.pub.dev_table);

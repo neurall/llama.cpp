@@ -397,6 +397,22 @@ static void test_turns() {
     report("the split's start factor asks it", b != std::string::npos && src.substr(a, b - a).find("llama_dsplit_turns_fork(") != std::string::npos);
 }
 
+// staging=0's uploads into the cache's blocks (cs_copy) count in the pass statistics like the staged uploads: Qwen3.8 IQ4_XS 12k, 2026-11-14, the split balance line
+// said "link GB: experts 0.00, link busy 21 ms" on the expert card while about 48 GB went up, so a slow upload and an upload started late looked alike.
+static void test_cs_bytes_counted() {
+    printf("staging=0 uploads in the pass statistics:\n");
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-moecache-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    const size_t a = src.find("\nstatic void cs_copy(");
+    const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
+    report("cs_copy adds its bytes to the card's uploads", b != std::string::npos && src.substr(a, b - a).find("ggml_backend_sched_upload_add_fork(") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -409,6 +425,7 @@ int main(int argc, char ** argv) {
     test_f_fresh();
     test_may_take_call();
     test_turns();
+    test_cs_bytes_counted();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;
