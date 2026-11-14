@@ -864,6 +864,22 @@ static void test_regress_ring_costly() {
     report("the engine: cs_ahead plans by poolx_ring_cheap", ah.find("poolx_ring_cheap(") != std::string::npos && ah.find("cs_plan(") != std::string::npos);
     report("the engine: cs_plan ranks by poolx_ring_tier and poolx_ring_victim", pl.find("poolx_ring_tier(") != std::string::npos && pl.find("poolx_ring_victim(") != std::string::npos);
     report("the engine: decode's prompt rank is poolx_victim_rank", pv.find("poolx_victim_rank(") != std::string::npos);
+    // a copy over a computed entry's block waits for the done event recorded over it (cs_cov), so cs_done moves only where that event is recorded: cs_mark_done
+    // (vf-ds and vf-qni3 on ring_next_use: the reduce split's hook moved it on its own, "GGML_ASSERT ... cs_cov[wq] >= wq")
+    const std::string md = body("\nstatic void cs_mark_done(");
+    int n_move = 0;
+    for (size_t at = src.find("cs_done["); at != std::string::npos; at = src.find("cs_done[", at + 1)) {
+        size_t k = src.find(']', at) + 1;
+        while (k < src.size() && src[k] == ' ') { ++k; }
+        if (k + 1 < src.size() && src[k] == '=' && src[k + 1] != '=') {
+            size_t v = k + 1;
+            while (v < src.size() && src[v] == ' ') { ++v; }
+            const size_t in = src.find("\nstatic void cs_mark_done(");
+            const bool inside = in != std::string::npos && at > in && at < in + md.size();
+            n_move += src[v] != '0' && src[v] != '{' && !inside;   // a pass start resets it to 0, the declaration to {}
+        }
+    }
+    report("the engine: cs_done moves only in cs_mark_done, which records the event and its cover", !md.empty() && md.find("cs_cov[") != std::string::npos && n_move == 0);
 }
 
 int main(int argc, char ** argv) {

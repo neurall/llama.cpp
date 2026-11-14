@@ -12977,6 +12977,14 @@ static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & j
     }
 }
 
+// card k's entries before pass position q are queued on compute stream cbe: one done event behind them, which covers each of them (cs_cov: what a copy over
+// their blocks waits for; every path that moves cs_done comes here)
+static void cs_mark_done(moe_cache * mc, int k, size_t q, ggml_backend_t cbe) {   // cache lock held
+    ggml_backend_event_record(csl(mc, mc->cs_order[q - 1]).cs_done_ev, cbe);
+    for (size_t r = mc->cs_done[k]; r < q; ++r) { if (csl(mc, mc->cs_order[r]).link == k) { mc->cs_cov[r] = (int32_t) (q - 1); } }
+    mc->cs_done[k] = q;
+}
+
 // the split of cstream layer il is about to be queued on compute stream cbe (scheduler thread)
 static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {   // shadow: -1 the layer itself, else the index of its shadow (another card's part of an expert split, a further chunk)
     std::vector<cs_job> jobs;
@@ -13001,9 +13009,7 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
         size_t q = p;   // 1 + the position of this card's last layer before it (two cards: the layer before it may be the other card's, its event lives there)
         while (q > 0 && csl(mc, mc->cs_order[q - 1]).link != k) { --q; }
         if (q > mc->cs_done[k] && ggml_backend_get_device(cbe) == mc->link_dev[k]) {   // the card's layers before it are queued on cbe: one event behind them
-            ggml_backend_event_record(csl(mc, mc->cs_order[q - 1]).cs_done_ev, cbe);
-            for (size_t r = mc->cs_done[k]; r < q; ++r) { if (csl(mc, mc->cs_order[r]).link == k) { mc->cs_cov[r] = (int32_t) (q - 1); } }   // this event covers the card's entries since the last
-            mc->cs_done[k] = q;
+            cs_mark_done(mc, k, q, cbe);
         }
         if (ggml_backend_get_device(cbe) == mc->link_dev[k]) { mc->cs_hooked[k] = p + 1; mc->cs_hook_us[k] = ggml_time_us(); }
         if (g_cs_k_pass > 0.0) {
@@ -13062,8 +13068,7 @@ static void cs_release(moe_cache * mc, ggml_backend_t cbe) {
         int k = -1;
         for (int c = 0; c < mc->n_links; ++c) { if (mc->link_dev[c] == ggml_backend_get_device(cbe)) { k = c; } }
         if (k < 0 || mc->cs_hooked[k] <= mc->cs_done[k] || mc->cs_hooked[k] > mc->cs_order.size()) { return; }
-        ggml_backend_event_record(csl(mc, mc->cs_order[mc->cs_hooked[k] - 1]).cs_done_ev, cbe);
-        mc->cs_done[k] = mc->cs_hooked[k];
+        cs_mark_done(mc, k, mc->cs_hooked[k], cbe);
         mc->cs_hook_us[k] = ggml_time_us();
         cs_ahead(mc, k, SIZE_MAX, jobs);
     }
