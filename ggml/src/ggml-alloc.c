@@ -301,6 +301,16 @@ static struct buffer_address ggml_dyn_tallocr_alloc(struct ggml_dyn_tallocr * al
     }
 #endif
 
+    // fork: GGML_GALLOC_HW=1 names each tensor that raises a buffer's high-water mark by 64 MiB or more (the pass-size probe of 2026-11-14 reserved 58 GiB
+    // against a 5.4 GiB peak of the graph's own tensors)
+    if (tensor && addr.offset + size > chunk->max_size + ((size_t) 64 << 20)) {
+        static int hw = -1;
+        if (hw < 0) { const char * e = getenv("GGML_GALLOC_HW"); hw = e && atoi(e) != 0; }
+        if (hw) {
+            GGML_LOG_WARN("galloc: high water %.0f -> %.0f MiB (chunk %d) by %s %s %.0f MiB at offset %.0f MiB\n", chunk->max_size / 1048576.0,
+                (addr.offset + size) / 1048576.0, addr.chunk, tensor->name, ggml_op_desc(tensor), size / 1048576.0, addr.offset / 1048576.0);
+        }
+    }
     chunk->max_size = MAX(chunk->max_size, addr.offset + size);
 
     return addr;
