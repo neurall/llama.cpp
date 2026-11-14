@@ -16651,7 +16651,13 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     cand(PP_RING, estimate_fullstream_upload_time(pm));
     // layer parallel (user 2026-11-13: the old staging=0 layout as a planner option, priced by its own estimator and weighed on every call): staging=0 with layers on two
     // or more cards; each card computes its own layers' experts, the cached ones where they sit, the others over its own link, the cards in turns. --moe moe-split=expert: never.
-    const double lp_us = pp_no_staging() && has_slower && moe_split_mode() != 0 ? estimate_layerparallel_time(pm) : 0.0;
+    // Where the dense split takes the call with experts on its helpers (its copies placed, the split controller's share for a pass of this size), layer parallel's
+    // time is the split's plus the helpers' share of the experts run on one card (each layer's experts on its home card while the other card waits; both use both
+    // links): it never wins there, and its pick only moved the split's graphs (Qwen3.6 128k: passes 4576 against 5504, 2882 prompt t/s against 3283)
+    bool ds_x = false;
+    for (const auto & a : mc->alias) { ds_x = ds_x || a.mirror_b > 0; }
+    ds_x = ds_x && llama_dsplit_helpers_experts_fork((int64_t) std::min<double>(n, (double) ub_max));
+    const double lp_us = pp_no_staging() && has_slower && (moe_split_mode() == 1 || (moe_split_mode() != 0 && !ds_x)) ? estimate_layerparallel_time(pm) : 0.0;
     if (lp_us > 0.0) { cand(PP_LP, estimate_layerparallel_upload_time(pm)); }
     // (--moe staging=0: the mix's share on the fastest link's card is that card's shadow of the layer, filled by the stream like any other entry: llama_moe_cache_cs_mix_dev_fork.
     // It was switched off on 2026-11-13 while that share still ran as plain graph inputs with no fetch ahead: 1113 prompt t/s against the stream's 1507.)
