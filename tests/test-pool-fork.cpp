@@ -772,12 +772,18 @@ static void test_regress_ring_costly() {
     report("costly: a layer ahead's cached expert, another class's bytes over one", poolx_ring_costly(4) && poolx_ring_costly(6));
     report("cheap: free, empty, computed in this pass, another class's bytes without one", !poolx_ring_costly(0) && !poolx_ring_costly(1) && !poolx_ring_costly(2) && !poolx_ring_costly(3) && !poolx_ring_costly(5));
     report("free first, a prediction giving way last", poolx_ring_rank(0) == 0 && poolx_ring_rank(7) == 7);
-    // user 2026-11-14: "from pending furthest ones first": a pending layer's expert comes back at its layer's turn, the furthest the latest
-    report("pending: the furthest layer's expert first", poolx_ring_before(4, 90, 4, 10) && !poolx_ring_before(4, 10, 4, 90));
-    report("pending claims: the one whose nearest pending layer is furthest first", poolx_ring_before(6, 70, 6, 20));
-    report("a pending layer's expert before a claim over one (rank)", poolx_ring_before(4, 5, 6, 90));
-    report("cheap before pending, whatever the layer", poolx_ring_before(3, 0, 4, 99) && !poolx_ring_before(4, 99, 3, 0));
-    report("cheap ones of a rank keep the cursor's order", !poolx_ring_before(2, 9, 2, 1) && !poolx_ring_before(2, 1, 2, 9));
+    // user 2026-11-14: "why not use the same [rules as the decode cache]" + "past or farthest layers coldest moes first": within a tier the decode cache's own
+    // prompt victim rank (poolx_victim_rank, default mode; layer = pass position, jli = the entry planned), lowest first
+    const auto vr = [](size_t o, double s) { return poolx_victim_rank(false, true, o, 20, 48, s); };
+    report("computed layers: the coldest expert first, whichever layer", vr(3, 5.0) < vr(17, 50.0) && vr(17, 5.0) < vr(3, 50.0));
+    report("layers to come: the furthest layer first, however hot", vr(40, 800.0) < vr(22, 1.0));
+    report("layers to come, one layer: the coldest first", vr(40, 1.0) < vr(40, 800.0));
+    report("every computed layer's expert before any layer to come's", vr(19, 9e5) < vr(47, 0.0));
+    report("same tier: the lower victim rank first", poolx_ring_before(3, vr(5, 1.0), 3, vr(5, 9.0)) && !poolx_ring_before(3, vr(5, 9.0), 3, vr(5, 1.0)));
+    report("pending: the furthest layer's expert first", poolx_ring_before(4, vr(40, 800.0), 4, vr(22, 1.0)));
+    report("a pending layer's expert before a claim over one (tier rank)", poolx_ring_before(4, 9e12, 6, -1e12));
+    report("cheap before pending, whatever the rank", poolx_ring_before(3, 9e12, 4, -1e12) && !poolx_ring_before(4, -1e12, 3, 9e12));
+    report("equal ranks keep the cursor's order", !poolx_ring_before(2, 0.0, 2, 0.0));
     std::string src;
     {
         std::string path = __FILE__;
@@ -789,6 +795,12 @@ static void test_regress_ring_costly() {
     const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
     const std::string ah = b == std::string::npos ? std::string() : src.substr(a, b - a);
     report("an entry planned ahead of its need takes cheap blocks only", ah.find("nx > must") != std::string::npos && ah.find("cs_plan(") != std::string::npos);
+    const size_t pa = src.find("\nstatic bool cs_plan(");
+    const size_t pb = pa == std::string::npos ? pa : src.find("\n}\n", pa);
+    const std::string pl = pb == std::string::npos ? std::string() : src.substr(pa, pb - pa);
+    report("the ring ranks cached experts by the decode cache's victim rank", pl.find("prompt_victim_rank(") != std::string::npos);
+    const size_t va = src.find("inline double prompt_victim_rank(");
+    report("the decode cache's victim rank is poolx_victim_rank", va != std::string::npos && src.find("poolx_victim_rank(", va) < src.find("\n}\n", va));
 }
 
 int main(int argc, char ** argv) {

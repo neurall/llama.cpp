@@ -92,12 +92,23 @@ static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return 
 // uploaded against staged's 47.9). Rank: the order taken, cheap before costly; a costly block only for an entry needed now (cs_ahead).
 static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6; }
 static inline int  poolx_ring_rank(int tier) { static const int r[8] = { 0, 1, 2, 4, 5, 3, 6, 7 }; return tier >= 0 && tier < 8 ? r[tier] : 8; }
-// the order taken: by rank; among costly ones of a rank the furthest pending layer first (pos: the pass position of the layer whose expert comes back, a claim's
-// nearest), as it comes back last (user 2026-11-14: "from pending furthest ones first"); cheap ones of a rank keep the cursor's order (stable sort)
-static inline bool poolx_ring_before(int tier_x, int32_t pos_x, int tier_y, int32_t pos_y) {
+// A prompt pass's victim rank, lowest taken first: the arithmetic of prompt_victim_rank (llama-moecache-fork.cpp), shared by the decode cache's prompt misses and
+// the staging=0 ring. s: the decode cache's score of expert x of layer o, bounded under 9e5; jli: the layer the pass is at. off (default): the layers done coldest
+// first wherever they lie, then the layers to come, the furthest first and the coldest within. on (--moe prompt-victim=1): the next two layers last; all (the pass
+// visits nearly every expert): the layer just finished first, then the furthest ahead; else the coldest wherever (equal: the later layer).
+static inline double poolx_victim_rank(bool on, bool all, size_t o, size_t jli, size_t n_layers, double s) {
+    if (!on) { return o > jli ? 1e12 - (double) o * 1e6 + s : s; }
+    if (o > jli && o <= jli + 2) { return 1e12 - (double) o * 1e6 + s; }
+    if (all) { return o <= jli ? (double) (jli - o) * 1e6 + s : 1e11 - (double) o * 1e6 + s; }
+    return s + 1e-3 * (1.0 - (double) o / (double) n_layers);
+}
+// the order taken: by tier rank, then the lower victim rank (cs_plan: cached experts by poolx_victim_rank, user 2026-11-14 "why not use the same" [as the decode
+// cache] and "past or farthest layers coldest moes first"; a claim over a pending expert by its nearest pending layer, the furthest first); equal ranks keep the
+// cursor's order (stable sort)
+static inline bool poolx_ring_before(int tier_x, double rank_x, int tier_y, double rank_y) {
     const int rx = poolx_ring_rank(tier_x), ry = poolx_ring_rank(tier_y);
     if (rx != ry) { return rx < ry; }
-    return poolx_ring_costly(tier_x) && pos_x > pos_y;
+    return rank_x < rank_y;
 }
 
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
