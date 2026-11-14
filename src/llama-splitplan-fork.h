@@ -266,3 +266,18 @@ static inline dsxn_out dsxn_plan(const dsxn_in & in) {
     for (int il = 0; il < in.L; ++il) { o.t_split += dsxn_layer_us(in, il, o.s); }
     return o;
 }
+
+// The helpers' expert shares a pass-size bucket starts with (n_dev cards, the expert card last): the expert trial's shares in force (trial_f, one per
+// helper), the expert card the rest; every expert on the expert card when no trial matches the cards. A bucket with nothing stored reads as this too, so a
+// read before the bucket exists gives what it is created with (2026-11-14: three readers read 0 there, the helper idled, qni4-i -19%).
+static inline std::vector<double> llama_dsplit_f_fresh_fork(size_t n_dev, const std::vector<double> & trial_f) {
+    std::vector<double> f(n_dev, 0.0);
+    if (n_dev == 0) { return f; }
+    f[n_dev - 1] = 1.0;
+    if (n_dev >= 2 && trial_f.size() == n_dev - 1) {
+        double sum = 0.0;
+        for (size_t i = 0; i + 1 < n_dev; ++i) { f[i] = trial_f[i]; sum += trial_f[i]; }
+        f[n_dev - 1] = 1.0 - sum;
+    }
+    return f;
+}

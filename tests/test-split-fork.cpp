@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <random>
 #include <string>
+#include <vector>
 
 static int  n_failed = 0;
 static long g_iters  = 300;
@@ -303,6 +304,57 @@ static void test_nc_plan() {
     }
 }
 
+// The expert shares of a pass-size bucket with nothing stored yet (2026-11-14, qni4-i -19%): the four readers of the per-bucket shares each had their own
+// default for a missing bucket; three read 0 (every expert on the expert card, the helper idle) while a new bucket starts from the expert trial's shares in
+// force. A read before the bucket exists must give what the bucket is created with: one function for both (llama_dsplit_f_fresh_fork), one reader in the
+// engine (dsplit_f_of); the source check below keeps new per-pass lookups from adding a default of their own.
+static void test_f_fresh() {
+    printf("expert shares of a bucket with nothing stored:\n");
+    const auto eq = [](const std::vector<double> & a, const std::vector<double> & b) {
+        if (a.size() != b.size()) { return false; }
+        for (size_t i = 0; i < a.size(); ++i) { if (std::fabs(a[i] - b[i]) > 1e-12) { return false; } }
+        return true;
+    };
+    report("3 cards, trial shares 0.2 and 0.1: the expert card takes the rest", eq(llama_dsplit_f_fresh_fork(3, { 0.2, 0.1 }), { 0.2, 0.1, 0.7 }));
+    report("2 cards, no trial yet: every expert on the expert card", eq(llama_dsplit_f_fresh_fork(2, {}), { 0.0, 1.0 }));
+    report("2 cards, trial shares for 3 cards: not used", eq(llama_dsplit_f_fresh_fork(2, { 0.3, 0.1 }), { 0.0, 1.0 }));
+    report("no cards: nothing", llama_dsplit_f_fresh_fork(0, { 0.3 }).empty());
+    std::mt19937 rng(g_seed);
+    bool ok = true;
+    for (long it = 0; it < g_iters && ok; ++it) {   // any trial: shares sum to 1, each in [0, 1], the helpers' as the trial's
+        const size_t n = 2 + rng() % 4;
+        std::vector<double> t(n - 1);
+        double sum = 0.0;
+        for (auto & x : t) { x = (rng() % 1000) / 1000.0 / (double) n; sum += x; }
+        const auto f = llama_dsplit_f_fresh_fork(n, t);
+        double fs = 0.0;
+        for (size_t i = 0; i < n; ++i) { fs += f[i]; ok = ok && f[i] >= 0.0 && f[i] <= 1.0 && (i + 1 == n || f[i] == t[i]); }
+        ok = ok && std::fabs(fs - 1.0) < 1e-9;
+    }
+    report("any trial: shares sum to 1, helpers keep the trial's", ok);
+    // the engine: every per-pass lookup of the shares goes through dsplit_f_of (a lookup of its own brings a default of its own)
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-dsplit-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    int bad = 0;
+    std::string fn, where;
+    for (size_t pos = 0, nl; pos < src.size(); pos = nl + 1) {
+        nl = src.find('\n', pos);
+        if (nl == std::string::npos) { nl = src.size(); }
+        const std::string line = src.substr(pos, nl - pos);
+        if (!line.empty() && line[0] != ' ' && line[0] != '}' && line[0] != '/' && line.find('(') != std::string::npos) { fn = line; }
+        if (line.find("g_bal.find(dsplit_bucket_of(n_tokens))") != std::string::npos && fn.find("dsplit_f_of(") == std::string::npos) {
+            bad++; where += "\n      in " + fn.substr(0, 90);
+        }
+    }
+    report("source read", !src.empty());
+    report("no per-pass share lookup outside dsplit_f_of", bad == 0, fmt("%d%s", bad, where.c_str()));
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -312,6 +364,7 @@ int main(int argc, char ** argv) {
     test_nc_counts();
     test_nc_loop();
     test_nc_plan();
+    test_f_fresh();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

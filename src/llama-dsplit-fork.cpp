@@ -1831,19 +1831,23 @@ dsplit_bal & dsplit_bal_get(int b, const std::vector<ggml_backend_dev_t> & dev) 
     const size_t n = dev.size();
     B.dev = dev;
     B.s.assign(n, n ? 1.0 / (double) n : 0.0);
-    B.f.assign(n, 0.0);
-    if (n) { B.f[n - 1] = 1.0; }
-    if (n >= 2 && g_xt.f.size() == n - 1) {   // the expert trial's shares in force: a pass of a size not seen before keeps them (2026-11-08: a fresh bucket ran at 0% and restarted the trial)
-        double sum = 0.0;
-        for (size_t i = 0; i + 1 < n; ++i) { B.f[i] = g_xt.f[i]; sum += g_xt.f[i]; }
-        B.f[n - 1] = 1.0 - sum;
-    }
+    B.f = llama_dsplit_f_fresh_fork(n, g_xt.f);   // the expert trial's shares in force: a pass of a size not seen before keeps them (2026-11-08: a fresh bucket ran at 0% and restarted the trial)
     B.c.assign(n, 0.0); B.hop.assign(n, 0.0); B.k.assign(n, 0.0); B.d.assign(n, 0.0); B.m.assign(n, 0.0); B.wd.assign(n, 0.0); B.wm.assign(n, 0.0); B.wx.assign(n, 0.0); B.tok.assign(n, 0);
     B.s_run = B.s; B.f_run = B.f;
     B.phase = 2;   // the dense split alone: every expert on the expert card
     B.last = "nothing measured yet";
     (void) b;      // the shares come from the zero-wait rule (dsplit_zw), the same for every pass size; B keeps the measured times of the size's last pass
     return B;
+}
+// The expert shares of a pass of n_tokens, the one reader for every per-pass caller (under g_plan_mu): the bucket's own, else what a new bucket starts with
+// (llama_dsplit_f_fresh_fork on the cards of the last measured bucket), so reads before and after the bucket exists agree. dev: the cards, in share order.
+// Empty when no bucket was ever measured (nothing known: the dense split alone). tests/test-split-fork.cpp keeps per-pass lookups in here.
+static std::vector<double> dsplit_f_of(int64_t n_tokens, std::vector<ggml_backend_dev_t> & dev) {
+    const auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
+    if (bt != g_bal.end() && !bt->second.f.empty()) { dev = bt->second.dev; return bt->second.f; }
+    const auto last = g_bal_last >= 0 ? g_bal.find(g_bal_last) : g_bal.end();
+    dev = last != g_bal.end() ? last->second.dev : std::vector<ggml_backend_dev_t>();
+    return llama_dsplit_f_fresh_fork(dev.size(), g_xt.f);
 }
 double dsplit_link(ggml_backend_dev_t d) {
     return d && ggml_backend_dev_is_gpu(d) ? dsplit_link_once(d) : 0.0;
@@ -2480,9 +2484,9 @@ void llama_dsplit_pass_done_fork() {
 // dense split alone) and the graph is built again, before the split itself is given up; true when there was something to drop
 bool llama_dsplit_drop_experts_fork(int64_t n_tokens) {
     std::lock_guard<llama_checked_mutex> lk(g_plan_mu);
-    auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
-    if (bt == g_bal.end() || bt->second.f.empty()) { return false; }
-    dsplit_bal & B = bt->second;
+    std::vector<ggml_backend_dev_t> dev;
+    if (dsplit_f_of(n_tokens, dev).empty()) { return false; }
+    dsplit_bal & B = dsplit_bal_get(dsplit_bucket_of(n_tokens), dev);   // a bucket not stored yet is made with the shares its graph was built with
     double fh = 0.0;
     for (size_t i = 0; i + 1 < B.f.size(); ++i) { fh += B.f[i]; }
     if (fh <= 0.0) { return false; }
@@ -2506,9 +2510,9 @@ double llama_dsplit_card_f_fork(int il, int64_t n_tokens, ggml_backend_dev_t dev
     {
         std::lock_guard<llama_checked_mutex> lk(g_plan_mu);
         if (g_bal_used) {
-            auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
-            if (bt == g_bal.end()) { return 0.0; }
-            for (size_t i = 0; i < bt->second.dev.size(); ++i) { if (bt->second.dev[i] == dev) { return bt->second.f[i]; } }
+            std::vector<ggml_backend_dev_t> cards;
+            const std::vector<double> f = dsplit_f_of(n_tokens, cards);
+            for (size_t i = 0; i < cards.size() && i < f.size(); ++i) { if (cards[i] == dev) { return f[i]; } }
             return 0.0;
         }
     }
@@ -2522,9 +2526,9 @@ bool llama_dsplit_helpers_experts_fork(int64_t n_tokens) {
     if (mode >= 0) { return mode == 1; }
     std::lock_guard<llama_checked_mutex> lk(g_plan_mu);
     if (g_bal_used) {
-        auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
-        if (bt == g_bal.end()) { return false; }
-        for (size_t i = 0; i + 1 < bt->second.f.size(); ++i) { if (bt->second.f[i] > 0.0) { return true; } }   // the last card is the expert card
+        std::vector<ggml_backend_dev_t> cards;
+        const std::vector<double> f = dsplit_f_of(n_tokens, cards);
+        for (size_t i = 0; i + 1 < f.size(); ++i) { if (f[i] > 0.0) { return true; } }   // the last card is the expert card
         return false;
     }
     auto tt = g_tune.find(dsplit_bucket_of(n_tokens));
@@ -2539,8 +2543,9 @@ double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
     // keeps); every other layer none. K comes from the layer tuner (phase 0 of dsplit_tune_step) and starts at 0: the dense split alone.
     std::lock_guard<llama_checked_mutex> lk(g_plan_mu);
     if (g_bal_used) {   // the live balance: the first helper's share (llama_dsplit_card_f_fork gives every card's)
-        auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
-        return bt != g_bal.end() && !bt->second.f.empty() ? bt->second.f[0] : 0.0;
+        std::vector<ggml_backend_dev_t> cards;
+        const std::vector<double> f = dsplit_f_of(n_tokens, cards);
+        return f.size() >= 2 ? f[0] : 0.0;
     }
     if (il < 0 || il >= (int) g_layer_rank.size() || g_layer_rank[il] < 0) { return 0.0; }
     auto tt = g_tune.find(dsplit_bucket_of(n_tokens));
