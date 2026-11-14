@@ -1704,13 +1704,20 @@ void llama_context::sched_reserve() {
                     if (t && (t->flags & GGML_TENSOR_FLAG_INPUT) && std::find(ts.begin(), ts.end(), t) == ts.end()) { ts.push_back(t); }
                 }
             }
+            // views take no memory of the graph (the KV's 5 GiB cache views led every list): left out; per op, the bytes of all its tensors over the layers
+            ts.erase(std::remove_if(ts.begin(), ts.end(), [](const ggml_tensor * t) { return t->view_src != nullptr; }), ts.end());
             std::sort(ts.begin(), ts.end(), [](const ggml_tensor * x, const ggml_tensor * y) { return ggml_nbytes(x) > ggml_nbytes(y); });
-            std::string top;
+            std::map<std::string, std::pair<int, size_t>> by_op;
+            for (const ggml_tensor * t : ts) { auto & e = by_op[ggml_op_desc(t)]; e.first++; e.second += ggml_nbytes(t); }
+            std::vector<std::pair<std::string, std::pair<int, size_t>>> ops(by_op.begin(), by_op.end());
+            std::sort(ops.begin(), ops.end(), [](const auto & x, const auto & y) { return x.second.second > y.second.second; });
+            std::string top, per_op;
             for (size_t k = 0; k < ts.size() && k < 8; ++k) {
                 top += format("%s %s [%lld,%lld,%lld,%lld] %.0f MiB; ", ts[k]->name, ggml_op_desc(ts[k]), (long long) ts[k]->ne[0], (long long) ts[k]->ne[1],
                         (long long) ts[k]->ne[2], (long long) ts[k]->ne[3], ggml_nbytes(ts[k]) / 1048576.0);
             }
-            LLAMA_LOG_WARN("%s: prompt graph of %u tokens on %s: largest tensors: %s\n", __func__, u, ggml_backend_dev_name(dv), top.c_str());
+            for (size_t k = 0; k < ops.size() && k < 8; ++k) { per_op += format("%s x%d %.0f MiB; ", ops[k].first.c_str(), ops[k].second.first, ops[k].second.second / 1048576.0); }
+            LLAMA_LOG_WARN("%s: prompt graph of %u tokens on %s: largest tensors: %s| by op (all layers): %s\n", __func__, u, ggml_backend_dev_name(dv), top.c_str(), per_op.c_str());
         }
     };
     if (cparams.moe_cache && !model.no_alloc() && n_tokens > 512) {   // before the first real reserve (which allocates): the list, measure-only
