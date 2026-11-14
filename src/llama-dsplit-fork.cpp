@@ -58,6 +58,8 @@ static bool dsplit_card(const llama_model & model, ggml_backend_dev_t d) {
     return !r || r->compute >= 0.25 * top;
 }
 
+int llama_moe_cache_split_mode_fork();   // llama-moecache-fork.cpp: --moe moe-split, 1 home, 0 expert, -1 unset (the expert card, as staged)
+
 namespace {
 
 // --moe mirror-pool (default on with the compute alias): one card's copies live at the start of its expert pool buffer, in the blocks a prompt pass that
@@ -1913,7 +1915,6 @@ dsplit_zw g_zw;
 // zero-wait rule's 0.75 start and its drop at every wait of the expert card are for a card that computes every expert (GLM 3.0 12k, staging=0: the expert card
 // waited 2.1 s with the helper's chain at 61% of its window and 4.2 s at 128%, both read as caused by the tokens: the factor fell 0.75, 0.68, 0.61 and the
 // helper's tokens went 42%, 54%, then 36%; passes of 16.9 s at 42% and 16.5 s at 54%, 200 W a card).
-int llama_moe_cache_split_mode_fork();   // llama-moecache-fork.cpp: --moe moe-split, 1 home, 0 expert, -1 unset (the expert card, as staged)
 static bool dsplit_zw_turns() {
     return llama_dsplit_turns_fork(moe_no_staging(), llama_dsplit_experts_mode_fork(), llama_moe_cache_split_mode_fork());
 }
