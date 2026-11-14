@@ -1860,8 +1860,13 @@ void llm_graph_result::reset() {
 }
 
 void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
+    static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;   // fork: which input a big pass's start waits for
     for (auto & input : inputs) {
+        const int64_t t0 = dbg ? ggml_time_us() : 0;
         input->set_input(ubatch);
+        if (dbg && ubatch->n_tokens >= 1024 && ggml_time_us() - t0 >= 2000) {
+            LLAMA_LOG_WARN("prefill split: input %s of %u tokens took %.1f ms\n", typeid(*input).name(), ubatch->n_tokens, (ggml_time_us() - t0) / 1e3);
+        }
     }
 }
 
