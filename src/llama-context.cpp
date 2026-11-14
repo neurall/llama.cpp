@@ -1686,9 +1686,9 @@ void llama_context::sched_reserve() {
     // once per process: what the prompt graph of each card is made of (its largest tensors), so a size that does not fit names its cause (GLM 3.0: 1.84 MiB per
     // token at the start, 0.5 in the real passes, 2026-10-24)
     std::vector<size_t> lt(backend_ptrs.size(), 0);
-    auto list_top = [&](ggml_cgraph * mg, uint32_t u) {
+    auto list_top = [&](ggml_cgraph * mg, uint32_t u, bool again = false) {   // again: a graph that failed a check names what it holds too
         static bool listed = false;
-        if (listed || !mg) { return; }
+        if ((listed && !again) || !mg) { return; }
         listed = true;
         for (size_t bi = 0; bi < backend_ptrs.size(); ++bi) {
             ggml_backend_dev_t dv = ggml_backend_get_device(backend_ptrs[bi]);
@@ -1875,6 +1875,7 @@ void llama_context::sched_reserve() {
                         if (n_jump++ < 2) {
                             LLAMA_LOG_ERROR("%s: GRAPH JUMP: the %u-token probe asks %.0f MiB on %s, the first reserve %.0f MiB at %u tokens: a graph tensor lives too long\n",
                                     __func__, u, s[i] / 1048576.0, ggml_backend_dev_name(d), lt[i] / 1048576.0, n_tokens);
+                            if (n_jump == 1) { list_top(mg, u, true); }   // what this probe holds at its peak (the first list was the first reserve's)
                         }
                     }
                     s[i] += scr;
