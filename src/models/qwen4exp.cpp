@@ -546,8 +546,6 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
             ggml_reshape_3d(ctx0, inpL, n_embd, 1, n_tokens),
             n_embd, hc, n_tokens, 1);
     cb(res_hc, "hc_init", -1);
-    // make sure hc_init is in the same graph split as the first layer (-sm tensor)
-    ggml_build_forward_expand(gf, res_hc);
 
     // ---- fork: dense split (token ranges, one per card; the shared kit in llama-graph.cpp, the reasoning in llama-dsplit-fork.cpp) ---------------------------
     // The dense part of this model is small in bytes (3.5 GiB of 84: 72 MiB per layer against 1 GiB of routed experts) but it is most of the compute of a
@@ -989,6 +987,9 @@ llama_model_qwen4exp::graph::graph(const llm_graph_params & params) :
         }
     }
 
+    // make sure hc_init is in the same graph split as the first layer (-sm tensor). Not in a dense split pass: its ranges build their own, and expanded before the
+    // split was decided it sat in the graph with no reader to the end (640 MiB at 16384 tokens on Qwen3.8, named by the graph planner's check, 2026-11-14)
+    if (!ds_done) { ggml_build_forward_expand(gf, res_hc); }
     for (int il = 0; il < n_layer && !ds_done; ++il) {
         if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
             res->t_layer_inp[il] = hc_stream_mean(ctx0, res_hc);
