@@ -92,6 +92,13 @@ static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return 
 // uploaded against staged's 47.9). Rank: the order taken, cheap before costly; a costly block only for an entry needed now (cs_ahead).
 static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6; }
 static inline int  poolx_ring_rank(int tier) { static const int r[8] = { 0, 1, 2, 4, 5, 3, 6, 7 }; return tier >= 0 && tier < 8 ? r[tier] : 8; }
+// the order taken: by rank; among costly ones of a rank the furthest pending layer first (pos: the pass position of the layer whose expert comes back, a claim's
+// nearest), as it comes back last (user 2026-11-14: "from pending furthest ones first"); cheap ones of a rank keep the cursor's order (stable sort)
+static inline bool poolx_ring_before(int tier_x, int32_t pos_x, int tier_y, int32_t pos_y) {
+    const int rx = poolx_ring_rank(tier_x), ry = poolx_ring_rank(tier_y);
+    if (rx != ry) { return rx < ry; }
+    return poolx_ring_costly(tier_x) && pos_x > pos_y;
+}
 
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
     for (const auto & sg : ap.segs) {

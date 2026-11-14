@@ -12230,9 +12230,9 @@ static int64_t chain_grid_blocks(moe_cache * mc, const layer_state & l, int64_t 
     for (int32_t b = 0; b < (int32_t) ps.owner.size() && n < enough; ++b) { n += ps.owner[b] == -4 && chain_claimable(mc, l.pcls, b); }
     return n;
 }
-static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool & from_done, bool & fut, bool force) {   // cache lock held; force: pins yield; fut: over an expert of a layer to come
+static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool & from_done, int32_t & fut_q, bool force) {   // cache lock held; force: pins yield; fut_q: the nearest layer to come whose expert lies there, -1 none
     bool fd = false;
-    fut = false;
+    fut_q = -1;
     const bool ok = cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
         const int32_t o = mc->pool[qc].owner[x];
         if (o == -1 || o == -4) { return true; }
@@ -12245,7 +12245,7 @@ static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool 
         const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
         if (q < 0 || (!force && pinned(mc, lo, e))) { return false; }
         if ((size_t) q < mc->cs_done[lo.link]) { fd = true; return true; }
-        if ((size_t) q > p) { fut = true; return true; }
+        if ((size_t) q > p) { fut_q = fut_q < 0 ? q : std::min(fut_q, q); return true; }
         return false;
     });
     from_done = ok && fd;
@@ -12483,7 +12483,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     if (ps.cs_up.size() < ps.owner.size()) { ps.cs_up.resize(ps.owner.size(), 0); }
     // A ring (user 2026-11-12: "evict past not future"; the staged stream's whole-layer copies, only the destination differs): the blocks in order from the class's write
     // cursor, so a layer lands in one run over what was written longest ago. Never a block of a layer uploaded for in this pass whose kernels are not queued yet.
-    struct cand { int tier; int32_t b; int64_t o; int32_t at; bool fd; };   // o: the entry (layer or shadow) holding the block, -1 none; at: its place from the cursor; fd: a computed layer's (its copy waits for the done event)
+    struct cand { int tier; int32_t b; int64_t o; int32_t at; bool fd; int32_t pos; };   // o: the entry (layer or shadow) holding the block, -1 none; at: its place from the cursor; fd: a computed layer's (its copy waits for the done event); pos: a pending one's layer position (a claim's nearest)
     std::vector<cand> c;
     // the layer ring (staging=0): the class's blocks in the reserve behind floor_end, from the card's cursor (bytes, class-blind: the layers of every class follow
     // one another there, first in first out); without a reserve the class's own cursor over all its blocks
@@ -12506,8 +12506,9 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         const int32_t o = ps.owner[b];
         if (o == -1) { c.push_back({ 0, b, -1, i, false }); continue; }
         if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: nothing of a layer to come, 6: an expert of one)
-            bool fd = false, fut = false;
-            if (cls_claimable(mc, ls.pcls, b, p, fd, fut, force) && !(cheap && fut)) { c.push_back({ fut ? 6 : 5, b, -1, i, fd }); } else { n_sk[0]++; }
+            bool fd = false;
+            int32_t fq = -1;
+            if (cls_claimable(mc, ls.pcls, b, p, fd, fq, force) && !(cheap && fq >= 0)) { c.push_back({ fq >= 0 ? 6 : 5, b, -1, i, fd, fq }); } else { n_sk[0]++; }
             continue;
         }
         const int64_t lx = cs_li_of(mc, o);   // a layer's or a shadow's
@@ -12522,7 +12523,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         if ((size_t) q < mc->cs_done[lo.link]) {   // computed in this pass: its done event is on its card's compute stream
             c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, lx, i, true });
         } else if ((size_t) q > p && !((size_t) q < mc->cs_mix.size() && mc->cs_mix[(size_t) q] == 1)) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert
-            if (!cheap) { c.push_back({ 4, b, lx, i, false }); }                                                  // comes back when its turn comes; never a mix home's (its shadow left those out)
+            if (!cheap) { c.push_back({ 4, b, lx, i, false, q }); }                                                // comes back when its turn comes; never a mix home's (its shadow left those out)
         } else {
             n_sk[5]++;
         }
@@ -12539,11 +12540,11 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     // upload"; scattered picks made 8323 copies of 22894 experts a Qwen3.8 12k pass). The run takes the best ranks it can (poolx_ring_window), down to the experts
     // of layers to come: those fill the class at every pass's start. Else the tiered pick below.
     bool win = false;
-    if (!sel && !late && mix == 0 && c.size() >= want.size() && nr > 0) {
+    if (!sel && !late && mix == 0 && n_cheap >= want.size() && nr > 0) {   // a run of cheap blocks only: pending ones go furthest first (below)
         std::vector<int32_t> ci((size_t) nr, -1);   // block (from the ring's start) -> its candidate
         std::vector<int8_t>  rk((size_t) nr, -1);
-        for (size_t x = 0; x < c.size(); ++x) {   // a run never takes a costly block while the cheap ones would do (a copy saved is not worth an expert's bytes again)
-            if (n_cheap >= want.size() && poolx_ring_costly(c[x].tier)) { continue; }
+        for (size_t x = 0; x < c.size(); ++x) {   // a run never takes a costly block (a copy saved is not worth an expert's bytes again)
+            if (poolx_ring_costly(c[x].tier)) { continue; }
             ci[(size_t) (c[x].b - r0)] = (int32_t) x; rk[(size_t) (c[x].b - r0)] = (int8_t) poolx_ring_rank(c[x].tier);
         }
         const int32_t j0 = poolx_ring_window(rk, ps.cs_cur, (int32_t) want.size());
@@ -12566,7 +12567,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         }
     }
     if (!win) {
-        std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return poolx_ring_rank(x.tier) < poolx_ring_rank(y.tier); });
+        std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return poolx_ring_before(x.tier, x.pos, y.tier, y.pos); });
         if (c.size() > want.size()) { c.resize(want.size()); }
     }
     mc->cs_n_win += win;

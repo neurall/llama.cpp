@@ -772,6 +772,12 @@ static void test_regress_ring_costly() {
     report("costly: a layer ahead's cached expert, another class's bytes over one", poolx_ring_costly(4) && poolx_ring_costly(6));
     report("cheap: free, empty, computed in this pass, another class's bytes without one", !poolx_ring_costly(0) && !poolx_ring_costly(1) && !poolx_ring_costly(2) && !poolx_ring_costly(3) && !poolx_ring_costly(5));
     report("free first, a prediction giving way last", poolx_ring_rank(0) == 0 && poolx_ring_rank(7) == 7);
+    // user 2026-11-14: "from pending furthest ones first": a pending layer's expert comes back at its layer's turn, the furthest the latest
+    report("pending: the furthest layer's expert first", poolx_ring_before(4, 90, 4, 10) && !poolx_ring_before(4, 10, 4, 90));
+    report("pending claims: the one whose nearest pending layer is furthest first", poolx_ring_before(6, 70, 6, 20));
+    report("a pending layer's expert before a claim over one (rank)", poolx_ring_before(4, 5, 6, 90));
+    report("cheap before pending, whatever the layer", poolx_ring_before(3, 0, 4, 99) && !poolx_ring_before(4, 99, 3, 0));
+    report("cheap ones of a rank keep the cursor's order", !poolx_ring_before(2, 9, 2, 1) && !poolx_ring_before(2, 1, 2, 9));
     std::string src;
     {
         std::string path = __FILE__;
