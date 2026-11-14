@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+pmx-off,k31,2,chatv,512,"--moe rp-grow=0",--env PERF_LEDGER=0
+pmx-t4,k31,2,chatv,512,"--moe rp-grow=0,pred-top=4,predict-ahead=0,pred=1",--env PERF_LEDGER=0
+pmx-t8,k31,2,chatv,512,"--moe rp-grow=0,pred-top=8,predict-ahead=0,pred=1",--env PERF_LEDGER=0
+pmx-t16,k31,2,chatv,512,"--moe rp-grow=0,pred-top=16,predict-ahead=0,pred=1",--env PERF_LEDGER=0
