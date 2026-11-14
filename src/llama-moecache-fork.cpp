@@ -15882,6 +15882,16 @@ static double pp_wait_us(double n) {
     }
     return 0.0;
 }
+// what a prior missed by at a size (took / its estimate) and the factor a call's decision put on each never-run arm (0: it had samples): rls_prior_cal
+static double g_pp_cal[32] = {}, g_pp_cal_on[PP_PATHS] = {};
+static double pp_cal_at(double n) {   // this size's, else a neighbour's (x2 either way); 0 = none yet
+    const int b = pp_bucket(n);
+    for (int d = 0; d < 2; ++d) {
+        if (b - d >= 0 && g_pp_cal[b - d] > 0.0) { return g_pp_cal[b - d]; }
+        if (b + d < 32 && g_pp_cal[b + d] > 0.0) { return g_pp_cal[b + d]; }
+    }
+    return 0.0;
+}
 // the path's time at n tokens, through its measured points as pp_pass_us; 0 when it never ran near this size
 static double pp_took_us(int path, double n) {
     if (g_pp_took[path][pp_bucket(n)].n <= 0.0) { return 0.0; }
@@ -16529,6 +16539,12 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 // (a tiny call on the stream family ran on the CPU: its time says nothing about a stream. The 2-token call at start, priced against the uncalibrated link rate, left the upload coefficient about 17x low)
                 // nor does a tiny decode-chain call teach its arm: the 2-token start call (cold kernels, 420 ms) put a 100-token GLM call at 13.9 s and the stream won it (2026-11-10)
                 const bool streamed = n1 >= PP_MIN_BATCH || path == PP_CHAIN;
+                if (g_pp_cal_on[path] > 0.0 && mu > 0.0 && streamed) {   // it ran on its prior: the prior's miss prices the never-run arms of this size (rls_prior_cal)
+                    const double est = mu / g_pp_cal_on[path];
+                    g_pp_cal[pp_bucket(n1)] = took / est;
+                    LLAMA_LOG_WARN("moe-cache: planner: %s ran on its prior (%.0f tokens a pass): %.0f ms estimated, took %.0f: the arms that never ran at this size x%.2f\n",
+                            pp_path_name(path).c_str(), n1, est / 1e3, took / 1e3, took / est);
+                }
                 const double nis = learned > 0 || !streamed ? rp.nis : rls_update(rp, g_pp_phi[path], took);   // the passes taught the arm already (llama_moe_cache_pp_pass_learn_fork)
                 if (nis > 1.0) { g_pp_redraw = true; }   // the posterior moved more than it expected: the next call draws again
                 // stored only when determined and quiet (feedback_stored_values_policy): a next start begins from it as its prior
@@ -16951,6 +16967,13 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // no path beats the compute itself: a few short samples extrapolated to a long call gave the chain -494459 ms (GLM, 4475 tokens, 2026-11-10), and a negative mean always won
         g_pp_pmu[p] = std::max(g_pp_c_us > 0.0 ? g_pp_c_us * (double) n : 0.0, rls_pred(rp, g_pp_phi[p], &g_pp_var[p]));
         rls_draw(rp, g_pp_phi[p], rls_mix(g_pp_seed + (uint64_t) p), &g_pp_drw[p]);
+    }
+    {   // the never-run arms priced by what a prior missed by at this size (rls_prior_cal; user 2026-11-15: "planner shall calculate it")
+        int ns[PP_PATHS];
+        for (int p = 0; p < PP_PATHS; ++p) { ns[p] = g_pp_phi[p][1] > 0.0 ? pp_rls(p).n : 1; }
+        const double cal = pp_cal_at(n);
+        rls_prior_cal(g_pp_pmu, g_pp_var, ns, PP_PATHS, cal);
+        for (int p = 0; p < PP_PATHS; ++p) { g_pp_cal_on[p] = ns[p] == 0 ? (cal > 0.0 ? cal : 1.0) : 0.0; }
     }
     {
         bool ok[PP_PATHS];

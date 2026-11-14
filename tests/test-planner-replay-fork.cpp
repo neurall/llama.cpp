@@ -43,11 +43,12 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
     dsf_rls one[A_N], split, fill;
     bool copies = false;
     std::vector<double> seen;
+    std::map<int, double> cal;   // per size bucket: what a prior missed by (process-local, as g_pp_cal)
     uint64_t rseed = 0; int last_req = -1;
     for (const auto & e : E) {
         if (e.log != cur) {   // a new start: copies not in place; fresh state, or (carry) what the previous start of this arm stored (R4)
             const std::string arm = e.log.substr(e.log.rfind('-') + 1), prev_arm = cur.empty() ? "" : cur.substr(cur.rfind('-') + 1);
-            cur = e.log; copies = false; last_req = -1; seen.clear();
+            cur = e.log; copies = false; last_req = -1; seen.clear(); cal.clear();
             if (g_carry && arm == prev_arm) {   // the state file round trip: every posterior with a sample (R4: its P carries any surprise), as rls_str / rls_parse (diag P), the rest fresh
                 auto keep = [](dsf_rls & r, int k) { dsf_rls q; if (r.k > 0 && r.n >= 1 && rls_parse(q, k, rls_str(r))) { r = q; } else { r = dsf_rls(); } };
                 for (auto & r : one) { keep(r, 4); }
@@ -73,6 +74,19 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
             if ((a == A_MIX || a >= A_K) && one[a].n == 0 && one[A_RING].n > 0) { one[a] = one[A_RING]; one[a].n = 0; one[a].nis = 1; }
             mu[a] = rls_pred(one[a], phi[a], &var[a]);
             rls_draw(one[a], phi[a], rls_mix(rseed + a), &dr[a]);
+        }
+        // the never-run arms priced by what a prior missed by at this size, as the planner (rls_prior_cal; REPLAY_NOCAL=1: without, the gate's before)
+        const auto bkt = [](double n) { int b = 0; while (b < 31 && n >= (double) (2ull << b)) { ++b; } return b; };
+        double con[A_N] = {};
+        if (!getenv("REPLAY_NOCAL")) {
+            int ns[A_N];
+            for (int a = 0; a < A_N; ++a) { ns[a] = ok[a] ? one[a].n : 1; }
+            double c = 0.0;
+            for (int d = 0, b = bkt(e.n); d < 2 && c <= 0.0; ++d) {
+                if (cal.count(b - d)) { c = cal[b - d]; } else if (cal.count(b + d)) { c = cal[b + d]; }
+            }
+            rls_prior_cal(mu, var, ns, A_N, c);
+            for (int a = 0; a < A_N; ++a) { con[a] = ns[a] == 0 ? (c > 0.0 ? c : 1.0) : 0.0; }
         }
         double lcb[A_N];
         for (int a = 0; a < A_N; ++a) { lcb[a] = ok[a] ? mu[a] - std::sqrt(std::max(0.0, var[a])) : 0; }
@@ -132,7 +146,10 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
             if (verbose) { printf("  %-34s req %d %5.0f tok %s: picked %-6s (%s) %6.0f ms, best %-6s %6.0f ms, loss %5.1f%%\n", e.log.c_str(), e.req, e.n, st.c_str(), picked.c_str(), sp ? "split" : "one card", took, ba.c_str(), best, 100 * loss); }
             // the sample the planner learns from (the code's definitions: split pass = call - fill wall; fill = wall)
             if (sp) { rls_update(split, sphi, tr("dense") * 1e3); if (!copies) { rls_update(fill, &est, fill_ms * 1e3); } copies = true; }
-            else    { rls_update(one[pick1], phi[pick1], took * 1e3); }
+            else    {
+                if (con[pick1] > 0.0 && mu[pick1] > 0.0) { cal[bkt(e.n)] = took * 1e3 / (mu[pick1] / con[pick1]); }   // it ran on its prior: the prior's miss
+                rls_update(one[pick1], phi[pick1], took * 1e3);
+            }
         } else if (verbose) { printf("  %-34s req %d %5.0f tok %s: picked %-6s unscored (never measured there)\n", e.log.c_str(), e.req, e.n, st.c_str(), picked.c_str()); }
     }
     return R;

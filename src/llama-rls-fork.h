@@ -238,6 +238,15 @@ static inline double rls_ei(double mu, double var, double b) {
 // (a 137x miss of its calculation) stand as that arm's mean and posterior, and the next calls priced from it.
 static inline bool rls_known(const dsf_rls & r, double mu, double var) { return r.n > 1 && var <= 2.0 * r.s2 * mu * mu; }
 
+// The arms that never ran (n_samples 0) priced by what a prior missed by where one ran at this size (cal = took / its prior's estimate; 0: none yet): the
+// priors share their inputs (SSD rate, resident bytes, link rates), so one measured miss is every prior's (user 2026-11-15: "planner shall calculate it").
+// K3 1k prompt: the stream's k x1 arm estimated 45.9 s on its prior and took 70.4 s; only its own model learned it, the untried arms kept the same 35%-low
+// prior (71.6 s against its 95.2 s at the next call) and layer parallel won the next call: 77.4 s.
+static inline void rls_prior_cal(double * mu, double * var, const int * n_samples, int n, double cal) {
+    if (!(cal > 0.0)) { return; }
+    for (int i = 0; i < n; ++i) { if (n_samples[i] == 0) { mu[i] *= cal; var[i] *= cal * cal; } }
+}
+
 // The pick. Among the arms known here: the lowest mean (a learned estimate is never overruled: no tie margin, no veto). Any other arm (a prior, or a
 // model extrapolated far from where it ran) is a trial, run only when its stake pays: expected gain over the calls of this size so far against its
 // expected loss, EI x R >= EL - all three learned. With no arm known here the lowest mean stands (nothing better is known).

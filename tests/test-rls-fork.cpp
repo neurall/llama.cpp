@@ -80,6 +80,20 @@ int main() {
         const std::string s = rls_str(a);
         check("old format without off-diagonals loads", rls_parse(d, 4, s.substr(0, s.rfind('|'))) && d.P[1] == 0.0, d.P[1]);
     }
+    {   // K3 1k prompt, request 2 (predmax1k, 2026-11-15): k x1 ran once on its prior (45.9 s estimated, 70.4 s took) and its model says 95.2 s; layer parallel,
+        // mix and stream never ran and kept the prior (71.6, 71.6, 71.7 s); layer parallel won and took 77.4 s
+        double mu[4]  = { 95.2, 71.6, 71.6, 71.7 }, var[4] = { 17.8 * 17.8, 6.3e5 * 6.3e5, 79.5 * 79.5, 2.4e4 * 2.4e4 };
+        const int nsamp[4] = { 1, 0, 0, 0 };
+        const bool ok[4] = { true, true, true, true }, known[4] = { false, false, false, false };
+        bool trial = false;
+        check("without the calibration a never-run prior wins (the K3 miss)", rls_voi_pick(mu, var, ok, 4, 2.0, &trial, known) != 0, 0.0);
+        rls_prior_cal(mu, var, nsamp, 4, 70.4 / 45.9);
+        check("priors x the measured miss (70.4 / 45.9): the arm that ran wins", rls_voi_pick(mu, var, ok, 4, 2.0, &trial, known) == 0, mu[1]);
+        check("the arm that ran keeps its own model's mean", mu[0] == 95.2, mu[0]);
+        double m2[2] = { 10.0, 20.0 }, v2[2] = { 1.0, 1.0 }; const int s2[2] = { 0, 0 };
+        rls_prior_cal(m2, v2, s2, 2, 0.0);
+        check("no calibration yet: the priors stay", m2[0] == 10.0 && m2[1] == 20.0, m2[0]);
+    }
     printf("%s\n", n_failed ? "FAILED" : "all passed");
     return n_failed ? 1 : 0;
 }
