@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+reg-1k,k31,2,pf1k,64,"--moe rp-grow=0",--env PERF_LEDGER=0
