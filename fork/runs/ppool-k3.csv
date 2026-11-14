@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+k3pp-off,k31,2,chatv,256,"--moe rp-grow=0",--env PERF_LEDGER=0
+k3pp-alloc,k31,2,chatv,256,"--moe rp-grow=0,pred-top=16,predict-ahead=0,pred-pool=1",--env PERF_LEDGER=0
+k3pp-on,k31,2,chatv,256,"--moe rp-grow=0,pred-top=16,predict-ahead=0,pred-pool=1,pred=1",--env PERF_LEDGER=0

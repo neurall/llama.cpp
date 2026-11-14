@@ -2302,7 +2302,8 @@ static void common_moe_cache_auto_impl(common_params & params) {
         // when the pool cannot lend the graph. Without the alias (--moe alias=0, pool=0, router prediction on) the old chooser below weighs the compute buffer against the cache.
         const char * o_alias = llama_moe_get_opt("alias");
         const char * o_pool  = llama_moe_get_opt("pool");
-        const bool   alias_ok = use_cache && params.n_moe_predict <= 0 && (!o_alias || atoi(o_alias) != 0) && (!o_pool || atoi(o_pool) != 0);
+        const char * o_ppool = llama_moe_get_opt("pred-pool");   // --moe pred-pool=1: the predictor keeps the block pool (the alias works as without it)
+        const bool   alias_ok = use_cache && (params.n_moe_predict <= 0 || (o_ppool && atoi(o_ppool) != 0)) && (!o_alias || atoi(o_alias) != 0) && (!o_pool || atoi(o_pool) != 0);
         if (alias_ok) {
             // no fixed size: the best pass differs per model (12.4k prompt, full models: GLM flat from 8192 to 12416, MiMo 12416 +28% over 8192, Qwen3.8 8192).
             // The maximum is the context; the context's shrink-to-fit halves it until the pool can lend the graph, and the per-prompt rule picks equal passes under it.

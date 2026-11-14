@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+ppo-on,olmoei,2,pf1k,64,"--cpu-moe --moe-expert-cache 19 --moe pred-top=8,predict-ahead=0,pred-pool=1,rampool=1,verify=2",--env CUDA_VISIBLE_DEVICES=1
+ppo-off,olmoei,2,pf1k,64,"--cpu-moe --moe-expert-cache 19 --moe rampool=1,verify=2",--env CUDA_VISIBLE_DEVICES=1
+ppo-chat-on,olmoei,2,chatv,128,"--cpu-moe --moe-expert-cache 19 --moe pred-top=8,predict-ahead=0,pred-pool=1,rampool=1,verify=2",--env CUDA_VISIBLE_DEVICES=1
