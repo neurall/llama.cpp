@@ -20,6 +20,7 @@
 #include "llama-gpu-probe-fork.h"
 #include "llama-moecache-fork.h"
 #include "llama-moestate-fork.h"
+#include "llama-lockrank-fork.h"
 
 #include "llama-arch.h"
 #include "llama-impl.h"
@@ -595,7 +596,7 @@ struct dsplit_plan_cache {
     std::vector<double> s_cards;  // the plan's token share of every card of the split (g_cards order)
 };
 std::map<int, dsplit_plan_cache> g_plans;   // per pass-size bucket
-std::mutex g_plan_mu;
+llama_ranked_mutex g_plan_mu(10, "g_plan_mu");   // rank: the outermost of the planner locks (llama-lockrank-fork.h)
 // The split tuner (under g_plan_mu): the planner gives the start, the measured pass times of a size decide (the model is good to 20-25% on the split;
 // a share it gets wrong costs every pass of that size). Per pass-size bucket, one parameter at a time, steps halved when the time gets worse:
 //   phase 0  gx, a factor on the plan's per-layer expert shares of the helper (0 = no experts on it, the dense split alone): step 0.5, down to 0.125
@@ -735,7 +736,7 @@ struct dsf_pt {
     int n = 0;
     double us = 0.0;   // the median of s
 };
-static std::mutex g_dsf_mu;   // innermost lock (taken under g_mu and g_plan_mu, never the other way)
+static llama_ranked_mutex g_dsf_mu(30, "g_dsf_mu");   // innermost lock (taken under g_mu and g_plan_mu, never the other way)
 static std::map<int, dsf_pt> g_dsf_one, g_dsf_split;
 static std::map<std::string, std::map<int, dsf_pt>> g_dsf_dense;
 static std::map<std::string, dsf_pt> g_dsf_hop;
@@ -1379,7 +1380,7 @@ size_t llama_dsplit_attn_split_cells_fork(const llama_model & model) {
     if (by_hand > 0) { return by_hand; }
     static size_t cached = 0;
     if (cached > 0) { return cached; }
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     const auto & hp = model.hparams;
     int il = -1;
     for (uint32_t i = 0; i < hp.n_layer(); ++i) { if (!hp.is_recr(i) && !hp.is_swa(i) && hp.has_kv(i)) { il = (int) i; break; } }
@@ -1490,7 +1491,7 @@ static void dsplit_mm_bench(const llama_model & model, const std::vector<ggml_ba
 // with "CUDA error: out of memory" in cuMemCreate (MiMo 60k, pre7; forced dense split never reached the planner, so it never timed and never failed).
 // the weight read rate of a card (bytes/s) from the matmul timing at load, 0 = not timed
 double llama_dsplit_read_rate_fork(ggml_backend_dev_t d) {
-    std::lock_guard<std::mutex> pk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
     const auto it = g_mm_read.find(d);
     return it != g_mm_read.end() ? it->second : 0.0;
 }
@@ -1498,7 +1499,7 @@ double llama_dsplit_read_rate_fork(ggml_backend_dev_t d) {
 void llama_dsplit_bench_fork(const llama_model & model) {
     std::vector<ggml_backend_dev_t> devs;
     for (const auto & d : model.devices) { if (dsplit_card(model, d.dev)) { devs.push_back(d.dev); } }
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     dsplit_mm_bench(model, devs);
     dsplit_link_model(model, 0);   // the weight bytes a token reads, for llama_dsplit_compute_calc_us_fork before the first split plan
     // the state file's section and hardware key now, under the reads: the moe-cache's posteriors (pp.rls.*) are read through them. Set only by the first
@@ -1511,7 +1512,7 @@ void llama_dsplit_bench_fork(const llama_model & model) {
 // 0 = not probed. The calculation llama_dsplit_plan_get_fork logs, without its attention term (that needs the model and the call's cells).
 // shortcut: no attention term (GLM 3.0 at 6k cells: 230 of 396 us per token); add it once the caller passes the model and cells.
 double llama_dsplit_compute_calc_us_fork(ggml_backend_dev_t d) {
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     const double rate = dsplit_mm_rate(d);
     return g_w_bytes_tok > 0.0 && rate > 0.0 ? g_w_bytes_tok / rate * 1e6 : 0.0;
 }
@@ -1522,7 +1523,7 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
         return llama_dsplit_plan_fork();
     }
     double c_us = llama_moe_cache_compute_us_fork();
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     // Calculated, not measured, for the first prompt (user 2026-10-25: "calculated split first pass"): before any prompt pass is timed the compute per token
     // is the weight bytes a token reads (dense weights + its active experts, dsplit_link_model) over the expert card's matmul rate measured at start (probe:
     // weight bytes x tokens per second, the sustained burst when there is one). Without it the plan was invalid and the first prompt ran on one card
@@ -1568,7 +1569,7 @@ llama_dsplit_plan_fork llama_dsplit_plan_get_fork(const llama_model & model, int
 }
 
 double llama_dsplit_plan_share_fork(int64_t n_tokens) {
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     const int b = dsplit_bucket_of(n_tokens);
     auto tt = g_tune.find(b);
     if (tt != g_tune.end() && tt->second.s >= 0.0) { return tt->second.s; }
@@ -2285,7 +2286,7 @@ void dsplit_bal_step(int b) {
     dsplit_climb_step(B, n, b);
     {   // this split pass's per-card factors (dsf): dense us/token at its context; hand-off; and for the experts on a card (dense + experts on cards whose links can
         // stream them, x16 / PCIe 5; user 2026-10-25): its expert compute per token of its expert share, and its measured upload rate
-        std::lock_guard<std::mutex> dl(g_dsf_mu);
+        std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu);
         dsf_load();
         if (g_dsf_ps.choice == 1 && g_dsf_ps.pos0 >= 0) {
             const int kb = (int) ((g_dsf_ps.pos0 + g_dsf_ps.T / 2) / DSF_CELLS);
@@ -2339,7 +2340,7 @@ void dsplit_pass_step_locked() {   // under g_plan_mu: the balance step of the s
 // the token share of every card (in the order of `dev`, the cards of llama_dsplit_cards_fork) for a split pass of n_tokens: the zero-wait rule (dsplit_zw)
 bool llama_dsplit_in_pass_loop_fork();   // llama-context.cpp: the pass was sized for all cards by the forced pass loop
 std::vector<double> llama_dsplit_bal_shares_fork(int64_t n_tokens, const std::vector<ggml_backend_dev_t> & dev) {
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     g_bal_used = true;
     std::vector<double> s = dsplit_zw_shares(dev);
     // A pass cut by the shares (not one the forced pass loop sized for all cards): equal DENSE time per card. Each card's tokens are proportional to 1 / (its
@@ -2458,7 +2459,7 @@ uint32_t llama_dsplit_pass_size_fork(uint32_t cap) {
 }
 // the cards of the split graph just built and the tokens of each (0: no range this pass), in range order: the balance relates each card's time to its tokens
 void llama_dsplit_note_ranges_fork(const std::vector<ggml_backend_dev_t> & dev, const std::vector<int64_t> & tok) {
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     g_rng_dev = dev;
     g_rng_tok = tok;
     g_rng_seq++;
@@ -2471,14 +2472,14 @@ bool llama_dsplit_prev_split_fork() {
     return g_cur == 1;
 }
 void llama_dsplit_pass_done_fork() {
-    std::lock_guard<std::mutex> pk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
     dsplit_pass_step_locked();
 }
 
 // a split pass with experts on the helpers did not fit (llama_context::process_ubatch): the experts go back to the expert card for passes of this size (the
 // dense split alone) and the graph is built again, before the split itself is given up; true when there was something to drop
 bool llama_dsplit_drop_experts_fork(int64_t n_tokens) {
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
     if (bt == g_bal.end() || bt->second.f.empty()) { return false; }
     dsplit_bal & B = bt->second;
@@ -2503,7 +2504,7 @@ double llama_dsplit_card_f_fork(int il, int64_t n_tokens, ggml_backend_dev_t dev
     if (mode == 0) { return 0.0; }    // dense only
     if (mode == 1) { return -1.0; }   // the old start and controller
     {
-        std::lock_guard<std::mutex> lk(g_plan_mu);
+        std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
         if (g_bal_used) {
             auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
             if (bt == g_bal.end()) { return 0.0; }
@@ -2519,7 +2520,7 @@ double llama_dsplit_card_f_fork(int il, int64_t n_tokens, ggml_backend_dev_t dev
 bool llama_dsplit_helpers_experts_fork(int64_t n_tokens) {
     const int mode = llama_dsplit_experts_mode_fork();
     if (mode >= 0) { return mode == 1; }
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     if (g_bal_used) {
         auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
         if (bt == g_bal.end()) { return false; }
@@ -2536,7 +2537,7 @@ double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
     if (mode == 1) { return -1.0; }   // the old start and controller
     // auto (2026-10-23): whole MoE layers, the first K of g_layer_order, give their experts to the helper (1: all of the layer's experts but the one the owner
     // keeps); every other layer none. K comes from the layer tuner (phase 0 of dsplit_tune_step) and starts at 0: the dense split alone.
-    std::lock_guard<std::mutex> lk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> lk(g_plan_mu);
     if (g_bal_used) {   // the live balance: the first helper's share (llama_dsplit_card_f_fork gives every card's)
         auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
         return bt != g_bal.end() && !bt->second.f.empty() ? bt->second.f[0] : 0.0;
@@ -2558,7 +2559,7 @@ std::string llama_dsplit_state_json_fork() {
     std::lock_guard<std::mutex> lk(g_mu);
     std::string why = g_pf_why;
     for (char & c : why) { if (c == '"' || c == '\\' || c < ' ') { c = ' '; } }
-    std::lock_guard<std::mutex> pk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
     int n_rng = 0;   // the cards that computed a range of the last split pass
     for (int64_t t : g_rng_tok) { n_rng += t > 0; }
     std::string out = format("\"split\":{\"gpus\":%d,\"devs\":\"%s\",\"prefill\":%d,\"prefill_gpus\":%d,\"why\":\"%s\"", g_ngpus, g_dev_all.c_str(), g_pf_choice,
@@ -2624,7 +2625,7 @@ static void dsplit_hw_check(const llama_model & model) {
     g_hw_key = dsplit_hw_key(model);
     dsplit_link_forget();
     g_card_order.clear();
-    std::lock_guard<std::mutex> pk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
     g_plans.clear(); g_bal.clear(); g_tune.clear();
 }
 
@@ -2734,7 +2735,7 @@ static std::string dsf_fit_str(const dsf_fit & f) {
 }
 // the choice for a pass from the learned factors (-1: not enough measured); under g_mu
 static int dsf_decide(const llama_model & model, int64_t n_tokens) {
-    std::lock_guard<std::mutex> dl(g_dsf_mu);
+    std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu);
     dsf_load();
     if (g_cards.size() < 2 || g_dsf_next_pos0 < 0) { return -1; }
     if (g_dsf_next_pos0 < g_dsf_seen_pos0) { g_dsf_ban = false; }   // a position lower than the last pass's: a new request
@@ -2867,7 +2868,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
             if (c_prior > 0.0 && c_one > 0.0) { ratio_bench = std::min(1.0, c_prior / c_one); }
         }
     }
-    std::lock_guard<std::mutex> dl(g_dsf_mu);
+    std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu);
     dsf_load();
     if (g_cards.size() < 2 || g_dsf_next_pos0 < 0) { return -1; }
     const int64_t pos0 = g_dsf_next_pos0;
@@ -2998,21 +2999,21 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     return choice;
 }
 // every prompt pass is timed: the pass decided last ends at the synchronize before the next prompt pass and at the end of its call (llama_context)
-void llama_dsplit_note_pass_fork(int64_t pos0) { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_next_pos0 = pos0; }
-bool llama_dsplit_pass_open_fork() { std::lock_guard<std::mutex> dl(g_dsf_mu); return g_dsf_ps.choice >= 0; }
+void llama_dsplit_note_pass_fork(int64_t pos0) { std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu); g_dsf_next_pos0 = pos0; }
+bool llama_dsplit_pass_open_fork() { std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu); return g_dsf_ps.choice >= 0; }
 // a pass that ran out of CUDA memory (llama_context::decode takes its call back and runs it again) is no sample: its open timing would end at the next
 // pass and count the failure, the recovery and the retry as that pass's time (the scheduler drops its card times itself)
-void llama_dsplit_pass_abandon_fork() { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_ps = dsf_pass(); }
+void llama_dsplit_pass_abandon_fork() { std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu); g_dsf_ps = dsf_pass(); }
 static void dsplit_pass_end_locked();
 static void dsplit_one_report(const dsf_pass & p);
 void llama_dsplit_pass_end_fork() {
     dsf_pass p0;
-    { std::lock_guard<std::mutex> dl(g_dsf_mu); p0 = g_dsf_ps; }
+    { std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu); p0 = g_dsf_ps; }
     dsplit_pass_end_locked();
     if (p0.choice == 0) { dsplit_one_report(p0); }   // after the dsf lock is released: the report takes g_plan_mu, the balance step takes them the other way round
 }
 static void dsplit_pass_end_locked() {
-    std::lock_guard<std::mutex> dl(g_dsf_mu);
+    std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu);
     const dsf_pass p = g_dsf_ps;
     g_dsf_ps = dsf_pass();
     if (p.choice < 0 || p.T < 64 || p.pos0 < 0 || p.t0 <= 0) { return; }
@@ -3098,7 +3099,7 @@ void llama_moe_span_fork(const char * what, double t0, double t1, uint64_t bytes
 double llama_moe_span_now_fork();   // seconds since the start of the process, the time base of the spans
 void llama_dsplit_note_fill_fork(double ms, double pin_ms) {
     { const double t1 = llama_moe_span_now_fork(); llama_moe_span_fork("dense-split copy fill (dense weights of the other card into the expert pool)", t1 - ms / 1e3, t1, 0, ""); }   // llama_context::moe_mirror_fill: the copies of this prompt were filled (part of the split pass decided last)
-    std::lock_guard<std::mutex> dl(g_dsf_mu);
+    std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu);
     dsf_load();
     // one place, one definition each: ms is moe_mirror_fill's whole wall, pin_ms its staging-block pins (once per process). The split pass is timed without
     // the wall; the fill's cost (old: dsf.fill, learned: g_rls_fill) is the wall less the pins, against the planner's estimate at the decision.
@@ -3128,7 +3129,7 @@ static void dsplit_one_report(const dsf_pass & p) {
     const dsplit_card_stat * c = nullptr;
     for (int j = 0; j < nst; ++j) { if (st[j].backend && ggml_backend_get_device(st[j].backend) == p.xdev) { c = &st[j]; } }
     if (!c || c->dense_us + c->moe_us <= 0 || c->last_us <= c->first_us) { return; }
-    std::lock_guard<std::mutex> pk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
     static long seen = -1;
     if (gen == seen) { return; }   // the same stamps as the last report: this pass was not measured
     seen = gen;
@@ -3189,7 +3190,7 @@ double llama_dsplit_kernel_share_fork(long * gen) {
 bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (n_tokens >= 64) {   // the load-time timing's lines, once (they were written while the parameter fit muted the log)
-        std::lock_guard<std::mutex> pk(g_plan_mu);
+        std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
         if (!g_bench_logged && !g_bench_log.empty()) { g_bench_logged = true; LLAMA_LOG_WARN("%s", g_bench_log.c_str()); }
     }
     dsplit_hw_check(model);
@@ -3215,12 +3216,12 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     const bool managed = it != g_sets.end() && dsplit_n_gpus(model) >= 2 &&
                          (it->second.mirror.empty() ? (dsplit_opt_auto() && !it->second.resident) : (dsplit_copies_ready(it->second) && g_cards.size() >= 2));
     if (managed && n_tokens >= 64 && !it->second.mirror.empty()) {
-        std::lock_guard<std::mutex> pk(g_plan_mu);
+        std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
         dsplit_link_model(model, n_tokens);   // the balance's hand-off and KV numbers, in auto and forced mode alike
     }
     if (managed && n_tokens >= 64) {
         {   // the state file's section and hardware key for the split factors, also in forced runs (they teach the factors too)
-            std::lock_guard<std::mutex> pk(g_plan_mu);
+            std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
             dsplit_calib_load(model);
         }
         if (dsplit_opt_one()) {
@@ -3270,7 +3271,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             if (B.n[0] > 0 && B.n[1] > 0) {
                 // the split must win by split_min_gain on the passes measured, a tie or a close call stays on one card (never on while slower); the
                 // copy fill this request still owes goes on the split's side (the per-token samples exclude it, see dsplit_update)
-                const double fill_ms = [] { std::lock_guard<std::mutex> dl(g_dsf_mu); dsf_load(); return dsf_fill_owed_us() / 1e3; }();
+                const double fill_ms = [] { std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu); dsf_load(); return dsf_fill_owed_us() / 1e3; }();
                 const double nt = (double) n_tokens;
                 const int best = B.us_tok[1] * nt / 1e3 + fill_ms <= (1.0 - llama_moe_live_get("split_min_gain")) * B.us_tok[0] * nt / 1e3 ? 1 : 0;
                 choice = (explore && B.passes % 16 == 15) ? 1 - best : best;
@@ -3354,7 +3355,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
         const double att_cell = llama_moe_cache_att_us_cell_fork();
         const double U_us = llama_moe_cache_pass_upload_ms_fork((uint32_t) n_tokens, std::max<uint32_t>(1, model.hparams.n_expert_used_max()),
                                                                 std::max<uint32_t>(1, model.hparams.n_expert)) * 1e3;
-        std::lock_guard<std::mutex> dl(g_dsf_mu);
+        std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu);
         g_dsf_ps = dsf_pass();
         g_dsf_ps.choice = choice; g_dsf_ps.T = n_tokens; g_dsf_ps.pos0 = g_dsf_next_pos0; g_dsf_ps.t0 = ggml_time_us();
         g_dsf_ps.xdev = g_cards.empty() ? nullptr : g_cards.back();
@@ -3373,7 +3374,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
     }
     bool tuned = false;
     {
-        std::lock_guard<std::mutex> pk(g_plan_mu);
+        std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
         tuned = g_tune_changed && choice == 1;
         if (choice == 1) { g_tune_changed = false; }
     }
@@ -3458,7 +3459,7 @@ static void dsplit_drift_step(int b, dsplit_tune & T, double v, int kmax) {
 }
 
 static void dsplit_tune_step(int b, double v) {
-    std::lock_guard<std::mutex> pk(g_plan_mu);
+    std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
     auto pit = g_plans.find(b);
     if (pit == g_plans.end() || !pit->second.plan.valid) {
         return;
@@ -3513,11 +3514,11 @@ static void dsplit_tune_step(int b, double v) {
 void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (g_pending == 1 && n_tokens > 0 && us > 0) {   // the live balance (and the cards' times for /moe/stats)
-        std::lock_guard<std::mutex> pk(g_plan_mu);
+        std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
         dsplit_pass_step_locked();   // (the last pass of the call; the passes before it were taken by llama_dsplit_pass_done_fork)
     }
     llama_dsplit_pass_end_fork();   // the call's last prompt pass ends here (synchronized): its time per token for the split factors
-    { std::lock_guard<std::mutex> dl(g_dsf_mu); dsf_flush(); }   // and the call's new samples go to the state file, once
+    { std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu); dsf_flush(); }   // and the call's new samples go to the state file, once
     // a pass on the prompt chain is no one-card sample (see dsplit_pass_end_locked): stored as one, a chain that lost to streaming made the split win at this size (Qwen3.6, 441 tokens: "one card"
     // 764 t/s against 1036 streamed, the split ran at 531). Keys dsplit_arm4 and dsplit_calib7: the older ones hold such samples.
     // 2026-11-06: one card is the fastest one-card path measured at this size, whichever ran (a prediction, the chain, the stream, the mix): the split is weighed
@@ -3530,13 +3531,13 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
         dsplit_bucket & B = g_buckets[dsplit_bucket_of(g_pend_max)];
         const int c = g_pending;
         // fault G: the call time holds the copy fill's wall; the size's split arm is the call without it (one definition: llama_dsplit_note_fill_fork)
-        const double fw_us = c == 1 ? [] { std::lock_guard<std::mutex> dl(g_dsf_mu); return g_dsf_call_fill_ms * 1e3; }() : 0.0;
+        const double fw_us = c == 1 ? [] { std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu); return g_dsf_call_fill_ms * 1e3; }() : 0.0;
         const double v = c == 0 && best_one > 0.0 ? std::min((double) us / (double) n_tokens, best_one) : std::max(1.0, (double) us - fw_us) / (double) n_tokens;
         const bool learned = dsplit_split_model_on();   // the learned planner reads none of the below: the arms stay as the log's display, nothing is calibrated or stored
         if (learned) {
         } else if (c == 1) {
             // the split planner's calibration: this measurement against the plan it ran with (both per token)
-            std::lock_guard<std::mutex> pk(g_plan_mu);
+            std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
             auto pit = g_plans.find(dsplit_bucket_of(g_pend_max));
             if (pit != g_plans.end() && pit->second.plan.valid && pit->second.plan.t_split_ms > 0.0 && pit->second.n_tokens > 0) {
                 // the factor scales the modelled pass only: the one-off copy and refill terms are taken out of the measurement first (they were counted twice before:
@@ -3556,7 +3557,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
             }
         } else {
             // one card: this size's measured over the model's one-card time
-            std::lock_guard<std::mutex> pk(g_plan_mu);
+            std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
             const int bk = dsplit_bucket_of(g_pend_max);
             auto rt = g_one_raw_b.find(bk);
             if (rt != g_one_raw_b.end() && rt->second > 0.0) {
@@ -3596,7 +3597,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
         double tok_share = 0.0, exp_share = 0.0;
         if (g_pending == 1 || g_pending == -2) {
             const int b = dsplit_bucket_of(g_pend_max);
-            std::lock_guard<std::mutex> pk(g_plan_mu);
+            std::lock_guard<llama_ranked_mutex> pk(g_plan_mu);
             const auto pit = g_plans.find(b);
             const auto tt  = g_tune.find(b);
             const auto bt  = g_bal_used && !g_rng_dev.empty() ? g_bal.find(dsplit_bucket_of([&] { int64_t s = 0; for (int64_t t : g_rng_tok) { s += t; } return s; }())) : g_bal.end();
@@ -3653,7 +3654,7 @@ void llama_dsplit_report_fork(int64_t n_tokens, int64_t us) {
     g_pending  = -1;
     g_pend_max = 0;
     g_why      = "";
-    { std::lock_guard<std::mutex> dl(g_dsf_mu); g_dsf_call_fill_ms = 0.0; }   // the next call's fill walls
+    { std::lock_guard<llama_ranked_mutex> dl(g_dsf_mu); g_dsf_call_fill_ms = 0.0; }   // the next call's fill walls
 }
 
 llama_layer llama_dsplit_layer_fork(const llama_model & model, const llama_layer & l, ggml_backend_dev_t dev) {
