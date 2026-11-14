@@ -6,6 +6,7 @@
 // build: cmake --build <dir> --target test-rampool-fork;  run: ctest -R test-rampool-fork
 #include "../ggml/src/ggml-rampool-fork.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +57,91 @@ static void need(int64_t a, int64_t b) {   // elements [a, b) for one graph
 }
 static void next_graphs() { ggml_rampool_graph_fork(); ggml_rampool_graph_fork(); }   // what the graphs before asked for may go now
 static ggml_rampool_stats stats() { ggml_rampool_stats s; ggml_rampool_stats_fork(&s, false); return s; }
+
+// rows of lazy row tables (PLE, Engram) as pool entries with their histories (ggml-rampool-fork.cpp, rows part)
+extern "C" void   ggml_rampool_rows_add_fork(const void * key, size_t rs);
+extern "C" size_t ggml_rampool_rows_get_fork(const void * key, const int32_t * rows, size_t n, uint8_t * dst, uint8_t * hit);
+extern "C" void   ggml_rampool_rows_put_fork(const void * key, const int32_t * rows, size_t n, const uint8_t * src);
+extern "C" void   ggml_rampool_rows_has_fork(const void * key, const int32_t * rows, size_t n, uint8_t * in);
+extern "C" void   ggml_rampool_rows_stats_fork(const void * key, uint64_t * v, double * turnover);
+
+static uint8_t row_byte(int32_t r, size_t i) { return (uint8_t) (r * 7 + (int32_t) i); }
+
+// one call of the fill: get, read the misses "from the file" (bytes named by row), put them. Returns the hits; *bad counts hit rows with wrong bytes.
+static size_t rows_call(const void * key, size_t rs, std::vector<int32_t> rows, int * bad) {
+    std::sort(rows.begin(), rows.end());
+    std::vector<uint8_t> dst(rows.size() * rs), hit(rows.size());
+    const size_t nh = ggml_rampool_rows_get_fork(key, rows.data(), rows.size(), dst.data(), hit.data());
+    std::vector<int32_t> mr;
+    std::vector<uint8_t> mb;
+    for (size_t k = 0; k < rows.size(); ++k) {
+        if (hit[k]) {
+            for (size_t i = 0; i < rs; ++i) { if (dst[k * rs + i] != row_byte(rows[k], i)) { (*bad)++; break; } }
+            continue;
+        }
+        mr.push_back(rows[k]);
+        for (size_t i = 0; i < rs; ++i) { mb.push_back(row_byte(rows[k], i)); }
+    }
+    ggml_rampool_rows_put_fork(key, mr.data(), mr.size(), mb.data());
+    return nh;
+}
+
+static void test_rows() {
+    // a pass's rows: none in RAM the first time, all the second time (free blocks take anyone), each with its own bytes
+    {
+        static int key = 0;
+        const size_t rs = 90;
+        ggml_rampool_rows_add_fork(&key, rs);
+        std::vector<int32_t> rows;
+        for (int32_t r = 0; r < 100; ++r) { rows.push_back(r * 1000003 % 320000000); }
+        int bad = 0;
+        CHECK(rows_call(&key, rs, rows, &bad) == 0);
+        CHECK(rows_call(&key, rs, rows, &bad) == 100);
+        CHECK(bad == 0);
+        std::vector<uint8_t> in(rows.size());
+        std::sort(rows.begin(), rows.end());
+        ggml_rampool_rows_has_fork(&key, rows.data(), rows.size(), in.data());
+        for (uint8_t x : in) { CHECK(x == 1); }
+        uint64_t v[10]; double turn = 0;
+        ggml_rampool_rows_stats_fork(&key, v, &turn);
+        CHECK(v[0] == 100 && v[2] == 1000 && v[3] == 100 && v[4] == 100 && v[5] == 100);
+    }
+    // amnesia: the tier is full of rows read once. A hot set that starts later is declined at its first recall (nothing known) but remembered, so its second
+    // recall gets it in over the one-offs (they served nothing), and from then on it hits. One-offs never hit. Calls of 300 rows: capacity 3000.
+    {
+        static int key = 0;
+        const size_t rs = 144;
+        ggml_rampool_rows_add_fork(&key, rs);
+        int32_t next = 100000000;
+        size_t hot_hits = 0, other_hits = 0;
+        int bad = 0;
+        for (int c = 0; c < 40; ++c) {
+            std::vector<int32_t> rows;
+            const bool hot = c >= 20;
+            if (hot) { for (int32_t r = 0; r < 50; ++r) { rows.push_back(r); } }
+            while (rows.size() < 300) { rows.push_back(next++); }
+            std::vector<int32_t> h(rows.begin(), rows.begin() + (hot ? 50 : 0));
+            std::sort(h.begin(), h.end());
+            std::vector<uint8_t> in_before(h.size());
+            ggml_rampool_rows_has_fork(&key, h.data(), h.size(), in_before.data());
+            const size_t nh = rows_call(&key, rs, rows, &bad);
+            size_t hh = 0;
+            for (uint8_t x : in_before) { hh += x; }
+            hot_hits += hh;
+            other_hits += nh - hh;
+            if (c == 20 || c == 21) { CHECK(hh == 0); }   // first recall declined, second admitted (a miss that is read and kept)
+        }
+        CHECK(bad == 0);
+        CHECK(hot_hits == 50 * 18);   // calls 22..39
+        CHECK(other_hits == 0);
+        uint64_t v[10]; double turn = 0;
+        ggml_rampool_rows_stats_fork(&key, v, &turn);
+        CHECK(v[2] == 3000 && v[0] == 3000);
+        printf("rows, amnesia check: hot hits %zu of %d, one-off hits %zu, in RAM %llu of %llu, entries %llu, admitted %llu, declined %llu, evicted %llu, forgotten %llu, %.1f KiB\n",
+               hot_hits, 50 * 18, other_hits, (unsigned long long) v[0], (unsigned long long) v[2], (unsigned long long) v[1], (unsigned long long) v[5],
+               (unsigned long long) v[6], (unsigned long long) v[7], (unsigned long long) v[8], v[9] / 1024.0);
+    }
+}
 
 int main() {
     char path[] = "/tmp/test-rampool-XXXXXX";
@@ -127,6 +213,8 @@ int main() {
     ggml_rampool_close_fork();
     for (void * p : g_live) { free(p); }
     close(fd);
+
+    test_rows();
     if (g_fail) { fprintf(stderr, "%d checks failed\n", g_fail); return 1; }
     printf("test-rampool-fork: all checks passed\n");
     return 0;

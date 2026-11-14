@@ -47,6 +47,13 @@ std::mutex g_mu;
 std::unordered_map<const ggml_tensor *, row_src> g_src;
 }
 
+// rows kept in the RAM pool by their histories (ggml-rampool-fork.cpp, rows part); declared where used, as in llama-moecache-fork.cpp
+extern "C" void   ggml_rampool_rows_add_fork(const void * key, size_t rs);
+extern "C" size_t ggml_rampool_rows_get_fork(const void * key, const int32_t * rows, size_t n, uint8_t * dst, uint8_t * hit);
+extern "C" void   ggml_rampool_rows_put_fork(const void * key, const int32_t * rows, size_t n, const uint8_t * src);
+extern "C" void   ggml_rampool_rows_has_fork(const void * key, const int32_t * rows, size_t n, uint8_t * in);
+extern "C" void   ggml_rampool_rows_stats_fork(const void * key, uint64_t * v, double * turnover);
+
 // the table t starts at byte `off` of the file open as fd_file (the loader's descriptor): opened once more past the page cache
 bool llama_rowread_add_fork(const ggml_tensor * t, int fd_file, uint64_t off) {
     const char * e = getenv("LLAMA_ROWREAD");
@@ -62,7 +69,11 @@ bool llama_rowread_add_fork(const ggml_tensor * t, int fd_file, uint64_t off) {
     if (!ok) { LLAMA_LOG_WARN("%s: %s stays read through the mapping (no async page reads here)\n", __func__, ggml_get_name(t)); return false; }
     std::lock_guard<std::mutex> lk(g_mu);
     g_src[t] = { fd, off };
-    LLAMA_LOG_INFO("%s: %s read straight from the file (O_DIRECT pages, kernel AIO), not through the mapping\n", __func__, ggml_get_name(t));
+    const char * ep = getenv("LLAMA_ROWREAD_POOL");   // =0: every pass reads all its rows (A/B)
+    const bool pool = !ep || atoi(ep) != 0;
+    if (pool) { ggml_rampool_rows_add_fork(t, ggml_row_size(t->type, t->ne[0])); }
+    LLAMA_LOG_INFO("%s: %s read straight from the file (O_DIRECT pages, kernel AIO), not through the mapping%s\n", __func__, ggml_get_name(t),
+            pool ? "; rows read again soon stay in RAM by their last-10 histories" : "");
     return true;
 }
 
@@ -176,6 +187,13 @@ void llama_rowread_ahead_fork(const ggml_tensor * t, const int32_t * ids, size_t
     j->u.assign(ids, ids + n);
     std::sort(j->u.begin(), j->u.end());
     j->u.erase(std::unique(j->u.begin(), j->u.end()), j->u.end());
+    {   // rows in RAM now are not read; the fill takes them from there (nothing evicts between: only a fill of t puts rows of t)
+        std::vector<uint8_t> in(j->u.size());
+        ggml_rampool_rows_has_fork(t, j->u.data(), j->u.size(), in.data());
+        size_t w = 0;
+        for (size_t k = 0; k < j->u.size(); ++k) { if (!in[k]) { j->u[w++] = j->u[k]; } }
+        j->u.resize(w);
+    }
     row_reader & r = reader();
     {
         std::lock_guard<std::mutex> lk(r.mu);
@@ -217,6 +235,16 @@ std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor 
     const bool host = ggml_backend_buffer_is_host(tab->buffer);
     std::vector<uint8_t> tmp(host ? 0 : u.size()*rs);
     uint8_t * dst = host ? (uint8_t *) tab->data : tmp.data();
+    // rows in RAM first (each recall goes into its history), then the misses: from the read-ahead, else read now; the misses are handed to the pool, which keeps
+    // the ones whose histories say they will be read again during a stay
+    std::vector<uint8_t> hit(u.size());
+    const size_t n_ram = ggml_rampool_rows_get_fork(t, u.data(), u.size(), dst, hit.data());
+    std::vector<int32_t> mr;   // the misses, ascending
+    std::vector<size_t>  mk;   // their places in u
+    mr.reserve(u.size() - n_ram);
+    mk.reserve(u.size() - n_ram);
+    for (size_t k = 0; k < u.size(); ++k) { if (!hit[k]) { mr.push_back(u[k]); mk.push_back(k); } }
+    std::vector<uint8_t> mb(mr.size()*rs);
     std::shared_ptr<row_job> j;
     const int64_t t0 = ggml_time_us();
     if (g_ahead_used.load()) {
@@ -231,24 +259,38 @@ std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor 
     }
     const int64_t t1 = ggml_time_us();
     bool ok = true;
-    size_t n_miss = u.size();
-    if (j && j->ok) {
-        const std::vector<size_t> miss = rowread_take(j->u, j->data.data(), u, rs, dst);
-        n_miss = miss.size();
-        if (!miss.empty()) {
-            std::vector<int32_t> mr(miss.size());
-            for (size_t i = 0; i < miss.size(); ++i) { mr[i] = u[miss[i]]; }
-            std::vector<uint8_t> mb(miss.size()*rs);
-            ok = rowread_gather(t, mr.data(), mr.size(), mb.data());
-            for (size_t i = 0; ok && i < miss.size(); ++i) { memcpy(dst + miss[i]*rs, mb.data() + i*rs, rs); }
+    size_t n_miss = mr.size();
+    if (!mr.empty()) {
+        std::vector<size_t> rest;
+        if (j && j->ok) {
+            rest = rowread_take(j->u, j->data.data(), mr, rs, mb.data());
+        } else {
+            rest.resize(mr.size());
+            for (size_t i = 0; i < mr.size(); ++i) { rest[i] = i; }
         }
-    } else {
-        ok = rowread_gather(t, u.data(), u.size(), dst);
+        n_miss = rest.size();
+        if (!rest.empty()) {
+            std::vector<int32_t> rr(rest.size());
+            for (size_t i = 0; i < rest.size(); ++i) { rr[i] = mr[rest[i]]; }
+            std::vector<uint8_t> rb(rest.size()*rs);
+            ok = rowread_gather(t, rr.data(), rr.size(), rb.data());
+            for (size_t i = 0; ok && i < rest.size(); ++i) { memcpy(mb.data() + rest[i]*rs, rb.data() + i*rs, rs); }
+        }
+        if (ok) {
+            for (size_t i = 0; i < mr.size(); ++i) { memcpy(dst + mk[i]*rs, mb.data() + i*rs, rs); }
+            ggml_rampool_rows_put_fork(t, mr.data(), mr.size(), mb.data());
+        }
     }
     static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
     if (dbg && n >= 1024) {
-        LLAMA_LOG_WARN("%s: %s: %zu rows, %zu from the read-ahead (waited %.1f ms for it), %zu read now in %.1f ms\n", __func__, ggml_get_name(t), u.size(),
-                u.size() - n_miss, (t1 - t0) / 1e3, n_miss, (ggml_time_us() - t1) / 1e3);
+        uint64_t v[10];
+        double turn = 0;
+        ggml_rampool_rows_stats_fork(t, v, &turn);
+        LLAMA_LOG_WARN("%s: %s: %zu rows, %zu in RAM, %zu from the read-ahead (waited %.1f ms for it), %zu read now; %.1f ms. Rows in RAM %llu of %llu, "
+                "histories %llu, %.1f MiB, kept %llu, declined %llu, evicted %llu, forgotten %llu, a stay lasts %.0f rows recalled\n", __func__, ggml_get_name(t), u.size(),
+                n_ram, mr.size() - n_miss, (t1 - t0) / 1e3, n_miss, (ggml_time_us() - t0) / 1e3, (unsigned long long) v[0], (unsigned long long) v[2],
+                (unsigned long long) v[1], v[9] / 1048576.0, (unsigned long long) v[5], (unsigned long long) v[6], (unsigned long long) v[7],
+                (unsigned long long) v[8], turn);
     }
     if (!ok) {
         static std::atomic<bool> warned{false};

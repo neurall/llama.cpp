@@ -17,6 +17,7 @@
 //   - Elements of a class lie behind each other as the file has them after the fill, so one DMA serves a run. A matmul that reads past a slice needs the real next expert's
 //     bytes there (llama-moecache-fork.cpp, expert_past): such tensors are not given to the pool.
 #include "ggml-rampool-fork.h"
+#include "ggml-hist-fork.h"
 #include "ggml-impl.h"
 #include "ggml-read-fork.h"
 
@@ -1009,6 +1010,211 @@ void ggml_rampool_stats_fork(struct ggml_rampool_stats * s, bool reset) {
     if (reset) {
         p->st_asked = 0; p->st_hit = 0; p->st_cold = 0; p->st_refused = 0; p->st_evicted = 0; p->st_cold_b = 0; p->st_wait_us = 0; p->st_pp_hit = 0; p->st_pp_miss = 0;
     }
+}
+
+} // extern "C"
+
+// ---- rows of lazy row tables (PLE, Engram) as pool entries (user 2026-11-14) ----
+// A row is 90-144 bytes at a hashed place of a 27-103 GiB table, a 12k pass needs 90k-310k of them. Through the mapping each cost a 4 KiB page of page cache; read
+// straight from the file at every pass they cost 0.3-1.5 s of seek reads before layer 0 (qni4 / DS). Here a row read once can stay: an entry per row with its three
+// last-10 histories (ggml-hist-fork.h), kept for cold rows too, and a row-sized block for the ones in RAM. A free block takes anyone; else the newcomer must expect
+// more reads per stay than the victim (of 64 sampled residents the one expected to serve fewest). The caller seek-reads the misses itself (one batch of async page
+// reads) and hands them in (rows_put). Capacity: the ring length times the most rows one call recalled (a row recalled within about the last 10 calls can be in
+// RAM), entries twice that (the cold rows' histories). The clock counts rows recalled, so a prompt pass and a decode step weigh by their rows.
+namespace {
+struct rp_row_ent {
+    int32_t row  = -1;
+    int32_t slot = -1;   // its block, -1: out
+    hist10  h;
+};
+struct rp_rows {
+    size_t rs = 0;                                  // row bytes
+    std::unordered_map<int32_t, uint32_t> idx;      // row -> entry
+    std::vector<rp_row_ent> ents;
+    std::vector<uint32_t>   ent_free;
+    std::vector<char *>     chunks;
+    uint32_t per_chunk = 0, n_slots = 0;            // blocks per chunk, blocks that exist
+    std::vector<int32_t>    slot_ent;               // block -> entry, -1: free
+    std::vector<uint32_t>   slot_free;
+    uint64_t cap_slots = 0, cap_ents = 0;
+    uint32_t clock = 0, sample = 0, esample = 0;
+    size_t   n_last = 0, adm_last = 0;              // rows the last get recalled, admissions since
+    double   adm_per_row = 1.0;                     // admissions per row recalled (EMA over calls); a resident stays cap_slots / this
+    uint64_t st_hit = 0, st_miss = 0, st_adm = 0, st_dec = 0, st_evict = 0, st_forget = 0;
+    char * at(int32_t s) const { return chunks[(size_t) s / per_chunk] + (size_t) (s % per_chunk) * rs; }
+    ~rp_rows() { for (char * c : chunks) { free(c); } }
+};
+std::mutex g_rows_mu;
+std::unordered_map<const void *, std::unique_ptr<rp_rows>> g_rows;
+
+rp_rows * rows_find(const void * key) {
+    const auto it = g_rows.find(key);
+    return it == g_rows.end() ? nullptr : it->second.get();
+}
+
+double rows_turnover(const rp_rows & t) { return (double) t.cap_slots / std::max(t.adm_per_row, 1e-3); }
+
+// a free block, a new chunk when the last one is full and the capacity allows; -1: none
+// shortcut: chunks come from malloc beside the pinned pool and are counted only in the rows' line, not in rp_resize's floor; fold them into the floor when small-RAM rows show pressure
+int32_t rows_slot(rp_rows & t) {
+    if (!t.slot_free.empty()) { const uint32_t s = t.slot_free.back(); t.slot_free.pop_back(); return (int32_t) s; }
+    if (t.n_slots >= t.cap_slots) { return -1; }
+    if (t.n_slots % t.per_chunk == 0) {
+        char * m = (char *) malloc((size_t) t.per_chunk * t.rs);
+        if (m == nullptr) { return -1; }
+        t.chunks.push_back(m);
+    }
+    t.slot_ent.push_back(-1);
+    return (int32_t) t.n_slots++;
+}
+
+uint32_t rows_newest(const hist10 & h) { return h.n_recall ? h.recall[(h.h_recall + hist10::N - 1) % hist10::N] : 0; }
+
+// the entry of row r, made when new; a full table forgets the cold entry recalled longest ago of 64 sampled ones. UINT32_MAX: none (r is served without a history)
+uint32_t rows_ent(rp_rows & t, int32_t r) {
+    const auto it = t.idx.find(r);
+    if (it != t.idx.end()) { return it->second; }
+    uint32_t e = UINT32_MAX;
+    if (!t.ent_free.empty()) {
+        e = t.ent_free.back();
+        t.ent_free.pop_back();
+    } else if (t.ents.size() < t.cap_ents) {
+        e = (uint32_t) t.ents.size();
+        t.ents.emplace_back();
+    } else {
+        const uint32_t n = (uint32_t) t.ents.size();
+        uint32_t best = UINT32_MAX, age = 0;
+        for (uint32_t i = 0, seen = 0; i < n && seen < 64; ++i) {
+            const uint32_t q = (t.esample + i * 7919u) % n;
+            const rp_row_ent & x = t.ents[q];
+            if (x.slot >= 0 || x.row < 0) { continue; }
+            seen++;
+            const uint32_t a = t.clock - rows_newest(x.h);
+            if (best == UINT32_MAX || a > age) { best = q; age = a; }
+        }
+        t.esample = (t.esample + 1) % n;
+        if (best == UINT32_MAX) { return UINT32_MAX; }
+        t.idx.erase(t.ents[best].row);
+        t.st_forget++;
+        e = best;
+    }
+    t.ents[e] = rp_row_ent();
+    t.ents[e].row = r;
+    t.idx[r] = e;
+    return e;
+}
+}
+
+extern "C" {
+
+// a lazy row table of rs-byte rows (its tensor as the key)
+GGML_API void ggml_rampool_rows_add_fork(const void * key, size_t rs) {
+    std::lock_guard<std::mutex> lk(g_rows_mu);
+    auto & t = g_rows[key];
+    if (t) { return; }
+    t = std::make_unique<rp_rows>();
+    t->rs = rs;
+    t->per_chunk = (uint32_t) std::max<size_t>(1, ((size_t) 64 << 20) / rs);   // 64 MiB chunks
+}
+
+// a call recalls rows (sorted, distinct): the ones in RAM are copied to dst + k*rs and hit[k] = 1; returns the hits. The capacity follows the call's size.
+GGML_API size_t ggml_rampool_rows_get_fork(const void * key, const int32_t * rows, size_t n, uint8_t * dst, uint8_t * hit) {
+    std::lock_guard<std::mutex> lk(g_rows_mu);
+    rp_rows * t = rows_find(key);
+    memset(hit, 0, n);
+    if (t == nullptr) { return 0; }
+    t->cap_slots = std::max<uint64_t>(t->cap_slots, (uint64_t) hist10::N * n);
+    t->cap_ents  = 2 * t->cap_slots;
+    const uint32_t clock = t->clock;
+    size_t nh = 0;
+    for (size_t k = 0; k < n; ++k) {
+        const uint32_t e = rows_ent(*t, rows[k]);
+        if (e == UINT32_MAX) { continue; }
+        rp_row_ent & x = t->ents[e];
+        hist_recall(x.h, clock);
+        if (x.slot >= 0) {
+            memcpy(dst + k * t->rs, t->at(x.slot), t->rs);
+            hit[k] = 1;
+            nh++;
+        }
+    }
+    t->clock += (uint32_t) n;
+    if (t->n_last > 0) { t->adm_per_row = 0.8 * t->adm_per_row + 0.2 * (double) t->adm_last / (double) t->n_last; }   // the call before, with its put (or none: all hit)
+    t->n_last = n;
+    t->adm_last = 0;
+    t->st_hit += nh;
+    t->st_miss += n - nh;
+    return nh;
+}
+
+// rows the caller read from the file after a get (its misses): each is admitted by its history or only remembered
+GGML_API void ggml_rampool_rows_put_fork(const void * key, const int32_t * rows, size_t n, const uint8_t * src) {
+    std::lock_guard<std::mutex> lk(g_rows_mu);
+    rp_rows * t = rows_find(key);
+    if (t == nullptr) { return; }
+    const double turnover = rows_turnover(*t);
+    const uint32_t clock = t->clock;
+    size_t adm = 0;
+    for (size_t k = 0; k < n; ++k) {
+        const auto it = t->idx.find(rows[k]);
+        if (it == t->idx.end()) { continue; }   // forgotten: served by seek reads
+        rp_row_ent & x = t->ents[it->second];
+        if (x.slot >= 0) { continue; }
+        int32_t s = rows_slot(*t);
+        if (s < 0) {
+            int32_t v = -1;
+            double ev = 1e300;
+            for (uint32_t i = 0, seen = 0; i < t->n_slots && seen < 64; ++i) {
+                const uint32_t q = (t->sample + i * 7919u) % t->n_slots;
+                const int32_t ve = t->slot_ent[q];
+                if (ve < 0) { continue; }
+                seen++;
+                const double qe = hist_expect(t->ents[ve].h, clock, turnover);
+                if (qe < ev) { ev = qe; v = (int32_t) q; }
+            }
+            t->sample = (t->sample + 1) % std::max<uint32_t>(t->n_slots, 1);
+            if (v < 0 || !hist_admit_ok(x.h, clock, turnover, ev)) { t->st_dec++; continue; }
+            rp_row_ent & y = t->ents[t->slot_ent[v]];
+            hist_evict(y.h, clock);
+            y.slot = -1;
+            t->st_evict++;
+            s = v;
+        }
+        x.slot = s;
+        t->slot_ent[s] = (int32_t) it->second;
+        hist_admit(x.h);
+        memcpy(t->at(s), src + k * t->rs, t->rs);
+        adm++;
+        t->st_adm++;
+    }
+    t->adm_last += adm;
+}
+
+// which rows are in RAM now, nothing recorded (a read-ahead skips them)
+GGML_API void ggml_rampool_rows_has_fork(const void * key, const int32_t * rows, size_t n, uint8_t * in) {
+    std::lock_guard<std::mutex> lk(g_rows_mu);
+    memset(in, 0, n);
+    rp_rows * t = rows_find(key);
+    if (t == nullptr) { return; }
+    for (size_t k = 0; k < n; ++k) {
+        const auto it = t->idx.find(rows[k]);
+        in[k] = it != t->idx.end() && t->ents[it->second].slot >= 0;
+    }
+}
+
+// v[0..9]: in RAM, entries, capacity (rows), hits, misses, admitted, declined, evicted, forgotten, bytes held; *turnover: rows recalled while a resident stays
+GGML_API void ggml_rampool_rows_stats_fork(const void * key, uint64_t * v, double * turnover) {
+    std::lock_guard<std::mutex> lk(g_rows_mu);
+    memset(v, 0, 10 * sizeof(uint64_t));
+    *turnover = 0.0;
+    rp_rows * t = rows_find(key);
+    if (t == nullptr) { return; }
+    v[0] = t->n_slots - t->slot_free.size();
+    v[1] = t->ents.size() - t->ent_free.size();
+    v[2] = t->cap_slots;
+    v[3] = t->st_hit; v[4] = t->st_miss; v[5] = t->st_adm; v[6] = t->st_dec; v[7] = t->st_evict; v[8] = t->st_forget;
+    v[9] = (uint64_t) t->n_slots * t->rs + t->ents.capacity() * sizeof(rp_row_ent) + t->idx.size() * 48;   // blocks touched (a chunk's pages come on first write), 48: a map node, about
+    *turnover = rows_turnover(*t);
 }
 
 } // extern "C"
