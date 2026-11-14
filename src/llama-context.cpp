@@ -1762,6 +1762,19 @@ void llama_context::sched_reserve() {
                         if (cross) { xin[s] = ggml_nbytes(s); }
                     }
                 }
+                // tensors built and never read (not outputs): the allocator frees a tensor when its last reader ran, so these stay to the end of the graph
+                std::unordered_map<const ggml_tensor *, int> readers;
+                for (int k = 0; k < nn; ++k) { for (const ggml_tensor * s : ggml_graph_node(mg, k)->src) { if (s) { readers[root(s)]++; readers[s]++; } } }
+                std::vector<const ggml_tensor *> dang;
+                size_t dsum = 0;
+                for (int k = 0; k < nn; ++k) {
+                    ggml_tensor * n = ggml_graph_node(mg, k);
+                    if (n->view_src || (n->flags & GGML_TENSOR_FLAG_OUTPUT) || readers.count(n) || ggml_backend_sched_get_tensor_backend(sched.get(), n) != backend_ptrs[bi]) { continue; }
+                    dang.push_back(n); dsum += ggml_nbytes(n);
+                }
+                std::sort(dang.begin(), dang.end(), [](const ggml_tensor * x, const ggml_tensor * y) { return ggml_nbytes(x) > ggml_nbytes(y); });
+                at_peak += format("| never read: %zu tensors, %.0f MiB: ", dang.size(), dsum / 1048576.0);
+                for (size_t k = 0; k < dang.size() && k < 8; ++k) { at_peak += format("%s %s %.0f MiB; ", dang[k]->name, ggml_op_desc(dang[k]), ggml_nbytes(dang[k]) / 1048576.0); }
                 std::vector<std::pair<const ggml_tensor *, size_t>> xv(xin.begin(), xin.end());
                 std::sort(xv.begin(), xv.end(), [](const auto & x, const auto & y) { return x.second > y.second; });
                 size_t xsum = 0; for (const auto & x : xv) { xsum += x.second; }
