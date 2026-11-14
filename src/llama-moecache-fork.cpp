@@ -12071,6 +12071,7 @@ void llama_moe_cache_cs_mix_fork(const llama_moe_cache_layer_fork * part, int ro
     }
 }
 
+static int64_t chain_grid_blocks(moe_cache * mc, const layer_state & l, int64_t enough);   // below (grids)
 int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_t n_tokens, int64_t n_used) {
     moe_cache * mc = g_cache;
     if (mc && ((g_pp_cstream_call.load(std::memory_order_relaxed) && g_prompt_call.load(std::memory_order_relaxed)) || g_cs_measure.load(std::memory_order_relaxed))) {   // 2: the stream into the cache's blocks (cs_begin, cs_layer)
@@ -12112,9 +12113,14 @@ int llama_moe_cache_pp_chain_fork(const llama_moe_cache_layer_fork * pub, int64_
         // --moe pp-off=F: F of the pairs stay off the card, so the pass needs at most (1 - F) of the experts' blocks (the least used ones are what stays off)
         static const double off_f = [] { const char * e = moe_opt("pp-off"); return e ? atof(e) : 0.0; }();
         const int64_t want = (int64_t) std::ceil((1.0 - off_f) * (double) std::min<int64_t>((int64_t) l.expert_slot.size(), n_tokens * n_used));
-        if (!mc->link_be[l.link] || pp_blocks(mc, l) < want) {
+        const int64_t own = pp_blocks(mc, l), grid = own < want ? chain_grid_blocks(mc, l, want - own) : 0;   // staging=0: the cold tails of other classes too
+        if (grid > 0 && own + grid >= want) {
+            static int n_g = 0;
+            if (n_g++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt chain: layer %d holds %lld blocks of %lld its pass may use; the rest comes from other size classes' cold blocks (grid)\n", pub->il, (long long) own, (long long) want); }
+        }
+        if (!mc->link_be[l.link] || own + grid < want) {
             static int n_log = 0;
-            if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt chain refused: layer %d has %lld blocks, wants %lld\n", pub->il, (long long) pp_blocks(mc, l), (long long) want); }
+            if (n_log++ < 3) { LLAMA_LOG_WARN("moe-cache: prompt chain refused: layer %d has %lld blocks (%lld of them other classes'), wants %lld\n", pub->il, (long long) (own + grid), (long long) grid, (long long) want); }
             // --moe staging=0: this graph finishes as the decode chain (it never runs), then the call is decided again without the chain and the graph built again
             // (llama_moe_cache_pp_short_fork): the stream into the blocks. The size leaves the chain for good, as a refusal the stream ran for does after the call.
             // Before the cstream ring the decode chain ran here: Qwen3.8 12k, 2 x 3090, first request 13.1 s for a 5408-token pass against 5.1 s streamed (2026-11-12)
@@ -12184,6 +12190,28 @@ template <class F> static bool cls_over(moe_cache * mc, int32_t pc, int32_t b, c
         }
     }
     return false;
+}
+// --moe staging=0, the prompt chain: a block of a layer's grid outside what its class holds (-4) is the chain's when nothing over its bytes is lent, under
+// the KV rows, on its way or the stream's (cache lock held); the experts there are evicted when it is taken (cls_claim), the coldest first (the picker's rank).
+// A class short of a layer's worth (Qwen3.8 on 2 x 24 GiB: one-layer classes of 458 blocks for 512 experts) eats the cold tail of the others instead of
+// sending the call to the stream (user 2026-11-14: smaller classes eat the tails of bigger ones; the pool map marks who holds the bytes).
+static bool chain_claimable(moe_cache * mc, int32_t pc, int32_t b) {
+    return cls_over(mc, pc, b, [&](int32_t q, int32_t x) {
+        const int32_t o = mc->pool[q].owner[x];
+        if (o == -1 || o == -4) { return true; }
+        const int64_t lx = cs_li_of(mc, o);
+        if (lx < 0) { return false; }   // lent, under the KV rows
+        const layer_state & lo = csl(mc, (size_t) lx);
+        return !lo.slot_in_flight[x] && !lo.is_stream[x];
+    });
+}
+// the chain's grid blocks of a layer's class, counted up to `enough`
+static int64_t chain_grid_blocks(moe_cache * mc, const layer_state & l, int64_t enough) {
+    if (l.pcls < 0 || enough <= 0 || !pp_no_staging()) { return 0; }
+    const auto & ps = mc->pool[l.pcls];
+    int64_t n = 0;
+    for (int32_t b = 0; b < (int32_t) ps.owner.size() && n < enough; ++b) { n += ps.owner[b] == -4 && chain_claimable(mc, l.pcls, b); }
+    return n;
 }
 static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool & from_done, bool force) {   // cache lock held; force: pins yield
     bool fd = false;
@@ -13029,7 +13057,8 @@ bool llama_moe_cache_pp_short_fork() {
     if (refused.empty()) {
         std::lock_guard<std::mutex> lock(mc->mtx);
         for (auto & l : mc->layers) {
-            if (l.pub.up_c && pp_blocks(mc, l) < std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want) && !moe_opt("pp-off")) {   // --moe pp-off: misses go to the miss device, the chain is not short of blocks
+            const int64_t w = std::min<int64_t>((int64_t) l.expert_slot.size(), g_pp_want), own = l.pub.up_c ? pp_blocks(mc, l) : 0;
+            if (l.pub.up_c && own + (own < w ? chain_grid_blocks(mc, l, w - own) : 0) < w && !moe_opt("pp-off")) {   // --moe pp-off: misses go to the miss device, the chain is not short of blocks
                 g_pp_short = true;
                 g_pp_built = false;
                 refused = format("prompt chain: layer %d keeps %lld blocks beside the graph, the pass may use %lld experts: the call is decided again without the chain",
@@ -13266,6 +13295,27 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
                     if (o == -1) { c.push_back({ -2.0 - (double) b, b, -1 }); }   // the highest free block first: prompts borrow the pool from its start
                     else if (o >= 0) { add(o, b); }
                 }
+                if (pp_no_staging()) {   // the grid: other classes' bytes, ranked by the dearest expert a claim evicts there (cold tails first); owner -4 = claim it
+                    for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+                        if (ps.owner[b] != -4) { continue; }
+                        double rank = -1.0;
+                        const bool ok = cls_over(mc, ls.pcls, b, [&](int32_t q, int32_t x) {
+                            const int32_t o = mc->pool[q].owner[x];
+                            if (o == -1 || o == -4) { return true; }
+                            const int64_t lx = cs_li_of(mc, o);
+                            if (lx < 0) { return false; }
+                            const layer_state & lo = csl(mc, (size_t) lx);
+                            if (lo.slot_in_flight[x] || lo.is_stream[x]) { return false; }
+                            const int32_t e = lo.slot_expert[x];
+                            if (o >= 0 && e >= 0) {
+                                const double r = prompt_victim_rank(mc, lo, (size_t) o, jli, e, n_visited * 8 >= used.size() * 7);
+                                rank = std::max(rank, pinned(mc, lo, e) ? 2e12 + r : r);
+                            }
+                            return true;
+                        });
+                        if (ok) { c.push_back({ rank, b, -4 }); }
+                    }
+                }
             } else {
                 for (int32_t b = 0; b < ls.pub.n_slots; ++b) { add((int32_t) jli, b); }
             }
@@ -13281,6 +13331,7 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
             for (size_t i = 0; i < miss.size(); ++i) {
                 const int32_t id = miss[i], slot = c[i].slot;
                 if (c[i].owner >= 0) { evict_slot(mc, mc->layers[c[i].owner], slot); }
+                if (c[i].owner == -4) { cls_claim(mc, ls.pcls, slot); }   // a grid block: the other classes' experts over its bytes go first
                 pool_take(mc, jli, slot);
                 led_upload(mc, "chain-up", jli, id, slot, false);
                 for (int k = 0; k < 3; ++k) {
