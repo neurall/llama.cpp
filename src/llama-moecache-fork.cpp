@@ -2740,6 +2740,8 @@ static bool pool_gate(const moe_cache::alias_pool & ap, size_t lo, size_t hi, co
 // Our own writers (uploads, keep-hot, zone moves, zero restores, poison) pass unnamed temporary tensors and have their own checks (pool_gate, the ledger).
 // Found by it: 2026-11-10, CUDA's init_tensor zeroed the padding behind graph tensors placed through the pool buffer before the lend (f6dbde5665).
 extern "C" void ggml_backend_fork_set_pool_access(void (*fn)(const struct ggml_tensor *, const void *, size_t, const char *));   // ggml-backend.cpp (no header edit)
+extern "C" GGML_API void ggml_backend_vram_guard_fork(int mode);                          // ggml-backend.cpp: device buffers outside the block pool, named or aborted
+extern "C" GGML_API void ggml_backend_vram_guard_stats_fork(uint64_t * n, uint64_t * bytes);
 static int guard_level() {
     static const int v = [] { const char * e = moe_opt("guard"); return e ? std::max(0, atoi(e)) : 0; }();
     return v;
@@ -9151,6 +9153,15 @@ void llama_moe_request_end_fork(void) {
     llama_moe_stats_log_fork("REQ", "end");
     rp_best_note(g_cache);   // before rp_log resets the pool's counters
     rp_log("request");
+    {
+        uint64_t vn = 0, vb = 0;   // device buffers allocated outside the block pool since it took the cards (vram guard, ggml-backend.cpp)
+        ggml_backend_vram_guard_stats_fork(&vn, &vb);
+        if (vn > 0) {
+            const std::string line = format("VRAM outside the block pool since the pool took the cards: %llu allocations, %.1f MiB (each is named in the log with E)", (unsigned long long) vn, vb / 1048576.0);
+            llama_moe_stats_log_fork("VRG", line.c_str());
+            LLAMA_LOG_WARN("moe-cache: %s\n", line.c_str());
+        }
+    }
     pp_pred_log(g_cache);
     rp_resize(g_cache);
     g_warm.store(true);
@@ -10057,9 +10068,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // LLAMA_MOE_CACHE_JIT_POOL=n: JIT pool slots per slower-link layer on the fastest-link GPU. Default 0: the pool
         // chain's cross-GPU input/output copies cost ~10% on GLM (2x3090, 20 x4 layers) even with nothing in the pool
         // --moe pool=0: own cache tensors per layer with a fixed slot count each, as before the block pool (reference for A/B)
-        // --moe pred-pool=1 (task #281, A/B): the predictor keeps the block pool. With the RAM pool on its lists only start SSD reads into RAM (pred_loop), so it
-        // needs no per-layer stream slots (K3 decode 2026-11-14: 0.41 of 0.56 s a token waits for SSD reads that start only after each layer's router)
-        static const bool pred_pool = [] { const char * e = moe_opt("pred-pool"); return e && atoi(e) != 0; }();
+        // The predictor keeps the block pool (task #281): its lists only start SSD reads into the RAM pool (pred_loop), so it needs no per-layer stream slots (K3 decode
+        // 2026-11-14: 0.41 of 0.56 s a token waits for SSD reads that start only after each layer's router). --moe pred-pool=0: the old per-layer layout with stream
+        // slots for predicted uploads (no pool, so no compute alias: ggml's own compute buffers, user 2026-11-14 "disable any non pool allocs")
+        static const bool pred_pool = [] { const char * e = moe_opt("pred-pool"); return !e || atoi(e) != 0; }();
         const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }() && (predict <= 0 || pred_pool);   // the predictor's stream slots are per layer
         const int32_t jit_pool = [] { const char * e = moe_opt("jit-pool"); return e ? std::max(0, atoi(e)) : 0; }();
         // LLAMA_MOE_CACHE_JIT_POOL_ALL=1: every layer gets a pool (JIT never evicts the main cache)
@@ -11485,6 +11497,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         }
         g_cache = mc;
         g_init_done = true;
+        if (!mc->pool.empty()) {
+            // user 2026-11-14: no VRAM outside the block pool. From here every device buffer is named (--moe vram-guard=1, the default) or aborts (=2), so each
+            // one is found and moved into the pool (lent blocks)
+            static const int vg = [] { const char * e = moe_opt("vram-guard"); return e ? atoi(e) : 1; }();
+            ggml_backend_vram_guard_fork(vg);
+        }
         if (guard_level() > 0) {
             ggml_backend_fork_set_pool_access(pool_guard_access);
             LLAMA_LOG_WARN("%s: pool guard on (--moe guard=%d): ggml's own writes into the pool are checked against their owners, %s\n", __func__, guard_level(),

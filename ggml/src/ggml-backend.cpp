@@ -64,8 +64,43 @@ static size_t ggml_backend_sim_vram_off(ggml_backend_dev_t dev, size_t free_now)
     return it->second;
 }
 
+// fork: VRAM guard (user 2026-11-14: "disable any non pool allocs ... so we can spot and fix them to use pool"). The MoE cache arms it once its block pool holds the
+// cards' VRAM (ggml_backend_vram_guard_fork): every later device buffer is named with its size, the first ones with their backtrace (mode 1), or aborts (mode 2).
+// The pool's own buffers are allocated before it is armed; host buffers (pinned or not) are not VRAM.
+static std::atomic<int>      g_vram_guard{0};
+static std::atomic<uint64_t> g_vram_out_n{0}, g_vram_out_b{0};
+extern "C" GGML_API void ggml_backend_vram_guard_fork(int mode) { g_vram_guard.store(mode); }
+extern "C" GGML_API void ggml_backend_vram_guard_stats_fork(uint64_t * n, uint64_t * bytes) { *n = g_vram_out_n.load(); *bytes = g_vram_out_b.load(); }
+
+static void vram_guard_check(ggml_backend_buffer_type_t buft, size_t size) {
+    const int mode = g_vram_guard.load(std::memory_order_relaxed);
+    if (mode <= 0 || ggml_backend_buft_is_host(buft)) {
+        return;
+    }
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
+    const enum ggml_backend_dev_type type = dev ? ggml_backend_dev_type(dev) : GGML_BACKEND_DEVICE_TYPE_CPU;
+    if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+        return;
+    }
+    const uint64_t n = ++g_vram_out_n;
+    g_vram_out_b += size;
+    if (n <= 64 || (n & (n - 1)) == 0 || mode >= 2) {   // a buffer allocated per call would flood the log: the first 64, then powers of two
+        GGML_LOG_ERROR("%s: VRAM outside the block pool: %s %.2f MiB (allocation %llu, %.1f MiB so far; the pool owns this card: move it into the pool)\n", __func__,
+                ggml_backend_buft_name(buft), size / 1048576.0, (unsigned long long) n, g_vram_out_b.load() / 1048576.0);
+    }
+    if (mode >= 2) {
+        GGML_ABORT("VRAM outside the block pool (--moe vram-guard=2)");
+    }
+    if (n <= 16) {
+        ggml_print_backtrace();
+    }
+}
+
 ggml_backend_buffer_t ggml_backend_buft_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     GGML_ASSERT(buft);
+    if (size > 0) {
+        vram_guard_check(buft, size);
+    }
     if (size == 0) {
         // return a dummy buffer for zero-sized allocations
         return ggml_backend_buffer_init(buft, {}, NULL, 0);
