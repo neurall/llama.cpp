@@ -161,6 +161,23 @@ int main() {
         }
     }
 
+    // ---- router or full stream (pp_switch_pick): the arm the planner strikes out. Qwen3.8 IQ3_S, 2442-token calls, 2 x 3090, build chain_grid_claims, 2026-11-14 ----
+    {
+        pp_metrics q; q.n = 2442.0; q.comp_us_tok = 78.0; q.up = 149e3; q.wait_us = 0.0; q.U = 1334e3;   // first request: compute calculated, no router wait known
+        // the router 339 ms against the stream's 1334 struck the stream; the chain took 2449 ms, the release's stream and mix 1767
+        check("cold: two calculated estimates strike nothing", pp_switch_pick(q, 0.0, 0.0, false) == PP_SWITCH_NONE);
+        // second request: the chain's bound measured 2300 ms of compute; the stream's upload at the per-expert average (10.2 GB/s) is 2863 ms, at the probed maximum 1054
+        q.comp_us_tok = 2300e3 / 2442.0; q.up = 436e3;
+        q.U = 2863e3; check("per-expert link average: the router wins (the failure)", pp_switch_pick(q, 0.0, 0.0, true) == PP_SWITCH_STREAM_OUT);
+        q.U = 1054e3; check("probed link maximum: the stream wins", pp_switch_pick(q, 0.0, 0.0, true) == PP_SWITCH_ROUTER_OUT);
+        // a path measured here counts with its real time (Qwen3.8 IQ4_XS 512-token passes: router 2.9-3.0 ms a token, the stream measured 3.6-3.8)
+        pp_metrics r; r.n = 512.0; r.comp_us_tok = 2000.0; r.up = 300e3; r.wait_us = 200e3; r.U = 1e6;
+        check("measured stream slower than the router's estimate: the stream is struck", pp_switch_pick(r, 0.0, 3.7e3 * 512.0, true) == PP_SWITCH_STREAM_OUT);
+        check("measured router slower than the stream's estimate: the router is struck", pp_switch_pick(r, 5e3 * 512.0, 0.0, true) == PP_SWITCH_ROUTER_OUT);
+        check("a measured time decides without other measured inputs", pp_switch_pick(r, 5e3 * 512.0, 0.0, false) == PP_SWITCH_ROUTER_OUT);
+        check("a tie goes to the stream", pp_switch_pick(r, 1e6, 1e6, true) == PP_SWITCH_ROUTER_OUT);
+    }
+
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

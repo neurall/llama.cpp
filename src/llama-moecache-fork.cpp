@@ -12,6 +12,7 @@
 #include "llama-dsplit-fork.h"
 #include "llama-rls-fork.h"   // the planner's estimator (one RLS per prompt path)
 #include "llama-estimate-fork.h"   // the planner's strategy estimators: metrics in, time per token out
+#include "llama-splitplan-fork.h"  // the dense split's pure rules (llama_dsplit_may_take_call_fork)
 #include "llama-moe-fetchlist-fork.h"   // the predictor's ordered fetch list (decode and prompt passes)
 
 #include "llama-impl.h"
@@ -16542,7 +16543,9 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
                               // the stream was off and the 12k prompt ran as the decode chain, 363 t/s, 2026-11-12)
     {
         std::lock_guard<std::mutex> lock(mc->mtx);
-        const double r0 = mc->gbs_link[0] * 1e3;   // bytes / us
+        // the stream, the mix and the predictions copy whole layers: the link's probed maximum (gbs_link is the per-expert upload average, 10.2 against 21.1 GB/s
+        // after a chain pass of Qwen3.8 IQ3_S 2442 tokens, 2026-11-14: the stream's upload priced 2863 ms against 1054 and the router won)
+        const double r0 = link_max_gbs(mc, 0) * 1e3;   // bytes / us
         const double rc = cpu_gbs_now(mc) * 1e3;   // as llama_moe_cache_jit_fork
         ggml_backend_buffer_type_t pinned_buft = mc->link_dev[0] ? ggml_backend_dev_host_buffer_type(mc->link_dev[0]) : nullptr;
         cpu_known = rc > 0.0;
@@ -16743,10 +16746,13 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
         // against an arm known here, and a chain measured here (known) competes on its mean. (a448602c58 had dropped this as a ballpark; the
         // ballpark was the calculated dec_max, this is the measured one.)
         static const bool pp_switch_r1 = [] { const char * e = moe_opt("pp-switch"); return !e || atoi(e) != 0; }();
+        // the switch below decides only on a measured input (pp_switch_pick); a call it leaves alone falls under R1 as before it existed
+        const bool sw_in = g_pp_c_us > 0.0 || g_pp_c_chain > 0.0 || pm.wait_us > 0.0;   // compute timed by a pass (the stream's, or the chain's bound), a router wait timed
+        const bool sw_decides = pp_switch_r1 && (sw_in || pp_took_us(PP_CHAIN, n) > 0.0 || pp_took_us(PP_RING, n) > 0.0);
         for (const int p : { PP_CHAIN, PP_DEC }) {
             // the router path has no CPU side to run away with (the 1170 s below was the decode chain): with the switch on, time per token decides it at any size
             // (Qwen3.8-Flash-Next IQ4_XS, 512-token passes: router 2.9-3.0 ms per token against the stream's 3.6-3.8, never tried past 256 under this rule)
-            if (p == PP_CHAIN && pp_switch_r1) { continue; }
+            if (p == PP_CHAIN && sw_decides) { continue; }
             // (g_mb_auto = experts / picks is 32 on these models, and the chains win well past it. Forced sweep 2026-10-31, t/s, cache / stream: MiMo 100 tokens 59/28, 200 64/55, 300 62/82; GLM 3.0 56/27, 62/54, 60/80;
             // DeepSeek 200 53/13, 500 52/27, 1000 57/57. So up to the calculated crossover dec_max, at most 256 tokens: dec_max alone says thousands before a stream pass measured the compute, and a chain loses there; a chain that ran competes on its mean at any size)
             // shortcut: 256 is the sweep's crossover on MiMo and GLM, not computed (DeepSeek's is near 1000); use dec_max alone once it is built from a measured compute and link rate
@@ -16788,9 +16794,11 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             const double ran_r = pp_took_us(PP_CHAIN, n), ran_s = pp_took_us(PP_RING, n);
             // both carry the SSD now (it was left out while the SSD term counted locked and pool weights as file reads: 93 GB of GLM's at 6.3 GB/s, 14.8 s against a 3.9 s upload)
             const double t_r = ran_r > 0.0 ? ran_r : estimate_router_time_per_token(pm) * n, t_s = ran_s > 0.0 ? ran_s : estimate_fullstream_time_per_token(pm) * n;
-            const bool stream = t_s <= t_r;
-            ok[stream ? PP_CHAIN : PP_RING] = false;
-            llama_moe_stats_log_fork("DEC", format("prompt call of %.0f tokens: %s: router %.3f ms per token (%s; picks %.0f, wait %.0f, compute %.0f ms), full stream %.3f ms per token (%s; upload %.0f ms)", n, stream ? "full stream" : "router",
+            const int sw = pp_switch_pick(pm, ran_r, ran_s, sw_in);   // llama-estimate-fork.h
+            const bool stream = sw == PP_SWITCH_ROUTER_OUT;
+            if (sw != PP_SWITCH_NONE) { ok[stream ? PP_CHAIN : PP_RING] = false; }
+            llama_moe_stats_log_fork("DEC", format("prompt call of %.0f tokens: %s: router %.3f ms per token (%s; picks %.0f, wait %.0f, compute %.0f ms), full stream %.3f ms per token (%s; upload %.0f ms)", n,
+                    sw == PP_SWITCH_NONE ? "neither struck (no input measured here: the older rules pick)" : stream ? "full stream" : "router",
                     t_r / 1e3 / n, ran_r > 0.0 ? "measured" : "estimate", up / 1e3, wait / 1e3, comp / 1e3, t_s / 1e3 / n, ran_s > 0.0 ? "measured" : "estimate", U / 1e3).c_str());
         }
         g_pp_pick = rls_voi_pick(g_pp_pmu, g_pp_var, ok, PP_PATHS, R, &g_pp_trial, known, tonly);
@@ -16954,6 +16962,7 @@ bool llama_moe_cache_pp_yield_fork(const char * why) {
     // With it off the split's experts were plain graph inputs, copied when their layer came up: GLM 3.0 12k, 2 x 3090, the expert card waited 4.2 s of a 15.4 s
     // pass for them (760 prompt t/s against 1030 staged). Every pass of the call asks again (the cache path still takes its size): nothing left to change then.
     const bool cs = g_pp_cstream_call.load(std::memory_order_relaxed);
+    if (!llama_dsplit_may_take_call_fork(pp_no_staging(), cs)) { return false; }   // staging=0, a chain call: the split's experts would be plain graph inputs
     if (cs && g_pp_cs_split.exchange(true)) { return true; }
     g_pp_dec = false;
     if (!cs) { g_pp_mb = 0; }

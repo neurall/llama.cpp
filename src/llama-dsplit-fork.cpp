@@ -3241,7 +3241,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
             why = g_plan_why.c_str();
             if (choice == 1 && llama_moe_cache_pp_chain_takes_fork(n_tokens) && !llama_moe_cache_pp_yield_fork(why)) {
                 choice = 0;
-                why = "the prompt path set by --moe pp-path / pp-k keeps the pass";
+                why = "the call's path keeps the pass (set by --moe pp-path / pp-k, or --moe staging=0 and a call that does not stream into the cache's blocks)";
             }
             // logged once per pass (decode re-decides a pass after an out-of-memory retry with the same draws: the same pick)
             static int64_t logged_pos0 = -2; static int logged_choice = -1;
@@ -3334,7 +3334,7 @@ bool llama_dsplit_decide_fork(const llama_model & model, int64_t n_tokens) {
                         why = wb;
                     } else {
                         choice = 0;
-                        why = "the prompt path set by --moe pp-path / pp-k keeps the pass";
+                        why = "the call's path keeps the pass (set by --moe pp-path / pp-k, or --moe staging=0 and a call that does not stream into the cache's blocks)";
                     }
                 } else {
                     snprintf(wb, sizeof wb, "the call's one-card path %.0f ms (%s, saving %.0f ms) against the split %.0f ms: one card", t_one, src, save, t_sp);

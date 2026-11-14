@@ -267,6 +267,11 @@ static inline dsxn_out dsxn_plan(const dsxn_in & in) {
     return o;
 }
 
+// May the dense split take a prompt call from its one-card path? With --moe staging=0 only a call that streams into the cache's blocks (stream, mix, layer parallel,
+// a prediction): the split's expert card reads that stream. A chain or decode chain call has none, and its experts were plain graph inputs, every expert of every
+// layer copied when its layer came up (Qwen3.8 IQ3_S 2442 tokens, 2 x 3090, 2026-11-14: 50 GB at 15.9 GB/s, 3.0 s against the chain's 2.45). Staged: any call.
+static inline bool llama_dsplit_may_take_call_fork(bool no_staging, bool stream_call) { return !no_staging || stream_call; }
+
 // The helpers' expert shares a pass-size bucket starts with (n_dev cards, the expert card last): the expert trial's shares in force (trial_f, one per
 // helper), the expert card the rest; every expert on the expert card when no trial matches the cards. A bucket with nothing stored reads as this too, so a
 // read before the bucket exists gives what it is created with (2026-11-14: three readers read 0 there, the helper idled, qni4-i -19%).

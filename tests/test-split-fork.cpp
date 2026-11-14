@@ -355,6 +355,26 @@ static void test_f_fresh() {
     report("no per-pass share lookup outside dsplit_f_of", bad == 0, fmt("%d%s", bad, where.c_str()));
 }
 
+// --moe staging=0: the dense split takes a prompt call from its one-card path only when the call streams into the cache's blocks (its experts come from that stream).
+// Qwen3.8 IQ3_S, 2442 tokens, 2 x 3090, 2026-11-14: it took a prompt chain call, its experts became plain graph inputs, every expert of every layer was copied when its
+// layer came up (50 GB at 15.9 GB/s): 3.0 s against the chain's 2.45 (742 against 997 prompt t/s).
+static void test_may_take_call() {
+    printf("the split takes a call from its one-card path:\n");
+    report("staged: any call", llama_dsplit_may_take_call_fork(false, false) && llama_dsplit_may_take_call_fork(false, true));
+    report("staging=0, a stream call: yes", llama_dsplit_may_take_call_fork(true, true));
+    report("staging=0, a chain or decode chain call: no (the failure)", !llama_dsplit_may_take_call_fork(true, false));
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-moecache-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    const size_t a = src.find("\nbool llama_moe_cache_pp_yield_fork(");
+    const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
+    report("the engine's yield asks it", b != std::string::npos && src.substr(a, b - a).find("llama_dsplit_may_take_call_fork(") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -365,6 +385,7 @@ int main(int argc, char ** argv) {
     test_nc_loop();
     test_nc_plan();
     test_f_fresh();
+    test_may_take_call();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

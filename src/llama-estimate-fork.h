@@ -82,6 +82,19 @@ static inline double estimate_mix_upload_time(const pp_metrics & m)           { 
 static inline double estimate_mix_time_per_token(const pp_metrics & m)        { return std::max(estimate_mix_upload_time(m), m.comp_us_tok * m.n) / m.n; }
 // Router path (prompt chain): each layer waits for its router's ids, uploads only the misses among the picks, then computes: the three add up.
 static inline double estimate_router_time_per_token(const pp_metrics & m)     { return (estimate_moe_miss_ongpu_time(m) + m.wait_us + m.comp_us_tok * m.n) / m.n; }
+// Router or full stream (user 2026-11-10): which of the two the planner strikes out for a call of m.n tokens. A path measured at this size counts with its real time
+// (ran_r the router path, ran_s the stream: us a pass, 0 never ran here), the other with its estimate; the stream as soon as it costs the same or less. measured: an
+// input the estimates rest on was measured in this process (a pass timed the compute, a router pass its waits). Two estimates from calculated inputs alone strike
+// nothing: the calculated compute is a lower bound and an unknown router wait counts 0, so the router always looked faster (Qwen3.8 IQ3_S, 2442 tokens, first
+// request, 2026-11-14: compute calculated 78 us a token against about 560 measured, the router 339 ms against the stream's 1334; the chain took 2449 ms, the
+// release's stream and mix 1767). Then the planner's older rules pick (R1: no chain past the crossover before it ran).
+enum { PP_SWITCH_NONE = 0, PP_SWITCH_ROUTER_OUT = 1, PP_SWITCH_STREAM_OUT = 2 };
+static inline int pp_switch_pick(const pp_metrics & m, double ran_r, double ran_s, bool measured) {
+    if (ran_r <= 0.0 && ran_s <= 0.0 && !measured) { return PP_SWITCH_NONE; }
+    const double t_r = ran_r > 0.0 ? ran_r : estimate_router_time_per_token(m) * m.n;
+    const double t_s = ran_s > 0.0 ? ran_s : estimate_fullstream_time_per_token(m) * m.n;
+    return t_s <= t_r ? PP_SWITCH_ROUTER_OUT : PP_SWITCH_STREAM_OUT;
+}
 // Decode chain: the misses go to the CPU and to the uploads side by side (a x b / (a + b)), the GPU work runs in 4-token chunks that read every token's experts again.
 static inline double estimate_decodechain_time(const pp_metrics & m) {
     const double both = m.up + m.cpu > 0.0 ? m.up * m.cpu / (m.up + m.cpu) : 0.0;
