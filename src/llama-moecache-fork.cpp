@@ -16910,6 +16910,10 @@ bool llama_moe_cache_pp_yield_fork(const char * why) {
     g_pp_dec = false;
     if (!cs) { g_pp_mb = 0; }
     if (k_auto) { ggml_backend_pred_set_fork(0.0); }
+    // layer parallel gives way under the split: the split places the experts itself (the helpers' share, measured pass by pass: llama_dsplit_card_f_fork) and its
+    // cards use both links already; layer parallel put every layer's experts on its home card instead and made CUDA1's graph larger (Qwen3.6 128k at 4.5 GiB a card:
+    // 82 split passes against 49, 2566 prompt t/s against 3360). --moe moe-split=home keeps it
+    if (moe_split_mode() != 1) { g_pp_lp_call = false; }
     g_pp_path_call = g_pp_mix_call.load(std::memory_order_relaxed) ? PP_MIX : g_pp_lp_call.load(std::memory_order_relaxed) ? PP_LP : PP_RING;
     g_pp_save_us = 0.0;
     const std::string s = format("prompt call: the dense split takes it from its one-card path (%s)", why);
