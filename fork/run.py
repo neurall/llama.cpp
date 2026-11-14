@@ -7357,7 +7357,8 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     if out:
         out.close()
         if rc: live_clear(); print("".join(open(log, errors="replace").readlines()[-8:]), end="", flush=True)   # the failure reason
-    return rc
+    # what the table shows: a cell without a result is failed although its process exited 0 (bug log: "cells, failed: none" under FAIL rows, 3 times)
+    return CELL_REC[-1]["rc"]
 
 
 def resolve_build(name):
