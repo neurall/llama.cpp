@@ -67,6 +67,7 @@ size_t   llama_moe_cache_vram_margin_fork(ggml_backend_dev_t dev);
 void     llama_moe_cache_alias_refused_fork(uint32_t n_tokens);                        // src/llama-moecache-fork.cpp: a graph that did not fit the lent blocks counts as a refusal                     // src/llama-moecache-fork.cpp: the VRAM margin a card keeps (the first micro-batch cap below)
 bool     llama_moe_cache_pp_short_fork();
 void     llama_moe_cache_pp_freeze_fork();
+void     llama_rowread_ahead_ubatch_fork(int arch, const llama_model & model, llama_memory_context_i * mctx, const llama_ubatch & ubatch);   // llama-rowread-fork.cpp
 void     llama_moe_cache_verify_fork(ggml_backend_sched_t sched, int32_t n_tokens);
 void     llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max);
 void     llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub);   // the pass size decided after the path: the path's features follow it
@@ -3604,6 +3605,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         ret = GGML_STATUS_FAILED;
         return nullptr;
     }
+    // fork: the rows this pass gathers from lazy row tables (PLE, Engram) are read on the row reader from here, beside the graph build, the KV moves and the copy
+    // fill (llama-rowread-fork.cpp); the cells hold this ubatch now, so the hashes see its tokens' predecessors
+    if (mctx && ubatch.token && ubatch.n_tokens > 1) { llama_rowread_ahead_ubatch_fork((int) model.arch, model, mctx, ubatch); }
 
     // fork: --moe kv-tail: the KV zone of each card grows (cells past half of it) and makes room for the lend a graph of this size needed before, BEFORE the graph
     // is built: a graph never points at rows that move (a move changes the reuse epoch below)

@@ -1753,7 +1753,8 @@ public:
     std::vector<llama_token> prev;
 };
 
-void llm_graph_input_qwen4exp_ple::set_input(const llama_ubatch * ubatch) {
+// the PLE rows of a ubatch (ple_n_heads per token, token by token): what set_input gathers and what the read-ahead reads beside the graph build
+static void qwen4exp_ple_ids(const llama_model & model, const llama_kv_cache_context * mctx, const llama_ubatch * ubatch, std::vector<llama_token> & prev, std::vector<int32_t> & idx) {
     const auto & hparams = model.hparams;
 
     // an image arrives as an embd batch, so ubatch->token is null, but every position still needs a row for ggml_get_rows
@@ -1774,7 +1775,7 @@ void llm_graph_input_qwen4exp_ple::set_input(const llama_ubatch * ubatch) {
     const int64_t eos      = hparams.ple_eos_token_id;
     const int64_t n_prev   = n_gram - 1;
 
-    std::vector<int32_t> idx(n_heads * n_tokens);
+    idx.assign(n_heads * n_tokens, 0);
 
     GGML_ASSERT(mctx != nullptr);
 
@@ -1813,6 +1814,30 @@ void llm_graph_input_qwen4exp_ple::set_input(const llama_ubatch * ubatch) {
             }
         }
     }
+}
+
+void llama_rowread_ahead_fork(const ggml_tensor * t, const int32_t * ids, size_t n);   // llama-rowread-fork.cpp: rows read on the row reader from now
+bool llama_rowread_ahead_register_fork(int arch, void (*fn)(const llama_model &, llama_memory_context_i *, const llama_ubatch &));
+
+// fork: a pass's PLE rows, asked for right after the memory apply (llama_context::process_ubatch), so the reads run beside the graph build and the copy fill
+static void qwen4exp_ple_ahead(const llama_model & model, llama_memory_context_i * mctx, const llama_ubatch & ubatch) {
+    const auto * hyb = dynamic_cast<const llama_memory_hybrid_idx_context *>(mctx);
+    if (!hyb || model.hparams.ple_n_heads <= 0 || !llama_rowread_has_fork(model.per_layer_tok_embd)) {
+        return;
+    }
+    for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+        if (ubatch.n_seq_id[i] != 1) { return; }   // set_input refuses these; no read-ahead for them
+    }
+    std::vector<llama_token> prev;
+    std::vector<int32_t> idx;
+    qwen4exp_ple_ids(model, hyb->get_attn(), &ubatch, prev, idx);
+    llama_rowread_ahead_fork(model.per_layer_tok_embd, idx.data(), idx.size());
+}
+static const bool g_qwen4exp_ple_ahead = llama_rowread_ahead_register_fork((int) LLM_ARCH_QWEN4EXP, &qwen4exp_ple_ahead);
+
+void llm_graph_input_qwen4exp_ple::set_input(const llama_ubatch * ubatch) {
+    std::vector<int32_t> idx;
+    qwen4exp_ple_ids(model, mctx, ubatch, prev, idx);
 
     {
         ggml_tensor * ple = model.per_layer_tok_embd;

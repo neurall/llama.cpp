@@ -360,6 +360,32 @@ void llm_graph_input_dsv41::set_input(const llama_ubatch * ubatch) {
     }
 }
 
+void llama_rowread_ahead_fork(const ggml_tensor * t, const int32_t * ids, size_t n);   // llama-rowread-fork.cpp: rows read on the row reader from now
+bool llama_rowread_ahead_register_fork(int arch, void (*fn)(const llama_model &, llama_memory_context_i *, const llama_ubatch &));
+
+// fork: a pass's Engram rows (every Engram layer's, hashed as set_input does), asked for right after the memory apply (llama_context::process_ubatch), so their reads
+// run beside the graph build (DS 12k-token pass: about 307k distinct rows)
+static void dsv41_engram_ahead(const llama_model & model, llama_memory_context_i * mctx, const llama_ubatch & ubatch) {
+    const auto * m  = dynamic_cast<const llama_model_deepseek41 *>(&model);
+    const auto * kv = dynamic_cast<const llama_kv_cache_dsv4_context *>(mctx);
+    if (!m || !kv || m->hparams.ple_n_heads <= 0 || !llama_rowread_has_fork(m->per_layer_tok_embd)) {
+        return;
+    }
+    std::vector<llama_token> prev;
+    kv->get_raw()->get_prev_tokens(ubatch, m->hparams.ple_ngram_size - 1, prev);
+    std::vector<int32_t> all, ids;
+    int e = 0;
+    for (int il = 0; il < (int) m->hparams.n_layer(); ++il) {
+        if (!m->hparams.is_ple(il)) {
+            continue;
+        }
+        m->engram_hash(e++, ubatch, prev, ids);
+        all.insert(all.end(), ids.begin(), ids.end());
+    }
+    llama_rowread_ahead_fork(m->per_layer_tok_embd, all.data(), all.size());
+}
+static const bool g_dsv41_engram_ahead = llama_rowread_ahead_register_fork((int) LLM_ARCH_DEEPSEEK41, &dsv41_engram_ahead);
+
 bool llm_graph_input_dsv41::can_reuse(const llm_graph_params & params) {
     mctx = static_cast<const llama_kv_cache_dsv4_context *>(params.mctx);
 
