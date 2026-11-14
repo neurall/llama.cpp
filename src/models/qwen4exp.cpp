@@ -1816,7 +1816,7 @@ static void qwen4exp_ple_ids(const llama_model & model, const llama_kv_cache_con
     }
 }
 
-void llama_rowread_ahead_fork(const ggml_tensor * t, const int32_t * ids, size_t n);   // llama-rowread-fork.cpp: rows read on the row reader from now
+void llama_rowread_ahead_fork(const ggml_tensor * t, int part, const int32_t * ids, size_t n);   // llama-rowread-fork.cpp: rows of gather `part` read on the row reader from now
 bool llama_rowread_ahead_register_fork(int arch, void (*fn)(const llama_model &, llama_memory_context_i *, const llama_ubatch &));
 
 // fork: a pass's PLE rows, asked for right after the memory apply (llama_context::process_ubatch), so the reads run beside the graph build and the copy fill
@@ -1831,7 +1831,7 @@ static void qwen4exp_ple_ahead(const llama_model & model, llama_memory_context_i
     std::vector<llama_token> prev;
     std::vector<int32_t> idx;
     qwen4exp_ple_ids(model, hyb->get_attn(), &ubatch, prev, idx);
-    llama_rowread_ahead_fork(model.per_layer_tok_embd, idx.data(), idx.size());
+    llama_rowread_ahead_fork(model.per_layer_tok_embd, 0, idx.data(), idx.size());
 }
 static const bool g_qwen4exp_ple_ahead = llama_rowread_ahead_register_fork((int) LLM_ARCH_QWEN4EXP, &qwen4exp_ple_ahead);
 

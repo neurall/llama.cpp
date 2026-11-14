@@ -131,6 +131,7 @@ static bool rowread_gather(const ggml_tensor * t, const int32_t * rows, size_t n
 namespace {
 struct row_job {
     const ggml_tensor * t = nullptr;
+    int part = 0;                 // which gather of the pass (DS: the Engram layer), read in the order asked
     std::vector<int32_t> u;       // the rows, sorted and distinct
     std::vector<uint8_t> data;    // their bytes, u.size() rows
     bool started = false, done = false, ok = false;
@@ -178,12 +179,13 @@ row_reader & reader() {
 }
 }
 
-// the rows ids[0..n) of t read on the reader thread from now: the pass that asks for them next finds them in RAM. A job of t that has not started, or was read
-// and never taken (its pass gathered nothing), gives way.
-void llama_rowread_ahead_fork(const ggml_tensor * t, const int32_t * ids, size_t n) {
+// the rows ids[0..n) of t for gather `part` of the next pass, read on the reader thread from now (parts in the order asked): the pass finds them in RAM. A job of
+// the same t and part that has not started, or was read and never taken (its pass gathered nothing), gives way.
+void llama_rowread_ahead_fork(const ggml_tensor * t, int part, const int32_t * ids, size_t n) {
     if (n == 0 || !llama_rowread_has_fork(t)) { return; }
     auto j = std::make_shared<row_job>();
     j->t = t;
+    j->part = part;
     j->u.assign(ids, ids + n);
     std::sort(j->u.begin(), j->u.end());
     j->u.erase(std::unique(j->u.begin(), j->u.end()), j->u.end());
@@ -197,7 +199,7 @@ void llama_rowread_ahead_fork(const ggml_tensor * t, const int32_t * ids, size_t
     row_reader & r = reader();
     {
         std::lock_guard<std::mutex> lk(r.mu);
-        r.q.erase(std::remove_if(r.q.begin(), r.q.end(), [&](const std::shared_ptr<row_job> & x) { return x->t == t && (!x->started || x->done); }), r.q.end());
+        r.q.erase(std::remove_if(r.q.begin(), r.q.end(), [&](const std::shared_ptr<row_job> & x) { return x->t == t && x->part == part && (!x->started || x->done); }), r.q.end());
         r.q.push_back(j);
     }
     g_ahead_used = true;
@@ -223,34 +225,26 @@ void llama_rowread_ahead_ubatch_fork(int arch, const llama_model & model, llama_
     for (const auto & f : ahead_fns()) { if (f.first == arch) { f.second(model, mctx, ubatch); } }
 }
 
-// A pass's rows for a graph that gathers from `tab` (an input of the pass: t's row size, at least as many rows as ids) instead of the mapped t: each distinct row
-// among ids[0..n) once, ascending, read from the file (a failed read: from the mapping, logged once). Returns them: row k of tab holds row u[k] of t, so a caller
-// maps its ids to tab's rows with lower_bound. Rows a read-ahead of t holds come from it (the newest job of t, waited for).
-std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor * tab, const int32_t * ids, size_t n) {
-    std::vector<int32_t> u(ids, ids + n);
-    std::sort(u.begin(), u.end());
-    u.erase(std::unique(u.begin(), u.end()), u.end());
-    GGML_ASSERT((int64_t) u.size() <= tab->ne[1]);
-    const size_t rs = ggml_row_size(tab->type, tab->ne[0]);
-    const bool host = ggml_backend_buffer_is_host(tab->buffer);
-    std::vector<uint8_t> tmp(host ? 0 : u.size()*rs);
-    uint8_t * dst = host ? (uint8_t *) tab->data : tmp.data();
+// Rows u[0..nu) of t (ascending, distinct) into dst, row k at dst + k*row size: each read from the file (a failed read: from the mapping, logged once). Rows in RAM
+// come from the pool, rows a read-ahead of (t, part) holds from it (its newest job, waited for), the rest are read now. False: a read failed.
+bool llama_rowread_fill_rows_fork(const ggml_tensor * t, int part, const int32_t * u, size_t nu, uint8_t * dst) {
+    const size_t rs = ggml_row_size(t->type, t->ne[0]);
     // rows in RAM first (each recall goes into its history), then the misses: from the read-ahead, else read now; the misses are handed to the pool, which keeps
     // the ones whose histories say they will be read again during a stay
-    std::vector<uint8_t> hit(u.size());
-    const size_t n_ram = ggml_rampool_rows_get_fork(t, u.data(), u.size(), dst, hit.data());
+    std::vector<uint8_t> hit(nu);
+    const size_t n_ram = ggml_rampool_rows_get_fork(t, u, nu, dst, hit.data());
     std::vector<int32_t> mr;   // the misses, ascending
     std::vector<size_t>  mk;   // their places in u
-    mr.reserve(u.size() - n_ram);
-    mk.reserve(u.size() - n_ram);
-    for (size_t k = 0; k < u.size(); ++k) { if (!hit[k]) { mr.push_back(u[k]); mk.push_back(k); } }
+    mr.reserve(nu - n_ram);
+    mk.reserve(nu - n_ram);
+    for (size_t k = 0; k < nu; ++k) { if (!hit[k]) { mr.push_back(u[k]); mk.push_back(k); } }
     std::vector<uint8_t> mb(mr.size()*rs);
     std::shared_ptr<row_job> j;
     const int64_t t0 = ggml_time_us();
     if (g_ahead_used.load()) {
         row_reader & r = reader();
         std::unique_lock<std::mutex> lk(r.mu);
-        for (auto it = r.q.rbegin(); it != r.q.rend() && !j; ++it) { if ((*it)->t == t) { j = *it; } }
+        for (auto it = r.q.rbegin(); it != r.q.rend() && !j; ++it) { if ((*it)->t == t && (*it)->part == part) { j = *it; } }
         if (j) {
             r.cv.wait(lk, [&] { return j->done; });
             const auto it = std::find(r.q.begin(), r.q.end(), j);   // a newer read-ahead of t may have dropped it already
@@ -282,12 +276,12 @@ std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor 
         }
     }
     static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
-    if (dbg && n >= 1024) {
+    if (dbg && nu >= 512) {
         uint64_t v[10];
         double turn = 0;
         ggml_rampool_rows_stats_fork(t, v, &turn);
-        LLAMA_LOG_WARN("%s: %s: %zu rows, %zu in RAM, %zu from the read-ahead (waited %.1f ms for it), %zu read now; %.1f ms. Rows in RAM %llu of %llu, "
-                "histories %llu, %.1f MiB, kept %llu, declined %llu, evicted %llu, forgotten %llu, a stay lasts %.0f rows recalled\n", __func__, ggml_get_name(t), u.size(),
+        LLAMA_LOG_WARN("%s: %s part %d: %zu rows, %zu in RAM, %zu from the read-ahead (waited %.1f ms for it), %zu read now; %.1f ms. Rows in RAM %llu of %llu, "
+                "histories %llu, %.1f MiB, kept %llu, declined %llu, evicted %llu, forgotten %llu, a stay lasts %.0f rows recalled\n", __func__, ggml_get_name(t), part, nu,
                 n_ram, mr.size() - n_miss, (t1 - t0) / 1e3, n_miss, (ggml_time_us() - t0) / 1e3, (unsigned long long) v[0], (unsigned long long) v[2],
                 (unsigned long long) v[1], v[9] / 1048576.0, (unsigned long long) v[5], (unsigned long long) v[6], (unsigned long long) v[7],
                 (unsigned long long) v[8], turn);
@@ -295,8 +289,24 @@ std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor 
     if (!ok) {
         static std::atomic<bool> warned{false};
         if (!warned.exchange(true)) { LLAMA_LOG_WARN("%s: a row read of %s failed: this pass takes its rows from the mapping\n", __func__, ggml_get_name(t)); }
-        for (size_t k = 0; k < u.size(); ++k) { memcpy(dst + k*rs, (const uint8_t *) t->data + (size_t) u[k]*rs, rs); }
+        for (size_t k = 0; k < nu; ++k) { memcpy(dst + k*rs, (const uint8_t *) t->data + (size_t) u[k]*rs, rs); }
     }
+    return ok;
+}
+
+// A pass's rows for a graph that gathers from `tab` (an input of the pass: t's row size, at least as many rows as ids) instead of the mapped t: each distinct row
+// among ids[0..n) once, ascending (llama_rowread_fill_rows_fork, gather part 0). Returns them: row k of tab holds row u[k] of t, so a caller maps its ids to tab's
+// rows with lower_bound.
+std::vector<int32_t> llama_rowread_fill_fork(const ggml_tensor * t, ggml_tensor * tab, const int32_t * ids, size_t n) {
+    std::vector<int32_t> u(ids, ids + n);
+    std::sort(u.begin(), u.end());
+    u.erase(std::unique(u.begin(), u.end()), u.end());
+    GGML_ASSERT((int64_t) u.size() <= tab->ne[1]);
+    const size_t rs = ggml_row_size(tab->type, tab->ne[0]);
+    const bool host = ggml_backend_buffer_is_host(tab->buffer);
+    std::vector<uint8_t> tmp(host ? 0 : u.size()*rs);
+    uint8_t * dst = host ? (uint8_t *) tab->data : tmp.data();
+    llama_rowread_fill_rows_fork(t, 0, u.data(), u.size(), dst);
     if (!host) { ggml_backend_tensor_set(tab, tmp.data(), 0, u.size()*rs); }
     return u;
 }
