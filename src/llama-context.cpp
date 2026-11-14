@@ -1747,6 +1747,28 @@ void llama_context::sched_reserve() {
                 for (size_t k = 0; k < alive.size() && k < 10; ++k) {
                     at_peak += format("%s %s %.0f MiB (last read at node %d); ", alive[k]->name, ggml_op_desc(alive[k]), ggml_nbytes(alive[k]) / 1048576.0, last[alive[k]]);
                 }
+                // what this card reads from elsewhere: the scheduler copies each such input in (a view with its parent's strides, a weight whole when the card
+                // cannot read its buffer), and these copies are not among the graph's own tensors above
+                std::map<const ggml_tensor *, size_t> xin;
+                for (int k = 0; k < nn; ++k) {
+                    ggml_tensor * n = ggml_graph_node(mg, k);
+                    if (n->view_src || ggml_backend_sched_get_tensor_backend(sched.get(), n) != backend_ptrs[bi]) { continue; }
+                    for (ggml_tensor * s : n->src) {
+                        if (!s) { continue; }
+                        ggml_tensor * r = s; while (r->view_src) { r = r->view_src; }
+                        bool cross = false;
+                        if (r->buffer) { cross = !ggml_backend_supports_buft(backend_ptrs[bi], ggml_backend_buffer_get_type(r->buffer)); }
+                        else { ggml_backend_t sb = ggml_backend_sched_get_tensor_backend(sched.get(), r); cross = sb && sb != backend_ptrs[bi]; }
+                        if (cross) { xin[s] = ggml_nbytes(s); }
+                    }
+                }
+                std::vector<std::pair<const ggml_tensor *, size_t>> xv(xin.begin(), xin.end());
+                std::sort(xv.begin(), xv.end(), [](const auto & x, const auto & y) { return x.second > y.second; });
+                size_t xsum = 0; for (const auto & x : xv) { xsum += x.second; }
+                at_peak += format("| read from elsewhere: %zu inputs, %.0f MiB in all: ", xv.size(), xsum / 1048576.0);
+                for (size_t k = 0; k < xv.size() && k < 10; ++k) {
+                    at_peak += format("%s %s%s %.0f MiB; ", xv[k].first->name, ggml_op_desc(xv[k].first), xv[k].first->buffer ? " (weight)" : "", xv[k].second / 1048576.0);
+                }
             }
             LLAMA_LOG_WARN("%s: prompt graph of %u tokens on %s: largest tensors: %s| by op (all layers): %s%s\n", __func__, u, ggml_backend_dev_name(dv), top.c_str(), per_op.c_str(), at_peak.c_str());
         }
