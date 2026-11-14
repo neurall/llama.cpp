@@ -552,7 +552,7 @@ struct moe_cache {
     std::vector<uint8_t>     cs_mix;   // per entry of cs_order: 0, 1 the prompt mix's home (computes what its blocks hold, copies nothing), 2 its shadow on the fastest link's card (the rest)
     bool                     cs_masked = false;   // a pass of this call masked device tables to their range: the call's end writes every layer's table again
     uint64_t                 cs_n_direct = 0, cs_n_map = 0;   // the pass so far: slices the RAM pool refused, read O_DIRECT into a pinned slot; slices copied from the mapping (should stay 0)
-    uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
+    uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0, cs_n_claim_fut = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
     uint64_t                 cs_n_win = 0, cs_n_ent = 0;   // the pass so far: entries placed in one run of blocks (cs_plan's window), entries that uploaded anything
     uint64_t                 cs_b_plan = 0, cs_b_cp[MAX_LINKS] = {}, cs_b_past[MAX_LINKS] = {};   // the pass so far: bytes planned (cs_plan), slice and past bytes copied per link (cs_copy, the card's worker)
     uint64_t                 cs_n_pred = 0, cs_n_late = 0, cs_n_used = 0, cs_n_listed = 0, cs_n_noids = 0, cs_n_steal = 0;   // the k arm, the pass so far: uploaded by the rankings, by the late fix; experts the entries used, of those in their list; entries without ids (whole range); predicted blocks the late fix took back
@@ -12230,8 +12230,9 @@ static int64_t chain_grid_blocks(moe_cache * mc, const layer_state & l, int64_t 
     for (int32_t b = 0; b < (int32_t) ps.owner.size() && n < enough; ++b) { n += ps.owner[b] == -4 && chain_claimable(mc, l.pcls, b); }
     return n;
 }
-static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool & from_done, bool force) {   // cache lock held; force: pins yield
+static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool & from_done, bool & fut, bool force) {   // cache lock held; force: pins yield; fut: over an expert of a layer to come
     bool fd = false;
+    fut = false;
     const bool ok = cls_over(mc, pc, b, [&](int32_t qc, int32_t x) {
         const int32_t o = mc->pool[qc].owner[x];
         if (o == -1 || o == -4) { return true; }
@@ -12244,7 +12245,8 @@ static bool cls_claimable(moe_cache * mc, int32_t pc, int32_t b, size_t p, bool 
         const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
         if (q < 0 || (!force && pinned(mc, lo, e))) { return false; }
         if ((size_t) q < mc->cs_done[lo.link]) { fd = true; return true; }
-        return (size_t) q > p;
+        if ((size_t) q > p) { fut = true; return true; }
+        return false;
     });
     from_done = ok && fd;
     return ok;
@@ -12461,7 +12463,8 @@ static const std::vector<uint8_t> * cs_used(moe_cache * mc, int il, int64_t ne) 
 }
 
 // sel: null = every uncached expert of the entry's range (the stream), else only those with sel[e] != 0 (the k arm's predicted or used experts)
-static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done, const std::vector<uint8_t> * sel = nullptr, bool late = false) {   // cache lock held
+// cheap: an entry planned ahead of its need takes no costly block (poolx_ring_costly: an expert of a layer to come would go up twice); it waits for computed layers' blocks
+static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & from_done, const std::vector<uint8_t> * sel = nullptr, bool late = false, bool cheap = false) {   // cache lock held
     const size_t li = mc->cs_order[p];
     layer_state & ls = csl(mc, li);
     out.clear();
@@ -12480,7 +12483,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     if (ps.cs_up.size() < ps.owner.size()) { ps.cs_up.resize(ps.owner.size(), 0); }
     // A ring (user 2026-11-12: "evict past not future"; the staged stream's whole-layer copies, only the destination differs): the blocks in order from the class's write
     // cursor, so a layer lands in one run over what was written longest ago. Never a block of a layer uploaded for in this pass whose kernels are not queued yet.
-    struct cand { int tier; int32_t b; int64_t o; int32_t at; };   // o: the entry (layer or shadow) holding the block, -1 none; at: its place from the cursor
+    struct cand { int tier; int32_t b; int64_t o; int32_t at; bool fd; };   // o: the entry (layer or shadow) holding the block, -1 none; at: its place from the cursor; fd: a computed layer's (its copy waits for the done event)
     std::vector<cand> c;
     // the layer ring (staging=0): the class's blocks in the reserve behind floor_end, from the card's cursor (bytes, class-blind: the layers of every class follow
     // one another there, first in first out); without a reserve the class's own cursor over all its blocks
@@ -12501,10 +12504,10 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     for (int32_t i = 0; i < nr; ++i) {   // the whole class: every block the stream may take, the best ones picked below
         const int32_t b = r0 + (ps.cs_cur + i) % nr;
         const int32_t o = ps.owner[b];
-        if (o == -1) { c.push_back({ 0, b, -1, i }); continue; }
-        if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: none of it computed in this pass, 6: some)
-            bool fd = false;
-            if (cls_claimable(mc, ls.pcls, b, p, fd, force)) { c.push_back({ fd ? 6 : 5, b, -1, i }); } else { n_sk[0]++; }
+        if (o == -1) { c.push_back({ 0, b, -1, i, false }); continue; }
+        if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: nothing of a layer to come, 6: an expert of one)
+            bool fd = false, fut = false;
+            if (cls_claimable(mc, ls.pcls, b, p, fd, fut, force) && !(cheap && fut)) { c.push_back({ fut ? 6 : 5, b, -1, i, fd }); } else { n_sk[0]++; }
             continue;
         }
         const int64_t lx = cs_li_of(mc, o);   // a layer's or a shadow's
@@ -12512,23 +12515,25 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         layer_state & lo = csl(mc, (size_t) lx);
         if (lo.slot_in_flight[b] || lo.is_stream[b]) { n_sk[2]++; continue; }
         const int32_t x = lo.slot_expert[b];
-        if (x < 0) { c.push_back({ 1, b, lx, i }); continue; }   // the layer's, empty
+        if (x < 0) { c.push_back({ 1, b, lx, i, false }); continue; }   // the layer's, empty
         const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
         if (q < 0) { n_sk[3]++; continue; }   // a layer outside the cstream graph (its path may read the block)
         if (!force && pinned(mc, lo, x)) { n_sk[4]++; continue; }   // a pinned expert
         if ((size_t) q < mc->cs_done[lo.link]) {   // computed in this pass: its done event is on its card's compute stream
-            c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, lx, i });
+            c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, lx, i, true });
         } else if ((size_t) q > p && !((size_t) q < mc->cs_mix.size() && mc->cs_mix[(size_t) q] == 1)) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert
-            c.push_back({ 4, b, lx, i });                                                                         // comes back when its turn comes; never a mix home's (its shadow left those out)
+            if (!cheap) { c.push_back({ 4, b, lx, i, false }); }                                                  // comes back when its turn comes; never a mix home's (its shadow left those out)
         } else {
             n_sk[5]++;
         }
     }
     }
     // The stream takes the cache's own blocks (user 2026-11-13: nothing set aside for it), so it keeps what the cache holds: free blocks first, then empty ones of a
-    // layer, its own writes of this pass already computed, another class's bytes, then cached experts already computed in this pass, last the experts of layers still to
-    // come (they come back when their turn comes; "evict past not future", user 2026-11-12). Same tier: the cursor's order, what was written longest ago first.
-    static const int tier_rank[8] = { 0, 1, 2, 5, 6, 3, 4, 7 };
+    // layer, its own writes of this pass already computed, another class's bytes over nothing of a layer to come, cached experts already computed in this pass; costly
+    // last, the experts of layers still to come and other classes' bytes over them (each goes up again when its turn comes; "evict past not future", user 2026-11-12;
+    // poolx_ring_rank). Same tier: the cursor's order, what was written longest ago first.
+    size_t n_cheap = 0;
+    for (const auto & x : c) { n_cheap += !poolx_ring_costly(x.tier); }
     // The stream (not the k arm's lists or its late fix, not the mix): the layer's experts into ONE run of blocks, the first run from the cursor long enough, so each
     // tensor goes up in as few copies as its cached experts allow (user 2026-11-14: "sort and coalesce and upload moes needed for compute as one n size class coalesced
     // upload"; scattered picks made 8323 copies of 22894 experts a Qwen3.8 12k pass). The run takes the best ranks it can (poolx_ring_window), down to the experts
@@ -12537,7 +12542,10 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     if (!sel && !late && mix == 0 && c.size() >= want.size() && nr > 0) {
         std::vector<int32_t> ci((size_t) nr, -1);   // block (from the ring's start) -> its candidate
         std::vector<int8_t>  rk((size_t) nr, -1);
-        for (size_t x = 0; x < c.size(); ++x) { ci[(size_t) (c[x].b - r0)] = (int32_t) x; rk[(size_t) (c[x].b - r0)] = (int8_t) tier_rank[c[x].tier]; }
+        for (size_t x = 0; x < c.size(); ++x) {   // a run never takes a costly block while the cheap ones would do (a copy saved is not worth an expert's bytes again)
+            if (n_cheap >= want.size() && poolx_ring_costly(c[x].tier)) { continue; }
+            ci[(size_t) (c[x].b - r0)] = (int32_t) x; rk[(size_t) (c[x].b - r0)] = (int8_t) poolx_ring_rank(c[x].tier);
+        }
         const int32_t j0 = poolx_ring_window(rk, ps.cs_cur, (int32_t) want.size());
         if (j0 >= 0) {
             std::vector<cand> run;
@@ -12558,7 +12566,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         }
     }
     if (!win) {
-        std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return tier_rank[x.tier] < tier_rank[y.tier]; });
+        std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return poolx_ring_rank(x.tier) < poolx_ring_rank(y.tier); });
         if (c.size() > want.size()) { c.resize(want.size()); }
     }
     mc->cs_n_win += win;
@@ -12582,7 +12590,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
             else if ((size_t) lx == li && sel && ((size_t) x >= sel->size() || !(*sel)[(size_t) x])) { fl.push_back({ -1, b }); }
         }
         std::stable_sort(fl.begin(), fl.end(), [](const std::pair<int32_t, int32_t> & x, const std::pair<int32_t, int32_t> & y) { return x.first > y.first; });
-        for (size_t i = 0; i < fl.size() && c.size() < want.size(); ++i) { c.push_back({ 7, fl[i].second, cs_li_of(mc, ps.owner[fl[i].second]) }); }
+        for (size_t i = 0; i < fl.size() && c.size() < want.size(); ++i) { c.push_back({ 7, fl[i].second, cs_li_of(mc, ps.owner[fl[i].second]), 0, false }); }
     }
     if (c.size() < want.size()) { return false; }
     if (n_ring > 0) {
@@ -12605,9 +12613,9 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
             if (q > (int32_t) p) { mc->cs_next[lo.link] = std::min(mc->cs_next[lo.link], (size_t) q); }
             mc->cs_n_steal++;
         }
-        else if (c[i].tier >= 5) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; }
+        else if (c[i].tier >= 5) { cls_claim(mc, ls.pcls, b); mc->cs_n_claim++; mc->cs_n_claim_fut += c[i].tier == 6; }
         else if (c[i].tier >= 2) { cs_evict(mc, (size_t) c[i].o, b); }
-        from_done |= c[i].tier == 2 || c[i].tier == 3 || c[i].tier == 6;
+        from_done |= c[i].fd;
         mc->cs_n_free += c[i].tier <= 1; mc->cs_n_cold += c[i].tier == 2; mc->cs_n_done += c[i].tier == 3; mc->cs_n_ahead += c[i].tier == 4;
         pool_take(mc, li, b);
         led_upload(mc, "cs-up", li, e, b, false);
@@ -12831,10 +12839,10 @@ static void cs_begin(moe_cache * mc) {
     static int n_log = 0;
     if (mc->cs_pass > 0 && (n_log < 6 || mc->cs_pass % 64 == 0)) {
         n_log++;
-        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies (%llu of %llu entries in one run of blocks, copies on %s): %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of layers ahead, %llu claimed from other size classes; slices the RAM pool refused: %llu read O_DIRECT into pinned slots, %llu from the mapping\n",
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies (%llu of %llu entries in one run of blocks, copies on %s): %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of layers ahead, %llu claimed from other size classes (%llu over an expert of a layer ahead); slices the RAM pool refused: %llu read O_DIRECT into pinned slots, %llu from the mapping\n",
                 mc->cs_pass, (unsigned long long) mc->cs_n_up, (unsigned long long) mc->cs_n_cp, (unsigned long long) mc->cs_n_win, (unsigned long long) mc->cs_n_ent,
                 cs_async(mc) ? "the cards' upload workers" : "the scheduler thread", (unsigned long long) mc->cs_n_free, (unsigned long long) mc->cs_n_cold,
-                (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim,
+                (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim, (unsigned long long) mc->cs_n_claim_fut,
                 (unsigned long long) mc->cs_n_direct, (unsigned long long) mc->cs_n_map);
     }
     if (mc->cs_pass > 0 && n_log <= 6) {
@@ -12856,7 +12864,7 @@ static void cs_begin(moe_cache * mc) {
                 mc->cs_pass, k_last, (unsigned long long) mc->cs_n_pred, (unsigned long long) mc->cs_n_late, (unsigned long long) mc->cs_n_used,
                 mc->cs_n_used ? 100.0 * (double) mc->cs_n_listed / (double) mc->cs_n_used : 0.0, (unsigned long long) mc->cs_n_noids, (unsigned long long) mc->cs_n_steal);
     }
-    mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = 0;
+    mc->cs_n_up = mc->cs_n_cp = mc->cs_n_free = mc->cs_n_cold = mc->cs_n_done = mc->cs_n_ahead = mc->cs_n_hook = mc->cs_n_claim = mc->cs_n_claim_fut = 0;
     mc->cs_n_pred = mc->cs_n_late = mc->cs_n_used = mc->cs_n_listed = mc->cs_n_noids = mc->cs_n_steal = 0;
     g_cs_k_pass = g_cs_pred_built ? cs_k_call() : 0.0;
     k_last = g_cs_k_pass;
@@ -12938,6 +12946,8 @@ static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & j
         for (int c = 0; c < mc->n_links; ++c) {
             if ((pass == 0) != (c == k)) { continue; }
             size_t & nx = mc->cs_next[c];
+            size_t lead = SIZE_MAX;   // the card's next entry after the one needed now: its copies run over the compute before it (staged's second slot)
+            for (size_t q = must == SIZE_MAX ? SIZE_MAX : must + 1; q < mc->cs_order.size(); ++q) { if (csl(mc, mc->cs_order[q]).link == c) { lead = q; break; } }
             for (int n_other = 0; c == k || n_other < 1; ++n_other) {
                 while (nx < mc->cs_order.size() && csl(mc, mc->cs_order[nx]).link != c) { ++nx; }
                 if (nx >= mc->cs_order.size()) { mc->cs_why[c] = 2; break; }
@@ -12945,11 +12955,13 @@ static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & j
                 // the k arm: only an entry whose layer's ranking came back, its predicted experts (q1 alone when the blocks hold no more); else its split plans it
                 const std::vector<uint8_t> * sel = g_cs_k_pass > 0.0 ? cs_sel(mc, nx) : nullptr;
                 if (g_cs_k_pass > 0.0 && !sel) { mc->cs_why[c] = 1; break; }
-                bool ok = cs_plan(mc, nx, j.cps, j.from_done, sel);
+                // further ahead than the next entry: cheap blocks only, a layer still to come gives up nothing to it (it waits for computed layers' blocks or its turn)
+                const bool cheap = must == SIZE_MAX || (nx > must && nx != lead);
+                bool ok = cs_plan(mc, nx, j.cps, j.from_done, sel, false, cheap);
                 if (!ok && sel) {
                     std::vector<uint8_t> q1(*sel);
                     for (auto & x : q1) { x = x == 1; }
-                    ok = cs_plan(mc, nx, j.cps, j.from_done, &q1);
+                    ok = cs_plan(mc, nx, j.cps, j.from_done, &q1, false, cheap);
                 }
                 mc->cs_n_pred += sel ? j.cps.size() : 0;
                 if (!ok) {

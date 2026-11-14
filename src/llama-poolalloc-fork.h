@@ -85,6 +85,14 @@ static inline int32_t poolx_ring_window(const std::vector<int8_t> & rank, int32_
 // submissions then hold everyone's calls (2026-11-14, Qwen3.8 12k: 14 GB queued on one ring, the scheduler thread's launches sat 343 ms behind it).
 static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return depth > 0 && in_flight >= depth ? in_flight - depth + 1 : 0; }
 
+// staging=0 ring: what a block a stream entry may take holds (cs_plan's tiers): 0 free, 1 a layer's empty block, 2 an expert streamed this pass whose layer is computed,
+// 3 an expert cached before the pass whose layer is computed, 4 a cached expert of a layer still to come in this pass, 5 another class's bytes over nothing of a layer
+// to come, 6 another class's bytes over an expert of a layer to come, 7 a prediction giving way (the k arm's late fix). Costly (4, 6): that expert goes up again when its
+// layer comes (Qwen3.8 IQ4_XS 12k staging=0, 2026-11-14: 2825 of pass 1's 23013 blocks were layers ahead and 4510 were claims ranked before computed experts; 55.9 GB
+// uploaded against staged's 47.9). Rank: the order taken, cheap before costly; a costly block only for an entry needed now (cs_ahead).
+static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6; }
+static inline int  poolx_ring_rank(int tier) { static const int r[8] = { 0, 1, 2, 4, 5, 3, 6, 7 }; return tier >= 0 && tier < 8 ? r[tier] : 8; }
+
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
     for (const auto & sg : ap.segs) {
         const size_t end = sg.base + (size_t) sg.n * sg.B;

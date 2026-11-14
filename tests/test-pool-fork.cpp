@@ -758,12 +758,40 @@ static void test_regress_ring_depth() {
     report("the worker waits for its oldest job before it queues another", run.find("poolx_ring_retire(") != std::string::npos && w != std::string::npos && c != std::string::npos && w < c);
 }
 
+// staging=0 ring: which blocks a stream entry takes first. Qwen3.8 IQ4_XS 12k, 2 x 3090, build rel_moe_class, pass 1: 2825 of 23013 blocks held cached experts of
+// layers still to come and 4510 were other classes' bytes that could hold them too; each such expert went up twice (55.9 GB against staged's 47.9)
+static void test_regress_ring_costly() {
+    printf("Testing the ring's block order (an expert of a layer still to come goes up twice):\n");
+    bool order = true;
+    for (int t = 0; t < 8; ++t) {
+        for (int u = 0; u < 8; ++u) {
+            if (t != 7 && !poolx_ring_costly(t) && poolx_ring_costly(u) && poolx_ring_rank(t) >= poolx_ring_rank(u)) { order = false; }
+        }
+    }
+    report("every cheap block ranks before every costly one", order);
+    report("costly: a layer ahead's cached expert, another class's bytes over one", poolx_ring_costly(4) && poolx_ring_costly(6));
+    report("cheap: free, empty, computed in this pass, another class's bytes without one", !poolx_ring_costly(0) && !poolx_ring_costly(1) && !poolx_ring_costly(2) && !poolx_ring_costly(3) && !poolx_ring_costly(5));
+    report("free first, a prediction giving way last", poolx_ring_rank(0) == 0 && poolx_ring_rank(7) == 7);
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-moecache-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    const size_t a = src.find("\nstatic void cs_ahead(");
+    const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
+    const std::string ah = b == std::string::npos ? std::string() : src.substr(a, b - a);
+    report("an entry planned ahead of its need takes cheap blocks only", ah.find("nx > must") != std::string::npos && ah.find("cs_plan(") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
     test_regress_past_rows();
     test_regress_coalesced_ring();
     test_regress_ring_depth();
+    test_regress_ring_costly();
     test_block_sizing();
     test_lend_granularity();
     test_ledger_random();
