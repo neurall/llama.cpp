@@ -12829,12 +12829,15 @@ static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id,
 static void cs_begin(moe_cache * mc) {
     static const bool hooked = [] { ggml_sched_set_split_hook_fork(cs_split_cb); return true; }();   // in front of the ledger's or guard's hook (g_cs_hook_next)
     GGML_UNUSED(hooked);
+    const int64_t t_b0 = ggml_time_us();   // LLAMA_SPLIT_CTL_DEBUG=1: what the pass start waits for
     cs_drain(mc);
     {
         std::lock_guard<std::mutex> lk(mc->wmtx);
         for (int k = 0; k < MAX_LINKS; ++k) { g_cs_issued[k] = 0; }
     }
+    const int64_t t_b1 = ggml_time_us();
     std::lock_guard<std::mutex> lock(mc->mtx);
+    const int64_t t_b2 = ggml_time_us();
     static int n_log = 0;
     if (mc->cs_pass > 0 && (n_log < 6 || mc->cs_pass % 64 == 0)) {
         n_log++;
@@ -12903,6 +12906,8 @@ static void cs_begin(moe_cache * mc) {
         if (!ls.cs_done_ev) { ls.cs_done_ev = ggml_backend_event_new(mc->link_dev[ls.link]); }
         GGML_ASSERT(ls.ring_ev && ls.cs_done_ev && ring_backend(mc, ls.link) && "cstream: no events or upload stream");
     }
+    const int64_t t_b3 = ggml_time_us();
+    size_t n_ev = 0;
     // the call's first cstream pass: the ring reserve is the ring's, so a layer outside the pass drops what it caches there (its path may read the block while
     // the ring writes it; Qwen3.8: the last layer runs its output rows on the decode path, its 32 decode experts kept ring layer 30 from 512 blocks)
     if (!g_cs_live.load()) {
@@ -12911,7 +12916,7 @@ static void cs_begin(moe_cache * mc) {
             if (ps.ring_lo == 0) { continue; }
             for (int32_t b = ps.ring_lo; b < (int32_t) ps.owner.size(); ++b) {
                 const int32_t o = ps.owner[b];
-                if (o >= 0 && mc->cs_pos[o] < 0 && mc->layers[o].slot_expert[b] >= 0) { evict_slot(mc, mc->layers[o], b); any = true; }
+                if (o >= 0 && mc->cs_pos[o] < 0 && mc->layers[o].slot_expert[b] >= 0) { evict_slot(mc, mc->layers[o], b); any = true; n_ev++; }
             }
         }
         if (any) {
@@ -12920,6 +12925,7 @@ static void cs_begin(moe_cache * mc) {
         }
     }
     mc->cs_pass++;
+    const int64_t t_b4 = ggml_time_us();
     for (int k = 0; k < mc->n_links; ++k) {
         mc->cs_next[k]    = 0;
         mc->cs_rd[k]      = 0;
@@ -12935,6 +12941,11 @@ static void cs_begin(moe_cache * mc) {
         ggml_backend_event_record(mc->cs_start_ev[k], mc->link_be[k]);
     }
     g_cs_live = true;
+    static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
+    if (dbg) {
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u begins: drain %.1f ms, lock %.1f ms, tables %.1f ms, first-pass evictions %.1f ms (%zu blocks), link syncs %.1f ms\n", mc->cs_pass,
+                (t_b1 - t_b0) / 1e3, (t_b2 - t_b1) / 1e3, (t_b3 - t_b2) / 1e3, (t_b4 - t_b3) / 1e3, n_ev, (ggml_time_us() - t_b4) / 1e3);
+    }
 }
 
 // the uploads that can start now (cache lock held). Each card's ring runs ahead over its own layers (one cursor over all layers held card 1's uploads back until card 0's
@@ -13120,7 +13131,10 @@ static void cs_end(moe_cache * mc) {
 void llama_moe_cache_pp_freeze_fork() {
     moe_cache * mc = g_cache;
     if (mc && g_pp_cstream_built) {
+        const int64_t t0 = ggml_time_us();
         pp_settle(mc);
+        static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
+        if (dbg) { LLAMA_LOG_WARN("moe-cache: cstream: settle %.1f ms (decode uploads in flight, ring streams)\n", (ggml_time_us() - t0) / 1e3); }
         cs_begin(mc);
         return;
     }

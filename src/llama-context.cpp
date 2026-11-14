@@ -3782,7 +3782,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                     ctl_changed ? " (the expert counts changed)" : ds_changed ? " (one card / split choice changed)" : "");
         }
     }
+    const int64_t t_fill0 = ggml_time_us();   // fork: LLAMA_SPLIT_CTL_DEBUG=1 prints the steps between the built graph and its start
     moe_mirror_fill();   // fork: --moe mirror-pool: the dense split's copies, when the region lost them since they were last filled
+    const int64_t t_in0 = ggml_time_us();
 
     // set the input data for the input tensors
     {
@@ -3801,7 +3803,16 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         fork_idx_check(sched.get(), res->get_gf(), cparams.ctx_other ? "draft" : "target", n_graphs[this]++);
     }
 
+    const int64_t t_fz0 = ggml_time_us();
     llama_moe_cache_pp_freeze_fork();   // a graph of the prompt mix: both cards' view of the home card's experts is fixed for the pass
+    {
+        static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
+        if (dbg && ubatch.n_tokens >= 32) {
+            const int64_t t_fz1 = ggml_time_us();
+            LLAMA_LOG_WARN("prefill split: graph of %u tokens starts: copy fill %.1f ms, inputs %.1f ms, freeze %.1f ms\n", ubatch.n_tokens,
+                    (t_in0 - t_fill0) / 1e3, (t_fz0 - t_in0) / 1e3, (t_fz1 - t_fz0) / 1e3);
+        }
+    }
     if (cparams.moe_cache) { llama_moe_cache_verify_fork(sched.get(), (int32_t) ubatch.n_tokens); }   // --moe verify: the cached experts against the host's copy
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
