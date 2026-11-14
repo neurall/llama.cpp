@@ -2515,6 +2515,22 @@ double llama_dsplit_card_f_fork(int il, int64_t n_tokens, ggml_backend_dev_t dev
     return llama_dsplit_plan_helper_f_fork(il, n_tokens);   // --moe split-balance=0: the layer tuner's
 }
 
+// whether a split pass of n_tokens gives a helper card experts (the live balance's shares, else the layer tuner's K): the two layouts a card's graph has
+// (llama-moecache-fork.cpp keeps their sizes apart for the pass cap)
+bool llama_dsplit_helpers_experts_fork(int64_t n_tokens) {
+    const int mode = llama_dsplit_experts_mode_fork();
+    if (mode >= 0) { return mode == 1; }
+    std::lock_guard<std::mutex> lk(g_plan_mu);
+    if (g_bal_used) {
+        auto bt = g_bal.find(dsplit_bucket_of(n_tokens));
+        if (bt == g_bal.end()) { return false; }
+        for (size_t i = 0; i + 1 < bt->second.f.size(); ++i) { if (bt->second.f[i] > 0.0) { return true; } }   // the last card is the expert card
+        return false;
+    }
+    auto tt = g_tune.find(dsplit_bucket_of(n_tokens));
+    return tt != g_tune.end() && tt->second.K > 0;
+}
+
 double llama_dsplit_plan_helper_f_fork(int il, int64_t n_tokens) {
     const int mode = llama_dsplit_experts_mode_fork();
     if (mode == 0) { return 0.0; }    // dense only

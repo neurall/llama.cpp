@@ -406,6 +406,9 @@ struct moe_cache {
         std::map<int32_t, size_t> need_tok;     // the most a graph of n tokens borrowed from the start of the buffer (graph + scratch + staging slots)
         std::map<int32_t, size_t> need_cells;   // the cells in use when that most was measured (the graph's inputs grow with them: need_at_cells)
         std::set<int32_t>     need_est;         // the sizes of need_tok that are start-up estimates (measure-only reserves), not graphs that ran: a lend replaces them
+        // split graphs that ran, by layout (0: the helpers compute no experts, 1: some): the most a graph of n tokens borrowed and the cells it ran at. The pass
+        // cap fits the layout that runs next; one line through both (need_tok keeps the larger per size) gave CUDA1 a fixed part of 1.8 GB and a cap of 64
+        std::map<int32_t, std::pair<size_t, size_t>> need_lay[2];
         double                grow_p0 = 0.0, grow_p1 = 0.0;   // a graph's bytes per token at kv_step cells and at grow_c1 cells (start-up probes, llama_moe_cache_note_graph_cells_fork)
         size_t                grow_c1 = 0;
         size_t                kv_blocks = 0;    // blocks under the KV zone now
@@ -5793,9 +5796,10 @@ static std::atomic<double> g_mask_bpc { 0.0 };
 void llama_moe_cache_mask_bpc_fork(double bytes_per_token_cell) { g_mask_bpc.store(std::max(0.0, bytes_per_token_cell)); }
 static std::atomic<bool> g_mask_tail { false };   // a graph's mask covers only its pass's own cells (llama_kv_cache::kq_mask_k0)
 void llama_moe_cache_mask_tail_fork() { g_mask_tail.store(true, std::memory_order_relaxed); }
-static size_t need_at_cells(const moe_cache::alias_pool & ap, int32_t n_tokens, size_t need, size_t cells) {
+bool llama_dsplit_helpers_experts_fork(int64_t n_tokens);   // llama-dsplit-fork.cpp: a split pass of n_tokens gives the helpers experts (the graph's layout)
+static size_t need_at_cells(const moe_cache::alias_pool & ap, int32_t n_tokens, size_t need, size_t cells, size_t c0_at = SIZE_MAX) {   // c0_at: the cells it was measured at (default: need_cells)
     const auto it = ap.need_cells.find(n_tokens);
-    const size_t c0 = it != ap.need_cells.end() ? it->second : cells;
+    const size_t c0 = c0_at != SIZE_MAX ? c0_at : it != ap.need_cells.end() ? it->second : cells;
     size_t r = need;
     if (cells > c0) {
         const double pc = (double) (n_tokens < 64 ? ap.kv_lend_pc_dec : ap.kv_lend_pc);   // the f16 copies of quantized K/V
@@ -6700,6 +6704,9 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
             const int64_t d = kv.first < 64 ? (int64_t) cp.pcd - (int64_t) ap.kv_lend_pc_dec : (int64_t) cp.pc - (int64_t) ap.kv_lend_pc;
             kv.second = (size_t) std::max<int64_t>(0, (int64_t) kv.second + d * c0);
         }
+        for (auto & lay : ap.need_lay) {   // (prompt graphs only)
+            for (auto & kv : lay) { kv.second.first = (size_t) std::max<int64_t>(0, (int64_t) kv.second.first + ((int64_t) cp.pc - (int64_t) ap.kv_lend_pc) * (int64_t) kv.second.second); }
+        }
         ap.dec_need = (size_t) std::max<int64_t>(0, (int64_t) ap.dec_need + ((int64_t) cp.pcd - (int64_t) ap.kv_lend_pc_dec) * (int64_t) ap.dec_cells);
         ap.kv_fixed = cp.F; ap.kv_row = cp.R; ap.kv_lend_pc = cp.pc; ap.kv_lend_pc_dec = cp.pcd;
         // the zone's new extent: blocks it left (and the staging) back to the experts
@@ -7358,6 +7365,10 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
             }
             if (stage_off >= nt) { ap.need_cells[n_tokens] = cells_now; }
             nt = std::max(nt, stage_off);
+            if (n_tokens >= 64 && llama_dsplit_cur_fork() == 1) {   // a split graph: its size under its layout too (need_lay)
+                auto & e = ap.need_lay[llama_dsplit_helpers_experts_fork(n_tokens) ? 1 : 0][n_tokens];
+                if (stage_off >= e.first) { e = { stage_off, cells_now }; }
+            }
         }
         // the lend takes whole blocks: a graph of need_b bytes holds ceil(need_b / bmax) * bmax of the buffer (the largest size class), so it reaches the KV zone when THAT passes the
         // zone's start, not need_b (MiMo: a 10.8 MB lend took the 9.2 MB blocks 0 and 1, up to 18.3 MB, while the zone began at 12.6 MB inside block 1 and was never claimed)
@@ -15824,8 +15835,17 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     if (ap.need_tok.empty()) { return seeded(); }
     // every measured size at the cells this call ends at (need_at_cells): the fit below then includes the masks' growth with the context
     const bool real_only = need_real_only(ap);   // (need_pts: the start-up estimates leave the fit once a prompt-sized pass ran)
-    const std::vector<std::pair<int32_t, size_t>> pts = need_pts(ap, cells_end);
+    std::vector<std::pair<int32_t, size_t>> pts = need_pts(ap, cells_end);
     if (pts.empty()) { return seeded(); }
+    // a split call: the sizes of the layout its passes run with (the helpers' experts or not, as the split controller has them for a pass of ub tokens), when two
+    // of them ran; need_tok keeps the larger of both per size, and one line through two layouts' sizes made the fixed part 1.8 GB (staged 128k: cap 64, 666 t/s)
+    const bool lay_fit = llama_dsplit_cur_fork() == 1 && ap.need_lay[llama_dsplit_helpers_experts_fork((int64_t) ub) ? 1 : 0].size() >= 2;
+    if (lay_fit) {
+        pts.clear();
+        for (const auto & kv : ap.need_lay[llama_dsplit_helpers_experts_fork((int64_t) ub) ? 1 : 0]) {
+            pts.push_back({ kv.first, need_at_cells(ap, kv.first, kv.second.first, cells_end, kv.second.second) });
+        }
+    }
     // graph bytes = a + b x tokens through every measured size at the cells this call ends at (ppx_lend_line: least squares, the slope never above the least
     // bytes per token measured; GLM 3.0's passes of 8995 and 8973 tokens, then 6552 and 6554, gave slopes of noise: passes capped to 96 tokens, 239 of them)
     double a = 0.0, b = 0.0;
@@ -15840,7 +15860,13 @@ static uint32_t pp_cap_to_pool(const moe_cache::alias_pool & ap, uint32_t n_prom
     unsigned cap = kvz_pass_cap(ap, cells_end, ub, a, b, pad, ap.mirror_b);
     // a graph measured at this very size is the truth, not the line (find_slot checks with it): Qwen3.8 staging=0, the 5408-token graph measured 3811 MiB, the
     // line said less, the pass ran at 8312 cells and its KV did not fit ("failed to prepare attention ubatches"). The line moves up through that point.
-    if (const auto ex = ap.need_tok.find((int32_t) cap); ex != ap.need_tok.end() && !(real_only && ap.need_est.count(ex->first))) {
+    if (lay_fit) {   // (the layout's own size at exactly this many tokens)
+        const auto & lay = ap.need_lay[llama_dsplit_helpers_experts_fork((int64_t) ub) ? 1 : 0];
+        if (const auto ex = lay.find((int32_t) cap); ex != lay.end()) {
+            const double m = (double) need_at_cells(ap, ex->first, ex->second.first, cells_end, ex->second.second);
+            if (m > a + b * (double) cap) { cap = kvz_pass_cap(ap, cells_end, ub, m - b * (double) cap, b, pad, ap.mirror_b); }
+        }
+    } else if (const auto ex = ap.need_tok.find((int32_t) cap); ex != ap.need_tok.end() && !(real_only && ap.need_est.count(ex->first))) {
         const double m = (double) need_at_cells(ap, ex->first, ex->second, cells_end);
         if (m > a + b * (double) cap) { cap = kvz_pass_cap(ap, cells_end, ub, m - b * (double) cap, b, pad, ap.mirror_b); }
     }
