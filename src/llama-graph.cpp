@@ -2757,15 +2757,19 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         static struct { const void * g; ggml_tensor * cur[256]; int il; } hist = { nullptr, {}, -2 };
         // the k arm on the stream into the cache's blocks (--moe staging=0) reads the same rankings: the cache, not the scheduler (llama-moecache-fork.cpp cs_sel)
         const bool cs_pred = cparams.moe_cache && llama_moe_cache_cs_pred_fork();
+        // the router's weight and input: a model that computes its router itself passes the logits (Kimi K3.1's latent MoE: the router reads the full-width input,
+        // the experts the latent one, gate_inp is null); without this K3 prompts built no ranking and the k arm uploaded every expert late (2026-11-15)
+        ggml_tensor * rw = gate_inp, * rin = cur;
+        if (!rw && probs_in && probs_in->op == GGML_OP_MUL_MAT) { rw = probs_in->src[0]; rin = probs_in->src[1]; }
         if ((pred_k > 0 || ggml_backend_pred_get_fork() > 0.0 || cs_pred) && il >= 0 && il < 256) {
             if (hist.g != this || il == 0) { hist.g = this; std::fill(std::begin(hist.cur), std::end(hist.cur), nullptr); }
             for (int d = 0; d < pred_depth; ++d) {
                 const int from = d == 0 ? std::max(il - pred_lag, 0) : il - (pred_lag + d);
                 ggml_tensor * src = il > 0 && from >= 0 ? hist.cur[from] : nullptr;
-                if (src && gate_inp && n_tokens > 1 && selected_experts_in == nullptr &&
+                if (src && rw && src->ne[0] == rw->ne[0] && n_tokens > 1 && selected_experts_in == nullptr &&
                         (cs_pred || !(cparams.moe_cache && n_tokens <= llama_moe_cache_max_batch_fork()))) {   // a pass on the cache chain computes with the cache, no staging
                     const int n0 = ggml_graph_n_nodes(gf);
-                    ggml_tensor * pl = ggml_mul_mat(ctx0, gate_inp, src);   // [n_expert, n_tokens]
+                    ggml_tensor * pl = ggml_mul_mat(ctx0, rw, src);   // [n_expert, n_tokens]
                     if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID) { pl = ggml_sigmoid(ctx0, pl); }
                     if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS) { pl = ggml_sqrt(ctx0, ggml_softplus(ctx0, pl)); }   // the bias adds to these, as in the real selection below
                     if (exp_probs_b) { pl = ggml_add(ctx0, pl, exp_probs_b); }
@@ -2780,7 +2784,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                     if (at >= 0 && !getenv("GGML_PRED_STAY")) { std::rotate(nodes + at + 1, nodes + n0, nodes + n1); }   // the new nodes read only src and weights
                 }
             }
-            hist.cur[il] = cur;
+            hist.cur[il] = rin;
         }
     }
 
