@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+qni4-st,qn_iq4xs,3,pf12k4k,4096,"--moe staging=1",--env PERF_LEDGER=0
+qni4-ns,qn_iq4xs,3,pf12k4k,4096,,--env PERF_LEDGER=0
+ds-st,ds,2,pf12k4k,4096,"--moe staging=1",--env PERF_LEDGER=0
