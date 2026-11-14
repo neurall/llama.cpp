@@ -695,10 +695,40 @@ static void test_regress_past_rows() {
     report("cs_copy writes a run's past bytes with one strided copy", b != std::string::npos && src.substr(a, b - a).find("poolx_past_rows(") != std::string::npos);
 }
 
+// staging=0, a layer's uploads coalesced (user 2026-11-14: "sort and coalesce and upload moes needed for compute as one n size class coalesced upload, after which upload
+// rest to overlap with compute"). Qwen3.8 IQ4_XS 12k on 2 x 3090 (nsys): the tiered block pick scattered a layer over the class (8323 runs for 22894 experts a pass), the
+// scheduler thread issued every layer its blocks allowed before the pass's first kernel and sat 3.4 s of a request in copy calls with the queues full.
+static void test_regress_coalesced_ring() {
+    printf("Testing the coalesced ring (one run of blocks a layer, copies on the card's upload worker):\n");
+    const std::vector<uint8_t> all(10, 1), holes = { 1, 1, 0, 1, 1, 1, 1, 0, 1, 1 };
+    report("free class: the window starts at the cursor", poolx_first_window(all, 3, 4) == 3);
+    report("a window never wraps the class end", poolx_first_window(all, 8, 4) == 0);
+    report("holes: the first run long enough from the cursor", poolx_first_window(holes, 0, 4) == 3 && poolx_first_window(holes, 8, 2) == 8 && poolx_first_window(holes, 8, 3) == 3);
+    report("no run long enough: none (the tiered pick takes over)", poolx_first_window(holes, 0, 5) == -1 && poolx_first_window(all, 0, 11) == -1);
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-moecache-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    auto body = [&](const char * head) { const size_t a = src.find(head); const size_t b = a == std::string::npos ? a : src.find("\n}\n", a); return b == std::string::npos ? std::string() : src.substr(a, b - a); };
+    report("cs_plan places a layer in one window", body("\nstatic bool cs_plan(").find("poolx_first_window(") != std::string::npos);
+    const std::string lay = body("\nstatic void cs_layer("), rel = body("\nstatic void cs_release(");
+    report("the hooks hand their copies to the cards' workers", lay.find("cs_issue(") != std::string::npos && rel.find("cs_issue(") != std::string::npos
+           && lay.find("cs_copy(") == std::string::npos && rel.find("cs_copy(") == std::string::npos && body("\nstatic void cs_issue(").find("g_cs_q[") != std::string::npos);
+    report("a layer's kernels wait until its own copies are queued", lay.find("cs_wait_issued(") != std::string::npos && lay.find("cs_wait_issued(") < lay.find("ggml_backend_event_wait(cbe, ls.ring_ev)"));
+    report("the upload worker takes ring jobs first", src.find("if (cs_w && cs_worker_has(cs_link)) { cs_worker_run(") != std::string::npos);
+    report("pass start, pass end and a lend wait until the workers copied everything", body("\nstatic void cs_begin(").find("cs_drain(") != std::string::npos
+           && body("\nstatic void cs_end(").find("cs_drain(") != std::string::npos && body("\nbool llama_moe_cache_alias_fork(").find("cs_drain(") != std::string::npos);
+    report("the JIT path's pinned slots are taken under one lock", body("\nstatic void cs_copy(").find("jit_mu") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
     test_regress_past_rows();
+    test_regress_coalesced_ring();
     test_block_sizing();
     test_lend_granularity();
     test_ledger_random();

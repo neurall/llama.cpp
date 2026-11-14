@@ -553,6 +553,7 @@ struct moe_cache {
     bool                     cs_masked = false;   // a pass of this call masked device tables to their range: the call's end writes every layer's table again
     uint64_t                 cs_n_direct = 0, cs_n_map = 0;   // the pass so far: slices the RAM pool refused, read O_DIRECT into a pinned slot; slices copied from the mapping (should stay 0)
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
+    uint64_t                 cs_n_win = 0, cs_n_ent = 0;   // the pass so far: entries placed in one run of blocks (cs_plan's window), entries that uploaded anything
     uint64_t                 cs_n_pred = 0, cs_n_late = 0, cs_n_used = 0, cs_n_listed = 0, cs_n_noids = 0, cs_n_steal = 0;   // the k arm, the pass so far: uploaded by the rankings, by the late fix; experts the entries used, of those in their list; entries without ids (whole range); predicted blocks the late fix took back
     uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
@@ -646,6 +647,7 @@ struct moe_cache {
     struct jit_slot { ggml_backend_buffer_t buf = nullptr; ggml_backend_event_t ev = nullptr; ggml_backend_t be = nullptr; };
     std::vector<jit_slot> jit_ring;
     size_t jit_ring_i = 0;
+    std::mutex jit_mu;   // a slot taken, read into and its copies queued by one thread at a time: the JIT path's (scheduler) and the ring's (the card's upload worker)
     uint64_t jit_rd_n = 0, jit_rd_b = 0, jit_rd_us = 0, jit_map_n = 0;   // per request: slices read O_DIRECT for JIT uploads, their bytes and time; slices that had to come from the mapping
     double   jit_rd_gbs = 0;   // the measured O_DIRECT rate of those reads (EMA): the planner's upload cost of a mapped expert when it is below the link's rate
     int rd_threads = 8;   // --moe read-threads: at 1 MiB blocks, queue depth 8 gave 5.5 GB/s, 2 gave 3.3 (fio on this file)
@@ -7259,9 +7261,13 @@ void llama_moe_cache_alias_refused_fork(uint32_t n_tokens) {
 }
 
 static void cs_shadow_drop(moe_cache * mc);   // below
+static void cs_drain(moe_cache * mc);         // below: the cards' upload workers have copied every ring job
+static bool cs_worker_has(int link);
+static void cs_worker_run(moe_cache * mc, int link, std::unique_lock<std::mutex> & lk);
 bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
     g_alias_err.clear();
     moe_cache * mc = g_cache;
+    if (mc && g_cs_live.load()) { cs_drain(mc); }   // no ring copy may still be queued for a block this lend or its zone hands out
     if (mc && !mc->shadows.empty() && g_cs_live.load()) {   // the last pass's shadow blocks go back before this graph's lend and zone (cs_shadow_drop)
         std::lock_guard<std::mutex> lk(mc->mtx);
         cs_shadow_drop(mc);
@@ -10936,15 +10942,19 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         }
                         return bg;
                     };
+                    // the first worker of each link also copies the staging=0 ring's jobs of its card, ahead of every other job (cs_issue)
+                    const int  cs_link = link >= 0 ? link : 0;
+                    const bool cs_w    = (int) w < std::max(1, mc->n_links);
                     for (;;) {
                         const bool reading = g_hpend_n.load(std::memory_order_acquire) > 0;   // read before mine(): a load that ends after it is seen next round
-                        if (mc->stop || mine() != mc->todo.end()) { break; }
+                        if (mc->stop || (cs_w && cs_worker_has(cs_link)) || mine() != mc->todo.end()) { break; }
                         // nobody notifies when a buffer's read lands: looked at again every 20 ms while a load reads
                         if (reading) { mc->wcv.wait_for(lk, std::chrono::milliseconds(20)); } else { mc->wcv.wait(lk); }
                     }
                     if (mc->stop) {
                         return;
                     }
+                    if (cs_w && cs_worker_has(cs_link)) { cs_worker_run(mc, cs_link, lk); continue; }
                     auto it = mine();
                     j = *it;
                     mc->todo.erase(it);
@@ -11725,6 +11735,8 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             for (int k = 0; k < 3; ++k) {
                 const size_t sz = srcs[k]->nb[2];
                 const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;   // the pool's pinned block, not the mapping (see the slot path below)
+                std::unique_lock<std::mutex> jl(mc->jit_mu, std::defer_lock);
+                if (!rp) { jl.lock(); }
                 const char * dr = rp ? nullptr : jit_direct_src(mc, be, srcs[k], (size_t) id*sz, sz, (int) ids->ne[0]);   // else an O_DIRECT read into a pinned slot
                 ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : dr ? dr : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) ps*dsts[k]->nb[2], sz);
                 if (dr) { jit_direct_done(mc, be); }
@@ -11792,6 +11804,8 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
             const size_t pb = expert_past(mc, ls, k, id, srcs[k], from);
             const bool past_next = pb > 0 && from == (const char *) srcs[k]->data + (size_t) (id + 1) * sz;   // the bytes past the slice are the next expert's: in the file right after it, read along
             const char * rp = mc->rp_on ? ggml_rampool_use_fork(srcs[k], id) : nullptr;
+            std::unique_lock<std::mutex> jl(mc->jit_mu, std::defer_lock);
+            if (!rp) { jl.lock(); }
             const char * dr = rp ? nullptr : jit_direct_src(mc, be, srcs[k], (size_t) id*sz, sz + (past_next ? pb : 0), (int) ids->ne[0]);   // else an O_DIRECT read into a pinned slot
             ggml_backend_tensor_set_async(be, dsts[k], rp ? rp : dr ? dr : (const char *) srcs[k]->data + (size_t) id*sz, (size_t) slot*dsts[k]->nb[2], sz);
             if (pb) {
@@ -12509,8 +12523,34 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
     // layer, its own writes of this pass already computed, another class's bytes, then cached experts already computed in this pass, last the experts of layers still to
     // come (they come back when their turn comes; "evict past not future", user 2026-11-12). Same tier: the cursor's order, what was written longest ago first.
     static const int tier_rank[8] = { 0, 1, 2, 5, 6, 3, 4, 7 };
-    std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return tier_rank[x.tier] < tier_rank[y.tier]; });
-    if (c.size() > want.size()) { c.resize(want.size()); }
+    // The stream (not the k arm's lists or its late fix, not the mix): the layer's experts into ONE run of blocks, the first run from the cursor long enough, so each
+    // tensor goes up in as few copies as its cached experts allow (user 2026-11-14: "sort and coalesce and upload moes needed for compute as one n size class coalesced
+    // upload"; scattered picks made 8323 copies of 22894 experts a Qwen3.8 12k pass). The run may take cached experts already computed in this pass (rank 5) and,
+    // only when the tiered pick would too, those of the layers to come; else the tiered pick below.
+    bool win = false;
+    if (!sel && !late && mix == 0 && c.size() >= want.size() && nr > 0) {
+        std::vector<int32_t> ci((size_t) nr, -1);   // block (from the ring's start) -> its candidate
+        int n_keep = 0;   // candidates that are no layer to come's
+        for (size_t x = 0; x < c.size(); ++x) { ci[(size_t) (c[x].b - r0)] = (int32_t) x; n_keep += tier_rank[c[x].tier] <= 5; }
+        for (int lim : { 3, 5, 6 }) {
+            if (lim == 6 && n_keep >= (int) want.size()) { break; }
+            std::vector<uint8_t> ok((size_t) nr);
+            for (int32_t j = 0; j < nr; ++j) { ok[(size_t) j] = ci[(size_t) j] >= 0 && tier_rank[c[(size_t) ci[(size_t) j]].tier] <= lim; }
+            const int32_t j0 = poolx_first_window(ok, ps.cs_cur, (int32_t) want.size());
+            if (j0 < 0) { continue; }
+            std::vector<cand> run;
+            for (int32_t j = j0; j < j0 + (int32_t) want.size(); ++j) { run.push_back(c[(size_t) ci[(size_t) j]]); }
+            c.swap(run);
+            win = true;
+            break;
+        }
+    }
+    if (!win) {
+        std::stable_sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return tier_rank[x.tier] < tier_rank[y.tier]; });
+        if (c.size() > want.size()) { c.resize(want.size()); }
+    }
+    mc->cs_n_win += win;
+    mc->cs_n_ent++;
     // late (the k arm's late fix, at the entry's own split): with every block taken, the predictions give way, those of the entries after this one first (the
     // furthest first; their turn plans them again), then this entry's own its tokens do not use. Their copies are on the same ring stream, so the late copies
     // land after them, and no kernel read them yet. The staged k arm had its layer's staging slots for this; on the ring, the layers ahead held all 66 blocks
@@ -12644,6 +12684,8 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
         for (int k = 0; k < 3; ++k) {
             const size_t sz = srcs[k]->nb[2], B = dsts[k]->nb[2];
             const char * rpp = rp ? ggml_rampool_use_fork(srcs[k], cps[i].e) : nullptr;   // shortcut: the pool block is not held until the copy lands (no pool eviction while it fits in RAM)
+            std::unique_lock<std::mutex> jl(mc->jit_mu, std::defer_lock);
+            if (rp && !rpp) { jl.lock(); }
             // a slice the pool refused (n is 1 with the pool): an O_DIRECT read into one of the JIT path's pinned slots, with the bytes past it when they are the next
             // expert's, never the mapping (user 2026-11-13: misses are read from the SSD and kept in RAM only if they earn their place)
             const char * nx = nullptr;
@@ -12697,22 +12739,79 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
     ggml_backend_event_record(ls.ring_ev, rb);
 }
 
+struct cs_job { size_t li; std::vector<cs_cp> cps; bool from_done; size_t done_at; };
+// The ring's copies go up on the card's upload worker (task #325; nsys Qwen3.8 12k on 2 x 3090, 2026-11-14: the scheduler thread sat 3.4 s of a request in copy calls with
+// the queues full, and the kernels it would have queued meanwhile waited): per link the planned jobs in order, whether one is being copied, and 1 + the last position
+// whose copies and ready event are queued (a layer's hook waits for its own entry, cs_wait_issued). wmtx guards all three. The k arm copies on the scheduler thread
+// (its late fix plans entries again that it planned before); --moe cs-worker=0: every copy there, as before.
+static std::deque<cs_job>      g_cs_q[MAX_LINKS];
+static bool                    g_cs_busy[MAX_LINKS];
+static size_t                  g_cs_issued[MAX_LINKS];
+static std::condition_variable g_cs_icv;
+static bool cs_async(const moe_cache * mc) {
+    static const bool on = [] { const char * v = moe_opt("cs-worker"); return !v || atoi(v) != 0; }();
+    return on && g_cs_k_pass <= 0.0 && !mc->workers.empty();
+}
+static bool cs_worker_has(int link) { return link >= 0 && link < MAX_LINKS && !g_cs_q[link].empty(); }   // wmtx held
+static void cs_worker_run(moe_cache * mc, int link, std::unique_lock<std::mutex> & lk) {   // wmtx held on entry and on return
+    cs_job j = std::move(g_cs_q[link].front());
+    g_cs_q[link].pop_front();
+    g_cs_busy[link] = true;
+    lk.unlock();
+    cs_copy(mc, j.li, j.cps, j.from_done, j.done_at);
+    lk.lock();
+    g_cs_busy[link] = false;
+    const int32_t q = j.li < mc->cs_pos.size() ? mc->cs_pos[j.li] : -1;
+    if (q >= 0) { g_cs_issued[link] = std::max(g_cs_issued[link], (size_t) q + 1); }
+    g_cs_icv.notify_all();
+}
+static void cs_issue(moe_cache * mc, std::vector<cs_job> & jobs) {   // no cache lock
+    if (jobs.empty()) { return; }
+    if (!cs_async(mc)) {
+        for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(mc->wmtx);
+        for (auto & j : jobs) { g_cs_q[csl(mc, j.li).link].push_back(std::move(j)); }
+    }
+    mc->wcv.notify_all();
+}
+static void cs_wait_issued(moe_cache * mc, int link, size_t p) {   // entry p's kernels are queued next: its copies and its ready event must be queued before them
+    std::unique_lock<std::mutex> lk(mc->wmtx);
+    g_cs_icv.wait(lk, [&] { return g_cs_issued[link] > p || mc->stop; });
+}
+static void cs_drain(moe_cache * mc) {   // every planned job copied: a pass's start and end, a lend
+    std::unique_lock<std::mutex> lk(mc->wmtx);
+    g_cs_icv.wait(lk, [&] {
+        if (mc->stop) { return true; }
+        for (int k = 0; k < MAX_LINKS; ++k) { if (!g_cs_q[k].empty() || g_cs_busy[k]) { return false; } }
+        return true;
+    });
+}
+
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid);   // below
 
 // before a graph of a cstream call runs (pp_freeze, after pp_settle): the pass's layer order, the events, the upload streams' start. Nothing is copied here.
 static void cs_begin(moe_cache * mc) {
     static const bool hooked = [] { ggml_sched_set_split_hook_fork(cs_split_cb); return true; }();   // in front of the ledger's or guard's hook (g_cs_hook_next)
     GGML_UNUSED(hooked);
+    cs_drain(mc);
+    {
+        std::lock_guard<std::mutex> lk(mc->wmtx);
+        for (int k = 0; k < MAX_LINKS; ++k) { g_cs_issued[k] = 0; }
+    }
     std::lock_guard<std::mutex> lock(mc->mtx);
     static int n_log = 0;
     if (mc->cs_pass > 0 && (n_log < 6 || mc->cs_pass % 64 == 0)) {
         n_log++;
-        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies: %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of layers ahead, %llu claimed from other size classes; slices the RAM pool refused: %llu read O_DIRECT into pinned slots, %llu from the mapping\n",
-                mc->cs_pass, (unsigned long long) mc->cs_n_up, (unsigned long long) mc->cs_n_cp, (unsigned long long) mc->cs_n_free, (unsigned long long) mc->cs_n_cold,
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu experts into blocks in %llu copies (%llu of %llu entries in one run of blocks, copies on %s): %llu free or empty, %llu streamed this pass, %llu cached before it, %llu of layers ahead, %llu claimed from other size classes; slices the RAM pool refused: %llu read O_DIRECT into pinned slots, %llu from the mapping\n",
+                mc->cs_pass, (unsigned long long) mc->cs_n_up, (unsigned long long) mc->cs_n_cp, (unsigned long long) mc->cs_n_win, (unsigned long long) mc->cs_n_ent,
+                cs_async(mc) ? "the cards' upload workers" : "the scheduler thread", (unsigned long long) mc->cs_n_free, (unsigned long long) mc->cs_n_cold,
                 (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim,
                 (unsigned long long) mc->cs_n_direct, (unsigned long long) mc->cs_n_map);
     }
-    mc->cs_n_direct = mc->cs_n_map = 0;
+    mc->cs_n_direct = mc->cs_n_map = mc->cs_n_win = mc->cs_n_ent = 0;
     if (mc->cs_pass > 0 && mc->cs_n_hook != mc->cs_order.size()) {   // a layer whose split did not start at its table read ran without waiting for its uploads
         LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu of %zu layers met their split hook: the others computed without waiting for their experts\n",
                 mc->cs_pass, (unsigned long long) mc->cs_n_hook, mc->cs_order.size());
@@ -12798,7 +12897,6 @@ static void cs_begin(moe_cache * mc) {
     g_cs_live = true;
 }
 
-struct cs_job { size_t li; std::vector<cs_cp> cps; bool from_done; size_t done_at; };
 // the uploads that can start now (cache lock held). Each card's ring runs ahead over its own layers (one cursor over all layers held card 1's uploads back until card 0's
 // ring reached its last layers: on a layer split card 1's link started 0.5 s before its turn, Qwen3.8 12k 2 x 3090, 2026-11-12): card k's first, as far as its blocks
 // allow; another card's one layer per call, so a layer whose experts the RAM pool still reads from the SSD does not hold this card's next split back for long.
@@ -12899,8 +12997,10 @@ static void cs_layer(moe_cache * mc, ggml_backend_t cbe, int il, int shadow) {  
             cs_ahead(mc, k, p, jobs);
         }
     }
-    for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
+    const bool async = cs_async(mc);
+    cs_issue(mc, jobs);
     layer_state & ls = csl(mc, li);
+    if (async) { cs_wait_issued(mc, ls.link, (size_t) mc->cs_pos[li]); }
     ggml_backend_event_wait(cbe, ls.ring_ev);   // its experts and table before its kernels
     std::lock_guard<std::mutex> lock(mc->mtx);
     for (int32_t b : ls.ring_slots) { ls.slot_in_flight[b] = false; }
@@ -12924,7 +13024,7 @@ static void cs_release(moe_cache * mc, ggml_backend_t cbe) {
         mc->cs_hook_us[k] = ggml_time_us();
         cs_ahead(mc, k, SIZE_MAX, jobs);
     }
-    for (const auto & j : jobs) { cs_copy(mc, j.li, j.cps, j.from_done, j.done_at); }
+    cs_issue(mc, jobs);
 }
 
 static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
@@ -12940,6 +13040,7 @@ static void cs_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id,
 // the end of a prompt call: the last pass's kernels done, the tables of every layer the passes changed written (flush_tables waited for this)
 static void cs_end(moe_cache * mc) {
     if (!g_cs_live.exchange(false)) { return; }
+    cs_drain(mc);
     g_cs_k_pass = 0.0;
     for (int k = 0; k < mc->n_links; ++k) {
         mc->cs_why[k] = 0;

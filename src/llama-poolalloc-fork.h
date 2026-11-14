@@ -55,6 +55,17 @@ static inline poolx_block poolx_block_class(const poolx_slice s[3]) {
 // next expert exists go up as one strided copy (source pitch the slice, destination pitch the block); the tensor's last expert, when in the run, reads zeros past it.
 static inline size_t poolx_past_rows(int64_t e, size_t n, int64_t ne2) { return n == 0 ? 0 : e + (int64_t) n < ne2 ? n : n - 1; }
 
+// staging=0 ring: the first block i, searched from the cursor `from` on and wrapping to the class start, that begins n usable blocks in a row (ok[i..i+n-1]); a run
+// never wraps the class end (one copy per tensor needs one run of addresses). -1: no run that long, the caller picks blocks one by one.
+static inline int32_t poolx_first_window(const std::vector<uint8_t> & ok, int32_t from, int32_t n) {
+    const int32_t N = (int32_t) ok.size();
+    if (n <= 0 || n > N) { return -1; }
+    std::vector<int32_t> run(N + 1, 0);
+    for (int32_t i = N - 1; i >= 0; --i) { run[i] = ok[i] ? run[i + 1] + 1 : 0; }
+    for (int32_t k = 0; k < N; ++k) { const int32_t i = (from + k) % N; if (run[i] >= n) { return i; } }
+    return -1;
+}
+
 template <class P> static size_t poolx_lend_round(const P & ap, size_t bytes) {
     for (const auto & sg : ap.segs) {
         const size_t end = sg.base + (size_t) sg.n * sg.B;
