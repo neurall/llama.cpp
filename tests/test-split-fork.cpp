@@ -375,6 +375,28 @@ static void test_may_take_call() {
     report("the engine's yield asks it", b != std::string::npos && src.substr(a, b - a).find("llama_dsplit_may_take_call_fork(") != std::string::npos);
 }
 
+// The zero-wait shares start at factor 1 only when the cards take turns at whole layers' experts (staging=0, every layer on its home card: --moe moe-split=home).
+// staging=0 with the expert card computing every expert (the default since the 11-13 placement fix) is the staged case: factor 0.75. Qwen3.8 IQ4_XS 12k, 2 x 3090,
+// 2026-11-14: factor 1 gave the helper 49% of the tokens (staged 41%), pass 5452 ms against 4903 on the same build.
+static void test_turns() {
+    printf("the cards take turns at the experts:\n");
+    report("staging=0, experts on the expert card (moe-split unset): no (the failure)", !llama_dsplit_turns_fork(true, 0, -1));
+    report("staging=0, moe-split=expert: no", !llama_dsplit_turns_fork(true, 0, 0));
+    report("staging=0, moe-split=home: yes", llama_dsplit_turns_fork(true, 0, 1));
+    report("staged, moe-split=home: no", !llama_dsplit_turns_fork(false, 0, 1));
+    report("experts shared out by the split: no", !llama_dsplit_turns_fork(true, 1, 1));
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-dsplit-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    const size_t a = src.find("\nstatic bool dsplit_zw_turns(");
+    const size_t b = a == std::string::npos ? a : src.find("\n}\n", a);
+    report("the split's start factor asks it", b != std::string::npos && src.substr(a, b - a).find("llama_dsplit_turns_fork(") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -386,6 +408,7 @@ int main(int argc, char ** argv) {
     test_nc_plan();
     test_f_fresh();
     test_may_take_call();
+    test_turns();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

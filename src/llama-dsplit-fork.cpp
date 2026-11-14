@@ -1907,13 +1907,15 @@ struct dsplit_zw {
     std::string src;                       // where k came from (the log)
 };
 dsplit_zw g_zw;
-// --moe staging=0 with no experts shared out by the split: the stream into the cache's blocks runs every layer's experts on its home card for every token, so the
+// --moe staging=0 with --moe moe-split=home and no experts shared out by the split (unset, the expert card computes every expert as staged: llama_dsplit_turns_fork):
+// the stream into the cache's blocks runs every layer's experts on its home card for every token, so the
 // cards take turns at the experts and neither is the one the pass waits for: the pass is shortest when the cards' dense chains end together (factor 1). The
 // zero-wait rule's 0.75 start and its drop at every wait of the expert card are for a card that computes every expert (GLM 3.0 12k, staging=0: the expert card
 // waited 2.1 s with the helper's chain at 61% of its window and 4.2 s at 128%, both read as caused by the tokens: the factor fell 0.75, 0.68, 0.61 and the
 // helper's tokens went 42%, 54%, then 36%; passes of 16.9 s at 42% and 16.5 s at 54%, 200 W a card).
+int llama_moe_cache_split_mode_fork();   // llama-moecache-fork.cpp: --moe moe-split, 1 home, 0 expert, -1 unset (the expert card, as staged)
 static bool dsplit_zw_turns() {
-    return moe_no_staging() && llama_dsplit_experts_mode_fork() != 1;
+    return llama_dsplit_turns_fork(moe_no_staging(), llama_dsplit_experts_mode_fork(), llama_moe_cache_split_mode_fork());
 }
 bool dsplit_zw_pieces() {   // --moe split-pieces=1: each range's experts as their own op, the expert card's own range first
     static const bool on = [] { const char * e = llama_moe_get_opt("split-pieces"); return e && atoi(e) != 0; }();

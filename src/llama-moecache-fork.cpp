@@ -12026,6 +12026,7 @@ static int moe_split_mode() {
     static const int v = [] { const char * e = moe_opt("moe-split"); return !e ? -1 : strcmp(e, "home") == 0 || strcmp(e, "layers") == 0 ? 1 : 0; }();
     return v;
 }
+int llama_moe_cache_split_mode_fork() { return moe_split_mode(); }
 ggml_backend_dev_t llama_moe_cache_cs_expert_dev_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_dev_t expert) {
     moe_cache * mc = g_cache;
     if (!mc || !pub || !pp_no_staging() || moe_split_mode() == 1 || g_pp_lp_call.load(std::memory_order_relaxed) || pub->jit_n > 0) { return nullptr; }

@@ -272,6 +272,13 @@ static inline dsxn_out dsxn_plan(const dsxn_in & in) {
 // layer copied when its layer came up (Qwen3.8 IQ3_S 2442 tokens, 2 x 3090, 2026-11-14: 50 GB at 15.9 GB/s, 3.0 s against the chain's 2.45). Staged: any call.
 static inline bool llama_dsplit_may_take_call_fork(bool no_staging, bool stream_call) { return !no_staging || stream_call; }
 
+// Do the cards take turns at whole layers' experts (the zero-wait shares start at factor 1, the chains end together)? Only with --moe staging=0 and every layer on
+// its home card (moe_split_mode 1: --moe moe-split=home). Unset (-1) or expert (0): the expert card computes every expert, as staged (factor 0.75). Qwen3.8 IQ4_XS
+// 12k, 2 x 3090, 2026-11-14: staging=0 alone gave the helper 49% of the tokens (staged 41%), pass 5452 ms against 4903 on the same build.
+static inline bool llama_dsplit_turns_fork(bool no_staging, int experts_mode, int moe_split_mode) {
+    return no_staging && experts_mode != 1 && moe_split_mode == 1;
+}
+
 // The helpers' expert shares a pass-size bucket starts with (n_dev cards, the expert card last): the expert trial's shares in force (trial_f, one per
 // helper), the expert card the rest; every expert on the expert card when no trial matches the cards. A bucket with nothing stored reads as this too, so a
 // read before the bucket exists gives what it is created with (2026-11-14: three readers read 0 there, the helper idled, qni4-i -19%).
