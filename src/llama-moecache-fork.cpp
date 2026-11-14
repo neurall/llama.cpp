@@ -554,6 +554,7 @@ struct moe_cache {
     uint64_t                 cs_n_direct = 0, cs_n_map = 0;   // the pass so far: slices the RAM pool refused, read O_DIRECT into a pinned slot; slices copied from the mapping (should stay 0)
     uint64_t                 cs_n_up = 0, cs_n_free = 0, cs_n_done = 0, cs_n_cold = 0, cs_n_ahead = 0, cs_n_cp = 0, cs_n_hook = 0, cs_n_claim = 0;   // the pass so far: experts uploaded, their blocks were free/empty, of computed layers (cold: streamed this pass), of layers ahead; copies
     uint64_t                 cs_n_win = 0, cs_n_ent = 0;   // the pass so far: entries placed in one run of blocks (cs_plan's window), entries that uploaded anything
+    uint64_t                 cs_b_plan = 0, cs_b_cp[MAX_LINKS] = {}, cs_b_past[MAX_LINKS] = {};   // the pass so far: bytes planned (cs_plan), slice and past bytes copied per link (cs_copy, the card's worker)
     uint64_t                 cs_n_pred = 0, cs_n_late = 0, cs_n_used = 0, cs_n_listed = 0, cs_n_noids = 0, cs_n_steal = 0;   // the k arm, the pass so far: uploaded by the rankings, by the late fix; experts the entries used, of those in their list; entries without ids (whole range); predicted blocks the late fix took back
     uint64_t                 n_jit = 0, n_jit_layers = 0, n_jit_miss = 0, n_pool_up = 0, n_pool_hit = 0; // JIT: experts uploaded, layer calls that uploaded, misses seen
     // layer clock (resource saturator deadlines): EMA of the time from layer i's CPU expert op to layer i+1's
@@ -12493,29 +12494,34 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         ps.cs_cur = b0 >= r0 && b0 < nb ? b0 - r0 : 0;
     } else if (ps.cs_cur >= nr) { ps.cs_cur = 0; }
     // a second scan when the first finds too few: pinned experts give way (a pin keeps a decode favourite, it must not keep a layer out of its class's blocks)
+    int n_sk[6] = {};   // the blocks the last scan left out: other class not claimable, lent, in flight, outside the pass, pinned, uploaded this pass and not computed
     for (int force = 0; force < 2 && c.size() < want.size(); ++force) {
     c.clear();
+    std::fill(n_sk, n_sk + 6, 0);
     for (int32_t i = 0; i < nr; ++i) {   // the whole class: every block the stream may take, the best ones picked below
         const int32_t b = r0 + (ps.cs_cur + i) % nr;
         const int32_t o = ps.owner[b];
         if (o == -1) { c.push_back({ 0, b, -1, i }); continue; }
         if (o == -4) {   // another class's bytes: claimed when the ring could take what lies there (tier 5: none of it computed in this pass, 6: some)
             bool fd = false;
-            if (cls_claimable(mc, ls.pcls, b, p, fd, force)) { c.push_back({ fd ? 6 : 5, b, -1, i }); }
+            if (cls_claimable(mc, ls.pcls, b, p, fd, force)) { c.push_back({ fd ? 6 : 5, b, -1, i }); } else { n_sk[0]++; }
             continue;
         }
         const int64_t lx = cs_li_of(mc, o);   // a layer's or a shadow's
-        if (lx < 0) { continue; }   // lent to a graph, under the KV rows
+        if (lx < 0) { n_sk[1]++; continue; }   // lent to a graph, under the KV rows
         layer_state & lo = csl(mc, (size_t) lx);
-        if (lo.slot_in_flight[b] || lo.is_stream[b]) { continue; }
+        if (lo.slot_in_flight[b] || lo.is_stream[b]) { n_sk[2]++; continue; }
         const int32_t x = lo.slot_expert[b];
         if (x < 0) { c.push_back({ 1, b, lx, i }); continue; }   // the layer's, empty
         const int32_t q = (size_t) lx < mc->cs_pos.size() ? mc->cs_pos[(size_t) lx] : -1;
-        if (q < 0 || (!force && pinned(mc, lo, x))) { continue; }   // a layer outside the cstream graph (its path may read the block), a pinned expert
+        if (q < 0) { n_sk[3]++; continue; }   // a layer outside the cstream graph (its path may read the block)
+        if (!force && pinned(mc, lo, x)) { n_sk[4]++; continue; }   // a pinned expert
         if ((size_t) q < mc->cs_done[lo.link]) {   // computed in this pass: its done event is on its card's compute stream
             c.push_back({ ps.cs_up[b] == mc->cs_pass ? 2 : 3, b, lx, i });
         } else if ((size_t) q > p && !((size_t) q < mc->cs_mix.size() && mc->cs_mix[(size_t) q] == 1)) {   // not uploaded for yet in this pass (the last pass's or decode's): its expert
             c.push_back({ 4, b, lx, i });                                                                         // comes back when its turn comes; never a mix home's (its shadow left those out)
+        } else {
+            n_sk[5]++;
         }
     }
     }
@@ -12538,6 +12544,17 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
             for (int32_t j = j0; j < j0 + (int32_t) want.size(); ++j) { run.push_back(c[(size_t) ci[(size_t) j]]); }
             c.swap(run);
             win = true;
+        } else {   // why the class held no run that long: the first entries of a pass say it
+            static uint32_t log_pass = 0;
+            static int n_log = 0;
+            if (log_pass != mc->cs_pass) { log_pass = mc->cs_pass; n_log = 0; }
+            if (n_log++ < 3) {
+                int32_t best = 0, cur = 0;
+                for (int32_t j = 0; j < nr; ++j) { cur = rk[(size_t) j] >= 0 ? cur + 1 : 0; best = std::max(best, cur); }
+                LLAMA_LOG_WARN("moe-cache: cstream: pass %u entry %zu (layer %d, card %d): no run of %zu blocks in class %d (%d blocks from the ring start, %zu usable, longest run %d); "
+                        "left out: %d other class not claimable, %d lent, %d in flight, %d outside the pass, %d pinned, %d uploaded this pass and not computed\n",
+                        mc->cs_pass, p, ls.pub.il, ls.link, want.size(), ls.pcls, nr, c.size(), best, n_sk[0], n_sk[1], n_sk[2], n_sk[3], n_sk[4], n_sk[5]);
+            }
         }
     }
     if (!win) {
@@ -12605,7 +12622,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, bool & f
         ls.up_cost[e] = rlb > 0 ? (float) (S / rlb) : 0.0f;
         ls.up_hits[e] = 0;
         ps.cs_up[b] = mc->cs_pass;
-        mc->up_bytes += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S;
+        mc->up_bytes += (int64_t) S; mc->link_bytes[ls.link] += (int64_t) S; mc->cs_b_plan += (uint64_t) S;
         pu_note(mc, li < mc->layers.size() ? li : (size_t) mc->cs_li[(size_t) ls.pub.il], ls.link, S, false);   // a shadow's under its layer
         out.push_back({ e, b });
     }
@@ -12699,6 +12716,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
                     if (m0 > 0) {
                         ggml_tensor z = expert_past_view(dsts[k], (size_t) cps[i].b*B + sz, (m0 - 1)*B + pb);
                         ggml_backend_tensor_set_2d_async(rb, &z, (const char *) srcs[k]->data + (size_t) (cps[i].e + 1)*sz, 0, pb, m0, B, sz);
+                        mc->cs_b_past[link] += pb*m0;
                     }
                 } else {
                     m0 = n;   // the class reads nothing past its slices
@@ -12709,6 +12727,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
                 if (const size_t pb = expert_past(mc, ls, k, cps[i + m].e, srcs[k], from)) {
                     ggml_tensor z = expert_past_view(dsts[k], (size_t) cps[i + m].b*B + sz, pb);
                     ggml_backend_tensor_set_async(rb, &z, rpp ? rpp + sz : dr && past_next ? dr + sz : from, 0, pb);
+                    mc->cs_b_past[link] += pb;
                 }
             }
             if (dr) { jit_direct_done(mc, rb); }
@@ -12718,6 +12737,7 @@ static void cs_copy(moe_cache * mc, size_t li, const std::vector<cs_cp> & cps, b
         i += n;
     }
     ggml_backend_sched_upload_add_fork(mc->link_dev[link], up_bytes);   // the pass statistics' "link GB: experts" (staged uploads count there too)
+    mc->cs_b_cp[link] += up_bytes;
     // the layer's table, every pass (a block given to a later layer left an entry that is stale only for layers already computed); uncached and JIT pool experts are -1,
     // and so are the experts outside the entry's range (an expert split: another card computes them; cs_end writes the whole table again)
     const int64_t nt = ggml_nelements(ls.pub.dev_table);
@@ -12806,6 +12826,12 @@ static void cs_begin(moe_cache * mc) {
                 (unsigned long long) mc->cs_n_done, (unsigned long long) mc->cs_n_ahead, (unsigned long long) mc->cs_n_claim,
                 (unsigned long long) mc->cs_n_direct, (unsigned long long) mc->cs_n_map);
     }
+    if (mc->cs_pass > 0 && n_log <= 6) {
+        LLAMA_LOG_WARN("moe-cache: cstream: pass %u bytes: planned %.2f GB; copied slices %.2f + %.2f GB, past bytes %.2f + %.2f GB (card 0 + card 1)\n", mc->cs_pass, mc->cs_b_plan / 1e9,
+                mc->cs_b_cp[0] / 1e9, mc->cs_b_cp[1] / 1e9, mc->cs_b_past[0] / 1e9, mc->cs_b_past[1] / 1e9);
+    }
+    mc->cs_b_plan = 0;
+    for (int k = 0; k < MAX_LINKS; ++k) { mc->cs_b_cp[k] = mc->cs_b_past[k] = 0; }
     mc->cs_n_direct = mc->cs_n_map = mc->cs_n_win = mc->cs_n_ent = 0;
     if (mc->cs_pass > 0 && mc->cs_n_hook != mc->cs_order.size()) {   // a layer whose split did not start at its table read ran without waiting for its uploads
         LLAMA_LOG_WARN("moe-cache: cstream: pass %u: %llu of %zu layers met their split hook: the others computed without waiting for their experts\n",
