@@ -1717,7 +1717,38 @@ void llama_context::sched_reserve() {
                         (long long) ts[k]->ne[2], (long long) ts[k]->ne[3], ggml_nbytes(ts[k]) / 1048576.0);
             }
             for (size_t k = 0; k < ops.size() && k < 8; ++k) { per_op += format("%s x%d %.0f MiB; ", ops[k].first.c_str(), ops[k].second.first, ops[k].second.second / 1048576.0); }
-            LLAMA_LOG_WARN("%s: prompt graph of %u tokens on %s: largest tensors: %s| by op (all layers): %s\n", __func__, u, ggml_backend_dev_name(dv), top.c_str(), per_op.c_str());
+            // what is alive at this card's peak, in node order: a tensor lives from its node to its last reader (a view's readers keep its source; outputs to the end).
+            // An estimate of the allocator's peak (no fragmentation, no in-place reuse, no split-input copies), to name what piles up
+            std::string at_peak;
+            if (!cpu) {
+                const int nn = ggml_graph_n_nodes(mg);
+                auto root = [](const ggml_tensor * t) { while (t->view_src) { t = t->view_src; } return t; };
+                std::unordered_map<const ggml_tensor *, int> last;
+                for (int k = 0; k < nn; ++k) {
+                    const ggml_tensor * n = ggml_graph_node(mg, k);
+                    last[root(n)] = std::max(last[root(n)], (n->flags & GGML_TENSOR_FLAG_OUTPUT) ? nn : k);
+                    for (const ggml_tensor * s : n->src) { if (s) { last[root(s)] = std::max(last[root(s)], k); } }
+                }
+                size_t cur = 0, peak = 0; int peak_k = 0;
+                std::vector<size_t> freed(nn + 1, 0);
+                for (int k = 0; k < nn; ++k) {
+                    ggml_tensor * n = ggml_graph_node(mg, k);
+                    if (!n->view_src && ggml_backend_sched_get_tensor_backend(sched.get(), n) == backend_ptrs[bi]) { cur += ggml_nbytes(n); freed[std::min(last[n], nn)] += ggml_nbytes(n); }
+                    if (cur > peak) { peak = cur; peak_k = k; }
+                    cur -= freed[k];
+                }
+                std::vector<const ggml_tensor *> alive;
+                for (int k = 0; k <= peak_k; ++k) {
+                    ggml_tensor * n = ggml_graph_node(mg, k);
+                    if (!n->view_src && ggml_backend_sched_get_tensor_backend(sched.get(), n) == backend_ptrs[bi] && last[n] >= peak_k) { alive.push_back(n); }
+                }
+                std::sort(alive.begin(), alive.end(), [](const ggml_tensor * x, const ggml_tensor * y) { return ggml_nbytes(x) > ggml_nbytes(y); });
+                at_peak = format(" | alive at the peak (node %d of %d, %.0f MiB, %zu tensors): ", peak_k, nn, peak / 1048576.0, alive.size());
+                for (size_t k = 0; k < alive.size() && k < 10; ++k) {
+                    at_peak += format("%s %s %.0f MiB (last read at node %d); ", alive[k]->name, ggml_op_desc(alive[k]), ggml_nbytes(alive[k]) / 1048576.0, last[alive[k]]);
+                }
+            }
+            LLAMA_LOG_WARN("%s: prompt graph of %u tokens on %s: largest tensors: %s| by op (all layers): %s%s\n", __func__, u, ggml_backend_dev_name(dv), top.c_str(), per_op.c_str(), at_peak.c_str());
         }
     };
     if (cparams.moe_cache && !model.no_alloc() && n_tokens > 512) {   // before the first real reserve (which allocates): the list, measure-only
