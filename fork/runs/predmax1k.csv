@@ -1,9 +1,9 @@
 name,model,n,test,tokens,args,extra
-p1k-off,k31,2,pf1k,64,"--moe rp-grow=0",--env PERF_LEDGER=0
-p1k-csr0,k31,2,pf1k,64,"--moe rp-grow=0,cs-read=0",--env PERF_LEDGER=0
-p1k-d1,k31,2,pf1k,64,"--moe rp-grow=0,pred-top=16,predict-ahead=0,pred=1",--env PERF_LEDGER=0
-p1k-d1o,k31,2,pf1k,64,"--moe rp-grow=0,pred-top=16,predict-ahead=0,pred=1,pred-over=16",--env PERF_LEDGER=0
-p1k-d2,k31,2,pf1k,64,"--moe rp-grow=0,pred-top=16,predict-ahead=2,pred=1",--env PERF_LEDGER=0
-p1k-d2o,k31,2,pf1k,64,"--moe rp-grow=0,pred-top=16,predict-ahead=2,pred=1,pred-over=16",--env PERF_LEDGER=0
-p1k-d3,k31,2,pf1k,64,"--moe rp-grow=0,pred-top=16,predict-ahead=3,pred=1",--env PERF_LEDGER=0
-p1k-d3o,k31,2,pf1k,64,"--moe rp-grow=0,pred-top=16,predict-ahead=3,pred=1,pred-over=16",--env PERF_LEDGER=0
+p1k-off,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+p1k-csr0,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,cs-read=0",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+p1k-d1,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,pred-top=16,predict-ahead=0,pred=1",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+p1k-d1o,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,pred-top=16,predict-ahead=0,pred=1,pred-over=16",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+p1k-d2,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,pred-top=16,predict-ahead=2,pred=1",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+p1k-d2o,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,pred-top=16,predict-ahead=2,pred=1,pred-over=16",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+p1k-d3,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,pred-top=16,predict-ahead=3,pred=1",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+p1k-d3o,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,pred-top=16,predict-ahead=3,pred=1,pred-over=16",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0

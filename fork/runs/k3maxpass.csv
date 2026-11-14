@@ -1,5 +1,2 @@
 name,model,n,test,tokens,args,extra
-k3mp-4k,k31,1,pf128k,32,"--moe rp-grow=0",--clamp 4096 --ctx 40000 --env PERF_LEDGER=0
-k3mp-8k,k31,1,pf128k,32,"--moe rp-grow=0",--clamp 8192 --ctx 40000 --env PERF_LEDGER=0
-k3mp-16k,k31,1,pf128k,32,"--moe rp-grow=0",--clamp 16384 --ctx 40000 --env PERF_LEDGER=0
-k3mp-32k,k31,1,pf128k,32,"--moe rp-grow=0",--clamp 32768 --ctx 40000 --env PERF_LEDGER=0
+k3mp-probe,k31,1,pf128k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini",--clamp 16064 --ctx 16384 --state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
