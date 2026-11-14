@@ -186,6 +186,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # the fork's expert pool rules (header-only, no GPU, no model): src/llama-poolalloc-fork.h, src/llama-kvzone-fork.h
     llama_build_and_test(test-pool-fork.cpp)
     llama_build_and_test(test-rowread-fork.cpp)   # lazy row tables: a pass's rows from the read-ahead (src/llama-rowread-fork.h), no GPU
+    llama_build_and_test(test-hist-fork.cpp)      # three last-10 histories + admission, thrash sim (ggml/src/ggml-hist-fork.h), no GPU
     llama_build_and_test(test-rampool-fork.cpp)   # the RAM pool's resize between requests (ggml/src/ggml-rampool-fork.cpp), no GPU
     llama_build_and_test(test-moetopic-fork.cpp)
     llama_build_and_test(test-pass-fork.cpp)
