@@ -13498,32 +13498,28 @@ void llama_moe_cache_pp_upload_fork(const llama_moe_cache_layer_fork * pub, cons
             };
             if (ls.pcls >= 0) {
                 const auto & ps = mc->pool[ls.pcls];
-                for (int32_t b = 0, nb = ps.n_active(); b < nb; ++b) {
-                    const int32_t o = ps.owner[b];
-                    if (o == -1) { c.push_back({ -2.0 - (double) b, b, -1 }); }   // the highest free block first: prompts borrow the pool from its start
-                    else if (o >= 0) { add(o, b); }
-                }
-                if (pp_no_staging()) {   // the grid: other classes' bytes, ranked by the dearest expert a claim evicts there (cold tails first); owner -4 = claim it
-                    for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
-                        if (ps.owner[b] != -4) { continue; }
-                        double rank = -1.0;
-                        const bool ok = cls_over(mc, ls.pcls, b, [&](int32_t q, int32_t x) {
-                            const int32_t o = mc->pool[q].owner[x];
-                            if (o == -1 || o == -4) { return true; }
-                            const int64_t lx = cs_li_of(mc, o);
-                            if (lx < 0) { return false; }
-                            const layer_state & lo = csl(mc, (size_t) lx);
-                            if (lo.slot_in_flight[x] || lo.is_stream[x]) { return false; }
-                            const int32_t e = lo.slot_expert[x];
-                            if (o >= 0 && e >= 0) {
-                                const double r = prompt_victim_rank(mc, lo, (size_t) o, jli, e, n_visited * 8 >= used.size() * 7);
-                                rank = std::max(rank, pinned(mc, lo, e) ? 2e12 + r : r);
-                            }
-                            return true;
-                        });
-                        if (ok) { c.push_back({ rank, b, -4 }); }
-                    }
-                }
+                // every block of the class: a grid block an earlier layer of this pass claimed lies past n_active and is this class's to evict (poolx_chain_scan)
+                poolx_chain_scan(ps, pp_no_staging(), [&](int32_t b, int32_t o) {
+                    if (o == -1) { c.push_back({ -2.0 - (double) b, b, -1 }); return; }   // the highest free block first: prompts borrow the pool from its start
+                    if (o >= 0) { add(o, b); return; }
+                    // the grid: other classes' bytes, ranked by the dearest expert a claim evicts there (cold tails first); owner -4 = claim it
+                    double rank = -1.0;
+                    const bool ok = cls_over(mc, ls.pcls, b, [&](int32_t q, int32_t x) {
+                        const int32_t oq = mc->pool[q].owner[x];
+                        if (oq == -1 || oq == -4) { return true; }
+                        const int64_t lx = cs_li_of(mc, oq);
+                        if (lx < 0) { return false; }
+                        const layer_state & lo = csl(mc, (size_t) lx);
+                        if (lo.slot_in_flight[x] || lo.is_stream[x]) { return false; }
+                        const int32_t e = lo.slot_expert[x];
+                        if (oq >= 0 && e >= 0) {
+                            const double r = prompt_victim_rank(mc, lo, (size_t) oq, jli, e, n_visited * 8 >= used.size() * 7);
+                            rank = std::max(rank, pinned(mc, lo, e) ? 2e12 + r : r);
+                        }
+                        return true;
+                    });
+                    if (ok) { c.push_back({ rank, b, -4 }); }
+                });
             } else {
                 for (int32_t b = 0; b < ls.pub.n_slots; ++b) { add((int32_t) jli, b); }
             }

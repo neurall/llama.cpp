@@ -893,6 +893,44 @@ static void test_regress_ring_costly() {
     report("the engine: cs_done moves only in cs_mark_done, which records the event and its cover", !md.empty() && md.find("cs_cov[") != std::string::npos && n_move == 0);
 }
 
+// K3 4-token call after a 16k prompt (2026-11-14): CUDA1's home blocks were lent, the chain claimed grid blocks layer by layer, and a claimed block lies past
+// n_active: the old scan (owned blocks below n_active, grid only at -4) never offered it again, the 26th layer found 38 for 50 misses (GGML_ABORT).
+static void test_regress_chain_reuses_claimed_grid() {
+    printf("Testing the prompt chain's blocks over a pass (a claimed grid block stays the class's):\n");
+    struct PS { std::vector<int32_t> owner; };
+    const int32_t home_hi = 20, miss = 50;
+    const auto pass = [&](bool old_scan) {   // 30 layers of one class, each takes 50 blocks (claim or evict, then pool_take); the fewest any layer found
+        PS ps; ps.owner.assign(120, -4);
+        for (int32_t b = 0; b < home_hi; ++b) { ps.owner[b] = -2; }   // the home lent to the graph
+        ps.owner[119] = -3; ps.owner[118] = -7;                       // KV rows, a stream shadow
+        int32_t worst = INT32_MAX; bool bad_kind = false;
+        for (int32_t layer = 0; layer < 30; ++layer) {
+            std::vector<int32_t> c;
+            const auto take = [&](int32_t b, int32_t o) { bad_kind |= o == -2 || o == -3 || o <= -5; c.push_back(b); };
+            if (old_scan) { for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) { const int32_t o = ps.owner[b]; if ((b < home_hi && o >= -1) || o == -4) { take(b, o); } } }
+            else          { poolx_chain_scan(ps, true, take); }
+            worst = std::min(worst, (int32_t) c.size());
+            for (int32_t i = 0; i < miss && i < (int32_t) c.size(); ++i) { ps.owner[c[i]] = layer; }
+        }
+        return std::make_pair(worst, bad_kind);
+    };
+    const auto now = pass(false), old = pass(true);
+    report("every layer of a 30-layer pass finds blocks for its 50 misses among 98 grid blocks", now.first >= miss, fmt("fewest %d", now.first));
+    report("lent, KV and shadow blocks are never offered", !now.second);
+    report("negative control: the old scan runs out (as the K3 abort did)", old.first < miss, fmt("fewest %d", old.first));
+    PS q; q.owner.assign(10, -4); int n0 = 0; poolx_chain_scan(q, false, [&](int32_t, int32_t) { ++n0; });
+    report("without staging=0 no grid block is offered", n0 == 0);
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-moecache-fork.cpp";
+        FILE * fp = fopen(path.c_str(), "r");
+        if (fp) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, fp)) > 0) { src.append(buf, n); } fclose(fp); }
+    }
+    const size_t x = src.find("\nvoid llama_moe_cache_pp_upload_fork("), y = x == std::string::npos ? x : src.find("missed experts (the check at the graph's build", x);
+    report("the engine: the chain's misses pick from poolx_chain_scan", y != std::string::npos && src.substr(x, y - x).find("poolx_chain_scan(") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -915,6 +953,7 @@ int main(int argc, char ** argv) {
     test_regress_potential_matches_place();
     test_regress_capacity_is_gap();
     test_regress_least_over_cards();
+    test_regress_chain_reuses_claimed_grid();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

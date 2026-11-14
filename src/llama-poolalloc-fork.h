@@ -405,3 +405,16 @@ static poolx_pick poolx_pick_slot(const PS & ps, int32_t n_active, Busy busy, Ex
     }
     return p;
 }
+
+// ---- the prompt chain: which blocks of a class a layer's misses may take -------------------------------------------------------------------------
+// fn(b, o) for every block that is free (-1), holds a layer's expert (>= 0) or, with grid (staging=0), is another class's bytes the chain may claim (-4). Every block
+// of the class, not only the first n_active: a grid block a layer of this pass claimed sits past the home and stays this class's until cls_home, so the layers after
+// it must see it as theirs to evict (a K3 4-token call after a 16k prompt: CUDA1's layers each claimed fresh grid blocks and the 26th found 38 for 50 misses, abort,
+// 2026-11-14). Lent (-2), under the KV rows (-3) and a stream shadow's (<= -5) are never passed.
+template <class PS, class Fn>
+static void poolx_chain_scan(const PS & ps, bool grid, Fn fn) {
+    for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
+        const int32_t o = ps.owner[b];
+        if (o >= -1 || (grid && o == -4)) { fn(b, o); }
+    }
+}
