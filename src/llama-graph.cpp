@@ -2993,7 +2993,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     bool mc_ppk = false;                // the prompt upload with misses kept on the host (--moe pp-off)
     bool mc_pp = false;                 // the prompt chain: this pass's experts run on the GPU alone, see llama_moe_cache_pp_upload_fork
     bool mc_cstream = false;            // --moe pp-path=cstream: the stream into the cache's blocks, every expert in its block before the pass (llama_moe_cache_pp_freeze_fork)
-    static const bool no_staging = [] { const char * e = moe_opt("staging"); return e && atoi(e) == 0; }();   // --moe staging=0 (llama-moecache-fork.cpp pp_no_staging)
+    const bool no_staging = moe_no_staging();   // --moe staging=0, the default (llama-moestate-fork.cpp: one reader for the graph, the cache and the dense split)
     ggml_tensor * mc_ids_all = nullptr; // LLAMA_MOE_DEFER: full ids (router observation) and the deferred ids
     ggml_tensor * mc_ids_def = nullptr;
     ggml_tensor * mc_w_host  = nullptr;
@@ -3019,7 +3019,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         const int pp = mcache && (moe_ranges.empty() || no_staging) ? llama_moe_cache_pp_chain_fork(mcache, n_tokens, n_expert_used) : 0;
         mc_pp  = pp > 0;
         mc_cstream = pp == 2;
-        mcache = pp < 0 ? nullptr : mcache;
+        // a dense split call that stages (--moe staging=1) keeps its own path, as said above: no card chain beside it. Built, the chain sat in the graph with no reader
+        // and was never freed (2 GiB a layer at 16384 tokens), and the parts' expert chains took the cache's host table
+        mcache = pp < 0 || (!moe_ranges.empty() && !no_staging) ? nullptr : mcache;
         // --moe pp-off=F: the prompt upload leaves the least-used misses (F of the pass's expert-token pairs) on the host: they run on the miss device and the CPU
         // (pp-off-dev), next to the card's chain, which then has the decode chain's shape
         static const float pp_off = [] { const char * e = moe_opt("pp-off"); return e ? (float) atof(e) : 0.0f; }();
@@ -3347,10 +3349,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         static const bool chain_merge = [] { const char * e = moe_opt("chain-merge"); return e && atoi(e) != 0; }();
         const bool mc_late = chain_merge && n_tokens == 1 && mc_cpu_backend && !mc_pp && !mc_ppk && !mc_ids_all && !mc_miss_ids && !mc_mix_b && !mc_cstream;
         if (!mc_mix_b && !mc_cstream && !mc_late) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
-            if (!moe_ranges.empty()) {   // diagnostic (probe leak, 2026-11-14): which path expands the card's chain in a dense split graph
-                static int n_log = 0;
-                if (n_log++ < 6) { LLAMA_LOG_WARN("%s: dense split graph of %lld tokens, layer %d: card chain expanded (mc_pp %d, mc_cstream %d, no_staging %d)\n", __func__, (long long) n_tokens, il, (int) mc_pp, (int) mc_cstream, (int) no_staging); }
-            }
             ggml_build_forward_expand(gf, down_g);
         }
     }

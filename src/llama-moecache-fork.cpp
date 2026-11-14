@@ -1254,8 +1254,7 @@ static uint32_t g_pp_chain_refused = UINT32_MAX;  // the chain's graph refused a
 // --moe staging=0 (user 2026-11-11: staging is prohibited): no prompt path that stages. The stream keeps its copies and lands them in the cache's blocks (cstream, the
 // kernels read the tables); the two chains upload into the blocks too; the mix and the predictions' k arms still stage and are not picked. A refused chain becomes the decode chain.
 static bool pp_no_staging() {
-    static const bool v = [] { const char * e = moe_opt("staging"); return e && atoi(e) == 0; }();
-    return v;
+    return moe_no_staging();
 }
 // --moe cs-chunks=N (with staging=0): a layer of a stream pass is cut into N chunks of experts, each with its own table and split (a card's first is the layer itself on
 // its home card, every other one a shadow of the layer), so the ring reserve holds two chunks instead of two layers and the graph gets the rest: bigger passes, fewer

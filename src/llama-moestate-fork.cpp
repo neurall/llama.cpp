@@ -1092,6 +1092,15 @@ const char * moe_opt(const char * key) {
     return llama_moe_get_opt(key);
 }
 
+// One reader, with the default in it. The graph builder, the cache and the dense split each froze their own copy at their first read, and the graph builder's
+// was taken before common.cpp wrote the default into the options: it built the staged dense split while the cache streamed (2026-11-14, GLM two-card, own state:
+// every expert layer's card chain sat in the graph unread, a 58 GiB probe for a 7-8 GiB graph, prompt passes capped at 3776 tokens). With the default here, the
+// moment of the first read cannot change the answer; an explicit --moe staging=N is in the options from the argument parse on.
+bool moe_no_staging() {
+    static const bool v = [] { const char * e = llama_moe_get_opt("staging"); return !e || atoi(e) == 0; }();
+    return v;
+}
+
 // the stem of the research files of one run: model file name without .gguf and split suffix, --moe tag=NAME, start time; the same for every log of the process
 std::string moe_run_stem(const std::string & section) {
     static std::string stem;

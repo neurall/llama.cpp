@@ -1908,8 +1908,7 @@ dsplit_zw g_zw;
 // waited 2.1 s with the helper's chain at 61% of its window and 4.2 s at 128%, both read as caused by the tokens: the factor fell 0.75, 0.68, 0.61 and the
 // helper's tokens went 42%, 54%, then 36%; passes of 16.9 s at 42% and 16.5 s at 54%, 200 W a card).
 static bool dsplit_zw_turns() {
-    static const bool ns = [] { const char * e = llama_moe_get_opt("staging"); return e && atoi(e) == 0; }();
-    return ns && llama_dsplit_experts_mode_fork() != 1;
+    return moe_no_staging() && llama_dsplit_experts_mode_fork() != 1;
 }
 bool dsplit_zw_pieces() {   // --moe split-pieces=1: each range's experts as their own op, the expert card's own range first
     static const bool on = [] { const char * e = llama_moe_get_opt("split-pieces"); return e && atoi(e) != 0; }();
