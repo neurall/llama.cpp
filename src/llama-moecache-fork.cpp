@@ -15423,7 +15423,7 @@ void llama_moe_cache_probe_end_fork(const double * cn, const double * cus, int n
 //   prompt P passes of ceil(n / P) tokens: P x pass; P from the fewest (n / ub_max) up to four more, the cheapest wins.
 // Measured on MiMo, 4k prompt, one x16: 8 passes with 6 slots 127 t/s, 2 passes with 2 slots 471, one pass without slots 544: one pass wins when the upload
 // dominates; Qwen3.8-Flash-Next at 8k (compute 6.4 s against 1.3 s of upload) wins with two staged passes. --moe pass-plan=0: equal passes as before.
-static llama_ranked_mutex g_pp_mu(30, "g_pp_mu");   // rank: the innermost planner lock, under g_plan_mu and g_dsf_mu (llama-lockrank-fork.h)
+static llama_checked_mutex g_pp_mu("g_pp_mu");   // taken under g_plan_mu and g_dsf_mu (dsf_decide reads the cells, one_draw); order checked at run time (llama-lockrank-fork.h)
 // What a stream pass reads from the SSD (user 2026-11-03: "count the stream's compute and SSD read in its calculated time, using the measured rates"). DeepSeek (232 GiB on 125 GiB of RAM) streamed
 // 30 to 49 GB through the mapping in a 277-token call, 13.6 to 17.5 s at 2.1 to 2.9 GB/s, where the upload over the link alone said 4.5 s. g_pp_ssd_m: the bytes of the experts this call's stream
 // takes from tensors that are still mapped (set where the call is decided, used where it ends); g_pp_ssd_gbs: the mapped bytes per second the stream passes got through (read_bytes over 1 GiB says the SSD was read at all).
@@ -15480,7 +15480,7 @@ static double     g_pp_Usum  = 0.0;   // sum over the planned passes of their up
 static double     g_pp_xc    = 0.0;   // sum over the planned tokens of the cells each one's pass attends to (about the cells at the middle of its call)
 static uint64_t   g_pp_cells = 0;     // the cells at the end of the call being planned (set by the context, llama_moe_cache_pp_cells_fork)
 static double     g_fit[5]   = {0, 0, 0, 0, 0};   // decayed sums for the fit: weight, x, y, x*x, x*y (x = cells, y = us per token)
-void llama_moe_cache_pp_cells_fork(uint64_t cells_end) { std::lock_guard<llama_ranked_mutex> lk(g_pp_mu); g_pp_cells = cells_end; }
+void llama_moe_cache_pp_cells_fork(uint64_t cells_end) { std::lock_guard<llama_checked_mutex> lk(g_pp_mu); g_pp_cells = cells_end; }
 // the compute per token at the cells of the call being planned (under g_pp_mu)
 static double pp_c_at() { return g_pp_c_us > 0.0 ? g_pp_c_us + g_pp_a_us * (double) g_pp_cells : 0.0; }
 // The compute of a pass, by its size: the last measurement per power of two of the tokens (in memory, never stored; user 2026-10-30: the last measured times, log-spaced, no formula. A
@@ -15803,7 +15803,7 @@ static uint32_t pp_record(moe_cache * mc, uint32_t n, uint32_t ub) {
         U = gbs > 0.0 ? std::max(0.0, E - R) / (gbs * 1e3) : 0.0;
         if (pp_no_staging()) { U *= cs_share(mc); }   // an expert split's cards upload their shares side by side (as in pp_plan)
     }
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     pp_add(n, ub, U, -1);
     return ub;
 }
@@ -15952,7 +15952,7 @@ static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
     const double up_us = gbs > 0.0 ? E / (gbs * 1e3) * share : 0.0;   // every expert over the link, the cards' links side by side in an expert split
     double c_us = 0.0;
     {
-        std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+        std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
         const double cells = cells_end > 0 ? (double) cells_end : (double) g_pp_cells;
         c_us = g_pp_c_us > 0.0 ? g_pp_c_us + g_pp_a_us * std::max(0.0, cells - 0.5 * (double) n) : 0.0;
     }
@@ -15970,7 +15970,7 @@ static bool cs_pick(moe_cache * mc, uint32_t n, size_t cells_end, uint32_t ub) {
     }
     size_t ring_b = 0, cells_log = cells_end;
     for (const auto & a : mc->alias) { if (!a.rcls.empty()) { ring_b = std::max(ring_b, a.tail_end - a.floor_end); } }
-    if (cells_log == 0) { std::lock_guard<llama_ranked_mutex> lk(g_pp_mu); cells_log = (size_t) g_pp_cells; }
+    if (cells_log == 0) { std::lock_guard<llama_checked_mutex> lk(g_pp_mu); cells_log = (size_t) g_pp_cells; }
     const std::string line = format("stream of %u tokens to %zu cells: a layer in %d chunk%s (the graph and the KV stop %.0f MiB short of the tail, one entry; by chunks: %s; upload %.0f ms a pass, compute %s, a card holds %.2f of a layer)",
             n, cells_log, cs_cand[b], cs_cand[b] > 1 ? "s" : "", ring_b / 1048576.0, tab.c_str(), up_us / 1e3,
             c_us > 0.0 ? format("%.0f us a token, %.0f a further entry", c_us, CS_ENTRY_COST * c_us).c_str() : "not measured yet: the fewest passes", share);
@@ -16044,7 +16044,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
     const double rho      = free_now > 0.0 ? std::min(1.0, R_now / free_now) : 0.0;
     double c_us;
     {
-        std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+        std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
         pp_c_us_stored();
         c_us = pp_c_at();   // for the log line only: nothing below decides on it
     }
@@ -16080,7 +16080,7 @@ static uint32_t pp_plan(moe_cache * mc, uint32_t n, uint32_t ub_max, uint32_t ub
                 c_us, c_us > 0 ? "" : " (not measured yet)");
         (void) best_t;
     }
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     pp_add(n, best_ub, best_U, best_k);
     return best_ub;
 }
@@ -16172,7 +16172,7 @@ static int g_pp_pass_learned = 0;   // passes of this call that taught their pat
 // one-card arm, and a stale one-card mean held for a whole call (GLM 3.0 64k, 2026-11-08: a stored stream posterior of one sample said 4 s for a 10144-token
 // pass, one-card passes took 15 s, the 56k call ran one card from the first pass to the last at 491-581 tokens/s while the split does 750-800).
 void llama_moe_cache_pp_pass_learn_fork(uint32_t n, double us) {
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     if (!g_cache || us <= 0.0 || n < 64) { return; }
     const int path = pp_cur_path();
     if (path == PP_DENSE || g_pp_phi[path][1] <= 0.0) { return; }
@@ -16228,7 +16228,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
             if (moe_log_has("k")) { LLAMA_LOG_WARN("moe-cache: kv-tail: after the prompt %zu cold experts replaced by the prompt's hottest missing ones\n", swaps.size()); }
         }
     }
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     // a split pass (two cards) says nothing about one card, and a report that is not of the planned calls (an unplanned prompt) neither: the totals start again
     const double chain_up = g_pp_up_us.exchange(0.0);
     // a call of P passes: one pass of its size. A call whose passes were not counted here (the chains, a fixed -ub): the passes of the size its decision was made for.
@@ -16437,7 +16437,7 @@ uint32_t llama_moe_cache_pp_even_pass_fork(uint32_t n_tokens) {
     const double up_us = gbs > 0.0 ? E / (gbs * 1e3) * cs_share(mc) : 0.0;
     double c_us = 0.0;
     {
-        std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+        std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
         c_us = g_pp_c_us > 0.0 ? g_pp_c_us + g_pp_a_us * 0.5 * (double) n_tokens : 0.0;
     }
     if (c_us <= 0.0) { c_us = llama_dsplit_compute_calc_us_fork(mc->link_dev[0]); }
@@ -16446,15 +16446,15 @@ uint32_t llama_moe_cache_pp_even_pass_fork(uint32_t n_tokens) {
 }
 // the pass planner's measured compute of one prompt token on the offload card, all layers, us (0 = not measured yet)
 double llama_moe_cache_compute_us_fork() {
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     pp_c_us_stored();
     return pp_c_at();
 }
 // the cells the call being planned ends at (0 = not set yet)
-uint64_t llama_moe_cache_pp_cells_get_fork() { std::lock_guard<llama_ranked_mutex> lk(g_pp_mu); return g_pp_cells; }
+uint64_t llama_moe_cache_pp_cells_get_fork() { std::lock_guard<llama_checked_mutex> lk(g_pp_mu); return g_pp_cells; }
 // the part of it that is attention over the context (a x cells): the split planner shares it by tokens like the rest of the dense part
 double llama_moe_cache_compute_att_us_fork() {
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     return g_pp_c_us > 0.0 ? g_pp_a_us * (double) g_pp_cells : 0.0;
 }
 
@@ -16550,7 +16550,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     bool ds_x = false;
     for (const auto & a : mc->alias) { ds_x = ds_x || a.mirror_b > 0; }
     ds_x = ds_x && llama_dsplit_helpers_experts_fork((int64_t) n);
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     double up = 0.0, cpu = 0.0, miss_ssd_bytes = 0.0;   // what the call's misses cost uploaded (once per expert it touches) and on the CPU (once per token routed to them); their bytes only the SSD has
     pp_sums_misses(sums, n, up, cpu, miss_ssd_bytes);
     const char * why = "";
@@ -16856,7 +16856,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
 // shortcut: a candidate's upload is the call's pass size's (U at n of the call); passes of other sizes in one call are the tail only. Upgrade if calls mix sizes.
 double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, double * var, int * path, bool * known, int * n_obs) {
     // planner-simple: the one-card side is the path this call picked, its posterior mean and variance at this pass (no draws); -1 when none
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     const int p = g_pp_pick >= 0 ? g_pp_pick : -1;
     if (p < 0 || g_pp_phi[p][1] <= 0.0) { return -1.0; }
     const double phi[4] = { 1.0, (double) n, (double) n * g_pp_a_us * (double) c, g_pp_phi[p][3] };
@@ -16871,11 +16871,11 @@ double llama_moe_cache_pp_one_draw_fork(int64_t n, int64_t c, double * mu, doubl
     return std::max(0.0, m);
 }
 // this call has one-card candidates (the split planner learns its own one-card model otherwise)
-bool llama_moe_cache_pp_planned_fork() { std::lock_guard<llama_ranked_mutex> lk(g_pp_mu); for (const auto & f : g_pp_phi) { if (f[1] > 0.0) { return true; } } return false; }
+bool llama_moe_cache_pp_planned_fork() { std::lock_guard<llama_checked_mutex> lk(g_pp_mu); for (const auto & f : g_pp_phi) { if (f[1] > 0.0) { return true; } } return false; }
 // the pass size the call runs with, once the context has decided it (planner-rules.md C19/C21: pp_decide runs before the pass planner and its
 // features were for min(call, limit)); the candidates keep their pick and draws, the features follow the pass that runs
 void llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub) {
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     const double n = (double) std::min(n_tokens, std::max<uint32_t>(1, ub));
     for (auto & f : g_pp_phi) {
         if (f[1] <= 0.0 || f[1] == n) { continue; }
@@ -16883,7 +16883,7 @@ void llama_moe_cache_pp_repass_fork(uint32_t n_tokens, uint32_t ub) {
         f[1] = n;
     }
 }
-double llama_moe_cache_att_us_cell_fork() { std::lock_guard<llama_ranked_mutex> lk(g_pp_mu); return g_pp_a_us; }   // attention per token and cell (us), 0 = not fitted yet
+double llama_moe_cache_att_us_cell_fork() { std::lock_guard<llama_checked_mutex> lk(g_pp_mu); return g_pp_a_us; }   // attention per token and cell (us), 0 = not fitted yet
 std::string llama_moe_cache_pp_path_name_fork(int p) { return p >= 0 && p < PP_PATHS ? pp_path_name(p) : std::string("-"); }
 
 // For the dense split planner (llama_dsplit_decide_fork), which weighs the split against the one-card path this call took (2026-11-06)
@@ -16891,12 +16891,12 @@ bool llama_moe_cache_pp_dec_pass_fork() { return g_pp_dec_built; }
 bool llama_moe_cache_pp_no_dense_fork() { return g_pp_no_dense.load(std::memory_order_relaxed); }
 double llama_moe_cache_pp_saving_us_fork() { return g_pp_save_us.load(std::memory_order_relaxed); }
 double llama_moe_cache_pp_path_us_fork(int64_t n_tokens) {
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     return pp_took_us(g_pp_path_call.load(std::memory_order_relaxed), (double) n_tokens);
 }
 // the fastest one-card path measured at this pass size (us): what one card does best there; the decode chain is no candidate at the sizes the split runs
 double llama_moe_cache_pp_best_one_us_fork(int64_t n_tokens) {
-    std::lock_guard<llama_ranked_mutex> lk(g_pp_mu);
+    std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     double o = 0.0;
     for (int p = 0; p < PP_PATHS; ++p) {
         if (p == PP_DENSE || p == PP_DEC) { continue; }
