@@ -27,6 +27,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 #include "llama-moe-cache.h"
 #include "llama-ext.h"
 #include "llama-sampler.h"
+#include "llama-graphcheck-fork.h"
 #include "llama.h"
 
 bool llama_split_ctl_poll_fork(int64_t n_expert, int64_t n_embd);   // fork: llama-graph.cpp, the share controller of the expert split
@@ -1868,6 +1869,14 @@ void llama_context::sched_reserve() {
                 for (const auto & [i, d] : gi) {
                     const size_t scr = llama_moe_cache_graph_scratch_fork(sched.get(), d);   // the reserve's splits are still in the scheduler
                     parts += format("%s%s graph %.1f + CUDA scratch %.1f MiB", parts.empty() ? "" : ", ", ggml_backend_dev_name(d), s[i] / 1048576.0, scr / 1048576.0);
+                    // far above the first reserve per token: a graph tensor lives too long (the galloc UNREAD lines name it); run.py fails the row
+                    if (llama_graph_jump_fork(lt[i], n_tokens, s[i], u)) {
+                        static int n_jump = 0;
+                        if (n_jump++ < 2) {
+                            LLAMA_LOG_ERROR("%s: GRAPH JUMP: the %u-token probe asks %.0f MiB on %s, the first reserve %.0f MiB at %u tokens: a graph tensor lives too long\n",
+                                    __func__, u, s[i] / 1048576.0, ggml_backend_dev_name(d), lt[i] / 1048576.0, n_tokens);
+                        }
+                    }
                     s[i] += scr;
                 }
                 LLAMA_LOG_WARN("%s: probe %u tokens: %s\n", __func__, u, parts.c_str());

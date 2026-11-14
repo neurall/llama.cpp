@@ -929,39 +929,47 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
         }
     }
 
-    // fork: GGML_GALLOC_HW=1 lists what is still allocated at the graph's end and why: a tensor no node reads is never freed, and a view no node
-    // reads keeps its source to the end (the pass-size probe of 2026-11-14 reserved 58 GiB on CUDA0 for a 7.7 GiB graph)
-    if (galloc_hw_on()) {
-        size_t sum = 0, top_b[12] = { 0 };
-        const struct ggml_tensor * top_t[12] = { NULL };
-        const struct ggml_tensor * top_v[12] = { NULL };
+    // fork: what is still allocated at the graph's end, always on (one pass over the nodes, at a re-plan only): a tensor no node reads is computed for nothing and
+    // never freed, a view no node reads keeps its source to the end. The pass-size probe of 2026-11-14 reserved 58 GiB on CUDA0 for a 7-8 GiB graph that way and
+    // capped every prompt pass at 3776 tokens; run.py fails a row on these lines (tests/test-graphcheck-fork.cpp). Under 16 MiB a tensor is left alone: the fork's
+    // hook nodes (ids a split callback reads back, not a graph source) reach a MiB on big passes.
+    {
+        enum { TOP = 8 };
+        size_t sum = 0, top_b[TOP] = { 0 };
+        int n_unread = 0;
+        const struct ggml_tensor * top_t[TOP] = { NULL };
         for (int i = 0; i < graph->n_nodes; i++) {
             struct ggml_tensor * t = graph->nodes[i];
             struct hash_node * hn = ggml_gallocr_hash_get(galloc, t);
-            if (ggml_impl_is_view(t) || !hn->allocated || (t->flags & GGML_TENSOR_FLAG_OUTPUT)) {
+            const size_t b = ggml_nbytes(t);
+            if (ggml_impl_is_view(t) || !hn->allocated || (t->flags & GGML_TENSOR_FLAG_OUTPUT) || b < ((size_t) 16 << 20)) {
                 continue;
             }
-            const size_t b = ggml_nbytes(t);
             sum += b;
-            const struct ggml_tensor * pin = NULL;   // the unread view that holds it
-            for (int k = 0; hn->n_views > 0 && k < graph->n_nodes && !pin; k++) {
-                struct ggml_tensor * v = graph->nodes[k];
-                if (v->view_src == t && ggml_gallocr_hash_get(galloc, v)->n_children == 0) { pin = v; }
-            }
-            for (int k = 0; k < 12; k++) {
+            n_unread++;
+            for (int k = 0; k < TOP; k++) {
                 if (b > top_b[k]) {
-                    for (int m = 11; m > k; m--) { top_b[m] = top_b[m - 1]; top_t[m] = top_t[m - 1]; top_v[m] = top_v[m - 1]; }
-                    top_b[k] = b; top_t[k] = t; top_v[k] = pin;
+                    for (int m = TOP - 1; m > k; m--) { top_b[m] = top_b[m - 1]; top_t[m] = top_t[m - 1]; }
+                    top_b[k] = b; top_t[k] = t;
                     break;
                 }
             }
         }
-        if (sum > ((size_t) 256 << 20)) {
-            GGML_LOG_WARN("galloc: %.0f MiB still allocated at the end of a graph of %d nodes (not outputs), largest:\n", sum / 1048576.0, graph->n_nodes);
-            for (int k = 0; k < 12 && top_t[k]; k++) {
-                GGML_LOG_WARN("galloc:   %s %s %.0f MiB (buffer %d): %s%s%s\n", top_t[k]->name, ggml_op_desc(top_t[k]), top_b[k] / 1048576.0,
-                    ggml_gallocr_hash_get(galloc, top_t[k])->buffer_id, top_v[k] ? "kept by the unread view " : "no node reads it",
-                    top_v[k] ? top_v[k]->name : "", top_v[k] ? ggml_op_desc(top_v[k]) : "");
+        static size_t last_sum = 0;   // a graph re-planned as it was says it once
+        static int last_nodes = 0;
+        if (n_unread > 0 && (sum != last_sum || graph->n_nodes != last_nodes)) {
+            last_sum = sum;
+            last_nodes = graph->n_nodes;
+            GGML_LOG_WARN("galloc: UNREAD %.0f MiB in %d tensors still allocated at the end of a graph of %d nodes (computed for nothing, held to the end), largest:\n",
+                sum / 1048576.0, n_unread, graph->n_nodes);
+            for (int k = 0; k < TOP && top_t[k]; k++) {
+                const struct ggml_tensor * pin = NULL;   // the unread view that holds it
+                for (int j = 0; ggml_gallocr_hash_get(galloc, top_t[k])->n_views > 0 && j < graph->n_nodes && !pin; j++) {
+                    if (graph->nodes[j]->view_src == top_t[k]) { pin = graph->nodes[j]; }
+                }
+                GGML_LOG_WARN("galloc: UNREAD   %s %s %.0f MiB (buffer %d): %s%s%s\n", top_t[k]->name, ggml_op_desc(top_t[k]), top_b[k] / 1048576.0,
+                    ggml_gallocr_hash_get(galloc, top_t[k])->buffer_id, pin ? "kept by the unread view " : "no node reads it",
+                    pin ? pin->name : "", pin ? ggml_op_desc(pin) : "");
             }
         }
     }
