@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+k3d-s,k31,2,chatv,256,"--moe rp-grow=0",--env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1 --prompt @/p/bw/wt-mb/fork/prompts/prompt-paris.txt

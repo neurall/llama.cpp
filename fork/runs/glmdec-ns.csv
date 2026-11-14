@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+glmdec-ns,glm,2,pf12k,256,"--moe dense-split=0,staging=0",--env GGML_PF_STATS=1

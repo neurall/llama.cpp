@@ -4341,7 +4341,7 @@ void pred_loop(moe_cache * mc) {
         }
         const int64_t t_pop = ggml_time_us();
         const int64_t ne = (int64_t) mc->layers[r.li + 1].expert_slot.size();
-        if (r.pp || mc->rp_on) {
+        if (r.pp || mc->rp_on || !mc->pool.empty()) {   // block pool (--moe pred-pool=1): no per-layer stream slots, the lists only read ahead
             // the RAM pool on: the predictions start the SSD reads of the next layers' experts into the pool, queued behind the demand reads, and the step waits
             // only for what its own layer still lacks (user 2026-11-10: read layer after layer, nonstop). No uploads: their bytes would have to be in RAM first.
             // One ordered list for decode and prompt passes (llama-moe-fetchlist-fork.h): per layer ahead its picks, then its oversampled, most tokens first.
@@ -10057,7 +10057,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // LLAMA_MOE_CACHE_JIT_POOL=n: JIT pool slots per slower-link layer on the fastest-link GPU. Default 0: the pool
         // chain's cross-GPU input/output copies cost ~10% on GLM (2x3090, 20 x4 layers) even with nothing in the pool
         // --moe pool=0: own cache tensors per layer with a fixed slot count each, as before the block pool (reference for A/B)
-        const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }() && predict <= 0;   // the predictor's stream slots are per layer
+        // --moe pred-pool=1 (task #281, A/B): the predictor keeps the block pool. With the RAM pool on its lists only start SSD reads into RAM (pred_loop), so it
+        // needs no per-layer stream slots (K3 decode 2026-11-14: 0.41 of 0.56 s a token waits for SSD reads that start only after each layer's router)
+        static const bool pred_pool = [] { const char * e = moe_opt("pred-pool"); return e && atoi(e) != 0; }();
+        const bool pool_on = [] { const char * e = moe_opt("pool"); return !e || atoi(e) != 0; }() && (predict <= 0 || pred_pool);   // the predictor's stream slots are per layer
         const int32_t jit_pool = [] { const char * e = moe_opt("jit-pool"); return e ? std::max(0, atoi(e)) : 0; }();
         // LLAMA_MOE_CACHE_JIT_POOL_ALL=1: every layer gets a pool (JIT never evicts the main cache)
         const bool jit_pool_all = [] { const char * e = moe_opt("jit-pool-all"); return e && atoi(e) != 0; }();

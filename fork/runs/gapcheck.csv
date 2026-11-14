@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+gap-q36-128-stg,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 140000 --hog-gpu 4.5
+gap-q36-128-ns,qwen36,2,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 140000 --hog-gpu 4.5
+gap-qni3-i-stg,qwen38,2,pfbest1k,1024,"--moe staging=1",
+gap-qni3-i-ns,qwen38,2,pfbest1k,1024,"--moe staging=0",
