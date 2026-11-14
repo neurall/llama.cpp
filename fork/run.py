@@ -2040,6 +2040,17 @@ HOTMAPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hotmaps")   
 DIAG_ENV = ("POOL_LIVE", "PERF_LEDGER", "GGML_CUDA_SCRATCH_CHECK")   # diagnostics recorded in a row's env (see cmd_cell's rec): ~10% decode for the scratch check on MiMo
 
 
+def cell_diag(env, a):
+    """The diagnostics of a cell (DIAG_ENV, each costs speed) in one place: on by the cell's own command line (--ledger, --env KEY=VALUE) or by the
+    caller's environment, never by a build's name; returns the env and the ones that are on, which the cell prints (a fix_ build name once turned
+    the ledger on silently and cost ~25% decode in a fix retest, 2026-11-14). fork/tests/test_run_cell_diag.py keeps every DIAG_ENV write in here."""
+    env = dict(env)
+    if a.ledger: env["PERF_LEDGER"] = "1"
+    for kv in (a.env or []):
+        k, _, v = kv.partition("="); env[k] = v
+    return env, [f"{k}={env[k]}" + (" (--ledger: pool write ledger, decode about 25% slower)" if k == "PERF_LEDGER" else "") for k in DIAG_ENV if env.get(k) not in (None, "", "0")]
+
+
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
@@ -8038,7 +8049,8 @@ def run_list(name, argv):
     if any(not r["_b"].startswith("stock") for r in rows) and os.path.islink(os.path.join(DEVBUILDS, "stock-latest")):   # the stock the gains compare against
         sl = os.path.realpath(os.path.join(DEVBUILDS, "stock-latest")); print(f"{col(36, 'stock')}: {os.path.basename(sl)}  {col(33, time.strftime('%F %H:%M', time.localtime(os.path.getmtime(os.path.join(sl, 'llama-server')))))}  {col(94, 'b' + own_build_no(os.path.basename(sl)))}", flush=True)
     if not o.dry: CUR_HWL[0] = hw_line(); print(col(1, CUR_HWL[0]), flush=True)
-    print(col(33, "ledger: ON (--ledger): every cell records the pool write ledger; decode about 25% slower; rows carry PERF_LEDGER=1") if o.ledger else col(90, "ledger: off (--ledger turns it on)"), flush=True)
+    _diag = cell_diag(os.environ, argparse.Namespace(ledger=o.ledger, env=[]))[1]
+    print(col(33, "diagnostics ON in every cell: " + ", ".join(_diag)) if _diag else col(90, "diagnostics off (--ledger: pool write ledger)"), flush=True)
     NAMEW[0] = max((len(("s" if r["_b"].startswith("stock") else "") + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
     exp_all = [cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) for r in rows]
     known = [x for x in exp_all if x]; fill = (sum(known) / len(known)) if known else 600.0   # a cell without history counts the average of the known ones, so the whole-run bar and its time cover every cell of the list
@@ -8474,10 +8486,8 @@ def cmd_cell(a):
     if os.path.ismount("/mnt/huge1g") and not nomount and not too_big: env["GGML_CUDA_HUGEFS"] = "/mnt/huge1g"   # no pool mounted: the binary pins from ordinary RAM
     if env.get("PERF_WATCH"): env.setdefault("PERF_ANSWER", os.path.join(Q5, f"{a.tag}-{a.test}.answer.txt"))   # debug cells: the text the server streamed, kept even when it crashed or the cell was stopped
     env.setdefault("LLAMA_RAM_FLOOR_GB", f"{float(os.environ.get('PERF_GUARD_AVAIL_GB') or 3.0) + 0.5:.1f}")   # the RAM pool grows between requests down to this floor: half a GiB above the line memwatch kills at
-    env["PERF_LEDGER"] = "1" if a.ledger else "0"   # the pool write ledger (who wrote which bytes of a card's pool, when): on only by `run LIST --ledger` (cell --ledger), never by a build's name or an inherited environment (a fix_ build name turned it on silently and cost ~25% decode, 2026-11-14); kept as q5h/TAG.ledger.csv.gz with a replay summary in TAG.out
-    if a.ledger: print("ledger: ON (--ledger): the pool write ledger records every pool write; decode about 25% slower, the row carries PERF_LEDGER=1", flush=True)
-    for kv in (a.env or []):
-        k, _, v = kv.partition("="); env[k] = v
+    env, diag_on = cell_diag(env, a)
+    if diag_on: print("diagnostics ON: " + ", ".join(diag_on), flush=True)
     # the cell's --env values are this bench process's own environment, so server_run's key (env that differs from it) never saw them: a cell that
     # differed from the one before only by --env reused its kept server and the values never reached a server (2026-10-27, GGML_CUDA_SCRATCH_CHECK=1)
     env["PERF_CELL_ENV"] = " ".join(sorted(a.env or []))
