@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+nsq-nsos,qn_iq4xs,2,pf12k4k,8,,"--env PERF_LEDGER=0 --wrap 'nsys profile --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none -o /p/bw/data/nsys/nsq-nsos --force-overwrite=true'"
