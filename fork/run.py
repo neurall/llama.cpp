@@ -5379,6 +5379,14 @@ def _rel_prune(keep=int(os.environ.get("KEEP_BUILDS", "2"))):
             shutil.rmtree(f) if os.path.isdir(f) else os.remove(f)
 
 
+def build_jobs():
+    """Compile jobs for a dev build: every CPU, held to MemAvailable / 3 GiB (a CUDA kernel file's nvcc takes up to ~3 GiB; was a fixed -j 8)."""
+    try:
+        avail = next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemAvailable:")) / 2**20
+    except Exception:
+        avail = 24.0
+    return max(4, min(os.cpu_count() or 8, int(avail // 3)))
+
 def _build_stock(a):
     """upstream llama.cpp built exactly like upstream's release workflow (job ubuntu-cuda, x64, CUDA 12.8: nvidia/cuda:12.8.2-devel-ubuntu24.04, GCC 13,
     the workflow's cmake flags): stock numbers must be what upstream's binaries do, never the fork's recipe. Result: <gh_rel>/stock-b<build>-<hash9>
@@ -5653,7 +5661,7 @@ def cmd_build(a):
              "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_CUDA=ON -DGGML_CUDA_NCCL=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=ON "
              f"-DOPENSSL_USE_STATIC_LIBS=ON -DOPENSSL_ROOT_DIR=/opt/openssl -DLLAMA_BUILD_TESTS={'ON' if a.release or any(t.startswith('test-') for t in a.targets) else 'OFF'} -DLLAMA_BUILD_UI=OFF "
              "-DCMAKE_EXE_LINKER_FLAGS=\"$SLD -pthread\" -DCMAKE_SHARED_LINKER_FLAGS=\"$SLD\" -DCMAKE_MODULE_LINKER_FLAGS=\"$SLD\" && "
-             + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j 8 --target llama-server llama-cli llama-perplexity " + " ".join(a.targets)))
+             + (f"cmake --build {B} -j $(nproc)" if a.release else f"cmake --build {B} -j {build_jobs()} --target llama-server llama-cli llama-perplexity " + " ".join(a.targets)))
     lk = queue_lock(wait=True)   # no build while a benchmark runs (a build takes the CPU the measurements use)
     iid = _image("llama-rel-el8", keep=a.release)
     idf = os.path.join(B, ".image-id")   # a build dir keeps the absolute toolkit paths of the image that configured it (CUDA 13.2 paths broke a 13.4 release build, 2026-10-22): another image, or a dir from before this check, is configured afresh; the objects come back from ccache
