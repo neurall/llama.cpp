@@ -128,6 +128,18 @@ int main() {
         dsf_call mi; mi.ratio = 0.9; mi.c_one_bench = 4.2 * s / 3000.0;
         const dsf_pick_out f = dsf_pick({ pass(3000, 2.0, 8.7, 3.0, false, 0) }, mi);
         check("MiMo 3k: a never-measured one card is capped by the bench (8.7 -> 4.2 s)", std::fabs(f.mu1_0 / s - 4.2) < 1e-9, f.mu1_0 / s);
+        // crossover audit X4 (qn1m ns_probe_cells, 3536 tokens, 2026-11-12): the split's model said 2.06 +- 0.34 s against one card 2.09 +- 0.10, the split ran,
+        // and this size had measured one card 1628 t/s (2.17 s) and the split 1389 t/s (2.55 s): the passes measured at this size price the pass, not the model
+        dsf_call qn; qn.ratio = 0.96; qn.split_prior = false; qn.split = &meas;
+        dsf_arm_pass q = pass(3536, 0.5, 2.09, 0.10, true, 4, 2.06, 0.34);
+        check("qn1m 3536 as logged, nothing measured at this size: the split (the models' pick)", dsf_pick({ q }, qn).choice == 1, 0.0);
+        q.m1 = 3536.0 / 1628.0 * s; q.nm1 = 2; q.m2 = 3536.0 / 1389.0 * s; q.nm2 = 2;
+        const dsf_pick_out qa = dsf_pick({ q }, qn);
+        check("qn1m 3536, one card 2.17 s and the split 2.55 s measured at this size: one card, no trial", qa.choice == 0 && !qa.trial, qa.am[1] / s);
+        // one sample of each at this size stays with the models (qni3 engram_late_fill 2442: the split measured once at 1253 t/s ran at 2025)
+        dsf_arm_pass r = pass(2442, 0.4, 1.62, 0.10, true, 4, 1.15, 0.20);
+        r.m1 = 2442.0 / 1514.0 * s; r.nm1 = 1; r.m2 = 2442.0 / 1253.0 * s; r.nm2 = 1;
+        check("qni3 2442, one sample of each at this size: the models decide (the split)", dsf_pick({ r }, qn).choice == 1, 0.0);
     }
     printf("%s\n", n_failed ? "FAILED" : "all passed");
     return n_failed ? 1 : 0;

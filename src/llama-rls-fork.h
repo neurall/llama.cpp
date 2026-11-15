@@ -281,7 +281,8 @@ static inline int rls_voi_pick(const double * mu, const double * var, const bool
 // Per pass: its tokens T, the link-bound expert upload U (us), the one-card estimate (the moe-cache's pick, or the split planner's own one-card model where
 // that is narrower; kn1 known here, n1 its samples) and the split model's prediction (unused while the split never ran). Per call: the bench's one-card
 // compute, the split / one ratio, the split's model (rls_known), the fill owed and how often a one-pass call of this size came before in this process.
-struct dsf_arm_pass { double T = 0.0, U = 0.0, mu1 = 0.0, v1 = 0.0, mu2 = 0.0, v2 = 0.0; bool kn1 = false; int n1 = 0; };
+struct dsf_arm_pass { double T = 0.0, U = 0.0, mu1 = 0.0, v1 = 0.0, mu2 = 0.0, v2 = 0.0; bool kn1 = false; int n1 = 0;
+                      double m1 = 0.0, m2 = 0.0; int nm1 = 0, nm2 = 0; };   // m1, m2: the pass's time from the passes measured at this size (us), nm1, nm2 their count; 0: none
 struct dsf_call {
     double c_one_bench = 0.0;             // the bench's one-card compute per token (us), 0: none
     double ratio = RLS_SPLIT_ONE_RATIO;   // the split / one-card compute ratio (the plan's matmul bench and link probe, else the measured constant)
@@ -323,9 +324,17 @@ static inline dsf_pick_out dsf_pick(const std::vector<dsf_arm_pass> & passes, co
         // the mirror of the split's prior: a split measured against a one card never measured, its bench figure counts neither the hand-offs nor the other card's layers
         // (GLM 3.0 12k, first request: split 6.46 s measured, one card 4.90 +- 1.76 from the bench, picked, took 9.4 s)
         if (!p.kn1 && p.n1 == 0 && !c.split_prior && mu2 / c.ratio > mu1) { mu1 = std::max(p.U, mu2 / c.ratio); v1 = mu1 * mu1 * sd2; }
+        // the passes measured at this size price the pass where each arm ran twice or more here (two samples: the user's denoise rule, rls_known): the models fit
+        // every size at once and miss at some (qn1m 3536 tokens, crossover audit X4: the split's model said 2.06 s, the split measured 2.55 s at this size and
+        // took 2.71, one card measured 2.17); one sample of an arm stays with its model (qni3 2442: the split measured once at 1253 t/s, ran at 2025)
+        bool m_kn1 = false, m_kn2 = false;
+        if (p.nm1 >= 2 && p.m1 > 0.0 && p.nm2 >= 2 && p.m2 > 0.0) {
+            mu1 = p.m1; v1 = std::min(v1, mu1 * mu1 * 0.06 * 0.06); m_kn1 = true;
+            mu2 = p.m2; v2 = std::min(v2 > 0.0 ? v2 : mu2 * mu2, mu2 * mu2 * 0.06 * 0.06); m_kn2 = true;
+        }
         if (o.np == 0) {
             o.mu1_0 = mu1; o.v1_0 = v1; o.mu2_0 = mu2; o.v2_0 = v2; o.u0 = p.U;
-            o.known1 = p.kn1; o.known2 = !c.split_prior && c.split && rls_known(*c.split, mu2, v2);
+            o.known1 = p.kn1 || m_kn1; o.known2 = m_kn2 || (!c.split_prior && c.split && rls_known(*c.split, mu2, v2));
         }
         m1 += mu1; v1s += v1; m2 += mu2; v2s += v2;
         ++o.np;

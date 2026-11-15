@@ -2927,6 +2927,14 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
             if (mo > 0.0 && vo < q.v1) { q.mu1 = mo; q.v1 = vo; q.kn1 = rls_known(g_rls_one, mo, vo); q.n1 = g_rls_one.n; }
         }
         if (!split_prior) { q.mu2 = rls_pred(g_rls_split, phi, &q.v2); }
+        {   // the passes this process measured at this size (g_buckets, live samples only, the caller holds g_mu): dsf_pick prices from them where both arms ran twice here
+            const auto bi = g_buckets.find(dsplit_bucket_of(T));
+            if (bi != g_buckets.end()) {
+                const dsplit_bucket & B = bi->second;
+                if (!B.prior[0]) { q.m1 = B.us_tok[0] * (double) T; q.nm1 = B.n[0]; }
+                if (!B.prior[1]) { q.m2 = B.us_tok[1] * (double) T; q.nm2 = B.n[1]; }
+            }
+        }
         if (c == pos0) { path0 = pth; }
         passes.push_back(q);
     }
