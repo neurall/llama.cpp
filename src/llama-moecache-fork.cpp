@@ -12651,9 +12651,9 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
     }
     if (c.size() < want.size()) { return false; }
     if (n_ring > 0) {
-        int32_t far = 0;   // past the furthest block taken from the cursor: the next entry starts behind it
-        for (size_t i = 0; i < n_ring; ++i) { far = std::max(far, c[i].at); }
-        ps.cs_cur = (ps.cs_cur + far + 1) % nr;
+        int32_t furthest = 0;   // past the furthest block taken from the cursor: the next entry starts behind it
+        for (size_t i = 0; i < n_ring; ++i) { furthest = std::max(furthest, c[i].at); }
+        ps.cs_cur = (ps.cs_cur + furthest + 1) % nr;
         if (r0 > 0 && card) { card->cs_byte = cbase + (size_t) (c[n_ring - 1].b + 1) * ps.B; if (card->cs_byte >= card->tail_end) { card->cs_byte = card->floor_end; } }
     }
     std::sort(c.begin(), c.end(), [](const cand & x, const cand & y) { return x.b < y.b; });   // ascending blocks for ascending experts: runs of both, one 2D copy each
