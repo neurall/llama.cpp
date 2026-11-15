@@ -19,7 +19,12 @@ static __global__ void ggml_cuda_batch_get_kernel(const ggml_cuda_batch_get_desc
     }
     const size_t first = (size_t) blockIdx.y * blockDim.x + threadIdx.x;
     const size_t stride = (size_t) gridDim.y * blockDim.x;
-    const auto copy = copies[index];
+    // fork: the descriptors live in mapped host memory (no VRAM outside the expert pool): one PCIe read per block, shared by its threads
+    __shared__ ggml_cuda_batch_get_descriptor copy;
+    if (threadIdx.x == 0) {
+        copy = copies[index];
+    }
+    __syncthreads();
     // Use 16-, 8-, 4-, or 2-byte copies when both pointers meet that alignment; threads copy separate chunks.
     const uintptr_t alignment = (uintptr_t) copy.src | (uintptr_t) copy.dst;
     size_t tail = 0;
@@ -148,18 +153,19 @@ bool ggml_cuda_get_tensor_n(int device,
     // Keep descriptor storage alive until the final stream synchronization.
     constexpr size_t max_batch_descriptors = 128 * 1024;
     const size_t bytes = std::min(n_reads_gather, max_batch_descriptors) * sizeof(ggml_cuda_batch_get_descriptor);
-    ggml_backend_buffer_ptr descriptors(n_reads_gather ? ggml_backend_buft_alloc_buffer(ggml_backend_cuda_buffer_type(device), bytes) : nullptr);
-    if (!descriptors) {
-        n_reads_gather = 0;
-    }
+    // fork: the kernel reads the pinned host descriptors through their mapping; a device copy was 2.3-2.8 MiB of VRAM outside the expert pool per K3 prompt save
     const auto host_type = ggml_backend_cuda_host_buffer_type();
     ggml_backend_buffer_ptr host_descriptors(n_reads_gather ? ggml_backend_buft_alloc_buffer(host_type, bytes) : nullptr);
     if (!host_descriptors || ggml_backend_buffer_get_type(host_descriptors.get()) != host_type) {
         n_reads_gather = 0;
     }
+    ggml_cuda_batch_get_descriptor * device_copies = nullptr;
+    if (n_reads_gather && cudaHostGetDevicePointer((void **) &device_copies, ggml_backend_buffer_get_base(host_descriptors.get()), 0) != cudaSuccess) {
+        (void) cudaGetLastError();
+        n_reads_gather = 0;
+    }
     if (n_reads_gather) {
         auto * copies = static_cast<ggml_cuda_batch_get_descriptor *>(ggml_backend_buffer_get_base(host_descriptors.get()));
-        auto * device_copies = static_cast<ggml_cuda_batch_get_descriptor *>(ggml_backend_buffer_get_base(descriptors.get()));
         const int threads = 256;
         const size_t nsm = ggml_cuda_info().devices[device].nsm;
         size_t i = 0;
@@ -175,8 +181,6 @@ bool ggml_cuda_get_tensor_n(int device,
             }
             const size_t blocks_per_copy = std::min<size_t>(UINT16_MAX, std::max<size_t>(1, (nsm + n_batch - 1) / n_batch));
             const dim3 blocks((unsigned int) n_batch, (unsigned int) blocks_per_copy);
-            // Stream ordering keeps each kernel ahead of the next descriptor overwrite.
-            CUDA_CHECK(cudaMemcpyAsync(device_copies, copies, n_batch * sizeof(copies[0]), cudaMemcpyHostToDevice, cudaStreamPerThread));
             ggml_cuda_batch_get_kernel<<<blocks, threads, 0, cudaStreamPerThread>>>(device_copies, n_batch);
             CUDA_CHECK(cudaGetLastError());
             if (first + n_batch < n_reads_gather) {
