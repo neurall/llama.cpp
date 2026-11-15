@@ -1117,6 +1117,9 @@ static const double * ggml_cuda_link_caps() {   // GB/s each way per device, 0: 
     });
     return caps;
 }
+#ifndef CUDART_CB
+#define CUDART_CB   // HIP and MUSA host callbacks have no calling-convention macro (fork: the Linux HIP module failed to build on these)
+#endif
 struct ggml_cuda_link_use { int device, out; size_t size; int64_t t0; };
 static void CUDART_CB ggml_cuda_link_begin_cb(void * p) { ((ggml_cuda_link_use *) p)->t0 = ggml_time_us(); }   // the stream reached the copy
 static void CUDART_CB ggml_cuda_link_end_cb(void * p) {
