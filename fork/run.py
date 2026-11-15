@@ -5775,6 +5775,15 @@ HUGE_NR = "/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages"
 HUGE_FREE = "/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages"
 
 
+def pool_most_gib(total=None):
+    """The largest pool that leaves the rest of a run its RAM: RAM minus max(20%, 24 GiB), HUGEFS_MARGIN_GIB overrides. hugepool mount and the list's per-model sizing
+    (run_list_pool) both keep to it. Returns (RAM GiB, margin GiB, the most a pool may take)."""
+    if total is None:
+        total = int([l for l in open("/proc/meminfo") if l.startswith("MemTotal")][0].split()[1]) >> 20
+    margin = int(os.environ.get("HUGEFS_MARGIN_GIB") or max(total // 5, 24))
+    return total, margin, total - margin
+
+
 def _sudo_write(path, val):
     r = subprocess.run(["sudo", "-n", "tee", path], input=str(val), capture_output=True, text=True)
     if r.returncode != 0:
@@ -7448,6 +7457,18 @@ def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
     need = max(-(-model_bytes >> 30), 1)
     have = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
     why = ""
+    total, margin, most = pool_most_gib()
+    if need > most:   # pinned whole, the model would leave the run less than the margin (DeepSeek 232 GiB on 251: its 232 pool left 15 GiB, memwatch killed both loads, 2026-11-15): no pool, the engine pins its own computed share from ordinary RAM
+        if os.path.ismount(mnt):
+            while subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0: time.sleep(5)   # nothing may map the pool while it goes
+            import contextlib, io
+            try:
+                with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
+            except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
+        if getattr(run_list_pool, "told_big", None) != need:
+            print(f"pool: none for this model: {need} GiB is above the {most} GiB a pool may take (RAM {total} GiB less {margin} GiB for the rest of the run); the engine pins its own share", flush=True)
+            run_list_pool.told_big = need
+        return
     if have >= need and os.path.ismount(mnt): return   # a pool the model fits in stays as it is: every unmount fragments RAM further (the stock cells unmount in the caller, then the next model mounts its own size)
     while subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0: time.sleep(5)   # nothing may map the pool while it is rebuilt
     import contextlib, io
@@ -9545,9 +9566,7 @@ def cmd_hugepool(a):
         return
     if "hugetlb_cma" in open("/proc/cmdline").read():
         sys.exit("the kernel was booted with hugetlb_cma=: those pages cannot be pinned for the GPU, boot without it")
-    total = int([l for l in open("/proc/meminfo") if l.startswith("MemTotal")][0].split()[1]) >> 20
-    margin = int(os.environ.get("HUGEFS_MARGIN_GIB") or max(total // 5, 24))
-    most = total - margin
+    total, margin, most = pool_most_gib()
     if most <= 0:
         sys.exit(f"not enough RAM for a pool (total {total} GiB, margin {margin} GiB)")
     targets = a.what or []
