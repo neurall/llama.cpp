@@ -10,6 +10,7 @@ void llama_moe_set_opt(const char * key, const char * value);
 
 #include "llama-moecache-fork.h"
 #include "llama-dsplit-fork.h"
+#include "llama-estimate-fork.h"   // thread_search: the decode thread search's rule
 #include "llama-kv-cache.h"
 #include "llama-moestate-fork.h"
 
