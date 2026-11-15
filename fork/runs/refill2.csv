@@ -1,0 +1,10 @@
+name,model,n,test,tokens,args,extra
+rf-mimo-12k-new,mimo,2,pf12k1k,1024,,
+rf-mimo-12k-noend,mimo,2,pf12k1k,1024,--moe refill-end=0,
+rf-mimo-1k-new,mimo,2,pf1k1k,1024,,
+rf-mimo-1k-noend,mimo,2,pf1k1k,1024,--moe refill-end=0,
+rf-qni4-new,qn_iq4xs,3,pf128k,512,,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0
+rf-qni4-noend,qn_iq4xs,3,pf128k,512,--moe refill-end=0,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0
+rf-qni4-allbg,qn_iq4xs,3,pf128k,512,--moe reheat-bg=1,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0
+rf-qni4-8g-new,qn_iq4xs,2,pf12k,512,--moe sim-vram=8192,
+rf-qni4-8g-noend,qn_iq4xs,2,pf12k,512,"--moe sim-vram=8192,refill-end=0",
