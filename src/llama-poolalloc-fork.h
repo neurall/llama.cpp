@@ -92,8 +92,14 @@ static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return 
 // again when its layer comes (Qwen3.8 IQ4_XS 12k staging=0, 2026-11-14: 2825 of pass 1's 23013 blocks were layers ahead and 4510 were claims ranked before computed
 // experts; 55.9 GB uploaded against staged's 47.9). Rank: the order taken, cheap before costly, the layer still computing after every other cheap block; a costly
 // block only for an entry needed now (poolx_ring_cheap).
-static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6; }
-static inline int  poolx_ring_rank(int tier) { static const int r[9] = { 0, 1, 2, 4, 6, 3, 7, 8, 5 }; return tier >= 0 && tier < 9 ? r[tier] : 9; }
+// 9 a decode-hot cached expert of a computed layer, 10 another class's bytes over one (--moe ring-keep-hot, default on): the stream takes them after every
+// other cheap block and only for the entry needed now, so a prompt leaves decode its hot experts (Qwen3.8 IQ4_XS 12k, 2026-11-15: staging=0 refilled 24-26 GB
+// after the prompt against staged's 14-15 GB, decode 45.8 against 49.95 t/s)
+static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6 || tier == 9 || tier == 10; }
+static inline int  poolx_ring_rank(int tier) { static const int r[11] = { 0, 1, 2, 4, 8, 3, 9, 10, 5, 6, 7 }; return tier >= 0 && tier < 11 ? r[tier] : 11; }
+// decode-hot: decode visits at or above the layer's mean over all its experts
+template <class V> static double poolx_hot_cut(const V & cnt) { double s = 0; for (const auto v : cnt) { s += (double) v; } return cnt.empty() ? 0.0 : s / (double) cnt.size(); }
+static inline bool poolx_is_hot(double visits, double cut) { return visits > 0 && visits >= cut; }
 // what taking a block of a tier does to what lies there: nothing (free, empty), its cached expert leaves the table (cs_evict: 2, 3, 4, 8), the other classes'
 // experts over its bytes leave (cls_claim: 5, 6), a prediction gives way (7). Never by comparing tiers: tier 8 once went down the claim branch and its expert stayed
 // in the table over the new expert's bytes (vf-qni3 on ring_cover_all, 1830 slices bad)
@@ -101,7 +107,7 @@ enum poolx_take_kind { POOLX_TAKE_NONE, POOLX_TAKE_EVICT, POOLX_TAKE_CLAIM, POOL
 static inline poolx_take_kind poolx_ring_take(int tier) {
     switch (tier) {
         case 0: case 1:         return POOLX_TAKE_NONE;
-        case 5: case 6:         return POOLX_TAKE_CLAIM;
+        case 5: case 6: case 10: return POOLX_TAKE_CLAIM;
         case 7:                 return POOLX_TAKE_YIELD;
         default:                return POOLX_TAKE_EVICT;
     }

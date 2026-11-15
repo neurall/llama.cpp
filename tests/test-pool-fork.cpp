@@ -826,6 +826,14 @@ static void test_regress_ring_costly() {
     // every other computed block, before any layer to come's (that one goes up twice, this one only waits for its compute)
     report("the layer still computing after every other computed block and claim", poolx_ring_rank(8) > poolx_ring_rank(2) && poolx_ring_rank(8) > poolx_ring_rank(3) && poolx_ring_rank(8) > poolx_ring_rank(5));
     report("the layer still computing before any layer to come", poolx_ring_rank(8) < poolx_ring_rank(4) && poolx_ring_rank(8) < poolx_ring_rank(6));
+    {   // ring keep-hot (Qwen3.8 IQ4_XS 12k 2026-11-15: the stream took decode-hot experts, staging=0 refilled 24-26 GB against staged's 14-15)
+        const std::vector<uint64_t> cnt = { 0, 0, 10, 1, 1 };
+        const double cut = poolx_hot_cut(cnt);
+        report("decode-hot: at or above the layer's mean visits, never an unvisited one", poolx_is_hot(10, cut) && !poolx_is_hot(1, cut) && !poolx_is_hot(0, cut) && !poolx_is_hot(0, 0.0));
+        report("hot cached experts after every cheap block, before layers to come", poolx_ring_rank(9) > poolx_ring_rank(8) && poolx_ring_rank(9) > poolx_ring_rank(3) && poolx_ring_rank(9) > poolx_ring_rank(5) && poolx_ring_rank(9) < poolx_ring_rank(4) && poolx_ring_rank(10) < poolx_ring_rank(4));
+        report("hot blocks costly: only the entry needed now takes them", poolx_ring_costly(9) && poolx_ring_costly(10));
+        report("a hot claim claims, a hot cached expert is evicted", poolx_ring_take(10) == POOLX_TAKE_CLAIM && poolx_ring_take(9) == POOLX_TAKE_EVICT);
+    }
     report("tiers: computed 2/3, still computing 8, to come 4, queued or own -1",
            poolx_ring_tier(3, 9, 12, true, false, false) == 2 && poolx_ring_tier(3, 9, 12, false, false, false) == 3 && poolx_ring_tier(8, 9, 12, true, false, false) == 8 &&
            poolx_ring_tier(20, 9, 12, false, false, false) == 4 && poolx_ring_tier(10, 9, 12, true, false, false) == -1 && poolx_ring_tier(12, 9, 12, false, false, false) == -1);
