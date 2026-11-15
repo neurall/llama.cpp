@@ -7662,6 +7662,32 @@ def simjoe_teardown(quiet=False):
     if did and not quiet: print(col(33, f"simjoe: {' and '.join(did)} limits removed"), flush=True)
 
 
+def simjoe_sweep():
+    """limits simjoe may have left with no mark (a crash before the mark, a mark lost): CPUs offline, the bandwidth group, the RAM hold, a lowered link, a held-down power limit.
+    Nothing happens while a simjoe list runs (its mark or RUN_SIMJOE) or when everything is normal; prints what it put back."""
+    if os.environ.get("RUN_SIMJOE") or os.path.exists(JOE_MARK): return []
+    did = []; busy = subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0
+    off = [n for n in range(1, os.cpu_count() or 1) if os.path.exists(f"/sys/devices/system/cpu/cpu{n}/online") and open(f"/sys/devices/system/cpu/cpu{n}/online").read().strip() == "0"]
+    for n in off: subprocess.run(["sudo", "-n", "tee", f"/sys/devices/system/cpu/cpu{n}/online"], input="1", capture_output=True, text=True)
+    if off: did.append(f"{len(off)} CPUs online")
+    if os.path.ismount(JOE_HOGFS):
+        subprocess.run(["sudo", "-n", "rm", "-f", JOE_HOGFS + "/hold"], capture_output=True); subprocess.run(["sudo", "-n", "umount", JOE_HOGFS], capture_output=True); did.append("RAM hold")
+    if os.path.exists(JOE_HOG) and int(open(JOE_HOG).read() or 0) > 0 and not busy:
+        subprocess.run(["sudo", "-n", "tee", JOE_HOG], input="0", capture_output=True, text=True); did.append("2 MiB pages")
+    if os.path.isdir(JOE_RG):
+        subprocess.run(["sudo", "-n", "rmdir", JOE_RG], capture_output=True); did.append("bandwidth cap")
+    if not busy:
+        try:
+            for i, mx in enumerate(subprocess.run([NVSMI, "--query-gpu=pcie.link.gen.max", "--format=csv,noheader"], capture_output=True, text=True).stdout.split()):
+                rp, _ = joe_root_port(i); tgt = joe_link_gen(rp)
+                if tgt and tgt < int(mx): joe_link_gen(rp, int(mx)); did.append(f"CUDA{i} link Gen {int(mx)}")
+        except (OSError, ValueError): pass
+    try: apply_power_schedule()
+    except Exception: pass
+    if did: print(col(33, f"simjoe: left over, put back: {', '.join(did)}"), flush=True)
+    return did
+
+
 def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
     """The huge-page pool for the next model. A model above the pool limit (pool_most_gib: RAM less max(20%, 24 GiB)) gets none and a mounted pool goes. Otherwise a pool
     the model fits in is kept; a missing or smaller one is replaced by one of this model's size. The list orders our cells of pool models biggest first, then stock and
@@ -8127,6 +8153,7 @@ def run_list(name, argv):
         if not o.dry: simjoe_setup(simjoe_cfg())
     elif not o.dry:
         simjoe_teardown()   # limits a stopped simjoe list left behind
+        simjoe_sweep()      # and any it left with no mark (a crash, a lost mark)
     if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
     if o.n_gpus is not None and o.machine == "pc1":   # this host: the children (cells, servers) see the chosen cards only, numbered in the listed order
         _vis = pick_gpus(o.n_gpus, subprocess.run(GPU_Q_NG, shell=True, capture_output=True, text=True).stdout) if o.n_gpus > 0 else ""
@@ -9779,6 +9806,7 @@ def cmd_stop(a):
         time.sleep(2)
     print(f"stop: {len(targets)} processes ended; GPU memory in use {used} MiB" + ("" if used is None or used < 800 else "  <-- NOT free"))
     simjoe_teardown()   # a simjoe list killed before its own exit: its RAM hold and bandwidth cap go too
+    simjoe_sweep()
     if not a.no_power:
         apply_power_schedule()
 
