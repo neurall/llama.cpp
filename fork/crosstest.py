@@ -39,10 +39,10 @@ def model_key(name):
     if "mimo" in s: return "mimo"
     if "deepseek" in s or re.search(r"(^|[-_])ds([-_]|$)", s): return "ds"
     if "qwen3.6" in s or "qwen36" in s or re.search(r"(^|[-_])q35([-_]|$)", s): return "qwen36"
+    if "olmoe" in s: return "olmoe"   # before the quant names: OLMoE-1B-7B-0924-IQ1_M is no Qwen3.8 IQ1_M
     if "iq1_m" in s or re.search(r"(^|[-_])qn1([-_]|$)", s): return "qn1m"
     if "iq3_s" in s or "qni3" in s: return "qni3"
     if "iq4_xs" in s or "qni4" in s or "qwen3.8" in s or "qwen38" in s: return "qni4"
-    if "olmoe" in s: return "olmoe"
     if "kimi" in s or re.search(r"(^|[-_])k3", s): return "k31"
     return ""
 
