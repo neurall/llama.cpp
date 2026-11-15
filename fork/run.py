@@ -8545,8 +8545,14 @@ def ini_set_maxpp(sec, tokens):
 BESTPP_MEM = {}   # (alias, VRAM GiB) -> request time per token (ms) of the best prompt so far: read from models.ini once, then only in memory
 
 
+def best_size(seen, tol=0.02):
+    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> the best prompt size: the highest prompt speed, and among the sizes within tol of it the longest prompt. Decode speed does not rank sizes: it hardly depends on the prompt and moves 25% from cell to cell (MiMo 26.8 vs 34.4 t/s), which once made a slower 8k beat the faster 11k"""
+    top = max(v[1] for v in seen.values())
+    return max((k for k, v in seen.items() if v[1] >= top * (1 - tol)))
+
+
 def scores(seen):
-    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> {prompt tokens: score}: prompt speed over the best prompt speed plus decode speed over the best decode speed (best on both = 2)"""
+    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> {prompt tokens: score}: prompt speed over the best prompt speed plus decode speed over the best decode speed (best on both = 2); only shown, best_size picks"""
     mp, mt = max(v[1] for v in seen.values()), max(v[2] for v in seen.values())
     return {k: v[1] / mp + v[2] / mt for k, v in seen.items()}
 
@@ -8593,9 +8599,9 @@ def learn_bestpp(model, test, tag):
         pp_s, tg_s = new[0] / new[2], new[1] / new[3]; total = pp_s + tg_s   # seconds of the request: the prompt, then the answer the run gave at the decode speed that followed (the server's own timings: no load time)
         if key not in BESTPP_MEM:   # every one-pass prompt seen so far for this model and VRAM: {prompt tokens: (answer tokens, prompt t/s, decode t/s)}, starting with the models.ini entry
             e0 = bestpp_entries((fcfg.models_ini().get(sec) or {}).get("bestpp", "")).get(hw); BESTPP_MEM[key] = {e0[0]: e0[1:4]} if e0 else {}
-        seen = BESTPP_MEM[key]; was = max(seen, key=lambda k: scores(seen)[k]) if seen else None   # the stored best before this run
+        seen = BESTPP_MEM[key]; was = best_size(seen) if seen else None   # the stored best before this run
         seen[new[0]] = new[1:]
-        sc_all = scores(seen); best = max(seen, key=lambda k: (round(sc_all[k], 6), k))   # all seen sizes against the same two best numbers: no order effects
+        sc_all = scores(seen); best = best_size(seen)   # all seen sizes against the same best prompt speed: no order effects
         if best != was or new[0] == best:
             o_, p_, d_ = seen[best]; ini_set_bestpp(sec, best, o_, p_, d_, best / p_, o_ / d_, sc_all[best])
             if best != was: print(col(92, f"best prompt of {sec} at {hw}g: {best} tokens, prompt {p_:.0f} t/s, decode {d_:.1f} t/s, total {best / p_ + o_ / d_:.1f} s, score {sc_all[best]:.2f}, written to models.ini"), flush=True)
@@ -11195,6 +11201,9 @@ def _tool_selftest():
         check(_g["ini_put_text"]("[a]\npath = x\n\n[b]\nk = 1\n", "a", "bestpp", "v") == "[a]\npath = x\nbestpp = v\n\n[b]\nk = 1\n", "ini_put_text: a key goes to its section's end")
         check(_g["ini_put_text"]("", "m", "k", "v") == "[m]\nk = v\n" and _g["ini_put_text"]("[m]\nk = 1\n", "m", "k", "2").count("k =") == 1, "ini_put_text: a new section, a replaced key")
         check(_f.ini_overlay({"a": {"path": "x", "bestpp": "old"}}, {"a": {"bestpp": "new"}}) == {"a": {"path": "x", "bestpp": "new"}}, "ini_overlay: this hardware's value wins, the rest stays")
+        _sm = {8037: (1024, 1422.0, 34.4), 11015: (1024, 1465.0, 26.8), 9937: (1024, 1461.0, 32.9), 4000: (1024, 1300.0, 36.0)}
+        check(_g["best_size"](_sm) == 11015, "best_size: decode noise (26.8 vs 34.4 t/s) never moves the pick; the highest prompt speed wins, and within 2% the longer prompt")
+        check(_g["best_size"]({8037: (1024, 1000.0, 30.0), 12000: (1024, 985.0, 20.0)}) == 12000 and _g["best_size"]({8037: (1024, 1000.0, 30.0), 12000: (1024, 900.0, 30.0)}) == 8037, "best_size: within 2% the longer prompt, below that the faster one")
         check(_f.hw_slug("A b | C:d x16") == "A-b__C-d-x16", "hw_slug: ' | ' becomes '__', unsafe characters '-'")
         rv = lambda b, t, m="M": {"test": "ppl", "ok": "1", "model": m, "args": "a", "build": b, "tps": str(t)}
         check(runpy.run_path(RUN, run_name="forkselftest")["regress_list_verdict"]([rv("n", 10), rv("n", 10.1), rv("b", 10), rv("b", 10.1)], "n", "b", "/x", 0.97) == 0, "regress list: equal builds pass")
