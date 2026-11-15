@@ -140,7 +140,8 @@ def judge(cells):
                 k = (size_class(p["n"]), "c" if i == 0 else "w"); b4 = prior.get(k)
                 if b4 and b4[0] and b4[1] and p["n"] >= 1000:
                     mine = b4[1] if p["mode"].startswith("dense") else b4[0]; other = b4[0] if p["mode"].startswith("dense") else b4[1]
-                    if other > mine * (1 + YARD): knew.append(f"{p['n']} {p['mode']} {p['tps']:.0f} t/s, known before: one {b4[0]:.0f} / split {b4[1]:.0f}{' (trial)' if p['trial'] else ''}")
+                    # a pick the buckets called slower counts when it also ran slower than the other arm's known rate: a trial that came out level is no loss (qni3 2442: 1497 against one 1526)
+                    if other > mine * (1 + YARD) and other > p['tps'] * (1 + YARD): knew.append(f"{p['n']} {p['mode']} {p['tps']:.0f} t/s, known before: one {b4[0]:.0f} / split {b4[1]:.0f}{' (trial)' if p['trial'] else ''}")
                 prior[k] = (one or (b4[0] if b4 else None), spl or (b4[1] if b4 else None))
     if knew and x4[0] != "FAIL": x4 = ("FAIL", x4[1], x4[2] + len(knew), f"{len(knew)} passes ran the slower arm the planner's own buckets knew: " + "; ".join(knew[:3]) + ("; " + x4[3] if x4[0] == "PASS" else ""))
     elif knew: x4 = (x4[0], x4[1], x4[2] + len(knew), x4[3] + "; known-slower passes: " + "; ".join(knew[:2]))
