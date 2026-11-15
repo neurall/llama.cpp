@@ -1,0 +1,7 @@
+run 27939 | mix_zero_first | pf4k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 50.31 t/s | prompt 1309.9 t/s | 32 tokens | args: -np 1 --moe pp-path=mix,dense-split=0 | power 280+280 W | 2026-11-13 20:48:07
+
+
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string

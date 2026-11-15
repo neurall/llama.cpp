@@ -1,0 +1,59 @@
+run 28394 | lp_check_before_lock | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 25.93 t/s | prompt 21.3 t/s | 986 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 280+280 W | 2026-11-14 07:34:41
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, line clearing, rotation, gravity. Need maybe use canvas and keyboard. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Requirements:
+- Canvas 10x20 grid.
+- Tetromino shapes.
+- Random piece.
+- Move left/right/down, rotate.
+- Drop with space? Maybe.
+- Line clear.
+- Score.
+- Game over.
+- Restart.
+
+Need "smallest html" maybe code golf. But must be understandable. We can provide compact code.
+
+Let's craft robust code.
+
+Use canvas width 300 height 600, cell 30. Board 10x20. Use array board 20 rows x 10 cols. Piece represented by matrix? Could use shapes as arrays of coordinates. Simpler: define tetrominoes as arrays of 4 [x,y] cells relative to top-left. Rotation by transform coordinates around center? Need handle rotation. Could use matrix representation and rotate matrix. But compact.
+
+Option: Use shapes as 4x4 matrices? For each piece, define matrix of 0/1. Rotation by rotating matrix. Collision check. This is easy. But code longer. Could use coordinate arrays and rotate around origin. Need ensure rotation works.
+
+Let's define pieces as arrays of coordinates:
+I: [[0,0],[1,0],[2,0],[3,0]]
+O: [[0,0],[1,0],[0,1],[1,1]]
+T: [[0,0],[1,0],[2,0],[1,1]]
+S: [[1,0],[2,0],[0,1],[1,1]]
+Z: [[0,0],[1,0],[1,1],[2,1]]
+J: [[0,0],[0,1],[1,1],[2,1]]
+L: [[2,0],[0,1],[1,1],[2,1]]
+Need rotation. For coordinate arrays, rotate around center? If rotate each cell (x,y) -> (y, -x) or (-y,x). But shape may shift. Need normalize after rotation by subtracting min x/y. That works. For I horizontal, rotate -> vertical. For O, rotate same. For T, rotate. Need collision with board. Use piece cells relative to top-left after normalization. Rotation can be done by mapping (x,y)->(y,-x), then normalize min. But for shapes with coordinates not centered, rotation around origin may produce shape shifted; normalization handles. Need ensure rotation of T: coords (0,0),(1,0),(2,0),(1,1). Rotate (y,-x): (0,0),(0,-1),(0,-2),(-1,-1). Normalize min x=-1, min y=-2 -> (1,2),(1,1),(1,0),(0,1). That's T rotated? Cells: (1,2),(1,1),(1,0),(0,1) = vertical T with stem left? Actually T rotated clockwise? It's valid. Good.
+
+Need piece position x,y top-left. Collision: for each cell [cx,cy], board[y+cy][x+cx] if out of bounds or occupied. Need allow y negative? Spawn at y=0. Rotation may have cells with y up to 3. Board 20. Fine.
+
+Need line clear: after locking piece, check rows full. Remove row, unshift empty row. Score += 100 * lines? Maybe.
+
+Need gravity: setInterval or requestAnimationFrame. Use drop timer. Simpler: setInterval tick every 500ms. But keyboard moves. Need game loop. Use setInterval for gravity. Need handle game over.
+
+Need controls: ArrowLeft/Right move, ArrowDown soft drop, ArrowUp rotate, Space hard drop. Maybe prevent default.
+
+Need draw: canvas. Draw board cells and current piece. Use colors. Need maybe score text in HTML.
+
+Need minimal code. Could use CSS to center. Need include canvas and score.
+
+Let's write code:
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tetris</title>
+<style>
+body{display:flex
+---

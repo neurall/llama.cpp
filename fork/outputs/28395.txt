@@ -1,0 +1,45 @@
+run 28395 | lp_check_before_lock | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 45.24 t/s | prompt 34.0 t/s | 987 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 280+280 W | 2026-11-14 07:36:07
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need ensure game playable. Need concise. Need maybe no external libs. Need include controls. Need smallest possible but still Tetris. Need generate code.
+
+Need think through implementation. We can create a compact Tetris game in one HTML file. Need maybe use canvas 10x20, tetrominoes, rotation, collision, line clear, score, game over. Need keyboard controls. Need maybe mobile? Not necessary. Need "smallest html tetris game" likely wants code. We can provide code block.
+
+Need design minimal code. Need ensure correctness. Let's craft compact JS.
+
+Approach:
+- Canvas width 300 height 600? Board 10x20, cell 30. Use canvas.
+- Tetromino shapes as arrays of coordinates or matrices. Use 7 shapes with rotations? Could use matrix rotations. Minimal: define shapes as arrays of 4 cells in 4x4 matrices? Or define base shapes and rotate via function.
+- Use board array 20 rows x 10 cols.
+- Current piece: shape matrix (4x4) with 1s, x,y. Rotation by rotating matrix.
+- Collision: for each filled cell, check board bounds and occupied.
+- Spawn random piece at x=3, y=0? Need top. If collision game over.
+- Drop: move down if possible; else lock, clear lines, spawn.
+- Controls: left/right, down, up rotate, space hard drop? Maybe.
+- Game loop with requestAnimationFrame and drop interval. Use timestamp.
+- Score.
+
+Need minimal code. Could use setInterval. Need avoid too much.
+
+Let's write code:
+
+<!doctype html>
+<html>
+<body>
+<canvas id=c width=300 height=600></canvas>
+<script>
+const c=document.getElementById('c'),g=c.getContext('2d'),W=10,H=20,S=30;
+let b=Array.from({length:H},()=>Array(W).fill(0)),p,px,py,score=0,dead=false,last=0;
+const shapes=[
+ [[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]], // I
+ [[1,1,0,0],[1,1,0,0],[0,0,0,0],[0,0,0,0]], // O
+ [[0,1,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]], // T
+ [[1,0,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]], // L? Actually J? 
+ [[0,0,1,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]], // J
+ [[1,1,0,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]], // S
+ [[0,1,1,0],[1,1,0,0],[0,0,0,0],[0,0,0,0]] // Z
+];
+function rot(m){let n=m.map(r=>r.slice()); for(let i=0;i<4;i++)for(let j=0;j<4;j++)n[i][j]=m[3-j][i]; return n;}
+function hit(m,x,y){for(let i=0;i<4;i++)for(let j=0;j<4;j++)if(m[i][j]){let X=x+j,Y=y+i; if(X<0||X>=W||Y>=H||b[Y][X])return true;} return false;}
+function spawn(){p=shapes[Math.floor(Math.random()*7)].map(r=>r.slice()); px=3; py=0; if(hit(p,px,py)) dead=true;}
+function lock(){for(let i=0;i<4;i++)for(let j=0;j<4;j++)if(p[i][j])b[py+i][px+j]=1; let n=0; for(let y=H-1;y>=0;y--){if(b[y].every(v=>v)){b.splice(y,1); b.unshift(Array
+---

@@ -1,0 +1,21 @@
+run 27815 | tree_emb_key | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.46 t/s | prompt 125.0 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,rp-pre=0,tree-key=emb,state=/tmp/runstate/q36ph3/tpre/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/tpre | power 280+280 W | 2026-11-13 18:03:43
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, crushing weight of centuries pressing against his ribs. The air in the habitation module smelled of ozone and stale recycled moisture, a scent he had memorized in the dark dreams of his long sleep. He blinked, his vision swimming in the gray haze of the emergency lighting, until the familiar hum of the ship’s life support systems stabilized into a steady, rhythmic thrum.
+
+He was the Archivist. His duty was to preserve the memory of the journey, to catalog the stars they had passed and the silence they had endured. But now, the silence was broken.
+
+Elias stumbled toward the observation deck, his legs trembling like wet paper. The heavy blast doors slid open with a hiss, revealing the viewport. He expected the black void, the distant, pinprick stars that had guided them for three hundred years. Instead, he saw light.
+
+It was not the harsh glare of a sun, but the soft, amber glow of civilization. Below them, the planet of Aethel—our promised home—was illuminated. Cities sprawled across the continents like glowing neural networks, pulsing with electricity, with life. The lights were too bright, too dense. They should have been dark. They should have been wild, untouched, waiting for the first footprints of the *Odyssey*.
+
+Elias pressed his face against the cold glass, his breath fogging the surface. "That’s impossible," he whispered, his voice raspy from disuse. "We are the first. We are the seed."
+
+Behind him, Captain Vane entered the deck, his uniform wrinkled, his eyes wide with the same disbelief. "Check the telemetry," Vane said, his voice tight. "Are we in the wrong sector?"
+
+"No," Elias replied, turning to face him. "We are exactly where the charts predicted. Three hundred years of travel. We arrived on schedule."
+
+"Then who is lighting the cities?" Vane asked, looking out at the sprawling metropolis. The lights reflected off the glass, casting a warm, eerie glow on Elias’s pale face.
+
+Elias walked to the console, his fingers trembling as he keyed in the navigation data. He pulled up the historical logs, the digital records of the *Odyssey*’s departure. He scrolled through the years, the decades, the centuries.

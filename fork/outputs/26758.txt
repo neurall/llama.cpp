@@ -1,0 +1,108 @@
+run 26758 | ns_probe_cells | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 42.71 t/s | prompt 50.4 t/s | 1010 tokens | args: -np 1 | power 280+280 W | 2026-11-12 14:42:55
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+1. A canvas or grid to display the game
+2. Piece definitions (tetrominoes)
+3. Game loop (falling, collision, line clearing)
+4. Controls (left, right, rotate, drop)
+5. Score
+
+Let me write a compact version:
+
+```html
+<!DOCTYPE html>
+<html>
+<head><title>Tetris</title></head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+// ... game code
+</script>
+</body>
+</html>
+```
+
+Let me write a compact but functional Tetris game. I'll use a canvas and keep the code as small as possible while still being functional.
+
+Let me think about the core mechanics:
+
+- 10 columns, 20 rows
+- Cell size: 30px (300x600 canvas)
+- Pieces: I, O, T, S, Z, J, L
+- Each piece is a 4x4 matrix or similar representation
+- Rotation
+- Collision detection
+- Line clearing
+- Score
+
+Let me write this compactly:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let grid=[],score=0,piece,nextPiece,gameOver=false;
+
+// Tetromino definitions - each is a set of [row, col] offsets
+const pieces=[
+  [[1,1,1,1]], // I
+  [[1,1],[1,1]], // O
+  [[0,1,0],[1,1,1]], // T
+  [[0,1,1],[1,1,0]], // S
+  [[1,1,0],[0,1,1]], // Z
+  [[1,0,0],[1,1,1]], // J
+  [[0,0,1],[1,1,1]]  // L
+];
+```
+
+Actually, let me think about this differently. I'll represent pieces as arrays of cells (relative positions), and rotate them.
+
+Let me write a more compact version:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let g=[],sc=0,p,px,py,go=0;
+
+// Pieces as arrays of [col,row] relative positions
+const P=[
+  [[0,0],[1,0],[2,0],[3,0]], // I
+  [[0,0],[1,0],[0,1],[1,1]], // O
+  [[1,0],[0,1],[1,1],[2,1]], // T
+  [[1,0],[2,0],[0,1],[1,1]], // S
+  [[0,0],[1,0],[1,1],[2,1]], // Z
+  [[0,0],[0,1],[1,1],[2,1]], // J
+  [[2,0],[0,1],[1,1],[2,1]]  // L
+];
+```
+
+Hmm, let me think about rotation. For rotation, I can rotate the piece matrix.
+
+Actually, let me use a matrix representation for each piece and rotate the matrix:
+
+```javascript
+const P=[
+  [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], // I
+  [[1,1],[1,1]], // O
+  [[0,1,0],[1,1,1],[0,0,0]], // T
+  [[0,1,1],[1,1,0],[0,0,0]], // S
+  [[1,1,0],[0,1,1],[0,0,0]], // Z
+  [[1,0,0],[1,1,1],[0,0,0]], // J
+  [[0,0,1],[1,1,1],[0,0,0]]  // L
+];
+```
+
+Rotation: transpose and reverse rows (or reverse columns and transpose).
+
+Let me write the full game now, keeping it as compact as possible:
+
+```html
+<!DOCTYPE html>
+<html><body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let g=[],sc=0,p,px,py,go
+---

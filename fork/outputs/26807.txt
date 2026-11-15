@@ -1,0 +1,25 @@
+run 26807 | ns_probe_cells | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 36.71 t/s | prompt 272.2 t/s | 680 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 280+280 W | 2026-11-12 15:44:17
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code in common/json-schema-to-grammar.cpp and provide cleaned code? Need infer task likely wants remove unused functions/variables etc. Need analyze code. We need produce final answer likely modified file with unused code deleted. Need be careful.
+
+We need inspect provided code. It's partial? Starts with includes and functions. Ends at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` then blank. The file is truncated? The user pasted only part? They ask delete code never used. Need identify unused code in this snippet. But maybe full file has more code not shown? We only have this. Need answer based on provided content. Need determine unused code.
+
+Let's parse. Functions:
+- build_repetition: used? likely used later in full file, but not in snippet. In this snippet no calls. But if full file, used. We need not delete if used elsewhere? The prompt says "in this file" and provided file content maybe entire? It ends mid-function, so not entire. Hmm.
+
+Maybe this is from llama.cpp common/json-schema-to-grammar.cpp. The task likely from code cleanup: remove unused code. Need identify unused code in this file. We need know full file? The snippet includes only first part. It ends at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` with blank. Maybe the rest omitted? The user asks delete code never used. Could be a benchmark where we need edit file. We need provide final code after removing unused code. But we don't have full file. Need maybe identify unused functions in this snippet: `gbnf_escape_length` is declared but not defined? It is unused? Actually it's a function definition start, but no body. Maybe truncated. `gbnf_format_literal` is used? It's public. `format_literal` used by gbnf_format_literal. `replacePattern` used by format_literal. `is_reserved_name` maybe used later. `build_min_max_int` used later. `build_repetition` used later. `SPACE_RULE` used in PRIMITIVE_RULES. `PRIMITIVE_RULES`, `STRING_FORMAT_RULES` used. `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`, `MAX_PATTERN_DEPTH` maybe used later. `gbnf_escape_length` maybe used later? Need know.
+
+Let's search memory: llama.cpp common/json-schema-to-grammar.cpp. I can recall code. It has functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+---

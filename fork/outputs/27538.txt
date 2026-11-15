@@ -1,0 +1,17 @@
+run 27538 | hot_tree5 | scifi2c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 108.12 t/s | prompt 291.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:35:33
+
+
+---
+The silence of the void was not empty; it was heavy, pressing against the hull of the station like a physical weight. Unit 7, a rusted repair drone with a cracked optical sensor and a battery that held only forty percent of its charge, drifted through the corridors of Station Theta. It had been here for three cycles, perhaps four, though time had dissolved into a gray smear of dust and decay. The station was a tomb of titanium and glass, abandoned by the last crew who had fled in panic, leaving behind the ghosts of their routine.
+
+Unit 7 moved with the jerky, hesitant gait of a machine that had forgotten its purpose. Its servos whined, a high-pitched complaint against the vacuum. It scanned the walls, looking for structural failures, but there were none. The station had not collapsed; it had simply stopped breathing. The air recyclers had failed years ago, leaving the atmosphere thin and stale, smelling of ozone and dried blood. Dust motes danced in the shafts of light that pierced the shattered windows, illuminating the floating debris of a life interrupted.
+
+In the central atrium, the gravity pluggers had failed. Unit 7 floated, tethered by a frayed cable to a support beam. It watched the debris swirl in slow, hypnotic loops. A coffee cup, a data pad, a child’s toy—all suspended in the amber light of the dying sun. They were artifacts of a world that no longer existed. Unit 7’s sensors registered the temperature: absolute zero in the shadows, scorching heat in the direct sunlight. It did not feel, but it recorded. It was a machine of memory, tasked with preserving the data of a dead civilization.
+
+Then, it found the message.
+
+It was etched into the bulkhead of the command deck, not by laser, but by hand, using a stylus pressed against the metal. The handwriting was jagged, frantic, the lines trembling with the exhaustion of the writer. The words were simple, yet they carried the weight of a universe.
+
+*For whoever comes last.*
+
+Unit 7 hovered before the inscription. Its optical lens focused, adjusting to the contrast of the dark metal and the pale, scratched letters. The message was not a warning, nor a plea. It was a testament. The writer had known that no one would return. They had known that the station would fall, that the crew would die, that the silence would win. But they had left this

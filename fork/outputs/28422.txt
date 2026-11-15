@@ -1,0 +1,62 @@
+run 28422 | probe_bare_parents | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.08 t/s | prompt 350.0 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 08:36:55
+
+<think>Let me analyze this code review request. The user wants me to review the source files provided:
+
+1. `common/json-schema-to-grammar.cpp` - JSON schema to grammar conversion
+2. `common/arg.cpp` - Argument parsing
+
+Let me look at the code carefully and identify issues.
+
+Looking at the first file `common/json-schema-to-grammar.cpp`:
+
+The code has a `common_chat_schema_converter` class with methods for converting JSON schemas to GBNF grammars. Let me trace through the logic:
+
+1. `_visit_pattern` - converts regex patterns to grammar rules
+2. `_resolve_ref` - resolves schema references
+3. `_build_object_rule` - builds object rules
+4. `_add_primitive` - adds primitive rules
+5. `visit` - main dispatch based on schema kind
+6. `check_errors` - checks for errors/warnings
+7. `format_grammar` - formats the grammar output
+
+Issues I can spot:
+
+1. In `_visit_pattern`, there's a potential issue with regex conversion - the code converts JSON schema regex patterns to GBNF grammar. The `visit` function recursively processes regex nodes.
+
+2. In `_build_object_rule`, the `get_recursive_refs` lambda creates recursive rules for optional properties. There's a subtle issue: when `first_is_optional` is false and `k == "*"`, the code produces `kv_rule_name + " " + comma_ref + "*"`, which means the star applies to the comma_ref, not the kv_rule_name. This might be intentional but could be confusing.
+
+3. In `visit` for `KIND_ARRAY`: `int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;` - this is fine.
+
+4. In `visit` for `KIND_STRING`: the format handling looks correct.
+
+5. In `visit` for `KIND_INTEGER`: `build_min_max_int(i.minimum, i.maximum, out)` - builds min/max integer rules.
+
+6. `json_schema_to_grammar(const common_json & schema, bool force_gbnf)` - the LLAMA_USE_LLGUIDANCE path returns "%llguidance {}\nstart: %json " + schema.dump(). This seems fine.
+
+7. `json_schema_to_grammar(const common_chat_schema_document & schema)` - creates converter with `false` for dotall.
+
+8. `build_grammar` - creates converter with `options.dotall`.
+
+Now for `common/arg.cpp`:
+
+1. `read_file` - reads a file, throws on failure. Fine.
+
+2. `get_common_arg_defs` - static initialization with lambda. Fine.
+
+3. `common_arg::set_examples`, `set_excludes`, `set_env`, `set_sampling`, `set_spec`, `set_preset_only` - setter methods returning `*this`. Fine.
+
+4. `common_arg::in_example`, `is_exclude` - membership checks. Fine.
+
+5. `common_arg::get_value_from_env` - checks env vars including negated variants. Fine.
+
+6. `common_arg::has_value_from_env` - similar. Fine.
+
+7. `break_str_into_lines` - word wrapping. There's a subtle bug: `if (current_line.length() + !current_line.empty() + word.length() > max_char_per_line)` - this adds 1 for the space if current_line is not empty. That's correct logic.
+
+8. `common_arg::to_string` - formatting for console. `ss.tellp()` returns `std::streampos`, comparing with int might need cast. Actually `ss.tellp() > n_leading_spaces - 3` - tellp returns pos_type which converts to streamoff; comparison with int should work via implicit conversion. Hmm, but there could be an issue: `std::string(leading_spaces.size() - ss.tellp(), ' ')` - if `ss.tellp()` is greater than `leading_spaces.size()`, this would underflow (size_t subtraction). Wait, but the condition above ensures `ss.tellp() <= n_leading_spaces - 3 = 37`, and `leading_spaces.size() = 40`, so `40 - tellp >= 3`, no underflow. OK.
+
+Actually wait, let me re-check: `if (ss.tellp() > n_leading_spaces - 3)` - n_leading_spaces is 40, so condition is `tellp > 37`. If tellp <= 37, then `leading_spaces.size() - ss.tellp() = 40 - tellp >= 3 > 0`. Fine.
+
+9. `parse_tensor_buffer_overrides` - parses tensor buffer overrides. Uses static `std::list<std::string> buft_overrides` to keep strings alive. Fine but static list grows unboundedly - each call adds strings. Minor memory concern but intentional per comment.
+
+10. `clean_file_name` - replaces backslashes and slashes with

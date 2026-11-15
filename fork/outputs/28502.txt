@@ -1,0 +1,76 @@
+run 28502 | chain_grid_claims | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 36.55 t/s | prompt 1479.5 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 10:54:30
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` cases - correct
+  - When separator is present, builds `item (separator item)*` pattern - looks correct
+  - The recursive call for separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` - this seems correct for building `item (sep item){min-1,max-1}`
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda handles digit-by-digit range matching
+- Potential issue: `std::stoll` could throw if the substring is not a valid number
+- The `decimals_left` parameter is used to limit digit depth - seems like a safety mechanism
+- The `top_level` parameter controls whether leading zeros are allowed
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization of unordered_maps - these are file-scope statics
+- The `is_reserved_name` function uses a static local set initialized from these maps - this is fine but note that the initialization order depends on the maps being initialized first (they are, since they're declared before the function)
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - replaces invalid chars with `-`
+- `GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]")` - matches chars needing escaping in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - defined but never used! This is dead code.
+
+### gbnf_escape_length function
+- Handles escape sequences in patterns
+- The comment says "keep in sync with parse_char() in src/llama-grammar.cpp" - good practice
+- Looks correct for the supported escape sequences
+
+### common_chat_schema_converter class
+
+#### _add_rule
+- Handles name collisions by appending numbers
+- The logic looks correct but could be more efficient with a map lookup
+
+#### _generate_union_rule
+- Generates alternatives with numbered suffixes
+
+#### _visit_pattern / _pattern_to_rule
+- Complex regex-to-grammar conversion
+- The `rules_snapshot` for rollback is a good pattern
+- The `transform` lambda is a recursive function that parses the pattern
+- Potential issue: the `sub_rule_ids` map is used for caching sub-rules but the key is the rule content, not a unique identifier - this could lead to incorrect caching if two different sub-rules happen to have the same content but should be treated differently (though in practice this is unlikely to be a problem since identical content means identical rules)
+
+#### _not_strings
+- Generates a rule that matches strings that are NOT in a given set
+- Uses a trie for efficiency
+- The `rejects` string is built by concatenating characters - if a character is a regex special character (like `]`, `^`, `-`), this could cause issues in the character class `[...]`. Wait, looking more carefully: `rejects` is used in `[^"rejects]` - if `rejects` contains characters like `]`, `^`, `-`, or `\`, this would break the character class. This is a potential bug!
+
+Actually, let me re-read: `out << " | [^\"" << rejects << "] " << char_rule << "*";` - the `rejects` string contains UTF-8 characters from the trie. If any of these characters are regex metacharacters like `]`, `^`, `-`, or `\`, they would need to be escaped in the character class. This is a potential bug.
+
+#### _resolve_ref
+- Handles `$ref` resolution with cycle detection
+- The `ref_fragment` extraction looks correct
+
+#### _build_object_rule
+- Complex function for building object rules with required and optional properties
+- The `get_recursive_refs` function builds alternatives for optional properties
+- The handling of `additional_properties` with `*` wildcard looks correct
+
+#### _add_primitive
+- Recursively adds primitive rules and their dependencies
+- Looks correct
+
+#### visit method
+- Main dispatch method for schema kinds
+- Handles all schema kinds
+- The `is_reserved_name` check appends `-` to

@@ -1,0 +1,38 @@
+run 27456 | hot_tree4 | poemc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 100.48 t/s | prompt 238.4 t/s | 246 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 11:42:07
+
+
+---
+The sun dips low, the sky turns deep,
+A gentle breeze begins to creep.
+The waves roll soft against the sand,
+A quiet rhythm, hand in hand.
+
+Your eyes reflect the fading light,
+A warmth that burns within the night.
+The salt air kisses on your skin,
+As we let the world begin.
+
+The moon rises, pale and bright,
+Guiding us through the fading light.
+I hear the tide, a soft refrain,
+Like whispers of a gentle pain.
+
+But not of sorrow, but of love,
+A quiet peace, a quiet dove.
+The stars above, a distant glow,
+Reflect the beauty of your brow.
+
+We stand together, side by side,
+With nowhere else to hide.
+The ocean hums a lullaby,
+Underneath the starry sky.
+
+My heart beats slow, a steady drum,
+Safe within the evening’s hum.
+You are the shore, I am the sea,
+Bound by eternity.
+
+The night wraps round us, soft and deep,
+A promise that we cannot keep
+From fading, but we stay together,
+In this quiet, silver weather.

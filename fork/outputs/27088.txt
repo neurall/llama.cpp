@@ -1,0 +1,11 @@
+run 27088 | ns_home_part_all | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 113.33 t/s | prompt 588.5 t/s | 64 tokens | args: -np 1 --moe mode=cache,sim-vram=1536,staging=0,verify=2,poison=3 | power 200+200 W | 2026-11-13 01:11:40
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, to_sub);
+                    }
+                    out << ")";
+                }

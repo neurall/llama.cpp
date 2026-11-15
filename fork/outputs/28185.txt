@@ -1,0 +1,10 @@
+run 28185 | kv_fit_pass_grow | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 18.46 t/s | prompt 72.6 t/s | 64 tokens | args: -np 1 --moe staging=0,verify=2,poison=3 | power 200+200 W | 2026-11-14 02:19:15
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_MTP || params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_draft(const

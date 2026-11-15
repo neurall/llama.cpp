@@ -1,0 +1,31 @@
+run 28379 | lp_check_before_lock | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 23.7 t/s | prompt 650.2 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 07:15:01
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: if `min_items > 0` and `max_items == 0`, returns "" — that's contradictory constraints (min > max), silently returns empty rule. Might be worth noting.
+- In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and `min_items == 1`, then recursion gets max_items = 0, returns "", so result = item_rule + " " — wait let me check: `result = item_rule + " " + build_repetition(...)`. If inner returns "", result = `item_rule + " "` with trailing space. Hmm, actually if min_items == 1 and max_items == 1, the inner call has min 0, max 0 → returns "". So result = `item_rule + " "`. That trailing space is odd but GBNF rules... Actually wait, in GBNF, spaces in rules are literal? No — in this grammar format, "space" is a rule name. A literal space character in a rule... Actually in llama.cpp's GBNF format, whitespace in rules is ignored? Let me think. In the GBNF format used by llama.cpp, spaces within rule definitions are generally ignored except within quoted literals. Actually no — in llama.cpp grammar parser, spaces are skipped. So trailing space is harmless. OK.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a free function since it doesn't capture anything except itself. Actually `uniform_range` is a lambda defined inside `build_min_max_int` and recurses via `std::function`. It captures `out`, `digit_range`, `more_digits` by reference. Fine.
+- Potential bug: `more_digits(0, decimals_left - 1)` — `{0,...}` repetition in GBNF. OK.
+- In the `has_min && has_max` negative-negative case: `build_min_max_int(-max_value, -min_value, ...)` — correct mapping.
+- `min_value < 0` case with `has_max`: emits `"-" (...) | ` then sets `min_value = 0` and continues to the string-based range. OK.
+- Edge: `decimals_left` default 16. `less_decimals = std::max(decimals_left - 1, 1)`.
+- Potential issue: `std::stoll(min_s.substr(1))` — if min_value is like 1000000000000000000 (1e18), substr(1) = "000000000000000000" → stoll fine. But if min_value has 19 digits (e.g., 9223372036854775807), substr(1) = "223372036854775807" which fits int64. OK. But wait — what if min_value = 10000000000000000000? That doesn't fit int64. OK.
+- Hmm, one subtle bug: in the `min_value <= 9` branch: `char c = '0' + min_value;` — fine for 1..9.
+- In the else branch (min_value > 9): `more_digits(len - 1, less_decimals)` — hmm, `len - 1` where len is length of min_s. For min_value = 10, len = 2, so more_digits(1, less_decimals). The rule `[2-9] [0-9]{1,...}`? Wait: c = '1', c > '1' false, so no first alternative. digit_range('1','1') → `[1]`, then ` (build_min_max_int(0, INT64_MAX, ...))` with less_decimals. Then c < '9' → ` | [2-9] [0-9]{1, less}`. Hmm wait

@@ -1,0 +1,28 @@
+run 27489 | hot_tree4 | poemseac | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 84.51 t/s | prompt 139.7 t/s | 206 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:02:21
+
+
+---
+The dark water breathes in heavy, rhythmic waves,
+swallowing the moon’s pale, fractured light.
+Salt spray clings to the hull like cold iron,
+and the wind screams through the rigging,
+a lonely, hollow throat.
+
+Far from the shore’s comforting edge,
+the boat drifts in the void,
+a speck of wood against the infinite black.
+The engine hums a low, steady prayer,
+keeping the darkness at bay.
+
+Then, a beam cuts through the gloom,
+sharp and golden, slicing the night.
+The lighthouse stands on the distant rock,
+unblinking, a sentinel of stone.
+Its light does not warm, but guides,
+a beacon in the endless, churning sea.
+
+The sailor watches the beam fade,
+then return, then fade again.
+The sea is vast, indifferent, and deep,
+but the light holds the line,
+keeping the small boat from the abyss.

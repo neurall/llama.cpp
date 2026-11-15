@@ -1,0 +1,7 @@
+run 27948 | mix_zero_first | pf4k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 28.08 t/s | prompt 551.2 t/s | 32 tokens | args: -np 1 --moe pp-path=stream,dense-split=0 | power 280+280 W | 2026-11-13 20:55:16
+
+ // Reserve space for efficiency
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return string_join(results

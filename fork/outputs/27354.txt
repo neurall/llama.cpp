@@ -1,0 +1,69 @@
+run 27354 | hot_tree2 | tetrisc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 200.74 t/s | prompt 124.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:32:14
+
+
+---
+Creating a fully functional Tetris game from scratch in HTML, CSS, and JavaScript is quite involved and goes beyond a simple response. However, I can guide you through the basics of how you might start building a simple Tetris game using HTML, CSS, and JavaScript. This will be a very basic version to get you started.
+
+### HTML
+
+First, let's set up the basic structure of our game.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tetris Game</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        .game-container {
+            width: 400px;
+            height: 400px;
+            background-color: #000;
+            position: relative;
+            overflow: hidden;
+        }
+        .tetris-block {
+            width: 50px;
+            height: 50px;
+            position: absolute;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="tetris-block" data-x="0" data-y="0"></div>
+        <!-- Add more tetris-blocks as you place them in the game -->
+    </div>
+    <script src="tetris.js"></script>
+</body>
+</html>
+```
+
+### CSS
+
+This CSS sets up the basic look and feel of the game.
+
+```css
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background-color: #f0f0f0;
+    font-family: Arial, sans-serif;
+}
+
+.game-container {
+    width: 400px;
+    height: 400px;
+    background-color: #000;
+    position: relative;

@@ -1,0 +1,59 @@
+run 27466 | hot_tree4 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 97.44 t/s | prompt 175.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 11:48:22
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses **only standard C++** (no external libraries like ncurses) and relies on ANSI escape codes for rendering.
+
+### Features:
+- Runs in any terminal with ANSI support.
+- Uses `std::cin` for input (Arrow keys).
+- Handles collision (game over).
+- Snake grows when eating food.
+- Minimal code (~150 lines).
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+using namespace std;
+
+int main() {
+    // Terminal dimensions
+    const int W = 20, H = 15;
+    
+    // Snake state: head at (0,0), body starts at (0,0)
+    vector<pair<int,int>> snake = {{0,0}};
+    pair<int,int> dir = {0,1}; // Direction: dx, dy (down)
+    pair<int,int> food;
+    
+    // Generate random food
+    auto rand_pos = [&]() {
+        return {rand() % W, rand() % H};
+    };
+    food = rand_pos();
+    
+    // Clear screen
+    cout << "\033[2J\033[H"; // Clear screen and move to top-left
+    
+    while (true) {
+        // Input handling
+        char c = getchar();
+        if (c == 'w') dir = {0,-1}; // Up
+        if (c == 's') dir = {0,1};  // Down
+        if (c == 'a') dir = {-1,0}; // Left
+        if (c == 'd') dir = {1,0};  // Right
+        
+        // Move head
+        pair<int,int> new_head = {snake[0].first + dir.first, snake[0].second + dir.second};
+        
+        // Check collision with walls or self
+        if (new_head.first < 0 || new_head.first >= W || 
+            new_head.second < 0 || new_head.second >= H ||
+            find(snake.begin(), snake.end(), new_head) != snake.end()) {
+            cout << "\nGame Over! Score: " << snake.size() - 1 << endl;
+            return 0;

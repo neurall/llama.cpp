@@ -1,0 +1,4 @@
+run 28598 | ring_cheap_ahead | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 37.43 t/s | prompt 55.3 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 280+280 W | 2026-11-14 17:04:09
+
+<think>
+We need answer user's request: "

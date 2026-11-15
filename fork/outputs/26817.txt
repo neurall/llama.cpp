@@ -1,0 +1,78 @@
+run 26817 | oneexe | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 42.3 t/s | prompt 650.2 t/s | 906 tokens | args: -np 1 | power 220+280 W | 2026-11-12 16:33:41
+
+Let me analyze this file carefully to identify which code is never used.
+
+Let me go through each function, variable, and definition:
+
+1. `build_repetition` - Let me check if it's used anywhere in this file... I don't see it being called in the visible code. But wait, the file is truncated. Let me look at what's visible.
+
+2. `build_min_max_int` - Not called in the visible portion.
+
+3. `SPACE_RULE` - Not referenced in the visible portion.
+
+4. `BuiltinRule` struct - Used by `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+
+5. `PRIMITIVE_RULES` - Used by `is_reserved_name`.
+
+6. `STRING_FORMAT_RULES` - Used by `is_reserved_name`.
+
+7. `is_reserved_name` - Not called in the visible portion.
+
+8. `INVALID_RULE_CHARS_RE` - Not used in the visible portion.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - Used by `format_literal`.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - Not used in the visible portion.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - Used by `format_literal`.
+
+12. `MAX_PATTERN_DEPTH` - Not used in the visible portion.
+
+13. `NON_LITERAL_SET` - Not used in the visible portion.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - Not used in the visible portion.
+
+15. `replacePattern` - Used by `format_literal`.
+
+16. `format_literal` - Used by `gbnf_format_literal`.
+
+17. `gbnf_format_literal` - This is a non-static function, so it could be used externally. It's declared in the header presumably.
+
+18. `gbnf_escape_length` - Not used in the visible portion (and it's truncated).
+
+Wait, but the file is truncated. The question says "Delete the code in this file that is never used." This means I need to consider the entire file, but I only see a portion of it. However, since the file is truncated, I should work with what's visible.
+
+Actually, re-reading the prompt - the file content is given and it's truncated at `gbnf_escape_length`. The task is to delete code that is never used in this file.
+
+But wait - many of these functions and variables might be used later in the file (which is truncated). The question is whether I should consider only the visible portion or the entire file.
+
+Since the file is truncated, I should only consider what's visible. But actually, the prompt says "this file" - so I should consider the entire file content as given.
+
+Let me re-read: the file content ends with `gbnf_escape_length` being truncated. So the visible content is what I have.
+
+Let me think about what's used and what's not:
+
+Functions/variables that are used:
+- `BuiltinRule` - used by PRIMITIVE_RULES and STRING_FORMAT_RULES
+- `PRIMITIVE_RULES` - used by `is_reserved_name`
+- `STRING_FORMAT_RULES` - used by `is_reserved_name`
+- `is_reserved_name` - not called in visible code... but it might be called later
+- `GRAMMAR_LITERAL_ESCAPE_RE` - used by `format_literal`
+- `GRAMMAR_LITERAL_ESCAPES` - used by `format_literal`
+- `replacePattern` - used by `format_literal`
+- `format_literal` - used by `gbnf_format_literal`
+- `gbnf_format_literal` - non-static, exported, used externally
+
+Functions/variables that are NOT used in the visible code:
+- `build_repetition` - not called
+- `build_min_max_int` - not called
+- `SPACE_RULE` - not referenced
+- `INVALID_RULE_CHARS_RE` - not used
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - not used
+- `MAX_PATTERN_DEPTH` - not used
+- `NON_LITERAL_SET` - not used
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - not used
+- `gbnf_escape_length` - truncated, but it's a non-static function so it could be used externally
+
+Hmm, but `build_repetition` and `build_min_max_int` are static functions - they're only used within this file. If they're not
+---

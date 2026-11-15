@@ -1,0 +1,50 @@
+run 27393 | hot_tree3 | snakecppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 192.03 t/s | prompt 103.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:56:27
+
+
+---
+Creating a full Snake game in a single response is quite extensive, but I can guide you through a minimalist version of the Snake game in C++ that you can expand upon. This version will be very basic, using the console for output and input, and will include the essential elements: a snake that grows in length and a board that wraps around.
+
+```cpp
+#include <iostream>
+#include <string>
+
+using namespace std;
+
+const int SNAKE_LENGTH = 10; // Initial length of the snake
+const int SNAKE_SPEED = 5; // Speed of the snake
+const int BOARD_SIZE = 20; // Size of the board
+
+int board[BOARD_SIZE][BOARD_SIZE]; // 2D array to represent the board
+int snakeX, snakeY, foodX, foodY; // Coordinates of the snake and food
+bool gameOver = false; // Flag to check if game is over
+
+void printBoard() {
+    for (int i = 0; i < BOARD_SIZE; ++i) {
+        for (int j = 0; j < BOARD_SIZE; ++j) {
+            cout << (board[i][j] == 'O' ? '*' : board[i][j]);
+        }
+        cout << "\n";
+    }
+}
+
+void moveSnake(int dx, int dy) {
+    snakeX += dx;
+    snakeY += dy;
+
+    // Check for collisions with the board edges
+    if (snakeX < 0 || snakeX >= BOARD_SIZE || snakeY < 0 || snakeY >= BOARD_SIZE) {
+        return;
+    }
+
+    // Check for collisions with itself
+    for (int i = 0; i < snakes.size(); ++i) {
+        if (snakeX == snakes[i].x && snakeY == snakes[i].y) {
+            return;
+        }
+    }
+
+    // If the snake eats the food, increase its length
+    if (snakeX == foodX && snakeY == foodY) {
+        snakes.push_back({snakeX, snakeY}); // Add the new head of the snake to the list
+        snakeX = foodX; // Eat the food
+        snakeY = foodY

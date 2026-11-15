@@ -1,0 +1,64 @@
+run 26894 | dq_upcount | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.61 t/s | prompt 1076.0 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-12 18:26:29
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided partial C++ source file common/json-schema-to-grammar.cpp, truncated at end. Need produce code review. Need analyze code, identify issues, suggestions. Need likely mention incomplete file. Need be thorough. Need maybe discuss grammar generation, recursion, integer overflow, regex? Let's inspect code.
+
+We need review source file. It includes headers, using json = common_json; functions build_repetition, build_min_max_int, constants, PRIMITIVE_RULES truncated. Need review visible code.
+
+Need consider C++ style, correctness, performance, security, maintainability.
+
+Let's parse code.
+
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+using json = common_json;
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Potential issues:
+- If min_items > max_items? Not validated. Could produce invalid grammar e.g. {5,3}. Need assert or clamp.
+- If max_items == 0 and min_items >0? returns empty, invalid. Should handle.
+- If min_items negative? Not validated.
+- If max_items == INT_MAX and min_items? has_max false. For separator case: has_max ? max_items - 1 : max_items. If max_items INT_MAX and has_max false, passes INT_MAX. OK. But if has_max true and max_items=0? earlier returns. If max_items=1 and min_items=0? returns item_rule? Wait if separator_rule nonempty and min=0 max=1: earlier min=0 max=1 returns item_rule + "?" before separator branch. That ignores separator, but with max 1 separator irrelevant. OK.
+- For separator case min=0 max=2: result = item + " " + build_repetition((sep item), 0, 1) => item (sep item)? => item (sep item)? OK. min=1 max=2: result = item + " " + build_repetition((sep item), 0,1) => item (sep item)? OK. min=2 max=2: result = item + " " + build_repetition((sep item),1,1) => item (sep item){1,1}? build_repetition with min=1 max=1 no separator: returns item_rule{1,1}? Actually if min=1 max=1, not special, returns (sep item){1,1}. So result item (sep item){1,1}. OK but verbose.
+- For min=0 max=0 returns empty. If schema requires empty array? maybe OK? But if min_items=0 max_items=0, grammar empty? Could be invalid if used as rule? Maybe should be ""? In grammar, empty string may mean epsilon? Need know grammar format. Could be okay? But if used in concatenation, empty may be problematic.
+- Recursion: build_repetition calls itself with max_items-1. If max_items large, recursion depth? It only recurses once? Actually build_repetition with separator calls itself once, not recursively multiple? It calls itself with adjusted min/max, but inside that call if separator_rule empty (because passed empty default) returns directly. So depth 2. OK.
+- Grammar escaping: item_rule and

@@ -1,0 +1,10 @@
+run 28851 | refused_size_drop | pf128k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.31 t/s | prompt 30.1 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini | power 200+200 W | 2026-11-15 04:24:27
+
+ate variant B
+    params_modifier(params_B);
+
+    // Apply template to both variants
+    std::string prompt_A = apply_template(tmpl, params_A);
+    std::string prompt_B = apply_template(tmpl, params_B);
+
+    if (prompt_A == ERR_TMPL || prompt_B == ERR_TM

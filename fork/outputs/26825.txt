@@ -1,0 +1,75 @@
+run 26825 | oneexe | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.5 t/s | prompt 35.3 t/s | 965 tokens | args: -np 1 -lm pin | power 220+280 W | 2026-11-12 16:41:47
+
+The user wants the smallest HTML Tetris game. Let me make something that's actually small but also genuinely playable and well-crafted. "Smallest" — I should keep it compact but I can still make it feel good. Let me balance: a tiny single-file Tetris that actually works, with nice touches but minimal code.
+
+Let me write compact Tetris in a single HTML file. Keep it genuinely small but polished — dark background, canvas, next piece, score, level.
+
+Let me write it dense but readable-ish.
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0b12;color:#e8e8f0;font:14px/1.4 system-ui;display:grid;place-items:center;height:100vh;gap:12px}
+canvas{background:#08080d;border:2px solid #2a2a3c;image-rendering:pixelated;box-shadow:0 0 40px #4a2cff22}
+...
+</style>
+```
+
+Let me write the game logic compactly.
+
+Standard approach:
+
+```js
+const W=10,H=20,S=24;
+let g=Array.from({length:H+2},()=>Array(W).fill(0)), score=0, lines=0, lvl=1, p, next, t=0, over=0;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]];
+```
+
+Colors per piece index.
+
+Rotation: rotate matrix.
+
+Collision check.
+
+Draw with canvas.
+
+Let me write it:
+
+```js
+function R(m){return m[0].map((_,i)=>m.map(r=>r[i]).reverse())}
+function ok(m,x,y){return m.every((r,j)=>r.every((v,i)=>!v||!B[y+j]||!B[y+j][x+i]||y+j<0))}
+```
+
+Hmm need bounds. Let me use board with walls.
+
+Simplify: board B is H rows x W cols of 0 or color index. Piece has shape matrix, x, y, color.
+
+```js
+function ok(s,x,y){return s.every((r,j)=>r.every((v,i)=>!v||x+i>=0&&x+i<W&&y+j<H&&!(y+j>=0&&B[y+j][x+i])))}
+```
+
+Spawn y = -1 maybe. Fine.
+
+Merge, clear lines, gravity with requestAnimationFrame and drop interval based on level.
+
+Controls: arrows, space for hard drop, up rotate, Z rotate ccw.
+
+Let me add ghost piece — nice touch, small code.
+
+Also "next" preview on a small canvas.
+
+Keep it small but nice. Let me write final code.
+
+I'll aim for something like ~60 lines total. Let me be careful about correctness.
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title><style>
+:root{--c:#7f5cff}
+*{box-sizing:border-box}
+body{margin:0;height:100vh;display:grid;place-items:center;background:#0a0a10;color:#dfe0ea;font:600 13px/1.5 ui-monospace,Menlo,monospace;user-select:none}
+main{display:flex;gap:18px;align-items:flex-start}
+canvas{background:#05050a;border:1px solid #23233a;box-shadow:0 0 60px #5b3cff22,inset 0 0 40px #0008}
+#side{display:flex;flex-direction:column;gap:14px;width:120px}
+label{display:block;color:#6b6d8a;font-size:10px;letter-spacing:.18em}
+b{font-size:22px;font-weight:700;color:#fff;font-variant-
+---

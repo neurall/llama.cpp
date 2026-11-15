@@ -1,0 +1,109 @@
+run 28835 | dsf_pick | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 75.62 t/s | prompt 2514.6 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini --moe sim-vram=4608 | power 200+200 W | 2026-11-15 03:49:00
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    if (mask.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    for (size_t i = 0; i < mask.size(); i++) {
+        if (mask[i] == '0' || mask[i] == '1') {
+            cpumask.push_back(mask[i] - '0');
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool parse_cpu_range(const std::string & range, std::vector<int32_t> & cpumask) {
+    if (range.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    auto parts = string_split<std::string>(range, '-');
+    if (parts.size() != 2) {
+        return false;
+    }
+    int32_t lo = std::stoi(parts[0]);
+    int32_t hi = std::stoi(parts[1]);
+    if (lo > hi) {
+        return false;
+    }
+    for (int32_t i = lo; i <= hi; i++) {
+        cpumask.push_back(i);
+    }
+    return true;
+}
+
+static std::string cpu_mask_to_string(const std::vector<int32_t> & cpumask) {
+    std::string result;
+    for (int32_t cpu : cpumask) {
+        result += std::to_string(cpu);
+    }
+    return result;
+}
+
+static std::string cpu_range_to_string(const std::vector<int32_t> & cpumask) {
+    if (cpumask.empty()) {
+        return "";
+    }
+    std::string result;
+    int32_t lo = cpumask[0];
+    int32_t hi = cpumask[0];
+    for (size_t i = 1; i < cpumask.size(); i++) {
+        if (cpumask[i] != cpumask[i - 1] + 1) {
+            result += std::to_string(lo) + "-" + std::to_string(hi);
+            lo = cpumask[i];
+            hi = cpumask[i];
+        } else {
+            hi = cpumask[i];
+        }
+    }
+    result += std::to_string(lo) + "-" + std::to_string(hi);
+    return result;
+}
+
+static std::string cpu_mask_to_string(const std::vector<int32_t> & cpumask, const std::vector<int32_t> & cpumask_batch) {
+    std::string result;
+    if (!cpumask.empty()) {
+        result += cpu_mask_to_string(cpumask);
+    }
+    if (!cpumask_batch.empty()) {
+        result += " " + cpu_mask_to_string(cpumask_batch);
+    }
+    return result;
+}
+
+static std::string cpu_range_to_string(const std::vector<int32_t> & cpumask, const std::vector<int32_t> & cpumask_batch) {
+    std::string result;
+    if (!cpumask.empty()) {
+        result += cpu_range_to_string(cpumask);
+    }
+    if (!cpumask_batch.empty()) {
+        result += " " + cpu_range_to_string(cpumask_batch);
+    }
+    return result;
+}
+
+static std::string cpu_mask_to_string(const std::vector<int32_t> & cpumask, const std::vector<int32_t> & cpumask_batch, const std::vector<int32_t> & cpumask_draft) {
+    std::string result;
+    if (!cpumask.empty()) {
+        result += cpu_mask_to_string(cpumask);
+    }
+    if (!cpumask_batch.empty()) {
+        result += " " + cpu_mask_to_string(cpumask_batch);
+    }
+    if (!cpumask_draft.empty()) {
+        result += " " + cpu_mask_to_string(cpumask_draft);
+    }
+    return result;
+}
+
+static std::string cpu_range_to_string(const std::vector<int32_t> & cpumask, const std::vector<int32

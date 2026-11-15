@@ -1,0 +1,61 @@
+run 27848 | tree_emb_key | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 51.28 t/s | prompt 42.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=emb,rp-steer=0,state=/tmp/runstate/q36ph3/tsoff/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/tsoff | power 280+280 W | 2026-11-13 18:23:15
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `ncurses` for terminal graphics.
+
+### Requirements
+- **Compiler**: `g++` or `clang++`
+- **Library**: `ncurses` (install via `sudo apt install ncurses` on Linux)
+
+### Code (`snake.cpp`)
+
+```cpp
+#include <ncurses.h>
+#include <stdlib.h>
+#include <time.h>
+
+int main() {
+    initscr();
+    hidecursor();
+    srand(time(0));
+    int x = 10, y = 10, dx = 1, dy = 0, fx = rand() % 20, fy = rand() % 20;
+    char buf[200];
+
+    while (1) {
+        if (getch() == 27) break; // ESC to exit
+        int c = getch();
+        if (c == 97) dx = -1; // a
+        if (c == 100) dx = 1; // d
+        if (c == 107) dy = 1; // k
+        if (c == 108) dy = -1; // l
+
+        x += dx; y += dy;
+        if (x < 0 || x > 20 || y < 0 || y > 20) break;
+
+        mvprintw(y, x, "O");
+        mvprintw(fy, fx, "X");
+        if (x == fx && y == fy) {
+            fx = rand() % 20; fy = rand() % 20;
+        }
+        usleep(100000);
+    }
+    endscr();
+    return 0;
+}
+```
+
+### How to Compile and Run
+
+```bash
+g++ -o snake snake.cpp -lncurses
+./snake
+```
+
+### Controls
+- **Arrow Keys**: Move (mapped to `a`, `d`, `k`, `l` for brevity in the code, but you can change to arrow keys if you prefer).
+- **ESC**: Exit.
+
+### Explanation
+- **`ncurses`**: Handles terminal graphics (cursor, printing characters).
+- **`srand

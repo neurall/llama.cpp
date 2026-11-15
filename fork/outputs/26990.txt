@@ -1,0 +1,10 @@
+run 26990 | ns_router_compute | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 17.0 t/s | prompt 93.9 t/s | 64 tokens | args: -np 1 --moe staging=0,verify=2,poison=3 | power 280+280 W | 2026-11-12 22:18:34
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_DRAFT;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_MTP;
+}
+
+static bool spec_types_is_mtp_or_default(const common_params & params)

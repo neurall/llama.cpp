@@ -1,0 +1,30 @@
+run 28391 | lp_check_before_lock | pf2k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 38.88 t/s | prompt 200.0 t/s | 1024 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 280+280 W | 2026-11-14 07:31:11
+
+<think>We need answer code review. Need inspect source. Need identify bugs, style, correctness. Need likely from llama.cpp? common/json-schema-to-grammar.cpp. Need review. Need maybe full file truncated? User provided partial ending at array. Need review given source. Need mention incomplete? We can review visible. Need be thorough but desired oververbosity 5. Need analyze code.
+
+We need understand functions.
+
+File includes json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json. build_repetition, build_min_max_int, SPACE_RULE, PRIMITIVE_RULES partial.
+
+Need code review. Need identify issues.
+
+Let's parse build_repetition.
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) return "";
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) return item_rule + "+";
+        if (min_items == 0 && !has_max) return item_rule + "*";
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) result = "(" + result + ")?";
+    return result;
+}
+
+Potential bug: For separator_rule non-empty and min_items==0, max_items maybe 0 handled. If min_items=0 max_items=1: earlier returns item_rule + "?" before separator branch. But with separator, repetition of 0 or 1 item should be item_rule? (no separator) yes item_rule? okay. If min_items=0 max_items=2: result = item_rule + " " + build_repetition("(sep item)", 0, 1) = item_rule + " " + "(sep item)?" then wrap = "(item (sep item)?)?" This allows empty or item or item sep item. Good. But if min_items=0 and max_items=0 handled. If min_items=1 max_items=1: separator branch? max_items !=0, min=1 max=1. result = item_rule + " " + build_repetition("(sep item)", 0, 0) = item_rule + " " + "" = "item_rule " trailing space. Then min_items !=0 no wrap. Returns "item_rule " with trailing space. That's a bug: for exactly one item with separator, should return item_rule, not item_rule + " ". Also if min_items=1 max_items=1 and separator non-empty, has_max true, max_items-1=0, build_repetition returns ""; result item_rule + " " + "" => trailing space. Grammar may tolerate? In GBNF spaces are literal? Actually rule concatenation with space? In grammar, spaces outside quotes? Need know llama grammar syntax: spaces are ignored? In GBNF, whitespace between rules is ignored? I think spaces are separators, not literal. So trailing space may be harmless. But string concatenation "item_rule " maybe okay. But if item_rule contains alternatives? Need parentheses? build_repetition item_rule may be complex. For separator branch, result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...). If item_rule is e.g. "a | b", then concatenation without parentheses can alter precedence. Need check. build_repetition called with item_rule maybe "string" etc. For object: build_repetition("string \":\" space value", 0, max, ",")? Actually item_rule includes spaces. Need parentheses around item_rule? In GBNF, concatenation precedence? Alternatives lower. If item_rule contains "|", then item_rule + " " + ... could be ambiguous. Need inspect usage later not provided. But likely item_rule is a rule name or parenthesized. Could be issue.
+
+Also build_repetition with separator and min_items=0: result = item_rule + " " + build_repetition("(sep item)", 0, max-1

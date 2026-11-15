@@ -1,0 +1,19 @@
+run 28754 | pred_pool_alias | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.57 t/s | prompt 1.6 t/s | 256 tokens | args: -np 1 --moe rp-grow=0,pred-top=16,predict-ahead=0,pred-pool=1,pred=1 | power 280+280 W | 2026-11-14 23:03:25
+
+
+---
+Every evening, Elias climbed the spiral stairs of the lighthouse with a brass lantern in one hand and a notebook in the other. He had kept the light for twenty-three years, long enough to know the sea’s moods by the color of the foam. On clear nights, he wrote down the names of passing ships. On stormy nights, he wrote only one word: *Stay*.
+
+The message in the bottle arrived on a morning after a storm.
+
+Elias found it while walking the narrow beach below the cliffs, collecting driftwood for the stove. The bottle was green glass, its neck sealed with black wax. Inside, a folded paper had been stained brown by salt and time.
+
+He carried it to the lighthouse kitchen and opened it beside the window.
+
+The handwriting was fine and slanted, the ink faded almost to silver.
+
+*To whoever keeps the light,* it read.
+
+*I am not asking you to save me. The sea took that choice long ago. I am asking you to remember that we saw your lamp. Three nights before we sank, when the fog had swallowed every star, your light came through the window of our cabin. My daughter thought it was a fallen moon. She laughed, and for one moment we were not afraid.*
+
+*Her name

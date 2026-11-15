@@ -1,0 +1,12 @@
+run 27304 | k3_situ | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.73 t/s | prompt 3.6 t/s | 64 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-13 09:10:20
+
+ } else {
+            if (from.length() != to.length()) {
+                throw std::runtime_error("Bad range");
+            }
+            out << "\"" << from << "\"";
+        }
+    };
+    auto less_than = [&](int64_t value) {
+        auto value_str = std::to_string(value);
+        build

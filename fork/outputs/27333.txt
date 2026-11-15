@@ -1,0 +1,52 @@
+run 27333 | hot_tree | pycsvc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 200.3 t/s | prompt 266.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:18:12
+
+
+---
+```python
+import csv
+from collections import defaultdict
+
+def read_and_calculate(file_path):
+    # Open the CSV file and read its contents
+    with open(file_path, 'r') as file:
+        reader = csv.DictReader(file)
+        
+        # Initialize a dictionary to store the total amount per region and month
+        total_amounts = defaultdict(lambda: defaultdict(int))
+
+        # Iterate over each record in the CSV file
+        for record in reader:
+            # Extract the date, region, and amount from the record
+            date = record['date']
+            region = record['region']
+            amount = float(record['amount'])
+            
+            # Calculate the month from the date
+            import datetime
+            month = datetime.datetime.strptime(date, '%Y-%m').month
+            
+            # Update the total amount for the region and month
+            total_amounts[region][month] += amount
+        
+        # Print the total amount per region and month
+        for region, amounts in total_amounts.items():
+            print(f"Region: {region}")
+            for month, total in amounts.items():
+                print(f"  Month {month}: {total}")
+
+# Define the path to the CSV file
+file_path = 'sales_records.csv'
+
+# Call the read_and_calculate function with the file path
+read_and_calculate(file_path)
+```
+
+### Explanation:
+
+1. **Import necessary modules**: We import `csv` for reading CSV files and `defaultdict` from `collections` for easier dictionary handling.
+2. **Define the `read_and_calculate` function**:
+   - **Open the CSV file**: Use `open` to read the file.
+   - **Read the CSV file**: Use `csv.DictReader` to read the file as a list of dictionaries, where each dictionary represents a row in the CSV.
+   - **Initialize `total_amounts`**: Use `defaultdict` to initialize a dictionary where the keys are regions and the values are dictionaries containing months and their total amounts.
+   - **Iterate through records**: For each record, extract the `date`, `region`, and `amount`.
+   -

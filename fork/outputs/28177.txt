@@ -1,0 +1,11 @@
+run 28177 | kv_fit_pass_grow | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 74.87 t/s | prompt 3218.7 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=0,moe-split=expert,log=w --moe sim-vram=4608 | power 200+200 W | 2026-11-14 02:02:31
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool common_cpu_get_num_physical_cores(int32_t & num_physical_cores) {
+    num_physical_cores = common_cpu_get_num

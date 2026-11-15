@@ -1,0 +1,73 @@
+run 26766 | ns_probe_cells | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.74 t/s | prompt 110.3 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-11-12 14:52:06
+
+The user wants the smallest HTML Tetris game. I'll give them a compact single-file Tetris. "Smallest" — so keep it tight. But I still want it to feel alive and pleasant to play. Let me make a genuinely compact but complete Tetris.
+
+Let me write a minimal but working Tetris in one HTML file. Keep it small but polished.
+
+```html
+<!DOCTYPE html><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#111;color:#eee;font:14px/1.4 system-ui;display:grid;place-items:center;height:100vh}
+canvas{background:#000;image-rendering:pixelated;border:2px solid #333}
+</style>
+<canvas id=c width=160 height=320></canvas>
+<script>
+// minimal tetris
+</script>
+```
+
+Let me write compact logic.
+
+Standard approach:
+
+```js
+const W=10,H=20,S=16,c=document.getElementById('c'),x=c.getContext('2d');
+let g=Array.from({length:H},()=>Array(W).fill(0)),p,px,py,o,s=0,l=1,t=0;
+const P='⛛⛝⛞⛟⛠⛡⛢' // no, better use arrays
+```
+
+Compact tetromino definitions using strings:
+
+```js
+const T=[0,1,2,3,4].map(i=>{...})
+```
+
+A classic minified trick: define pieces as numbers.
+
+Let me use this approach: pieces defined by a 4x4 bitmask per rotation... Simpler: define base shapes as coordinate arrays and rotate.
+
+```js
+const S=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[0,1],[1,1]],[[0,0],[1,0],[1,1],[2,1]],[[0,1],[1,1],[1,0],[2,0]],[[0,0],[0,1],[1,1],[2,1]],[[0,0],[1,0],[2,0],[2,1]],[[0,1],[1,1],[2,1],[2,0]]]
+```
+
+Rotation: for each piece, rotate around center. Simpler: store 4 rotations precomputed via a rotate function.
+
+Let me just do: piece = array of [x,y] cells, color index. Rotate: (x,y)->(y,-x) then normalize.
+
+```js
+function rot(p){return p.map(([x,y])=>[y,-x])}
+```
+Then normalize by subtracting min.
+
+For I piece with 4 cells this works fine (rotation about a corner-ish center) — it'll shift but still playable.
+
+Let me write it:
+
+```js
+const B=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[0,1],[1,1]],[[1,0],[2,0],[0,1],[1,1]],[[0,0],[1,0],[2,1],[1,1]],[[0,0],[0,1],[1,1],[2,1]],[[0,0],[1,0],[2,0],[2,1]],[[0,1],[1,1],[2,0],[2,1]]];
+```
+Wait O piece rotating around origin: [[0,0],[1,0],[0,1],[1,1]] -> (x,y)->(y,-x): [[0,0],[0,-1],[1,0],[1,-1]] normalize y+1 -> [[0,1],[0,0],[1,1],[1,0]] same set. Good.
+
+Colors: 7 colors.
+
+Game loop with requestAnimationFrame and drop timer.
+
+Let me write the full compact code:
+
+```js
+const W=10,H=20,Z=16;
+c.width=W*Z;c.height=H*Z;
+const x=c.getContext('2d');
+const C=['#0ff','#f0f','#ff0','#0f0','#f00','#00f','#fa0'];
+const B=[[[0,0],[1,
+---

@@ -1,0 +1,51 @@
+run 27556 | hot_tree6 | tetrisc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 98.83 t/s | prompt 65.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:50:37
+
+
+---
+Here is the smallest possible functional Tetris game in a single HTML file. It uses a compact grid representation, a single loop for logic, and minimal CSS.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mini Tetris</title>
+  <style>
+    body { background: #111; color: #fff; font-family: monospace; text-align: center; }
+    canvas { border: 1px solid #333; margin: 20px auto; display: block; }
+    #score { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="240" height="400"></canvas>
+  <div id="score">Score: 0</div>
+  <script>
+    const c = document.getElementById('c');
+    const ctx = c.getContext('2d');
+    const R = 20; // Row size
+    const W = 12, H = 20; // Grid dimensions
+    let grid = Array(H).fill(0);
+    let score = 0;
+    let t = 0; // Timer
+    let p = { x: 4, y: 0, shape: [1,1,1,1], color: '#00f' }; // Piece
+
+    // Tetromino shapes
+    const shapes = [
+      [1,1,1,1], // I
+      [1,1,1,0], // L
+      [1,0,1,1], // J
+      [1,1,0,1], // T
+      [1,1,0,0], // O (Square)
+      [0,1,1,0], // S
+      [1,0,0,1]  // Z
+    ];
+
+    function draw() {
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, c.width, c.height);
+      
+      // Draw grid
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          if (grid[y][x]) {
+            ctx.fillStyle = grid[y][x];
+            ctx.fillRect(x

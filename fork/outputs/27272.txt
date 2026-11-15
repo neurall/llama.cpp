@@ -1,0 +1,107 @@
+run 27272 | ns_gate2 | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 79.67 t/s | prompt 4286.1 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=1 --moe sim-vram=4608 | power 280+280 W | 2026-11-13 07:09:35
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    if (mask.empty()) {
+        return false;
+    }
+    if (mask.size() > 64) {
+        throw std::invalid_argument("mask too long");
+    }
+    cpumask.clear();
+    for (size_t i = 0; i < mask.size(); i++) {
+        if (mask[i] == '1') {
+            cpumask.push_back(static_cast<int32_t>(mask.size() - 1 - i));
+        }
+    }
+    return true;
+}
+
+bool parse_cpu_range(const std::string & range, std::vector<int32_t> & cpumask) {
+    if (range.empty()) {
+        return false;
+    }
+    auto parts = string_split<std::string>(range, '-');
+    if (parts.size() != 2) {
+        throw std::invalid_argument("invalid range");
+    }
+    int32_t lo = std::stoi(parts[0]);
+    int32_t hi = std::stoi(parts[1]);
+    if (lo > hi) {
+        throw std::invalid_argument("invalid range");
+    }
+    cpumask.clear();
+    for (int32_t i = lo; i <= hi; i++) {
+        cpumask.push_back(i);
+    }
+    return true;
+}
+
+static std::string cpu_mask_to_string(const std::vector<int32_t> & cpumask) {
+    std::string result;
+    result.resize(cpumask.size());
+    for (int32_t i : cpumask) {
+        result[i] = '1';
+    }
+    return result;
+}
+
+static std::string cpu_range_to_string(const std::vector<int32_t> & cpumask) {
+    if (cpumask.empty()) {
+        return "";
+    }
+    int32_t lo = cpumask[0];
+    int32_t hi = cpumask.back();
+    return std::to_string(lo) + "-" + std::to_string(hi);
+}
+
+static std::string cpu_mask_to_string(const std::vector<int32_t> & cpumask, int32_t max_cpu) {
+    std::string result;
+    result.resize(max_cpu);
+    for (int32_t i : cpumask) {
+        result[i] = '1';
+    }
+    return result;
+}
+
+static std::string cpu_range_to_string(const std::vector<int32_t> & cpumask, int32_t max_cpu) {
+    if (cpumask.empty()) {
+        return "";
+    }
+    int32_t lo = cpumask[0];
+    int32_t hi = cpumask.back();
+    return std::to_string(lo) + "-" + std::to_string(hi);
+}
+
+static std::string cpu_mask_to_string(const std::vector<int32_t> & cpumask, int32_t max_cpu, int32_t min_cpu) {
+    std::string result;
+    result.resize(max_cpu - min_cpu);
+    for (int32_t i : cpumask) {
+        result[i - min_cpu] = '1';
+    }
+    return result;
+}
+
+static std::string cpu_range_to_string(const std::vector<int32_t> & cpumask, int32_t max_cpu, int32_t min_cpu) {
+    if (cpumask.empty()) {
+        return "";
+    }
+    int32_t lo = cpumask[0];
+    int32_t hi = cpumask.back();
+    return std::to_string(lo - min_cpu) + "-" + std::to_string(hi - min_cpu);
+}
+
+static std::string cpu_mask_to_string(const std::vector<int32_t> & cpumask, int32_t max_cpu, int32_t min_cpu, int32_t offset) {
+    std::string result;
+    result.resize(max_cpu - min_cpu);
+    for (int32_t i : cpumask) {
+        result[i - min_cpu + offset] = '1';
+    }
+    return result;
+}

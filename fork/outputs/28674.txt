@@ -1,0 +1,45 @@
+run 28674 | engram_late_fill | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 33.22 t/s | prompt 753.8 t/s | 512 tokens | args: -np 1 | power 280+280 W | 2026-11-14 20:45:38
+
+ }
+                }
+                return _add_rule(rule_name, _build_object_rule(properties, required, name, obj.additional_properties.get()));
+            }
+            case common_chat_schema::KIND_ARRAY: {
+                const auto & arr = as<common_chat_schema_array>(schema);
+                std::string items_rule = visit(*arr.items, sub_name + "item");
+                std::string result = "\"[\" space " + build_repetition(items_rule, arr.min_items, arr.max_items, " \",\" space ") + " space \"]\"";
+                return _add_rule(rule_name, result);
+            }
+            case common_chat_schema::KIND_STRING: {
+                const auto & str = as<common_chat_schema_string>(schema);
+                std::string result;
+                if (str.pattern) {
+                    result = _visit_pattern(str.pattern, name);
+                } else if (str.format) {
+                    auto it = STRING_FORMAT_RULES.find(str.format);
+                    if (it == STRING_FORMAT_RULES.end()) {
+                        _errors.push_back("Unknown string format: " + str.format);
+                        return "";
+                    }
+                    result = _add_primitive(str.format, it->second);
+                } else {
+                    result = _add_primitive("string", PRIMITIVE_RULES.at("string"));
+                }
+                return _add_rule(rule_name, result);
+            }
+            case common_chat_schema::KIND_NUMBER: {
+                const auto & num = as<common_chat_schema_number>(schema);
+                std::stringstream ss;
+                build_min_max_int(num.minimum, num.maximum, ss);
+                return _add_rule(rule_name, ss.str());
+            }
+            case common_chat_schema::KIND_INTEGER: {
+                const auto & num = as<common_chat_schema_integer>(schema);
+                std::stringstream ss;
+                build_min_max_int(num.minimum, num.maximum, ss);
+                return _add_rule(rule_name, ss.str());
+            }
+            case common_chat_schema::KIND_BOOLEAN:
+                return _add_primitive("boolean", PRIMITIVE_RULES.at("boolean"));
+            case common_chat_schema::KIND_NULL:
+                return _add_primitive("null", PRIMITIVE_RULES.at("null"));

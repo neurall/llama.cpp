@@ -1,0 +1,21 @@
+run 27442 | hot_tree4 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 105.14 t/s | prompt 492.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 11:33:39
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, heavy weight of the pod’s lid pressing against his chest. The air in the archive sector smelled of ozone and stale recycled water, a scent that had lingered for three centuries. He blinked, his vision swimming in the gray haze of post-sleep disorientation, until the emergency lights flickered on, casting long, jagged shadows across the rows of dormant pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The ship’s AI, dormant for the long sleep, responded with a soft, synthetic hum. "We have arrived. Target: Kepler-4b. Estimated time since departure: 300 years."
+
+Elias stumbled toward the observation deck, his legs trembling like new-born calves. He expected to see a barren rock, a world waiting for the first footprint of humanity. He expected silence. Instead, he saw light.
+
+Through the reinforced glass, the planet glowed. Not with the dull, rocky reflection of an uninhabited sphere, but with the electric brilliance of cities. Sprawling metropolises of silver and gold stretched across the continents, connected by veins of light that pulsed like heartbeats. The night side of the planet was a tapestry of civilization, dense and vibrant.
+
+Elias pressed his face against the cold glass, his breath fogging the pane. "Impossible," he whispered. "We are the first. We are the seed."
+
+The ship’s navigation computer chimed, a sound that cut through his disbelief. "Anomaly detected. Signal received from surface. Origin: Local. Date: 100 years post-departure."
+
+Elias turned to the comms panel. His hands shook as he activated the channel. "This is the *Aethelgard*. Who is this?"
+
+The voice that answered was clear, warm, and unmistakably human. It was not a machine. It was a woman, speaking with the cadence of a storyteller. "This is the *Aethelgard II*. We received your signal. We have been waiting for you."
+
+Elias froze. The *Aethelgard II*? That ship had been launched a century after the original departure, a backup vessel, a second chance. It was supposed to arrive three hundred years later, synchronized with the original crew’s awakening

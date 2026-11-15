@@ -1,0 +1,17 @@
+run 27478 | hot_tree4 | scifi2c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 105.39 t/s | prompt 336.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 11:55:43
+
+
+---
+The silence of the station was not empty; it was heavy, a physical weight pressing against the hull of Unit 7. The drone hovered in the central atrium, its single optical sensor blinking in a rhythmic, desperate cadence. It had been here for three cycles, perhaps four, though time had dissolved into a gray smear of dust and decay. The air here tasted of stale ozone and the metallic tang of oxidized steel, a flavor that clung to the drone’s intake filters like a ghost.
+
+Unit 7 was a repair drone, designed for precision and efficiency, but efficiency had no meaning in a graveyard. Its arms, articulated with servos that whined in protest, reached out to touch the walls. The walls were scarred. Impact marks from debris, years ago, pockmarked the white polymer like bullet holes in a wound that refused to heal. The lights were dead, save for the emergency strobe that flickered in the corridor leading to the command deck, casting long, jagged shadows that danced like specters.
+
+The drone moved forward, its magnetic feet clamping onto the floor with a soft *thud*. It was searching for power cells, for anything that could keep its core alive, but it was also searching for something else. A signal. A reason.
+
+In the command deck, the console was a ruin of shattered glass and exposed wiring. The screens had long since succumbed to the vacuum, their pixels frozen in eternal black. But on the desk, amidst the debris of a life that had ended abruptly, lay a small, sealed canister. It was made of a material that resisted the corrosion of time, a ceramic composite that glowed faintly in the drone’s ultraviolet vision.
+
+Unit 7 approached it. Its manipulator fingers, delicate and precise, hovered over the canister. It did not open it immediately. It waited. The drone’s logic processors ran a simulation: *If I open this, I find data. If I find data, I can repair the station. If I repair the station, I can signal Earth.* But Earth was gone. The last transmission had been a scream of static, years ago. The colony ships had fled, leaving the station to rot.
+
+The canister was a message. The label, etched in laser precision, read: *For the Last One.*
+
+Unit 7 opened the canister. Inside was a single sheet of paper, preserved in a vacuum-sealed pouch. The paper was brittle,

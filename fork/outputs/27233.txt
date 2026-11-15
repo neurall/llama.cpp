@@ -1,0 +1,4 @@
+run 27233 | ns_fcls | scific | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.3 t/s | prompt 2.7 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 200+200 W | 2026-11-13 05:05:12
+
+We need answer story ~900 words.
+---

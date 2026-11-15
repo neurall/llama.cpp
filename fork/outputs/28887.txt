@@ -1,0 +1,76 @@
+run 28887 | relcand3 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 17.3 t/s | prompt 894.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-15 09:26:51
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, security issues, and general code quality.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - `max_items == 0` returns empty string - correct
+  - `min_items == 0 && max_items == 1` returns `item_rule + "?"` - correct
+  - When separator is empty and `min_items == 1 && !has_max` returns `item_rule + "+"` - correct
+  - When separator is empty and `min_items == 0 && !has_max` returns `item_rule + "*"` - correct
+  - General case with separator: builds `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` - this looks correct for building sequences like `item (sep item)*`
+  - When `min_items == 0`, wraps in optional - correct
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda is recursive and handles digit-by-digit range matching
+- Potential issue: `decimals_left` parameter is used but the name is misleading - it's about digit count, not decimals
+- The `top_level` parameter controls whether leading zeros are allowed
+- Edge case: when `min_value == max_value`, the function should handle it correctly through the `has_min && has_max` path
+- The function throws if neither min nor max is set - but this is called with both set in the main path
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization order - these are file-scope statics, should be fine since they're initialized before use
+- `is_reserved_name` uses a static local with lambda initialization - this is thread-safe in C++11+
+
+### _add_rule
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. This could potentially loop if there are many rules with the same name but different content, but the while loop will eventually find a free slot.
+
+### _visit_pattern
+- Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+- However, `_rules` is a `std::map` and the snapshot copies the entire map - this could be expensive for large schemas.
+
+### _pattern_to_rule
+- The regex-to-grammar conversion is complex
+- `MAX_PATTERN_DEPTH = 100` prevents stack overflow from deep nesting
+- The `transform` lambda is recursive through `std::function` - this could be slow due to type erasure
+- The character class parsing handles escapes
+- The curly bracket parsing handles `{n}`, `{n,m}`, `{n,}`
+
+### _not_strings
+- Uses a trie to build a rule that matches strings that are NOT in a given set
+- The `rejects` string accumulates characters for the negated character class - if characters include special regex chars like `]`, `-`, `\`, this could be problematic. The function doesn't escape these characters in the character class.
+
+Wait, let me look more carefully at `_not_strings`:
+```cpp
+out << " | [^\"" << rejects << "] " << char_rule << "*";
+```
+The `rejects` string contains raw UTF-8 characters. If any of these characters are `]`, `-`, or `\`, they would need to be escaped in the grammar's character class. This is a potential bug.
+
+Actually, looking at the trie construction - the trie is built from property names (strings), so the characters could include anything. The `rejects` string is built from `common_unicode_cpt_to_utf8(cpt)` which gives UTF-8 representations. If a property name contains `]`, `-`, or `\`, these would break the character class.
+
+### _resolve_ref
+- Handles `$ref` resolution with cycle detection via `_refs_being_resolved`
+- The `ref_fragment` extraction looks for `#` in the ref string
+
+### _build_object_rule
+- Builds object rules with required and optional properties
+- The `get_recursive_refs` function builds alternatives for optional properties
+- The `additional_properties` handling adds a catch-all key-value rule
+
+### _add_primitive
+- Recursively adds primitive rules and their dependencies
+- Checks both `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` for dependencies
+
+### visit function
+- Main dispatch function for schema kinds
+- Handles all schema types
+
+### check_errors
+- Throws if there are errors, prints warnings to stderr
+
+### format

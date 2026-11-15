@@ -1,0 +1,9 @@
+run 28522 | graph_jump_names_peak | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.2 t/s | prompt 12.5 t/s | 64 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-14 12:13:38
+
+ } else if (i == from.length()) {
+            out << "[" << from[i] << "] ";
+            out << "(";
+            uniform_range(from.substr(i + 1), string_repeat("9", to.length() - i - 1));
+            out << ")";
+        } else {
+            out << "[" << to

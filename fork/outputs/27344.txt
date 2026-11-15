@@ -1,0 +1,56 @@
+run 27344 | hot_tree | mathc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 253.59 t/s | prompt 338.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:24:16
+
+
+---
+To solve the integral \(\int x^2 e^x \, dx\) and verify the result through differentiation, we'll follow these steps:
+
+### Step 1: Find the Integral
+
+The integral we need to solve is:
+\[
+\int x^2 e^x \, dx
+\]
+
+To solve this, we use integration by parts, which is based on the formula:
+\[
+\int u \, dv = uv - \int v \, du
+\]
+
+### Step 2: Choose \(u\) and \(dv\)
+
+Let \(u = x^2\) and \(dv = e^x \, dx\). Then \(du = 2x \, dx\) and \(v = e^x\).
+
+### Step 3: Apply the Integration by Parts Formula
+
+Substitute \(u\), \(dv\), \(du\), and \(v\) into the integration by parts formula:
+\[
+\int x^2 e^x \, dx = x^2 e^x - \int 2x e^x \, dx
+\]
+
+### Step 4: Solve the Remaining Integral
+
+Now, we need to solve \(\int 2x e^x \, dx\). Again, apply integration by parts:
+Let \(u = 2x\) and \(dv = e^x \, dx\). Then \(du = 2 \, dx\) and \(v = e^x\).
+
+Applying integration by parts:
+\[
+\int 2x e^x \, dx = 2x e^x - \int 2 e^x \, dx = 2x e^x - 2e^x + C
+\]
+
+### Step 5: Combine Results
+
+Now, combine the results:
+\[
+\int x^2 e^x \, dx = x^2 e^x - (2x e^x - 2e^x) + C = x^2 e^x - 2x e^x + 2e^x + C
+\]
+
+Simplify:
+\[
+\int x^2 e^x \, dx = (x^2 - 2x + 2)e^x + C
+\]
+
+### Step 6: Verify by Differentiation
+
+Differentiate the integrated result to verify:
+\[
+\frac{d}{dx} \left[ (x^2 - 2x + 2)e^x \right] = (2x -

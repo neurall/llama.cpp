@@ -1,0 +1,19 @@
+run 27511 | hot_tree5 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 97.65 t/s | prompt 230.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:19:04
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, crushing weight of centuries pressing against his ribs. The air in the stasis pod smelled of ozone and stale recycled breath, a scent that had lingered for three hundred years. He gasped, his lungs expanding like wet paper, and the glass of the pod hissed open.
+
+Outside, the viewport was a window into a world that should have been a barren wasteland. Instead, it was a tapestry of light. Below the hull of the *Aethelgard*, the planet of Veridia pulsed with the electric glow of cities. Towers of glass and steel pierced the cloud layer, weaving a web of luminescence that stretched to the horizon. It was not the dark, silent earth they had been promised. It was alive. It was inhabited.
+
+Elias floated out of the pod, his limbs stiff, his mind fogged by the chemical haze of the revival serum. He drifted toward the observation deck, where the other crew members were already stirring. Captain Vance stood by the railing, his face pale, his eyes wide with a confusion that mirrored Elias’s own.
+
+"Look," Vance whispered, his voice trembling. "They are here."
+
+Elias joined him, pressing his hand against the cold glass. The lights below were not random. They formed patterns. Grids. Streets. He squinted, trying to resolve the details. The architecture was familiar, yet alien. The spires were sleek, aerodynamic, designed for a world that had evolved in isolation. But the layout... the layout was identical to the blueprints they had carried in their minds.
+
+"Who are they?" Elias asked, his archivist’s instinct kicking in. He was the keeper of records, the memory of the ship. He knew every name, every date, every contingency plan. But this was not in the plan.
+
+"Descendants," Vance said, the word hanging in the air like a ghost. "A copy of the ship. Left a century after us. Arrived first."
+
+Elias felt a chill that had nothing to do with the cryo-cold. A century. The *Aethelgard* had been launched in 2140. The copy, the *Aethelgard II*, had launched in 2240. It had traveled the same distance, but with better

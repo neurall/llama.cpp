@@ -1,0 +1,46 @@
+run 27433 | hot_tree3 | tetriscppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 194.61 t/s | prompt 103.0 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 11:18:40
+
+
+---
+Creating a full Tetris game from scratch in C++ for the terminal involves a lot of code, but I'll guide you through a minimalist version that demonstrates the core mechanics of Tetris. This version will focus on the essentials: moving a Tetromino (shapes made up of squares) down the screen, rotating the Tetromino, and dropping it when a wall is hit.
+
+This example will use the `curses` library for terminal manipulation, which is a standard library for creating text-based user interfaces on Unix-like systems. If you don't have `curses` installed, you can usually do so via your package manager (e.g., `sudo apt-get install libcurses-dev` on Debian/Ubuntu).
+
+```cpp
+#include <iostream>
+#include <curses.h>
+
+const int WINDOW_WIDTH = 60;
+const int WINDOW_HEIGHT = 24;
+
+// Tetromino shapes
+const char* tetromino1 = "  XXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+const char* tetromino2 = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+const char* tetromino3 = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+const char* tetromino4 = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+const char* tetromino5 = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+const char* tetromino6 = "XXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+
+int main(int argc, char** argv) {
+    cbreak(); // Enable raw mode for better control
+    
+    // Initialize curses window
+    initscr();
+    std::cout << "Press any key to start Tetris\n";
+    
+    // Define the game window
+    char key;
+    int window = newwin(WINDOW_HEIGHT, WINDOW_WIDTH, 0, 0);
+    
+    // Game loop
+    while (1) {
+        // Get keypress
+        key = getch();
+        
+        // Check if key is in valid range (0-9)
+        if (key >= '0' && key <= '9') {
+            // Convert key to Tetromino index
+            int tetrominoIndex = key - '0';
+            
+            // Check if the current Tetromino is valid
+            if (

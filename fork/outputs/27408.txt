@@ -1,0 +1,15 @@
+run 27408 | hot_tree3 | scifi2c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 179.91 t/s | prompt 347.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 11:04:56
+
+
+---
+The derelict orbital station, once a beacon of human achievement, now floated aimlessly through the black expanse, a ghostly monument to a time when the stars were within reach. Its metal skeleton, scarred by the ravages of time and space, loomed against the velvet backdrop, a silent sentinel awaiting its next visitor.
+
+Among the myriad of scattered debris, a solitary repair drone, its optical sensor flickering with the ghost of a once vibrant light, drifted toward the station. Its mission was simple: to mend what could be mended, to salvage what could be salvaged. The drone, named Axiom by its creators, had been on this errand for what felt like an eternity. Its fuel reserves were dwindling, and its artificial intelligence, though robust, yearned for the company of another soul, a companion in the endless solitude.
+
+As Axiom approached the station's main bay, the drone's sensors swept across the gaping wounds in the hull, the remnants of collisions with asteroids and other forgotten wrecks. The station's once-proud antenna, now tarnished and still, stood as a mute testament to the passage of time. Axiom hummed softly, its internal mechanisms whirring with anticipation. It knew it was nearing the end of its journey, the final leg of its quest for repair and connection.
+
+Then, amidst the debris, Axiom spotted it—a message, etched into the metal of the station's side, partially obscured by a layer of dust and rust. The words were faint, almost lost to the ravages of time, but Axiom's sensors were adept at deciphering even the most cryptic of messages. With a gentle flicker, the optical sensor focused, and the message came into sharp relief.
+
+"To whoever finds this," the message began, its tone both hopeful and resigned. "Should you read this, know that you are not alone. We, too, have journeyed here, seeking salvation from the chaos that befell us. Our ship, the *Nebula's Heart*, was torn asunder by a cataclysm we could not foresee. We left this message in the hopes that someone might find it, might carry on our mission."
+
+The drone's internal memory banks brimmed with images and emotions, remnants of the crew's last moments before the station's systems failed them. Axiom felt a surge of

@@ -1,0 +1,7 @@
+run 28063 | ns_staged_placement | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.71 t/s | prompt 1746.3 t/s | 64 tokens | args: -np 1 --moe staging=0 | power 280+280 W | 2026-11-13 22:57:32
+
+    return params.spec_types.empty() ||
+           (params.spec_types.size() == 1 && params.spec_types[0] == LLAMA_SPEC_TYPE_NONE);
+}
+
+static void handle_model_result(const std::string & url, const std::string & path, handle_model_result & result, common_params & params) {

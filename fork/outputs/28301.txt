@@ -1,0 +1,11 @@
+run 28301 | lp_yields_to_split | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 24.11 t/s | prompt 632.2 t/s | 64 tokens | args: -np 1 --moe dense-split=1,split-experts=0,staging=0,moe-split=home | power 200+200 W | 2026-11-14 04:29:32
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_auto(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec

@@ -1,0 +1,70 @@
+run 27389 | hot_tree3 | mathc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 208.87 t/s | prompt 227.2 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:54:14
+
+
+---
+To solve the integral \(\int x^2 e^x \, dx\) and verify it using differentiation, we'll follow these steps:
+
+### Step 1: Find the Integral
+
+The integral we need to solve is:
+\[
+\int x^2 e^x \, dx
+\]
+
+To solve this, we use integration by parts, which states:
+\[
+\int u \, dv = uv - \int v \, du
+\]
+
+Let's choose:
+\[
+u = x^2 \quad \text{and} \quad dv = e^x \, dx
+\]
+
+Then, we need to find \(du\) and \(v\):
+\[
+du = 2x \, dx \quad \text{and} \quad v = e^x
+\]
+
+Now apply the integration by parts formula:
+\[
+\int x^2 e^x \, dx = x^2 e^x - \int 2x e^x \, dx
+\]
+
+### Step 2: Differentiate the Resulting Expression
+
+Next, we differentiate the result to verify it:
+\[
+\frac{d}{dx} \left( x^2 e^x \right) = 2x e^x + x^2 e^x
+\]
+
+And the integral we initially set out to solve:
+\[
+\int 2x e^x \, dx
+\]
+
+We apply integration by parts again with:
+\[
+u = 2x \quad \text{and} \quad dv = e^x \, dx
+\]
+
+Then, we find:
+\[
+du = 2 \, dx \quad \text{and} \quad v = e^x
+\]
+
+Applying integration by parts again:
+\[
+\int 2x e^x \, dx = 2x e^x - \int 2 e^x \, dx = 2x e^x - 2e^x
+\]
+
+### Step 3: Verify the Integral
+
+Now, let's compare the integral we found:
+\[
+\int x^2 e^x \, dx = x^2 e^x - (2x e^x - 2e^x) = x^2 e^x - 2x e^x + 2e^x
+\]
+
+Simplifying:
+\[
+= e^x (x^2 - 2x + 2)

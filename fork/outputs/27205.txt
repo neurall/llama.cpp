@@ -1,0 +1,7 @@
+run 27205 | ns_fcls | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 29.59 t/s | prompt 200.7 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,staging=0,verify=2,poison=3 | power 200+200 W | 2026-11-13 04:15:19
+
+    return params.speculative.types == (1u << COMMON_SPEC_TYPE_NONE)
+        || (params.speculative.types == (1u << COMMON_SPEC_TYPE_DRAFT) && params.model.hparams.n_layer_nextn > 0);
+}
+
+static bool is_url(const std::string & url) {

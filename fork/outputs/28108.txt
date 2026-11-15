@@ -1,0 +1,11 @@
+run 28108 | ns_staged_placement | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 52.5 t/s | prompt 3016.9 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=0,log=w --moe sim-vram=4608 | power 280+280 W | 2026-11-13 23:41:47
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+   

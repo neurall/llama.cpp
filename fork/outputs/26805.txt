@@ -1,0 +1,29 @@
+run 26805 | ns_probe_cells | pf2k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 34.88 t/s | prompt 194.5 t/s | 1024 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 280+280 W | 2026-11-12 15:41:36
+
+<think>We need answer code review. Need inspect source. Need identify bugs, style, correctness. Need likely from llama.cpp? common/json-schema-to-grammar.cpp. Need review. Need maybe full file truncated? User provided partial ending at array. Need review given source. Need mention incomplete? We can review visible. Need be thorough but desired oververbosity 5. Need analyze code.
+
+Let's parse. File includes json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json. Functions build_repetition, build_min_max_int, SPACE_RULE, PRIMITIVE_RULES partial.
+
+Need code review. Need identify issues.
+
+Let's understand build_repetition. It constructs grammar repetition. Potential bug with separator and min_items=0? Let's test.
+
+build_repetition(item, min, max, sep):
+- max_items == 0 return ""
+- min=0 max=1 return item? (ignores separator; if separator nonempty and max=1, should item? maybe yes no separator)
+- sep empty:
+  - min=1 no max -> item+
+  - min=0 no max -> item*
+  - else item{min,max} with max omitted if no max. For min=0 max finite? item{0,max}. For min=1 max finite item{1,max}. For min=0 max=1 handled item?.
+- sep nonempty:
+  result = item + " " + build_repetition("(" + sep + " " + item + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)
+  if min_items == 0 result = "(" + result + ")?"
+  return result.
+
+Potential bug: For min_items=0, max_items finite >1, result = item + " " + build_repetition("(sep item)", 0, max-1). Then wraps optional. This grammar allows item followed by optional repetitions? Let's see min=0 max=3 sep="," item="a": result = a + " " + build_repetition("(, a)",0,2). build_repetition sep empty? item_rule="(, a)", min=0 max=2 -> "(, a){0,2}"? Actually sep empty branch returns item_rule + "{0,2}" = "(, a){0,2}". Then result = "a ( , a){0,2}"? Then wrap optional: "(a (, a){0,2})?" This allows empty or a followed by 0-2 comma a. That's correct for 0-3 items? If 0 items empty; 1 item a; 2 items a , a; 3 items a , a , a. Yes. But note spaces: item_rule + " " + repetition. Grammar has space? It may be okay.
+
+For min_items=1 max=3 sep: result = item + " " + build_repetition("(sep item)",0,2) = item + " " + "(sep item){0,2}"? Wait build_repetition with sep empty and min=0 max=2 returns item_rule + "{0,2}" = "(sep item){0,2}". So result = item + " " + "(sep item){0,2}". This allows item followed by 0-2 repetitions. Correct. But there is a space between item and repetition. In grammar, if repetition zero, result = item + " " + "(sep item){0,2}"? The space is literal? Actually build_repetition returns string with " " between item_rule and repetition. In grammar, spaces are literal? In llama grammar, spaces in rule are literal? Need know. In GBNF, whitespace in rule? Actually grammar syntax: spaces are literal? In llama.cpp grammar, spaces are literal characters? Let's recall: GBNF rules: `" "` for space. Unquoted spaces in rule are ignored? Hmm in llama.cpp grammar, whitespace is ignored? Let's recall examples: `root ::= "a" "b"`? In GBNF, whitespace between tokens is ignored? Actually grammar parser treats whitespace as separator, not literal. So `item_rule + " " + ...` is just concatenation with whitespace separator, not literal space. So okay. But if item_rule contains spaces? It's grammar syntax. Fine.
+
+Potential bug: build_repetition with separator and min_items=0 max_items=1 returns item_rule + "?" before separator branch. If separator nonempty and max=1, should allow empty or one item, no separator. item? correct. If min=0 max=0 returns empty. Good.
+
+Potential bug: max_items - 1 when max_items=0?

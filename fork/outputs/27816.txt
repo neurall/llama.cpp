@@ -1,0 +1,21 @@
+run 27816 | tree_emb_key | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 57.95 t/s | prompt 49.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=emb,rp-steer=0,state=/tmp/runstate/q36ph3/tsoff/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/tsoff | power 280+280 W | 2026-11-13 18:04:22
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, heavy weight of the pod’s lid pressing against his chest. The air in the archive sector smelled of ozone and stale recycled water, a scent that had lingered for three centuries. He blinked, his vision swimming in the gray haze of hypothermia, until the emergency lights flickered on, casting long, jagged shadows across the rows of dormant pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The AI, dormant for decades, hummed to life. "We have arrived. Orbit established. Target: Kepler-4b."
+
+Elias stumbled toward the observation deck, his legs trembling like new-born calves. He expected the planet to be a blank slate, a verdant wilderness waiting for the first bootprints of humanity. Instead, he looked down and saw the night side of the world glowing with the electric veins of civilization. Cities pulsed like neurons in a brain, vast and intricate, stretching from the equator to the poles.
+
+He pressed his face against the cold glass, his breath fogging the pane. The lights were not the chaotic sprawl of a primitive settlement, but the structured grid of a mature metropolis. There were spires piercing the cloud layer, orbital elevators shimmering like threads of gold, and the faint, rhythmic pulse of fusion reactors.
+
+"Impossible," he whispered. The math of the mission was absolute. They were the first. The *Aethelgard* was the seed. The descendants were the fruit. But the fruit had ripened before the seed could fall.
+
+He turned to the comms console, his fingers trembling as he keyed in the frequency. "This is Elias, Archivist of the *Aethelgard*. We are in orbit. We see... lights. We see cities. Who is there?"
+
+The silence stretched for a minute, then a second. Then, a voice crackled through the static. It was clear, warm, and terrifyingly familiar.
+
+"Welcome home, Grandfather."
+
+Elias froze. The voice belonged to a woman, young and confident. "You are the *Aethelgard*," the voice continued. "We are the *Aethelgard II*. We left one hundred years after you. We arrived fifty years before you. We are your children. Your grandchildren.

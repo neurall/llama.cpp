@@ -1,0 +1,10 @@
+run 28196 | kv_fit_pass_grow | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 27.99 t/s | prompt 979.3 t/s | 64 tokens | args: -np 1 --moe staging=0 | power 200+200 W | 2026-11-14 02:35:54
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_default(const common_params & params, const std::string & spec_types) {
+    return spec_types_is_default(params) || params.spec_types == spec_types;
+}
+
+static bool spec_types_is_default(const common_params & params, const std::vector<std::

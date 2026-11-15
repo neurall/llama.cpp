@@ -1,0 +1,47 @@
+run 27434 | hot_tree3 | tetriscppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 189.95 t/s | prompt 585.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 11:19:13
+
+
+---
+Creating a full Tetris game from scratch in C++ for the terminal involves a lot of code, but I'll guide you through a minimalist version that demonstrates the core mechanics of Tetris. This version will focus on the essentials: moving a Tetromino (shapes made up of squares) down the screen, rotating the Tetromino, and dropping it when a solid line is reached.
+
+This example will use `std::string` for the Tetromino shapes and `std::cout` for output. You'll need to handle input (such as moving left/right and dropping) manually, typically through keyboard keys.
+
+```cpp
+#include <iostream>
+#include <string>
+#include <vector>
+#include <cmath>
+
+const std::string TETRIS_SHAPES[] = {
+    "1111", "0111", "0011", "1001", "0001",
+    "1100", "1010", "0101", "1011", "1001",
+    "1001", "1011", "0111", "0111", "1111"
+};
+
+int main() {
+    int rows = 20; // Number of rows
+    int cols = 40; // Number of columns
+    int gridSize = rows * cols; // Size of the grid
+    
+    std::vector<std::vector<int>> grid(gridSize);
+    for (int i = 0; i < gridSize; ++i) {
+        grid[i] = std::vector<int>(cols, 0);
+    }
+
+    int row = 0;
+    int col = 0;
+    int currentShape = 0; // Index of the current Tetromino shape
+    int currentRowLength = 0; // Length of the current row
+    
+    while (true) {
+        // Check if the game is over
+        if (row >= gridSize || grid[row][col] != currentShape) {
+            std::cout << "Game Over\n";
+            return 0;
+        }
+        
+        // Update the current Tetromino shape
+        if (col >= grid[row].size()) {
+            currentShape = (currentShape + 1) % TETRIS_SHAPES[grid[row].size() - 1];
+        } else {
+            grid[row][col] = T

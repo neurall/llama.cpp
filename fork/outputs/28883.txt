@@ -1,0 +1,49 @@
+run 28883 | relcand3 | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 14.76 t/s | prompt 801.0 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-15 09:12:56
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, and potential problems.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - For separator case: when `min_items == 0`, it wraps the result in `(...)?` - correct
+  - The separator case with `min_items == 0` and `has_max`: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1, "")` - this seems correct for building `item (sep item)*` pattern
+  - Wait, when `min_items == 0` and separator is present, the result is `item_rule + " " + build_repetition(...)` then wrapped in `(...)?`. So it becomes `(item (sep item){0,max-1})?` which is correct for 0 to max items.
+
+### build_min_max_int function
+- This is a complex function for generating integer range rules. Let me check some edge cases:
+  - When both min and max are set and both negative: handles by negating - correct
+  - When min is negative and max is positive: handles negative part then continues with positive - correct
+  - The `uniform_range` lambda is recursive and complex - potential for issues
+  - `decimals_left` parameter is used to limit digit depth - good for preventing exponential blowup
+  - The `top_level` parameter controls whether leading zeros are allowed - correct
+
+- Potential issue: In the `has_min` case when `min_value <= 9`, `char c = '0' + min_value;` - if `min_value` is between 0 and 9, this is fine. But what if `min_value` is negative? The code checks `min_value < 0` first, so by the time we reach `min_value <= 9`, it's guaranteed to be >= 0. Wait, actually looking more carefully:
+  - `if (min_value < 0)` - handles negative
+  - `else if (min_value == 0)` - handles zero
+  - `else if (min_value <= 9)` - handles 1-9
+  - `else` - handles >= 10
+  This is correct.
+
+- In the `has_max` case when `max_value >= 0`: it outputs negative numbers first (if top_level), then calls `build_min_max_int(0, max_value, ...)`. This seems correct.
+
+- When `max_value < 0`: outputs `"-"` then calls `build_min_max_int(-max_value, INT64_MAX, ...)`. This handles the range [-max_value, -1] correctly... wait, actually it should be [-max_value, -1] but the code generates `"-"` followed by numbers from 1 to -max_value. That's correct since we're negating.
+
+### _add_rule function
+- The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. This seems correct but could potentially create many rules if called repeatedly with different content for the same name.
+
+### _visit_pattern function
+- Takes a snapshot of `_rules` before attempting to convert, and restores on failure. This is a good pattern for rollback.
+- However, `_refs_being_resolved` is not snapshotted/restored - potential issue if a ref resolution fails during pattern conversion.
+
+### _pattern_to_rule function
+- Complex regex-to-grammar conversion. Let me check some issues:
+  - The `join_seq` function merges consecutive literals - good
+  - The `to_rule` function wraps literals in quotes - good
+  - Character class handling: reads until `]` but doesn't handle `]` as first character in class (e.g., `[]abc]`) - this is a potential issue. In regex, `[]abc]` means the class contains `]`, `a`, `b`, `c`. But the code would stop at the first `]`.
+  - Wait, actually looking at the code: `while (i < length && sub_pattern[i] != ']')` - this would stop at the first `]`. For `[]abc]`, the first `]` would terminate the class, leaving `abc]` as literal. This is a bug for patterns like `[]abc]`.
+  -

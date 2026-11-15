@@ -1,0 +1,10 @@
+run 27621 | hot_tree8 | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.82 t/s | prompt 11.4 t/s | 64 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-13 13:51:14
+
+ } else if (i == from.length()) {
+            out << "[" << from[from.length() - 1] << "] ";
+            out << "(";
+            uniform_range(from.substr(i), to.substr(i));
+            out << ")";
+        }
+    };
+    auto uniform_range_s = [&](const std::string & from,

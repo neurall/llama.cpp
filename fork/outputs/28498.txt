@@ -1,0 +1,4 @@
+run 28498 | chain_grid_claims | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 28.74 t/s | prompt 25.6 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 280+280 W | 2026-11-14 10:47:40
+
+<think>
+We need answer user's request: "

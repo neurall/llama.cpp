@@ -1,0 +1,11 @@
+run 28761 | pred_depth_over | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.49 t/s | prompt 12.6 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini | power 280+280 W | 2026-11-14 23:44:09
+
+ } else {
+            digit_range(from[i], to[i]);
+        }
+    };
+    auto uniform_range_s = [&](const std::string & from, const std::string & to) {
+        uniform_range(from, to);
+    };
+    auto to_digits = [&](int64_t value) {
+        return std::to

@@ -1,0 +1,11 @@
+run 28524 | situ_pp_option | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.17 t/s | prompt 13.6 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,situ-pp=1 | power 280+280 W | 2026-11-14 12:21:55
+
+ } else {
+            digit_range(from[i], to[i]);
+        }
+    };
+    auto uniform_range_s = [&](const std::string & from, const std::string & to) {
+        uniform_range(from, to);
+    };
+    auto to_digits = [&](int64_t value) {
+        return std::to

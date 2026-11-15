@@ -1,0 +1,11 @@
+run 26964 | fix_ds_kv_clear_rows | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 19.25 t/s | prompt 124.7 t/s | 64 tokens | args: -np 1 --moe staging=0,verify=2,poison=3 | power 280+280 W | 2026-11-12 21:22:17
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_none(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types[0] == LLAMA_SPEC_TYPE_NONE;
+}
+
+static bool spec_types_is_all(const common_params & params) {
+    return params.spec_types

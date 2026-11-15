@@ -1,0 +1,7 @@
+run 28762 | pred_depth_over | pf128k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.37 t/s | prompt 54.7 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini | power 280+280 W | 2026-11-14 23:47:17
+
+ paths.push_back(program_data + "\\llama.cpp\\config.ini"); }
+    const std::string app_data = common_get_env("APPDATA");
+    if (!app_data.empty()) { paths.push_back(app_data + "\\llama.cpp\\config.ini"); }
+#else
+    paths.push_back("/etc/ll

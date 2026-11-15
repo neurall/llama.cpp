@@ -1,0 +1,7 @@
+run 27220 | ns_fcls | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 20.2 t/s | prompt 159.0 t/s | 64 tokens | args: -np 1 --moe staging=0,split-experts=1,verify=2,poison=3 | power 200+200 W | 2026-11-13 04:46:19
+
+    return params.spec_types.empty() || params.spec_types == std::vector<std::string>{"draft"};
+}
+
+static void handle_model_result(const common_params & params, const std::string & model_id, const std::string & model_path, handle_model_result & result) {
+    // TODO: this is a hack

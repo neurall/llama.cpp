@@ -1,0 +1,21 @@
+run 27663 | tree_phase_maps | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 77.46 t/s | prompt 154.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,count-prompt=0,state=/tmp/runstate/q36ph/cp0/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/cp0 | power 280+280 W | 2026-11-13 16:01:22
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in the haze of neuro-stimulant residue, until the lights of the command deck stabilized into a harsh, clinical white.
+
+"Status report," Commander Vance’s voice cut through the fog, sharp and authoritative. Elias rubbed his eyes, his fingers trembling as he reached for the console. The data streams were already flooding his neural link. They had arrived. The destination, Kepler-4b, was no longer a distant star in the void. It was a world.
+
+But it was not a world of virgin soil.
+
+Elias stared at the holographic projection hovering above the central table. The planet spun slowly, a marble of azure and ochre. But the darkness of the night side was pierced by a web of golden light. Cities. Millions of them. The lights were not the scattered, primitive flickers of early settlement; they were structured, luminous, and vast. They looked like the constellations of Earth, mapped onto a new sky.
+
+"Impossible," Elias whispered, his voice raspy from disuse. He looked at Vance. "We were the first. The *Aethelgard* was the seed. There should be no one here."
+
+Vance looked down at the screen, his face pale. "We checked the telemetry. The ship that arrived... it wasn't us. It was the *Aethelgard II*. The copy. The one launched a century after us, with a faster drive and a smaller crew. They beat us by fifty years."
+
+Elias felt a hollow ache in his chest. The irony was suffocating. They had spent three hundred years in the dark, dreaming of a future they would build from scratch. They had preserved the history of Earth, the art, the laws, the warnings, in the hope that they would be the first to speak to the new world. Instead, they were the ghosts arriving at a party that had already begun.
+
+"Who are they?" Elias asked, his mind racing through the archives. "Are they hostile? Do they know we exist?"
+
+Vance shook his

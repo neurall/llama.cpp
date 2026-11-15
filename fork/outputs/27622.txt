@@ -1,0 +1,12 @@
+run 27622 | hot_tree8 | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.11 t/s | prompt 10.3 t/s | 64 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-13 13:54:41
+
+ } else if (i == from.length()) {
+            out << more_digits(to.length() - i, to.length() - i);
+        }
+    };
+
+    auto less_than = [&](int64_t bound) {
+        if (bound == 0) {
+            return;
+        }
+        auto bound_str = std::

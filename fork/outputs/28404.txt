@@ -1,0 +1,36 @@
+run 28404 | lp_check_before_lock | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.15 t/s | prompt 1359.1 t/s | 1024 tokens | args: -np 1 --moe staging=0 | power 280+280 W | 2026-11-14 07:49:03
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check for edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - For separator case: when `min_items == 0`, it wraps the result in `(...)?` - correct
+  - The separator case with `min_items == 0` and `has_max` - the recursive call passes `max_items - 1` which could be -1 if `max_items == 0`, but that's already handled by the early return. Wait, if `max_items == 0` we return early. But what if `max_items == 1` and `min_items == 0` with a separator? Then `has_max` is true, and we'd call `build_repetition` with `min_items - 1 = -1`... wait no, `min_items == 0` so it passes `0` for min. And `max_items - 1 = 0`. So it would return `""`. Then `result = item_rule + " " + ""` = `item_rule + " "`. Then wrapped in `(...)?`. That seems correct - one item with optional separator+item.
+
+  Actually wait, let me re-read: `min_items == 0 ? 0 : min_items - 1`. So if min_items is 0, it passes 0. And `has_max ? max_items - 1 : max_items`. If max_items is 1, has_max is true, so it passes 0. So build_repetition with min=0, max=0 returns "". Then result = `item_rule + " " + ""` = `item_rule + " "`. Then since min_items == 0, it becomes `(item_rule + " ")?`. Hmm, that trailing space seems odd but might be intentional for the separator pattern.
+
+  Actually, looking more carefully at the separator case: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...)`. So the result is `item_rule + " " + ""` = `item_rule + " "`. Then wrapped: `(item_rule + " ")?`. This means it matches `item_rule` followed by a space, which is the separator. But the separator itself is `",\" space"` for arrays. So the full pattern would be `item_rule + " " + ",\" space" + " " + item_rule`. That seems correct for the separator case.
+
+  Wait, but when max_items is 0, we return "" early. So for the separator case with max_items=0, we'd return "" before even getting to the separator logic. That's correct.
+
+  But what about `min_items == 0 && max_items == 1` with a separator? The early return `item_rule + "?"` happens before the separator check. So for arrays with min=0, max=1, we'd get `item_rule?` without the separator. That's correct since with max 1 item, no separator is needed.
+
+  Actually wait, the early return for `min_items == 0 && max_items == 1` returns `item_rule + "?"` regardless of separator. That's correct.
+
+  What about `min_items == 0 && max_items == 0`? The `max_items == 0` check comes first, so returns "". Correct.
+
+  What about negative min_items? Not checked. Could be a bug if callers pass negative values.
+
+### build_min_max_int function
+- Complex function for generating integer range rules. Let me check for issues:
+  - `decimals_left` parameter is used to limit digit depth
+  - The `uniform_range` lambda handles the common prefix case
+  - The `to_reached` variable is declared inside the `if (sub_len > 0)` block but used across branches - let me check... it's initialized to `false` and set to `true` in one branch. It's used in `if (!to_reached)` after the if/else. This looks correct.
+  - The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - ensures at least 1
+  - In the `has_min` case with `min_value < 0`: it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` -

@@ -1,0 +1,28 @@
+run 27340 | hot_tree | poemc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 200.54 t/s | prompt 301.5 t/s | 258 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:22:05
+
+
+---
+In the soft embrace of twilight's glow,
+By the sea's gentle murmur we sit, you and I.
+The stars begin to peek from the sky,
+As the sun dips low, painting the world in hues of love and sigh.
+
+The waves, like whispers from the deep,
+Carry our thoughts away, to a place where dreams and reality meet.
+Your hand finds mine, a silent vow,
+To cherish this moment, forever, nohow.
+
+The moon rises, a silent witness to our serenade,
+Its silver light dances on the water, a gentle cascade.
+The world seems to pause, in this tranquil state,
+As we revel in the beauty, the peace, and the love we create.
+
+The sea's rhythm is our heartbeat's tune,
+A timeless melody that speaks of our everlasting bloom.
+The stars twinkle, a celestial sign,
+Of the promises we make, under this vast, loving sky.
+
+Let the waves crash, let the wind blow,
+As long as we're together, let the world go.
+In this quiet haven by the sea,
+Our hearts entwine, forever, you and me.

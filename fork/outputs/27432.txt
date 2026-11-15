@@ -1,0 +1,44 @@
+run 27432 | hot_tree3 | tetriscppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 233.7 t/s | prompt 535.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 11:18:05
+
+
+---
+Creating a full Tetris game from scratch in a text-based environment like a terminal involves a lot of code and complexity, especially if you want it to be functional, efficient, and user-friendly. However, I can guide you through a simplified version that demonstrates the core mechanics of Tetris, focusing on the essential elements: moving and rotating tetrominoes, handling the falling piece, and keeping track of the game state.
+
+This example will be quite basic and will not include advanced features like graphics rendering, sound effects, or a full game loop with user input handling. Instead, it will focus on the logic needed to simulate the game in a text-based environment.
+
+```cpp
+#include <iostream>
+#include <string>
+
+using namespace std;
+
+const int WINDOW_WIDTH = 80;
+const int WINDOW_HEIGHT = 24;
+
+struct Tetromino {
+    string shape; // Define the shape of the tetromino
+    int x, y; // Position in the grid
+    int rotation; // 0 for straight, 1 for rotated left, 2 for rotated right
+
+    Tetromino() : shape(""), x(0), y(0), rotation(0) {}
+    Tetromino(const string& shape, int x, int y, int rotation) : shape(shape), x(x), y(y), rotation(rotation) {}
+};
+
+void print_tetromino(Tetromino tetromino) {
+    for (int i = 0; i < tetromino.shape.length(); i++) {
+        cout << tetromino.shape[i];
+    }
+    cout << endl;
+}
+
+void move_tetromino(Tetromino& tetromino, int dx, int dy) {
+    int newX = tetromino.x + dx;
+    int newY = tetromino.y + dy;
+
+    // Check if the new position is valid
+    if (newX >= 0 && newX < WINDOW_WIDTH && newY >= 0 && newY < WINDOW_HEIGHT) {
+        tetromino.x = newX;
+        tetromino.y = newY;
+    } else {
+        // Handle the case where the tetromino goes off the window
+        newX = max(0

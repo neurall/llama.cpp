@@ -1,0 +1,17 @@
+run 28750 | pred_pool_alias | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.5 t/s | prompt 1.6 t/s | 256 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-14 22:46:00
+
+
+---
+Every evening, Elias climbed the spiral stairs of the lighthouse with a lantern in one hand and a rag in the other, polishing the brass until it reflected the storm-gray sea. He had kept the light for twenty-three years, long enough to know the exact sound of fog against the rocks and the particular silence that followed a ship’s safe passage.
+
+One morning, after a night of violent wind, he found a bottle wedged between the stones below the tower. Its glass was green and cloudy, its cork sealed with black wax. Inside lay a folded page, the ink feathered by salt.
+
+Elias carried it to the kitchen and read it beside his cooling tea.
+
+*To whoever finds this: the light on Aster Rock has gone dark. My daughter is aboard the* Mercy *with forty others. We have no charts, no stars, and the captain will not admit we are lost. If you can see this coast, burn something bright.*
+
+There was no date, no name. Only a drawing at the bottom: a small hand pressed against a window.
+
+Elias looked out at the horizon. Aster Rock was his own lighthouse, named before anyone had bothered to give the keeper a name. The light had not gone dark. It had shone all night.
+
+Still

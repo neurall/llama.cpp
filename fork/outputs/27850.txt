@@ -1,0 +1,58 @@
+run 27850 | tree_emb_key | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 62.02 t/s | prompt 39.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph3/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/ini | power 280+280 W | 2026-11-13 18:24:26
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 150, dx = 2, dy = -2;
+let p = 80, pw = 20;
+let bricks = [];
+for(let i=0; i<10; i++) for(let j=0; j<5; j++) bricks.push({x: i*20, y: j*20, alive: 1});
+
+function loop() {
+    ctx.clearRect(0,0,200,200);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(p, 190, pw, 10);
+    
+    // Collision with Paddle
+    if(y + dy > 180 && x > p && x < p + pw) dy = -dy;
+    
+    // Collision with Bricks
+    bricks.forEach(b => {
+        if(b.alive && x > b.x && x < b.x + 20 && y > b.y && y < b.y + 20) {
+            b.alive = 0; dy = -dy;
+        }
+    });
+    
+    // Wall Collision
+    if(x <= 0 || x >= 200) dx = -dx;
+    if(y <= 0) dy = -dy;
+    
+    // Game Over
+    if(y > 190) {
+        ctx.fillStyle = 'red';
+        ctx.fillText("Game Over", 50, 100);
+        return;
+    }
+    
+    x += dx; y += dy;
+    
+    // Draw Ball
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI*2);
+    ctx.fill();
+    
+    // Draw Bricks
+    bricks.forEach(b => {
+        if(b.alive) {
+            ctx.fillStyle = 'blue';
+            ctx.fillRect(b.x,

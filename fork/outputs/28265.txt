@@ -1,0 +1,8 @@
+run 28265 | lp_yields_to_split | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 26.33 t/s | prompt 752.2 t/s | 64 tokens | args: -np 1 --moe dense-split=1,split-experts=0,staging=0 | power 200+200 W | 2026-11-14 03:54:59
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static void spec_types_set_default(common_params & params) {
+    params.speculative.num_draft = 8;
+    params.speculative.num_reuse = 256;

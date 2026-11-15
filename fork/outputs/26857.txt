@@ -1,0 +1,26 @@
+run 26857 | oneexe | pf2k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 34.87 t/s | prompt 197.3 t/s | 1024 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 220+280 W | 2026-11-12 17:17:37
+
+<think>We need answer code review. Need inspect source. Need identify bugs, style, correctness. Need likely from llama.cpp? common/json-schema-to-grammar.cpp. Need review. Need maybe full file truncated? User provided partial ending at array. Need review given source. Need mention incomplete? We can review visible. Need be thorough but desired oververbosity 5. Need analyze code.
+
+We need understand functions.
+
+File includes json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json. Static build_repetition, build_min_max_int, SPACE_RULE, BuiltinRule, PRIMITIVE_RULES partial.
+
+Need code review. Need identify issues:
+
+1. build_repetition separator logic likely wrong for min_items=0? Let's analyze.
+
+build_repetition(item_rule, min_items, max_items, separator_rule=""):
+- has_max = max_items != INT_MAX.
+- if max_items == 0 return "";
+- if min_items == 0 && max_items == 1 return item_rule + "?";
+- if separator empty:
+  - min=1 no max -> item+
+  - min=0 no max -> item*
+  - return item + "{" + min + "," + (has_max ? max : "") + "}"
+Potential issue: if min_items == max_items? It emits {n,n} okay. If min_items=0 max_items=0 handled. If min_items=0 max_items>1 emits item{0,max} okay. If min_items=1 max_items=1? It doesn't hit min=0 max=1; separator empty returns item{1,1}, okay but could item. If min_items=1 max_items=2 returns item{1,2}. Fine.
+- separator nonempty:
+  result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+  if min_items == 0 result = "(" + result + ")?";
+  return result.
+Need check for min_items=0 max_items=1 with separator: earlier returns item_rule + "?" ignoring separator. For zero or one item, no separator needed, okay. For min=0 max=2: result = item + " " + build_repetition("(sep item)", 0, 1) -> inner returns "(sep item)?" (because min=0 max=1) => item + " " + "(sep item)?" then wrap optional => "(item (sep item)?)?"? Wait result initially item_rule + " " + inner. Then if min=0 result = "(" + result + ")?". So grammar: (item (sep item)?)? This allows empty, item, item sep item. Good. But note item_rule + " " + inner has space between item and optional separator; if empty optional, result "item " with trailing space? In grammar, spaces are literal? Actually item_rule may be grammar expression; concatenation with " " means literal space? In llama grammar, spaces in rule are literal? Need know. In GBNF, spaces are literal? Actually grammar syntax: whitespace separates tokens? In llama.cpp grammar, spaces are literal? Let's recall: GBNF rules: `" "` is literal space. Unquoted spaces? In grammar, whitespace is ignored? Hmm llama.cpp grammar parser: spaces are literal? Let's recall examples: `root ::= "a" "b"`? They use `space` rule. In PRIMITIVE_RULES object: `"\"{\" space ( string \":\" space value ...` Here `space` is rule reference, not literal. They include spaces between tokens as separators in grammar syntax, not literal. In GBNF, whitespace between tokens is ignored? Actually grammar syntax uses spaces to separate symbols; literal spaces must be quoted. So `item_rule + " " + ...` adds a separator token? Wait if item_rule is e.g. `"a"` and separator_rule is `","`, result `"a" ("," "a")?` The space between `"a"` and `(` is just grammar whitespace, not literal. So okay. But if item_rule ends with something? It's grammar expression. Spaces are ignored. So no trailing literal issue. But in build_repetition, separator_rule is inserted as `"(" + separator_rule + " " + item_rule + ")"`; if separator_rule is `","` (quoted comma), then `("," "a")`? Actually separator_rule likely `","` including quotes? Need see usage. In PRIMITIVE_RULES object: `(\",

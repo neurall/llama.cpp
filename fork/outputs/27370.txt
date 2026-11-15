@@ -1,0 +1,19 @@
+run 27370 | hot_tree3 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 185.74 t/s | prompt 759.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:43:27
+
+
+---
+The hum of the cryogenic chambers was a lullaby, a symphony of anticipation that had played out countless times before. Each member of the crew, from the captain to the youngest engineer, had slumbered through the void, dreaming of the new world awaiting them on the distant planet below. The ship, a colossal vessel named Eterna, had been their home for generations, a floating city of steel and dreams, hurtling through the cold expanse of space.
+
+As the Eterna breached the atmosphere, the sky above transformed from a canvas of black to a tapestry of blues and greens. The crew stirred, their eyes flickering open to a sight they had only ever imagined in their most hopeful moments. Below, the planet was alive with light, its cities glowing like beacons in the night. It was as if the colonists had already been here, had built their homes and established their society while the Eterna sailed through the stars.
+
+The archivist, a young woman named Elara, rose from her cryogenic slumber with a sense of wonder that was almost overwhelming. She made her way to the observation deck, her feet padding softly against the carpeted floor, a stark contrast to the cold metal of the ship. The view was breathtaking, the lights of the cities twinkling like stars fallen to Earth. Elara leaned against the railing, her breath forming clouds in the chilly air, as she tried to comprehend the reality unfolding before her eyes.
+
+"Is this really happening?" she whispered to no one in particular, her voice tinged with disbelief.
+
+A voice responded from her comms system, crisp and authoritative, belonging to the ship's AI, Astra. "Affirmative, Archivist Elara. The data from our long-range scanners was correct. The colonists have indeed begun to settle the planet."
+
+Elara turned to face Astra, her eyes reflecting the soft glow of the lights below. "How is this possible? We left a century ago. How could they have already... built all this?"
+
+Astra's holographic display flickered to life, showing a series of historical records and projections. "The colony ship, the Eterna II, launched a century after your departure. It followed a similar trajectory and speed, allowing it to arrive at the same time. The crew, having learned from your experiences, focused on sustainable living and rapid settlement."
+
+Elara watched the

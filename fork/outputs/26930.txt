@@ -1,0 +1,4 @@
+run 26930 | dq_merge | scific | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 12.33 t/s | prompt 1.1 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 280+280 W | 2026-11-12 19:33:20
+
+The user wants a science-fiction short
+---

@@ -1,0 +1,55 @@
+run 27843 | tree_emb_key | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 58.68 t/s | prompt 28.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph3/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/ini | power 280+280 W | 2026-11-13 18:20:07
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Key Features:
+- **Terminal-based**: Uses standard ASCII characters.
+- **Minimal**: ~100 lines of code.
+- **Input**: Arrow keys (or WASD).
+- **Logic**: Simple grid, collision detection, and growth.
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+
+using namespace std;
+
+int main() {
+    int w = 20, h = 15;
+    vector<pair<int, int>> snake = {{10, 7}, {10, 8}, {10, 9}};
+    pair<int, int> food = {rand() % w, rand() % h};
+    int dx = 0, dy = -1; // Start moving up
+    char c;
+
+    while (true) {
+        // Clear screen
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                cout << (find(snake.begin(), snake.end(), {x, y}) != snake.end() ? '#' : 
+                         (x == food.first && y == food.second ? 'F' : ' '));
+            }
+            cout << endl;
+        }
+
+        // Input
+        if (cin >> c) {
+            if (c == 'w') dx = 0, dy = -1;
+            if (c == 's') dx = 0, dy = 1;
+            if (c == 'a') dx = -1, dy = 0;
+            if (c == 'd') dx = 1, dy = 0;
+        }
+
+        // Move head
+        pair<int, int> head = {snake.front().first + dx, snake.front().second + dy};
+
+        // Check collision
+        if (head.first < 0 || head.first >= w || head.second < 0 || head.second >= h ||
+            find(snake.begin(), snake.end(), head) != snake.end()) {
+            cout << "Game Over!" << endl;
+            break;
+        }

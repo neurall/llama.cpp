@@ -1,0 +1,11 @@
+run 28654 | row_read_ahead | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.36 t/s | prompt 14.7 t/s | 64 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-14 19:59:45
+
+ } else if (from.length() == to.length()) {
+            out << "\"" << from << "\"";
+        } else {
+            out << "[0-9] ";
+            more_digits(from.length(), from.length());
+        }
+    };
+
+    auto min_digits = std::to_string(has_min ? min_value : 0

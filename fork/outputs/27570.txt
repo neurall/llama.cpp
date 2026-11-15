@@ -1,0 +1,19 @@
+run 27570 | hot_tree7 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 95.58 t/s | prompt 214.2 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 13:01:12
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold ache of bone-deep frost clinging to his marrow. The hiss of the decompression seals echoed like the breath of a dying beast, and the amber light of the waking chamber flooded his vision, blinding him for a moment. He blinked, shaking the numbness from his limbs, and looked toward the viewport.
+
+Below them, the planet of Aethel glowed. It was not the dark, wild expanse they had been promised, nor the barren rock of their simulations. It was a tapestry of light. Cities pulsed with neon veins, agricultural zones shimmered with the gold of harvest, and orbital rings spun like halos around the equator. Elias, the ship’s archivist, felt a hollow ache in his chest. They had traveled for three centuries. They were the pioneers. The first.
+
+"Status report," Captain Vane’s voice crackled through the intercom, sharp and urgent. "Are we in orbit? Is the landing sequence green?"
+
+Elias rubbed his eyes, trying to focus on the data stream scrolling across his console. The telemetry was confusing. The atmospheric readings were stable, but the population density was off by a factor of ten. "Captain," Elias said, his voice raspy from disuse. "We are in orbit. But... the lights. They are too bright. The infrastructure is mature."
+
+Vane paused. "Mature? We left a century ago. The colony ship *Aethel II* was scheduled to launch fifty years after us. It should be arriving now, or just missed us."
+
+Elias looked at the star charts. The *Aethel II* had left Earth in 2140. They had left in 2090. If the *Aethel II* had arrived first, they would be the descendants. But the math didn't hold. The *Aethel II* was a smaller vessel, less efficient. It should have lagged behind. Unless...
+
+"Open the comms channel to the surface," Elias commanded, his fingers trembling on the interface. He bypassed the standard greeting protocols and dialed the emergency frequency used for first-contact scenarios.
+
+The static cleared, and a voice emerged. It was not the rough, untrained voice of a pioneer. It was smooth, cultured, and weary.

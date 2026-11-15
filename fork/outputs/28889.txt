@@ -1,0 +1,10 @@
+run 28889 | cpu_mask_drift_gate | pf1k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.05 t/s | prompt 223.2 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=1 | power 280+280 W | 2026-11-15 09:43:30
+
+<think>Let me carefully review this C++ source file for code quality, correctness, potential bugs, and style issues.
+
+Let me go through the code systematically.
+
+**1. `build_repetition` function:**
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items,

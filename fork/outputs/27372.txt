@@ -1,0 +1,29 @@
+run 27372 | hot_tree3 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 183.78 t/s | prompt 699.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:44:37
+
+
+---
+The hum of the cryogenic chambers was a lullaby, a symphony of anticipation that had played in the minds of the crew for centuries. As the ship, the Arcadia, drifted through the endless expanse of space, its inhabitants slumbered in frozen sleep, awaiting the moment when they would awaken to begin the next chapter of human existence. I, the Arcadia's archivist, had spent countless lifetimes cataloging the memories of those who had embarked on this journey, a mission to seed life on a distant world.
+
+The centuries had passed like the gentle flow of a river, each drop a moment, each current a year. Yet, despite the vast stretches of time, the mission remained our beacon, our purpose. Until today.
+
+The first light of dawn crept across the planet below, a shimmering gold that danced upon the horizon. It was as if the world itself had awoken, its cities glowing with a life that belied the silence of the cosmos. I watched from the observation deck, my eyes tracing the contours of the sprawling metropolises that sprawled across the continents. The architecture was a testament to the ingenuity and resilience of the human spirit, each structure a marvel of engineering and artistry.
+
+"Wake the others," I instructed, my voice a whisper against the backdrop of the awakening world.
+
+Commander Elara nodded, her eyes reflecting the same wonder that filled my own heart. "Let them experience this moment, this miracle we've created."
+
+The crew stirred, their faces etched with a mix of excitement and disbelief. As they emerged from their slumber, the questions began, a chorus of curiosity that filled the air with anticipation.
+
+"What is this place?"
+
+"How did they...?"
+
+"Is this really our home?"
+
+I approached the window, my breath forming misty clouds against the cold glass. "It is. A century ago, a sister ship, the Valkyrie, followed our path. They arrived first, found life here, and began to build. Our ancestors, our descendants, they are the ones who settled this world, who nurtured it into the vibrant cityscape before us."
+
+The crew absorbed the information, their expressions shifting from shock to awe.
+
+"We're not alone," someone murmured, a realization dawning.
+
+"No," I agreed, "we are not. This planet, this civilization, they

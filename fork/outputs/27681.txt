@@ -1,0 +1,41 @@
+run 27681 | tree_phase_maps | mathc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 36.37 t/s | prompt 15.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,count-prompt=0,state=/tmp/runstate/q36ph/cp0/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/cp0 | power 280+280 W | 2026-11-13 16:11:59
+
+
+---
+Here is the step-by-step solution to the integral, followed by a verification and an explanation of the integration by parts technique.
+
+### Part 1: Solving the Integral $\int x^2 e^x \, dx$
+
+We will use the method of **Integration by Parts**. The formula for integration by parts is:
+$$ \int u \, dv = uv - \int v \, du $$
+
+**Step 1: First Application of Integration by Parts**
+Let:
+$$ u = x^2 \quad \Rightarrow \quad du = 2x \, dx $$
+$$ dv = e^x \, dx \quad \Rightarrow \quad v = e^x $$
+
+Substitute these into the formula:
+$$ \int x^2 e^x \, dx = x^2 e^x - \int e^x (2x) \, dx $$
+$$ \int x^2 e^x \, dx = x^2 e^x - 2 \int x e^x \, dx $$
+
+**Step 2: Second Application of Integration by Parts**
+Now we need to solve the remaining integral $\int x e^x \, dx$. Let:
+$$ u = x \quad \Rightarrow \quad du = dx $$
+$$ dv = e^x \, dx \quad \Rightarrow \quad v = e^x $$
+
+Substitute these into the formula for this specific integral:
+$$ \int x e^x \, dx = x e^x - \int e^x \, dx $$
+$$ \int x e^x \, dx = x e^x - e^x $$
+
+**Step 3: Combine Results**
+Substitute the result from Step 2 back into the equation from Step 1:
+$$ \int x^2 e^x \, dx = x^2 e^x - 2 \left( x e^x - e^x \right) $$
+$$ \int x^2 e^x \, dx = x^2 e^x - 2x e^x + 2e^x $$
+
+**Step 4: Final Answer**
+Factor out $e^x$ and add the constant of integration $C$:
+$$ \int x^2 e^x \, dx = e^x (x^2 - 2x + 2) + C $$
+
+---
+
+### Part

@@ -1,0 +1,55 @@
+run 27587 | hot_tree7 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 97.3 t/s | prompt 146.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 13:11:30
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `ncurses` for terminal graphics.
+
+### Requirements
+- **Compiler**: `g++` or `clang++`
+- **Library**: `ncurses` (install via `sudo apt install ncurses` on Linux)
+
+### Code (`snake.cpp`)
+
+```cpp
+#include <ncurses.h>
+#include <stdlib.h>
+#include <time.h>
+
+int main() {
+    initscr();
+    hidecursor();
+    srand(time(0));
+    
+    int x = 10, y = 10, dx = 1, dy = 0;
+    int px = x, py = y; // head
+    int len = 1;
+    int fx = rand() % 20 + 1, fy = rand() % 20 + 1; // food
+    
+    while(1) {
+        int c = getch();
+        if(c == 119) dy = -1; // w
+        if(c == 115) dy = 1;  // s
+        if(c == 100) dx = 1;  // d
+        if(c == 97) dx = -1;  // a
+        
+        x += dx; y += dy;
+        
+        if(x < 0 || x > 20 || y < 0 || y > 20) break;
+        
+        // Check collision with tail
+        for(int i = 0; i < len; i++) {
+            if(x == px && y == py) break;
+            // Move tail
+            int nx = px, ny = py;
+            px = x; py = y; // head moves to new pos
+            // Actually, simpler: just check if head hits any part of body
+            // But for smallest code, we just check if head hits food or wall
+        }
+        
+        // Simpler collision: if head hits food, grow. Else, move tail.
+        if(x == fx && y == fy) {
+            len++;
+            fx = rand() % 20 + 1;
+            fy = rand() % 20 + 1;
+        } else {
+            // Move tail: we need to store the tail

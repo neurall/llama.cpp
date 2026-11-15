@@ -1,0 +1,70 @@
+run 27527 | hot_tree5 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 91.75 t/s | prompt 67.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:28:48
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Key Features:
+- **Terminal-based**: Uses standard ASCII characters.
+- **Input**: Arrow keys (Up, Down, Left, Right).
+- **Logic**: Simple grid, collision detection, growing snake.
+- **Size**: ~150 lines of code.
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+using namespace std;
+
+int main() {
+    // Grid dimensions
+    const int WIDTH = 20, HEIGHT = 15;
+    
+    // Snake state: head at (1,1), tail grows
+    vector<pair<int, int>> snake = {{1, 1}};
+    pair<int, int> dir = {0, 1}; // Start moving right
+    pair<int, int> food;
+    
+    // Generate initial food
+    auto rand_pos = [&]() {
+        return make_pair(rand() % WIDTH, rand() % HEIGHT);
+    };
+    food = rand_pos();
+    
+    // Prevent food on snake
+    while (any_of(snake.begin(), snake.end(), [&](pair<int, int> p) {
+        return p == food;
+    })) {
+        food = rand_pos();
+    }
+
+    // Game loop
+    while (true) {
+        // Clear screen
+        cout << "\033[H"; // Clear screen
+        
+        // Draw grid
+        for (int y = 0; y < HEIGHT; ++y) {
+            for (int x = 0; x < WIDTH; ++x) {
+                if (x == food.first && y == food.second) {
+                    cout << "O"; // Food
+                } else if (any_of(snake.begin(), snake.end(), [&](pair<int, int> p) {
+                    return p == {x, y};
+                })) {
+                    cout << "#"; // Snake
+                } else {
+                    cout << " "; // Empty
+                }
+            }
+            cout << "\n";
+        }
+        
+        // Input handling
+        char input;
+        if (cin >> input) {
+            if

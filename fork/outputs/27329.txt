@@ -1,0 +1,23 @@
+run 27329 | hot_tree | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 160.12 t/s | prompt 554.0 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 10:15:52
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Thalia, the archivist of the generation ship Aetheria, had watched over the slumbering souls for what felt like an eternity. A century of cryosleep had passed, a blink of an eye in the vast expanse of time, and now we had arrived at our destination—a world teeming with life, a mirror of our own lost home.
+
+The planet, named Elysia by its inhabitants, was a jewel of a thing, its continents sprawling beneath us like a sprawling tapestry of blues and greens. The cities, though, they were the true marvel. As the Aetheria drifted lower, the lights below flickered on, like stars born from the darkness, illuminating the sprawl of human achievement and hope.
+
+I awoke to the gentle hum of the ship's systems awakening with me. The crew stirred around me, their faces etched with the dreams of a hundred generations. We were the custodians of a legacy, the harbingers of a new beginning. I rose from my berth, my feet touching the cold metal floor, a sensation that sent a shiver up my spine.
+
+"Good morning, Thalia," said Captain Elara, her voice a melody that stirred something deep within me.
+
+"Morning," I replied, my voice a whisper against the backdrop of the Aetheria's awakening life. "It seems our descendants have done well for themselves."
+
+The captain's eyes, sharp and knowing, scanned the viewport. "Indeed. They've surpassed our hopes. Look at the lights, Thalia. They're not just surviving; they're thriving."
+
+I stepped closer, my breath catching in my chest. The cities below were alive with light, a constellation of illumination spreading across the land. It was as if the planet itself had awoken, its inhabitants stirring from their slumber to embrace the new day.
+
+"It's as if they've inherited our dreams," I mused, my voice tinged with awe. "Our hopes for a new beginning, a place to call home."
+
+Elara nodded, her gaze never leaving the view. "They are our children, in a way. Children who grew up knowing only the stars. Yet, here they are, building a civilization on a new world."
+
+The crew stirred around us,

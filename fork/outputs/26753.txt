@@ -1,0 +1,3 @@
+run 26753 | ns_probe_cells | pf2k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 37.38 t/s | prompt 355.5 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-12 14:34:51
+
+<think>We need answer code review. Need inspect source. Need identify issues. Need likely from llama.cpp? common/json-schema-to-grammar.cpp. Need review. Need maybe full file truncated? User provided partial ending at array. Need review given source. Need mention incomplete? We can review visible. Need be thorough but

@@ -1,0 +1,10 @@
+run 27225 | ns_fcls | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 35.52 t/s | prompt 1384.5 t/s | 64 tokens | args: -np 1 --moe staging=0,split-experts=1 | power 200+200 W | 2026-11-13 04:53:56
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_default(const common_params & params, const std::string & spec_types) {
+    return spec_types_is_default(params) || params.spec_types == spec_types;
+}
+
+static bool spec_types_is_default(const common_params & params, const std::vector<std::

@@ -1,0 +1,49 @@
+run 26903 | dq_peak | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.97 t/s | prompt 1346.6 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-12 18:57:15
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided partial C++ source file common/json-schema-to-grammar.cpp, truncated at end. Need produce code review. Need analyze code, identify issues, suggestions. Need likely mention incomplete file. Need be thorough. Need maybe discuss grammar generation, recursion, integer overflow, regex? Let's inspect code.
+
+We need review source file. It includes headers, using json = common_json. Functions build_repetition, build_min_max_int, constants, PRIMITIVE_RULES truncated. Need review visible code.
+
+Need consider C++ style, correctness, performance, security, maintainability.
+
+Let's parse code.
+
+build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Issues:
+- If max_items == 0 and min_items > 0? JSON schema invalid? Should handle min > max. If max_items=0 min_items>0 returns empty grammar, which matches empty string? Actually empty string may not be valid? For repetition with max 0 should match empty, but if min>0 impossible. Should return impossible grammar or throw.
+- If min_items > max_items, invalid. Should validate.
+- If max_items == INT_MAX and min_items? has_max false. For separator case: has_max ? max_items - 1 : max_items. If max_items == INT_MAX, max_items - 1 not executed? ternary evaluates only chosen branch? In C++ conditional operator only evaluates selected expression, so safe. But if max_items == INT_MAX and has_max false, passes max_items. Good.
+- If max_items == 0 and separator_rule nonempty? returns empty before separator. If min_items=0 max=0 returns empty. If min_items>0 invalid.
+- If min_items == 0 max_items == 1 returns item_rule? Actually item_rule + "?" matches zero or one. Good.
+- If min_items == 0 max_items == 0 returns empty. Good.
+- If min_items == 1 max_items == 1? separator empty returns item_rule{1,1}; could return item_rule. Not bug but verbose.
+- If separator_rule nonempty and max_items == 1: result = item_rule + " " + build_repetition(..., min_items==0?0:min_items-1, has_max?0:max_items). If min_items=0 max=1: result = item_rule + " " + build_repetition(...,0,0) => item_rule + " " + "" => trailing space? Then if min_items==0 result = "(" + result + ")?" => "(item_rule )?" with trailing space before ). Could be invalid grammar? Let's test: build_repetition(item,0,1,sep) returns (item )? because inner empty. That has trailing space. Grammar may tolerate? But likely should special-case max_items==1 return item_rule + "?" even with separator. Similarly min_items=1 max=1 with separator returns item_rule + " " + empty => trailing space. Should handle max_items <=1.
+- If min_items=0 max_items=2 separator: result = item + " " + build_repetition((sep item),0,1) => item + " " + ((sep item))? => item ((sep item))? good. If min_items=1 max=2: result = item + " " + build_repetition((sep item),0,1) => item ((sep item))? good. If min_items=2 max=2: result = item + " " + build_repetition((sep item),1,

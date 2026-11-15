@@ -1,0 +1,19 @@
+run 27568 | hot_tree7 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 98.63 t/s | prompt 230.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 13:00:00
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in a haze of white light, until the familiar hum of the *Aethelgard*’s engines settled into a steady rhythm.
+
+He was the first to stir. The others followed, groggy and disoriented, their faces pale as moonlight. Captain Vane stood up, shaking the frost from his uniform, his eyes scanning the viewport. Elias followed his gaze, expecting the barren, rocky landscape of Proxima Centauri b, the world they had been sent to tame. Instead, he saw light.
+
+Not the flickering, primitive glow of torches or the harsh glare of solar panels, but a soft, pulsating luminescence that draped the planet like a velvet cloak. Cities. Thousands of them. They sprawled across the continents, connected by veins of silver and gold, glowing with a civilization that had not yet been born.
+
+"Impossible," Vane whispered, his voice cracking. "We are the first. We are the seed."
+
+Elias moved to the console, his fingers trembling as he accessed the navigation logs. The data streams were clear. The *Aethelgard* had traveled for three hundred years. But the telemetry indicated a second vessel, the *Aethelgard II*, launched exactly one century after the first. It had traveled faster, utilizing a propulsion technology that had been theorized but never built until the second generation of engineers on Earth had perfected it.
+
+"They beat us," Elias said, the words feeling like stones in his mouth. "They arrived before us. They settled. They built."
+
+The crew stared at the planet, a mixture of awe and horror washing over them. They were ghosts. Orphans. The original colonists, the ones who had sacrificed their lives to sleep through the void, had arrived to find their descendants already living, breathing, and thriving.
+
+Elias walked to the window, pressing his hand against the cold glass. Below, the lights of the cities pulsed in a rhythm that seemed almost biological. He could see the shapes of towers, the curves of bridges, the movement

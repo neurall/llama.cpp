@@ -1,0 +1,19 @@
+run 27814 | tree_emb_key | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 61.8 t/s | prompt 69.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,rp-pre=0,tree-key=emb,state=/tmp/runstate/q36ph3/tpre/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/tpre | power 280+280 W | 2026-11-13 18:03:04
+
+
+---
+The thawing of the cryo-gel felt less like waking and more like drowning in reverse. Elias, the ship’s archivist, gasped as the viscous fluid drained from his lungs, replacing the cold numbness with a sharp, burning heat. His eyes, crusted with the residue of a century’s sleep, blinked against the sudden glare of the artificial dawn. The silence of the *Aethelgard* was broken not by alarms, but by the hum of the ventilation systems, a low, rhythmic thrum that vibrated in his teeth.
+
+He stumbled toward the observation deck, his legs trembling like wet paper. The viewports were massive, curved sheets of reinforced glass, offering a panoramic gaze of the world they had been sent to colonize: Kepler-4b. He expected a barren wasteland, a place of dust and silence, waiting for the first footprints of humanity. Instead, the planet was a tapestry of light.
+
+Below, the continents were stitched together by glowing veins of electricity. Cities sprawled across the equatorial bands, their architecture intricate and alien, yet unmistakably human. Spires of glass and steel pierced the cloud layer, reflecting the twin moons in a dazzling display of urban density. It was not the primitive settlement Elias had memorized from the pre-launch archives. It was a metropolis.
+
+"Look," Elias whispered, his voice raspy from disuse. He pressed his palm against the cold glass, tracing the outline of a sprawling megalopolis. "They’re here."
+
+Behind him, Captain Vane stepped into the room, his uniform crisp, his face pale but composed. He had been the first to wake, as protocol dictated, but he had waited for the rest of the crew to thaw before announcing the discovery.
+
+"Descendants," Vane said, his tone devoid of surprise, though his eyes held a profound weight. "The *Aethelgard* was the lead vessel. But the launch sequence was flawed. A secondary ship, the *Aethelgard II*, was launched a century later. It carried a smaller crew, but with superior propulsion. It arrived fifty years before us."
+
+Elias turned to face the Captain. The realization hit him with the force of a physical blow. They were not the pioneers. They were the latecomers. The ghosts of a future that had already happened.
+
+"We are the echo," Elias murmured. He walked to the console, his fingers hovering over the data streams

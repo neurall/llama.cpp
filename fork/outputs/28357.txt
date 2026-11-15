@@ -1,0 +1,76 @@
+run 28357 | lp_check_before_lock | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 43.21 t/s | prompt 704.7 t/s | 906 tokens | args: -np 1 | power 200+200 W | 2026-11-14 06:50:02
+
+Let me analyze this file carefully to identify which functions, variables, and code are never used.
+
+Let me go through each item:
+
+1. `build_repetition` - Let me check if it's used... It's a static function. I need to see if it's called anywhere in this file. Looking at the code, I don't see any calls to `build_repetition` in the visible portion of the file. But the file seems to be cut off at the end. Let me assume the file continues and check what's used.
+
+2. `build_min_max_int` - This is a static function. Is it called? I don't see any calls to it in the visible code.
+
+3. `SPACE_RULE` - Is it used? I don't see it referenced.
+
+4. `BuiltinRule` struct - Used by `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+
+5. `PRIMITIVE_RULES` - Used by `is_reserved_name`.
+
+6. `STRING_FORMAT_RULES` - Used by `is_reserved_name`.
+
+7. `is_reserved_name` - Is it called? I don't see any calls to it in the visible code.
+
+8. `INVALID_RULE_CHARS_RE` - Is it used? I don't see it referenced.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - Used by `format_literal`.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - Is it used? I don't see it referenced.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - Used by `format_literal`.
+
+12. `MAX_PATTERN_DEPTH` - Is it used? I don't see it referenced.
+
+13. `NON_LITERAL_SET` - Is it used? I don't see it referenced.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - Is it used? I don't see it referenced.
+
+15. `replacePattern` - Used by `format_literal`.
+
+16. `format_literal` - Used by `gbnf_format_literal`.
+
+17. `gbnf_format_literal` - This is a non-static function, so it's likely used externally.
+
+18. `gbnf_escape_length` - This is a non-static function, likely used externally.
+
+Wait, the file is cut off. Let me re-read the prompt. The file ends with `gbnf_escape_length` being defined but the body is empty/incomplete.
+
+Actually, looking more carefully, the file content ends with:
+```
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+   
+```
+
+So the file is incomplete/truncated. But the task is to delete code that is never used.
+
+Let me think about this more carefully. The file is a `.cpp` file, so it's an implementation file. Functions that are `static` are only used within this file. Non-static functions are used externally.
+
+Let me check each item:
+
+**Functions:**
+- `build_repetition` (static) - Not called anywhere in the visible code → DELETE
+- `build_min_max_int` (static) - Not called anywhere in the visible code → DELETE
+- `is_reserved_name` (static) - Not called anywhere in the visible code → DELETE
+- `replacePattern` (static) - Called by `format_literal` → KEEP
+- `format_literal` (static) - Called by `gbnf_format_literal` → KEEP
+- `gbnf_format_literal` (non-static) - Exported, likely used externally → KEEP
+- `gbnf_escape_length` (non-static) - Exported, likely used externally → KEEP
+
+**Variables:**
+- `SPACE_RULE` (const) - Not referenced → DELETE
+- `PRIMITIVE_RULES` - Used by `is_reserved_name`, but `is_reserved_name` is unused → DELETE
+- `STRING_FORMAT_RULES` - Used by `is_reserved_name`, but `is_reserved_name` is unused → DELETE
+- `INVALID_RULE_CHARS_RE` - Not referenced → DELETE
+- `GRAMMAR_LITERAL_ESCAPE_RE` - Used by `format_literal` → KEEP
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - Not referenced → DELETE
+- `GRAMMAR_LITERAL_ESCAPES` - Used by `format_literal` → KEEP
+- `MAX_PATTERN_DEPTH` - Not referenced → DELETE
+- `NON_LITERAL_SET` - Not
+---

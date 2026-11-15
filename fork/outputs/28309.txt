@@ -1,0 +1,7 @@
+run 28309 | lp_yields_to_split | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 45.69 t/s | prompt 1306.3 t/s | 64 tokens | args: -np 1 --moe pp-path=mix,dense-split=0,simlink=16,4,staging=1 | power 200+200 W | 2026-11-14 04:40:36
+
+    return params.speculative.types == (1u << COMMON_SPEC_TYPE_NONE)
+        || (params.speculative.types == (1u << COMMON_SPEC_TYPE_NGRAM) && params.speculative.types == (1u << COMMON_SPEC_TYPE_DRAFT));
+}
+
+static bool is_model_already_spec(const common_params &

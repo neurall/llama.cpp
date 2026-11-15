@@ -1,0 +1,11 @@
+run 27310 | situ_heat | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.73 t/s | prompt 5.1 t/s | 64 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-13 09:39:46
+
+ } else if (i == from.length()) {
+            out << "\"";
+            out << from.substr(i);
+            out << "\"";
+        }
+    };
+    auto less_than = [&](int64_t value) {
+        auto value_str = std::to_string(value);
+        build_min_max_int(std::numeric_limits<int

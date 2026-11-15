@@ -1,0 +1,47 @@
+run 27582 | hot_tree7 | mathc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 83.96 t/s | prompt 132.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 13:08:26
+
+
+---
+Here is the step-by-step solution to the integral, followed by a verification and an explanation of the integration by parts method.
+
+### Part 1: Solving the Integral $\int x^2 e^x \, dx$
+
+We will use the method of **Integration by Parts**. The formula for integration by parts is:
+$$ \int u \, dv = uv - \int v \, du $$
+
+**Step 1: First Application of Integration by Parts**
+
+Let:
+$$ u = x^2 \quad \text{and} \quad dv = e^x \, dx $$
+
+Differentiate $u$ and integrate $dv$:
+$$ du = 2x \, dx $$
+$$ v = \int e^x \, dx = e^x $$
+
+Apply the formula:
+$$ \int x^2 e^x \, dx = x^2 e^x - \int e^x (2x) \, dx $$
+$$ \int x^2 e^x \, dx = x^2 e^x - 2 \int x e^x \, dx $$
+
+**Step 2: Second Application of Integration by Parts**
+
+Now we need to solve the remaining integral $\int x e^x \, dx$. Let:
+$$ u = x \quad \text{and} \quad dv = e^x \, dx $$
+
+Differentiate $u$ and integrate $dv$:
+$$ du = dx $$
+$$ v = e^x $$
+
+Apply the formula again:
+$$ \int x e^x \, dx = x e^x - \int e^x \, dx $$
+$$ \int x e^x \, dx = x e^x - e^x $$
+
+**Step 3: Combine Results**
+
+Substitute the result from Step 2 back into the equation from Step 1:
+$$ \int x^2 e^x \, dx = x^2 e^x - 2 \left( x e^x - e^x \right) $$
+
+Distribute the $-2$:
+$$ \int x^2 e^x \, dx = x^2 e^x - 2x e^x + 2e^x $$
+
+Factor out $e^x$ (optional but cleaner):
+$$ \int x^2 e^x \, dx = e^x (x^

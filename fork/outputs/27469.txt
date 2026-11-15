@@ -1,0 +1,49 @@
+run 27469 | hot_tree4 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 85.31 t/s | prompt 63.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,tree-key=map,state=/tmp/runstate/hottree-q/map/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/map | power 280+280 W | 2026-11-13 11:50:13
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Requirements
+- C++11 or later
+- Terminal with support for ANSI escape codes (most modern terminals)
+
+### Code (`snake.cpp`)
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+
+int main() {
+    std::vector<int> snake = {0, 0}; // x, y
+    int dir = 0; // 0: right, 1: down, 2: left, 3: up
+    int w = 20, h = 10;
+    int fx = 0, fy = 0;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dx(0, w-1), dy(0, h-1);
+
+    auto move = [&](int d) {
+        dir = d;
+        int nx = snake[0] + (dir == 0 ? 1 : dir == 2 ? -1 : 0);
+        int ny = snake[1] + (dir == 1 ? 1 : dir == 3 ? -1 : 0);
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h || std::find(snake.begin(), snake.end(), nx) != snake.end() || std::find(snake.begin(), snake.end(), ny) != snake.end()) return false;
+        snake.push_back(nx);
+        snake.push_back(ny);
+        if (nx == fx && ny == fy) {
+            fx = dx(gen); fy = dy(gen);
+        } else {
+            snake.erase(snake.end());
+            snake.erase(snake.end());
+        }
+        return true;
+    };
+
+    while (true) {
+        std::cout << "\033[H"; // Clear screen
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                if (x == fx && y == fy) std::cout << "O";
+                else if

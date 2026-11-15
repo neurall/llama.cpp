@@ -1,0 +1,7 @@
+run 28091 | ns_staged_placement | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 25.58 t/s | prompt 1115.6 t/s | 64 tokens | args: -np 1 --moe dense-split=1,staging=1 | power 280+280 W | 2026-11-13 23:22:02
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0

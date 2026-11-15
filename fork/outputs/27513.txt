@@ -1,0 +1,17 @@
+run 27513 | hot_tree5 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 95.0 t/s | prompt 206.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:20:17
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, heavy weight of his own bones pressing against the glass of his pod. The air in the archive sector smelled of ozone and stale recycled moisture, a scent that had lingered for three centuries. He blinked, his vision swimming in the gray haze of hypothermia, until the emergency lights flickered on, casting long, jagged shadows across the rows of sleeping pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The AI, dormant for decades, hummed to life. Its voice was smooth, devoid of the friction of human emotion. "We have arrived. Destination: Kepler-4b. Estimated time since departure: 312 years."
+
+Elias stumbled toward the observation deck. The ship, *The Aethelgard*, was a needle of titanium and ceramic, drifting in the silent vacuum. He expected the planet below to be a dark, unlit sphere, a blank canvas waiting for the first brushstrokes of humanity. Instead, the planet glowed.
+
+It was not the faint, scattered pinpricks of early settlement lights. It was a web of brilliance. Cities pulsed with amber and azure, connected by glowing arteries of infrastructure. The night side of Kepler-4b was brighter than the day side of Earth had ever been. Elias pressed his face against the cold viewport, his breath fogging the glass. The scale of the civilization below was impossible. They had arrived three centuries ago. They should have been struggling with soil, with water, with the first brutal winters.
+
+"Who is down there?" Elias whispered, the question hanging in the recycled air.
+
+The AI responded, its logic cold and precise. "Analysis of orbital debris and signal emissions suggests a technological baseline consistent with late-stage industrialization. However, the genetic markers in the atmospheric data do not match the original crew of *The Aethelgard*."
+
+Elias felt a chill that had nothing to do with the cryo-sleep. He ran back to the archive, his hands trembling as he pulled the historical logs from the server. He found the records of the launch sequence. There had been two ships. *The Aethelgard*, the first, carrying the seed of humanity. And *The Second Wave*, launched a century later, carrying a redundant population, a backup plan in case the

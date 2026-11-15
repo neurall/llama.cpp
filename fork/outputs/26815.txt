@@ -1,0 +1,54 @@
+run 26815 | oneexe | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.13 t/s | prompt 1215.5 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-12 16:31:04
+
+<think>The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - For separator case: when `min_items == 0`, it wraps the result in `(...)?` - correct
+  - The separator case with `min_items == 0` and `has_max`: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1)` - this seems correct for the separator case
+  - When `min_items == 1` and `has_max` with separator: `build_repetition("(" + sep + " " + item + ")", 0, max_items - 1)` - correct
+
+### build_min_max_int function
+- Complex function for generating integer ranges
+- The `uniform_range` lambda is recursive via `std::function` - this is fine but could be noted
+- The `decimals_left` parameter is used to limit digit depth - seems like a safeguard against infinite recursion
+- `less_decimals = std::max(decimals_left - 1, 1)` - ensures at least 1
+- The function handles negative numbers, min-only, max-only, and both cases
+- Potential issue: when `min_value` is `std::numeric_limits<int64_t>::min()` and we negate it, `-min_value` would overflow. Let me check... Actually, `std::numeric_limits<int64_t>::min()` is `-9223372036854775808`, and negating it would overflow. But looking at the code, when `has_min` is false (min_value is INT64_MIN), the code goes to the `has_max` branch. When `has_min && has_max` and `min_value < 0`, it does `build_min_max_int(0, -min_value, ...)`. If `min_value` is `INT64_MIN`, then `-min_value` overflows. But wait, `has_min` checks `min_value != std::numeric_limits<int64_t>::min()`, so if min_value IS INT64_MIN, `has_min` is false. So this case is handled.
+
+Actually wait, let me re-read. When `has_min && has_max` and `min_value < 0 && max_value < 0`:
+```
+build_min_max_int(-max_value, -min_value, out, decimals_left, true);
+```
+If `min_value` is `INT64_MIN`, then `has_min` is false, so we wouldn't enter this branch. Good.
+
+But what if `min_value` is `INT64_MIN + 1`? Then `-min_value` = `INT64_MAX`, which is fine.
+
+What about `min_value < 0` (but not INT64_MIN) and `max_value >= 0`:
+```
+build_min_max_int(0, -min_value, out, decimals_left, true);
+```
+If `min_value` is `INT64_MIN + 1`, `-min_value` = `INT64_MAX`. Fine.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization order: `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` are file-scope statics. `is_reserved_name` uses a function-local static that references both. This should be fine since they're initialized before `is_reserved_name` is called (assuming no static initialization order fiasco).
+
+### _add_rule
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. The while loop finds the first available slot. This seems correct.
+
+### _visit_pattern / _pattern_to_rule
+- The pattern parser handles regex syntax and converts to GBNF
+- `MAX_PATTERN_DEPTH = 100` - reasonable limit
+- The `join_seq` function merges consecutive literals - good optimization
+- The literal parsing loop has a complex condition for when to continue consuming characters:
+```cpp
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+```
+This is checking if the current char is not a special char AND (it's the last char,

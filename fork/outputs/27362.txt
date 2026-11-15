@@ -1,0 +1,19 @@
+run 27362 | hot_tree2 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 204.35 t/s | prompt 713.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 10:36:47
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Thalia, the archivist of the generation ship Aetheria, had watched over the slumbering souls for what felt like an eternity. Aeons, perhaps. The journey had been planned with meticulous precision, a grand experiment in human endurance and hope. We were to be the vanguard, the pioneers of a new world, a testament to what humanity could achieve when it dared to dream beyond the confines of an aging star.
+
+The Aetheria had been designed as a beacon of progress, a self-sustaining ark that would carry our genetic legacy across the stars. We were to terraform a lifeless planet, seed it with life, and watch it flourish. But fate, it seemed, had other plans.
+
+The first cryo-pod to jolt awake was mine. The cold had not yet left my bones, and the air was thick with the scent of preserved flesh and recycled air. I blinked against the dim light, my eyes slow to adjust to the sudden brightness. The planet below, a jewel of blue and green, stretched out in a tapestry of rolling hills and sprawling cities, their lights a stark contrast to the eternal night of space.
+
+"What sorcery is this?" I murmured, my voice a threadbare whisper against the silence.
+
+The archivist's quarters were bathed in a soft, ethereal glow, courtesy of the bioluminescent moss that carpeted the ship's interior. I rose, my joints protesting, and made my way to the observation deck. The sight that greeted me was beyond comprehension. The cities below, though centuries old, were alive with light and motion. The colonists, my descendants, moved with purpose and joy, their buildings gleaming like beacons in the night.
+
+I stumbled to the control panel, my fingers dancing across the interface with a familiarity born of countless simulations and preparations. The ship's log flickered to life, its screen displaying a wealth of data. The date, I saw with a start, was not centuries past but rather a mere century. We had awakened prematurely, centuries too soon.
+
+"Report," I commanded, my voice steady despite the whirlwind of emotions.
+
+"The planet is hospitable," came the calm response from the ship's AI. "Biomes are thriving, and the

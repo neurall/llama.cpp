@@ -1,0 +1,7 @@
+run 28234 | kv_fit_pass_grow | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 37.5 t/s | prompt 1347.3 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=1,staging=0,moe-split=home | power 200+200 W | 2026-11-14 03:11:04
+
+    return params.speculative.types.all() && !params.speculative.types.none();
+}
+
+static bool spec_types_is_default(const std::vector<llama_sampler_chain_t *> & chains) {
+    return chains.empty() || std::all_of(chains.begin(), chains.end(), [](llama_sampler_chain_t

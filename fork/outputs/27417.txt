@@ -1,0 +1,38 @@
+run 27417 | hot_tree3 | poemseac | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 177.61 t/s | prompt 231.0 t/s | 256 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 11:10:03
+
+
+---
+The moon hangs high, a silver spoon
+Dipping into the ink-black sea
+Waves whisper secrets to the stars
+Their timbre a lullaby for the night
+
+A solitary lighthouse stands sentinel
+Its beam a guiding beacon in the gloom
+Its light dances on the water's skin
+A dance of hope for weary sailors
+
+A small boat, a mere speck on the horizon
+Holds two souls, braving the vast unknown
+Their hearts beat in rhythm with the waves
+A silent pact, a dance with destiny
+
+The sea roars its ancient song
+A symphony of power and grace
+It swallows the small boat whole
+Leaving only a memory behind
+
+The lighthouse continues its watch
+Its light a steadfast companion
+Guiding lost ships back to shore
+A guardian of both land and sea
+
+The night deepens, the moon climbs higher
+The stars twinkle like diamonds in a velvet sky
+The sea whispers its eternal secrets
+To the night, to the land, to the stars above
+
+And in that moment, time stands still
+The world holds its breath in awe
+For in this vast, unending expanse
+Lies the true essence of life itself

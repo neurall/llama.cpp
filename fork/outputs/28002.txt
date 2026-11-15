@@ -1,0 +1,12 @@
+run 28002 | simlink_stream_pace | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 54.97 t/s | prompt 2935.6 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,log=w --moe sim-vram=4608 | power 280+280 W | 2026-11-13 21:37:57
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool common_cpu_get_num_logical_cores(int32_t & num_logical_cores) {
+#if defined(_AIX)
+    num

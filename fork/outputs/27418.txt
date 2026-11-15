@@ -1,0 +1,43 @@
+run 27418 | hot_tree3 | poemseac | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 214.65 t/s | prompt 316.0 t/s | 299 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 11:10:33
+
+
+---
+The moon hangs high, a silver spoon
+Dipping into the ink-black sea
+Stars twinkle like diamonds flung
+From the hands of a celestial jeweler
+
+A gentle lapping whispers secrets
+Against the shore, a lullaby for the brave
+The lighthouse stands sentinel, a beacon
+Guiding ships through the night's cold grip
+
+A small boat, no more than a shadow
+Drifts far from shore, its occupants
+Seeking solace in the vast unknown
+Their small silhouette against the dark
+
+The sea roars like a hungry beast
+Its waves crashing against the rocks
+In a relentless dance of power and grace
+A symphony of nature's might
+
+The lighthouse keeper watches, a lone sentinel
+His lantern casting a warm glow
+Against the cold, indifferent sky
+A solitary figure against the night
+
+The boat's occupants shiver, their breath visible
+In the frigid air, their nerves taut
+Yet they press on, driven by hope
+Their destination unknown, their courage unshaken
+
+The sea whispers its ancient tales
+Of storms and calms, of love and loss
+Of life and death, of dreams and realities
+A timeless story etched into the waves
+
+The lighthouse keeper raises his hand
+In a silent salute to the night's mysteries
+The boat's occupants nod in return
+A bond forged in the heart of the sea

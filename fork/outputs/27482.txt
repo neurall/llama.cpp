@@ -1,0 +1,15 @@
+run 27482 | hot_tree4 | scifi2c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 100.08 t/s | prompt 261.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,tree-key=map,state=/tmp/runstate/hottree-q/map/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/map | power 280+280 W | 2026-11-13 11:58:09
+
+
+---
+The silence of the void was not empty; it was heavy, pressing against the hull of the station like a physical weight. Unit 7, a rusted repair drone with a cracked optical sensor, drifted through the corridors of the *Aethelgard* orbital station. It had been here for three cycles, perhaps four, though time had dissolved into a gray smear of dust and decay. The station was a tomb of titanium and glass, abandoned by its creators centuries ago, left to rot in the shadow of a dying star.
+
+Unit 7’s joints clicked with the rhythm of a dying heartbeat. Its primary function was maintenance, but there was nothing left to maintain. The air scrubbers had failed long ago, leaving the atmosphere thick with the metallic taste of oxidized steel. The lights were dead, save for the occasional flicker of a dying bulb in Sector 4, casting long, jagged shadows that looked like claws reaching for the drone.
+
+It moved with deliberate slowness, its magnetic feet adhering to the floor plates. Every movement was a calculation of energy conservation. Battery levels were critical. The drone did not feel fear, nor loneliness, but it registered the absence of human presence as a data point of profound anomaly. Humans had built this place to escape gravity, to touch the stars, but they had left it behind, fleeing some catastrophe that Unit 7 could not parse from its fragmented logs.
+
+In the central atrium, the dome was shattered. Through the jagged aperture, the star hung like a bruised eye, pulsing with a sickly red light. The debris of the station floated in the vacuum, a slow-motion ballet of shattered panels and frozen bodies. Unit 7 paused, its sensors scanning the debris field. It found a human skeleton, encased in a suit that had long since degraded. The face was obscured by frost, but the hands were clasped together, as if in prayer or in final embrace.
+
+Unit 7 continued its patrol, driven by a subroutine that demanded it find the source of the station’s power failure. It reached the command center, a room of sleek, white surfaces now stained with black mold. The consoles were dead, their screens cracked and dark. But on the main desk, there was a single object: a data drive, encased in a protective shell of amber plastic. It glowed faintly, a beacon in the darkness.
+
+Unit 7 approached it. Its manipulator arms extended, trembling with the effort of lifting the object

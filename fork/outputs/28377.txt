@@ -1,0 +1,88 @@
+run 28377 | lp_check_before_lock | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 62.33 t/s | prompt 43.7 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-11-14 07:11:48
+
+The user wants the smallest HTML Tetris game. The request is minimal and functional: "generate smallest html tetris game." So the priority is compactness. But I can still make it a single self-contained file, quite small, yet playable and with some polish. The instruction says "smallest" — so I should honor that: produce a compact single-file Tetris. I shouldn't bloat it with tons of features. But I can make it tasteful with minimal CSS.
+
+Let me write a genuinely small Tetris. Aim for something like ~40-60 lines. Keep it readable-ish but compact.
+
+Let me write it:
+
+```html
+<!doctype html><title>Tetris</title>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<style>
+body{margin:0;background:#0b0e14;color:#e6e9ef;font:14px/1.4 ui-monospace,monospace;display:grid;place-items:center;height:100vh;gap:12px}
+canvas{background:#11151f;border:1px solid #2a3346;border-radius:6px;image-rendering:pixelated}
+b{color:#7ee0ff}
+</style>
+<canvas id=c width=180 height=360></canvas>
+<div id=s></div>
+<script>
+// compact tetris
+</script>
+```
+
+Let me write the game logic compactly.
+
+Standard compact tetris approach:
+
+```js
+const W=10,H=18,S=18,x=c.getContext('2d');
+let g=[...Array(H)].map(_=>Array(W).fill(0)), p, o=0, r=0, sc=0, lv=1, t=0, d=0;
+const P='0,6,15,23,7,11,14,18,9,26,21,30,12,27,1,2,13,19,8,28,31,16,22,5,25,29,4,17,10,3'.split(',').map(n=>parseInt(n,16));
+```
+
+Hmm, a common compact encoding: each piece as a list of 4x4 bit rows. Let me use a simpler approach: define pieces as strings of rotations.
+
+Actually a well-known tiny approach: use the "S" matrix trick — represent each tetromino as a bitmask of a 4x4 grid and rotate by bit manipulation.
+
+Simplest readable compact: define pieces as arrays of coordinates per rotation? That's long.
+
+Alternative classic tiny trick: define pieces as hex rows of 4-bit values.
+
+Pieces (4x4 grid, rows top to bottom):
+- I: 0,15,0,0 → 0x0F00
+- O: 3,3,0,0 → 0x3300
+- T: 1,3,1,0 → 0x1310... wait T: row0: .X. = 2 (0b0100? depends bit order). Let's use bit 3 = leftmost.
+
+Let me use 4-bit rows with bit value 8 = leftmost column.
+
+- I: rows [0,15,0,0]
+- O: rows [3,3,0,0]  (cols 0,1)
+- T: rows [1,3,1,0]? With 8=leftmost: T shape:
+  ```
+  .X..
+  XXX.
+  ....
+  ```
+  Hmm let's define T as:
+  ```
+  XXX.
+  .X..
+  ....
+  ```
+  rows [7,2,0,0]
+- S:
+  ```
+  .XX.
+  XX..
+  ```
+  rows [3,6,0,0]
+- Z:
+  ```
+  XX..
+  .XX.
+  ```
+  rows [6,3,0,0]
+- J:
+  ```
+  X..
+  XXX
+  ```
+  rows [4,7,0,0]
+- L:
+  ```
+  ..X
+  XXX
+  ```
+  rows [1,7,0
+---

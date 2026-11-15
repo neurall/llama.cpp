@@ -1,0 +1,7 @@
+run 28288 | lp_yields_to_split | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.33 t/s | prompt 989.9 t/s | 64 tokens | args: -np 1 --moe dense-split=1,split-experts=0,staging=0 | power 200+200 W | 2026-11-14 04:17:03
+
+    return params.spec_types.empty() || params.spec_types == std::vector<std::string>{"draft", "speculative"};
+}
+
+static void handle_model_result(const common_params & params, const std::string & model_url, const std::string & model_filename, handle_model_result & result) {
+    // handle preset

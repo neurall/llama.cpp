@@ -1,0 +1,33 @@
+run 27419 | hot_tree3 | poemseac | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 188.1 t/s | prompt 215.4 t/s | 230 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 11:11:07
+
+
+---
+The moon hangs high, a silver spoon
+Dipping into the ink-black sea
+Stars twinkle like diamonds flung
+From the hands of a celestial jeweler
+
+A gentle lapping sound, the sea's lullaby
+Whispers secrets to the night
+The lighthouse stands tall, a sentinel
+Guarding the shore from hidden foes
+
+A small boat, a lone voyager
+Far from the safety of the land
+Its tiny silhouette against the moon's glow
+A tiny flame in a vast, dark sea
+
+The waves rise and fall, a rhythmic dance
+Each crest a silver sword, each trough a void
+The sea roars its ancient song
+A timeless melody that echoes through the night
+
+The lighthouse beacon cuts through the dark
+A guiding light, a beacon of hope
+Its glow dances on the waves
+Illuminating the path for the solitary traveler
+
+The small boat moves with purpose
+A speck against the vast expanse
+The lighthouse stands firm, unwavering
+Its light piercing the night, a beacon of salvation

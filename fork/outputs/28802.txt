@@ -1,0 +1,12 @@
+run 28802 | k_ahead_room | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.4 t/s | prompt 1.0 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,jit-all=1 | power 200+200 W | 2026-11-15 02:00:27
+
+
+---
+To parse a CSV file and calculate the average of each column, you can use the `csv` module in Python. Here's a function that does this:
+
+```python
+import csv
+
+def calculate_column_averages(csv_file_path):
+    with open(csv_file_path, newline='') as csvfile:
+        reader = csv

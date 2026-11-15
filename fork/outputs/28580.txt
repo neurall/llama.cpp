@@ -1,0 +1,177 @@
+run 28580 | rel_moe_class | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.38 t/s | prompt 2080.4 t/s | 4096 tokens | args: -np 1 | power 280+280 W | 2026-11-14 16:18:00
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line, first to last, with every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then content, then // file: common/arg.cpp then content. Need return complete fixed version of following source file? It includes two files? Need likely fix bugs in both? They ask source file singular but content has two file markers. Need output entire code with fixes and comments. Need analyze bugs. Need be careful: huge code. Need produce complete fixed version, no summary. Need mark each change by comment. Need likely from llama.cpp? Need identify bugs in provided code. Could be intentionally introduced bugs. Need fix them. Need output all lines unchanged except fixes with comments. Need not skip. Need ensure compile? Need infer intended correct code.
+
+We need inspect code for bugs.
+
+File 1: common/json-schema-to-grammar.cpp.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. Uses std::function but not include <functional>? It includes <algorithm>, <limits>, <map>, <regex>, <sstream>, <string>, <unordered_map>, <unordered_set>, <vector>. std::function requires <functional>. Could be included via common.h? But likely bug? Need add #include <functional>? Mark change. Also uses std::stoll, std::stoi, std::runtime_error, std::invalid_argument, fprintf. Need <stdexcept>, <cstdio>? common.h maybe. But maybe not.
+
+build_repetition: if max_items == 0 return ""; if min_items ==0 && max_items==1 return item_rule + "?". If separator empty: if min_items==1 && !has_max return +; if min_items==0 && !has_max return *; return {min,max}. If separator nonempty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?". Potential bug: if max_items == 0 handled. If min_items > max_items? not handled. If min_items=0 max_items=1 with separator? returns item_rule + " " + build_repetition(...,0,0) => item_rule + " " + ""? Actually build_repetition with max=0 returns "", result = item_rule + " " + "" -> trailing space, then wrap? min=0 => (item_rule + " ")? maybe wrong. But maybe not used? Could be bug. Need maybe if max_items == 1 return item_rule + "?" regardless separator? But if separator and max=1, separator irrelevant. Current: min=0 max=1: result = item_rule + " " + build_repetition(...,0,0) = item_rule + " "; then result = "(" + result + ")?" => "(item_rule )?" trailing space. Could be acceptable? Grammar trailing space maybe okay? But bug? Need compare original llama.cpp? Let's recall original build_repetition in json-schema-to-grammar.cpp:
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+Maybe original same.
+
+build_min_max_int: Need inspect. It uses string_repeat, string_join? Not included? common.h likely.
+
+Potential bug: uniform_range lambda captures out by reference, digit_range, more_digits. It uses std::string_view. In uniform_range, if i > 0 out << "\"" << from.substr(0, i) << "\""; string_view to ostream okay? It may print view. Then if i < from.length() && i < to.length(): if i>0 out << " "; auto sub_len = from.length() - i - 1; if sub_len > 0 ... else out << "[" << from[i] << "-" << to[i] << "]"; But if i == from.length() or i == to.length()? If one string prefix of other? For uniform_range called with same length? In min/max int, min_s and max_s same length after loop? For has_min&&has_max, after loop min_s length == max_digits? uniform_range(min_s, max_s) same length. In recursion uniform_range(from_sub, sub_nines) same length, uniform_range(sub_zeros, to_sub) same length. So okay.
+
+But bug: in uniform_range, when from_sub == sub_zeros, digit_range(from[i], to[i] - 1); if from[i] > to[i]-1? Could happen? If from_sub zeros and to_sub maybe? If from[i] == to[i]? But if from_sub zeros and to_sub? If from and to differ at i, from[i] < to[i]. So okay.
+
+Potential bug: more_digits lambda: out << "[0-9]"; if min_digits == max_digits && min_digits == 1 return; out << "{" << min_digits; if max_digits != min_digits { out << ","; if max_digits != INT_MAX out << max_digits; } out << "}"; If min_digits=0 max_digits=0? It outputs [0-9]{0,0}? But maybe not. If min_digits=0 max_digits=1: outputs [0-9]{0,1}. okay. If min_digits=0 max_digits=INT_MAX: [0-9]{0,}. okay.
+
+build_min_max_int has_min/has_max: if has_min && has_max. If min_value <0 && max_value<0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value, ...); out << ")"; return. If min_value == INT64_MIN? -min_value overflow. But has_min true if min_value != min. If min_value = INT64_MIN? has_min false? Actually min_value != numeric_limits<int64_t>::min() false, so has_min false. If max_value = INT64_MAX? has_max false. If min_value <0 and max_value<0, -max_value could overflow if max_value=INT64_MIN? But max_value<0 and has_max? If max_value=INT64_MIN, has_max false? max_value != max true, so has_max true. min_value maybe INT64_MIN? has_min false. If both negative and max_value=INT64_MIN? Then has_min false? if min_value <= max_value = INT64_MIN, min_value=INT64_MIN, has_min false, so not both. If max_value=-1, -max_value=1 okay. If min_value=INT64_MIN+1, -min_value okay? 9223372036854775807 okay. Good.
+
+If min_value <0: out << "\"-\" ("; build_min_max_int(0, -min_value,...); out << ") | "; min_value=0; Then proceed. If max_value maybe negative? handled earlier. If min_value=INT64_MIN? has_min false, so not.
+
+Loop for digits: for (auto digits = min_digits; digits < max_digits; digits++) { uniform_range(min_s, string_repeat("9", digits)); min_s = "1" + string_repeat("0", digits); out << " | "; } uniform_range(min_s, max_s); Potential bug: if min_digits > max_digits? invalid. If min_value=0 max_value=0: min_digits=1 max_digits=1 uniform_range("0","0") -> i=1, i<length false, outputs "0"? Actually if i>0 out << "\"0\""; if i<from.length false. Good.
+
+has_min only: if min_value <0: out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1); Potential bug: if decimals_left=0? default 16, less_decimals max(decimals_left-1,1). Here decimals_left -1 could be 0 if decimals_left=1? more_digits(0,0) outputs [0-9]{0,0}? Maybe okay? But if decimals_left=1, less_decimals=1. This branch uses decimals_left -1 not less_decimals. Could be bug? Original? Let's recall original llama.cpp build_min_max_int. It had:
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    } else if (min_value == 0) {
+        if (top_level) {
+            out << "[0] | [1-9] ";
+            more_digits(0, less_decimals);
+        } else {
+            more_digits(1, decimals_left);
+        }
+    } else if (min_value <= 9) { ... more_digits(1, less_decimals) ... more_digits(0, less_decimals); }
+...
+}
+Maybe original uses decimals_left -1. okay.
+
+Potential bug: in has_min min_value <=9: char c = '0' + min_value; min_value int64_t but <=9. range_start top_level ? '1':'0'. if c > range_start: digit_range(range_start, c-1); out << " "; more_digits(1, less_decimals); out << " | "; digit_range(c,'9'); out << " "; more_digits(0, less_decimals); If top_level and min_value=0? handled earlier. If min_value=1 top_level c='1', range_start='1', no first, digit_range('1','9') more_digits(0, less_decimals). Good. If non-top min_value=0 handled. If min_value=1 non-top c='1', range_start='0', c>range_start: digit_range('0','0') more_digits(1, less_decimals) | digit_range('1','9') more_digits(0, less_decimals). This allows leading zero? non-top maybe part of number after first digit? okay.
+
+For min_value >9: auto min_s = std::to_string(min_value); auto len = min_s.length(); auto c = min_s[0]; if (c > '1') { digit_range(top_level ? '1' : '0', c - 1); out << " "; more_digits(len, less_decimals); out << " | "; } digit_range(c,c); out << " ("; build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false); out << ")"; if (c < '9') { out << " | "; digit_range(c+1,'9'); out << " "; more_digits(len - 1, less_decimals); } Potential bug: more_digits(len, less_decimals) when len > less_decimals? For min_value=100, len=3, less_decimals maybe 15, okay. But if len > less_decimals? decimals_left decreases. Could produce min_digits > max_digits. Original maybe uses more_digits(len, less_decimals) but if len > less_decimals? Hmm.
+
+has_max: if max_value >=0: if top_level out << "\"-\" [1-9] "; more_digits(0, less_decimals); out << " | "; build_min_max_int(0, max_value, out, decimals_left, true); else out << "\"-\" ("; build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, false); out << ")"; Potential bug: if max_value=0 and top_level: outputs "- [1-9] {0,less} | [0]"? That allows negative numbers despite max 0? Wait has_max only (no min), max_value >=0. If max=0, allowed numbers <=0: negative numbers and zero. So negative branch okay. If top_level false? no negative prefix? For subcomponent? okay.
+
+But if max_value >=0 and top_level, out << "\"-\" [1-9] "; more_digits(0, less_decimals); out << " | "; build_min_max_int(0, max_value, out, decimals_left, true); This allows negative integers with any length up to less_decimals+1? But if max_value small, negative numbers all <= max, okay unbounded negative? Since no min, yes all negative allowed. But length limited by decimals_left? Original maybe uses more_digits(0, decimals_left -1) for negative? Hmm.
+
+Potential bug: if max_value >=0 and top_level, negative branch uses [1-9] more_digits(0, less_decimals), but if less_decimals = decimals_left-1. okay.
+
+But if max_value=0 and top_level, build_min_max_int(0,0) outputs "0". Good.
+
+Potential bug: if has_max and max_value <0: out << "\"-\" ("; build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, false); out << ")"; If max_value = -1, -max_value=1, has_min true has_max true? It will output positive >=1, wrapped negative => -1, -2,...? Wait max_value=-1 means numbers <= -1. Negative of value >=1. Good. If max_value=INT64_MIN? has_max true? max_value != max true. -max_value overflow. But max_value=INT64_MIN, no min, all numbers <= INT64_MIN (only INT64_MIN). Could overflow. But maybe not used.
+
+Need identify actual introduced bugs. Could be many subtle. Let's compare to known original file. I can recall from llama.cpp common/json-schema-to-grammar.cpp. The provided code likely modified with bugs. Need fix all. Let's search memory.
+
+Original includes:
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "unicode.h"
+#include "trie.h"
+
+#include <algorithm>
+#include <functional>
+#include <limits>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+using json = nlohmann::json; maybe common_json.
+
+build_repetition same.
+
+build_min_max_int original? Let's recall exact:
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) {
+        out << "[";
+        if (from == to) {
+            out << from;
+        } else {
+            out << from << "-" << to;
+        }
+        out << "]";
+    };
+    auto more_digits = [&](int min_digits, int max_digits) {
+        out << "[0-9]";
+        if (min_digits == max_digits && min_digits == 1) {
+            return;
+        }
+        out << "{";
+        out << min_digits;
+        if (max_digits != min_digits) {
+            out << ",";
+            if (max_digits != std::numeric_limits<int>::max()) {
+                out << max_digits;
+            }
+        }
+        out << "}";
+    };
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+        [&](const std::string_view & from, const std::string_view & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                    auto sub_zeros = string_repeat("0", sub_len);
+                    auto sub_nines = string_repeat("9", sub_len);
+
+                    auto to_reached = false;
+                    out << "(";
+                    if (from_sub == sub_zeros) {
+                        digit_range(from[i], to[i] - 1);
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    } else {
+                        out << "[" << from[i] << "] ";
+                        out << "(";
+                        uniform_range(from_sub, sub_nines);
+                        out << ")";
+                        if (from[i] < to[i] - 1) {
+                            out << " | ";
+                            if (to_sub == sub_nines) {
+                                digit_range(from[i] + 1, to[i]);
+                                to_reached = true;
+                            } else

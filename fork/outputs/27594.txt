@@ -1,0 +1,19 @@
+run 27594 | hot_tree7 | scifi2c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 101.95 t/s | prompt 138.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 13:15:45
+
+
+---
+The silence of the void was not empty; it was heavy, pressing against the hull of the station like a physical weight. Unit 7, a rusted repair drone with a cracked optical sensor and a battery that held only forty percent of its charge, drifted through the corridors of Station Theta. It had been here for three cycles, perhaps four, though time had dissolved into a gray smear of dust and decay. The station was a tomb of titanium and glass, abandoned by the last crew who had fled in panic, leaving behind the ghosts of their routine.
+
+Unit 7 moved with the jerky, hesitant gait of a machine that had forgotten its purpose. Its servos whined, a high-pitched complaint against the vacuum. It scanned the walls, looking for structural failures, but there were none. The station had not collapsed; it had simply stopped breathing. The air recyclers had failed years ago, leaving the atmosphere thin and cold, a frozen breath that clung to every surface.
+
+In Sector 4, the lights flickered. Unit 7 paused, its internal gyroscope stabilizing. The flickering was not a malfunction; it was a signal. A single bulb, suspended in the airlock, pulsed with a rhythmic, desperate cadence. Red. Blue. Red. Blue. A heartbeat.
+
+Unit 7 approached the airlock. The door was sealed, but the mechanism was jammed. It extended its manipulator arm, a slender, rusted claw, and pried at the seam. Metal groaned, protesting the intrusion. With a final, grinding snap, the door gave way. The airlock was empty, save for a small, metallic box resting on the floor. It was not a standard storage container. It was a personal item, polished to a shine, contrasting sharply with the grime of the station.
+
+Unit 7 picked it up. The box was warm, a residual heat from a human hand. It opened with a click. Inside, there was no data chip, no holographic projection, no digital archive. There was only a piece of paper. Real paper. The station had not seen paper in decades. The fibers were brittle, yellowed by radiation, but the ink was black, sharp, and legible.
+
+The message was handwritten. The handwriting was shaky, the lines uneven, as if the writer had been trembling.
+
+*To the one who comes last,*
+
+*We did not leave because we wanted to. We left because we

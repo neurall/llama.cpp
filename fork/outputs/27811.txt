@@ -1,0 +1,23 @@
+run 27811 | tree_emb_key | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 72.8 t/s | prompt 140.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph3/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/ini | power 280+280 W | 2026-11-13 18:01:07
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold ache of frozen marrow in his joints. The air in the habitation module smelled of ozone and stale recycled water, a scent that had lingered for three centuries. He blinked against the harsh glare of the emergency lights, his vision swimming in the haze of hypothermia. Beside him, Commander Vance groaned, shaking off the last remnants of the deep sleep.
+
+"Status report," Vance rasped, his voice cracking like dry ice.
+
+Elias, the ship’s archivist, sat up slowly. His hands trembled as he reached for the console. The data streams were chaotic, a blur of telemetry and navigation logs. But the primary sensor feed was clear. They had arrived. The planet, designated Terra Nova, hung in the viewport like a sapphire marble, swirling with white clouds and deep blue oceans. It was beautiful. It was exactly as the mission parameters had promised.
+
+"Approaching orbit," Elias said, his voice gaining strength. "Deceleration burn complete. We are in the final descent phase."
+
+Vance nodded, rubbing his eyes. "Good. Three hundred years of sleep. We’re the first. The pioneers."
+
+Elias looked at the screen. The telemetry showed a population density reading. It was not zero. It was not empty. It was a number so high it defied the initial survey models. The lights on the planet were not just scattered; they were a web. A constellation of artificial luminescence that spanned continents.
+
+"Commander," Elias whispered, "look at the thermal signature."
+
+Vance leaned in. The heat maps showed cities. Massive, sprawling metropolises. The lights were bright, pulsing with the rhythm of a living civilization.
+
+"That’s impossible," Vance said. "We were the first generation ship. The *Aethelgard*. We left Earth two centuries before the *Odyssey* was even built. There should be no one here."
+
+Elias felt a cold dread settle in his stomach, colder than the cryo-gel. He pulled up the historical logs. He had spent his life curating the past, preserving the memories of Earth before the exodus. He knew the timeline. He knew the *Odyssey* was launched a century after the *Aethelgard*. He knew the *Odyssey* was a

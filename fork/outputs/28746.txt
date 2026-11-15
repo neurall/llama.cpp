@@ -1,0 +1,17 @@
+run 28746 | pred_pool_readahead | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.48 t/s | prompt 1.6 t/s | 256 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-14 22:22:37
+
+
+---
+Every evening, Elias climbed the spiral stairs of the lighthouse with a brass lantern in one hand and a notebook in the other. He had kept the light for twenty-three years, long enough to know the sea’s moods by the color of its foam. On clear nights, he wrote down the names of passing ships. On stormy nights, he wrote only one word: *Stay*.
+
+The message in the bottle arrived on a morning after a storm.
+
+Elias found it while walking the narrow beach below the cliffs, collecting driftwood for the stove. The bottle was green glass, its neck sealed with black wax. Inside, a folded paper had been stained brown by salt and time.
+
+He carried it to the lighthouse kitchen, set it beside his tea, and read.
+
+*To whoever finds this,* the letter began, *my name is Mara Venn. I am the keeper of the light at Saint Orra’s Rock. If the light has gone out, please do not assume I have abandoned it. The fog bell is broken, the supply ship has not come, and my daughter is ill. I am sending this because I do not know what else to send.*
+
+There was no date.
+
+Elias knew Saint Orra’s Rock. It lay forty

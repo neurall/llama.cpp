@@ -1,0 +1,62 @@
+run 27685 | tree_phase_maps | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 48.76 t/s | prompt 20.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/ini | power 280+280 W | 2026-11-13 16:14:40
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Requirements
+- C++11 or later
+- Terminal with support for ANSI escape codes (most modern terminals)
+
+### Code (`snake.cpp`)
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+
+using namespace std;
+
+int main() {
+    // Terminal dimensions
+    const int W = 20, H = 15;
+    
+    // Snake state: head at (1,1), body at (1,1) initially
+    vector<pair<int,int>> snake = {{1,1}};
+    pair<int,int> dir = {0,1}; // Direction: right
+    pair<int,int> food;
+    
+    // Random food position
+    auto rand_pos = [&]() {
+        return {rand() % (W-2) + 1, rand() % (H-2) + 1};
+    };
+    food = rand_pos();
+
+    // Clear screen
+    cout << "\033[2J"; // Clear screen
+    cout << "\033[H";  // Move cursor to top-left
+
+    // Game loop
+    while(true) {
+        // Draw
+        for(int y=0; y<H; y++) {
+            for(int x=0; x<W; x++) {
+                if(x==0 || x==W-1 || y==0 || y==H-1) cout << "#";
+                else {
+                    bool is_snake = false;
+                    for(auto p : snake) if(p.first==x && p.second==y) is_snake = true;
+                    bool is_food = (food.first==x && food.second==y);
+                    if(is_snake) cout << "O";
+                    else if(is_food) cout << "*";
+                    else cout << " ";
+                }
+            }
+            cout << "\n";
+        }
+
+        // Input
+        char c = getchar();
+        if(c == 'w') dir = {-1,0};
+        else if(c == 's') dir = {1,0};
+        else if(c == 'a') dir = {0,-1};

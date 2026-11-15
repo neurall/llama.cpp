@@ -1,0 +1,9 @@
+run 27642 | heat_decode_only | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.47 t/s | prompt 10.9 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3cold/s.ini | power 280+280 W | 2026-11-13 15:18:22
+
+ } else if (i == from.length()) {
+            out << "[" << from[i] << "] ";
+            out << "(";
+            uniform_range(from.substr(i + 1), string_repeat("9", to.length() - i - 1));
+            out << ")";
+        } else {
+            out << "[" << to

@@ -1,0 +1,87 @@
+run 28424 | galloc_high_water | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 27.34 t/s | prompt 349.3 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 08:46:59
+
+<think>Let me analyze this request. The user wants me to do a code review of the provided source files. The files are:
+
+1. `common/json-schema-to-grammar.cpp` - JSON schema to grammar converter
+2. `common/arg.cpp` - argument parsing (truncated)
+
+The request is to review the code. Let me look at the code carefully and identify issues.
+
+Looking at the first file `json-schema-to-grammar.cpp`:
+
+The code appears to be a JSON schema to grammar converter for llama.cpp. Let me review it for issues:
+
+1. In `_not_strings`, there's a potential issue with the trie construction - the `rejects` string accumulates characters but there's a subtle bug: when a node has children, the code adds `[^"rejects]` but the rejects string is built incrementally. Let me check:
+
+```cpp
+std::function<void(size_t)> visit = [&](size_t idx) {
+    const auto & node = trie.nodes[idx];
+    std::string rejects;
+    auto first = true;
+    for (const auto & [cpt, child] : node.children) {
+        std::string c = common_unicode_cpt_to_utf8(cpt);
+        rejects += c;
+        if (first) {
+            first = false;
+        } else {
+            out << " | ";
+        }
+        out << "[" << c << "]";
+        if (!trie.nodes[child].children.empty()) {
+            out << " (";
+            visit(child);
+            out << ")";
+        } else {
+            out << " " << char_rule << "+";
+        }
+    }
+    if (!node.children.empty()) {
+        out << " | [^\"" << rejects << "] " << char_rule << "*";
+    }
+};
+```
+
+Wait, there's a bug here: `rejects` is declared inside `visit`, so it's local. But the issue is that `rejects` accumulates all children characters, and then `[^"rejects]` is emitted. But wait - the `rejects` string is built as `rejects += c` for each child. So at the end, `rejects` contains all children characters. That seems correct for the negated character class.
+
+Hmm, but actually there's a subtle issue: the `first` flag logic. If `first` is true initially, then for the first child, `first` is set to false but no separator is printed. For subsequent children, ` | ` is printed. That's correct.
+
+2. In `_resolve_ref`:
+```cpp
+std::string _resolve_ref(const common_chat_schema_ref & schema) {
+    auto it = schema.ref.find('#');
+    std::string ref_fragment = it != std::string::npos ? schema.ref.substr(it + 1) : schema.ref;
+    static const std::regex nonalphanumeric_regex(R"([^a-zA-Z0-9-]+)");
+    std::string ref_name = "ref" + std::regex_replace(ref_fragment, nonalphanumeric_regex, "-");
+    if (_rules.find(ref_name) == _rules.end() && _refs_being_resolved.find(schema.ref) == _refs_being_resolved.end()) {
+        if (!schema.target) {
+            _errors.push_back("Unresolved $ref " + schema.ref);
+            return "";
+        }
+        _refs_being_resolved.insert(schema.ref);
+        ref_name = visit(*schema.target, ref_name);
+        _refs_being_resolved.erase(schema.ref);
+    }
+    return ref_name;
+}
+```
+
+This looks reasonable. One issue: if the ref is already being resolved (circular reference), it returns the ref_name without checking if it exists in _rules. That could produce an invalid grammar. But that's the standard approach for handling circular refs in llama.cpp.
+
+3. In `_build_object_rule`, there's a potential issue with the `get_recursive_refs` lambda - it's recursive and creates rules for each suffix of optional props. This is the standard llama.cpp approach.
+
+4. In `visit` for KIND_ARRAY:
+```cpp
+case common_chat_schema::KIND_ARRAY: {
+    const auto & arr = as<common_chat_schema_array>(schema);
+    if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+        return _visit_primitive(rule_name, "array");
+    }
+    std::string item_rule_name = visit(*arr.items, sub_name + "item");
+    int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;
+    return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+}
+```
+
+This looks fine.
+
+5. In `build_min_max_int` - this is a complex function that builds a grammar for integer ranges. It's truncated in the

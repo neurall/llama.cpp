@@ -1,0 +1,8 @@
+run 27116 | ns_home_part_all | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 26.8 t/s | prompt 222.5 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,pp-path=mix,staging=0,verify=2,poison=3 | power 200+200 W | 2026-11-13 01:56:08
+
+    return params.speculative.types.get() == (1u << COMMON_SPEC_TYPE_DRAFT)
+        && params.speculative.types.get() != (1u << COMMON_SPEC_TYPE_NONE);
+}
+
+static bool is_model_url(const std::string & model_path) {
+    return is_url(model_path);

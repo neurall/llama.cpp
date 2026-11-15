@@ -1,0 +1,76 @@
+run 28382 | lp_check_before_lock | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 26.47 t/s | prompt 36.2 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-14 07:19:24
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — they want minimal code. But I also care about quality. There's tension here: "smallest" means minimal bytes, but I usually want polished, memorable work. The user explicitly asked for smallest, so I should honor that intent — a genuinely tiny, working Tetris in a single HTML file. This is one case where the user's explicit request overrides my usual preference for elaborate visual design.
+
+However, I can still make it *good* while being small. Let me think about what "smallest" means: fewest characters while still being a playable Tetris with proper mechanics — gravity, rotation, line clearing, scoring, game over, keyboard controls.
+
+Let me write a genuinely compact Tetris. Classic approaches:
+
+- Canvas for rendering.
+- A piece set encoded compactly.
+- Rotation via matrix transpose or coordinate tricks.
+- Collision detection.
+- Line clear.
+- Score.
+- Game over.
+
+Let me aim for something like ~500-800 bytes of actual code, well golfed but readable enough. Actually "smallest" — I could go hardcore golf. Let me try to write a really compact one and count roughly.
+
+A well-known minimal Tetris in JS can be done in under 600 bytes. Let me construct my own carefully, making sure it actually works. I need to be careful — golfed code is error-prone. Let me write it step by step and verify logic mentally.
+
+Plan:
+
+- Grid: 10 wide, 20 tall. Store as a single array of 200 cells, or array of rows.
+- Pieces: 7 tetrominoes. Compact encoding: each piece as a 4x4 or use binary numbers per rotation. A classic trick: store each piece as a 2D matrix and rotate by transposing+reversing.
+
+Compact piece encoding trick: use strings. E.g. pieces as arrays of [x,y] pairs, or as bit patterns.
+
+A very compact known approach (from "Tetris in 140 bytes" style) uses binary numbers. But those are hard to verify. Let me use a readable-but-small approach: pieces as matrices of strings.
+
+Something like:
+
+```js
+P=[[0x4444,0x0F00],...]
+```
+
+Hmm. Let me think of the classic compact representation: each rotation state as a 4x4 bitmask (16 bits), pieces have 1, 2, or 4 rotations. Alternatively store all rotations for all 7 pieces = 19 unique states (O, I, S, Z have 2; T, J, L have 4). 19 * 16 bits.
+
+Alternative simpler approach: store each piece as a matrix (array of arrays), rotate with a transpose function. Rotation: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())` — rotates clockwise.
+
+Let me draft:
+
+```html
+<body onload="u=setInterval(f,300)"><canvas id=c width=120 height=240></canvas><script>
+...
+</script>
+```
+
+Let me write the JS:
+
+```js
+D=c.getContext('2d')
+G=[] // grid rows
+for(i=20;i--;)G.push([0,0,...]) 
+```
+
+Actually simpler: `G=[...Array(20)].map(_=>Array(10).fill(0))`.
+
+Pieces:
+
+```js
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,1],[0,1,0]]... ]
+```
+
+Wait, T piece: [[1,1,1],[0,1,0]]. J: [[1,0,0],[1,1,1]]. L: [[0,0,1],[1,1,1]].
+
+So:
+- I: [[1,1,1,1]]
+- O: [[1,1],[1,1]]
+- T: [[1,1,1],[0,1,0]]
+- S: [[0,1,1],[1,1,0]]
+- Z: [[1,1,0],[0,1,1]]
+- J: [[1,0,0],[1,1,1]]
+- L: [[0,0,1],[1,1,1]]
+
+Colors: could use a single color to save bytes, or per-piece colors. For "smallest", single color or two colors. But a tiny bit of color makes it feel alive. Per-piece colors via a string: `C='#f00#ff0#0f0#0ff#00f#f0f#fff'` split
+---

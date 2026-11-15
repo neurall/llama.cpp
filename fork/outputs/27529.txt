@@ -1,0 +1,67 @@
+run 27529 | hot_tree5 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 86.11 t/s | prompt 69.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:30:03
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Key Features:
+- **Terminal-based**: Uses standard ASCII characters.
+- **Minimal**: ~100 lines of code.
+- **Input**: Arrow keys (or WASD).
+- **Game Loop**: Runs until collision or quit.
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+using namespace std;
+
+int main() {
+    // Game state
+    vector<pair<int, int>> snake = {{0, 0}};
+    pair<int, int> food = {5, 5};
+    int dx = 1, dy = 0; // Initial direction: right
+    int score = 0;
+    bool running = true;
+
+    // Terminal dimensions
+    const int WIDTH = 20, HEIGHT = 15;
+
+    // Helper to clear screen
+    auto clear = []() { cout << "\033[H"; };
+
+    // Helper to print grid
+    auto print = [&]() {
+        clear();
+        for (int y = 0; y < HEIGHT; ++y) {
+            for (int x = 0; x < WIDTH; ++x) {
+                bool isSnake = false;
+                for (auto& p : snake) {
+                    if (p == {x, y}) { isSnake = true; break; }
+                }
+                if (isSnake) cout << "█";
+                else if ({x, y} == food) cout << "●";
+                else cout << " ";
+            }
+            cout << "\n";
+        }
+        cout << "Score: " << score << "\n";
+    };
+
+    // Random food placement
+    auto placeFood = [&]() {
+        do {
+            food = {rand() % WIDTH, rand() % HEIGHT};
+        } while (any_of(snake.begin(), snake.end(), [&](pair<int,int> p) { return p == food; }));
+    };
+
+    // Input handling
+    char input;
+    while (running) {
+        // Non-blocking input check
+        if (cin

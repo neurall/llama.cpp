@@ -1,0 +1,83 @@
+run 28419 | sum_on_cache_card | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 27.88 t/s | prompt 350.0 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 08:23:08
+
+<think>Let me analyze this code carefully. The user is asking me to do a code review of the provided source files. The files are:
+
+1. `common/json-schema-to-grammar.cpp` - converts JSON schemas to grammar rules
+2. `common/arg.cpp` - argument parsing utilities
+
+Let me look at the code for potential issues, bugs, security vulnerabilities, and improvements.
+
+Looking at `json-schema-to-grammar.cpp`:
+
+1. The `common_chat_schema_converter` class has several methods:
+   - `_add_rule` - adds a rule to the map
+   - `_add_primitive` - adds a primitive rule
+   - `_visit_pattern` - visits a pattern
+   - `_resolve_ref` - resolves a schema reference
+   - `_build_object_rule` - builds an object rule
+   - `_visit_all_of` - visits all_of schemas
+   - `visit` - main visitor method
+   - `check_errors` - checks for errors
+   - `format_grammar` - formats the grammar
+
+2. Potential issues I can see:
+   - In `_resolve_ref`, there's a potential infinite recursion issue if a schema references itself. The `_refs_being_resolved` set is used to track refs being resolved, but if a ref is already being resolved and it's not in `_rules`, it will return an empty string. Wait, let me re-read:
+   
+   ```cpp
+   if (_rules.find(ref_name) == _rules.end() && _refs_being_resolved.find(schema.ref) == _refs_being_resolved.end()) {
+       if (!schema.target) {
+           _errors.push_back("Unresolved $ref " + schema.ref);
+           return "";
+       }
+       _refs_being_resolved.insert(schema.ref);
+       ref_name = visit(*schema.target, ref_name);
+       _refs_being_resolved.erase(schema.ref);
+   }
+   return ref_name;
+   ```
+   
+   This looks correct - it prevents infinite recursion by checking if the ref is already being resolved. But wait, if the ref is already being resolved, it returns `ref_name` which might be an empty string or the original name. Actually, if the ref is already being resolved, `ref_name` would be the computed name (from the regex replace), and it would be returned as-is. This could cause issues if the rule hasn't been added yet. But this is a common pattern for handling recursive schemas.
+
+   Actually, there's a subtle issue: if `_refs_being_resolved.find(schema.ref) != _refs_being_resolved.end()` (the ref IS being resolved), we skip the resolution and return `ref_name` directly. But `ref_name` might not have been added to `_rules` yet. This could cause the grammar to reference a rule that doesn't exist. However, this is a known limitation of this approach.
+
+3. In `_build_object_rule`, there's a potential issue with the `get_recursive_refs` lambda:
+   ```cpp
+   std::function<std::string(const std::vector<std::string> &, bool)> get_recursive_refs = [&](const std::vector<std::string> & ks, bool first_is_optional) {
+       std::string res;
+       if (ks.empty()) {
+           return res;
+       }
+       const std::string& k = ks[0];
+       std::string kv_rule_name = prop_kv_rule_names[k];
+       std::string comma_ref = "( \",\" space " + kv_rule_name + " )";
+       if (first_is_optional) {
+           res = comma_ref + (k == "*" ? "*" : "?");
+       } else {
+           res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+       }
+       if (ks.size() > 1) {
+           res += " " + _add_rule(
+               name + (name.empty() ? "" : "-") + k + "-rest",
+               get_recursive_refs(std::vector<std::string>(ks.begin() + 1, ks.end()), true)
+           );
+       }
+       return res;
+   };
+   ```
+   
+   This looks correct.
+
+4. In `visit`, for `KIND_ARRAY`:
+   ```cpp
+   int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;
+   return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+   ```
+   
+   This looks correct.
+
+5. In `visit`, for `KIND_STRING`:
+   ```cpp
+   if (str.min_length > 0 || str.max_length >= 0) {
+       std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+       int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+       return _add_rule

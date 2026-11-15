@@ -1,0 +1,11 @@
+run 26996 | ns_router_compute | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 22.25 t/s | prompt 124.0 t/s | 64 tokens | args: -np 1 --moe staging=0,verify=2,poison=3 | power 280+280 W | 2026-11-12 22:29:41
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_none(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types[0] == LLAMA_SPEC_TYPE_NONE;
+}
+
+static bool spec_types_is_draft_only(const common_params & params) {
+    return params.spec

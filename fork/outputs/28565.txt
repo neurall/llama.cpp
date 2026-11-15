@@ -1,0 +1,279 @@
+run 28565 | ring_window_worker | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.46 t/s | prompt 2564.6 t/s | 4096 tokens | args: -np 1 --moe staging=1 | power 280+280 W | 2026-11-14 14:53:52
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line from first to last, with every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then code, then // file: common/arg.cpp then code. Need return complete fixed version of following source file? It includes two files? Need likely fix bugs in both? They ask source file singular but content has two file markers. Need output entire code with fixes and comments. Need analyze bugs. Need be careful: huge code. Need produce complete fixed version, no summary. Need mark each change by comment. Need likely from llama.cpp? Need identify bugs in provided code. Could be intentionally introduced bugs. Need fix them. Need output all lines, unchanged parts too. Need comments for changes. Need not skip. Need ensure compile? Need infer intended correct code.
+
+We need inspect code for bugs.
+
+First file json-schema-to-grammar.cpp.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. OK.
+
+build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Potential bug: if max_items == 0 and min_items >0? invalid. If min_items=0 max_items=0 should maybe return ""? OK. If min_items=0 max_items=1 returns item? OK. If min_items=1 max_items=1 separator empty returns item{1,1}? Could be item? But not bug? In llama.cpp original? Let's recall original build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Maybe original had if (max_items == 0) return "";? Need check. If max_items=0, min=0, should empty? For array maxItems 0 grammar should match empty array? In caller: build_repetition(item_rule, arr.min_items, max_items, ",\" space") inside brackets. If max_items=0, build_repetition returns "" then grammar `"[\" space  space \"]"`? Actually if max_items=0 and min=0, should match empty array: `"[\" space \"]"` maybe. Returning "" yields `"[\" space  space \"]"` with double space? Not fatal? But if min_items=1 max_items=0 invalid. The added `if (max_items == 0) return "";` maybe bug? Let's test: min=0 max=0 separator nonempty: result = item + " " + build_repetition(... min=0, max=-1?) Wait has_max true (0 != INT_MAX), max_items -1 = -1. Recursion: max_items == 0? no (-1), min=0 max=-1, separator empty? returns item{-1?} invalid. But if top max_items==0 returns before. OK. But if min=0 max=0 with separator, returning "" means array rule `"[\" space  space \"]"`? Actually caller: `"[\" space " + build_repetition(...) + " space \"]\""` => `"[\" space  space \"]"` two spaces? It has space before and after empty. Grammar spaces are literal? In GBNF, spaces separate tokens, multiple spaces ignored? Probably OK. But if max_items=0 and min_items=0, should maybe return ""? OK.
+
+Potential bug: if min_items > max_items? not handled.
+
+build_min_max_int: Need inspect. This is complex. Need compare to original llama.cpp. There may be bugs introduced. Let's recall original from llama.cpp common/json-schema-to-grammar.cpp. I can reconstruct.
+
+Original build_min_max_int maybe:
+```
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) {
+        out << "[";
+        if (from == to) {
+            out << from;
+        } else {
+            out << from << "-" << to;
+        }
+        out << "]";
+    };
+    auto more_digits = [&](int min_digits, int max_digits) {
+        out << "[0-9]";
+        if (min_digits == max_digits && min_digits == 1) {
+            return;
+        }
+        out << "{";
+        out << min_digits;
+        if (max_digits != min_digits) {
+            out << ",";
+            if (max_digits != std::numeric_limits<int>::max()) {
+                out << max_digits;
+            }
+        }
+        out << "}";
+    };
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+        [&](const std::string_view & from, const std::string_view & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                    auto sub_zeros = string_repeat("0", sub_len);
+                    auto sub_nines = string_repeat("9", sub_len);
+
+                    auto to_reached = false;
+                    out << "(";
+                    if (from_sub == sub_zeros) {
+                        digit_range(from[i], to[i] - 1);
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    } else {
+                        out << "[" << from[i] << "] ";
+                        out << "(";
+                        uniform_range(from_sub, sub_nines);
+                        out << ")";
+                        if (from[i] < to[i] - 1) {
+                            out << " | ";
+                            if (to_sub == sub_nines) {
+                                digit_range(from[i] + 1, to[i]);
+                                to_reached = true;
+                            } else {
+                                digit_range(from[i] + 1, to[i] - 1);
+                            }
+                            out << " ";
+                            more_digits(sub_len, sub_len);
+                        }
+                    }
+                    if (!to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, to_sub);
+                    }
+                    out << ")";
+                } else {
+                    out << "[" << from[i] << "-" << to[i] << "]";
+                }
+            }
+        };
+...
+```
+Looks same. But potential bug: `string_repeat("0", sub_len)` expects string? Provided. OK.
+
+In has_min && has_max:
+```
+if (min_value < 0 && max_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+    out << ")";
+    return;
+}
+```
+If min=-5 max=-1 => -max=1 -min=5 OK. If min=LLONG_MIN? -min overflow. But has_min true if min != LLONG_MIN. If min=LLONG_MIN and max<0? min_value <0 max<0, -min overflow. Original maybe handles? Could be bug? But min_value can be LLONG_MIN? has_min false if min == min. But condition has_min && has_max, so min != LLONG_MIN. OK. If max=LLONG_MAX? has_max false. OK.
+
+If min_value <0:
+```
+out << "\"-\" (";
+build_min_max_int(0, -min_value, out, decimals_left, true);
+out << ") | ";
+min_value = 0;
+```
+If min=LLONG_MIN? has_min false, not here. OK.
+
+Then for digits loop:
+```
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+uniform_range(min_s, max_s);
+```
+Potential bug: if min_s length changes? OK.
+
+Then less_decimals = std::max(decimals_left - 1, 1);
+
+if has_min:
+```
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false);
+    out << ") | [0] | [1-9] ";
+    more_digits(0, decimals_left - 1);
+}
+```
+Potential bug: if min_value = LLONG_MIN? has_min false. If min_value negative, -min_value positive. OK. But grammar for min negative unbounded max: should match negative numbers <= min? Wait has_min only means min set, max unbounded. For min_value <0, allowed values >= min_value, including negative from min to -1, zero, positive. The code outputs negative part: `"-" (build_min_max_int(LLONG_MIN, -min_value))`? If min=-5, -min=5, build_min_max_int(LLONG_MIN,5) with has_min false has_max true. That matches negative magnitude 0..5? Then `"-"` gives -0..-5? But order? It also outputs [0] | [1-9] more_digits. Need check. Original likely same.
+
+`more_digits(0, decimals_left - 1)` if decimals_left=1 => more_digits(0,0) outputs [0-9]{0,0}? Is that valid? maybe. less_decimals used elsewhere.
+
+`else if (min_value == 0) { if top_level out << "[0] | [1-9] "; more_digits(0, less_decimals); else more_digits(1, decimals_left); }` OK.
+
+`else if (min_value <= 9) { char c = '0' + min_value; auto range_start = top_level ? '1' : '0'; if (c > range_start) { digit_range(range_start, c - 1); out << " "; more_digits(1, less_decimals); out << " | "; } digit_range(c, '9'); out << " "; more_digits(0, less_decimals); }`
+Potential bug: if top_level and min_value=0 handled. If min_value=1, c='1', range_start='1', no first, digit_range('1','9') more_digits(0, less). OK. If non-top min=1, range_start='0', c>'0', digit_range('0','0') more_digits(1, less) | digit_range('1','9') more_digits(0, less). OK.
+
+else min_value >9:
+```
+auto min_s = std::to_string(min_value);
+auto len = min_s.length();
+auto c = min_s[0];
+
+if (c > '1') {
+    digit_range(top_level ? '1' : '0', c - 1);
+    out << " ";
+    more_digits(len, less_decimals);
+    out << " | ";
+}
+digit_range(c, c);
+out << " (";
+build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false);
+out << ")";
+if (c < '9') {
+    out << " | ";
+    digit_range(c + 1, '9');
+    out << " ";
+    more_digits(len - 1, less_decimals);
+}
+```
+Potential bug: `more_digits(len, less_decimals)` when len > less_decimals? For min_value >9, len maybe 2, less_decimals maybe 1 if decimals_left=1? more_digits(2,1) invalid. Original? Let's recall. In original, for min_value > 9:
+```
+if (c > '1') {
+    digit_range(top_level ? '1' : '0', c - 1);
+    out << " ";
+    more_digits(len, less_decimals);
+    out << " | ";
+}
+```
+But if len > less_decimals? decimals_left starts 16, less_decimals 15, len <=16? For int64 max 19 digits? decimals_left=16 maybe not enough? Original uses decimals_left=16 for JSON number? Maybe int64 can 19 digits. Hmm.
+
+Potential bug: `std::stoll(min_s.substr(1))` if substr empty? min_value >9 so not empty. OK.
+
+if has_max:
+```
+if (max_value >= 0) {
+    if (top_level) {
+        out << "\"-\" [1-9] ";
+        more_digits(0, less_decimals);
+        out << " | ";
+    }
+    build_min_max_int(0, max_value, out, decimals_left, true);
+} else {
+    out << "\"-\" (";
+    build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, false);
+    out << ")";
+}
+```
+Potential bug: if max_value=0 and top_level: outputs negative numbers? For max=0, allowed negative and zero. `out << "\"-\" [1-9] "; more_digits(0, less_decimals); out << " | "; build_min_max_int(0,0,...)` This matches negative nonzero and zero. OK. But if max_value=0, negative zero? no.
+
+Potential bug: if max_value >=0 and top_level, negative part should include `-0`? JSON integer doesn't allow -0? maybe not. OK.
+
+But there may be introduced bug: `build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);` should be false? In original maybe top_level=false? Let's check. For has_max only, top-level should allow negative numbers and nonnegative up to max. It calls build_min_max_int(0,max_value, out, decimals_left, /* top_level= */ true) to generate nonnegative top-level (no leading zeros). That seems right.
+
+SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"; In original? Maybe `static const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";` But rule content begins with `|`? In grammar `space ::= | " " | "\n"{1,2} [ \t]{0,20}`? GBNF allows empty alternative? Maybe yes? Original likely `static const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";` OK.
+
+PRIMITIVE_RULES:
+```
+{"boolean", {"(\"true\" | \"false\")", {}}},
+{"decimal-part", {"[0-9]{1,16}", {}}},
+{"integral-part", {"[0] | [1-9] [0-9]{0,15}", {}}},
+{"number", {"(\"-\"? integral-part) (\".\" decimal-part)? ([eE] [-+]? integral-part)?", {"integral-part", "decimal-part"}}},
+{"integer", {"(\"-\"? integral-part)", {"integral-part"}}},
+{"value", {"object | array | string | number | boolean | null", {"object", "array", "string", "number", "boolean", "null

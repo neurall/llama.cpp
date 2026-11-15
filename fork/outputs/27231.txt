@@ -1,0 +1,4 @@
+run 27231 | ns_fcls | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.81 t/s | prompt 3.1 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 200+200 W | 2026-11-13 05:02:23
+
+The user wants a science-fiction short story
+---

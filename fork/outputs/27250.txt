@@ -1,0 +1,4 @@
+run 27250 | ns_gate1 | scific | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 15.24 t/s | prompt 2.2 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 200+200 W | 2026-11-13 06:13:33
+
+The user wants a science-fiction short
+---

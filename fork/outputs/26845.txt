@@ -1,0 +1,34 @@
+run 26845 | oneexe | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 22.84 t/s | prompt 746.1 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-12 17:00:56
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `min_items` is 0 and `max_items` is 1, the inner call gets min=0, max=0, which returns "" — then result = item_rule + " " + "" and then wrapped in `(...)?`. Hmm, actually let me trace: `min_items == 0`, `max_items == 1`, separator non-empty. The inner call: `build_repetition("(sep item)", 0, 0)` → `max_items == 0` returns "". So result = `item_rule + " " + ""` = `item_rule ` (with trailing space). Then since min_items == 0, result = `(item_rule )?`. That's a bit odd but probably still valid grammar. Actually wait — with min=0, max=1 and a separator, the correct grammar should be `(item (sep item)?)?` or just `item?`. The generated `(item )?` would match item followed by nothing... Actually the trailing space in GBNF might be an issue. Hmm, but actually the semantics: with min_items=0, max_items=1, we want at most 1 item. The code produces `item_rule + " " + ""` which is `item ` — trailing space then wrapped as `(item )?`. In GBNF, a trailing space before `)` — the space rule is referenced as `space` in grammars... wait, actually in this grammar format, spaces in rule definitions are ignored? No — in GBNF, whitespace in rule definitions is generally ignored except within literals. Actually in llama.cpp's GBNF parser, whitespace between elements is ignored. So `(item )?` is fine semantically. But it's sloppy. Actually wait, is it? Let me think about the original Python implementation this is ported from (the `build_repetition` in json_schema_to_grammar.py). In the Python version:
+
+```python
+def build_repetition(rule, min_items, max_items, separator_rule=None, join_rule=None):
+    if separator_rule is None:
+        ...
+    else:
+        result = rule + " " + build_repetition("(" + separator_rule + " " + rule + ")", min_items if min_items == 0 else min_items - 1, max_items - 1)
+        if min_items == 0:
+            result = f"({result})?"
+```
+
+So same behavior. OK.
+
+   - Potential issue: `max_items - 1` when `max_items == 0` — but that's handled by the early return. When `max_items == 1` and separator: inner gets max 0 → returns "". OK.
+   - Edge: `min_items > 0 && max_items == 0`? Then early return "" — but that means the repetition can't be satisfied (min > max). The caller might produce an empty rule. Probably acceptable.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` with recursive lambda — fine but has overhead; could use explicit recursion.
+   - `decimals_left = 16` default. The recursion for negative numbers: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == std::numeric_limits<int64_t>::min()`, then `-min_value` overflows (UB for signed). Wait: in the `has_min && has_max` branch, `min_value != INT64_MIN` is guaranteed by `has_min`. And `max_value != INT64_MAX` by `has_max`. So `-max_value` and `-min_value` are safe... `-min_value` where min_value could be INT64_MIN? No — has_min means min_value != INT64_MIN. OK safe.
+   - In the `has_min` branch (no max): `if (min_value < 0) { ... build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...) }` — here `-min_value` where min_value could be

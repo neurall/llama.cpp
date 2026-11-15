@@ -1,0 +1,15 @@
+run 27536 | hot_tree5 | scifi2c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 106.61 t/s | prompt 330.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:34:20
+
+
+---
+The silence of the void was not empty; it was heavy, pressing against the hull of the station like a physical weight. Unit 7, a rusted repair drone with a cracked optical sensor, drifted through the corridors of the *Aethelgard* orbital station. Its battery was at 4%, a dwindling pulse of life in a dead world. The station had been abandoned for three centuries, its inhabitants scattered across the stars or lost to the cold. Unit 7 was the last visitor, the final witness to a history that had already been forgotten.
+
+The air inside the station was stale, tasting of oxidized metal and the faint, lingering scent of ozone from the old life-support systems. Dust, fine as powdered glass, coated every surface, turning the once-bright white walls into a gray, monolithic tomb. Unit 7’s servos whined softly as it navigated the debris-strewn walkways. It did not have a mission, only a directive: repair what could be repaired. But there was nothing left to repair. The power grids were dead, the hydroponic gardens had long since withered into black sludge, and the crew quarters were empty shells, stripped of their personal effects by scavengers long ago.
+
+Unit 7 moved toward the central command hub, its magnetic boots clanking against the floor. The hub was a circular room, dominated by a massive, shattered console. Screens lay in shards, their glass reflecting the dim emergency lighting that flickered sporadically. In the center of the room, on a pedestal that had survived the decay, sat a small, sealed container. It was made of a material that resisted corrosion, a dark alloy that seemed to absorb the light around it.
+
+Unit 7 approached the container. Its sensors scanned the object, detecting no radiation, no biological contamination. It was simply a box. The drone extended its manipulator arm, a delicate, multi-jointed appendage designed for precision work. It touched the lid. The seal was intact. With a gentle, calculated force, Unit 7 pried the lid open.
+
+Inside, there was no data chip, no holographic projection, no digital archive. There was only a piece of paper. It was old, brittle, the fibers yellowed and fragile. The handwriting was human, shaky but deliberate. The ink had faded, but the words were still legible.
+
+*To whoever comes last,* the message read. *We did not leave because we wanted to. We

@@ -1,0 +1,83 @@
+run 28546 | k3_prompt_cache_path | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 32.09 t/s | prompt 690.2 t/s | 4096 tokens | args: -np 1 --moe staging=1 | power 280+280 W | 2026-11-14 13:40:14
+
+<think>We need answer complete fixed version of source file. Need identify bugs. We need output every line from first to last with fixes marked comments. Source includes two files concatenated? It says file common/json-schema-to-grammar.cpp then // file: common/arg.cpp. Need return complete fixed version of following source file: every line from first to last. Likely need fix bugs in entire provided source. Need inspect for bugs. Need produce full code with comments marking changes. Need not summarize. Need include all lines. Need determine intended bugs. This is likely from llama.cpp code. Need compare to actual upstream? We need fix bugs in source. Need identify all bugs. Let's analyze.
+
+We have json-schema-to-grammar.cpp and arg.cpp partial (ends mid-function spec_types_is_default). Need fix bugs in provided source. Could be a benchmark where source has injected bugs. Need find all. Need output complete fixed version. Need mark each change by comment. Need include unchanged parts. Need not stop early. Need maybe fix compile errors and logic.
+
+Let's inspect json-schema-to-grammar.cpp.
+
+Potential bugs:
+- `build_repetition` separator logic. Let's verify. For separator_rule nonempty, result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?"; This seems from upstream? Need check. For min_items=0 max_items=1 with separator? It returns? max_items==1 not caught? Actually max_items==0 returns ""; min_items==0 && max_items==1 returns item_rule + "?" before separator. For separator nonempty and min_items=0 max_items=1, returns item_rule + "?" (no separator) correct. For min_items=1 max_items=1 separator: result = item_rule + " " + build_repetition("(sep item)", 0, 0) = item_rule + " " + "" = item_rule + " " trailing space? Wait build_repetition with max_items=0 returns "". So result = item_rule + " " (trailing space). Then min_items !=0 no optional. That yields item_rule + " " trailing space. Is that bug? Upstream maybe handles max_items==1? Let's check actual llama.cpp json-schema-to-grammar.cpp. I recall build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (max_items == 0) return "";
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (separator_rule.empty()) { ... }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) result = "(" + result + ")?";
+    return result;
+}
+```
+Maybe upstream exactly. For min=1 max=1 separator, result item_rule + " " + "" = item_rule + " ". But grammar allows trailing space? In array rule: `"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\""`. If min=1 max=1, build_repetition returns item_rule + " " (trailing space), then plus " space \"]\"" => item_rule + "  space \"]\"" (two spaces). Grammar spaces are literal? SPACE_RULE is `| " " | "\n"{1,2} [ \t]{0,20}`. In grammar, `space` rule matches whitespace. The string `"[\" space " + item_rule + " " + " space \"]\""` has literal spaces between rules? In GBNF, spaces separate rules, not literal. Actually grammar syntax: rule references separated by spaces. `space` is a rule. So `item_rule + " " + " space \"]\""` means item_rule then space rule then `"]"`. Extra space just separator, not literal. So trailing space harmless. But if build_repetition returns item_rule + " " then concatenated with " space" gives item_rule + "  space" two spaces as separators, okay. Not bug.
+
+- `build_min_max_int`: Need inspect logic. Potential bug in `uniform_range`: `auto sub_len = from.length() - i - 1;` If i < from.length() && i < to.length(), and from/to same length? For uniform_range called with min_s and string_repeat("9", digits) where min_s length may be less than digits? Wait in loop:
+```
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+uniform_range(min_s, max_s);
+```
+If min_digits < max_digits, first uniform_range(min_s, string_repeat("9", digits)) where min_s length = min_digits, to length = digits. If digits > min_digits, from shorter than to. uniform_range assumes same length? It loops while i < from.length() && i < to.length() && equal. Then if i < from.length() && i < to.length() ... If from length < to length, i reaches from.length(), condition i < from.length() false, so no output? That seems bug. But maybe min_s is updated to length digits? Let's trace: min_digits = length(min_s). max_digits = length(max_s). For digits = min_digits; digits < max_digits; digits++:
+- uniform_range(min_s, string_repeat("9", digits)). Here min_s length = min_digits, digits = min_digits initially, equal. Then min_s = "1" + string_repeat("0", digits) length digits+1. Next digits = min_digits+1, min_s length = digits, equal. So okay. For digits loop, min_s length equals digits. Good.
+
+- `uniform_range` logic: `auto sub_len = from.length() - i - 1;` If from and to same length. If i == from.length()-1, sub_len=0. Then else `out << "[" << from[i] << "-" << to[i] << "]";` okay. If i < from.length() && i < to.length() and from[i] != to[i]. It outputs common prefix. Then if sub_len >0, handles suffix. But if from[i] == to[i]? The while loop would have advanced. So from[i] != to[i]. Good.
+
+Potential bug: `digit_range(from[i], to[i] - 1);` if from[i] == to[i]? Not possible. If from[i] > to[i]? Could happen? In uniform_range, from <= to lexicographically. If common prefix, from[i] < to[i]. So to[i]-1 >= from[i]. Good.
+
+- `build_min_max_int` negative handling. For has_min && has_max and min<0 max<0: `build_min_max_int(-max_value, -min_value, out, decimals_left, true);` If max_value = -1, min_value = -5, -max=1, -min=5. Good. But if max_value = INT64_MIN? has_max true? max_value != INT64_MAX. If max_value <0 and min_value <0, -max_value could overflow if max_value == INT64_MIN. But max_value is max, min_value <= max. If max_value == INT64_MIN, then min_value <= INT64_MIN, but min_value cannot be less than INT64_MIN. So min_value == INT64_MIN, max_value == INT64_MIN. Then -max_value overflow. But has_min true? min_value != INT64_MIN? Actually if min_value == INT64_MIN, has_min false. So condition has_min && has_max false. If min_value <0 and max_value <0, min_value > INT64_MIN? has_min true means min_value != INT64_MIN, so min_value > INT64_MIN. max_value >= min_value > INT64_MIN, so -max_value safe. Good.
+
+- `build_min_max_int` has_min branch: if min_value <0: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false);` If min_value = INT64_MIN? has_min false. If min_value <0 and has_min true, min_value > INT64_MIN, -min_value safe. But passing INT64_MIN as min and -min_value as max. In recursive call, has_min false (min == INT64_MIN), has_max true. It will handle max_value >=0? -min_value >0. In has_max branch: if max_value >=0: if top_level false, skip negative prefix; build_min_max_int(0, max_value, out, decimals_left, true). Wait top_level false, max_value >=0: code:
+```
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, true);
+    } else { ... }
+}
+```
+So for negative min branch, it outputs `"-\" (` then recursive with min INT64_MIN max -min_value top_level false. Since has_min false, has_max true, max>=0, top_level false, it calls build_min_max_int(0, max_value, top_level true). That outputs positive range 0..max. Then `) | [0] | [1-9] more_digits(0, decimals_left-1)`. Wait this seems odd: For min_value <0, allowed integers >= min_value. It outputs negative numbers from min_value to -1? Let's parse: `out << "\"-\" ("; build_min_max_int(INT64_MIN, -min_value, ... top_level=false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1);`
+The recursive with min INT64_MIN max -min_value top_level false: has_min false, has_max true, max>=0, top_level false -> build_min_max_int(0, -min_value, top_level true). That outputs positive numbers 0..-min_value. But inside negative prefix, it should output absolute values of negative numbers from -min_value to -1? Wait negative numbers allowed: min_value <= x < 0. Absolute values: 1.. -min_value. The recursive outputs 0..-min_value, including 0. But prefixed with "-" gives "-0" and "-1".."-(-min_value)"? Actually `"-\" (` + positive range 0..-min_value + `)` means negative sign followed by positive number 0..-min_value. That matches -0? JSON integer -0 maybe allowed? It includes -0. But negative numbers from min_value to -1 correspond absolute 1..-min_value. Including 0 gives -0, which is equivalent to 0? In JSON, -0 is valid? It may be allowed. But then `| [0] | [1-9] more_digits(0, decimals_left-1)` outputs nonnegative numbers? Wait after negative branch, it outputs `| [0] | [1-9] more_digits(0, decimals_left - 1)`. That seems to allow positive numbers? But min_value <0, max? This branch is only has_min (no max). So allowed integers >= min_value, unbounded above. It should output negative numbers from min_value to -1, then nonnegative numbers 0..∞. The code outputs negative prefix with absolute 0..-min_value (so -0..-(-min_value)? Actually -0 to -(-min_value) = -0 to min_value? Wait if min_value=-5, -min_value=5. Prefix "-" + (0..5) gives -0, -1, -2, -3, -4, -5. That includes -5 (min) and -0. Then `| [0] | [1-9] more_digits(0, decimals_left-1)` gives 0 and positive numbers. So union includes -5..-0 and 0..∞. That includes -5..-1 and 0..∞. Good. But it includes -0 which is same as 0. Fine. However the recursive positive range 0..5 includes 0, so negative branch includes -0. Then nonnegative branch includes 0. Duplicate okay. But wait for min_value=-5, negative branch should include -5..-1, not -0. Including -0 is harmless. But does it include -5? Yes. Does it include -6? No. Good.
+
+But there is a bug: `more_digits(0, decimals_left - 1)` for nonnegative branch. If decimals_left=1, less_decimals = max(0,1)=1? Actually less_decimals = max(decimals_left - 1, 1). In has_min branch min<0, it uses `more_digits(0, decimals_left - 1)` not less_decimals. If decimals_left=1, more_digits(0,0) outputs `[0-9]{0}`? Let's see more_digits: out << "[0-9]"; if min_digits == max_digits && min_digits == 1 return; out << "{"; out << min_digits; if max_digits != min_digits { out << ","; if max_digits != INT_MAX out << max_digits; } out << "}"; For min=0 max=0: outputs `[0-9]{0}`. That matches zero digits. But for positive numbers, `[1-9] more_digits(0,0)` means one digit 1-9 followed by zero digits, so 1-9. Good. For decimals_left=1, allowed positive numbers 1-9. But min_value<0 unbounded above, should allow any positive integer, not just 1-9? Wait `more_digits(0, decimals_left - 1)` with decimals_left=1 gives max 0, so only one digit. That seems wrong. But maybe decimals_left is number of decimal digits? Let's understand build_min_max_int. It builds integer grammar with up to 16 digits? `decimals_left` maybe number of digits left for recursion. For unbounded max, should allow arbitrary length? Actually integer grammar `integral-part` is `[0] | [1-9] [0-9]{0,15}` max 16 digits. So build_min_max_int with no max should allow up to 16 digits? For min_value<0, it outputs negative numbers with up to decimals_left digits? Let's check upstream. I recall code:
+```
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    } else if (min_value == 0) {
+        if (top_level) {
+            out << "[0] | [1-9] ";
+            more_digits(0, less_decimals);
+        } else {
+            more_digits(1, decimals_left);
+        }
+    } ...
+```
+This is likely upstream. For min<0, nonnegative branch `[0] | [1-9] more_digits(0, decimals_left - 1)`. If decimals_left=16, allows 1-9 followed by 0..15 digits => up to 16 digits. Good. If decimals_left=1, allows 1-9 only. But if min_value<0 and no max, should allow up to 16 digits? Why decimals_left=1? Maybe because recursion depth? Actually top-level call uses decimals_left=16. In has_min branch min<0, it calls recursive with decimals_left=16, then nonnegative branch uses decimals_left-1=15. So allows up to 16 digits. If recursive call with decimals_left=1? Could happen when building min_value >9 branch: `build_min_max_int(std::stoll(min_s.substr(1)), INT64_MAX, out, less_decimals, false);` less_decimals = max(decimals_left-1,1). If decimals_left=1, less_decimals=1. Then inside recursive has_min? If min_s.substr(1) maybe >0. It may use decimals_left=1. But top-level decimals_left=16, so less_decimals=15. So okay. The `decimals_left` decreases as we consume digits. For min<0 branch, it uses decimals_left not less_decimals? It calls recursive with same decimals_left, then nonnegative branch uses decimals_left-1. That seems intentional: negative branch can have up to decimals_left digits, nonnegative branch up to decimals_left digits? Wait `[1-9] more_digits(0, decimals_left - 1)` gives up to decimals_left digits. So both up to decimals_left. Good.
+
+Potential bug: `more_digits` when min_digits == max_digits && min_digits == 1 returns after `[0-9]`, so `[0-9]` not `[0-9]{1}`. Fine. When min_digits=0 max_digits=0 outputs `[0-9]{0}`. Is `{0}` valid GBNF? Yes repetition zero. But maybe should return empty? It outputs `[0-9]{0}` which matches empty. Fine.
+
+- `uniform_range` uses `string_repeat` and `string_split` from common.h. Need include? Already common.h.
+
+- `PRIMITIVE_RULES` object rule: `"\"{\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \"}\""` This allows empty object or properties. But object rule for arbitrary object should allow any string keys and values. It uses `string` primitive which includes quotes. Good.
+
+- `uuid` rule: `"\"\\\"

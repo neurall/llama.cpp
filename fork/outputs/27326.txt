@@ -1,0 +1,25 @@
+run 27326 | hot_tree | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 221.27 t/s | prompt 752.2 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:14:11
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, the archivist of the generation ship Eternity, had watched over the slumbering souls for the past century, cataloging memories, histories, and the dreams of those who slumbered. Each cryosleep chamber was a time capsule, a vessel of frozen consciousness waiting to be awakened.
+
+The mission was clear: settle the planet below and begin a new chapter of human civilization. We had been sent as pioneers, a vanguard to chart the unknown, to plant the seeds of humanity on a foreign world. Yet, as the Eternity drifted through the blackness, a strange anomaly began to manifest.
+
+It started with a whisper, a fleeting sensation of something amiss. The starship's internal sensors, designed to monitor the health and status of the passengers, picked up a subtle shift in the air. A pulse, a heartbeat, a rhythm that was not our own.
+
+I awoke with a start, the cold chamber around me suddenly oppressive. The sleep chamber lights flickered to life, casting a soft glow across the faces of my fellow passengers. Their features were etched with confusion and concern, eyes wide with the realization that something unprecedented had occurred.
+
+"What is it?" I asked, my voice a thread of sound in the silence.
+
+"The sensors... they detected something," one of the crew members, a young engineer named Elara, replied, her fingers dancing across the control panel. "A pulse, like a heartbeat, but not our own."
+
+I rose, my feet touching the cold metal floor, the air thick with tension. "Could it be a malfunction?" I suggested, though my heart hammered against my ribs, a premonition of the gravity of the situation.
+
+"Unlikely," Elara replied, her brow furrowed in concentration. "The probability matrix suggests an external influence."
+
+The ship's AI, Aethera, chimed in, her voice a soothing balm amidst the rising panic. "Analysis indicates a high likelihood of extraterrestrial origin, though the nature of the signal remains unidentified."
+
+The crew exchanged worried glances, their minds racing with possibilities. The Eternity was a marvel of technology, a testament to human ingenuity, but even such a vessel could not explain the pulse we had detected.
+
+As we gathered in the central

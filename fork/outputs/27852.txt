@@ -1,0 +1,51 @@
+run 27852 | tree_emb_key | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 44.55 t/s | prompt 41.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=emb,state=/tmp/runstate/q36ph3/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/tree | power 280+280 W | 2026-11-13 18:25:30
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 180, dx = 2, dy = -2, bx = 100, by = 10;
+let bricks = [];
+for(let i=0; i<10; i++) for(let j=0; j<5; j++) bricks.push({x: 10+i*20, y: 10+j*20, alive: true});
+
+function loop() {
+    ctx.fillStyle = '#000'; ctx.fillRect(0,0,200,200);
+    ctx.fillStyle = '#fff'; ctx.fillRect(bx-10, by-10, 20, 20); // Paddle
+    ctx.beginPath(); ctx.arc(x, y, 5); ctx.fill(); // Ball
+    
+    // Collision with bricks
+    bricks.forEach(b => {
+        if(b.alive && x > b.x && x < b.x+20 && y > b.y && y < b.y+20) {
+            b.alive = false; dy = -dy;
+        }
+    });
+
+    // Wall collision
+    if(x < 5 || x > 195) dx = -dx;
+    if(y < 5 || y > 195) dy = -dy;
+    
+    // Paddle collision
+    if(y > 180 && x > bx && x < bx+20) dy = -dy;
+
+    x += dx; y += dy;
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
+```
+
+### How to play:
+1.  Save the code as `breakout.html`.
+2.  Open it in any browser.
+3.  The paddle (white square) moves automatically based on the ball's horizontal position.
+4.  Hit the bricks to destroy them. If the ball hits the bottom, it bounces

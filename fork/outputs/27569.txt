@@ -1,0 +1,23 @@
+run 27569 | hot_tree7 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 105.23 t/s | prompt 493.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 13:00:37
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, crushing weight of centuries pressing against his ribs. The air in the habitation module smelled of ozone and stale recycled moisture, a scent that had lingered in his dreams for three hundred years. He blinked, his vision swimming through the haze of frost, until the emergency lights flickered on, casting a pale, sickly glow over the rows of sleeping pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The ship’s AI, dormant for decades, hummed to life. Its voice was smooth, devoid of the grit that Elias felt in his bones. "We have arrived. Destination: Kepler-4b. Orbital insertion complete."
+
+Elias stumbled toward the observation deck, his legs trembling like new-born calves. He was the Archivist, the keeper of the ship’s memory, the one who had cataloged the history of Earth before it was left behind. He expected to see a barren rock, a world waiting for the first touch of human boots. He expected silence.
+
+Instead, he saw light.
+
+Through the reinforced glass, the planet below was a tapestry of luminescence. Cities sprawled across the continents like glowing veins, pulsing with energy. The night side of the planet was brighter than the day side of Earth had ever been. Elias pressed his face against the cold pane, his breath fogging the glass. He squinted, trying to resolve the shapes. Towers, bridges, orbital elevators. It was not a wilderness. It was a civilization.
+
+"Impossible," he whispered. The math was clear. They had left first. The generation ship *Aethelgard* was the pioneer. The colony ship *Progeny* had launched a century later, carrying the second wave. They should have arrived decades after him. The planet should be empty, or at most, a few scattered outposts.
+
+"Query," Elias commanded, his heart hammering against his chest. "Identify the source of the orbital traffic. Who is in command?"
+
+The AI paused, processing the data streams. "Analysis indicates... indigenous population. Genetic markers match Human baseline. Cultural signatures indicate... continuity."
+
+"Continuity?" Elias frowned. "From whom?"
+
+"From the *Progeny*," the AI replied. "However, telemetry suggests the *Pro

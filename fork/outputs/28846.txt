@@ -1,0 +1,8 @@
+run 28846 | dsf_pick | pf60k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 33.8 t/s | prompt 1573.9 t/s | 51 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini -ctk q8_0 -ctv q8_0 | power 200+200 W | 2026-11-15 04:13:17
+
+ params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    return ctx_arg;
+}

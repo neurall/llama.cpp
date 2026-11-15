@@ -1,0 +1,10 @@
+run 28101 | ns_staged_placement | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 43.92 t/s | prompt 2086.4 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=1,staging=0,moe-split=home | power 280+280 W | 2026-11-13 23:30:38
+
+    return params.speculative.types.get() == (1u << COMMON_SPEC_TYPE_NONE);
+}
+
+static bool is_download_enabled(const common_params & params) {
+    return !params.no_download && spec_types_is_default(params);
+}
+
+static bool is_hf_repo(const std::string & repo) {

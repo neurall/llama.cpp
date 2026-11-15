@@ -1,0 +1,58 @@
+run 27414 | hot_tree3 | pyasyncc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 220.23 t/s | prompt 338.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 11:08:23
+
+
+---
+Certainly! Below is a Python script that uses `asyncio` and `aiohttp` to download URLs concurrently, implements retries with increasing delays for failed downloads, and saves the downloaded pages to disk. This script assumes you have `aiohttp` installed (``pip install aiohttp``).
+
+```python
+import asyncio
+import aiohttp
+import random
+
+# Define a function to handle retries
+async def download_page(session, url, retries=3):
+    delay = 2 ** retries  # Start with a 2-second delay, doubling each time
+    while retries > 0:
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    # Successful download, save the page
+                    with open(f"{url}.html", "wb") as f:
+                        f.write(await response.read())
+                    return True
+                else:
+                    print(f"Failed to download {url} with status {response.status}")
+                    retries -= 1
+                    delay *= 2
+                    continue
+        except Exception as e:
+            print(f"Error downloading {url}: {e}")
+            retries -= 1
+            delay *= 2
+            continue
+    return False  # If we reach here, all retries failed
+
+# Define the main async function
+async def main():
+    urls = ["https://example.com/page{i}".format(i=i) for i in range(1, 11)]  # Example URLs
+    session = aiohttp.ClientSession()
+
+    # Define the coroutine to download pages
+    async def download_pages(session, urls):
+        tasks = []
+        for url in urls:
+            tasks.append(download_page(session, url))
+        await asyncio.gather(*tasks)
+
+    # Start the download process
+    await download_pages(session, urls)
+
+# Run the main function
+asyncio.run(main())
+```
+
+### Key Points:
+
+- **`asyncio`**: For asynchronous programming with coroutines.
+- **`aiohttp`**: For handling HTTP requests asynchronously.
+- **Retry Logic**: The `download_page` function implements retries with increasing delays

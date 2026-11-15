@@ -1,0 +1,40 @@
+run 28510 | split_stream_calls_only | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.7 t/s | prompt 1664.8 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 11:24:52
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1, "")` 
+  - For the inner call with min=0, max=max-1, no separator: if max-1 == 0, returns ""; if max-1 == 1, returns `(...)?`; if max-1 > 1, returns `(...){0,max-1}`.
+  - Then wraps in `(...)?` if min_items == 0.
+  - This seems correct.
+
+- When `separator_rule` is non-empty and `min_items > 0`, the inner call gets `min_items - 1`. If `min_items == 1`, inner gets `min_items == 0`, which is correct (first item + 0 more separator-item pairs).
+
+- Edge case: `max_items == 0` returns `""` - but what if `min_items > 0` and `max_items == 0`? That's an invalid constraint (min > max), but it silently returns empty string. Could be a bug or intentional.
+
+### build_min_max_int function
+- Complex function with many branches. Let me check some edge cases:
+  - When `min_value == max_value`, both `has_min` and `has_max` are true (unless they're at the limits). The code converts to strings and does `uniform_range(min_s, max_s)` which should handle equal values.
+  - The `decimals_left` parameter limits digit depth to prevent exponential blowup. Default is 16.
+  - The `top_level` parameter controls whether leading zeros are allowed.
+
+- Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is too large for int64_t. But since `min_s` comes from `std::to_string(min_value)` where `min_value` is int64_t, the substring after the first digit should still fit.
+
+- The `uniform_range` lambda captures `out` by reference and uses `string_repeat`. Looks correct.
+
+- When `has_min` is true and `min_value < 0`, it recursively calls with `std::numeric_limits<int64_t>::min()` as the min. This means the negative branch handles all negative numbers down to INT64_MIN.
+
+### _add_rule
+- The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. This could theoretically loop forever if there are many conflicting rules, but in practice it's fine.
+
+### _visit_pattern / _pattern_to_rule
+- The pattern parser is a hand-rolled regex-to-GBNF converter. Several concerns:
+  - `paren_depth` is checked against `MAX_PATTERN_DEPTH` (100) but the check happens after incrementing, so depth 101 would throw. Actually, `paren_depth++` then `if (paren_depth > MAX_PATTERN_DEPTH)` - so depth 101 throws. That's fine.
+  - The `sub_rule_ids` map is used for `{n,m}` repetition of non-literal sub-expressions. The key is the sub-expression string, and the value is the rule ID. This could have collisions if two different sub-expressions produce the same string, but that's unlikely.
+  - The `join_seq` function merges consecutive literals. The `to_rule` function wraps literals in quotes. But when joining, literals are concatenated as raw strings and then wrapped in quotes at the end. This means special characters in literals need to be properly escaped. The code handles `"` by adding `\\\"` but what about other characters?
+  - Actually, looking more carefully, the literal accumulation handles backslash escapes and quotes. The `to_rule` function wraps in quotes. But the literal content might contain characters that need escaping in GBNF (like `\n`, `\r`). The code handles `\\\"` for quotes but I don't see explicit handling of `\n` or `\r` in the literal accumulation. Wait, looking at the escape handling: `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` includes `^`, `$`, `.`, `[`, `]`, `(`, `)`, `|`,

@@ -1,0 +1,23 @@
+run 27813 | tree_emb_key | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.64 t/s | prompt 143.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=emb,state=/tmp/runstate/q36ph3/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/tree | power 280+280 W | 2026-11-13 18:02:25
+
+
+---
+The thawing of the cryo-gel felt less like a waking and more like a drowning. The cold, thick syrup that had suspended my consciousness for three centuries slowly receded, leaving behind a hollow ache in the marrow of my bones. I gasped, my lungs expanding against the pressure of the pod’s interior, tasting the metallic tang of recycled air and the faint, sweet scent of preserved algae. Beside me, Commander Vance coughed, his eyes blinking open to the dim amber light of the emergency lamps. We were the first wave, the seed. We had been sent to plant the garden.
+
+But the garden was already blooming.
+
+I pulled myself from the pod, my limbs trembling like a newborn deer. The silence of the ship was broken not by the hum of engines, but by the roar of voices. Through the reinforced viewport, the planet below—Proxima Centauri b, our promised home—glowed with a brilliance that defied our calculations. It was night, yet the surface was a tapestry of electric gold. Cities sprawled across the continents, connected by glowing veins of transit and light. There were no ruins. There were no struggling settlements. There was only civilization, mature and dense.
+
+"Impossible," Vance whispered, his voice cracking. He pressed his face against the glass, squinting. "We are the pioneers. We are the first."
+
+I moved to the console, my fingers numb but instinctively finding the keys. The archivist’s duty was to record truth, even when truth shattered reality. I pulled up the navigation logs. The ship’s trajectory was correct. The arrival time was correct. But the telemetry data from the planet’s surface was screaming a different story.
+
+"Look at the spectral analysis," I said, pointing to the screen. "The atmospheric composition matches our terraforming projections, but the industrial output is... exponential. It’s not just settlement. It’s industry. It’s culture."
+
+Vance turned to me, his face pale. "Who is down there?"
+
+I ran the historical database. The ship’s log contained a single entry from the launch sequence, a message from the Earth Council that we had ignored in our fervor to leave. *The Second Wave. Departure scheduled one century after the First. Faster propulsion. Higher population density.*
+
+We had left. They had followed. But the Second Wave had faster engines. They had left a century later, but they arrived a century earlier.
+
+"They beat us," I

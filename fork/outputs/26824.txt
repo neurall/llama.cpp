@@ -1,0 +1,69 @@
+run 26824 | oneexe | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.52 t/s | prompt 61.0 t/s | 965 tokens | args: -np 1 -lm pin | power 220+280 W | 2026-11-12 16:40:50
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris in a single HTML file. "Smallest" — but I don't want to ship something bare. I'll aim for genuinely compact code while still feeling alive: next piece, score, level, ghost piece, keyboard controls. Keep it small but playable and polished.
+
+Let me write it tight but readable-ish. Single file, no dependencies.
+
+Let me craft it:
+
+- Canvas-based, 10x20 grid.
+- Compact code with a piece-shape table using rotation via matrix rotation.
+- Hard drop, soft drop, rotate, move, hold maybe.
+- Score, lines, level.
+- Ghost piece.
+- Small next queue.
+- Subtle styling: dark background, grid lines, glow.
+
+Let me write compact code.
+
+```html
+<canvas id=c width=250 height=500></canvas>
+```
+
+I'll write it with a tight style. Let me design:
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+:root{--a:#0ff}
+body{margin:0;height:100vh;display:grid;place-items:center;background:#08080c;font:12px/1 monospace;color:#cfd}
+...
+</style>
+```
+
+Let me write the game logic compactly.
+
+```js
+const W=10,H=20,S=25;
+let cv=document.querySelector('canvas'),x=cv.getContext('2d');
+let g=[],p,n,q=[],r=0,px=0,py=0,t=0,lv=1,sc=0,ln=0,over=0;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]].map(a=>a.map(b=>b.map(v=>v)));
+```
+
+Rotation: rotate matrix clockwise.
+
+Colors per piece index.
+
+Let me write it out fully:
+
+```js
+const S=24,W=10,H=20,
+P='IOTSZXJ'.split('').map((k,i)=>({c:i+1,m:({I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],O:[[1,1],[1,1]],T:[[0,1,0],[1,1,1],[0,0,0]],S:[[0,1,1],[1,1,0],[0,0,0]],Z:[[1,1,0],[0,1,1],[0,0,0]],J:[[1,0,0],[1,1,1],[0,0,0]],L:[[0,0,1],[1,1,1],[0,0,0]]})[k]})),
+C=['','#3ff','#ee3','#b6f','#5e5','#e55','#57f','#ea4'];
+```
+
+Board as Int array of 200.
+
+Functions: `hit(m,x,y)` collision, `merge()`, `rot()`, `tick()`, `draw()`.
+
+I'll add: 7-bag randomizer, ghost, hold, next queue of 3, line clear animation flash, level speed, score, game over overlay, restart on space/enter, pause.
+
+Keep it small-ish but feature rich. Let's write.
+
+```html
+<!doctype html><html><head><meta charset=utf-8><title>TETRIS</meta>
+<style>
+*{box-sizing:border-box;margin:0}
+body{height:100vh;display:grid;place-items:center;background:radial-gradient(120% 100% at 50% 0%,#161828,#07070c 60%);font:600 12px/1.4 ui-monospace,Menlo,monospace;color:#9fb3c8;-webkit-user-select:none;user-select:none}
+
+---

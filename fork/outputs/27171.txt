@@ -1,0 +1,7 @@
+run 27171 | ns_xt_start | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 19.48 t/s | prompt 64.2 t/s | 64 tokens | args: -np 1 --moe staging=0,verify=2,poison=3 | power 200+200 W | 2026-11-13 03:17:16
+
+    return params.spec_type == LLAMA_VOCAB_TYPE_GPT2 && params.spec_type == LLAMA_VOCAB_TYPE_BPE;
+}
+
+static bool spec_types_is_default(const common_params_speculative & params) {
+    return params.spec_type == LLAMA_VOCAB_TYPE_GPT2 && params.spec_type

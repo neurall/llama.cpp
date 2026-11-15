@@ -1,0 +1,70 @@
+run 27467 | hot_tree4 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 85.03 t/s | prompt 64.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 11:49:01
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Key Features:
+- **Terminal-based**: Uses standard input/output.
+- **Minimal**: ~100 lines of code.
+- **Controls**: Arrow keys to move.
+- **Game Logic**: Snake grows when eating food, dies on collision with walls or itself.
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+using namespace std;
+
+int main() {
+    // Grid dimensions
+    const int WIDTH = 20, HEIGHT = 15;
+    
+    // Snake state
+    vector<pair<int, int>> snake;
+    snake.push_back({WIDTH / 2, HEIGHT / 2}); // Start in the middle
+    
+    // Direction: 0=Up, 1=Right, 2=Down, 3=Left
+    int dir = 1;
+    
+    // Food position
+    pair<int, int> food;
+    auto rand_pos = [&]() {
+        return {rand() % WIDTH, rand() % HEIGHT};
+    };
+    food = rand_pos();
+    
+    // Game loop
+    while (true) {
+        // Clear screen
+        cout << "\033[H"; // Clear screen
+        
+        // Draw grid
+        for (int y = 0; y < HEIGHT; ++y) {
+            for (int x = 0; x < WIDTH; ++x) {
+                if (x == food.first && y == food.second) {
+                    cout << "O"; // Food
+                } else {
+                    bool is_snake = false;
+                    for (auto& s : snake) {
+                        if (s.first == x && s.second == y) {
+                            is_snake = true;
+                            break;
+                        }
+                    }
+                    cout << (is_snake ? "#" : " ");
+                }
+            }
+            cout << "\n";
+        }
+        
+        // Input handling (non-blocking, simple)
+        char input;
+        cin >> input;
+        if (input == 'w') dir = 0;
+        else if (input == 'd

@@ -1,0 +1,55 @@
+run 27531 | hot_tree5 | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.03 t/s | prompt 71.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:31:16
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 150, dx = 2, dy = -2, bx = 100, by = 180;
+let bricks = [];
+for(let r=0; r<5; r++) for(let col=0; col<10; col++) bricks.push({x:col*20, y:r*20, alive:1});
+
+function loop() {
+    ctx.clearRect(0,0,200,200);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(bx, by, 20, 10); // Paddle
+    
+    // Move Ball
+    x += dx; y += dy;
+    if(x < 0 || x > 200) dx = -dx;
+    if(y < 0 || y > 200) dy = -dy;
+    
+    // Paddle Collision
+    if(y > by && x > bx && x < bx+20) dy = -dy;
+    
+    // Brick Collision
+    bricks.forEach(b => {
+        if(b.alive && x > b.x && x < b.x+20 && y > b.y && y < b.y+20) {
+            b.alive = 0; dy = -dy;
+        }
+    });
+    
+    // Draw Bricks
+    ctx.fillStyle = '#f00';
+    bricks.forEach(b => {
+        if(b.alive) ctx.fillRect(b.x, b.y, 20, 10);
+    });
+    
+    // Draw Ball
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(x, y, 5, 5);
+    
+    requestAnimationFrame(loop);
+}
+
+document.addEventListener('keydown', e => {
+    if(e.key === 'ArrowLeft') bx -= 10;
+    if(e.key === 'ArrowRight') bx += 10;
+    bx =

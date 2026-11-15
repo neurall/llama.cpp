@@ -1,0 +1,23 @@
+run 27665 | tree_phase_maps | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 75.79 t/s | prompt 143.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=map,state=/tmp/runstate/q36ph/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/tree | power 280+280 W | 2026-11-13 16:02:40
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, heavy weight of the pod’s lid pressing against his chest. The air in the archive sector smelled of ozone and stale recycled water, a scent that had lingered for three centuries. He blinked, his vision swimming in the gray haze of hypothermia, until the emergency lights flickered on, casting long, jagged shadows across the rows of dormant pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The AI, dormant for decades, hummed to life. "We have arrived. Orbit established. Planet: Terra Nova."
+
+Elias stumbled toward the observation deck, his legs trembling like new-born calves. He expected the darkness of a virgin world, the silence of unbroken nature. Instead, he saw light.
+
+Below, the planet was a tapestry of gold and amber. Cities sprawled across the continents, glowing like embers in a dark hearth. The lights were not random; they formed grids, highways, and orbital rings. It was a civilization. A thriving, breathing civilization.
+
+Elias pressed his face against the cold glass, his breath fogging the pane. He looked for the ship that had preceded them. The *Aethelgard*, the second generation vessel, launched a century after the *Ozymandias*. They were supposed to arrive later, to find a wild land and build anew. But the lights below told a different story.
+
+"Computer," Elias whispered. "Identify the source of the illumination."
+
+"Source: Indigenous population," the AI replied, its voice devoid of emotion. "Population density: high. Technological level: comparable to late 21st-century Earth. Origin: Descendants of the *Aethelgard*."
+
+Elias felt a cold chill that had nothing to do with the cryo-sleep. The *Aethelgard* had left a century after them. They had been the pioneers, the first. But they had been slower. The *Aethelgard* had arrived first.
+
+He turned to the log of the *Ozymandias*. The captain’s final entry, written before the sleep, was clear: "We are the first. We are the founders." But the founder had been beaten to the finish line.
+
+Elias walked to the comms station. He needed to speak

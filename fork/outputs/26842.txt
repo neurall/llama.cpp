@@ -1,0 +1,58 @@
+run 26842 | oneexe | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.45 t/s | prompt 100.4 t/s | 965 tokens | args: -np 1 -lm pin | power 220+280 W | 2026-11-12 16:57:05
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file. I want to make it genuinely playable and well-crafted, not just tiny — but the user asked for "smallest," so I should keep it compact while still feeling alive. Balance: a small single-file Tetris, but crafted — nice visuals, CRT/arcade feel, smooth animation, sound via WebAudio, next-piece preview, hold, ghost piece, score/lines/level, keyboard controls.
+
+"Smallest" — I should keep the code tight but readable. I'll aim for a compact file that's still feature-complete. Let me write it with terse but clear code.
+
+Design: the most characteristic thing about Tetris is the playfield itself, so that should be the opening element rather than a generic header — the board should be front and center immediately, with an arcade-cabinet feel. Use a distinctive display face — something like "Press Start 2P" is cliché but very characteristic... maybe pair a pixel display font with a readable body font. Google Fonts: "Silkscreen" or "Press Start 2P" for display, and "Space Grotesk" or "IBM Plex Sans" for body. Let's do display: "Silkscreen" (pixel) and body: "Space Grotesk". Hmm, but external fonts add size. "Smallest" — maybe use system fonts? But I still want strong typographic contrast. I'll include one Google Font link (small) — acceptable. Actually to keep it truly self-contained and small, I could use a font stack with monospace. But I want a distinctive display face — I'll link Silkscreen (tiny font file) + Space Grotesk. That's two families. Fine.
+
+Palette: dark background, but I want it richer than a single neon accent on near-black — a layered ambient background. Tetromino colors are canonical: cyan, blue, purple, yellow, green, red, orange. So the palette can be built around those — a multi-hued palette. Background: deep navy/graphite with a subtle scanline + grid glow, plus a soft ambient gradient that shifts.
+
+Implementation plan (compact):
+
+HTML structure:
+- Left panel: score/lines/level stats, next queue, hold.
+- Center: canvas board.
+- Right: controls legend.
+- Header bar with title "TETRIS" in pixel font, small.
+
+Canvas-based rendering for the board (smallest code for drawing). Use one canvas for board, small canvases for next/hold.
+
+Game logic compact:
+
+```js
+const W=10,H=20,S=22; // cell size
+```
+
+Pieces as strings or matrices. Compact approach: use the classic "S" spawn with rotation via matrix rotation.
+
+```js
+const P=[[],[0,15],[0,15],[,1,1,1],[1,1,1],[,1,1,1],[1,1,,1],[1,1,1]];
+```
+Hmm, let me use a clean approach:
+
+```js
+const P=' 00 0 000 000 00 00 000'.match(/.{4}/g)
+```
+Simpler: define pieces as arrays of 4x4 or as coordinate offsets. Compact classic:
+
+```js
+const P=[
+[0,0,0,0, 1,1,1,1, 0,0,0,0, 0,0,0,0], // I
+...
+]
+```
+Rotation of a 4x4 matrix is more code. Use 3x3 for all except I which uses 4x4? Standard approach: represent each piece as list of rotation states as strings.
+
+Simplest compact rotation: for a piece stored as a flat array of size n*n, rotate by transposing+reversing.
+
+Let me do: pieces defined as n×n flat arrays (I and O use 4x4, others 3x3). Rotation: 
+
+```js
+const rot=(a,n)=>a[0].map((_,i)=>a.map(r=>r[n-1-i]))
+```
+Using arrays of arrays is clearer.
+
+```js
+const P=[[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,
+---

@@ -1,0 +1,10 @@
+run 27095 | ns_home_part_all | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 18.54 t/s | prompt 144.7 t/s | 64 tokens | args: -np 1 --moe staging=0,verify=2,poison=3 | power 200+200 W | 2026-11-13 01:23:50
+
+    return params.speculative.types == common_speculative_types_default();
+}
+
+static bool spec_types_is_ngram(const common_params & params) {
+    return params.speculative.types == common_speculative_types_ngram();
+}
+
+static bool spec_types_is_ngram_simple(const common_params

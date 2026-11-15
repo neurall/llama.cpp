@@ -1,0 +1,6 @@
+run 28819 | split_ab | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.52 t/s | prompt 1.7 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,jit-cpu=1 | power 200+200 W | 2026-11-15 02:45:37
+
+
+---
+Every evening, Elias climbed the spiral stairs of the lighthouse with a bucket of oil in one hand and a lantern in the other. He had kept the light burning for thirty-two years, long after ships had begun navigating by instruments instead of stars. The village below called him stubborn. Elias preferred the word faithful.
+

@@ -1,0 +1,28 @@
+run 27453 | hot_tree4 | poemc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.05 t/s | prompt 139.7 t/s | 220 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 11:40:20
+
+
+---
+The sun dips low, the sky turns deep,
+A gentle breeze begins to creep.
+The waves roll soft against the sand,
+Whispering secrets to the land.
+You stand beside me, hand in hand,
+Watching the horizon’s shifting band.
+The salt air kisses our skin,
+Cooling the heat of the day’s sin.
+Stars begin to pierce the night,
+Guiding us through the fading light.
+Your eyes reflect the moon’s glow,
+Soft and warm, like a slow flow.
+We listen to the ocean’s song,
+A melody that feels so strong.
+No words are needed, just the touch,
+Of love that feels so much.
+The world fades out, we are alone,
+In this quiet, sacred zone.
+Time slows down, the heart beats true,
+With you, I feel so new.
+The moonlight paints our faces white,
+In this beautiful, endless night.
+We breathe the peace, the calm, the sea,
+And find our love’s eternity.

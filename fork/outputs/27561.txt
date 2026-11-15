@@ -1,0 +1,21 @@
+run 27561 | hot_tree6 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 97.25 t/s | prompt 213.0 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:53:39
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, heavy weight of the gel sloughing off his skin like wet silk. The air in the pod smelled of ozone and stale recycled breath, a scent that had lingered for three centuries. He blinked against the harsh, artificial luminescence of the pod’s interior, his eyes adjusting to the sudden shift from the dark void of sleep to the bright, sterile reality of the waking deck.
+
+Around him, the other pods were hissing open. The crew of the *Aethelgard* stirred, groaning, stretching limbs that had atrophied in the deep freeze. But Elias did not move. He was the archivist, the keeper of the ship’s memory, and his duty was to observe before he participated. He crawled out of his pod, his legs trembling, and walked toward the observation blister. The glass was thick, frosted with condensation, but the view beyond was clear.
+
+Below them, hanging in the black velvet of space, was the planet they had been sent to colonize. It was a world of blue and green, swirling with clouds, but what stopped Elias’s breath was the light. The night side of the planet was not dark. It was a web of golden filaments, a constellation of cities that pulsed with warmth. There were lights where there should be none. There were structures where the terraforming reports predicted only barren rock.
+
+Elias pressed his hand against the glass. The cold of the planet’s surface seemed to radiate through the pane. He turned to the bridge, where Captain Vane stood, his face pale, his eyes wide with confusion.
+
+"Look," Vane whispered, his voice cracking. "They are here."
+
+"Who?" Elias asked, his throat dry.
+
+"The people," Vane said. "They are already here."
+
+Elias walked to the comms station. The silence of the ship was broken by the sudden burst of signal. It was not a distress call, nor a welcome. It was a broadcast, looping, clear and crisp. It was a recording of a city square, filled with people laughing, children playing, music drifting from open windows. The audio quality was perfect, untouched by the degradation of time.
+
+Elias listened to the voice in the broadcast. It was a woman, speaking in the dialect of the original colony,

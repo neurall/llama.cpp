@@ -1,0 +1,55 @@
+run 27413 | hot_tree3 | pyasyncc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 200.11 t/s | prompt 254.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 11:07:50
+
+
+---
+Certainly! Below is a Python script that uses `asyncio` and `aiohttp` to download URLs concurrently, implements retries with increasing delays for failed downloads, and saves the downloaded pages to disk. This script assumes you have `aiohttp` and `asyncio` installed in your Python environment.
+
+```python
+import asyncio
+import aiohttp
+from aiohttp import ClientError
+import time
+
+# Define a function to handle retries
+async def download_page(session, url, retries=3):
+    try:
+        async with session.get(url) as response:
+            if response.status == 200:
+                # If the response is OK, save the page to disk
+                with open(f"{url.split('/')[-1]}", "wb") as file:
+                    file.write(await response.read())
+                print(f"Downloaded: {url}")
+                return True
+            else:
+                print(f"Failed to retrieve {url}. Retrying...")
+                # Retry mechanism: delay increases exponentially
+                start_time = time.time()
+                for i in range(retries):
+                    if time.time() - start_time <= 10 * i:
+                        time.sleep(2 ** i)
+                    else:
+                        raise Exception(f"Max retries exceeded with url {url}")
+                return False
+    except ClientError as e:
+        print(f"Error fetching {url}: {e}")
+        return False
+
+# Define the main async function
+async def main():
+    # Define your list of URLs here
+    urls = ["https://example.com/page1", "https://example.com/page2", "https://example.com/page3"]
+
+    # Create aiohttp client session
+    session = aiohttp.ClientSession()
+
+    # Loop through URLs and download them
+    tasks = [download_page(session, url) for url in urls]
+    await asyncio.gather(*tasks)
+
+# Run the main function
+asyncio.run(main())
+```
+
+### Key Points:
+
+- **`download_page` Function**: This function handles the actual downloading of pages. It uses `async with` for clean resource management. It retries up to three

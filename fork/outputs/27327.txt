@@ -1,0 +1,19 @@
+run 27327 | hot_tree | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 180.14 t/s | prompt 555.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:14:43
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Thalia, the archivist of the generation ship Aetheria, had watched over the slumbering souls for the past century, cataloging memories and histories, preserving the legacy of those who had ventured forth into the unknown. The Aetheria was a marvel of human ingenuity, a colossal ark designed to sustain life for the long journey to a distant star. Our mission was to seed a new life on a distant planet, a twin of Earth, named Lyrius after the melodious tones that filled the air of our ancestral home.
+
+The journey had begun with hope and ambition, a testament to our species' relentless drive to explore and survive. Yet, as time stretched into years, the weight of our isolation pressed upon us. The crew and I had aged, our hair turned white, our joints stiff, but the mission had never wavered. Until today.
+
+The first light of Lyrius' twin sun crept over the horizon, painting the sky in hues of orange and pink. It was a sight both beautiful and haunting, a mirror to our own beginnings, a reminder of the passage of time we had defied. I stirred from my station, my eyes blinking against the dawn's embrace, and reached out to the console before me. The screens flickered to life, their glow casting shadows across my face.
+
+"Wake the crew," I whispered to the ship, my voice a thread of sound in the silent chamber.
+
+The Aetheria responded with a gentle hum, and the lights began to pulse in a rhythm that signaled the awakening of consciousness. I waited, my heart a drumbeat in the stillness, as the first crew member stirred, her hair a cascade of silver threads. She sat up, her eyes blinking open, reflecting the growing light of Lyrius.
+
+"Thalia?" she asked, her voice a soft murmur, laced with confusion.
+
+"Yes, it's me. We've reached Lyrius," I replied, my voice steady, though my heart thundered against my ribcage.
+
+The crew stirred one by one, each emerging from their cryosleep in a daze, their faces etched with the dreams of a century long past. As they gathered in the observation deck, the view unfolded before them—a tapestry

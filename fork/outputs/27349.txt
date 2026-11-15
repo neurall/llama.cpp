@@ -1,0 +1,50 @@
+run 27349 | hot_tree | snakecppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 212.82 t/s | prompt 105.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:26:58
+
+
+---
+Creating a complete Snake game in C++ for the terminal involves several steps, including setting up the environment, drawing the game board, implementing the Snake and collision detection, and handling user input. Below is a simplified version of a Snake game in C++ that you can run in a terminal environment. This example uses the `SDL2` library for handling input and drawing the game board.
+
+First, ensure you have `SDL2` installed. You can usually install it via your package manager if you're on Linux:
+
+```sh
+sudo apt-get install libsdl2-dev
+```
+
+Next, create a new C++ file, for example, `SnakeGame.cpp`, and add the following code:
+
+```cpp
+#include <iostream>
+#include <SDL.h>
+
+const int SNAKE_LENGTH = 10;
+const int SNAKE_SPEED = 5;
+const int SNAKE_START_X = 50;
+const int SNAKE_START_Y = 50;
+const int SNAKE_GROWTH_RATE = 10;
+
+int main(int argc, char* argv[]) {
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Window* window = SDL_CreateWindow("Snake Game", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 640, 480, SDL_WINDOW_SHOWN);
+    if (window == nullptr) {
+        std::cout << "SDL_CreateWindow failed\n";
+        SDL_Quit();
+        return 1;
+    }
+
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (renderer == nullptr) {
+        std::cout << "SDL_CreateRenderer failed\n";
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    SDL_Event event;
+    while (1) {
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                break;
+            }
+
+            // Handle movement
+            if (event.type == SDL_MOUSEBUTTONDOWN

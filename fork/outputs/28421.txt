@@ -1,0 +1,91 @@
+run 28421 | probe_never_read | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 25.65 t/s | prompt 350.0 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 08:32:22
+
+<think>Let me analyze this code review request. The user wants me to review the source files provided:
+
+1. `common/json-schema-to-grammar.cpp` - JSON schema to grammar conversion
+2. `common/arg.cpp` - Argument parsing
+
+Let me look at the code carefully and identify issues.
+
+Looking at the first file `common/json-schema-to-grammar.cpp`:
+
+The code has a `common_chat_schema_converter` class with methods like:
+- `_add_rule`
+- `_add_primitive`
+- `_visit_pattern`
+- `_resolve_ref`
+- `_build_object_rule`
+- `_not_strings`
+- `visit`
+- `check_errors`
+- `format_grammar`
+
+Let me trace through the logic:
+
+1. `_not_strings` builds a trie-based rule for excluding property names.
+2. `_resolve_ref` handles `$ref` resolution.
+3. `_build_object_rule` builds object rules with required/optional properties.
+4. `visit` dispatches based on schema kind.
+
+Potential issues I can spot:
+
+1. In `_build_object_rule`, the `get_recursive_refs` lambda captures `prop_kv_rule_names` by reference. This is fine since it's used within the function scope.
+
+2. In `_visit_all_of`, the `add_component` lambda handles `KIND_REF`, `KIND_OBJECT`, `KIND_ENUM`. But what about other kinds like `KIND_ARRAY`, `KIND_STRING`, etc.? They're silently ignored. This might be intentional but could be a bug if schemas contain other types.
+
+3. In `visit`, the `KIND_STRING` case: if `str.format != common_chat_schema::FORMAT_NONE`, it builds `prim_name` based on format. But what if format is something else entirely? The ternary chain handles FORMAT_DATE, FORMAT_TIME, else date-time. This seems okay but could silently misclassify unknown formats.
+
+4. In `visit`, `KIND_INTEGER`: if minimum and maximum are at their limits, use primitive. Otherwise build min/max rule. But `build_min_max_int` is called with `i.minimum` and `i.maximum` - what if minimum > maximum? That would produce an invalid rule.
+
+5. In `_visit_pattern`, the function uses `_rules` to check if pattern exists. The regex `nonalphanumeric_regex` replaces non-alphanumeric with "-". But what if the pattern itself contains characters that need escaping for GBNF? The code doesn't seem to handle regex-to-GBNF conversion properly - it just uses the pattern as-is in the rule. Actually wait, looking more carefully, `_visit_pattern` returns `_add_rule(rule_name, str.pattern)` - it uses the JSON schema regex pattern directly as a GBNF rule. JSON schema regexes and GBNF regexes have different syntax (e.g., JSON schema uses PCRE-like syntax, GBNF uses its own). This could be a correctness issue.
+
+Actually, looking at the code again:
+
+```cpp
+std::string _visit_pattern(const std::string & pattern, const std::string & name) {
+    auto rules_snapshot = _rules;
+    try {
+        return _pattern_to_rule(pattern, name);
+    } catch (const unsupported_pattern & err) {
+        _rules = std::move(rules_snapshot);
+        _warnings.push_back("pattern " + pattern + " is not supported (" + err.what() + "), accepting any string");
+        return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));
+    } catch (const invalid_pattern & err) {
+        _rules = std::move(rules_snapshot);
+        _errors.push_back("Invalid pattern " + pattern + ": " + err.what());
+        return "";
+    }
+}
+```
+
+Wait, this doesn't match the actual code shown. The code shown has a different structure. Let me re-read.
+
+Actually the code shown is:
+
+```cpp
+std::string _visit_pattern(const std::string & pattern, const std::string & name) {
+    auto rules_snapshot = _rules;
+    try {
+        return _pattern_to_rule(pattern, name);
+    } catch (const unsupported_pattern & err) {
+        ...
+    }
+}
+```
+
+Hmm, but the actual code in the file seems different. Let me look at the actual provided code more carefully.
+
+The provided code for `json-schema-to-grammar.cpp`:
+
+```cpp
+std::string _visit_pattern(const std::string & pattern, const std::string & name) {
+    auto rules_snapshot = _rules;
+    try {
+        return _pattern_to_rule(pattern, name);
+    } catch (const unsupported_pattern & err) {
+        // revert rules
+        _rules = std::move(rules_snapshot);
+        _warnings.push_back("pattern " + pattern + " is not supported (" + err.what() + "), accepting any string");
+        return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));
+    } catch (const invalid_pattern & err) {
+        _rules

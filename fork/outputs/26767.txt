@@ -1,0 +1,63 @@
+run 26767 | ns_probe_cells | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 49.72 t/s | prompt 33.7 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-11-12 14:52:57
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris. "Smallest" — they want minimal code. But I don't want to just dump a bare 20-line blob with no styling. Even a tiny game deserves to feel considered. So I should balance: keep the code genuinely small, but make it look nice.
+
+Let me write a compact Tetris in a single HTML file. Aim for something like ~60-80 lines that actually works well, with decent styling.
+
+Let me write it:
+
+```html
+<!DOCTYPE html><html><head><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0b12;color:#e8e8f0;font:14px/1.4 ui-monospace,monospace;display:grid;place-items:center;height:100vh;gap:12px}
+canvas{background:#12121c;border:2px solid #2a2a3c;box-shadow:0 0 40px #000 inset}
+...
+</style></head><body>
+...
+</script>
+```
+
+Let me design the game logic compactly.
+
+```js
+const B=document.body, C=document.querySelector('canvas'), X=C.getContext('2d');
+const W=10,H=20,S=C.width/W;
+let g=Array.from({length:H},()=>Array(W).fill(0)), p, n, x, y, s=0, sc=0, lo=0, t=0;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]];
+```
+
+Rotation: rotate matrix.
+
+Colors per piece index.
+
+Let me write it out carefully.
+
+```js
+const W=10,H=20,S=24;
+let g=[],p,x,y,o=0,sc=0,nl=0,ov=0,tm=0,ps=0;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]];
+const K='#0ff #ff0 #a0f #00f #f00 #0f0 #f80'.split(' ');
+function newP(){p=P[o=Math.random()*7|0];x=3;y=0;if(k(x,y,p))ov=1}
+function k(a,b,m){return m.some((r,j)=>r.some((v,i)=>v&&(a+i<0||a+i>=W||b+j>=H||g[b+j][a+i])))}
+function rot(m){return m[0].map((_,i)=>m.map(r=>r[i]).reverse())}
+function merge(){p.forEach((r,j)=>r.forEach((v,i)=>v&&(g[y+j][x+i]=p)))}
+```
+
+Storing the piece reference in grid lets color be derived: `g[j][i]` is a matrix → index via P.indexOf. Simpler: store color index.
+
+Let me store color index: `g[y+j][x+i]=o+1`.
+
+Draw:
+```js
+function dr(){
+ X.fillStyle='#12121c';X.fillRect(0,0,C.width,C.height);
+ cell=(c,i,j)=>{X.fillStyle=c;X.fillRect(i*S+1,j*S+1,S-2,S-2)};
+ g.forEach((r,j)=>r.forEach((v,i)=>v&&cell(K[v-1],i,j)));
+ p.forEach((r,j)=>r.forEach((v,i)=>v&&cell(K[o],x+i,y+j)));
+}
+```
+
+Line clear:
+```js
+function clear(){g=g.filter(r=>r.some(v=>!v));let d
+---

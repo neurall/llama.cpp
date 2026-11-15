@@ -1,0 +1,46 @@
+run 26773 | ns_probe_cells | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.29 t/s | prompt 24.4 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-12 15:01:10
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it actually playable and not broken.
+
+Let me think about what "smallest" means here. Options:
+1. Ultra-minified golf version (like those famous tiny Tetris implementations — e.g., the famous 140-byte-ish ones aren't real Tetris, but there are known ~500-byte JS Tetris implementations).
+2. A compact but readable implementation.
+
+The user said "smallest html tetris game" — I'll aim for a genuinely tiny single-file HTML. I can write it compactly but still keep it functional: piece movement (left/right/down/rotate), line clears, score, game over, next piece maybe. To keep it small, I might skip "next piece" preview and hold, hard drop maybe keep since it's cheap.
+
+Let me actually write a real, working minimal Tetris and then compress it.
+
+Core design:
+- Canvas rendering (small canvas, e.g., 240x480 or use a grid of 10x20 cells drawn with fillRect).
+- Board as array of rows, each row a string or array of 10 numbers.
+- Pieces: use the classic set with rotations encoded compactly. A common trick: encode each tetromino as a list of rotation states, each state as list of [x,y] offsets. Or use the "binary encoding" trick.
+
+A very compact known approach: represent pieces as arrays of 4 rotation states, each state as 4 coordinate pairs. Or use strings.
+
+Let me think about a compact representation. Classic trick from tiny tetris implementations:
+
+Pieces as bit patterns per rotation. E.g., each piece rotation is a 4x4 (or 3x3) grid encoded as a number. For I piece: rotations are rows/columns.
+
+Alternative compact approach used in famous "tetris in 140 bytes" style code: pieces defined as arrays of arrays of points.
+
+Let me define pieces with a compact string encoding. For example:
+
+`P = [[4,31],[2,15],[3,17],[2,17],[4,15],[2,17],[3,15],[2,15]]` — hmm, there's a known trick: encode each rotation state as a bitmask in a 4x4 box, where the bitmask is 16 bits. Each piece has 4 rotation states (some duplicates). Represent each state as a 16-bit number where bit i means cell filled at (i%4, i/4|0).
+
+Let me compute. Actually a well-known compact encoding (from "Tetris in 4kB" or similar):
+
+Pieces (using 4x4 grid, bit index = y*4 + x, bit set = filled):
+
+I piece:
+- Rotation 0: horizontal bar in row 1 (or row 0): cells (0..3, y=1)? Let's use standard: I in a 4x4 box: rot0: row y=1, x=0..3 → bits: y*4+x for y=1: 4,5,6,7 → 0b0000111100000000 = 0x0F00 = 3840.
+- rot1: column x=2, y=0..3 → bits 2,6,10,14 → 0x4444 = 17476? 0x4444 = 17476. Yes.
+- rot2: row y=2, x=0..3 → bits 8..11 → 0x00F0 = 240.
+- rot3: column x=1, y=0..3 → bits 1,5,9,13 → 0x2222 = 8738.
+
+So I = [0x0F00, 0x4444, 0x00F0, 0x2222].
+
+J piece (3x3 within 4x4, standard SRS-ish but simplified):
+- rot0: cells: (1,0),(1,1),(1,2),(0,2) → bits: 1, 5, 9, 8 → 0x0122? Let's compute: bit1=2, bit5=32, bit9=512, bit8=256 → 2+32+512+256 = 802 = 0x0322. Hmm let me double check standard encodings. Actually there's a known set used in many minimal tetris:
+
+Common known compact piece data (from the "tetris-ch
+---

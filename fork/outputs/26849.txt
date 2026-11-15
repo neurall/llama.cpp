@@ -1,0 +1,71 @@
+run 26849 | oneexe | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 24.16 t/s | prompt 11.7 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-12 17:07:04
+
+The user wants the smallest HTML Tetris game. This is a classic code-golf style challenge. Let me think about what "smallest" means here — likely minimal bytes while still being a playable Tetris. I should aim for a genuinely playable, compact Tetris in a single HTML file.
+
+Let me think about the classic minimal Tetris approaches. There are famous tiny Tetris implementations (like the 229-byte one, or "Tiny Tetris" by nickyvanurk ~ 471 bytes). I should write my own compact version, not copy verbatim. I'll aim for something in the few-hundred-byte range but readable-ish, or I could go ultra-golfed.
+
+Key components:
+1. Canvas for rendering (or even simpler, use DOM? Canvas is usually smaller for grid games).
+2. Board: 10x20 grid stored as array.
+3. Pieces: 7 tetrominoes. Compact encoding: use binary representations. A classic trick: encode each rotation of each piece as a 16-bit number (4x4 grid), or use the "rotate a matrix" approach with pieces defined as small matrices.
+
+A very compact approach: define pieces as arrays of coordinates, rotate by (x,y)->(y,-x) or similar. Or use the well-known compact encoding:
+
+Pieces as 4x4 bitmasks per rotation — that's 7*4 = 28 numbers. Alternatively define one shape per piece and rotate mathematically.
+
+Classic minimal approach (like the famous 229-byte tetris by "Sol" / the one on codegolf):
+
+Actually let me just write my own clean compact version. Let me design:
+
+```html
+<canvas id=c></canvas>
+<script>
+// board 10 wide, 20 tall
+B=[], // board
+...
+</script>
+```
+
+Let me write a compact but complete Tetris:
+
+Features needed for "real" Tetris:
+- 7 pieces with colors (colors optional for smallest — could be monochrome, but colors make it feel like Tetris; colors cost bytes though. Maybe use a small color array).
+- Movement: left, right, down (soft drop), rotate.
+- Collision detection.
+- Line clearing.
+- Game over.
+- Score maybe (optional; adds bytes).
+
+Let me write it:
+
+```html
+<body onload="setInterval(f,100)"bgcolor=000><canvas id=c width=120 height=240></canvas><script>
+D=document,C=D.getElementById('c').getContext('2d'),
+P=[[...pieces...]],
+...
+</script>
+```
+
+Let me think about piece representation. Compact trick: represent each piece as a 2D array of its blocks relative to origin, rotate via mapping [x,y] -> [y, 3-x] or [y,-x] with offset correction.
+
+A neat approach used in tiny tetris: pieces defined as strings of 16 chars for each rotation state. E.g.:
+
+```js
+p="0123..." 
+```
+
+Hmm. Let me use the bitmask approach: each piece rotation = 16-bit number where bits map to 4x4 grid. 7 pieces × 4 rotations = 28 numbers. That's compact-ish.
+
+Actually a smaller trick: define pieces as 4x4 matrices and rotate the matrix in code:
+
+```js
+R=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())
+```
+
+Then pieces defined once each as minimal matrix:
+
+- I: [[1,1,1,1]] (1x4) — rotating gives 4x1. Works with generic rotate if we handle non-square? R on 1x4 gives 4x1. Then rotating again gives 4x4 with... hmm, rotating non-square matrices changes dimensions, which complicates collision but actually works fine if collision checks use the matrix dims. But repeated rotation of 1x4: R([[1,1,1,1]]) = [[1],[1],[1],[1]] (4x1). R again = [[1,1,1,1]] reversed... let's check: R(m)=m[0].map((_,i)=>m.map(r=>r[i]).reverse()). For m=[[1],[1],[1],[1]] (4 rows, 1 col): m[0] = [1], map over 1 element: i=0: m.map(r=>r[0]) = [1,1,1,1], reverse = [1,1,1,1]. So [[1,1,1,1]]. Good, it alternates correctly.
+
+- O: [[1,1],[1,1]] — rotation invariant. 
+- T: [[0,1,0],[1,1,1]] (2x3). Rotations: R gives 3x2: [[
+---

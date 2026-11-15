@@ -1,0 +1,44 @@
+run 28670 | rows_pool | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 33.05 t/s | prompt 702.0 t/s | 512 tokens | args: -np 1 | power 280+280 W | 2026-11-14 20:32:54
+
+ }
+                }
+                return _add_rule(rule_name, _build_object_rule(properties, required, name, obj.additional_properties.get()));
+            }
+            case common_chat_schema::KIND_ARRAY: {
+                const auto & arr = as<common_chat_schema_array>(schema);
+                std::string item_rule_name = visit(*arr.items, sub_name + "item");
+                std::string result = build_repetition(item_rule_name, arr.min_items, arr.max_items, arr.items->kind() == common_chat_schema::KIND_OBJECT ? " \",\" space " : "");
+                return _add_rule(rule_name, "\"[\" space " + result + " space \"]\"");
+            }
+            case common_chat_schema::KIND_STRING: {
+                const auto & str = as<common_chat_schema_string>(schema);
+                if (str.pattern) {
+                    return _visit_pattern(str.pattern, rule_name);
+                }
+                return _add_primitive(rule_name, PRIMITIVE_RULES.at("string"));
+            }
+            case common_chat_schema::KIND_NUMBER: {
+                const auto & num = as<common_chat_schema_number>(schema);
+                std::stringstream ss;
+                build_min_max_int(num.min, num.max, ss);
+                return _add_rule(rule_name, ss.str());
+            }
+            case common_chat_schema::KIND_BOOLEAN:
+                return _add_primitive(rule_name, PRIMITIVE_RULES.at("boolean"));
+            case common_chat_schema::KIND_NULL:
+                return _add_primitive(rule_name, PRIMITIVE_RULES.at("null"));
+            case common_chat_schema::KIND_ANY:
+                return _add_primitive(rule_name, PRIMITIVE_RULES.at("value"));
+            default:
+                throw std::runtime_error("Unrecognized schema node");
+        }
+    }
+
+    std::string visit(const common_chat_schema & schema, const std::string & name, const std::string & rule_name) {
+        return visit(schema, name);
+    }
+
+    std::string get_grammar(const std::string & root_name) {
+        std::string root_rule = visit(common_chat_schema::root(), root_name);
+        std::vector<std::string> rules;
+        rules

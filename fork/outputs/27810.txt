@@ -1,0 +1,19 @@
+run 27810 | tree_emb_key | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 60.55 t/s | prompt 61.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph3/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/ini | power 280+280 W | 2026-11-13 18:00:29
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold ache of frozen marrow in his joints. The air in the habitation module smelled of ozone and stale recycled water, a scent that had lingered for three centuries. He blinked against the harsh glare of the emergency lights, his vision swimming in the haze of hypothermia. Beside him, the other crew members stirred, groaning like wounded beasts. But Elias, the Archivist, felt a strange, hollow stillness. He had spent his life cataloging the history of humanity, preserving the dead so the living could remember. Now, he was the living, and the dead seemed to have moved on.
+
+He dragged himself to the observation deck. The glass was thick, frosted with condensation, but the view beyond was clear. Below them, the planet of Aethel hung in the void, a marble of blue and green. But it was not the barren wasteland they had been promised. It was a tapestry of light. Cities sprawled across the continents, glowing like embers in a dark fire. The orbital rings were intact, humming with the energy of industry. Elias pressed his hand against the cold glass, his breath fogging the surface. He expected silence. He expected ruins. He expected the silence of a grave.
+
+Instead, he saw life.
+
+"Look," whispered Sarah, the engineer, her voice trembling. She stood beside him, her eyes wide, reflecting the city lights. "They’re here. They’re alive."
+
+Elias shook his head, his mind struggling to process the geometry of time. "We left in 2100. We were supposed to arrive in 2400. The journey takes three hundred years. The cryo-sleep preserves us. We are the first."
+
+"Unless," Sarah said, her voice rising, "we weren’t the first."
+
+Elias turned to her. The logic was terrifying. If a second ship had launched a century later, it would have arrived a century earlier. The generation ship *Chronos* was the slow, heavy vessel, carrying the bulk of the population and the weight of history. The *Swift* was the experimental prototype, faster, lighter, launched in 2110. They had been told the *Swift* failed. They had been told it exploded in the void.
+
+But the lights below told

@@ -1,0 +1,77 @@
+run 27396 | hot_tree3 | snakecppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 209.99 t/s | prompt 627.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:58:08
+
+
+---
+Creating a complete Snake game in a single response is quite extensive, but I can guide you through the basics of how to implement a simple Snake game in C++ for the terminal. This version will be quite basic, focusing on core functionalities such as moving the snake, eating food, and growing in length.
+
+### Step 1: Setup Your Project
+
+First, ensure you have a C++ compiler set up. For most Unix-like systems, you can use `gcc`. Create a new directory for your project and navigate into it:
+
+```bash
+mkdir snake_game
+cd snake_game
+```
+
+### Step 2: Basic Structure
+
+Create a `snake_game.cpp` file and start with a basic structure:
+
+```cpp
+#include <iostream>
+#include <cstdlib> // For exit()
+#include <ctime>   // For time()
+
+using namespace std;
+
+// Constants
+const int WINDOW_WIDTH = 80;
+const int WINDOW_HEIGHT = 30;
+const int MAX_LENGTH = 50;
+const int FPS = 60;
+
+// Game state
+class SnakeGame {
+public:
+    SnakeGame();
+    ~SnakeGame();
+
+    void update();
+    void render();
+
+    void handleInput();
+    void growSnake();
+    void checkCollision();
+    void eatFood();
+
+    bool gameOver();
+    void restartGame();
+
+private:
+    int width;
+    int height;
+    int snakeLength;
+    int grid[WINDOW_WIDTH][WINDOW_HEIGHT];
+    int headX, headY;
+    char *snakeChar;
+    int foodX, foodY;
+
+    void drawGrid();
+    void drawSnake();
+    void drawFood();
+};
+```
+
+### Step 3: Implement the Game Class
+
+Implement the `SnakeGame` class with the methods outlined:
+
+```cpp
+#include "snake_game.h"
+
+SnakeGame::SnakeGame() {
+    width = WINDOW_WIDTH;
+    height = WINDOW_HEIGHT;
+    snakeChar = new char[width * height];
+    memset(snakeChar, 'O', width * height);
+    headX = headY =

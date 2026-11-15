@@ -1,0 +1,5 @@
+run 28656 | row_read_ahead | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 4.12 t/s | prompt 2.8 t/s | 14 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-14 20:04:01
+
+
+---
+The capital of France is Paris.

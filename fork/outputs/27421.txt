@@ -1,0 +1,33 @@
+run 27421 | hot_tree3 | poemseac | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 183.21 t/s | prompt 206.7 t/s | 245 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 11:12:10
+
+
+---
+The moon hangs high, a silver spoon
+Dipping into the ink-black sea
+Whispers of wind, a gentle croon
+To the lone lighthouse, its beam a lullaby
+
+A small boat, a mere speck on the water
+Farther from shore than ever before
+Its tiny light, a tiny beacon
+Guiding souls through the night's unknown
+
+The sea, a vast expanse of mystery
+Its depths hold secrets untold
+The lighthouse, a sentinel on the shore
+Guarding the night, its duty bold
+
+The waves, like whispers, caress the sand
+As stars twinkle, a celestial dance
+The moon's glow, a silvery hand
+Leading the way for the sailor's chance
+
+In the vast expanse, a lone boat sails
+Its occupants unaware of the night's embrace
+The lighthouse stands firm, a steadfast friend
+Guarding the path, its light a gentle grace
+
+The sea, a symphony of night's embrace
+With every wave, a new story to tell
+The lighthouse, a guardian of the night
+Its light, a beacon, never to fail

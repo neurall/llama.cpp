@@ -1,0 +1,60 @@
+run 27530 | hot_tree5 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.64 t/s | prompt 133.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:30:41
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Requirements
+- C++11 or later
+- Terminal with support for ANSI escape codes (most modern terminals)
+
+### Code (`snake.cpp`)
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+
+using namespace std;
+
+int main() {
+    // Terminal dimensions
+    const int W = 20, H = 15;
+    
+    // Snake state: head at (1,1), tail grows
+    vector<pair<int,int>> snake = {{1,1}};
+    pair<int,int> food = {5,5};
+    int dir = 0; // 0:up, 1:right, 2:down, 3:left
+    int score = 0;
+    
+    // Random seed for food placement
+    random_device rd;
+    
+    auto clear = [&]() {
+        for(int y=0; y<H; y++) {
+            for(int x=0; x<W; x++) {
+                cout << " ";
+            }
+            cout << "\n";
+        }
+    };
+    
+    auto draw = [&]() {
+        clear();
+        for(auto p : snake) {
+            cout << "\033[" << p.second << ";" << p.first << "H" << "X";
+        }
+        cout << "\033[" << food.second << ";" << food.first << "H" << "O";
+        cout << "\033[0;0HScore: " << score << "\n";
+    };
+    
+    auto move = [&]() {
+        int nx = snake[0].first + (dir==1?1:dir==3?-1:0);
+        int ny = snake[0].second + (dir==0?-1:dir==2?1:0);
+        
+        // Check collision
+        if(nx<0 || nx>=W || ny<0 || ny>=H || find(snake.begin(), snake.end(), {nx,ny}) != snake.end()) {
+            cout << "\nGame Over! Score: " << score << "\n";
+            return false;
+        }

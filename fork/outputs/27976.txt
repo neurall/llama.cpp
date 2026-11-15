@@ -1,0 +1,13 @@
+run 27976 | simlink_stream_pace | pf4k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 13.92 t/s | prompt 284.8 t/s | 64 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=12288,rp-grow=0,pp-path=mix,pp-k=0,dense-split=0,simlink=16,4 | power 280+280 W | 2026-11-13 21:17:31
+
+
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return string_join(results, "");
+            };
+
+            while (i < length) {
+                char c = sub_pattern[i];
+                if (c == '\\') {
+                   

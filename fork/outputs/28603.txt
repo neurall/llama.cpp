@@ -1,0 +1,4 @@
+run 28603 | ring_next_use | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 11.81 t/s | prompt 1.2 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 280+280 W | 2026-11-14 17:28:13
+
+The user wants a science-fiction short story
+---

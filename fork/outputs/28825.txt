@@ -1,0 +1,15 @@
+run 28825 | split_ab | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.69 t/s | prompt 1.5 t/s | 256 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini | power 200+200 W | 2026-11-15 03:02:03
+
+
+---
+Every evening, Elias climbed the lighthouse stairs with a lantern in one hand and a book in the other. He had kept the light on Blackrock Point for twenty-three years, and in all that time, the sea had given him only storms, gulls, and the occasional wreck of a fishing boat.
+
+Then, on a calm morning in October, he found a bottle wedged between the rocks below the tower.
+
+It was green glass, clouded with salt, its cork sealed with dark wax. Inside was a folded sheet of paper. Elias carried it up to the lamp room, where the light itself seemed to pause as he read.
+
+*To whoever finds this,* the message began, *my name is Miriam. I am on the island of Saint Aurelia. The ship is sinking, but the island is near. If you have a boat, please come before winter. There are three of us.*
+
+Elias looked out at the horizon. Saint Aurelia was a name from old charts, a place no sailor visited anymore. It lay beyond the shoals, where the sea turned black even in daylight.
+
+He could have put the bottle back. He could have decided it was a hoax, or a story from another century. Instead, he lit the

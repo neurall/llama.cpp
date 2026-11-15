@@ -1,0 +1,21 @@
+run 27374 | hot_tree3 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 190.09 t/s | prompt 678.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 10:45:47
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Elara, the archivist of the generation ship Aetheria, had watched over the slumbering souls for the past century, cataloging memories and histories, preserving the collective consciousness of our voyage. The Aetheria had been designed as a beacon of hope, a ark carrying the remnants of humanity to a new world, a sanctuary amidst the stars.
+
+We had launched from Earth with the intent to seed life on a distant planet, one that mirrored our own in beauty and potential. A century of travel had seen us navigate the cold expanse, our engines a testament to human ingenuity, our destination a distant blue jewel in the blackness. But fate, it seemed, had other plans.
+
+The first cryo-pod to thaw was ours, the captain's, a man of vision and courage whose name was etched into the ship's history books. As his eyes fluttered open, the world outside the viewport transformed from a tapestry of darkness and light into a living canvas. The cities below, structures of glass and steel, glowed with an ethereal light, a beacon of life and civilization.
+
+"We've made it," he whispered, his voice a mix of wonder and disbelief.
+
+I, too, stepped out of my pod, my feet touching the soft soil of a world far different from the one we had left behind. The air was thick with oxygen, the sky painted with hues of dawn. The trees whispered in the wind, a melody I had never heard before.
+
+"We've arrived first," I confirmed, my voice steady but my heart racing with the implications. Our descendants, those who would inherit this world, had beaten us to it. A century of anticipation, of hope and fear, had culminated in this moment.
+
+The crew stirred, emerging from their slumber with equal parts excitement and confusion. We gathered in the central hall, a place of congregation and contemplation, our voices blending into a chorus of disbelief and joy.
+
+"We're not alone," someone said, a sentiment that spread like wildfire through our ranks.
+
+The implications were staggering. Our descendants, born from a copy of the Aetheria, had thrived in our absence. They had learned to adapt, to thrive in a world we had only ever known in theory. Their cities,

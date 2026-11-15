@@ -1,0 +1,45 @@
+run 28370 | lp_check_before_lock | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.96 t/s | prompt 37.1 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-14 07:05:08
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, minified/obfuscated-ish but still functional and playable.
+
+Let me think about what "smallest" means here. The user wants minimal bytes. I should write a compact Tetris: canvas rendering, keyboard controls, gravity, line clearing, next piece maybe, score, game over. To keep it truly small I'll strip non-essentials but keep it playable: move left/right, rotate, drop, gravity, collision, line clear, score, game over restart.
+
+I need to be careful: the delivery constraint says single self-contained HTML file. That's fine. The "smallest" request conflicts with some of my usual quality bar (no gradients etc. — those don't matter for size). I'll aim for a genuinely tiny but working Tetris. I can also present it nicely: show the code, explain briefly, maybe give a byte count.
+
+Let me actually write the smallest Tetris I can. Classic minimal Tetris implementations in JS are around 300-600 bytes for the logic. Let me craft one.
+
+Approach: use a canvas, a grid stored as an array of rows (strings or arrays). Pieces defined compactly. Use setInterval or requestAnimationFrame for gravity. Keyboard events for control.
+
+Let me design a compact implementation.
+
+Standard compact tetris (there's a famous one by @fsk141 or "tiny tetris" ~ 500 bytes). Let me write my own and count bytes.
+
+Plan:
+
+- Canvas 200x400? Grid 10x20, cell 20px → canvas width 200 height 400. Actually to keep small, cell size 15? Let's do 10x20 grid, cell 16 → 160x320. Or just scale.
+
+- Board: array B of 20 strings? Or a 2D array of 0/1... but colors? For smallest, monochrome blocks are fine. But I'd like at least some visual distinction. Smallest = single color blocks with slight variation by piece index? That costs bytes. Let's keep it minimal: draw filled rects, maybe different shade per piece using piece index — cheap: `c.fillStyle='#'+...`? Actually simplest: fillStyle = colors[p] where colors is a short string array. That's like 60 bytes. Hmm, for "smallest" maybe skip colors, use one color. But a tiny bit of color makes it feel like Tetris. Trade-off. The user asked for smallest — I'll prioritize size but keep it playable and readable-ish. I could offer both: the golfed version plus a slightly expanded readable version? The user asked for one thing: smallest. I'll deliver the golfed single file, and in the explanation show the byte count and briefly explain how it works. Maybe also include a readable formatted version in the explanation? That might be nice but adds length. I think I'll present the golfed file, state its size, and explain the tricks. Possibly also give a "pretty" version? The user asked specifically for smallest — one artifact. I'll keep the answer focused: one HTML file, byte count, short explanation of controls and techniques.
+
+Let me write the code.
+
+Core logic:
+
+```js
+D=document
+B=[] // board rows, each row array of 0/1 (or piece id)
+```
+
+Pieces: standard 7 tetrominoes. Compact representation: each piece as array of rotations, each rotation as array of [x,y] offsets? That's verbose. Compact trick: represent each rotation as a bitmask or as string of coordinates.
+
+A very compact known trick: pieces as arrays of 4 rotations, each rotation encoded as a number where 4 two-bit... hmm.
+
+Alternative compact encoding: each piece rotation as string like "018" ... Let me think of the classic minimal tetris code.
+
+Known minimal tetris (by "tinytetris" ~ 231 bytes C). For JS, there's a famous 500-ish byte tetris.
+
+Let me design my own encoding:
+
+Each tetromino has 4 cells. Encode each rotation as 4 numbers: x + y*4? Or as a 16-bit mask per rotation: bits set in a 4x4 grid. A rotation mask = 16-bit int. 7 pieces × 4 rotations = 28 masks. Each mask up to 0xFFFF → could encode as base36 or just decimal numbers in an array. 28 numbers, each ~4-5 chars → ~150 bytes. Alternatively encode all pieces as one string.
+
+Better trick: use the well-known "each piece = 4
+---

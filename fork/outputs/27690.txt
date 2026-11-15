@@ -1,0 +1,57 @@
+run 27690 | tree_phase_maps | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 55.14 t/s | prompt 29.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/ini | power 280+280 W | 2026-11-13 16:17:49
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 180, dx = 2, dy = -2, bx = 100, by = 100;
+let bricks = [];
+for(let i=0; i<10; i++) bricks.push({x: i*20, y: 20});
+
+function loop() {
+    ctx.clearRect(0,0,200,200);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(bx-10, by-10, 20, 20); // Paddle
+    
+    // Move Paddle
+    bx += dx;
+    if(bx < 10) bx = 10;
+    if(bx > 190) bx = 190;
+
+    // Move Ball
+    by += dy;
+    if(by < 10) dy = -dy; // Top bounce
+    if(by > 190) { // Game Over
+        x = 100; y = 180; dx = 2; dy = -2; bx = 100; by = 100;
+    }
+
+    // Brick Collision
+    bricks.forEach(b => {
+        if(x > b.x && x < b.x+20 && y > b.y && y < b.y+20) {
+            dy = -dy;
+            bricks = bricks.filter(br => br !== b);
+        }
+    });
+
+    // Draw Ball
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(x-5, y-5, 10, 10);
+    
+    // Draw Bricks
+    ctx.fillStyle = '#f00';
+    bricks.forEach(b => ctx.fillRect(b.x, b.y, 20, 20));
+
+    requestAnimationFrame(loop);
+}
+
+// Controls
+document.addEventListener('keydown', e => {
+    if(e

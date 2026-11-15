@@ -1,0 +1,23 @@
+run 26791 | ns_probe_cells | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.77 t/s | prompt 1071.9 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-12 15:15:21
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears to be truncated mid-function).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we return early, so `max_items - 1` when `has_max` is true means `max_items >= 1`, fine.
+   - Actually wait, there's a potential issue: if `min_items == 0 && max_items == 1` with a separator, it returns `item_rule + "?"` — correct since 0 or 1 items with separator doesn't need separator.
+   - Hmm, but what about `min_items == 1 && max_items == 1`? It goes to the general path: `item_rule + " " + build_repetition("(sep item)", 0, 0)` — and `build_repetition` with max_items == 0 returns "" — so result is `item_rule + " "` — trailing space. That's probably fine for grammar formatting (space is whitespace in GBNF? Actually in GBNF, spaces in rules are ignored... wait no, in GBNF the space rule is explicit. Actually in llama.cpp GBNF, whitespace between symbols in a rule is ignored by the parser). OK.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead.
+   - `uniform_range` captures by reference recursively via std::function.
+   - Potential issue: `digit_range(from[i], to[i] - 1)` — if `from[i] == to[i]`... wait, in that branch, `from_sub == sub_zeros` and we know `from < to` lexicographically at this point? Actually is that guaranteed? The caller ensures `from <= to`? Let me check: in the main flow, `uniform_range(min_s, string_repeat("9", digits))` — min_s <= "999...9" presumably. And `uniform_range(min_s, max_s)` with min_value <= max_value. Hmm, but if `min_value == max_value`, then `from == to`, and in `uniform_range`, `i` advances to full length, so `i == from.length()`, and the condition `i < from.length() && i < to.length()` is false, so no digit_range call. OK.
+   - But wait — what if `from[i] == to[i]` but `from_sub != sub_zeros` and `to_sub != sub_nines`? Then `from[i] < to[i] - 1` is false, and `to_reached` stays false, so we output `| [to[i]] uniform_range(sub_zeros, to_sub)`. But `uniform_range(sub_zeros, to_sub)` — here `from = "000...0"` and `to = to_sub`. If `to_sub` starts with... hmm, this recursion assumes `from <= to` as strings of equal length. `sub_zeros` <= `to_sub` always since zeros are smallest. OK.
+   - Edge: `digit_range(from[i], to[i] - 1)` when `from[i] == to[i]`? That happens only if `from_sub == sub_zeros` and... wait if `from[i] == to[i]` and `from_sub == sub_zeros`, then `to_sub >= from_sub = zeros`, and `to > from` means `to_sub > zeros` or... hmm, actually if `from[i] == to[i]` and `from_sub == sub_zeros`, is `to_sub == sub_nines` possible? Only if to_sub is all nines, but then `to[i]` could equal `from[i]`. E.g., from = "099", to = "199"? No wait, from[i] != to[i] there. Let me think: from = "0 99", to = "0 99"? Then i would advance past index 0 since from[0]==to[0]. Hmm, uniform_range first skips common prefix. So when we reach the digit_range branch, from[i] != to[i]

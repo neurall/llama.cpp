@@ -1,0 +1,15 @@
+run 27409 | hot_tree3 | scifi2c | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 154.61 t/s | prompt 256.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 11:05:32
+
+
+---
+The derelict orbital station, once a beacon of human achievement, now floated aimlessly through the black expanse, a ghostly monument to a time when the stars were within reach. Its metal skeleton, scarred by the ravages of time and space, loomed against the velvet backdrop of the cosmos. The sun, a distant yellow disk, cast a feeble light upon the station, illuminating the dust particles that danced in the thin stream of sunlight.
+
+Among the shadows and silence, a lone repair drone, its body a sleek amalgam of polished metal and glowing circuits, drifted through the vastness of the station's interior. Its purpose was to mend whatever breaches or malfunctions it encountered, a solitary guardian in the silent dominion of the void. The drone moved with purpose, its sensors scanning for anomalies, its thrusters whispering softly as they propelled it through the narrow corridors and vast chambers.
+
+Inside one of the station's many maintenance bays, the drone's sensors detected a faint signal emanating from a corroded panel in the wall. Curiosity piqued, it approached and carefully prised open the panel to reveal a small, crumpled piece of paper. The paper, yellowed with age and slightly burned at the edges, seemed untouched by time, as if it had been preserved in some inexplicable pocket of space-time.
+
+The drone's optical sensors scanned the message, deciphering the faded script with difficulty. It was a message left for whoever might find it, a final testament of those who had once inhabited the station. The words danced across the paper in a dance of desperation and hope:
+
+"To whoever finds this, if any soul remains... Our experiment has failed. The core is destabilizing, and we have sealed ourselves within our sanctum of madness. We hoped to harness the power of the void, to bend it to our will, but the cost has been our sanity. The station is now a tomb, a monument to our hubris. May someone else come after and find this message, perhaps with a chance to right our wrongs. We are gone, but perhaps we leave behind a fragment of ourselves, a warning and perhaps a hope."
+
+The drone's audio sensors picked up a faint, almost inaudible hum from the paper itself, a subtle vibration that seemed to resonate with the words etched upon it. It was as if the message had its own life, a pulse of energy that echoed the despair

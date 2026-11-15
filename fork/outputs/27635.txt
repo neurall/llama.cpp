@@ -1,0 +1,11 @@
+run 27635 | hot_tree8 | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.73 t/s | prompt 10.7 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3cold/s.ini | power 280+280 W | 2026-11-13 14:46:30
+
+ } else if (i == from.length()) {
+            out << "\"";
+            out << from;
+            out << "\"";
+        }
+    };
+    auto less_than = [&](int64_t value) {
+        auto value_str = std::to_string(value);
+        build_min_max_int(std::numeric_limits<int64_t

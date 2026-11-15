@@ -1,0 +1,4 @@
+run 27799 | pool_prefill | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 22.26 t/s | prompt 2.9 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 280+280 W | 2026-11-13 17:36:17
+
+The user wants a science-fiction short story
+---

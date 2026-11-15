@@ -1,0 +1,49 @@
+run 27503 | hot_tree4 | tetriscppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.34 t/s | prompt 64.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:10:48
+
+
+---
+Here is the smallest possible functional Tetris game in C++ for the terminal. It uses a single file, minimal dependencies, and standard C++11 features.
+
+### Requirements
+- **C++11 or later**
+- **Terminal with ANSI escape support** (most modern terminals)
+- **No external libraries** (uses `<iostream>`, `<vector>`, `<string>`, `<random>`)
+
+### Code
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <string>
+#include <random>
+#include <chrono>
+
+using namespace std;
+
+const int W = 10, H = 20;
+char grid[H][W] = {};
+int score = 0;
+
+// Tetromino shapes
+const vector<vector<int>> shapes = {
+    {{0,0,0,0},{1,1,1,1},{0,0,0,0},{0,0,0,0}}, // I
+    {{0,0,0},{0,1,1},{0,1,0},{0,0,0}},         // O
+    {{0,0,0},{1,1,0},{0,1,0},{0,0,0}},         // T
+    {{0,0,0},{1,1,0},{1,0,0},{0,0,0}},         // L
+    {{0,0,0},{0,1,1},{1,0,0},{0,0,0}},         // J
+    {{0,0,0},{1,0,0},{1,1,0},{0,0,0}},         // S
+    {{0,0,0},{0,1,0},{1,1,0},{0,0,0}}          // Z
+};
+
+int piece, x, y, rot;
+
+bool valid() {
+    for (int i = 0; i < 4; i++)
+        if (grid[y + shapes[piece][i][1]][x + shapes[piece][i][0]] != 0) return 0;
+    return 1;
+}
+
+void draw() {
+    for (int i = 0; i < H; i++) {
+        for (int j = 0; j < W; j++) {
+            if (grid[i][j]) cout << "█";

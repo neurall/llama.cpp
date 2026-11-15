@@ -1,0 +1,19 @@
+run 27360 | hot_tree2 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 213.2 t/s | prompt 702.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:35:39
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Elara, the archivist of the generation ship Aetheria, had watched over the slumbering souls for the past century, cataloging memories and histories, preserving the legacy of those who had ventured into the unknown. The Aetheria was a marvel of human ingenuity, a vessel crafted from technology that seemed almost magical—a floating city of steel and light, capable of carrying hundreds on a journey through the stars.
+
+The mission had been clear: to establish a new colony on the planet Elysium, a world teeming with life and promise. We were to be the vanguard, planting the seeds of civilization and waiting for the rest of humanity to catch up. But fate, it seemed, had other plans.
+
+The first cryo-pod to thaw was always the most sacred, the birthplace of our collective dream. I had been there, standing beside the glass as the woman inside stirred. Her name was Lena, and she blinked against the light with the confusion of someone waking from a deep slumber. Her eyes met mine, and in that gaze, I saw the future—our shared future—reflected back at me.
+
+"Welcome back, Lena," I whispered, though she could not hear me through the glass.
+
+The others awoke around her, each one a testament to our ambition and our hope. We gathered in the central hall, a vast chamber adorned with murals that depicted our journey and the world we were destined to claim. The walls pulsed with the lifeblood of the ship, glowing with a soft, bioluminescent light that bathed us in a warm, welcoming hue.
+
+"Today," I announced, my voice echoing through the chamber, "we begin the new chapter. Elysium awaits."
+
+The crew murmured in agreement, their faces alight with anticipation. We moved in silence, a congregation of spirits bound by purpose, through the corridors lined with lush vegetation that had taken root during our prolonged sleep. The air was thick with the scent of earth and growth, a stark contrast to the sterile environment of the ship.
+
+As we approached the central plaza, where the first of Elysium's cities sprawled beneath us, I felt a surge of emotion. The structures were alive with light, a symphony of colors dancing across the fac

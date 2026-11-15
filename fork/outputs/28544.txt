@@ -1,0 +1,206 @@
+run 28544 | k3_prompt_cache_path | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 51.62 t/s | prompt 1954.9 t/s | 4096 tokens | args: -np 1 | power 280+280 W | 2026-11-14 13:35:56
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line, first to last, every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then code, then // file: common/arg.cpp then code. Need return complete fixed version of following source file? It includes two files? Need likely fix bugs in both? They ask source file singular but content has two file markers. Need output entire code with fixes and comments. Need not summarize. Need ensure complete. Need identify bugs. This is huge. Need produce fixed version of both files? Probably yes, because they included both. Need mark each change by comment. Need every line unchanged parts included. Need not stop early. Need be careful.
+
+We need analyze code for bugs. It appears from llama.cpp? json-schema-to-grammar.cpp and arg.cpp. Need fix bugs. Could be intentionally introduced bugs. Need find and fix.
+
+Let's inspect first file.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. OK.
+
+build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Potential bug: if max_items == 0 and min_items >0? invalid. If min_items=0 max_items=0 should maybe return ""? OK. If min_items=0 max_items=1 returns item? OK. If min_items=1 max_items=1 no separator: returns item{1,1}? Could be item? But grammar supports {1,1}. OK. With separator: result = item + " " + repetition(sep item, min-1, max-1). If min=0 max=1: earlier returns item? Actually min=0 max=1 returns item_rule + "?" before separator, OK. If min=0 max=0 returns empty. If min=0 max>1: result = item + " " + repetition(sep item, 0, max-1); then wrap ? => (item repetition)?; OK. If min=1 max=1: result = item + " " + repetition(sep item,0,0). build_repetition with max=0 returns ""; result = item + " "; trailing space. Could be bug? For separator min=1 max=1 should just item_rule, not trailing space. In original llama.cpp? Let's recall build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    if (min_items == 1 && !has_max) {
+        return item_rule + "+";
+    }
+    if (min_items == 0 && !has_max) {
+        return item_rule + "*";
+    }
+    if (separator_rule.empty()) {
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Maybe original had if max_items == 0 return ""? Not sure. For min=1 max=1 with separator, original would call build_repetition(...,0,0) returns? If max_items==0 return "" then result item + " ". Could be trailing space not fatal? But maybe bug. Need fix? Could add if min_items == max_items == 1 return item_rule. But if max_items==0 and min_items==0? OK. If max_items==0 min_items>0 invalid maybe return empty? Could be bug.
+
+But likely introduced bugs elsewhere.
+
+build_min_max_int: complex. Need check bugs.
+```
+auto more_digits = [&](int min_digits, int max_digits) {
+    out << "[0-9]";
+    if (min_digits == max_digits && min_digits == 1) {
+        return;
+    }
+    out << "{";
+    out << min_digits;
+    if (max_digits != min_digits) {
+        out << ",";
+        if (max_digits != std::numeric_limits<int>::max()) {
+            out << max_digits;
+        }
+    }
+    out << "}";
+};
+```
+If min_digits=0 max_digits=0: outputs [0-9]{0,0}? OK? Could be empty? In grammar [0-9]{0,0} maybe allowed? Maybe should output nothing? Original? Let's recall llama.cpp build_min_max_int. It has:
+```
+auto more_digits = [&](int min_digits, int max_digits) {
+    out << "[0-9]";
+    if (min_digits == max_digits && min_digits == 1) {
+        return;
+    }
+    out << "{";
+    out << min_digits;
+    if (max_digits != min_digits) {
+        out << ",";
+        if (max_digits != std::numeric_limits<int>::max()) {
+            out << max_digits;
+        }
+    }
+    out << "}";
+};
+```
+OK.
+
+uniform_range: Need check. Original? It constructs regex-like range for numeric strings. Potential bug: `auto sub_len = from.length() - i - 1;` if i == length? But guarded i < from.length() && i < to.length(). If i == length-1, sub_len=0, else branch outputs `[from[i]-to[i]]`. OK. If from_sub == sub_zeros: digit_range(from[i], to[i] - 1); if from[i] > to[i]-1? Could happen? If from_sub zeros and from[i] == to[i]? But if from_sub zeros and to_sub maybe? Example from=100, to=199: i=1? from[1]=0 to[1]=9? OK. If from=100 to=100? i reaches length, no. If from=100 to=109: i=2? from[2]=0 to[2]=9? OK. If from=100 to=100? no. If from=100 to=101: i=2? from[2]=0 to[2]=1, digit_range(0,0). OK. If from=100 to=100? no. If from=100 to=100? OK. If from=100 to=100? no.
+Potential bug: `digit_range(to[i], to[i]);` should be `digit_range(to[i], to[i])` OK. But if to_reached false and from[i] == to[i]? Could output duplicate? Example from=123, to=129: i=2? from_sub=3 to_sub=9 sub_len=0? Actually i=2? from[0]=1 to[0]=1, from[1]=2 to[1]=2, i=2, sub_len=0, output [3-9]. OK. Example from=120, to=129: i=2? from[2]=0 to[2]=9 sub_len=0 output [0-9]. OK. Example from=120, to=130: i=1? from[1]=2 to[1]=3 sub_len=1. from_sub=0 to_sub=0? from_sub == sub_zeros true: digit_range(2,2) more_digits(1,1); to_reached false; out | digit_range(3,3) uniform_range(0,0). uniform_range(0,0): i=1? from.length=1 to.length=1, while i<1 && from[0]==to[0] => i=1; if i>0 out "0"; if i<length false. So outputs "0". Combined: [2] [0-9] | [3] "0". OK.
+Potential bug: `string_repeat("0", sub_len)` maybe function exists? common.h? OK.
+
+has_min && has_max:
+```
+if (min_value < 0 && max_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+    out << ")";
+    return;
+}
+```
+If min_value = INT64_MIN, -max_value? max_value negative maybe -1, -max_value=1, -min_value overflow if min_value=INT64_MIN. But maybe not considered. Could bug? Need fix? Could use unsigned? But original likely same.
+
+if min_value < 0:
+```
+out << "\"-\" (";
+build_min_max_int(0, -min_value, out, decimals_left, true);
+out << ") | ";
+min_value = 0;
+```
+If min_value=INT64_MIN overflow. But maybe.
+
+Then for digits loop:
+```
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+uniform_range(min_s, max_s);
+```
+Potential bug: if min_digits > max_digits? But min<=max so no. If min_s length changes? OK.
+
+less_decimals = std::max(decimals_left - 1, 1);
+
+has_min:
+```
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false);
+    out << ") | [0] | [1-9] ";
+    more_digits(0, decimals_left - 1);
+}
+```
+Potential bug: if min_value negative and has_min only (max unbounded), grammar should allow negative numbers <= min? Wait build_min_max_int(min, max) with max unbounded. If min<0, allowed values >= min. That includes negative numbers from min to -1 and nonnegative. The output: `"-" (build_min_max_int(INT64_MIN, -min_value)) | [0] | [1-9] more_digits`. But build_min_max_int(INT64_MIN, -min_value) with both has min and max? INT64_MIN as min, -min_value positive? If min_value=-5, -min_value=5, build_min_max_int(INT64_MIN,5) has_min && has_max, min<0 max>=0: outputs negative branch for min<0: `"-" (0..5) | 0..5`? That seems wrong? Let's test original? Maybe for min only negative, they want negative numbers with magnitude >=? Actually if min=-5, allowed integers >= -5: -5,-4,...,0,1,... unbounded. Negative part: -0 to -5? But JSON integer doesn't allow -0? Maybe [0]? They output `"-" (build_min_max_int(INT64_MIN, -min_value))`? That would allow negative numbers with magnitude from INT64_MIN to 5? That includes -100? Wait build_min_max_int(INT64_MIN, 5) with min negative max positive: min<0 branch: out `"-" (build_min_max_int(0, -INT64_MIN? overflow)) | ...` Not good. Maybe original uses `build_min_max_int(-min_value, std::numeric_limits<int64_t>::max())`? Let's recall actual llama.cpp code. I can search memory. In json-schema-to-grammar.cpp, build_min_max_int:
+```
+if (has_min && has_max) { ... }
+auto less_decimals = std::max(decimals_left - 1, 1);
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    } else if (min_value == 0) { ... }
+...
+}
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    } else {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+        out << ")";
+    }
+}
+```
+This is likely original. So not bug.
+
+But there may be introduced bugs in first file:
+- `static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");` OK.
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` unused? OK.
+- `static const int MAX_PATTERN_DEPTH = 100;` OK.
+- `NON_LITERAL_SET` includes `|`, `.`, `(`, `)`, `[`, `]`, `{`, `}`, `*`, `+`, `?`, `^`, `$`. Missing `"`? handled separately. OK.
+- `replacePattern`: uses `searchStart + match.position()` but match.position() returns difference_type relative to searchStart? In regex_search with iterators, match.position() is offset from searchStart? Yes. But `searchStart + match.position()` OK. `match.suffix().first` OK.
+- `format_literal`: uses GRAMMAR_LITERAL_ESCAPES.at(c). For chars matched by regex: \r, \n, ", \. Escapes map has all. OK.
+- `gbnf_escape_length`: if pos+1 >= length or pattern[pos] != '\\', return 0. For escape sequences. It handles x/u/U hex. But for `\x` if n_hex=2, checks pos+2+n_hex > length. OK. For `\u` 4, `\U` 8. For other escapes returns 2. But for `\b`, `\f`? It doesn't include b/f? In regex, \b is word boundary, not char? In char class maybe backspace? llama grammar parse_char maybe supports \b? Let's check comment keep in sync with parse_char in llama-grammar.cpp. parse_char likely supports \b, \f? In JSON string escapes: \b, \f, \n, \r, \t, \/, \", \\, \u. But regex escapes? Maybe grammar supports \b? The code includes 't','r','n','\\','"','[',']','-' but not 'b','f','/'. Could be bug? Need know original. In llama.cpp gbnf_escape_length maybe:
+```
+case 't': case 'r': case 'n': case '\\': case '"': case '[': case ']': case '-':
+    return 2;
+```
+Maybe yes.
+
+Class common_chat_schema_converter:
+- friend build_grammar OK.
+- `_add_rule`: if existing same OK. If different, appends number. But condition `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` OK. If esc_name+"0" exists with different rule, i increments. If exists same, exits and key maybe existing? Actually if find != end and rule same, condition false, key = esc_name + "0", then _rules[key]=rule (same). OK.
+- `_generate_union_rule`: name + (name.empty() ? "alternative-" : "-") + i. If name empty, result "alternative-0". If not, "name-0". OK.
+- `_visit_pattern`: catches unsupported/invalid. For invalid returns "". OK.
+- `_pattern_to_rule`: anchored check. `sub_pattern = pattern.substr(1, pattern.length() - 2);` If pattern length <2 handled. If pattern "^$" length 2 -> substr(1,0) OK.
+- `paren_depth` declared outside transform. transform recursive uses same paren_depth. For groups: when '(' encountered, i++, maybe skip ?:, paren_depth++, then transform inner. When ')' encountered, i++, if paren_depth==0 invalid, paren_depth--, return join_seq(). At top-level transform returns when i reaches length or sees ')'. After top transform, check paren_depth !=0 invalid. OK.
+Potential bug: In literal parsing inner while condition:
+```
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1])))

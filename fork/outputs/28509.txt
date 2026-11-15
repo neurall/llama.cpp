@@ -1,0 +1,75 @@
+run 28509 | split_stream_calls_only | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.36 t/s | prompt 1393.5 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 11:23:41
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` cases - correct
+  - When separator is present, builds `item (separator item)*` pattern - looks correct
+  - The recursive call for separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` - this seems correct for building `item (sep item){min-1,max-1}`
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda handles digit-by-digit range generation
+- Potential issue: `std::stoll` could throw if the substring is not a valid number
+- The `decimals_left` parameter is used to limit recursion depth - good
+- The `top_level` parameter controls whether leading zeros are allowed - good
+- Edge case: when `min_value == 0` and `top_level` is true, it outputs `[0] | [1-9] ...` which correctly handles zero
+- The negative number handling looks correct
+
+### _add_rule function
+- Handles name collisions by appending numbers - good
+- The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Looks correct.
+
+### _visit_pattern function
+- Takes a snapshot of rules before attempting pattern conversion - good for rollback
+- Catches `unsupported_pattern` and `invalid_pattern` exceptions - good
+
+### _pattern_to_rule function
+- Complex regex-to-grammar conversion
+- The `transform` lambda is recursive (via `std::function`)
+- Handles various regex constructs: `.`, `()`, `[]`, `|`, `*`, `+`, `?`, `{}`, literals
+- Potential issue: the `sub_rule_ids` map uses rule content as key, which could lead to incorrect rule IDs if different rules have the same content
+- The character class parsing looks correct
+- The curly bracket parsing handles `{n}`, `{n,m}`, `{n,}` cases
+
+### _not_strings function
+- Builds a trie-based rule for matching strings that are NOT in a given set
+- The `rejects` string accumulates characters for the negated character class
+- Potential issue: if a character in `rejects` needs escaping (like `"` or `\`), it's not escaped. The output is `[\"" << rejects << "]` - if `rejects` contains `"` or `\`, this would break the grammar.
+
+### _resolve_ref function
+- Handles `$ref` resolution with cycle detection via `_refs_being_resolved`
+- Good use of cycle detection
+
+### _build_object_rule function
+- Builds object rules with required and optional properties
+- The `get_recursive_refs` function builds alternatives for optional properties
+- Potential issue: the rule generation for optional properties could produce very large rules for many optional properties (exponential alternatives)
+
+### _add_primitive function
+- Recursively adds primitive rules and their dependencies
+- Good dependency resolution
+
+### visit function
+- Main dispatch function for schema types
+- Handles all schema kinds
+- The `is_reserved_name` check appends `-` to reserved names - good
+
+### Other observations:
+- `SPACE_RULE` is a global const string - fine
+- `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` are static unordered_maps - fine
+- The `INVALID_RULE_CHARS_RE` regex is used for sanitizing rule names
+- `MAX_PATTERN_DEPTH` is set to 100 - reasonable limit
+
+### Issues I've found:
+
+1. **`_not_strings` - unescaped characters in character class**: The `rejects` string is built from UTF-8 characters and placed directly inside `[...]` without escaping special characters like `"`, `\`, `]`, `-`.
+
+2. **`_pattern_to_rule` - `sub_rule_ids` keyed by rule content**: Using rule content as a key in `sub_rule_ids` could cause issues if two different sub-rules happen to have the same content but should be different

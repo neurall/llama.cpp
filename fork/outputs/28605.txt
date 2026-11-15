@@ -1,0 +1,4 @@
+run 28605 | ring_next_use | scific | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 20.52 t/s | prompt 2.6 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 280+280 W | 2026-11-14 17:32:31
+
+We need answer story ~900 words.
+---

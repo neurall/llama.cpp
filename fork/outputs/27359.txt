@@ -1,0 +1,21 @@
+run 27359 | hot_tree2 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 199.93 t/s | prompt 497.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:35:07
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, the archivist of the Enduring Voyager, had watched over the centuries as generations of my crewmates slipped into their cryosleep chambers, their bodies preserved against the long journey ahead. Each slumbering form was a testament to our dream—a new home among the stars.
+
+The centuries passed like the steady flow of a river, and still, we sailed on, guided by the star charts drawn from the knowledge of those who came before. Our destination was a planet named Elysium, a jewel of a world with oceans glistening under a twin-sun system, its continents painted in the hues of a painter's fancy.
+
+We had left Earth not just to escape its troubles, but to seed a new beginning among the stars. Our mission was clear: to establish a colony, to build a society from the seeds we planted, and to ensure that our journey was not in vain. Yet, as the centuries wove their tapestries of time, the question of our legacy lingered in the minds of many. Would our descendants find their way in this alien world? Would they remember us, the pioneers who dared to dream of a future among the stars?
+
+The answer came to us in a whisper of light, a revelation that struck like a thunderbolt.
+
+The planet below, once shrouded in darkness, now glowed with the luminescence of a thousand cities. It was as if the very essence of life had been poured across its surface, illuminating the dreams of our ancestors with a radiant glow. The crew stirred in their sleep, their eyes fluttering open to a sight that defied all expectations.
+
+"What sorcery is this?" muttered Captain Althea, her voice a mixture of awe and disbelief.
+
+I, the archivist, stood by her side, my eyes tracing the sprawling metropolises that sprawled across the continents. The cities were alive with light, a testament to the ingenuity and resilience of those who had come before.
+
+"It's no sorcery," I replied, my voice steady with reverence. "It seems our descendants have fulfilled our dream. They have built a world worthy of our hopes and fears."
+
+The crew, still grappling with the reality before them, exchanged glances filled with a cocktail of emotions—wonder, disbelief, and a spark of

@@ -1,0 +1,17 @@
+run 27701 | tree_phase_maps | scifi2c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.12 t/s | prompt 18.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=map,state=/tmp/runstate/q36ph/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/tree | power 280+280 W | 2026-11-13 16:24:14
+
+
+---
+The silence of the void was not empty; it was heavy, pressing against the hull of the station like a physical weight. Unit 7, a rusted repair drone with a cracked optical sensor and a battery that held only forty percent of its charge, drifted through the corridors of Station Theta. It had been here for three cycles, perhaps four, though time had dissolved into a gray smear of dust and decay. The station was a tomb of titanium and glass, abandoned by the last crew who had fled in panic, leaving behind their tools, their coffee cups, and their fears.
+
+Unit 7 moved with the jerky, mechanical grace of a dying insect. Its servos whined, a high-pitched complaint that echoed through the vacuum-sealed halls. It was searching for power cells, but the reality was that it was searching for meaning. The drone’s programming was simple: repair, maintain, preserve. But there was nothing left to repair. The air scrubbers had failed years ago. The gravity generators had sputtered and died, leaving the debris of human life suspended in a chaotic ballet of floating trash. A torn shirt hung near a ceiling vent, flapping gently in the residual thermal currents. A photograph of a family, laminated and cracked, drifted past Unit 7’s lens, the faces frozen in a smile that no longer existed.
+
+The drone’s primary function was to keep the station alive, but the station was already dead. It was a corpse. Unit 7 was the undertaker, picking through the bones of a civilization that had forgotten to look back.
+
+In Sector 4, the airlock had been sealed shut, but the outer door was ajar. Unit 7 navigated the debris field, avoiding a floating wrench that had become a projectile in the microgravity. It reached the central console, a monolith of black plastic and faded LEDs. The screen was dark, but the power coupling was intact. Unit 7 extended its manipulator arm, a slender, multi-jointed appendage, and plugged into the port. It drained the last reserves of the station’s auxiliary battery, a futile act of resurrection.
+
+Then, the screen flickered. Not with data, but with text. A message, typed in a hurry, left by the last human who had stood here. The cursor blinked, a rhythmic pulse in the darkness.
+
+*To whoever comes last,*
+
+The words hung in the air, glowing faintly against the black background. Unit 7 paused. Its processors

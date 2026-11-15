@@ -1,0 +1,45 @@
+run 27429 | hot_tree3 | tetriscppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 162.46 t/s | prompt 109.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 11:16:22
+
+
+---
+Creating a full Tetris game from scratch in C++ for the terminal involves a lot of code, but I'll guide you through a minimalist version that demonstrates the core mechanics of Tetris. This version will focus on the essentials: moving a Tetromino (shapes made up of squares) down the screen, rotating the Tetromino, and dropping it when a solid line is reached.
+
+This example will use `std::string` for the Tetromino shapes and `std::cout` for output. You'll need to handle input (such as moving left/right and dropping) separately, which could be done via keyboard keys or a game controller.
+
+```cpp
+#include <iostream>
+#include <string>
+#include <vector>
+
+// Define Tetromino shapes as strings
+const std::string I = "  ";
+const std::string O = " | ";
+const std::string S = "  |";
+const std::string T = " |  ";
+const std::string L = "  |";
+const std::string J = " |  |";
+const std::string Z = "  |";
+const std::string O2 = "  |";
+
+// Function to draw the Tetromino at the current position
+void draw(const std::string& tetromino, int x, int y) {
+    std::cout << tetromino.substr(y, 1) << " ";
+}
+
+// Function to check if the Tetromino is valid (no overlapping with walls)
+bool isValid(const std::string& tetromino, int x, int y) {
+    int width = tetromino.length();
+    int height = tetromino.size();
+    for (int i = 0; i < width; ++i) {
+        int x1 = x + i;
+        int y1 = y;
+        int x2 = x + i + 1;
+        int y2 = y + height - 1;
+        if ((x1 < 0 || x2 >= gameWidth) || (y1 < 0 || y2 >= gameHeight) ||
+            (tetromino[i] == ' ' && (x1 + 1 == x || x2 + 1 == x))) {
+            return false;
+        }
+    }
+    return true;
+}
+

@@ -1,0 +1,4 @@
+run 27252 | ns_gate1 | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.78 t/s | prompt 2.5 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 200+200 W | 2026-11-13 06:16:12
+
+The task: a ~900-word science
+---

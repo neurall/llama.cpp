@@ -1,0 +1,21 @@
+run 27664 | tree_phase_maps | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 62.53 t/s | prompt 66.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=map,state=/tmp/runstate/q36ph/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/tree | power 280+280 W | 2026-11-13 16:02:02
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in a haze of white light, until the familiar hum of the *Aethelgard*’s engines settled into a steady rhythm.
+
+He was the first to stir. The others followed, groggy and disoriented, their faces pale as moonlight. Captain Vane stood up, shaking the frost from his uniform, his eyes scanning the viewport. Elias followed his gaze, expecting the barren, violet landscape of Proxima Centauri b, the world they had been sent to terraform. Instead, he saw light.
+
+Not the scattered, flickering glow of primitive settlements, but a constellation of brilliance. The planet was a tapestry of gold and amber, woven with streets and towers that pierced the cloud layer. It was a city, alive and breathing.
+
+"Impossible," Vane whispered, his voice cracking. "We are the first. We are the only ones."
+
+Elias moved to the console, his fingers trembling as he accessed the navigation logs. The data streams were clear. They had arrived. The planet was Proxima Centauri b. But the telemetry suggested a discrepancy in arrival time. The ship’s chronometer, calibrated for a three-century journey, had ticked forward. Yet, the external sensors detected a signal—a radio wave, distinct and structured, pulsing from the surface.
+
+"Who is calling?" Elias asked, his archivist’s instinct overriding his shock. He pulled up the frequency analysis. The signal was not alien. It was human. It was a broadcast of the *Aethelgard*’s own launch code, repeated in a loop, but with a timestamp that contradicted their own history.
+
+"Look at the spectral analysis," Elias said, pointing to the screen. "The light below isn't just illumination. It's the reflection of a ship. A smaller vessel. It arrived before us."
+
+Vane stared at the screen, his face hardening. "A copy? A duplicate?"
+
+Elias nodded. "The archives mention a contingency protocol. If the primary mission failed, or if the population grew

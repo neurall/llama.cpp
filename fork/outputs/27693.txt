@@ -1,0 +1,52 @@
+run 27693 | tree_phase_maps | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 52.71 t/s | prompt 16.2 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,count-prompt=0,state=/tmp/runstate/q36ph/cp0/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/cp0 | power 280+280 W | 2026-11-13 16:19:32
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 180, dx = 2, dy = -2, bx = 100, by = 100;
+let bricks = [];
+for(let r=0; r<5; r++) for(let col=0; col<10; col++) bricks.push({x:col*20, y:r*20, alive:1});
+
+function loop() {
+    ctx.clearRect(0,0,200,200);
+    // Move Ball
+    x += dx; y += dy;
+    if(x<0||x>200) dx=-dx;
+    if(y<0||y>200) dy=-dy;
+    
+    // Paddle Collision
+    if(y>190 && x>90 && x<110) dy=-dy;
+    
+    // Brick Collision
+    bricks.forEach(b => {
+        if(b.alive && x>b.x && x<b.x+20 && y>b.y && y<b.y+20) {
+            b.alive=0; dy=-dy;
+        }
+    });
+    
+    // Draw
+    ctx.fillStyle='blue'; ctx.fillRect(bx-10, by-10, 20, 20); // Ball
+    ctx.fillStyle='black'; ctx.fillRect(90, 190, 20, 10); // Paddle
+    ctx.fillStyle='red'; bricks.forEach(b => { if(b.alive) ctx.fillRect(b.x, b.y, 20, 20); });
+    
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
+```
+
+### How it works:
+1. **Canvas**: A 200x200 pixel area.
+2. **Ball**: Moves diagonally (`dx`, `dy`). Bounces off walls.
+3. **P

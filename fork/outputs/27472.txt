@@ -1,0 +1,52 @@
+run 27472 | hot_tree4 | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 97.84 t/s | prompt 137.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 11:52:04
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 180, dx = 2, dy = -2, bx = 100, by = 100;
+let bricks = [];
+for(let i=0; i<10; i++) bricks.push({x: i*20, y: 20});
+
+function loop() {
+    ctx.clearRect(0,0,200,200);
+    bx += dx; by += dy;
+    if(bx<0||bx>200) dx=-dx;
+    if(by<0||by>200) dy=-dy;
+    if(by>180 && Math.abs(bx-bx) < 20) dy=-dy; // Paddle collision (simplified)
+    
+    // Draw Paddle
+    ctx.fillStyle = '#000';
+    ctx.fillRect(bx-10, 180, 20, 10);
+    
+    // Draw Ball
+    ctx.beginPath(); ctx.arc(bx, by, 5, 0, 7); ctx.fill();
+    
+    // Draw Bricks & Collision
+    bricks.forEach(b => {
+        if(bx>b.x && bx<b.x+20 && by>b.y && by<b.y+20) {
+            dy=-dy; b.y=999; // Remove brick
+        }
+        ctx.fillRect(b.x, b.y, 20, 20);
+    });
+    
+    requestAnimationFrame(loop);
+}
+document.onkeydown = e => bx = e.key=='ArrowLeft'?bx-10:bx+10;
+loop();
+</script>
+</body>
+</html>
+```
+
+### How it works:
+1. **Canvas**: Creates a 200x200 drawing area.
+2. **Ball Physics**: The ball moves with `dx` and `dy`. It bounces off walls

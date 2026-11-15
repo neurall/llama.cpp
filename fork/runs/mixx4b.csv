@@ -1,0 +1,11 @@
+name,model,n,test,tokens,args,extra
+x4-mx-qni4,qn_iq4xs,1,pf4k,32,"--moe pp-path=mix,dense-split=0,simlink=16,4",--nothink
+x4-st-qni4,qn_iq4xs,1,pf4k,32,"--moe pp-path=stream,dense-split=0,simlink=16,4",--nothink
+x4-au-qni4,qn_iq4xs,1,pf4k,32,"--moe simlink=16,4",--nothink
+eq-mx-qni4,qn_iq4xs,1,pf4k,32,"--moe pp-path=mix,dense-split=0",--nothink
+eq-st-qni4,qn_iq4xs,1,pf4k,32,"--moe pp-path=stream,dense-split=0",--nothink
+x4-mx-glm,glm,1,pf4k,32,"--moe pp-path=mix,dense-split=0,simlink=16,4",
+x4-st-glm,glm,1,pf4k,32,"--moe pp-path=stream,dense-split=0,simlink=16,4",
+x4-au-glm,glm,1,pf4k,32,"--moe simlink=16,4",
+eq-mx-glm,glm,1,pf4k,32,"--moe pp-path=mix,dense-split=0",
+eq-st-glm,glm,1,pf4k,32,"--moe pp-path=stream,dense-split=0",

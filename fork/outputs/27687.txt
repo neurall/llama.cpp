@@ -1,0 +1,67 @@
+run 27687 | tree_phase_maps | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 50.15 t/s | prompt 21.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,count-prompt=0,state=/tmp/runstate/q36ph/cp0/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/cp0 | power 280+280 W | 2026-11-13 16:15:53
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Key Features:
+- **Terminal-based**: Uses standard input/output.
+- **Minimal**: ~100 lines of code.
+- **Controls**: Arrow keys to move.
+- **Game Logic**: Snake grows when eating food, dies on collision with walls or itself.
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+using namespace std;
+
+int main() {
+    // Grid size
+    const int W = 20, H = 15;
+    vector<vector<char>> grid(H, vector<char>(W, ' '));
+
+    // Snake state
+    vector<pair<int, int>> snake = {{W/2, H/2}};
+    pair<int, int> food = {rand() % W, rand() % H};
+    char dir = 'r'; // Initial direction: right
+
+    // Game loop
+    while (true) {
+        // Clear screen
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                grid[y][x] = ' ';
+            }
+        }
+
+        // Draw snake
+        for (auto p : snake) {
+            grid[p.second][p.first] = 'S';
+        }
+        // Draw food
+        grid[food.second][food.first] = 'F';
+
+        // Print grid
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                cout << grid[y][x];
+            }
+            cout << endl;
+        }
+
+        // Input
+        char input;
+        cin >> input;
+        if (input == 'w') dir = 'u';
+        else if (input == 's') dir = 'd';
+        else if (input == 'a') dir = 'l';
+        else if (input == 'd') dir = 'r';
+
+        // Calculate new head position
+        pair<int, int> head =

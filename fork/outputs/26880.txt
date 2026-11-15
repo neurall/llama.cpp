@@ -1,0 +1,4 @@
+run 26880 | dq_cublas | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.44 t/s | prompt 753.2 t/s | 128 tokens | args: -np 1 --moe mode=stock | power 280+280 W | 2026-11-12 17:52:46
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided a C++ source file snippet, likely truncated. Need review. Need analyze code. Need produce final code review. Need be thorough. Need consider file common/json-schema-to-grammar.cpp. It includes headers, using json = common_json; functions build_repetition, build_min_max_int, constants, PRIMITIVE_RULES truncated. Need review for correctness, style, safety, maintainability, potential bugs. Since file truncated, note incomplete. Need maybe infer context: converting JSON Schema to grammar (likely llama.cpp grammar?). Need review code snippets

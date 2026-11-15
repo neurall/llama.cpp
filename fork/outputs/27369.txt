@@ -1,0 +1,19 @@
+run 27369 | hot_tree3 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 172.04 t/s | prompt 552.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:42:53
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, the archivist of the generation ship Aetheria, had watched over the slumbering souls for the past century, cataloging memories, histories, and dreams. Each cryo-pod a repository of life, each sleeper a story waiting to be told upon waking.
+
+The Aetheria had been designed as a beacon of hope, a vessel carrying the remnants of humanity to a new world. We were to be the pioneers of the stars, settling upon a planet named Elysium, a jewel of a world circling a sun not unlike our own. But fate had a different plan.
+
+The cryo-chambers had awakened us prematurely, weeks ahead of schedule. The captain, a man whose name was etched into the ship's core as its first commander, ordered us to rouse from our slumber. "Wake up, people," he had said, his voice steady but tinged with a hint of desperation. "It's time to face our new reality."
+
+As the lights above flickered to life, a symphony of colors danced across the ceiling of the communal chamber. It was a sight I had only ever witnessed in holo-records, a testament to the ingenuity and resilience of those who had come before us. The cities below, bathed in the soft glow of artificial light, were alive with activity. Buildings that once stood as skeletal frames in the void of space now teemed with life, their facades adorned with gardens and parks, rivers of light weaving through their streets.
+
+The colonists below, our descendants, moved with purpose. They were the architects of their own destiny, a society reborn from the ashes of the old world. I watched through the observation deck's viewport as they went about their daily lives—farmers tending to their crops, scientists peering into microscopes, artists painting murals on the sides of buildings.
+
+"They're our children," a voice whispered from beside me, a sentiment shared by many. We had expected to be the harbingers of civilization, yet here we were, witnesses to a testament of human ingenuity and adaptability.
+
+"Do you think they know about us?" another voice asked, curiosity lacing the question.
+
+I turned to face them, my gaze sweeping over the faces of those who shared my duty

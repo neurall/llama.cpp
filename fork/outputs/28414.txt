@@ -1,0 +1,91 @@
+run 28414 | probe_peak_alive | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 27.8 t/s | prompt 350.5 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 08:13:24
+
+<think>Let me analyze this code carefully. The user is asking me to do a code review of the provided source files. The files are:
+
+1. `common/json-schema-to-grammar.cpp` - converts JSON schemas to grammar rules
+2. `common/arg.cpp` - argument parsing utilities
+
+Let me look at the code for potential issues, bugs, security vulnerabilities, and improvements.
+
+Looking at `json-schema-to-grammar.cpp`:
+
+1. The `common_chat_schema_converter` class has methods for converting JSON schemas to grammar rules.
+
+2. In `_build_object_rule`, there's a lambda `get_recursive_refs` that recursively builds rules for optional properties.
+
+3. In `_visit_all_of`, there's handling of enum values intersection.
+
+4. The `json_schema_to_grammar` function has a try-catch that catches `std::runtime_error` and rethrows as `std::invalid_argument`.
+
+Looking at `arg.cpp`:
+
+1. `read_file` - reads a file, throws on failure.
+2. `get_common_arg_defs` - static initialization of options.
+3. `common_arg` methods - set_examples, set_excludes, set_env, etc.
+4. `break_str_into_lines` - breaks a string into lines with max chars per line.
+5. `to_string` - formats the arg for console printing.
+6. `get_args`, `get_env` - return vectors of strings.
+7. `parse_tensor_buffer_overrides` - parses tensor buffer override strings.
+8. `clean_file_name` - replaces backslashes and forward slashes with underscores.
+9. `handle_model_result` struct.
+10. `kv_cache_types` and `kv_cache_type_from_str`.
+11. `get_all_kv_cache_types`.
+12. `parse_bool_value`.
+13. `arg_removed`.
+14. `get_default_local_path`.
+15. `spec_types_is_default`.
+
+Let me look for specific issues:
+
+In `json-schema-to-grammar.cpp`:
+
+- The `_resolve_ref` method: if the ref is not found and not being resolved, it checks if target is null and pushes an error. But there's a potential issue: if `_refs_being_resolved` contains the ref but `_rules` doesn't have the ref_name, it returns ref_name without checking. Actually wait, let me re-read:
+
+```cpp
+std::string _resolve_ref(const common_chat_schema_ref & schema) {
+    auto it = schema.ref.find('#');
+    std::string ref_fragment = it != std::string::npos ? schema.ref.substr(it + 1) : schema.ref;
+    static const std::regex nonalphanumeric_regex(R"([^a-zA-Z0-9-]+)");
+    std::string ref_name = "ref" + std::regex_replace(ref_fragment, nonalphanumeric_regex, "-");
+    if (_rules.find(ref_name) == _rules.end() && _refs_being_resolved.find(schema.ref) == _refs_being_resolved.end()) {
+        if (!schema.target) {
+            _errors.push_back("Unresolved $ref " + schema.ref);
+            return "";
+        }
+        _refs_being_resolved.insert(schema.ref);
+        ref_name = visit(*schema.target, ref_name);
+        _refs_being_resolved.erase(schema.ref);
+    }
+    return ref_name;
+}
+```
+
+This looks OK. But there's a subtle issue: if the ref is being resolved (circular reference), it returns ref_name without adding the rule. This could lead to an unresolved rule reference in the grammar. But that's probably intentional to handle circular refs.
+
+In `_build_object_rule`:
+
+```cpp
+std::function<std::string(const std::vector<std::string> &, bool)> get_recursive_refs = [&](const std::vector<std::string> & ks, bool first_is_optional) {
+    std::string res;
+    if (ks.empty()) {
+        return res;
+    }
+    const std::string& k = ks[0];
+    std::string kv_rule_name = prop_kv_rule_names[k];
+    std::string comma_ref = "( \",\" space " + kv_rule_name + " )";
+    if (first_is_optional) {
+        res = comma_ref + (k == "*" ? "*" : "?");
+    } else {
+        res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+    }
+    if (ks.size() > 1) {
+        res += " " + _add_rule(
+            name + (name.empty() ? "" : "-") + k + "-rest",
+            get_recursive_refs(std::vector<std::string>(ks.begin() + 1, ks.end()), true)
+        );
+    }
+    return res;
+};
+```
+
+Hmm, there's a potential issue here: if `k == "*"` and `first_is_optional` is false, then `res = kv_rule_name + " " + comma_ref + "*"`. But `kv_rule_name` for "*" is the kv_rule

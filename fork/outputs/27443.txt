@@ -1,0 +1,19 @@
+run 27443 | hot_tree4 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 92.18 t/s | prompt 210.0 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 11:34:14
+
+
+---
+The thawing of the cryo-gel felt less like waking and more like drowning in reverse. Elias, the ship’s archivist, gasped as the viscous fluid drained from his lungs, replacing the cold numbness with a sharp, burning heat. His eyes, crusted with the residue of a century’s sleep, blinked against the sudden glare of the artificial dawn. The silence of the *Aethelgard* was broken not by alarms, but by the hum of the ventilation systems, a low, rhythmic thrum that vibrated in his teeth.
+
+He stumbled toward the observation deck, his legs trembling like wet paper. The viewports were massive, curved sheets of reinforced glass, offering a panoramic gaze of the world they had been sent to colonize: Kepler-4b. He expected a barren wasteland, a place of dust and silence, waiting for the first footprint. Instead, the planet was a tapestry of light.
+
+Below, the continents were stitched together by glowing veins of electricity. Cities sprawled across the equatorial bands, their architecture intricate and familiar. Towers of glass and steel pierced the clouds, reflecting the twin moons in a dazzling array of prisms. It was not the primitive settlement Elias had memorized from the pre-launch archives. It was a metropolis.
+
+"Look," whispered Commander Vance, standing beside him. Vance’s face was pale, his eyes wide with a mixture of awe and terror. "They’re here. They’re already here."
+
+Elias pressed his hand against the cold glass. The light was too bright, too organized. It defied the timeline. The *Aethelgard* had left Earth three hundred years ago, carrying the first wave of humanity. The mission parameters were clear: a century-long journey, followed by a generation of sleepers to maintain the ship’s systems. They were supposed to be the pioneers.
+
+"Impossible," Elias murmured, his voice raspy. "We are the first. The logs confirm it. No other vessel launched in our era."
+
+Vance turned to him, his expression grim. "Check the navigation logs, Elias. Check the telemetry from the last ten years."
+
+Elias moved to the console, his fingers shaking as he typed the command. The screen flickered, displaying the star charts. He scrolled back through the decades. There, buried in the data, was a anomaly. A second launch signature, detected by the ship’s long-range sensors only moments before their awakening. It had been

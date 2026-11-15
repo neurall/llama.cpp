@@ -1,0 +1,40 @@
+run 28895 | cpu_mask_drift_gate | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.06 t/s | prompt 1407.5 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-15 09:49:28
+
+<think>The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, security issues, and maintainability problems.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1, "")` 
+  - For `min_items=0, max_items=5`: inner is `item{0,4}` which is `item*` or `item{0,4}`. Then wrapped in `(...)?`. This seems correct.
+  - For `min_items=1, max_items=5`: inner is `item{0,4}`. Result is `item (sep item){0,4}`. Correct.
+  - For `min_items=0, max_items=INT_MAX`: inner is `item*`. Result is `(item (sep item)*)?`. Correct.
+
+### build_min_max_int function
+- Complex recursive function. Let me check edge cases:
+  - When `min_value == max_value`, both `has_min` and `has_max` are true. It goes to the first branch. `min_s == max_s`, so `min_digits == max_digits`, the for loop doesn't execute, and `uniform_range(min_s, max_s)` is called. This should work.
+  - When `min_value < 0 && max_value < 0`: negates both and recurses. But what about `min_value = INT64_MIN`? `-min_value` would overflow. Wait, `min_value < 0 && max_value < 0`, so it does `build_min_max_int(-max_value, -min_value, ...)`. If `min_value == INT64_MIN`, `-min_value` overflows. This is a potential bug.
+  - Actually wait, `min_value < 0 && max_value < 0` means both are negative. `-max_value` and `-min_value` are both positive. But if `min_value == INT64_MIN`, `-min_value` is undefined behavior (signed overflow). This is a bug.
+
+- When `min_value < 0` (but `max_value >= 0`): It outputs `"- " (build_min_max_int(0, -min_value, ...))` then `| ` and sets `min_value = 0`. If `min_value == INT64_MIN`, `-min_value` overflows again.
+
+- The `less_decimals` variable: `std::max(decimals_left - 1, 1)` - this is computed but only used in some branches. It's computed before the `has_min` check but used inside. This is fine but could be confusing.
+
+- In the `has_min` branch when `min_value < 0`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Again, if `min_value == INT64_MIN`, `-min_value` overflows.
+
+- In the `has_max` branch when `max_value < 0`: `build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), ...)`. If `max_value == INT64_MIN`, `-max_value` overflows.
+
+So there's a systematic issue with negating `INT64_MIN`.
+
+### _add_rule function
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop condition `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct.
+
+### _visit_pattern / _pattern_to_rule
+- The `sub_rule_ids` map is used to deduplicate sub-rules within a pattern. The key is the rule content, and the value is the rule ID. The naming uses `sub_rule_ids.size()` which could collide if different rules are added at the same size. Actually, `sub_rule_ids.size()` is used as a counter, but since it's a map keyed by content, different contents at the same size would get the same name. Wait, let me re-read:
+  ```cpp
+  std::string & sub_id = sub_rule_ids[sub];
+  if (sub_id.empty()) {
+      sub_id = _add_rule(name + "-" + std::

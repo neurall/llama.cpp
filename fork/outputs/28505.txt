@@ -1,0 +1,59 @@
+run 28505 | chain_grid_claims | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 27.86 t/s | prompt 935.9 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 10:58:12
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete/truncated.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, returns "" — but that's semantically wrong if min_items > 0 (a schema requiring at least 1 item with max 0 is contradictory; returning empty string silently accepts the contradiction). Actually wait, if max_items == 0 and min_items > 0, the schema is unsatisfiable. Returning "" means the grammar matches empty string, which is wrong — it should probably be an error or something that can't match. Hmm, actually returning "" as a rule content... Let me think. In GBNF, an empty rule would be invalid syntax. Actually the rule would be `name ::= ` with empty content. That's a bug potentially. But maybe callers never hit that. Actually in `KIND_ARRAY`, `min_items` could be > 0 and `max_items == 0`. That would produce an empty rule. Edge case bug.
+- Also `min_items < 0`? If min_items is negative, `{min_items,...}` would produce negative repetition which is invalid. Callers pass `arr.min_items` directly. If schema has negative min_items... probably validated elsewhere.
+- Recursion: `build_repetition` with separator calls itself with `max_items - 1`. If `max_items` is large (e.g., INT_MAX), `has_max` is false so it passes `max_items` unchanged (INT_MAX), fine. But if max_items is, say, 1000000, this recursion would generate a million-deep nested string — potential stack overflow / huge string. Actually the recursion is not deep — it's tail-ish but builds string iteratively? Let's see: `build_repetition(item, min, max, sep)` calls `build_repetition(...)` recursively once per level, and each level decrements max by 1. So for max_items = 100000, recursion depth 100000 → stack overflow. That's a real concern for large max_items with separators. In practice schemas rarely have huge max_items, but it's worth noting. Actually wait — each recursive call decrements max_items by 1, so depth = max_items. For max_items = 1000, depth 1000 recursion with string building — each frame has strings... could be heavy but OK. For larger, problematic. Worth noting as a potential DoS with adversarial schema.
+
+### `build_min_max_int`
+
+This is complex recursive logic generating regex-like digit ranges. Let me check some details.
+
+- `decimals_left = 16` default. `less_decimals = std::max(decimals_left - 1, 1)`.
+- The `uniform_range` lambda captures `out` by reference and calls itself recursively — declared as `std::function` so OK.
+- Potential issue: `uniform_range` recursion depth proportional to string length; strings are at most ~20 digits, fine.
+- In `has_min && has_max` branch with both negative: `build_min_max

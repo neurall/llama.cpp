@@ -1,0 +1,63 @@
+run 26813 | oneexe | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 41.56 t/s | prompt 673.6 t/s | 906 tokens | args: -np 1 | power 280+280 W | 2026-11-12 16:21:00
+
+Let me analyze this file carefully to identify which code is never used.
+
+First, let me understand what's used externally vs internally:
+
+1. `gbnf_format_literal` - this is a public function (declared in header presumably), so it's used.
+2. `gbnf_escape_length` - this is a public function (declared in header presumably), so it's used.
+3. `SPACE_RULE` - need to check if it's used elsewhere.
+4. `build_repetition` - static, need to check if used in this file.
+5. `build_min_max_int` - static, need to check if used in this file.
+6. `PRIMITIVE_RULES` - static, need to check if used in this file.
+7. `STRING_FORMAT_RULES` - static, need to check if used in this file.
+8. `is_reserved_name` - static, need to check if used in this file.
+9. `INVALID_RULE_CHARS_RE` - static, need to check if used in this file.
+10. `GRAMMAR_LITERAL_ESCAPE_RE` - used in `format_literal`.
+11. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - static, need to check if used in this file.
+12. `GRAMMAR_LITERAL_ESCAPES` - used in `format_literal`.
+13. `MAX_PATTERN_DEPTH` - static, need to check if used in this file.
+14. `NON_LITERAL_SET` - static, need to check if used in this file.
+15. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - static, need to check if used in this file.
+16. `replacePattern` - static, used in `format_literal`.
+17. `format_literal` - used by `gbnf_format_literal`.
+
+Wait, the file is truncated. The user only showed part of it. Let me re-read...
+
+The file ends with:
+```
+static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {
+   
+```
+
+So the file is incomplete/truncated. But the user is asking me to delete code that is never used.
+
+Let me look at what's actually used within the visible portion of the file:
+
+- `build_repetition` - I don't see it called anywhere in the visible code. It's a static function.
+- `build_min_max_int` - I don't see it called anywhere in the visible code. It's a static function.
+- `PRIMITIVE_RULES` - I don't see it used anywhere in the visible code except in `is_reserved_name`.
+- `STRING_FORMAT_RULES` - I don't see it used anywhere in the visible code except in `is_reserved_name`.
+- `is_reserved_name` - I don't see it called anywhere in the visible code.
+- `INVALID_RULE_CHARS_RE` - I don't see it used anywhere in the visible code.
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - I don't see it used anywhere in the visible code.
+- `MAX_PATTERN_DEPTH` - I don't see it used anywhere in the visible code.
+- `NON_LITERAL_SET` - I don't see it used anywhere in the visible code.
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - I don't see it used anywhere in the visible code.
+- `SPACE_RULE` - I don't see it used anywhere in the visible code.
+
+Wait, but the file is truncated. The rest of the file (after `gbnf_escape_length`) likely uses many of these. The user is showing me the file content and asking me to delete unused code.
+
+Hmm, but the file is clearly truncated - `gbnf_escape_length` function body is cut off. So I can only work with what's shown.
+
+Actually, re-reading the prompt: "Delete the code in this file that is never used."
+
+The file content shown is what I need to work with. Let me trace through carefully:
+
+**Functions/variables and their usage:**
+
+1. `build_repetition` (static) - Not called anywhere in the shown code.
+2. `build_min_max_int` (static) - Not called anywhere in the shown code.
+3. `SPACE_RULE` (const) - Not used anywhere in the shown code.
+4. `PRIMITIVE_RULES` (static) - Used in `is_reserved_name
+---

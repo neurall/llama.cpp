@@ -1,0 +1,101 @@
+run 28446 | probe_leak_why | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 27.8 t/s | prompt 320.2 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 09:14:37
+
+<think>Let me analyze this code carefully. The user wants me to do a code review of the provided source files. The files are:
+
+1. `common/json-schema-to-grammar.cpp` - converts JSON schemas to grammar rules
+2. `common/arg.cpp` - argument parsing utilities
+
+Let me look at the code carefully for bugs, issues, and improvements.
+
+Looking at `json-schema-to-grammar.cpp`:
+
+1. The `common_chat_schema_converter` class has various methods for converting JSON schemas to grammar rules.
+
+2. There's a `_not_strings` method that builds a trie-based rule for excluding strings.
+
+3. There's a `_resolve_ref` method that resolves `$ref` references.
+
+4. There's a `_build_object_rule` method that builds object rules.
+
+5. There's a `visit` method that dispatches based on schema kind.
+
+6. There's a `check_errors` method that throws if errors exist.
+
+7. There's a `format_grammar` method that formats the grammar.
+
+8. There's a `json_schema_to_grammar` function.
+
+9. There's a `build_grammar` function.
+
+Looking at `arg.cpp`:
+
+1. `read_file` - reads a file
+2. `get_common_arg_defs` - gets common arg definitions
+3. `common_arg` methods - set_examples, set_excludes, set_env, set_sampling, set_spec, set_preset_only, in_example, is_exclude, get_value_from_env, has_value_from_env, to_string, get_args, get_env
+4. `break_str_into_lines` - breaks a string into lines
+5. `parse_tensor_buffer_overrides` - parses tensor buffer overrides
+6. `clean_file_name` - cleans a file name
+7. `handle_model_result` - struct for model results
+8. `kv_cache_types` - vector of ggml types
+9. `kv_cache_type_from_str` - converts string to ggml type
+10. `get_all_kv_cache_types` - gets all kv cache types
+11. `parse_bool_value` - parses a boolean value
+12. `arg_removed` - throws an error for removed args
+13. `get_default_local_path` - gets default local path
+14. `spec_types_is_default` - checks if spec types are default
+
+Let me look for bugs:
+
+In `json-schema-to-grammar.cpp`:
+
+1. In `_not_strings`, the trie-based rule generation looks correct but there's a potential issue with the `rejects` string - it accumulates characters that are rejected.
+
+2. In `_resolve_ref`, there's a potential issue where `ref_name` is returned but if the schema has no target, an error is pushed and empty string is returned.
+
+3. In `_build_object_rule`, there's a potential issue with the `get_recursive_refs` lambda - it uses `ks.begin() + 1` which could be problematic if `ks.size() == 1`.
+
+Wait, looking more carefully:
+
+```cpp
+if (ks.size() > 1) {
+    res += " " + _add_rule(
+        name + (name.empty() ? "" : "-") + k + "-rest",
+        get_recursive_refs(std::vector<std::string>(ks.begin() + 1, ks.end()), true)
+    );
+}
+```
+
+This is guarded by `ks.size() > 1`, so `ks.begin() + 1` is valid.
+
+4. In `visit`, the `KIND_ARRAY` case:
+```cpp
+if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+    return _visit_primitive(rule_name, "array");
+}
+```
+This checks if items is KIND_ANY and min_items is 0 and max_items < 0.
+
+5. In `visit`, the `KIND_STRING` case:
+```cpp
+if (str.min_length > 0 || str.max_length >= 0) {
+    std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+    int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+    return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, str.min_length, max_len) + " \"\\\"\"");
+}
+```
+
+6. In `visit`, the `KIND_INTEGER` case:
+```cpp
+if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max()) {
+    return _visit_primitive(rule_name, "integer");
+}
+```
+
+7. In `check_errors`:
+```cpp
+if (!_errors.empty()) {
+    throw std::invalid_argument("JSON schema conversion failed:\n" + string_join(_errors, "\n"));
+}
+```
+
+8. In `json_schema_to_grammar`

@@ -1,0 +1,64 @@
+run 28381 | lp_check_before_lock | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 26.1 t/s | prompt 676.9 t/s | 918 tokens | args: -np 1 | power 280+280 W | 2026-11-14 07:18:11
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. It's cut off at the end (the last function `gbnf_escape_length` is incomplete). Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Used by... it's used in the schema-to-grammar conversion code (which is cut off in this snippet, but presumably later in the file). Since the file is truncated, I need to be careful. The user says "Delete the code in this file that is never used." The file shown is truncated at `gbnf_escape_length`. Hmm, but the task is to analyze what's shown.
+
+Wait — the file is cut off mid-function. The user wants me to identify dead code within what's shown. Let me think about what's actually used within the shown portion, and what would be used by the rest of the file (which we can't see). Actually, in these "delete unused code" tasks, typically the file is complete or the unused code is identifiable from the shown portion. Let me look at the actual llama.cpp source for this file to understand what's used.
+
+Actually, let me recall the actual llama.cpp `json-schema-to-grammar.cpp`. The real file has:
+
+- `build_repetition` - used in `build_array_rule`, `build_object_rule`, etc.
+- `build_min_max_int` - used in `build_min_max_int` calls for integer/number schemas.
+- `SPACE_RULE` - used.
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES` - used.
+- `is_reserved_name` - used in `parse_json_schema` / rule naming.
+- `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE`, `GRAMMAR_LITERAL_ESCAPES` - used.
+- `MAX_PATTERN_DEPTH` - used in regex handling.
+- `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - used in `gbnf_escape` / pattern conversion.
+- `replacePattern` - used by `format_literal` and `gbnf_escape`.
+- `format_literal` - used.
+- `gbnf_format_literal` - hmm, is this used? In the real llama.cpp file, there's `gbnf_format_literal` declared... Let me think. Actually in llama.cpp, `json-schema-to-grammar.h` declares `std::string gbnf_format_literal(const std::string & literal);`? Hmm.
+
+Actually wait. Let me recall the actual file. In llama.cpp's `common/json-schema-to-grammar.cpp`, there's:
+
+```cpp
+static std::string gbnf_escape(const char & c) { ... }
+static std::string gbnf_escape(const std::string & c) { ... }
+```
+
+Hmm, I remember there's a function `gbnf_escape` that handles regex pattern escaping. And there's `is_literal_char`, etc.
+
+Let me recall more precisely. The llama.cpp file (as of recent versions) contains:
+
+```cpp
+#pragma once
+
+#include <nlohmann/json.hpp>
+
+std::string json_schema_to_grammar(const nlohmann::ordered_json & schema, bool force_gbnf = false);
+```
+
+Hmm, actually the header declares `json_schema_to_grammar`.
+
+The cpp file has functions:
+- `build_repetition`
+- `build_min_max_int`
+- `SPACE_RULE`
+- `BuiltinRule`, `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`
+- `is_reserved_name`
+- regexes and escape maps
+- `MAX_PATTERN_DEPTH`
+- `NON_LITERAL_SET`, `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`
+- `replacePattern`
+- `format_literal`
+- `gbnf_format_literal` — hmm, I think this might be used by `common.h`? Actually no.
+
+Wait, actually I recall in llama.cpp there was a change where `json-schema-to-grammar` was refactored to use `common_json` and there's a `SchemaConverter` class. Let me think about the current state.
+
+Actually, the current llama.cpp `common/json-schema-to-grammar.cpp` (after the refactor by ochafik) contains a `SchemaConverter` template class with methods like `
+---

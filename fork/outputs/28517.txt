@@ -1,0 +1,10 @@
+run 28517 | split_stream_calls_only | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.06 t/s | prompt 11.3 t/s | 64 tokens | args: -np 1 --moe rp-grow=0 | power 280+280 W | 2026-11-14 11:52:24
+
+ } else if (i == from.length()) {
+            out << more_digits(to.length() - i, to.length() - i);
+        }
+    };
+
+    auto less_than = [&](int64_t bound) {
+        auto bound_str = std::to_string(bound);
+        if (bound == 0) {

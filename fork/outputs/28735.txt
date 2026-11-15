@@ -1,0 +1,27 @@
+run 28735 | engram_late_fill | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 26.3 t/s | prompt 873.5 t/s | 256 tokens | args: -np 1 --moe dense-split=0,staging=0 | power 280+280 W | 2026-11-14 21:58:14
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0 && params.speculative.num_gpu >= 0;
+}
+
+static void spec_types_set_defaults(common_params & params) {
+    params.speculative.num_draft = 8;
+    params.speculative.num_reuse = 256;
+    params.speculative.num_gpu = 0;
+}
+
+common_models_handler::common_models_handler(common_params & params, llama_example ex) : params(params), ex(ex) {
+    // check if the model is a preset
+    if (params.model.path.empty() && params.model.url.empty()) {
+        if (params.model_alias.empty()) {
+            throw std::runtime_error("error: no model path or URL was specified. Please provide --model or --model-url");
+        }
+        // try to find the model in the presets
+        auto preset = common_preset_find(params.model_alias);
+        if (preset) {
+            params.model = preset->model;
+            params.model_alias = preset->model_alias;
+            params.model_p

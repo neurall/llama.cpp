@@ -1,0 +1,46 @@
+run 27590 | hot_tree7 | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 90.61 t/s | prompt 65.2 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 13:13:19
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 180, dx = 2, dy = -2, bx = 100, by = 10;
+let p = 80, pw = 20;
+let bricks = [];
+for(let i=0; i<10; i++) for(let j=0; j<5; j++) bricks.push({x: 10+i*20, y: 10+j*20, alive: true});
+
+function draw() {
+    ctx.fillStyle = '#000'; ctx.fillRect(0,0,200,200);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(p, 190, pw, 10);
+    ctx.fillRect(bx, by, 10, 10);
+    bricks.forEach(b => {
+        if(b.alive) {
+            ctx.fillRect(b.x, b.y, 18, 18);
+            if(bx > b.x && bx < b.x+18 && by > b.y && by < b.y+18) {
+                b.alive = false; dy = -dy;
+            }
+        }
+    });
+    if(by <= 0 || bx < p || bx > p+pw) dx = -dx;
+    if(by > 190) { bx = 100; by = 10; dx = 2; dy = -2; bricks.forEach(b=>b.alive=true); }
+    bx += dx; by += dy;
+    requestAnimationFrame(draw);
+}
+document.onkeydown = e => { p = Math.max(0, Math.min(180, p + (e.key=='ArrowLeft'?-10:10))); }
+draw();
+</script>
+</body>
+</html>
+```
+
+### How to play:
+1. Save the code as `breakout.html

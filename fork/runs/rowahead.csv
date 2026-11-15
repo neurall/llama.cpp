@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+qni4-ahead,qn_iq4xs,2,pf12k4k,4096,,--env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1
+qni4-noahead,qn_iq4xs,2,pf12k4k,4096,,--env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1 --env LLAMA_ROWREAD_AHEAD=0
+ds-ahead,ds,2,pf12k4k,4096,,--env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1
+ds-noahead,ds,2,pf12k4k,4096,,--env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1 --env LLAMA_ROWREAD_AHEAD=0
+ds-map,ds,2,pf12k4k,4096,,--env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1 --env LLAMA_ROWREAD=0

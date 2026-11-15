@@ -1,0 +1,75 @@
+run 28425 | galloc_end_alive | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 26.7 t/s | prompt 350.4 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 08:52:57
+
+<think>Let me analyze this code carefully. The user wants me to do a code review of the provided source files. The files are:
+
+1. `common/json-schema-to-grammar.cpp` - JSON schema to grammar converter
+2. `common/arg.cpp` - argument parsing (truncated)
+
+Let me look at the code carefully for bugs, issues, and improvements.
+
+Looking at `json-schema-to-grammar.cpp`:
+
+1. The `common_chat_schema_converter` class has several methods:
+   - `_add_rule` - adds a rule to `_rules` map
+   - `_add_primitive` - adds a primitive rule
+   - `_visit_pattern` - visits a regex pattern
+   - `_resolve_ref` - resolves a JSON schema ref
+   - `_build_object_rule` - builds an object rule
+   - `_not_strings` - builds a trie-based rule for excluding strings
+   - `visit` - main dispatch method
+   - `check_errors` - checks errors and warnings
+   - `format_grammar` - formats the grammar
+
+Let me look for bugs:
+
+1. In `_visit_pattern`, there's a complex regex-to-grammar conversion. Let me check the logic.
+
+2. In `_build_object_rule`, there's a potential issue with the `get_recursive_refs` lambda - it captures `prop_kv_rule_names` by reference, which is fine since it's used within the function scope.
+
+3. In `visit`, the `KIND_ARRAY` case:
+```cpp
+if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+    return _visit_primitive(rule_name, "array");
+}
+```
+This looks correct.
+
+4. In `KIND_STRING` case:
+```cpp
+if (str.min_length > 0 || str.max_length >= 0) {
+    std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+    int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+    return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, str.min_length, max_len) + " \"\\\"\"");
+}
+```
+Wait, there's a subtle issue here. If `str.min_length > 0` but `str.max_length < 0`, then `max_len` is `std::numeric_limits<int>::max()`. But `build_repetition` with `min_items > 0` and `max_items == std::numeric_limits<int>::max()`... Let me check `build_repetition`:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_min = min_items != std::numeric_limits<int>::min();
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (min_items == 0 && max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    if (min_items == 1 && !has_max) {
+        return item_rule + "+";
+    }
+    if (min_items == 0 && !has_max) {
+        return item_rule + "*";
+    }
+    return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+}
+```
+
+Wait, there's a bug here. If `min_items == 0 && max_items == 0`, it returns "". But what if `min_items == 0 && max_items == 1`? It returns `item_rule + "?"`. But what if `min_items == 1 && max_items == 1`? It would fall through to the last case: `item_rule + "{1,1}"`. That's correct but could be simplified to just `item_rule`.
+
+Actually wait, let me re-check. The condition `min_items == 1 && !has_max` returns `item_rule + "+"`. But `has_max` is `max_items != std::numeric_limits<int>::max()`. So if `max_items == std::numeric_limits<int>::max()`, `has_max` is false, and we return `item_rule + "+"`. That's correct for "one or more".
+
+But wait, what if `min_items == 1 && max_items == 1`? Then `has_max` is true (since max_items = 1 != INT_MAX), so we fall through to `item_rule + "{1,1}"`. That's technically correct but verbose. Hmm, but actually in the original llama.cpp code, I think the logic is:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min

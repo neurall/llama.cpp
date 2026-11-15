@@ -1,0 +1,11 @@
+run 28353 | lp_check_before_lock | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 73.23 t/s | prompt 2918.6 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=0,log=w --moe sim-vram=4608 | power 200+200 W | 2026-11-14 06:43:53
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+   

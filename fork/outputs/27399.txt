@@ -1,0 +1,65 @@
+run 27399 | hot_tree3 | breakoutc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 228.57 t/s | prompt 203.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:59:52
+
+
+---
+Creating a complete breakout game from scratch in HTML involves a lot of code, but I'll guide you through the basics to get you started. A breakout game is a simple puzzle game where the player controls a paddle at the bottom of the screen to bounce a ball against bricks at the top. The goal is to break all the bricks.
+
+Here's a basic structure for an HTML file that you can expand upon:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Breakout Game</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f0f0;
+        }
+        .game-container {
+            width: 400px;
+            height: 400px;
+            background-color: #fff;
+            border-radius: 8px;
+            position: relative;
+        }
+        .paddle {
+            width: 100px;
+            height: 40px;
+            background-color: #2196f3;
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .ball {
+            width: 10px;
+            height: 10px;
+            background-color: #ff6347;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translateX(-50%) translateY(-50%);
+        }
+        .brick {
+            width: 100px;
+            height: 40px;
+            background-color: #6c7a8e;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="paddle"></div>
+        <div class="ball"></div>
+        <div class="bricks"></div>

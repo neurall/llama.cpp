@@ -1,0 +1,5 @@
+run 27283 | ns_gate3 | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.38 t/s | prompt 1.5 t/s | 14 tokens | args: -np 1 --moe rp-grow=0,staging=1 | power 280+280 W | 2026-11-13 07:46:36
+
+
+---
+The capital of France is Paris.

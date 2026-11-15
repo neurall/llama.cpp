@@ -1,0 +1,97 @@
+run 26795 | ns_probe_cells | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 26.35 t/s | prompt 23.0 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-12 15:21:23
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual approach of making polished, memorable experiences. The user explicitly asked for "smallest" — so the goal here is extreme minification, a single self-contained HTML file with the tiniest possible Tetris implementation.
+
+Let me think about what "smallest Tetris" means. There's a famous tradition of tiny Tetris implementations:
+- "Tiny Tetris" by Nick (tinytetris) — ~600 bytes C version
+- Various JS Tetris in under 1KB, some under 500 bytes
+- The famous 140-byte-ish ones are usually broken/incomplete
+
+I should aim for a genuinely working, playable Tetris in as few bytes as possible, while keeping it readable enough to explain. Let me write a compact but complete implementation:
+
+Features needed for "real" Tetris:
+1. 10×20 board
+2. 7 tetrominoes with rotation
+3. Movement left/right, soft drop (down), rotation (up)
+4. Line clearing
+5. Game over detection
+6. Score maybe (optional for smallest)
+7. Gravity/timer
+
+Let me write it in a compact style. Canvas rendering is usually smallest. Let me draft:
+
+```html
+<canvas id=c></canvas><script>
+// code
+</script>
+```
+
+Actually for smallest, we can even skip the canvas tag and create it in JS, or use document.write... Let's think.
+
+A classic minimal approach:
+
+```js
+D=document
+b=D.body
+b.bg=0 // black background
+c=D.createElement('canvas')... 
+```
+
+Hmm, but `<canvas id=c>` in HTML is short: `<canvas id=c>` = 14 chars. Creating in JS: `c=document.createElement`canvas`)` — longer. So keep the tag.
+
+Let me design the game logic compactly.
+
+Board: array of 200 cells, or use a single string/array. Represent board as array `b` of 200 numbers (0 empty, else color index or 1).
+
+Pieces: The classic trick is to encode all rotations of all 7 pieces. A very compact encoding: use a single string of digits where each piece's 4 rotations are 16-bit numbers, or use the "sum of digits" trick.
+
+A well-known compact encoding: pieces as arrays of coordinates. Or the famous trick from "Tetris in 140 bytes" style: encode each rotation state as a 4x4 bitmask number.
+
+Let me use the approach: each piece rotation = 16-bit number (4x4 grid). 7 pieces × 4 rotations = 28 numbers. Encode as a string, e.g. base-36 or just a string of hex digits.
+
+Standard 4x4 bitmasks (row-major, bit 15 = top-left... or bit 0 = top-left). Let me define piece shapes:
+
+I: 
+```
+....
+XXXX
+....
+....
+```
+= row 1 = 0b1111 → if bit 0 is leftmost of row... Let me use number where bit (r*4+c) set means filled, r=0 top.
+
+I horizontal: row1: cells (1,0),(1,1),(1,2),(1,3) → bits 4,5,6,7 → 0b0000111100000000 = 0x0F00 = 3840
+I vertical: col0: (0,0),(1,0),(2,0),(3,0) → bits 0,4,8,12 → 0x1111? bits 0,4,8,12 = 0x1111 = 4369
+I horizontal again (rotation 2 same as 0): 0x0F00
+I vertical: 0x1111
+
+O: 
+```
+XX..
+XX..
+....
+....
+```
+bits 0,1,4,5 → 0x33 = 51. All rotations same: 51,51,51,51.
+
+T:
+```
+.X..
+XXX.
+....
+....
+```
+bits 1,4,5,6 → 0x0072 = 114. 
+Rot1 (pointing right):
+```
+.X..
+.XX.
+.X..
+....
+```
+bits 1,5,6,9 → 0x0132? Let's compute: bit1=2, bit5=32, bit6=64, bit9=512 → 610 = 0x262. Hmm let me recompute: 2+32+64+512 = 610. 0x262 = 610. Yes.
+Rot2 (pointing down):
+```
+....
+
+---

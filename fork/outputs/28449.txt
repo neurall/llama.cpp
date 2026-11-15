@@ -1,0 +1,71 @@
+run 28449 | fix_staging_one_reader | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 29.17 t/s | prompt 1298.9 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 09:26:11
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - `max_items == 0` returns empty string - correct
+  - `min_items == 0 && max_items == 1` returns `item_rule + "?"` - correct
+  - When separator is empty and `min_items == 1 && !has_max` returns `item_rule + "+"` - correct
+  - When separator is empty and `min_items == 0 && !has_max` returns `item_rule + "*"` - correct
+  - General case with separator: builds `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` - this looks correct for building `item (sep item)*` patterns
+  - When `min_items == 0`, wraps in optional - correct
+
+### build_min_max_int function
+- This is a complex function for generating integer range rules. Let me check:
+  - `decimals_left` parameter is used for limiting digit depth - seems reasonable
+  - The `uniform_range` lambda handles generating rules for ranges between two strings of digits
+  - The negative number handling looks correct
+  - The `top_level` parameter controls whether leading zeros are allowed
+  - Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is too large for int64_t, but since it's derived from `std::to_string(min_value)` where min_value is int64_t, the substring should be fine.
+
+### _add_rule function
+- The deduplication logic looks correct - it tries to find an existing rule with the same content, or generates a unique name.
+
+### _visit_pattern function
+- Takes a snapshot of `_rules` before attempting to parse, and reverts on failure - good pattern for rollback.
+- However, `_refs_being_resolved` is not snapshotted - potential issue if pattern parsing modifies it (though patterns don't seem to use refs).
+
+### _pattern_to_rule function
+- Complex regex-to-grammar conversion
+- The `transform` lambda is recursive and handles various regex constructs
+- Potential issues:
+  - The `paren_depth` check at the end - if `paren_depth != 0`, throws invalid_pattern. But `paren_depth` is a local variable, so it should be correct.
+  - The character class parsing doesn't handle `]` as first character (which is valid in regex) - but this might be intentional for simplicity.
+  - The curly bracket parsing doesn't handle nested braces or escaped braces.
+
+### _not_strings function
+- Generates a rule that matches strings that are none of the provided strings
+- Uses a trie for efficiency
+- The `rejects` string is built by concatenating UTF-8 characters - potential issue if characters need escaping in the character class (e.g., `]`, `-`, `\`)
+
+### _resolve_ref function
+- Handles `$ref` resolution with cycle detection via `_refs_being_resolved`
+- The `ref_fragment` extraction looks correct
+
+### _build_object_rule function
+- Builds object rules with required and optional properties
+- The `get_recursive_refs` function generates alternatives for optional properties
+- Potential issue: the rule generation for optional properties could be exponential in the number of optional properties (each optional property generates an alternative)
+
+### _add_primitive function
+- Recursively adds primitive rules and their dependencies
+- Looks correct
+
+### visit function
+- Main dispatch function for schema types
+- Looks correct overall
+
+### Potential issues I've found:
+
+1. **`_not_strings` - character class escaping**: The `rejects` string is built by concatenating UTF-8 characters directly into a character class `[...]`. Characters like `]`, `-`, `\` need to be escaped in character classes. This could produce invalid grammar rules.
+
+2. **`_visit_pattern` - `_refs_being_resolved` not snapshotted**: While patterns don't seem to use refs, if they ever do, the rollback wouldn't restore `_refs_being_resolved`.
+
+3. **`build_min_max_int` - `decimals_left` parameter**: The `decimals_left` parameter is passed but its usage seems inconsistent. In some recursive calls, it's passed as `decimals_left` and in others as `less_decimals`. Need to verify this is correct.
+
+4. **`_pattern_to_rule` - character class parsing**: The parsing of `[...]` doesn't handle the case where `]` is the first character (which is valid in regex as a literal `]

@@ -1,0 +1,26 @@
+run 27732 | k_arm_ring | edit4c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 79.12 t/s | prompt 318.0 t/s | 128 tokens | args: -np 1 --moe sim-vram=3072,pp-path=stream,pp-k=1,dense-split=0 | power 280+280 W | 2026-11-13 16:43:52
+
+
+---
+Here is the complete code with the added function to count and print the number of lines in the file.
+
+```cpp
+// file: common/json-schema-to-grammar.cpp
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+using json = common_json;
+
+static std::string build_repetition(const std::

@@ -1,0 +1,11 @@
+run 27082 | ns_split_home_part | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 21.46 t/s | prompt 701.7 t/s | 64 tokens | args: -np 1 --moe staging=0 | power 200+200 W | 2026-11-13 01:01:58
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_auto(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_draft(const common_params & params) {
+    return params.spec_type

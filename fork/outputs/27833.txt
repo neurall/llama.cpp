@@ -1,0 +1,38 @@
+run 27833 | tree_emb_key | poemc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.91 t/s | prompt 53.8 t/s | 267 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=emb,rp-steer=0,state=/tmp/runstate/q36ph3/tsoff/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/tsoff | power 280+280 W | 2026-11-13 18:13:36
+
+
+---
+The sun dips low, the sky turns deep,
+A gentle breeze begins to creep.
+The waves roll soft against the sand,
+A quiet rhythm, hand in hand.
+
+Your eyes reflect the fading light,
+A warmth that burns within the night.
+The salt air kisses on your skin,
+As we walk where the waves begin.
+
+The moon rises, pale and bright,
+Guiding us through the fading light.
+Your voice is soft, a whisper low,
+Like tides that gently ebb and flow.
+
+I hold your hand, the world is still,
+No need for words, no need for will.
+Just you and me, the sea and sky,
+Underneath the starlit eye.
+
+The night wraps round us, soft and deep,
+A promise kept, a vow to keep.
+In this quiet hour, we are alone,
+Two hearts beating, one in one.
+
+The ocean sings a lullaby,
+For lovers who have passed the day.
+We stay here, where the waters meet,
+And find our peace in quiet street.
+
+The stars above, the sand below,
+Are all we need, all we know.
+Love is here, in this calm sea,
+A quiet place for you and me.

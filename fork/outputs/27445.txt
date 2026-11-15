@@ -1,0 +1,23 @@
+run 27445 | hot_tree4 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 88.66 t/s | prompt 199.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,tree-key=map,state=/tmp/runstate/hottree-q/map/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/map | power 280+280 W | 2026-11-13 11:35:28
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, heavy weight of the pod’s lid pressing against his chest. The air in the archive sector smelled of ozone and stale recycled water, a scent that had lingered for three centuries. He blinked, his vision swimming in the gray haze of hypothermia, until the emergency lights flickered on, casting long, jagged shadows across the rows of dormant pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The AI, dormant for decades, hummed to life. "We have arrived. Target: Kepler-4b. Estimated arrival time: 24 hours post-thaw."
+
+Elias stumbled to the observation deck. The glass was thick, frosted with condensation, but as he wiped it with a trembling hand, the planet emerged. It was not the barren, red dust of the charts. It was a jewel of azure and emerald, swirling with clouds that looked like bruised fruit. But it was the night side that arrested his breath.
+
+Cities.
+
+They were not scattered settlements of tents and solar panels. They were sprawling metropolises, glowing with the amber and white light of artificial illumination. The lights formed intricate webs, pulsing like the nervous system of a living organism. Elias pressed his forehead against the cold glass, his heart hammering against his ribs. They had been sent to terraform a dead world. They had been told there would be no life, no history, only the raw potential of soil and sky.
+
+"Computer," he whispered. "Identify the source of the illumination."
+
+The AI processed the data, its voice calm and detached. "Analysis indicates high-density urban infrastructure. Power signatures match fusion reactors. Cultural artifacts detected in spectral analysis: language patterns consistent with Old Earth dialects, modified over time. Genetic markers suggest human lineage."
+
+Elias felt a cold dread settle in his stomach. "Who is there?"
+
+"Descendants," the AI replied. "A second generation ship, *The Horizon*, departed Earth one hundred and twenty years after *The Ark*. It traveled at a higher velocity. It arrived forty years ago. The population below is approximately two million. They are your descendants."
+
+Elias laughed, a hollow, brittle sound. The irony was suffocating. They had spent three centuries in the dark, dreaming of a future

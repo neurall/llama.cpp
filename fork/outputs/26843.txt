@@ -1,0 +1,47 @@
+run 26843 | oneexe | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.37 t/s | prompt 45.9 t/s | 965 tokens | args: -np 1 -lm pin | power 220+280 W | 2026-11-12 16:57:55
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file.
+
+I don't want a bare code block alone — I'd like the result to feel crafted and alive: a nice CRT/arcade cabinet framing, a layered background, some ambient motion, micro-interactions, strong typographic contrast, a distinctive display face paired with a readable body face. But the user asked for "smallest" — so there's a tension. The primary ask is minimal code. I should honor that: keep the game code genuinely tiny, but present it in a nicely crafted page? Hmm.
+
+Actually "smallest html tetris game" — they want a single-file, compact Tetris. The most useful response: a single HTML file that's small but complete and playable. I can make it small in bytes while still looking good — a minimal but characteristic arcade aesthetic. Balance: keep it compact (a few KB) but not ugly. Don't bloat it with tons of JS scroll animations — that would betray "smallest."
+
+I'll aim for a tight single file: ~2-3KB of minified-ish but readable code, with a CRT arcade look: scanlines, grid backdrop, neon block colors, next-piece preview, score/lines/level, keyboard controls, pause, game over overlay. Use CSS custom properties, a distinctive display font (monospace display like "Press Start 2P"? That's a cliché maybe, but characteristic for arcade). Better: pair a bold display face with a readable mono. Let's use Google Fonts? That adds a network dependency and bloat. For "smallest," maybe use system fonts but with strong contrast. Hmm — I still want a distinctive display face paired with a readable body face. I could use a Google Fonts link (small cost, one line). Let's do a display face that's arcade-ish but not the default Press Start 2P... Options: "Silkscreen" (pixel), "VT323", "Major Mono Display", "Bungee". I like "Silkscreen" for headers and "Space Grotesk" or system mono for body. Actually for a Tetris game, pixel display face is exactly right. Let's use Silkscreen (display) + IBM Plex Mono (body). Two fonts, one link line.
+
+Palette: dark, but I don't want the tired near-black-with-one-neon-accent look. Tetris pieces are inherently 7 colors, so I get a polychrome palette for free — deep desaturated blue-slate background with a subtle grid, plus the 7 tetromino colors as the accent system. That's multi-hue, good.
+
+Layout: rather than a generic centered title, I'll open with the thing that's most characteristic of the game — the playfield itself, immediately. Left rail with big SCORE numerals, right rail with NEXT + HOLD + controls. Title in the corner as a small marquee.
+
+Implementation details for compactness:
+
+- Board 10x20, rendered on canvas (canvas is smaller than DOM grid).
+- Tetromino definitions via string/number encoding.
+- SRS-ish rotation with simple kicks (or just basic wall kicks).
+- requestAnimationFrame loop with drop timer.
+- Score: 100/300/500/800 * level, lines, level up every 10 lines.
+- 7-bag randomizer (compact).
+- Ghost piece.
+- Hold piece.
+- Keys: arrows, Z/X, Space, C, P.
+- Touch: maybe minimal on-screen buttons? Adds size. I'll add a compact touch pad row that only shows on small screens — nice completeness. Keep it small.
+
+Compact piece encoding: use arrays of coordinates per rotation? Smallest classic trick: define shapes as strings.
+
+A neat compact approach:
+
+```
+const S='0000,0110,1000,0000|...' 
+```
+Too long. Alternative: encode each piece as a 4x4 bitmask per rotation using numbers.
+
+Classic tiny approach:
+```
+P=[
+[],
+[0,1,1,1,0,0,1], // ...
+]
+```
+Let me use the well-known compact encoding with rotation via matrix transpose/reverse on a square matrix.
+
+Define pieces as 2D arrays in a 4x4 or 3x3 grid and rotate by transposing+re
+---

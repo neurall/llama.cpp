@@ -1,0 +1,7 @@
+run 27944 | mix_zero_first | pf4k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.64 t/s | prompt 470.0 t/s | 32 tokens | args: -np 1 --moe pp-path=stream,dense-split=0 | power 280+280 W | 2026-11-13 20:51:47
+
+ // reserve space
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return std::make_pair(string

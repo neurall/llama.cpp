@@ -1,0 +1,6 @@
+run 28807 | k_ahead_room | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.6 t/s | prompt 1.7 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,pred-top=16,predict-ahead=0,pred=1,pp-over=32,pred-over=32 | power 200+200 W | 2026-11-15 02:12:45
+
+
+---
+Every evening, Elias climbed the spiral stairs of the lighthouse with a bucket of oil in one hand and a lantern in the other. He had kept the light burning for twenty-three years, and in all that time, the sea had given him only storms, gulls, and the occasional wreck of a fishing boat.
+

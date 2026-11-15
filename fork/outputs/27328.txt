@@ -1,0 +1,19 @@
+run 27328 | hot_tree | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 212.26 t/s | prompt 749.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:15:17
+
+
+---
+The hum of the cryogenic chambers was a lullaby, a symphony of anticipation that had played out countless times before. Each member of the crew, from the captain to the youngest engineer, had slumbered through countless light-years, their bodies preserved in a state of suspended animation, awaiting the moment when the distant star at the edge of their vision would finally bloom into a welcoming sun.
+
+I, the ship's archivist, had the privilege—or perhaps the curse—of witnessing these countless awakenings. My duty was to catalog the memories, the dreams, and the histories of those who had embarked on this arduous journey. As the vessel, Elysium, drifted through the cold expanse of space, I had been the keeper of the collective consciousness, the repository of knowledge that connected the crew to their distant past and future selves.
+
+The awakening was always a profound moment, a rebirth into a world that was both familiar and entirely new. The first light of the alien sun filtered through the transparent sections of the ship, casting a warm glow across the faces of my fellow crewmates. Murmurs of wonder and awe filled the air, punctuated by the soft clicks of buttons and switches as the crew began to stir from their slumber.
+
+"Wake up, wake up," a voice echoed through the corridors, tinged with a mixture of excitement and disbelief. It belonged to Dr. Elara, the ship's chief scientist, whose eyes sparkled with the thrill of discovery. "We're finally here."
+
+I observed the scene with a sense of detachment, yet my heart raced with equal measure. The Elysium had been designed as a generational ship, a self-sustaining community meant to establish a new home on the planet below. A century had passed since the ship's departure, a testament to human ingenuity and the relentless pursuit of progress.
+
+As the crew began to move with purpose, I accessed the ship's archives, delving into the data streams that held the collective memories of those who had come before. The images and sounds of the past flooded my consciousness, painting a vivid tapestry of our journey.
+
+"We've done it," whispered a voice from the crowd, a voice that carried the weight of generations. It belonged to Marcus, the ship's engineer, whose hands had been responsible for keeping Elysium alive all these years. "We've beaten the distance."
+
+Marcus's words were

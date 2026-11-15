@@ -1,0 +1,49 @@
+run 27395 | hot_tree3 | snakecppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 220.73 t/s | prompt 100.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:57:35
+
+
+---
+Creating a full Snake game in a single response is quite extensive, but I can guide you through a simplified version that you can expand upon. This version will use ASCII characters to represent the snake and the food.
+
+Here's a basic implementation of a Snake game in C++:
+
+```cpp
+#include <iostream>
+#include <string>
+#include <cstdlib>
+#include <ctime>
+
+const int SNAKE_LENGTH = 10;
+const int SNAKE_SPEED = 5;
+const int FOOD_POSITION_X = rand() % (SCREEN_WIDTH - SNAKE_LENGTH) + 1;
+const int FOOD_POSITION_Y = rand() % (SCREEN_HEIGHT - SNAKE_LENGTH) + 1;
+const int SCREEN_WIDTH = 20;
+const int SCREEN_HEIGHT = 20;
+
+std::string snakeChar = "#";
+std::string foodChar = "O";
+
+void print_game_state() {
+    std::cout << "|" << std::string(SCREEN_WIDTH, ' ');
+    for (int i = 0; i < SCREEN_HEIGHT; ++i) {
+        std::cout << std::string(SCREEN_WIDTH, '#') << std::endl;
+    }
+    std::cout << "|";
+
+    std::cout << " " << foodChar << "|";
+
+    for (int i = 0; i < SNAKE_LENGTH; ++i) {
+        std::cout << snakeChar << "|";
+    }
+
+    std::cout << " " << snakeChar << "|";
+
+    std::cout << "|" << std::string(SCREEN_WIDTH, ' ') << "|";
+}
+
+void move_snake(int head_x, int head_y, std::string* snake) {
+    int new_head_x = head_x;
+    int new_head_y = head_y;
+
+    for (int i = 1; i < snake_length; ++i) {
+        int next_head_x = static_cast<int>(head_x + snake[i - 1] - '0');
+        int next_head_y = static_

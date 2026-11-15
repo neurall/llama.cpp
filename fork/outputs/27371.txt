@@ -1,0 +1,21 @@
+run 27371 | hot_tree3 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 163.95 t/s | prompt 493.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:44:03
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Thalia, the archivist of the generation ship Aetheria, had watched over the slumbering souls for what felt like an eternity. Aeons, perhaps. The journey had been long, a testament to human ingenuity and the relentless pursuit of a new home among the stars.
+
+We had set out from Earth with a singular purpose: to seed life on a distant planet, one that mirrored our own in beauty and potential. A century ago, we launched the Aetheria, a marvel of technology and human spirit, carrying not just our bodies but our hopes and dreams. Our descendants would finish the work we had begun, or so we believed.
+
+The first cryo-pod to awaken was always the most sacred. It was here, in the heart of the Aetheria, that I had stood beside the captain, his eyes reflecting the blue-white orb of our distant sun. "May our children wake to a world ripe for them," he had whispered, his voice barely audible over the hum of the ship.
+
+Now, as the first rays of dawn kissed the planet's surface, I stepped out of my quarters, my feet sinking into the soft, moss-like carpet that carpeted the ship's corridors. The air was thick with a fragrant sweetness, a stark contrast to the sterile atmosphere of our cryo-chambers. I breathed deeply, savoring the scent, a reminder of the world we had left behind.
+
+The crew stirred around me, each waking to a new day in a new world. Conversations bubbled up, a cacophony of excitement and wonder.
+
+"Look at that!" exclaimed one, her voice a melody that danced through the corridors. "The cities are alive!"
+
+Another, a seasoned explorer named Elian, nodded in approval. "It seems our descendants have done more than just survive. They've thrived."
+
+I approached the viewport, my eyes tracing the outline of towering spires and sprawling complexes that sprawled across the landscape. The cities were alive, a vibrant tapestry of light and color that stretched as far as the eye could see. It was a sight both humbling and exhilarating, a testament to the resilience and adaptability of the human spirit.
+
+"It's as if they've embraced our original vision," I

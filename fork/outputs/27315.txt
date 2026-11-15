@@ -1,0 +1,4 @@
+run 27315 | situ_heat | scific | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 14.29 t/s | prompt 2.5 t/s | 8 tokens | args: -np 1 --moe verify=2 | power 280+280 W | 2026-11-13 09:50:07
+
+The user wants a science-fiction short story
+---

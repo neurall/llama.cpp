@@ -1,0 +1,31 @@
+run 26855 | oneexe | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 41.1 t/s | prompt 25.4 t/s | 987 tokens | args: -np 1 | power 220+280 W | 2026-11-12 17:14:51
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, line clearing, rotation, gravity. Need maybe use canvas and keyboard. Need avoid bugs.
+
+Let's design compact single-file Tetris.
+
+Use canvas 10x20 grid, cell size maybe 20. Canvas width 200 height 400. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates. Need rotation. Simpler: use 4x4 matrices for each tetromino and rotate matrix. Or use coordinate arrays and rotate around center. Need minimal.
+
+Approach:
+- Board 10x20 array.
+- Tetromino definitions as 4x4 matrices? Use shapes as arrays of [x,y] relative coordinates. Rotation function: for each block (x,y), rotate around origin? Need handle shape. If using 4x4 matrix, rotate matrix. But coordinate arrays can rotate around center (1.5,1.5) for 4x4? For shapes with coordinates in 4x4, rotation formula: new x = 3 - y? Wait rotate 90 clockwise in 4x4: (x,y)->(3-y,x)? Let's derive. Matrix 4x4 indices 0..3. Rotate clockwise: new row = old col? Actually coordinate (x,y) with x horizontal, y vertical. Rotate clockwise around center (1.5,1.5): new x = 1.5 + (y-1.5) = y? Wait clockwise: vector (dx,dy) -> (dy,-dx). new x = 1.5 + dy = y? new y = 1.5 - dx = 3 - x? Let's test top-left (0,0) -> (0,3)? Clockwise rotation of top-left around center should go top-right? Hmm coordinate y down. Let's use matrix rotation: For 4x4, clockwise: new[x][y] = old[y][3-x]? Let's not.
+
+Simpler use predefined rotations for each tetromino? Could use shape arrays and rotate by formula around center of bounding box. Need ensure valid.
+
+Alternative use SRS? Too much.
+
+Could use 4x4 matrices and rotate via transpose+reverse. For a 4x4 matrix, clockwise rotation: new[i][j] = old[3-j][i]? Let's verify with matrix:
+old:
+1 0 0 0
+1 1 0 0
+0 0 0 0
+0 0 0 0
+Clockwise should become:
+0 1 0 0? Let's compute. Use formula new[i][j] = old[3-j][i]. For i=0,j=0: old[3][0]=0. i=0,j=1: old[2][0]=0. i=0,j=2: old[1][0]=1. i=0,j=3: old[0][0]=1. Row0: 0 0 1 1. Hmm shape L? Let's visualize old blocks at (0,0),(0,1),(1,1). Rotate clockwise around center: (0,0)->(0,3)? (0,1)->(1,3)? (1,1)->(1,2)? That gives blocks (0,3),(1,3),(1,2). Matrix row0 col3, row1 col3, row1 col2. Formula new[i][j]=old[3-j][i]: for (0,3): old[0][0]=1 yes. (1,3): old[0][1]=1 yes. (1,2): old[1][1]=1 yes. So formula works. Good.
+
+But if shape has empty rows, rotation around 4x4 center may shift. That's okay if using 4x4 matrix and collision checks. Need spawn at top. Use matrix with blocks. Rotation can be applied to matrix. Need ensure no weird offset. Use 4x4 matrices for each tetromino. Spawn at x=3? y=0? Board width 10. Use matrix coordinates. Need collision check with board
+---

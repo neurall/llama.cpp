@@ -1,0 +1,58 @@
+run 28464 | unread_fixes | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 25.42 t/s | prompt 932.2 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 09:51:52
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete/truncated.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, returns "" — but what if min_items > 0? That's an inconsistent schema (min > max). The function silently returns empty string, which would make the grammar match nothing. Actually wait — if max_items == 0 and min_items > 0, the schema is contradictory. Returning "" means the grammar can't produce anything valid. Hmm, actually returning "" as a rule content... Let me think. In `KIND_ARRAY`: `build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space")` — if max_items == 0, returns "", so rule becomes `"[" space  space "]"` — with double space. Actually `"[" space ` + `` + ` space "]"` = `"[" space  space "]"`. That's a grammar with two space tokens adjacent, which is fine but slightly odd. But if min_items > 0 and max_items == 0, the schema is unsatisfiable; the grammar would accept only empty arrays, violating min_items. This is a schema validation issue that's silently ignored. Worth noting.
+
+- Negative min_items: if min_items is negative (schema could have negative min_items?), `{min_items,...}` would produce weird output like `{-1,}`. Probably should clamp. Actually in the array case, `arr.min_items` comes from schema; could be negative? The code checks `arr.max_items < 0` but not min_items < 0. Hmm, for min_length in string: `str.min_length > 0 || str.max_length >= 0` — then `build_repetition(char_rule, str.min_length, max_len)` — if min_length is negative... `str.min_length > 0` is false, but `str.max_length >= 0` could be true, so build_repetition with negative min_length would produce `{-2,}` etc. Depends on whether the schema parser guarantees non-negative. Worth flagging as a potential issue.
+
+- Recursion in build_repetition with separator: for large max_items, this recurses max_items - 1 times? No wait — it calls `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items - 1, max_items - 1)` — that recursion only happens once per call... wait no. Let me re-read.
+
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+So with separator, it calls build_repetition recursively with the separator-augmented item rule. The recursion: each level decrements min_items and max_items by 1. So for min_items = 100, this recurses 100 times deep. Each recursion level also builds a string. For large min_items (e.g., 1000

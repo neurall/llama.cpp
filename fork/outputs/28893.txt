@@ -1,0 +1,9 @@
+run 28893 | cpu_mask_drift_gate | pf4k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 38.72 t/s | prompt 1442.6 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=1 | power 280+280 W | 2026-11-15 09:46:39
+
+<think>Let me carefully review this source file for code quality, correctness, potential bugs, and style issues.
+
+Let me go through the file systematically.
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check edge cases:
+   - When `max_items == 0

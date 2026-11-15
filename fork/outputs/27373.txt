@@ -1,0 +1,21 @@
+run 27373 | hot_tree3 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 171.71 t/s | prompt 488.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 10:45:13
+
+
+---
+The hum of the cryogenic chambers was a lullaby, a promise of awakening. I, the ship's archivist, had listened to it countless times, a symphony of anticipation and hope. Each time, it was as if I were hearing it for the first time, though I knew the ritual by heart. The crew and I, a diverse tapestry of genetic and cultural heritage, had spent decades in stasis, hurtling through the cold expanse of space toward an uncharted world. Our mission was to establish a new colony, a testament to human ingenuity and resilience.
+
+The planet, named Elysium by the explorers who had named it centuries ago, was a jewel of a world, its azure oceans glinting beneath a canopy of swirling clouds. It was a place of unparalleled beauty, a living canvas waiting for us to paint our dreams upon its surface. Yet, as the cryo-tubes hissed open and the crew stirred, a shadow of doubt crept into our collective consciousness. The cities below, bathed in the soft glow of artificial light, seemed too vibrant, too alive for a world untouched by human hands for millennia.
+
+Captain Elara emerged from her chamber, her eyes blinking against the sudden brightness. "Wake the others," she ordered, her voice steady but laced with an unease I could not quite fathom.
+
+I moved swiftly to comply, my fingers dancing across the control panel. The lights flickered to life, casting long shadows across the chamber. The crew stirred, murmurs of confusion and wonder rippling through the group. I watched as faces, familiar yet distant, lit up with a mixture of relief and disbelief.
+
+"We're alive," a crew member whispered, her voice a mixture of awe and disbelief.
+
+"We're not alone," another added, her eyes scanning the horizon.
+
+As the crew filed out, I followed, my feet carrying me to the observation deck. The sight that greeted us was nothing short of miraculous. Below, the cities were alive with activity. Buildings, gleaming under the artificial sun, were alive with movement. People moved with purpose, their silhouettes dancing against the backdrop of glowing streets and shimmering rivers.
+
+"How... how could they be here already?" someone asked, her voice a mixture of wonder and fear.
+
+I turned to face her, my gaze sweeping over the scene. "

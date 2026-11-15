@@ -1,0 +1,15 @@
+run 28748 | pred_pool_readahead | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.24 t/s | prompt 0.9 t/s | 256 tokens | args: -np 1 --moe rp-grow=0,pred-top=16,predict-ahead=0,pred-pool=1 | power 280+280 W | 2026-11-14 22:31:31
+
+
+---
+Every evening, Elias climbed the spiral stairs of the lighthouse with a brass lantern in one hand and a notebook in the other. He had kept the light for twenty-three years, long enough to know the sea’s moods by the color of the clouds. That autumn, the storms came early, and the island’s supply boat stopped arriving.
+
+One morning after a particularly violent night, Elias found a green glass bottle wedged between the rocks below the lighthouse. Inside was a folded page, its ink blurred but still readable:
+
+*To whoever finds this: the light at North Point has gone out. My daughter is aboard the* Mercy *with forty others. We are drifting toward the reef. Please do not assume the sea has forgotten us.*
+
+There was no date, no signature, only a drawing of a small star.
+
+Elias looked north. North Point was the abandoned lighthouse on the far side of the island, its lamp extinguished when the government decided one beacon was enough. Beyond it lay the reef sailors called the Teeth.
+
+He spent the day repairing the old lamp, carrying oil across the cliffs in a rain that felt like gravel. At dusk, he lit it. Then he returned to his own tower and began flashing the shutter in a pattern no ship had used

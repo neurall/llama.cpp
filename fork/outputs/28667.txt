@@ -1,0 +1,56 @@
+run 28667 | rows_pool | pf128k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 30.8 t/s | prompt 684.1 t/s | 512 tokens | args: -np 1 | power 280+280 W | 2026-11-14 20:28:59
+
+iguous        = false;
+    bool                    debug                = false;
+    common_peg_arena        parser;
+};
+
+struct common_chat_templates_ptr {
+    common_chat_templates * tmpls = nullptr;
+    bool                    has_explicit_template = false;
+
+    common_chat_templates_ptr() = default;
+    common_chat_templates_ptr(common_chat_templates * tmpls) : tmpls(tmpls) {}
+    common_chat_templates_ptr(common_chat_templates * tmpls, bool has_explicit_template)
+        : tmpls(tmpls), has_explicit_template(has_explicit_template) {}
+
+    ~common_chat_templates_ptr() { delete tmpls; }
+
+    common_chat_templates_ptr(const common_chat_templates_ptr & other) = delete;
+    common_chat_templates_ptr & operator=(const common_chat_templates_ptr & other) = delete;
+
+    explicit operator bool() const { return tmpls != nullptr; }
+
+    common_chat_templates * get() const { return tmpls; }
+    common_chat_templates * release() {
+        auto ptr = tmpls;
+        tmpls = nullptr;
+        return ptr;
+    }
+};
+
+struct common_chat_templates {
+    std::unique_ptr<common_chat_template> template_default;
+    std::unique_ptr<common_chat_template> template_tool_use;
+    bool                                  has_explicit_template = false;
+    bool                                  add_bos = false;
+    bool                                  add_eos = false;
+};
+
+// init chat template
+common_chat_templates_ptr common_chat_templates_init(const struct llama_model * model,
+                                                     const std::string &        chat_template_override = std::string(),
+                                                     const std::string &        bos_token_override = std::string(),
+                                                     const std::string &        eos_token_override = std::string());
+
+// apply chat template
+common_chat_params common_chat_templates_apply(const struct common_chat_templates *        tmpls,
+                                               const struct common_chat_templates_inputs & inputs);
+
+// parse chat template
+common_chat_msg common_chat_parse(const std::string &               input,
+                                  bool                              is_partial,
+                                  const common_chat_parser_params & params);
+
+common_chat_msg common_chat_peg_parse(const common_peg_arena &          src_parser,
+                                      const std::string &

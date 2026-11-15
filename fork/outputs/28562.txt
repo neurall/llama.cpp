@@ -1,0 +1,156 @@
+run 28562 | ring_window_worker | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.57 t/s | prompt 1913.8 t/s | 4096 tokens | args: -np 1 --moe cs-worker=0 | power 280+280 W | 2026-11-14 14:47:58
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line, first to last, with every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then content, then // file: common/arg.cpp then content. Need return complete fixed version of following source file: every line of it... likely need output both files? They say source file singular but includes two file markers. Need fix bugs in provided code. Need mark each change by comment. Need not summarize. Need produce full code. Need analyze bugs.
+
+We need inspect code. It's from llama.cpp? json-schema-to-grammar.cpp and arg.cpp. Need find bugs. Could be intentionally introduced bugs. Need fix all. Need mark changes with comments. Need output complete fixed version. Need be careful.
+
+Let's parse first file.
+
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+...
+
+using json = common_json;
+
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Potential bug: if max_items == 0 and min_items >0? invalid. If min_items > max_items? maybe. If min_items=0 max_items=0 returns empty. If min_items=1 max_items=1? returns item_rule? With separator? For separator: result = item_rule + " " + build_repetition(..., min_items-1=0, max_items-1=0). build_repetition max=0 returns "" -> result = item_rule + " " (trailing space). Then if min_items==0 no. So for min=1 max=1 with separator returns "item " trailing. Should be item_rule. Need fix? In original llama.cpp build_repetition maybe:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (min_items == 1 && !has_max) return item_rule + "+";
+    if (min_items == 0 && !has_max) return item_rule + "*";
+    if (separator_rule.empty()) return item_rule + "{" + ... + "}";
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) result = "(" + result + ")?";
+    return result;
+}
+But if max_items==0? maybe return ""? Original? Let's check memory: In llama.cpp common/json-schema-to-grammar.cpp:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+No max_items==0? If max=0 min=0 returns item_rule? Actually min=0 max=1? no. separator empty: returns item_rule{0,0}. With separator: result item_rule + " " + build_repetition(...,0,-1?) if max=0 has_max true max_items-1=-1. Bad. But maybe max_items never 0? Could be. Provided has if max_items == 0 return ""; maybe introduced? Need fix trailing space for min=1 max=1 with separator. Also if max_items==0 and min_items==0 maybe empty okay. If min_items > max_items? maybe invalid.
+
+Need identify all bugs. Could be from known PR? Let's inspect second file too.
+
+First file:
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+...
+Potential bug: in uniform_range, sub_len = from.length() - i - 1; if i == from.length()? But condition i < from.length() && i < to.length(), so okay. But if from and to same length? uniform_range expects same length? It is called with min_s and max_s possibly different length? In has_min&&has_max loop pads min_s to max_digits? It calls uniform_range(min_s, string_repeat("9", digits)); min_s length digits? Initially min_s length min_digits, digits from min_digits to max_digits-1. If min_s length less than digits? Example min=99 max=1000: min_s="99", digits=2: uniform_range("99","99") okay; min_s="100". digits=3: uniform_range("100","999") okay. If min=1 max=1000: min_s="1", digits=1: uniform_range("1","9") okay; min_s="10". digits=2: uniform_range("10","99") okay. Good.
+
+But uniform_range uses digit_range(from[i], to[i] - 1) etc. If from[i] > to[i]? Should not if same length and from<=to. But if from_sub != sub_zeros and from[i] == to[i]? It goes else: out << "[" << from[i] << "] "; out << "("; uniform_range(from_sub, sub_nines); out << ")"; if (from[i] < to[i] - 1) ... if from[i] == to[i], no middle. Then if !to_reached: out << " | "; digit_range(to[i], to[i]); out << " "; uniform_range(sub_zeros, to_sub); This handles same prefix. But if from_sub == sub_zeros and from[i] == to[i]? digit_range(from[i], to[i]-1) invalid (from > to). But if from_sub == sub_zeros and from[i]==to[i], then from == to? Actually if same first digit and from_sub zeros, to_sub maybe zeros? If from=100 to=100, i? uniform_range: common prefix length i=3? then i == length, no branch. If from=100 to=101: common prefix i=2? from[2]='0', to[2]='1', from_sub length 0? sub_len=0, else digit_range('0','1') okay. If from=100 to=199: common prefix i=1, from_sub="00" sub_zeros, from[i]='1', to[i]='9', digit_range('1','8') okay. If from=100 to=100? no. If from=100 to=100? okay. If from=100 to=100? fine. If from=100 to=100? okay.
+
+Potential bug: more_digits lambda: out << "[0-9]"; if min_digits == max_digits && min_digits == 1 return; out << "{"; out << min_digits; if (max_digits != min_digits) { out << ","; if (max_digits != INT_MAX) out << max_digits; } out << "}"; If min_digits=0 max_digits=0: outputs [0-9]{0,}? maybe okay? But if min_digits=0 max_digits=1: outputs [0-9]{0,1}. If min_digits=1 max_digits=1 returns [0-9]. Good. If min_digits=0 max_digits=INT_MAX: outputs [0-9]{0,}. Good.
+
+Potential bug: in has_min only, min_value <0 branch: out << "\"-\" ("; build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false); out << ") | [0] | [1-9] "; more_digits(0, decimals_left - 1); This seems wrong? For min negative and no max, grammar should match negative numbers <= min? Wait build_min_max_int with has_min only means values >= min_value. If min_value <0, allowed values include negative from min_value to -1 and nonnegative. They output "-" (build_min_max_int(INT64_MIN, -min_value)) | [0] | [1-9] more_digits. But build_min_max_int(INT64_MIN, -min_value) with has_min&&has_max? min=INT64_MIN has_min false? Actually has_min = min_value != INT64_MIN, so false; has_max true. It will generate values <= -min_value? For min_value=-5, -min_value=5, build_min_max_int(INT64_MIN,5) has_max only, max>=0 top_level false? It outputs? if has_max and max>=0: if top_level false no negative prefix, build_min_max_int(0,5) -> values 0..5. Then out ") | [0] | [1-9] more_digits". So negative part matches -0..-5? But min=-5 should negative values -5..-1? Actually values >= -5 include -5,-4,...,-1,0,...; negative strings "-5" to "-1" (not -0). build_min_max_int(0,5) includes 0, so "-0" allowed. Maybe original? Need check. Original llama code for min only negative:
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+    out << ") | [0] | [1-9] ";
+    more_digits(0, decimals_left - 1);
+}
+Maybe yes, but -0? JSON integer grammar may not allow -0? integral-part [0] | [1-9]... with "-"? integer rule ("-"? integral-part) allows -0? Actually integral-part includes [0], so -0 allowed. Maybe okay.
+
+Potential bug: in has_min min_value <=9 branch: char c = '0' + min_value; if min_value=0 handled earlier. For min_value=1 top_level true range_start='1', c=1 not >, digit_range('1','9') more_digits(0, less_decimals). Good. For top_level false range_start='0', min_value=1: c > '0', digit_range('0','0') more_digits(1, less_decimals) | digit_range('1','9') more_digits(0, less_decimals). This matches 0? Wait top_level false means after a prefix digit, remaining digits can be any length? For min suffix >=1? Hmm.
+
+Potential bug: in has_min min_value >9 branch:
+auto min_s = std::to_string(min_value);
+auto len = min_s.length();
+auto c = min_s[0];
+if (c > '1') { digit_range(top_level ? '1' : '0', c - 1); out << " "; more_digits(len, less_decimals); out << " | "; }
+digit_range(c, c); out << " ("; build_min_max_int(std::stoll(min_s.substr(1)), INT64_MAX, out, less_decimals, false); out << ")";
+if (c < '9') { out << " | "; digit_range(c + 1, '9'); out << " "; more_digits(len - 1, less_decimals); }
+
+Bug: more_digits(len, less_decimals) when len > less_decimals? For top-level min=100, less_decimals=15, len=3 okay. But if decimals_left small? maybe. Original? Need compare.
+
+Potential bug: std::stoll(min_s.substr(1)) if substr empty? min_value >9 so not empty. okay.
+
+Potential bug: in has_max branch: if max_value >=0: if top_level out negative any? out << "\"-\" [1-9] "; more_digits(0, less_decimals); out << " | "; build_min_max_int(0, max_value, out, decimals_left, true); else top_level false: build_min_max_int(0,max_value,... true). But if top_level false and max>=0, should allow any nonnegative <= max, no negative. okay. If max_value <0: out << "\"-\" ("; build_min_max_int(-max_value, INT64_MAX, out, decimals_left, false); out << ")"; This for max=-5 (values <= -5) should negative suffix >=5. build_min_max_int(5, INT64_MAX) has_min only, top_level false. okay.
+
+Potential bug: const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"; In grammar, space rule should maybe "[ \t\n]{0,20}"? Original llama: const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"; It starts with | because used as optional? In rules: "\"{\" space ... space \"}\"" where space rule begins with |? That seems invalid? Let's check original: const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}"; In GBNF, rule ::= | ... means empty alternative? Actually if rule content starts with |, e.g. space ::= | " " | "\n"{1,2} [ \t]{0,20}; That allows empty. Yes okay.
+
+PRIMITIVE_RULES:
+{"boolean", {"(\"true\" | \"false\")", {}}},
+{"decimal-part", {"[0-9]{1,16}", {}}},
+{"integral-part", {"[0] | [1-9] [0-9]{0,15}", {}}},
+{"number", {"(\"-\"? integral-part) (\".\" decimal-part)? ([eE] [-+]? integral-part)?", {"integral-part", "decimal-part"}}},
+{"integer", {"(\"-\"? integral-part)", {"integral-part"}}},
+{"value", {"object | array | string | number | boolean | null", {"object", "array", "string", "number", "boolean", "null"}}},
+{"object", {"\"{\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \"}\"", {"string", "value"}}},
+{"array", {"\"[\" space ( value (\",\" space value)* )? space \"]\"", {"value"}}},
+{"uuid", ...},
+{"char",   {"[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})", {}}},
+{"string", {"\"\\\"\" char* \"\\\"\"", {"char"}}},
+{"null", {"\"null\"", {}}},
+
+Potential bug: object deps missing "space"? But space added in constructor. value deps includes object array etc. okay.
+
+STRING_FORMAT_RULES: date, time, date-time, date-string, time-string, date-time-string. okay.
+
+is_reserved_name: includes root, PRIMITIVE_RULES, STRING_FORMAT_RULES. okay.
+
+GRAMMAR_LITERAL_ESCAPES: map char to string. For format_literal, replacePattern with regex [\r\n"\\]. It escapes \r, \n, ", \. But not '-' or ']'? For literals, only those. okay.
+
+gbnf_escape_length: handles \x, \u, \U, and some escapes. It says keep in sync with parse_char in llama-grammar.cpp. It returns 2 for \t etc. But for \x with n_hex=2, if pos+2+n_hex > length return 0. For \u 4, \U 8. Good. But missing \0? Maybe not.
+
+class common_chat_schema_converter:
+friend std::string build_grammar(...);
+private:
+bool _dotall;
+std::map<std::string, std::string> _rules;
+std::unordered_set<std::string> _refs_being_resolved;
+std::vector<std::string> _errors;
+std::vector<std::string> _warnings;
+
+template <typename T> static const T & as(const common_chat_schema & node) { return static_cast<const T &>(node); }
+
+_add_rule: if _rules.find(esc_name)==end ||

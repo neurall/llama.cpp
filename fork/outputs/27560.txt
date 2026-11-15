@@ -1,0 +1,25 @@
+run 27560 | hot_tree6 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 106.22 t/s | prompt 496.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:53:03
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in a haze of white light, until the familiar contours of the *Aethelgard*’s bridge emerged from the fog.
+
+Beside him, Captain Vane stirred, his eyes wide and unblinking. "Status report," Vane croaked, his voice rasping from disuse.
+
+Elias rubbed his stiff neck, his fingers trembling. "We are in orbit. Planet designation: Terra Nova. Arrival time: 240 years post-launch."
+
+Vane nodded, a grim smile touching his lips. "We made it. The dream holds."
+
+But as Elias looked out the reinforced viewport, the dream fractured. Below them, the planet did not lie in the primordial wilderness they had been promised. It did not lie in the dark, waiting for the first seeds of civilization. Instead, it glowed. A web of amber and azure light spanned the continents, pulsing like the nervous system of a living creature. Cities clustered in dense, luminous knots, connected by rivers of light that looked suspiciously like orbital highways.
+
+"Something is wrong," Elias whispered, the cold dread settling in his marrow. "The telemetry... the atmospheric composition is too stable. Too processed."
+
+Vane leaned forward, squinting. "Look at the spectral analysis. That’s not natural gas. That’s industrial output. We’re not the first."
+
+Elias scrambled to the console, his hands finding the rhythm of the keys despite his numbness. He pulled up the historical logs, the digital memory of the *Aethelgard*. He searched for anomalies, for drift, for errors. But the data was clean. Too clean. Then, he found the secondary transmission log, buried deep in the navigation cache. It was a signal, weak but persistent, broadcasting from the surface.
+
+"Listen," Elias said, adjusting the audio gain.
+
+The static cleared, revealing a voice. It was not a machine. It was a human voice, weary but clear.
+
+*"To the travelers of the First Wave. We are the Second. We left one

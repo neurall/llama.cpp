@@ -1,0 +1,96 @@
+run 28413 | probe_lists_ops | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.4 t/s | prompt 351.1 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-14 08:07:06
+
+<think>Let me analyze this code carefully. The user is asking me to do a code review of the provided source files. The files are:
+
+1. `common/json-schema-to-grammar.cpp` - converts JSON schemas to GBNF grammars
+2. `common/arg.cpp` - argument parsing utilities
+
+Let me look at the code carefully for bugs, issues, and improvements.
+
+Looking at `json-schema-to-grammar.cpp`:
+
+1. The `common_chat_schema_converter` class has `_rules`, `_errors`, `_warnings`, `_refs_being_resolved`, `_dotall`.
+
+2. `_not_strings` builds a trie-based rule for excluding strings.
+
+3. `_resolve_ref` handles `$ref` resolution.
+
+4. `_build_object_rule` builds object rules with required/optional properties.
+
+5. `visit` handles different schema kinds.
+
+6. `check_errors` throws if errors exist.
+
+7. `format_grammar` outputs rules.
+
+8. `json_schema_to_grammar` functions.
+
+9. `build_grammar` with callback.
+
+Now let me look for bugs:
+
+In `_build_object_rule`:
+- `get_recursive_refs` lambda: `std::vector<std::string>(ks.begin() + 1, ks.end())` - this creates a vector from iterators. If `ks.size() > 1`, this is fine. But wait, `ks.begin() + 1` when `ks.size() == 1` would be `ks.end()`, creating an empty vector - but that's guarded by `if (ks.size() > 1)`.
+
+- The `rule += " )";` inside `if (!required_props.empty())` - wait, let me re-read:
+
+```cpp
+if (!optional_props.empty()) {
+    rule += " (";
+    if (!required_props.empty()) {
+        rule += " \",\" space ( ";
+    }
+    ...
+    if (!required_props.empty()) {
+        rule += " )";
+    }
+    rule += " )?";
+}
+```
+
+Hmm, this looks suspicious. If required_props is empty, we get `" (" + optional stuff + " )?"`. If required_props is non-empty, we get `" ( \",\" space ( " + optional stuff + " ) )?"`. Wait, that doesn't look right. Let me think about the grammar:
+
+For required props: `"{" space req1 "," space req2 ...`
+For optional: `" (" ...` then if required non-empty: `" \",\" space ( "` ... then optional alternatives ... then if required non-empty: `" )"` then `" )?"`.
+
+Hmm, actually the structure seems off. Let me trace through:
+
+- required: [a, b], optional: [c, d]
+- rule = `"{" space a-kv "," space b-kv`
+- rule += `" ("`
+- rule += `" \",\" space ( "` (since required non-empty)
+- rule += get_recursive_refs([c, d], false) = `c-kv ( \",\" space c-kv )? d-kv-rest...` hmm wait.
+
+Actually `get_recursive_refs` for [c, d] with first_is_optional=false:
+- res = `c-kv` + (c == "*" ? ... : "") = `c-kv`
+- ks.size() > 1, so res += " " + _add_rule(name + "-c-rest", get_recursive_refs([d], true))
+- get_recursive_refs([d], true): res = `( \",\" space d-kv )` + "?" = `( \",\" space d-kv )?`
+- So res = `c-kv (name-c-rest)` where name-c-rest = `( \",\" space d-kv )?`
+
+Hmm wait, that's not right. Let me re-read:
+
+```cpp
+std::function<std::string(const std::vector<std::string> &, bool)> get_recursive_refs = [&](const std::vector<std::string> & ks, bool first_is_optional) {
+    std::string res;
+    if (ks.empty()) {
+        return res;
+    }
+    const std::string& k = ks[0];
+    std::string kv_rule_name = prop_kv_rule_names[k];
+    std::string comma_ref = "( \",\" space " + kv_rule_name + " )";
+    if (first_is_optional) {
+        res = comma_ref + (k == "*" ? "*" : "?");
+    } else {
+        res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+    }
+    if (ks.size() > 1) {
+        res += " " + _add_rule(
+            name + (name.empty() ? "" : "-") + k + "-rest",
+            get_recursive_refs(std::vector<std::string>(ks.begin() + 1, ks.end()), true)
+        );
+    }
+    return res;
+};
+```
+
+So for [c, d], first_is_optional

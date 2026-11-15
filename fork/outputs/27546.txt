@@ -1,0 +1,36 @@
+run 27546 | hot_tree5 | poemseac | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 105.08 t/s | prompt 250.1 t/s | 237 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:40:22
+
+
+---
+The black water breathes in slow, heavy waves,
+swallowing the moon’s pale, fractured face.
+Salt spray clings to the hull like frost,
+cold and sharp against the wood.
+
+Far from the harbor’s warm embrace,
+the boat drifts in the void.
+Oars dip silently,
+breaking the surface tension,
+leaving only ripples that fade
+into the endless dark.
+
+Above, the lighthouse stands as a sentinel,
+a beam of amber cutting through the gloom.
+It pulses, steady and unyielding,
+a heartbeat in the silence.
+The light does not warm the water,
+only guides the eye through the night.
+
+Stars are scattered like broken glass,
+distant and indifferent.
+The wind whispers secrets to the mast,
+telling stories of storms past.
+The boat holds its course,
+small and fragile against the vast.
+
+The sea is a mirror of the sky,
+deep and mysterious.
+The lighthouse watches,
+waiting for the dawn to break.
+Until then, there is only
+the dark, the light, and the drift.

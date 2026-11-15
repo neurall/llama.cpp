@@ -1,0 +1,11 @@
+run 28057 | ns_staged_placement | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 23.79 t/s | prompt 1235.0 t/s | 64 tokens | args: -np 1 --moe staging=1 | power 280+280 W | 2026-11-13 22:52:15
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_auto(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec

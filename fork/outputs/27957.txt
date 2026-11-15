@@ -1,0 +1,7 @@
+run 27957 | mix_zero_first | pf4k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 31.56 t/s | prompt 379.1 t/s | 32 tokens | args: -np 1 --moe pp-path=stream,dense-split=0 | power 280+280 W | 2026-11-13 21:04:01
+
+ // avoid reallocations
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return literal_or

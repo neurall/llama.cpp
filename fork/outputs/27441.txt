@@ -1,0 +1,23 @@
+run 27441 | hot_tree4 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 97.09 t/s | prompt 242.2 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 11:33:01
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in the haze of neuro-stimulant residue, until the lights of the command deck stabilized into a harsh, clinical white.
+
+"Status report," Commander Vance’s voice cut through the fog, sharp and authoritative. Elias rubbed his eyes, his fingers trembling as he reached for the console. The data streams were already flooding his neural link. The ship, *The Aethelgard*, had arrived. The destination, Kepler-4b, was within visual range.
+
+But the visual feed was wrong.
+
+Elias stared at the main viewport. Below them, the planet was not a barren, rocky wasteland as the pre-launch surveys had predicted. It was a tapestry of light. Cities sprawled across the continents, glowing with amber and azure hues, connected by networks of roads that shimmered like veins. The atmosphere was thick with the pollution of industry, but it was breathable. It was inhabited.
+
+"Impossible," Vance whispered, leaning over Elias’s shoulder. "We are the first. The first generation ship. The first to leave Earth."
+
+Elias typed the query into the archival database, his heart pounding against his ribs. He pulled up the historical logs of the departure. The *Aethelgard* had left in 2104. The mission parameters were clear: a century-long journey, followed by a two-century settlement phase. They were the pioneers. The vanguard.
+
+Yet, the lights below told a different story. Elias ran a spectral analysis of the city lights. The architecture was familiar, yet evolved. The spires were taller, the materials lighter. The energy signatures were advanced, far beyond what humanity had achieved at the time of launch.
+
+"Who is down there?" Elias asked, his voice raspy.
+
+Vance looked at the screen, his face pale. "We must descend. We must make contact."
+
+The descent was a nightmare of bureaucratic confusion. The landing craft, *The Seed*, touched down in a sprawling metropolis that the locals called New Eden. The air was crisp, smelling of pine and rain. Elias

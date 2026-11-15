@@ -1,0 +1,102 @@
+run 26759 | ns_probe_cells | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 41.14 t/s | prompt 39.7 t/s | 1010 tokens | args: -np 1 | power 280+280 W | 2026-11-12 14:44:07
+
+The user wants the smallest possible HTML Tetris game. Let me create a minimal but functional Tetris game in a single HTML file.
+
+Let me think about what's needed:
+- A canvas or grid to display the game
+- Piece definitions (tetrominoes)
+- Game loop (gravity, movement, collision)
+- Line clearing
+- Score
+- Controls (keyboard)
+
+Let me write a compact but functional version.
+
+```html
+<!DOCTYPE html>
+<html>
+<head><title>Tetris</title></head>
+<body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+// ... game code
+</script>
+</body>
+</html>
+```
+
+Let me write a compact Tetris game:
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+const W=10,H=20,S=30;
+let grid=[],score=0,piece,nextPiece,gameOver=false;
+
+// Tetromino shapes
+const shapes=[
+  [[1,1,1,1]], // I
+  [[1,1],[1,1]], // O
+  [[0,1,0],[1,1,1]], // T
+  [[1,0,0],[1,1,1]], // S
+  [[0,0,1],[1,1,1]], // Z
+  [[1,1,0],[0,1,1]], // J... wait let me get these right
+  [[0,1,1],[1,1,0]], // L... 
+];
+```
+
+Actually let me be more careful with the shapes:
+
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+
+Let me write a compact but complete version:
+
+```html
+<!DOCTYPE html>
+<html><body>
+<canvas id="c" width="300" height="600"></canvas>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d'),W=10,H=20,S=30;
+let g=[],sc=0,p,n,go=0,t=0;
+const sh=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]]];
+const col=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+
+function newP(){p={s:sh[Math.random()*7|0],x:3,y:0};}
+function coll(dx,dy,r){
+  let s=r?p.s:p.s;
+  // rotation...
+}
+```
+
+Hmm, let me think about rotation more carefully. For rotation, I need to rotate the matrix.
+
+Let me write a cleaner version:
+
+```javascript
+function rot(m){
+  return m[0].map((_,i)=>m.map(r=>r[i]).reverse());
+}
+```
+
+Wait, that's rotating clockwise. Let me verify:
+- m = [[0,1,0],[1,1,1]] (T piece)
+- m[0].map((_,i) => m.map(r=>r[i]).reverse())
+- i=0: m.map(r=>r[0]).reverse() = [0,1].reverse() = [1,0]
+- i=1: m.map(r=>r[1]).reverse() = [1,1].reverse() = [1,1]
+- i=2: m.map(r=>r[2]).reverse() = [0,1].reverse() = [1,0]
+- Result: [[1,0],[1,1],[1,0]] which is T rotated right. Good.
+
+Actually wait, let me reconsider. The standard rotation for a matrix:
+- Clockwise: each row becomes a column, reversed
+- `m[0].map((_,i)=>m.map(r=>r[i]).reverse())` - this takes column i and reverses it to form row i. That's clockwise rotation.
+
+Let me verify with a simple 2x2:
+m = [[1,1],[1,1]] - rotation doesn't matter for O piece.
+
+With
+---

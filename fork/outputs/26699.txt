@@ -1,0 +1,11 @@
+run 26699 | ns_one_size_rule | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 36.08 t/s | prompt 1492.8 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,prefill-split=0.5 | power 280+280 W | 2026-11-12 13:07:24
+
+    return params.speculative.types.all == (
+        LLAMA_SPEC_TYPE_NONE |
+        LLAMA_SPEC_TYPE_DRAFT |
+        LLAMA_SPEC_TYPE_NGRAM |
+        LLAMA_SPEC_TYPE_VERIFY);
+}
+
+static bool is_default_model(const common_params_model & model) {
+    return model.path

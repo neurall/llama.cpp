@@ -1,0 +1,46 @@
+run 27475 | hot_tree4 | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 84.25 t/s | prompt 60.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,tree-key=map,state=/tmp/runstate/hottree-q/map/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/map | power 280+280 W | 2026-11-13 11:53:52
+
+
+---
+Here is the smallest possible functional Breakout game in a single HTML file. It uses the HTML5 Canvas API and requires no external libraries.
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<script>
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+let x = 100, y = 180, dx = 2, dy = -2, bx = 100, by = 100;
+let bricks = [];
+for(let i=0; i<10; i++) for(let j=0; j<5; j++) bricks.push({x:20+i*20, y:20+j*20, alive:1});
+
+function loop() {
+    ctx.clearRect(0,0,200,200);
+    bx += dx; by += dy;
+    if(bx<0||bx>200) dx=-dx;
+    if(by<0||by>200) dy=-dy;
+    if(by>180 && bx>80 && bx<120) dy=-dy;
+    bricks.forEach(b=>{
+        if(b.alive && bx>b.x && bx<b.x+20 && by>b.y && by<b.y+20) {
+            b.alive=0; dy=-dy;
+        }
+    });
+    bricks.forEach(b=>{
+        if(b.alive) { ctx.fillStyle='red'; ctx.fillRect(b.x,b.y,20,20); }
+    });
+    ctx.fillStyle='blue'; ctx.fillRect(80,180,40,10);
+    ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(bx,by,5,0,7); ctx.fill();
+    requestAnimationFrame(loop);
+}
+document.onkeydown = e => { if(e.key=='ArrowLeft') dx=-2; if(e.key=='ArrowRight') dx=2; };
+loop();
+</script>
+</body>
+</html>
+```
+
+### How it works:
+1. **Canvas**: A 200x200 pixel canvas.
+2. **State**: Variables for ball position (`bx, by`), velocity (`dx

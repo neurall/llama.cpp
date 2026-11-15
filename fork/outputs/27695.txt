@@ -1,0 +1,59 @@
+run 27695 | tree_phase_maps | breakoutc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 49.8 t/s | prompt 18.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=map,state=/tmp/runstate/q36ph/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/tree | power 280+280 W | 2026-11-13 16:20:44
+
+
+---
+Here is the smallest possible functional HTML breakout game. It uses a single HTML file with inline CSS and JavaScript.
+
+It features:
+1.  A paddle controlled by the mouse.
+2.  A ball that bounces off walls, the paddle, and bricks.
+3.  A grid of bricks that disappear when hit.
+4.  A score counter.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Breakout</title>
+    <style>
+        body { margin: 0; background: #222; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { background: #000; border: 2px solid #fff; }
+    </style>
+</head>
+<body>
+    <canvas id="c" width="400" height="400"></canvas>
+    <script>
+        const c = document.getElementById('c');
+        const ctx = c.getContext('2d');
+        
+        // Game State
+        let x = 200, y = 300, dx = 2, dy = -2;
+        let paddle = 200, w = 80;
+        let score = 0;
+        const bricks = [];
+        
+        // Create Bricks (5 rows, 10 cols)
+        for(let r=0; r<5; r++) {
+            for(let col=0; col<10; col++) {
+                bricks.push({x: col*40 + 20, y: r*30 + 20, alive: true});
+            }
+        }
+
+        // Mouse Control
+        c.addEventListener('mousemove', e => paddle = e.clientX - w/2);
+
+        function draw() {
+            ctx.clearRect(0, 0, 400, 400);
+            
+            // Draw Paddle
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(paddle, 380, w, 10);
+
+            // Draw Ball
+            ctx.beginPath();
+            ctx.arc(x, y, 5, 0, Math.PI*2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+
+            // Draw Bricks
+            ctx.fillStyle = '#f00';

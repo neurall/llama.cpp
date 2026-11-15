@@ -1,0 +1,21 @@
+run 28743 | pred_pool_readahead | chatv | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 165.61 t/s | prompt 21.6 t/s | 128 tokens | args: -np 1 --cpu-moe --moe-expert-cache 19 --moe pred-top=8,predict-ahead=0,pred-pool=1,rampool=1,verify=2 | power 280+280 W | 2026-11-14 22:16:43
+
+
+---
+Here is a Python function that uses the `csv` module to parse a CSV file and return the average of each column:
+
+```python
+import csv
+
+def parse_csv_and_average(csv_file):
+    """
+    Parses a CSV file and returns a list of averages for each column.
+
+    Args:
+        csv_file (str): The path to the CSV file.
+
+    Returns:
+        list: A list of averages for each column in the CSV file.
+    """
+    averages = []
+    with open(csv_file, 'r') as

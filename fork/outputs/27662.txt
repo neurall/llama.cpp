@@ -1,0 +1,21 @@
+run 27662 | tree_phase_maps | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 61.66 t/s | prompt 63.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,count-prompt=0,state=/tmp/runstate/q36ph/cp0/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/cp0 | power 280+280 W | 2026-11-13 16:00:43
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in the haze of neuro-stimulant residue, until the lights of the command deck stabilized into a harsh, clinical white.
+
+"Status report," Commander Vance’s voice cut through the fog, sharp and authoritative. Elias rubbed his eyes, his fingers trembling as he reached for the console. The data streams were already flooding his neural link. They had arrived. The destination, Kepler-4b, was no longer a distant star in the void, but a glowing marble suspended in the blackness.
+
+But the data was wrong.
+
+Elias stared at the telemetry. The planet was not dark. It was illuminated. A web of golden light spanned the continents, pulsing with the rhythm of cities, power grids, and habitation zones. The silence of the void was broken by the hum of civilization.
+
+"Impossible," Vance muttered, leaning over Elias’s shoulder. "We are the first. The *Aethelgard* was launched three hundred years ago. We are the pioneers."
+
+Elias typed the query, his fingers stiff. He pulled up the historical logs. The *Aethelgard* was the lead vessel, carrying the genetic seed of humanity. But the archives contained a footnote, a footnote he had ignored in his sleep. A secondary launch, the *Aethelgard II*, had departed fifty years after the first. It was a smaller ship, faster, equipped with experimental drive technology. It was meant to be a backup, a redundancy.
+
+"It’s not us," Elias whispered, his voice raspy. "It’s them."
+
+The realization hit him like a physical blow. The people below were not strangers. They were his descendants. The crew of the *Aethelgard II* had arrived first. They had built the cities, raised the children, lived the lives that Elias and his crew were supposed to inhabit. The generation ship that had carried the burden of the long, slow journey had arrived to find a world already inhabited by the very people they were meant to save.
+
+Elias looked out the viewport. The planet spun slowly,

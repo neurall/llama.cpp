@@ -1,0 +1,7 @@
+run 28233 | kv_fit_pass_grow | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 42.36 t/s | prompt 1454.2 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,staging=0,moe-split=home | power 200+200 W | 2026-11-14 03:10:21
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_MTP | SPEC_TYPE_NGRAM_SET | SPEC_TYPE_NGRAM_MOD);
+}
+
+static bool parse_mlx_model_type(const std::string & type, int & n_gpu_layers, bool & use_temp_path

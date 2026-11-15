@@ -1,0 +1,11 @@
+run 28814 | split_ab | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.16 t/s | prompt 13.5 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,jit-cpu=1 | power 200+200 W | 2026-11-15 02:32:51
+
+ } else if (decimals_left == 0) {
+            out << to;
+        } else {
+            out << to << " ";
+            more_digits(decimals_left, decimals_left);
+        }
+    };
+    auto from_digits = std::to_string(has_min ? min_value : max_value);
+    auto to_digits =

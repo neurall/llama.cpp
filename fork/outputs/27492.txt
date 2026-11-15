@@ -1,0 +1,39 @@
+run 27492 | hot_tree4 | poemseac | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 100.31 t/s | prompt 255.2 t/s | 252 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:04:08
+
+
+---
+The black water breathes in slow, heavy waves,
+swallowing the moon’s pale, fractured face.
+Salt spray clings to the hull like frost,
+cold and sharp against the wood.
+
+Far from the harbor’s warm embrace,
+the boat drifts in the void.
+Oars dip silently,
+breaking the surface tension,
+leaving ripples that vanish instantly.
+
+Above, the stars are scattered shards,
+too distant to guide, too bright to trust.
+Then, a beam cuts through the dark,
+a golden spear piercing the night.
+
+The lighthouse stands on the jagged rock,
+unmoving, eternal, watching.
+Its light is not a beacon for safety,
+but a reminder of distance.
+
+The boat turns toward the glow,
+not because it is safe,
+but because it is the only thing
+that exists in the darkness.
+
+The sea roars, a low, deep hum,
+vibrating through the deck.
+The sailor holds the wheel tight,
+eyes fixed on the tower’s eye.
+
+Night is not empty,
+it is full of silence and sound,
+of fear and hope,
+of the endless, open dark.

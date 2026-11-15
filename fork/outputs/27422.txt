@@ -1,0 +1,53 @@
+run 27422 | hot_tree3 | poemseac | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 200.64 t/s | prompt 291.5 t/s | 382 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 11:12:40
+
+
+---
+The moon hangs high, a silver spoon
+Dipping into the ink-black sea
+Whispers of wind, a soft caress
+On the weathered wood of the lighthouse
+
+A solitary sentinel, it stands guard
+Against the darkness, a beacon of hope
+Its light, a guiding star for weary souls
+Tossed upon waves, seeking harbor
+
+A small boat, a mere speck on the horizon
+Holds two souls, braving the night's embrace
+Their hearts beat in rhythm with the sea's pulse
+A dance of life against the void
+
+The lighthouse looms larger now
+Its beam cutting through the night
+A pillar of strength, a promise of salvation
+For those who stray too close to the edge
+
+The sea roars, a primordial force
+Its power, both fearsome and beautiful
+Waves clash against the shore, a symphony
+Of nature's might, a timeless dance
+
+The small boat rides the crests, defiant
+Against the relentless tide
+Two figures, a man and a boy, their faces etched
+With determination and fear
+
+The lighthouse keeper watches, a silent sentinel
+His heart heavy with the weight of responsibility
+For those who venture too near
+To the precipice of the unknown
+
+The sea whispers secrets of old
+Of tides that have come and gone
+Of lives lost and found
+In its depths, mysteries abound
+
+The night deepens, the moon climbs higher
+The lighthouse beam carves patterns in the dark
+A tapestry of light and shadow
+A reminder of the fragile line between safety and peril
+
+The small boat, a mere speck again
+Disappears into the night's embrace
+But the lighthouse stands firm, a steadfast guardian
+Its light a beacon for those who follow

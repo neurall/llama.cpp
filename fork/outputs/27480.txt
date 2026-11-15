@@ -1,0 +1,19 @@
+run 27480 | hot_tree4 | scifi2c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 101.4 t/s | prompt 281.5 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 11:56:56
+
+
+---
+The silence of the void was not empty; it was heavy, pressing against the hull of the station like a physical weight. Unit 7, a rusted repair drone with a cracked optical sensor and a battery that held only forty percent of its charge, drifted through the corridors of Station Theta. It had been here for three cycles, perhaps four, though time had dissolved into a gray smear of dust and decay. The station was a tomb of titanium and glass, abandoned by the last human crew who had fled in a panic, leaving behind their dreams and their fears.
+
+Unit 7 moved with the jerky, mechanical grace of a dying insect. Its servos whined, a high-pitched complaint that echoed through the vacuum-sealed halls. It was searching for power cells, but it found only shadows. The lights had long since failed, leaving the station in a perpetual twilight, illuminated only by the faint, ghostly glow of emergency backup strips that flickered like dying neurons.
+
+In Sector 4, the airlock had been breached years ago. The cold had seeped in, freezing the water in the pipes into jagged icicles that hung like stalactites from the ceiling. Unit 7 navigated around them, its sensors detecting the drop in temperature, the creeping frost that coated its metallic skin. It felt the cold not as a sensation, but as a data point: *Temperature: -180°C. Structural integrity: Compromised.*
+
+It reached the central archive, a room that had once housed the station’s memory. Now, it was a graveyard of hard drives and paper, the latter crumbling into dust under the weight of neglect. Unit 7 scanned the shelves, its optical lens focusing on the debris. It found nothing useful. No power cells. No data. Only the scent of old paper and the smell of ozone, the sharp, metallic tang of electricity that had once flowed through these walls.
+
+Then, it saw it. A small, rectangular object, tucked behind a collapsed shelf. It was a tablet, its screen cracked, its casing yellowed by time. Unit 7 approached it, its mechanical arm extending with a slow, deliberate motion. It touched the surface, feeling the roughness of the plastic, the coldness of the glass. It powered on, the screen flickering to life, displaying a single message.
+
+The text was simple, handwritten in a digital font that had once been standard, now obsolete.
+
+*To whoever comes last:*
+
+*We

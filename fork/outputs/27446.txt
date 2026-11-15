@@ -1,0 +1,25 @@
+run 27446 | hot_tree4 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 96.8 t/s | prompt 389.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,tree-key=map,state=/tmp/runstate/hottree-q/map/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/map | power 280+280 W | 2026-11-13 11:36:05
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in the haze of neuro-stimulant residue, until the lights of the command deck stabilized.
+
+"Status report," Commander Vance’s voice cut through the fog, sharp and authoritative.
+
+Elias rubbed his eyes, his fingers trembling. He was the keeper of memory, the one who recorded the history of the journey, but now he was living it. "We have arrived," he croaked, his voice rough from disuse. "Orbit is stable. Planet is... lit."
+
+The word hung in the air, heavy and impossible. They had been sent to settle a barren world, a rock of dust and silence. The mission parameters were clear: three hundred years of travel, followed by decades of terraforming. The lights should be dark. The cities should be ruins or foundations.
+
+Vance moved to the viewport, his face pale. Elias followed, his legs weak, his mind struggling to process the visual data. Below them, the planet spun in a slow, majestic arc. But it was not the dark, jagged landscape of the pre-arrival scans. It was a tapestry of gold and white. Cities sprawled across the continents, glowing like embers in a dark room. Rivers of light connected them, pulsing with energy. There were no signs of war, no scars of nuclear fallout. Just civilization.
+
+"Impossible," Vance whispered. "We are the first."
+
+Elias looked at the data stream on the console. The telemetry was clear. They were the *Aethel*, the first generation ship. But the spectral analysis of the lights below suggested a technological maturity that matched their own, yet the atmospheric composition showed signs of centuries of industrial activity.
+
+"Who is down there?" Elias asked, his heart pounding.
+
+Vance turned to him, eyes wide. "We need to communicate. Open the channel."
+
+Elias typed the sequence, his hands shaking. The static crackled, then resolved into a voice. It was not the harsh, distorted signal of a primitive outpost. It was clear, calm, and human.
+
+"

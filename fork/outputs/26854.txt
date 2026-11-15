@@ -1,0 +1,47 @@
+run 26854 | oneexe | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 40.42 t/s | prompt 26.5 t/s | 987 tokens | args: -np 1 | power 220+280 W | 2026-11-12 17:13:31
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works.
+
+Need design compact Tetris. Single HTML file. Use canvas 10x20. Controls arrow keys, rotate up, space drop? Need implement.
+
+Need "smallest html tetris game" maybe code golf. Need produce minimal code. Need ensure no bugs. Let's craft compact but readable enough. Could use canvas and JS.
+
+Need implement Tetris:
+- board 10x20.
+- tetromino shapes. Use arrays of coordinates or bit masks.
+- current piece, rotation, x,y.
+- collision.
+- game loop with requestAnimationFrame or setInterval.
+- keyboard controls.
+- score maybe.
+- line clearing.
+- game over.
+
+Need minimal code. Could use canvas 200x400, cell 20. Use CSS. Use JS.
+
+Let's design robust.
+
+Option use 2D array board 20 rows x 10 cols. Shapes as arrays of [x,y] for each rotation? Simpler: define tetrominoes as matrices and rotate. But compact.
+
+Could use bitmask representation for each piece and rotations. Need collision.
+
+Let's define shapes as arrays of 4 blocks relative coordinates for each rotation? Could define base shapes and rotate function. Simpler.
+
+Tetromino definitions:
+I: [[0,0],[1,0],[2,0],[3,0]]
+O: [[0,0],[1,0],[0,1],[1,1]]
+T: [[0,0],[1,0],[2,0],[1,1]]
+S: [[1,0],[2,0],[0,1],[1,1]]
+Z: [[0,0],[1,0],[1,1],[2,1]]
+J: [[0,0],[0,1],[1,1],[2,1]]
+L: [[2,0],[0,1],[1,1],[2,1]]
+Need rotation. Rotate around origin? For shapes with coordinates, rotate (x,y)->(y,-x) or (-y,x). Need normalize to nonnegative. Could use function rotate(shape) returns normalized. But for I shape rotation around origin may produce vertical. Need normalize.
+
+Could store rotations precomputed? Simpler: function rot(p) { return p.map(([x,y])=>[y,-x]); } then normalize min x/y. But rotation of shape around origin may shift. Need normalize. For collision, use current shape coordinates relative to piece origin. If normalize after rotation, piece origin changes? We can maintain x,y as top-left of bounding box. Rotating and normalizing changes bounding box; need adjust x,y to keep center? In Tetris, rotation around center. If we normalize to min 0, then x,y top-left. But rotating around origin and normalizing may shift piece relative to board. Need adjust x,y to keep same center? Could be okay if we set x,y as top-left of bounding box and rotate shape normalized; but rotation may shift piece. Need avoid weird. Better use rotation around center and keep x,y as top-left? Let's think.
+
+If shape coordinates relative to top-left bounding box, rotating around center of bounding box and then normalize to top-left. The top-left position may change. If we keep x,y same, piece may shift. In Tetris, rotation should pivot around center, not top-left. But many simple implementations use rotation around origin and adjust x,y. Could be acceptable? Need correct.
+
+Alternative use fixed rotations arrays for each piece. That avoids rotation math. Define 7 pieces with 4 rotations each as arrays of coordinates relative to top-left. Then rotation index. This is compact enough. Need generate rotations manually? Could define base shapes and use function to rotate around center and normalize, then adjust x,y? Let's derive.
+
+Maybe use bitmask representation with 4x4 grid. Each piece rotation is a 4x4 bitmask. Rotate bitmask around center. Then collision uses bitmask. This is compact and correct. Use 4x4 matrix. For each piece, define base 4x4 bitmask. Rotate by 90 degrees around center (2,2). Then normalize? Actually 4x4 grid rotation around center keeps bounding box 4x4. Piece coordinates are cells in 4x4. Top-left x,y. Rotating bitmask around center of 4x4 and keeping x
+---

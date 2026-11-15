@@ -1,0 +1,11 @@
+run 27193 | ns_xt_start | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 26.7 t/s | prompt 873.8 t/s | 64 tokens | args: -np 1 --moe staging=0,split-experts=1 | power 200+200 W | 2026-11-13 03:56:41
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_auto(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_AUTO;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec

@@ -1,0 +1,11 @@
+run 28744 | pred_pool_readahead | chatv | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 132.3 t/s | prompt 16.1 t/s | 128 tokens | args: -np 1 --cpu-moe --moe-expert-cache 19 --moe pred-top=8,predict-ahead=0,pred-pool=1,rampool=1,verify=2 | power 280+280 W | 2026-11-14 22:16:59
+
+
+---
+The sun was setting, casting an orange glow over the horizon. The lighthouse keeper, Mr. Thompson, was finishing up his daily duties. He climbed the stairs to the lantern room to check the light. As he turned the crank to raise the light, his hand brushed against a small, sealed envelope attached to a buoyant piece of wood. Curious, he carefully opened the envelope. Inside was a handwritten note that read:
+
+"To whom it may concern,
+We are lost at sea. Please come to our rescue.
+- A group of sailors"
+
+Mr. Thompson's heart sank. He knew

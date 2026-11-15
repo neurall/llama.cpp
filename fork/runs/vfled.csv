@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+vfng-qni4,qn_iq4xs,1,scific,8,--moe verify=2,--env GGML_CUDA_DISABLE_GRAPHS=1
+vfrr-qni4,qn_iq4xs,1,scific,8,--moe verify=2,--env LLAMA_ROWREAD=0
+vfled-qni4,qn_iq4xs,1,scific,8,"--moe verify=2,ledger=2",
+vfled-ds,ds,1,scific,8,"--moe verify=2,ledger=2",

@@ -1,0 +1,86 @@
+run 28365 | lp_check_before_lock | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.41 t/s | prompt 31.1 t/s | 965 tokens | args: -np 1 | power 200+200 W | 2026-11-14 06:58:00
+
+The user wants the smallest HTML Tetris game. Let me think about this.
+
+The request is "generate smallest html tetris game." That's a direct request for minimal code. But my defaults push toward rich, crafted pages. However, the user explicitly asked for "smallest" — that's a direct instruction that overrides stylistic defaults. Honoring the user's explicit ask is the top priority here.
+
+So: smallest possible HTML Tetris. Let me actually write compact Tetris.
+
+Let me write a genuinely small but working Tetris.
+
+Classic minimal Tetris in JS:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// minimal tetris
+</script>
+```
+
+Let me write it carefully.
+
+Approach: use a 2D array board 10x20. Pieces defined by rotation via matrix rotation trick.
+
+Compact version:
+
+```js
+const B=[...Array(24)].map(_=>Array(10).fill(0)),C=c.getContext('2d'),S=8
+let p,x,y,r=0,t=0
+const P='⛓' // no
+```
+
+Let me use the classic trick: pieces as strings of hex or as arrays of coordinates.
+
+A well-known tiny Tetris:
+
+```js
+with(c)for(;;){}
+```
+
+Let me write a readable-but-tiny version.
+
+```html
+<canvas id=C width=120 height=240></canvas>
+<script>
+B=[...Array(20)].map(_=>[0,0,0,0,0,0,0,0,0,0])
+P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]]]
+```
+
+Rotation: rotate matrix clockwise: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`
+
+Collision check:
+
+```js
+function hit(m,x,y){return m.some((r,j)=>r.some((v,i)=>v&&B[y+j]?.[x+i]??(x+i<0||x+i>9||y+j>19)))}
+```
+
+Careful: y+j<0 should be allowed (above board). Let me handle: if y+j<0 return false for that cell (no collision). Actually simpler: make board 24 rows tall with 4 hidden rows on top, and only draw rows 4..23. Hmm, or just handle bounds.
+
+Let me do: board is 20 rows, spawn y=-2 or so.
+
+```js
+const H=(m,x,y)=>m.some((r,j)=>r.some((v,i)=>v&&(x+i<0||x+i>9||y+j>19||(B[y+j]?.[x+i]))))
+```
+
+With y+j<0: B[-1] is undefined → `undefined` falsy, and x bounds ok, y+j>19 false. So returns false. Good.
+
+Spawn: x=3, y=-2 (or 0). Let's spawn y=0 with pieces that have top row.
+
+Piece shapes: I'll use 3-wide/4-wide matrices.
+
+Let me define:
+- I: [[1,1,1,1]] — 1 row, 4 cols
+- O: [[1,1],[1,1]]
+- T: [[0,1,0],[1,1,1]]
+- J: [[1,0,0],[1,1,1]]
+- L: [[0,0,1],[1,1,1]]
+- S: [[0,1,1],[1,1,0]]
+- Z: [[1,1,0],[0,1,1]]
+
+Spawn y = -1 for most (2-row pieces) so they come in from top. Actually spawn y=0 is fine and simpler.
+
+Line clear:
+```js
+B=B.filter(r=>r.some(v=>!v));while(B.length<20)B.unshift([0,0,0,0,0,0,0,0,0,0])
+
+---

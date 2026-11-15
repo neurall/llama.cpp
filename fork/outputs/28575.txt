@@ -1,0 +1,126 @@
+run 28575 | ring_depth2 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.41 t/s | prompt 2312.0 t/s | 4096 tokens | args: -np 1 | power 280+280 W | 2026-11-14 15:48:16
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line from first to last, every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then code, then // file: common/arg.cpp then code. Need return complete fixed version of following source file? It includes two files? Need likely fix bugs in both? Need output entire code with comments marking changes. Need analyze bugs. Need be careful. Need produce final only code? They request return complete fixed version. Need include every line, unchanged parts, changes marked by comment. Need not summarize. Need likely output code block. Need identify bugs in provided code. This seems from llama.cpp? Need fix bugs. Let's inspect code.
+
+We need fix every bug. Need infer intended behavior. There may be intentional bugs introduced. Need find compile/runtime/logic bugs.
+
+File 1: json-schema-to-grammar.cpp.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. Uses std::function but not include <functional>? It uses std::function in code. Need add #include <functional>. Also uses std::stoll, std::stoi, std::to_string, string_repeat, string_join, string_split, common_json, common_chat_schema etc. Need maybe include <cstdint>? int64_t used. common.h may include. But bug? Need add <cstdint> maybe.
+
+build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Potential bug: if max_items == 0 and min_items >0 invalid? maybe return empty. If min_items > max_items? Could produce weird. But maybe not.
+For separator: if min_items=0 max_items=1, returns item_rule? Actually early min0 max1 returns item_rule + "?" before separator. Good.
+If min_items=0 max_items=0 returns empty. If min_items=1 max_items=1 separator: result = item + " " + build_repetition(...,0,0) => item + " " + "" => "item " trailing space. Then min_items !=0. That yields trailing space. Could be bug? For one item with separator, should just item_rule. But maybe grammar tolerates trailing space? Could be bug. Need fix? Let's see original llama.cpp build_repetition? I recall:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (max_items == 0) return "";
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (separator_rule.empty()) { ... }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) result = "(" + result + ")?";
+    return result;
+}
+```
+Maybe original has same trailing space? For min=1 max=1 separator, build_repetition(...,0,0) returns "", result item + " ". Could be bug. But maybe callers avoid max=1? Array with max_items=1 uses separator. Then grammar `item ` maybe okay? GBNF trailing space before space? In array: `"[\" space " + build_repetition(..., "\",\" space") + " space \"]\""` => `"[\" space item  space \"]\"` double space? GBNF may ignore? Not sure. Could fix by if max_items==1 return item_rule. But if min=0 max=1 already handled. If min=1 max=1 return item_rule. Add.
+
+build_min_max_int:
+- Uses std::function but no include.
+- `auto less_decimals = std::max(decimals_left - 1, 1);` decimals_left int. OK.
+- In uniform_range lambda: `auto sub_len = from.length() - i - 1;` If i == from.length()? But condition i < from.length() && i < to.length(), so i <= len-1, sub_len >=0. OK.
+- `digit_range(from[i], to[i] - 1);` char arithmetic. If from[i] > to[i]? uniform_range called with from <= to? likely.
+- `if (from[i] < to[i] - 1)` char compare. OK.
+- `digit_range(to[i], to[i]);` OK.
+- In has_min && has_max: if min<0 max<0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value,...). If max_value = INT64_MIN? -max_value overflow. But has_min/has_max exclude min==min, max==max. If max_value <0 and not max? max_value could be -9223372036854775807? -max ok. If max_value == INT64_MIN? has_max true? max_value != max, yes. -max_value overflow. But maybe not.
+- `if (min_value < 0) { out << "\"-\" ("; build_min_max_int(0, -min_value,...); out << ") | "; min_value = 0; }` If min_value == INT64_MIN? has_min false? min_value != min false, so not has_min. If has_min true, min_value not min, -min ok.
+- For min_value <=9 branch: `char c = '0' + min_value;` min_value int64_t but <=9. OK.
+- `more_digits(1, less_decimals);` if less_decimals maybe 1. OK.
+- In min_value >9: `more_digits(len, less_decimals);` Wait more_digits(min_digits, max_digits). If len > less_decimals? For min_value length len, less_decimals = decimals_left-1. decimals_left initial 16. If len=16, less_decimals=15, more_digits(16,15) invalid. Original? Let's inspect. For min_value >9, if c > '1': digit_range(top_level?'1':'0', c-1); out << " "; more_digits(len, less_decimals); This seems wrong: should more_digits(len, len)? Or more_digits(len, less_decimals)? Let's reason. This function builds regex for integers with up to decimals_left digits? For min_value with length len, numbers starting with smaller first digit and length len? If first digit smaller than c, to be >= min_value? Actually if first digit smaller than c, then number length must be > len? Hmm.
+Original llama.cpp build_min_max_int? I can recall from llama.cpp common/json-schema-to-grammar.cpp. It has `more_digits(len, less_decimals)`? Let's search memory. There is function build_min_max_int with `less_decimals = std::max(decimals_left - 1, 1);` In has_min branch:
+```
+} else if (min_value <= 9) {
+    char c = '0' + min_value;
+    auto range_start = top_level ? '1' : '0';
+    if (c > range_start) {
+        digit_range(range_start, c - 1);
+        out << " ";
+        more_digits(1, less_decimals);
+        out << " | ";
+    }
+    digit_range(c, '9');
+    out << " ";
+    more_digits(0, less_decimals);
+} else {
+    auto min_s = std::to_string(min_value);
+    auto len = min_s.length();
+    auto c = min_s[0];
+
+    if (c > '1') {
+        digit_range(top_level ? '1' : '0', c - 1);
+        out << " ";
+        more_digits(len, less_decimals);
+        out << " | ";
+    }
+    digit_range(c, c);
+    out << " (";
+    build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false);
+    out << ")";
+    if (c < '9') {
+        out << " | ";
+        digit_range(c + 1, '9');
+        out << " ";
+        more_digits(len - 1, less_decimals);
+    }
+}
+```
+Maybe original indeed has more_digits(len, less_decimals) but if len > less_decimals? decimals_left is max digits remaining? For top-level decimals_left=16. If min_value length 16, c > '1', more_digits(16,15) invalid. But min_value max 9999999999999999? 16 digits? int64 max 9223372036854775807 19 digits. decimals_left=16 maybe limits to 16 digits. If min_value length 16, less_decimals=15. more_digits(16,15) outputs `[0-9]{16,15}` invalid. Could be bug. Maybe should be `more_digits(len, len)`? Let's analyze grammar for min only.
+For min_value=100, decimals_left=16, top_level true. len=3, c='1'. c > '1' false. digit_range('1','1') (1) then build_min_max_int(0, max, less_decimals=15, false) for suffix >=00? Then if c<'9': digit_range('2','9') and more_digits(len-1=2, less_decimals=15). That matches 2-15 digits after first digit? For numbers starting 2-9, total length 3 to 16? more_digits(2,15) after one digit => total 3-16. Good. For c>'1', e.g. min=500, top_level. Need match numbers >=500. Options: first digit 1-4 with length? If first digit 1-4, to be >=500, total length must be >3? Actually 1-4 followed by any digits: 100-499 are <500 if length 3; but length 4+ are >=1000 >=500. So need first digit 1-4 and total length >=4? The code `digit_range('1','4'); more_digits(len, less_decimals)` => after first digit, 3 to 15 digits => total 4 to 16. Good. So more_digits(len, less_decimals) is correct for smaller first digit: need at least len additional digits to exceed length len. If len=16, less_decimals=15, impossible to have total >16 within max 16. But if min_value has 16 digits and top-level max digits 16, numbers with smaller first digit and length >16 not allowed, so should omit that alternative. more_digits(16,15) invalid. Need guard if len <= less_decimals. Original maybe assumes min_value <= 9999999999999999? 16 digits max? If len=16, less_decimals=15, bug. Could fix by only emit if len <= less_decimals. But if len == less_decimals? more_digits(15,15) total 16, smaller first digit length 16? For min length 15? Wait if len=15, less_decimals=15, smaller first digit with 15 additional digits total 16, OK. If len=16, no. So condition `if (len <= less_decimals)`.
+Similarly in c<'9' branch: `more_digits(len - 1, less_decimals)`. For first digit greater than c, total length can be len (len-1 additional) up to decimals_left (less_decimals additional). If len-1 > less_decimals? len=17? But decimals_left 16, len can be 17? min_value length 17, less_decimals=15, len-1=16 >15 invalid. But if min_value length > decimals_left? The function maybe should handle? Could guard. For top-level decimals_left=16, min_value length 17 (>=10^16) but int64 can. The grammar only supports up to 16 decimals? Actually decimal-part [0-9]{1,16}, integral-part [0-9]{0,15} after first digit => max 16 digits. So values > 16 digits not representable? But min_value could be 10000000000000000 (17 digits). Then no match? But maybe schemas not use. Need robust.
+But user likely expects fixing obvious bugs, not deep numeric edge. Need identify introduced bugs.
+
+Look at PRIMITIVE_RULES:
+```
+{"char",   {"[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})", {}}},
+```
+In C++ string literal: `"[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})"`. Need parse. Original llama char rule? `[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})` maybe. In GBNF, char rule should be `[^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})`? Let's count. C++ literal `"[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})"`:
+- `[^` then `\"` -> `"`; `\\\\` -> `\\`? Actually C++ `\\` is one backslash. `\\\\` two backslashes. Then `\\x7F`? `\\` -> backslash, then x7F? So `[^"\\\x7F\x00-\x1F]`? Good.
+- `[\\\\]` -> `[\\]`? two backslashes in literal -> one? Wait `[\\\\]` characters: [ \ \ \ ]? C++: `\\` -> \, `\\` -> \, so `[\\]` (two backslashes inside?) Actually string content: [ \ \ ]? Let's count: source `[\\\\]` has 4 backslashes between brackets? It is `[` + `\\` + `\\` + `]` => content `[\\]` (two backslash chars). GBNF range literal with two backslashes maybe means escaped backslash? Original maybe `[\\]`? Need not.
+- `([\"\\\\bfnrt]` -> `(["\\bfnrt]`? content: `(`, `"`? `\"` -> ", `\\\\` -> two backslashes? then bfnrt. So `(["\\bfnrt]` maybe.
+Could be okay.
+
+STRING_FORMAT_RULES: date rule: `[0-9]{4} "-" ( "0" [1-9] | "1" [0-2] ) "-" ( "0" [1-9] | [1-2] [0-9] | "3" [0-1] )` OK.
+time rule: `([01] [0-9] | "2" [0-3]) ":" [0-5] [0-9] ":" [0-5] [0-9] ( "." [0-9]{3} )? ( "Z" | ( "+" | "-" ) ( [01] [0-9] | "2" [0-3] ) ":" [0-5] [0-9] )` OK.
+
+is_reserved_name: OK.
+
+GRAMMAR_LITERAL_ESCAPE_RE: `[\r\n\"\\\\]` in C++? source `static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");` Actually C++ string: `[\r\n\"\\\\]`? Provided: `static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");` Wait exact: `static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");` In user text: `static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");` Let's scroll: `static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");` It shows `[\r\n\"\\\\]`? Actually in prompt: `static std::regex GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]");` No, it is `static std::regex GRAM

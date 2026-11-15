@@ -1,0 +1,19 @@
+run 28752 | pred_pool_alias | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.49 t/s | prompt 1.5 t/s | 256 tokens | args: -np 1 --moe rp-grow=0,pred-top=16,predict-ahead=0,pred-pool=1 | power 280+280 W | 2026-11-14 22:55:03
+
+
+---
+Every evening, Elias climbed the lighthouse stairs with a lantern in one hand and a book in the other. He had kept the light at Blackrock Point for twenty-three years, and the sea had taught him to expect nothing more surprising than a storm.
+
+Then, one October morning, he found a bottle wedged between the rocks below the tower.
+
+It was green glass, clouded by salt, with a cork sealed in wax. Inside was a folded sheet of paper. Elias carried it up to the lamp room, where the light had just gone out for the day, and opened it with a fisherman’s knife.
+
+The handwriting was fine and slanted, the ink brown with age.
+
+*To whoever finds this: My name is Miriam Vale. I am not drowning. I am not shipwrecked. I am simply alone on an island that no map seems to remember. If you are reading this, please do not come looking for me. Tell the light at Blackrock Point to burn three times tonight. Then I will know the sea has not swallowed every voice.*
+
+Elias read it twice.
+
+Below him, waves combed the rocks. Beyond the horizon lay open water, and beyond that, nothing he could see.
+
+He had never heard of Miriam

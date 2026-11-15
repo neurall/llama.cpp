@@ -1,0 +1,38 @@
+run 27603 | hot_tree7 | poemseac | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 105.99 t/s | prompt 273.0 t/s | 312 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 13:21:12
+
+
+---
+The dark water breathes in heavy, rhythmic waves,
+swallowing the moon’s pale, fractured reflection.
+Salt spray clings to the hull like a cold shroud,
+and the wind howls through the rigging’s taut strings.
+
+Far from the harbor’s warm, artificial glow,
+the boat drifts in the void, a speck of wood.
+Its engine hums a low, mechanical prayer,
+fighting the silence of the endless deep.
+
+Above, the lighthouse stands as a solitary eye,
+piercing the blackness with a beam of gold.
+It cuts through the fog, a steady, unblinking gaze,
+guiding the lost toward the unseen shore.
+
+The stars are scattered like crushed diamonds,
+frozen in the velvet sky above.
+Below, the waves crash against the bow,
+splashing white foam onto the deck.
+
+The sailor watches the light, a beacon in the night,
+knowing that safety is a distant dream.
+The sea is vast, indifferent, and wild,
+holding the boat in its cold, dark embrace.
+
+Time slows down, measured by the turning wheel,
+and the horizon blurs into a line of gray.
+The lighthouse fades into the mist,
+leaving only the sound of the water.
+
+The boat continues its lonely journey,
+carrying the weight of the night.
+The open sea is a mirror of the soul,
+reflecting the fear and the hope within.

@@ -1,0 +1,61 @@
+run 27390 | hot_tree3 | mathc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 223.52 t/s | prompt 309.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 10:54:47
+
+
+---
+To solve the integral \(\int x^2 e^x \, dx\) and verify the result through differentiation, we'll follow these steps:
+
+### Step 1: Integrate \(x^2 e^x\)
+
+The integral \(\int x^2 e^x \, dx\) is a standard integral that can be solved using integration by parts. The formula for integration by parts is:
+
+\[
+\int u \, dv = uv - \int v \, du
+\]
+
+Let's choose \(u = x^2\) and \(dv = e^x \, dx\). Then, \(du = 2x \, dx\) and \(v = e^x\).
+
+Applying the integration by parts formula:
+
+\[
+\int x^2 e^x \, dx = x^2 e^x - \int 2x e^x \, dx
+\]
+
+Now, we need to integrate \(\int 2x e^x \, dx\). Again, apply integration by parts with \(u = 2x\) and \(dv = e^x \, dx\). Then, \(du = 2 \, dx\) and \(v = e^x\).
+
+\[
+\int 2x e^x \, dx = 2x e^x - \int 2 e^x \, dx = 2x e^x - 2e^x + C
+\]
+
+Substitute this back into our original integral:
+
+\[
+\int x^2 e^x \, dx = x^2 e^x - (2x e^x - 2e^x) + C
+\]
+
+Simplify:
+
+\[
+= x^2 e^x - 2x e^x + 2e^x + C
+\]
+
+Combine like terms:
+
+\[
+= (x^2 - 2x + 2)e^x + C
+\]
+
+### Step 2: Verify the Result by Differentiation
+
+Differentiate the integrated result to verify it matches the original function:
+
+\[
+\frac{d}{dx} \left[ (x^2 - 2x + 2)e^x \right] = (x^2 - 2x + 2)e^x + e^x
+\]
+
+Simplify the derivative:
+
+\[
+= x^2 e^x - 2x e^x + 2e^x
+\]
+
+This matches the original

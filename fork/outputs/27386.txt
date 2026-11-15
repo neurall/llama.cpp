@@ -1,0 +1,43 @@
+run 27386 | hot_tree3 | poemc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 195.07 t/s | prompt 276.7 t/s | 375 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 10:52:31
+
+
+---
+In the soft embrace of twilight's glow,
+By the sea's gentle murmur we sit, you and I.
+The stars begin to peek from the sky,
+As the sun dips low, painting the world in hues of love and sigh.
+
+The waves, like whispers from the deep,
+Carry our thoughts away, to a place where we can be free.
+The salty breeze, a tender sweep,
+Brings scents of seaweed and sea-kissed glee.
+
+Your hand finds mine, a silent vow,
+To share this moment, forever to be.
+The world around us fades, no need to avow,
+In this tranquil haven, our hearts sing a soft melody.
+
+The moon rises, a silent witness,
+To our silent vows and whispered dreams.
+Its silver light, a gentle pretense,
+Of the love we hold, deep and clean.
+
+The stars, now bright sentinels,
+Guard our secret, our tender affair.
+In their glow, we find no pretense,
+But a truth too pure, too rare.
+
+The night deepens, yet we linger,
+In the warmth of each other's company.
+The sea's lullaby, a gentle singer,
+Binds us tighter, in love's mystery.
+
+As dawn approaches, painting the sky,
+With hues of hope and tender goodbye,
+We rise, but the memory stays by my side,
+A treasure beyond the vast, endless sea.
+
+In the quiet of the evening, by the sea,
+We've found a moment, timeless and free.
+With you, my love, my heart does agree,
+To cherish this moment, forever, endlessly.

@@ -1,0 +1,33 @@
+run 26790 | ns_probe_cells | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.31 t/s | prompt 1006.0 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-12 15:13:41
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one appears truncated).
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- Note: `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "". OK.
+- Potential issue: when `min_items > 0` and `max_items == 0`... returns "" which is fine.
+- When separator_rule is non-empty and `min_items == 0 && max_items == 1`: handled earlier by `item_rule + "?"`. OK.
+- Edge case: `min_items == 1, max_items == 1` with separator: `build_repetition("(sep item)", 0, 0)` → returns "" because max_items == 0. So result = item_rule + " " + "" = item_rule + " ". Hmm, that leaves a trailing space. Actually wait: `result = item_rule + " " + build_repetition(...)` where the inner call returns "" for max_items==0. So result = `item_rule + " "` — trailing space in grammar. That's a minor formatting bug but grammars may tolerate trailing spaces? Actually in GBNF, a trailing space in the rule would be part of the rule? Let me think. GBNF rules: `rule ::= item1 item2 ` — trailing whitespace after the last item is probably ignored by the parser. Actually in llama.cpp's grammar parser, trailing whitespace is ignored. So it's benign but sloppy.
+
+Wait, actually let me check: min_items == 1, max_items == 1, separator non-empty. Inner call: min_items - 1 = 0, max_items - 1 = 0. Inner: max_items == 0 → return "". So result = item_rule + " ". Then min_items != 0 so no "?" appended. Result: `item_rule ` with trailing space. The grammar parser likely ignores trailing whitespace. Minor.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a free function since it's already a static free function. Actually it's recursive via std::function captured lambda. It's already a static function so it could just call itself directly. The lambda capture is unnecessary — the function `build_min_max_int` is a free static function, so the lambda could call `build_min_max_int` directly instead of capturing itself. Minor style point.
+- `decimals_left` default 16, decrements. `less_decimals = std::max(decimals_left - 1, 1)`.
+- Potential infinite recursion? If `decimals_left` reaches 1, `less_decimals` stays 1... Let me check: in the `has_min` branch with `min_value == 0` and `top_level == false`: `more_digits(1, decimals_left)`. Hmm, does it recurse? No, `more_digits` doesn't recurse. The recursion happens in the `else` branch (min_value > 9): `build_min_max_int(std::stoll(min_s.substr(1)), ..., less_decimals, false)`. Each recursion reduces the number of digits by 1 (since min_s.substr(1) has len-1 digits), and decimals_left decreases. When min_value <= 9, no more recursion. So recursion terminates.
+- But wait: `std::stoll(min_s.substr(1))` — if min_s is like "10", substr(1) = "0", stoll = 0. OK. If min_value is like 1000000000000000000 (1e18), min_s = "1000000000000000000", substr(1) = "00000000000000000" → stoll = 0. OK.
+- Potential overflow: `char c = '0' + min_value;` for min_value <= 9 — fine.
+- `digit_range(from[i] + 1, to[i])` — char arithmetic, fine for digits.
+- In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)`. If min_value == INT64_MIN and max_value < 0... has_min would be false if min_value == INT64_MIN. So min_value < 0 && max_value < 0 with has_min

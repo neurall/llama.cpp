@@ -1,0 +1,7 @@
+run 27292 | ns_gate4 | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 42.3 t/s | prompt 1657.2 t/s | 64 tokens | args: -np 1 --moe sim-vram=8192,dense-split=0,staging=0 | power 280+280 W | 2026-11-13 08:09:58
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_MTP | SPEC_TYPE_NGRAM5 | SPEC_TYPE_NGRAM16);
+}
+
+static bool parse_url_or_path(const std::string & input, std::string & url_or_path, std::string

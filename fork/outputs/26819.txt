@@ -1,0 +1,124 @@
+run 26819 | oneexe | tetrisc | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 43.56 t/s | prompt 35.9 t/s | 1010 tokens | args: -np 1 | power 220+280 W | 2026-11-12 16:35:59
+
+The user wants the smallest possible HTML Tetris game. Let me create a compact but functional Tetris game in a single HTML file.
+
+Let me write a minimal but complete Tetris game:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<title>Tetris</title>
+<style>
+canvas{background:#000}
+</style>
+</head>
+<body>
+<canvas id=c width=200 height=400></canvas>
+<script>
+// Tetris game
+</script>
+</body>
+</html>
+```
+
+Let me write a complete, compact Tetris game. I need:
+- Game board (10x20 grid)
+- 7 tetromino pieces
+- Piece movement (left, right, down, rotate)
+- Collision detection
+- Line clearing
+- Score
+- Game over
+
+Let me write this as compactly as possible while keeping it functional.
+
+```javascript
+const c=document.getElementById('c'),x=c.getContext('2d');
+let b=[],s=0,g=0,p=null,px=0,py=0,pr=0,pi=0;
+const P=[
+[[1,1,1,1]],
+[[1,1],[1,1]],
+[[0,1,1],[1,1,0]],
+[[1,1,0],[0,1,1]],
+[[1,0,0],[1,1,1]],
+[[0,0,1],[1,1,1]],
+[[0,1,0],[1,1,1]]
+];
+const C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+```
+
+Actually, let me think about this more carefully. I want it to be small but complete.
+
+Let me write a compact version:
+
+```html
+<!DOCTYPE html>
+<html><head><title>Tetris</title>
+<style>body{background:#000;color:#fff;font-family:monospace}canvas{border:1px solid #333}</style>
+</head><body>
+<canvas id=c width=200 height=400></canvas>
+<div id=s>Score: 0</div>
+<script>
+const c=document.getElementById('c'),x=c.getContext('2d');
+let b=[],sc=0,p,px,py,pr,pi;
+const P=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,0],[1,1,1]]];
+const C=['#0ff','#ff0','#f0f','#0f0','#f00','#00f','#f80'];
+const W=10,H=20,S=20;
+
+function reset(){
+  b=Array.from({length:H},()=>Array(W).fill(0));
+  spawn();
+}
+
+function spawn(){
+  pi=Math.floor(Math.random()*7);
+  p=P[pi];
+  px=Math.floor((W-p[0].length)/2);
+  py=0;
+  pr=0;
+  if(collide(px,py))gameOver();
+}
+
+function collide(x,y){
+  for(let r=0;r<p.length;r++)
+    for(let c=0;c<p[r].length;c++)
+      if(p[r][c]){
+        let nx=x+c,ny=y+r;
+        if(nx<0||nx>=W||ny>=H)return true;
+        if(ny>=0&&b[ny][nx])return true;
+      }
+  return false;
+}
+
+function rotate(){
+  let np=p[0].map((_,i)=>p.map(r=>r[i]).reverse());
+  if(!collide(px,py))p=np;
+}
+
+function merge(){
+  for(let r=0;r<p.length;r++)
+    for(let c=0;c<p[r].length;c++)
+      if(p[r][c]&&py+r>=0)b[py+r][px+c]=pi+1;
+}
+
+function clear(){
+  let n=0;
+  for(let r=H-1;r>=0;r--){
+    if(b[r].every(v=>v)){
+      b.splice(r,1);
+      b.unshift(Array(W).fill(0));
+      n++;
+      r++;
+    }
+  }
+  if(n)sc+=[0,100,300,500,800][n];
+}
+
+function draw(){
+  x.fillStyle='#000';
+  x.fillRect(0,0,200,400);
+  // grid
+  x.strokeStyle='#111';
+  for(let i=0;i
+---

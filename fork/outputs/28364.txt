@@ -1,0 +1,66 @@
+run 28364 | lp_check_before_lock | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.94 t/s | prompt 101.7 t/s | 965 tokens | args: -np 1 | power 200+200 W | 2026-11-14 06:57:10
+
+The user wants the smallest HTML Tetris game. The request is literally "smallest" — so minimal code. But I want to respect that while still making it feel crafted rather than a bare gray page. Balance: a compact single-file Tetris that's genuinely small in code but well-designed visually.
+
+Hmm, "generate smallest html tetris game" — the primary ask is compactness. I'll deliver a tight single-file implementation. But I can still make it feel alive: nice typography, a subtle background, ghost piece, next piece, score, keys. That adds bytes though.
+
+Let me think about the tradeoff. The user asked for "smallest" — that's the functional brief. I should honor it: keep the code genuinely small and readable, not bloated. But I can add a modest amount of polish that costs few bytes — CSS custom properties, one font, a subtle grid background, hover states. I'll aim for something like ~100 lines total that plays well and looks intentional.
+
+Let me write compact Tetris.
+
+Approach: canvas-based, 10x20 board.
+
+Compact implementation:
+
+```html
+<canvas id=c width=300 height=600></canvas>
+<script>
+// tetris
+</script>
+```
+
+Let me write it well but compactly.
+
+```js
+const X=c.getContext('2d'),S=30,W=10,H=20;
+let b=Array.from({length:H},()=>Array(W).fill(0)),s=0,n=0,p;
+const P='⌀'; // shapes
+```
+
+Standard compact tetris uses shape strings. Let me use the classic approach with rotation matrices via string.
+
+Shapes as arrays of coords per rotation is verbose. A compact trick: define pieces as numbers and rotate via bit ops. Or use the classic:
+
+```js
+const S=[[],[0,1,3,4],[2,4,5,7],[1,2,3,4],[1,2,4,5],[1,2,3,5],[2,3,4,5],[1,3,4,5]]
+```
+Hmm, that's the "one rotation only" trick.
+
+Better compact approach: define each piece as a 4x4 bitfield? Let's use the well-known compact method:
+
+```js
+P=[0xF0,0x98C0,0x3C60,0xF00,0x6C60,0xC6C0,0x6C0]  // hmm
+```
+
+Actually a neat trick: pieces defined as hex of 4x4 grid, rotate by transposing rows.
+
+Let me do: each piece = array of 4 nibbles (rows). Rotate = transpose.
+
+```js
+const P=['e0','8c80','c600','6c00','f000','c440','2660']
+```
+Hmm getting complicated. Let me just use the classic compact approach with a single number per piece and rotation via lookup.
+
+Simplest readable-compact: define pieces as arrays of [x,y] offsets per piece, and rotate with (x,y)=>[y,-x] normalized. That's clean:
+
+```js
+const P=[[[0,0],[1,0],[2,0],[3,0]],[[0,0],[1,0],[0,1],[1,1]],[[0,0],[0,1],[1,1],[2,1]],[[2,0],[0,1],[1,1],[2,1]],[[0,0],[2,0],[0,1],[1,1]],[[0,0],[1,0],[2,0],[1,1]],[[0,0],[1,0],[0,1],[1,1]]]
+```
+Wait O should be [[0,0],[1,0],[0,1],[1,1]] and S/Z distinct. Let me define 7:
+
+I: [[0,0],[1,0],[2,0],[3,0]]
+O: [[0,0],[1,0],[0,1],[1,1]]
+T: [[0,0],[1,0],[2,0],[1,1]]
+S: [[1,0],[2,0],[0,1],[1,1]]
+Z: [[0,0],[1,0],[1,1],[2
+---

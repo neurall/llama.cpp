@@ -1,0 +1,52 @@
+run 27431 | hot_tree3 | tetriscppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 221.59 t/s | prompt 102.2 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,state=/tmp/runstate/hottree-o/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/tree | power 280+280 W | 2026-11-13 11:17:32
+
+
+---
+Creating a full Tetris game from scratch in C++ for the terminal involves a lot of code, but I'll guide you through a minimalist version that demonstrates the core mechanics of Tetris. This version will focus on the essentials: moving a Tetromino (shapes made up of squares) down the screen, rotating the Tetromino, and dropping it when a solid line is reached.
+
+This example will use `std::string` for the Tetromino shapes and `std::cout` for output. It won't include collision detection, scoring, or any advanced features, but it will give you a solid foundation to build upon.
+
+```cpp
+#include <iostream>
+#include <string>
+#include <cstdlib>
+
+const std::string TETRIS_SHAPES[] = {
+    "1111",   // I
+    "0111",   // O
+    "0011",   // L
+    "0011",   // J
+    "1001"   // S
+};
+
+void print_tetromino(const std::string& shape) {
+    for (size_t i = 0; i < shape.length(); ++i) {
+        std::cout << shape[i];
+    }
+    std::cout << std::endl;
+}
+
+void move_tetromino(int x, int y) {
+    // Simple logic: move down if not at the bottom, otherwise stop
+    if (y + 1 < height()) {
+        y += 1;
+    } else {
+        // Clear the current line
+        for (size_t i = 0; i < width(); ++i) {
+            std::cout << " ";
+        }
+        y = 0; // Reset y position
+    }
+}
+
+void rotate_tetromino(int x, int y) {
+    // Simple logic: flip the shape around the y-axis
+    // This is a basic rotation, not a true 2D rotation
+    for (size_t i = 0; i < shape.length(); ++i) {
+        std::swap(shape[i][y], shape[i][(y + 1) % shape.length()]);
+    }
+}
+
+int main() {
+    int height = 5; // Initial height of the Tetris board
+    int width = 6

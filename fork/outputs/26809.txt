@@ -1,0 +1,49 @@
+run 26809 | ns_probe_cells | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 41.79 t/s | prompt 27.9 t/s | 987 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 280+280 W | 2026-11-12 15:46:56
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Option: Use 7 tetrominoes as arrays of 4 cells in 4x4 matrix. Rotation function. Board 10x20. Current piece has shape matrix, x,y. Collision checks cells. Rotation with wall kick? Minimal no wall kick maybe if rotation collides, skip. Need handle spawn.
+
+Implementation:
+
+const W=10,H=20,S=30;
+const c=document.getElementById('c'), ctx=c.getContext('2d');
+let board=Array.from({length:H},()=>Array(W).fill(0));
+let score=0, gameOver=false;
+const shapes=[
+ [[1,1,1,1]], // I? Actually matrix 1x4
+ [[1,1],[1,1]], // O
+ [[0,1,0],[1,1,1]], // T
+ [[1,0,0],[1,1,1]], // J? 
+ [[0,0,1],[1,1,1]], // L
+ [[0,1,1],[1,1,0]], // S
+ [[1,1,0],[0,1,1]] // Z
+];
+But rotation of non-square matrices. Need rotate matrix. For I 1x4 rotate to 4x1. For O 2x2. For T 2x3 rotate to 3x2. Good.
+
+Need piece object: {shape, x, y}. x,y top-left of matrix. Spawn x = floor((W - shape[0].length)/2), y=0. But if shape matrix has empty top row? For T shape [[0,1,0],[1,1,1]], top row has cell at col1. Spawn y=0 okay. For J/L etc. Need collision.
+
+Collision function: for each r,c where shape[r][c], board[y+r][x+c] if out of bounds or occupied. Need x,y maybe negative? Rotation can shift? We keep x,y. If rotate shape, dimensions change; x,y top-left. Could cause out of bounds. If collision, skip rotation. But rotation may need adjust x to keep within board? Minimal skip if invalid. However rotating I from horizontal to vertical at x maybe 3, y=0, shape 4x1, x=3, y=0, cells x=3, y=0..3. Fine. Rotating T at x=3, y=0, shape 3x2, x=3..5, y=0..1. Fine. But if x near edge, rotation may go out; skip. Could be okay.
+
+Need gravity: setInterval or requestAnimationFrame. Use drop every 500ms. Need keyboard: left/right, down, up rotate, space hard drop. Need prevent default.
+
+Need line clearing: after piece locks, add to board, clear full rows, score. Then spawn new. If spawn collision game over.
+
+Need draw: clear canvas, draw board cells, draw current piece. Maybe draw grid. Need score display. Use HTML text.
+
+Need minimal code. Could use canvas with CSS. Need maybe no external assets.
+
+Let's craft robust code.
+
+Potential issue: shapes arrays with 0/1. Rotation function:
+function rot(a){return a[0].map((_,i)=>a.map(r=>r[i]).reverse());}
+Wait standard clockwise rotation: new matrix rows = old columns reversed? Let's derive. For matrix a with rows r, cols c. Clockwise rotation: new[r][c] = old[c][?]. Actually new dimensions c x r. new[i][j] = old[r-1-j][i]? Let's test T [[0,1
+---

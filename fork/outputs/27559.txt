@@ -1,0 +1,21 @@
+run 27559 | hot_tree6 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 95.94 t/s | prompt 228.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:52:25
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, heavy weight of the pod’s lid pressing against his chest. The air in the archive sector smelled of ozone and stale recycled moisture, a scent that had lingered for three centuries. He blinked, his vision swimming in the gray haze of hypothermia, until the emergency lights flickered on, casting long, jagged shadows across the rows of dormant pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The AI, dormant for decades, hummed to life. "We have arrived. Orbit established. Planet: Terra Nova."
+
+Elias stumbled toward the observation deck, his legs trembling like wet clay. He expected the darkness of a virgin world, the silence of a planet waiting to be named. Instead, he saw light.
+
+Below, the planet was a tapestry of glowing veins. Cities pulsed with amber and azure, connected by networks of roads that looked like neural pathways. The lights were not the flickering fires of primitive settlements; they were the steady, electric hum of a civilization that had already built, broken, and rebuilt itself.
+
+Elias pressed his face against the cold glass, his breath fogging the pane. He looked for the launch signature of their own ship, the *Aethelgard*, which had left Earth two hundred years ago. He found no trace of their arrival. The planet was already occupied.
+
+"Impossible," he whispered. The silence of the ship was deafening. He turned to the navigation console, his fingers trembling as he input the coordinates. The data streams scrolled past him, a waterfall of numbers. He cross-referenced the launch logs. There was a discrepancy. A second launch vector.
+
+He dug into the archives, his mind racing through the bureaucratic records of the Exodus Project. The *Aethelgard* was the first ship. But the records showed a second vessel, the *Aethelgard II*, launched exactly one century later. It carried a smaller population, a more advanced propulsion system, and a mandate to settle before the first ship arrived.
+
+"They beat us," Elias said, the realization hitting him with the force of a physical blow. "They beat us by a hundred years."
+
+The crew of the *Aethelgard* had been sent to colonize a world that was already colonized. Their descendants, the

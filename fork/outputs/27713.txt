@@ -1,0 +1,38 @@
+run 27713 | tree_phase_maps | poemseac | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 93.7 t/s | prompt 13.6 t/s | 309 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=map,state=/tmp/runstate/q36ph/tree/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/tree | power 280+280 W | 2026-11-13 16:30:40
+
+
+---
+The dark water breathes in heavy, rhythmic waves,
+swallowing the moon’s pale, fractured reflection.
+Salt spray clings to the hull like a cold shroud,
+and the wind howls through the rigging’s taut strings.
+
+Far from the harbor’s warm, artificial glow,
+the boat drifts in the void, a speck of wood.
+Its engine hums a low, mechanical prayer,
+fighting the silence of the endless deep.
+
+Above, the lighthouse stands as a solitary sentinel,
+its beam cutting through the blackness like a sword.
+It sweeps across the churning foam,
+searching for a shape that might be lost.
+
+The light is not a beacon of safety,
+but a warning of distance and danger.
+It illuminates the spray, the foam, the fear,
+but cannot touch the soul of the sailor.
+
+Stars are scattered like broken glass,
+cold and distant, indifferent to the struggle.
+The sea is a vast, uncharted wilderness,
+where the boundaries of land dissolve.
+
+The boat turns, fighting the current’s pull,
+heading toward a shore that feels impossibly far.
+The lighthouse blinks, a rhythmic heartbeat,
+guiding the eye, but not the hand.
+
+Night is a heavy blanket, woven of shadow,
+covering the world in a deep, quiet sleep.
+Only the light remains, a fragile thread,
+connecting the lost to the known.

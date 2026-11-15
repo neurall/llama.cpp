@@ -1,0 +1,4 @@
+run 28000 | simlink_stream_pace | pf4k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 14.55 t/s | prompt 3331.3 t/s | 8 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini --moe sim-vram=4608 | power 280+280 W | 2026-11-13 21:36:58
+
+
+                for (const auto & item

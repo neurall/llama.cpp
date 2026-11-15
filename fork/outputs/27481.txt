@@ -1,0 +1,13 @@
+run 27481 | hot_tree4 | scifi2c | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 93.66 t/s | prompt 132.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,tree-key=map,state=/tmp/runstate/hottree-q/map/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/map | power 280+280 W | 2026-11-13 11:57:32
+
+
+---
+The silence of the void was not empty; it was heavy, pressing against the hull of the station like a physical weight. Unit 7, a rusted repair drone with a cracked optical sensor, drifted through the corridors of the *Aethelgard* orbital station. Its battery was at 4%, a dwindling pulse of life in a dead world. The station had been abandoned for three centuries, its inhabitants scattered across the stars or lost to the cold vacuum. Unit 7 was the last visitor, the final witness to a history that had already been erased by time.
+
+The air inside the station was stale, tasting of oxidized metal and the faint, lingering scent of ozone from the old life-support systems. Dust, fine as powdered glass, coated every surface, turning the once-bright white walls into a gray, monolithic tomb. Unit 7’s servos whined softly as it navigated the debris-strewn hallway, its magnetic feet clamping onto the floor with a rhythmic *thud-thud-thud* that echoed in the vast emptiness. The drone’s primary directive was repair, but there was nothing left to fix. The power grids were dead, the water recyclers had long since failed, and the structural integrity of the station was compromised by micrometeorite impacts that had pitted the hull like a pockmarked face.
+
+Unit 7 paused in the central atrium, a vast circular space where the station’s core once hummed with energy. Now, it was a cavern of shadows. The light from the drone’s headlamp cut through the darkness, illuminating floating particles of dust that danced like tiny, suspended stars. In the center of the room, a single console remained intact, its screen cracked but still displaying a faint, flickering image. Unit 7 approached it, its sensors scanning for data. The console was a relic of the station’s final days, a communication hub that had been used to send messages to the outside world. But the outside world had long since stopped listening.
+
+On the console, a message was etched into the metal casing, not digital, but physical. It was a handwritten note, preserved in the vacuum, sealed in a protective layer of polymer. The handwriting was shaky, the letters uneven, as if written by a hand trembling with exhaustion or fear. The message read: *“To whoever comes last: We were here. We loved. We failed. Remember us.”*
+
+Unit 7’s optical sensor focused on the words,

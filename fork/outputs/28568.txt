@@ -1,0 +1,136 @@
+run 28568 | ring_window_fifo | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.74 t/s | prompt 2122.3 t/s | 4096 tokens | args: -np 1 --moe staging=1 | power 280+280 W | 2026-11-14 15:02:41
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line from first to last, every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then code, then // file: common/arg.cpp then code truncated at end: "static bool spec_types_is_default(const common_params & params) {" and then user ended. Need likely fix bugs in provided source. Need output complete fixed version of following source file: every line, with every bug fixed and each change marked by comment. Do not summarise, skip unchanged, stop early.
+
+We need infer bugs. This is likely from llama.cpp? Need fix source. Need produce entire code with comments marking changes. Need be careful: They provided two files? "Return the complete fixed version of the following source file: every line of it, from the first line to the last" but content includes two file headers. Maybe they expect output both files? Need include all lines from first to last, including second file truncated? We need complete fixed version of following source file? It includes two files. Maybe they want fixed version of entire provided snippet, including both files. But second file is incomplete (ends mid-function). We cannot complete unknown code? Need maybe fix only visible bugs and output up to provided end? But "from first line to last" means include all provided lines, not add missing beyond last? Last line is incomplete function signature. Could output it unchanged? But if bug? Need maybe fix syntax? The provided snippet ends with "{" but no body. If we output incomplete, not a valid file. But cannot know rest. Maybe the task is from benchmark where source has bugs and they expect full fixed file; they accidentally included two files and truncated? Need handle.
+
+Need identify bugs in json-schema-to-grammar.cpp and arg.cpp visible.
+
+Let's analyze code.
+
+First file: common/json-schema-to-grammar.cpp.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. Uses std::function but not include <functional>. Bug? Need add #include <functional>. Also uses std::stoll, std::stoi, std::runtime_error, std::invalid_argument, fprintf. Need <stdexcept>, <cstdio>? common.h may include. But explicit? Could add.
+
+build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Potential bug: if max_items == 0 and min_items >0 invalid? maybe return empty. If min_items > max_items? Could produce weird. But maybe not.
+For separator: if min_items=0 max_items=1, returns item_rule? Actually early min0 max1 returns item_rule + "?" before separator. Good.
+If min_items=0 max_items=0 returns empty. If min_items=1 max_items=1 separator: result = item_rule + " " + build_repetition(...,0,0) => item_rule + " " + ""? build_repetition max0 returns empty, result trailing space. Should be item_rule. Bug? For min=1 max=1 with separator, should return item_rule. Current: min_items==0? no. result = item_rule + " " + empty => trailing space. Could be grammar issue. Need fix? Maybe if max_items == 1 return item_rule? But if min=0 max=1 already handled. If min=1 max=1, return item_rule. Add if (min_items == 1 && max_items == 1) return item_rule;? But if separator and min=1 max=1, yes. Also if min=0 max=1 handled. If min=0 max=0 handled. If min=1 max=0 invalid. Could fix.
+But maybe original llama.cpp code? Let's recall. In llama.cpp json-schema-to-grammar.cpp build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+Maybe original had bug for min=1 max=1? Could be accepted? Grammar with trailing space maybe okay? But bug likely.
+
+build_min_max_int:
+- Uses std::function but no include.
+- uniform_range lambda captures out, digit_range, more_digits. Recursion. Potential bug: `auto sub_len = from.length() - i - 1;` if i == from.length()? But inside if i < from.length() && i < to.length(), so i <= len-1, sub_len >=0. Good.
+- In uniform_range, if from_sub == sub_zeros: digit_range(from[i], to[i] - 1). If from[i] > to[i]-1? Could happen? If from_sub zeros and from[i] == to[i]? But if from_sub zeros and to_sub? Example from=100, to=199: i=1? from[1]=0 to[1]=9? from_sub=00 sub_zeros, digit_range('0','8') okay. If from=100 to=100? i reaches length? no. If from=100 to=109: i=2? from[2]=0 to[2]=9? okay. If from=100 to=100? i=3 no. If from=100 to=101: i=2? from[2]=0 to[2]=1, digit_range('0','0') okay. If from=100 to=100? no. If from=100 to=100? okay.
+- `if (from[i] < to[i] - 1)` char arithmetic. okay.
+- `digit_range(to[i], to[i]);` okay.
+- In has_min && has_max: if min<0 max<0: out << "\"-\" ("; build_min_max_int(-max_value, -min_value,...). If max_value = LLONG_MIN? -max_value overflow. But min_value != min? has_min true. If max_value = LLONG_MIN and min_value = LLONG_MIN? -max overflow. Could use unsigned? But maybe not.
+- if min_value < 0: out << "\"-\" ("; build_min_max_int(0, -min_value,...). If min_value = LLONG_MIN overflow. Could bug.
+- `auto less_decimals = std::max(decimals_left - 1, 1);` decimals_left int. okay.
+- has_min min_value <=9: `char c = '0' + min_value;` min_value int64_t but <=9. okay.
+- `more_digits(1, less_decimals);` if less_decimals maybe 1. okay.
+- `more_digits(len, less_decimals);` if len > less_decimals? Could produce invalid {len,less} if min > less? Example min_value=100000000000000000? len 18, decimals_left 16, less_decimals 15. more_digits(18,15) invalid. But maybe decimals_left 16 enough? For min_value > 9, len can be up to 19. This function for integer bounds with decimals_left=16. If min_value has 18 digits, len=18, less_decimals=15, invalid. But maybe number grammar limits 16 decimals? integral-part [0-9]{1,16}. So values > 16 digits not supported? But int64 can 19. Could bug.
+- In has_min min_value >9: `digit_range(top_level ? '1' : '0', c - 1); out << " "; more_digits(len, less_decimals);` If len > less_decimals invalid. Should be more_digits(len, std::max(len, less_decimals))? Actually for numbers >= min with length len, if first digit less than c, remaining digits can be len-1? Let's derive. For min_value length len, first digit c. For first digit from range_start to c-1, total length len, remaining len-1 digits exactly? Should be more_digits(len - 1, len - 1), not len, less_decimals. Wait code: `more_digits(len, less_decimals)` after digit_range? It outputs first digit then more_digits(len, less_decimals) meaning total digits 1+len to 1+less? That seems wrong. Let's inspect original? Maybe `more_digits(len - 1, less_decimals)`? For min_value=100, top_level: if c='1', no range. digit_range('1','1') out << " (" build_min_max_int(00? stoll("00")=0, max, less_decimals) ... if c<'9' digit_range('2','9') << " " << more_digits(len-1, less_decimals). For first digit 2-9, remaining len-1 digits exactly? But if less_decimals > len-1, allows longer numbers, which are >= min. So more_digits(len-1, less_decimals) correct. Code has `more_digits(len, less_decimals)`? Let's check snippet:
+```
+            if (c > '1') {
+                digit_range(top_level ? '1' : '0', c - 1);
+                out << " ";
+                more_digits(len, less_decimals);
+                out << " | ";
+            }
+            digit_range(c, c);
+            out << " (";
+            build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, /* top_level= */ false);
+            out << ")";
+            if (c < '9') {
+                out << " | ";
+                digit_range(c + 1, '9');
+                out << " ";
+                more_digits(len - 1, less_decimals);
+            }
+```
+First branch uses len, second uses len-1. Should both be len-1? For first digit less than c, total length must be len? If top_level and first digit range_start '1' to c-1, number length exactly len? But if less_decimals > len, longer numbers also >= min. So more_digits(len - 1, less_decimals). If len=3, first digit 1 when c=2, remaining 2 digits exactly or more? Numbers 100-199 and 1000+ are >=200? Wait if min=200, first digit 1 with length 3 gives 100-199 <200, not allowed. Actually if first digit less than c and same length, number < min. So why output? Let's analyze min_value=200, top_level. c='2'. if c > '1': digit_range('1','1') then more_digits(len, less_decimals) => [1] [0-9]{3,15}? That yields 1000+ (length >=4) which are >=200. It should not allow length 3 (100-199). more_digits(len, less_decimals) after first digit means total digits 1+len=4 to 1+less, so length >=4. That is correct for first digit less than c: to be >= min, must have more digits than min. So more_digits(len, less_decimals) correct. For first digit greater than c, same length allowed, so remaining len-1 or more: more_digits(len-1, less_decimals). Good.
+- For min_value <=9: if c > range_start: digit_range(range_start, c-1) then more_digits(1, less_decimals). For min=5, top_level range_start=1, first digit 1-4, to be >=5 need more digits than 1, so remaining at least 1 => total length >=2. more_digits(1, less) correct. Then digit_range(c,'9') remaining 0 or more. Good.
+- For non-top_level min_value <=9: range_start='0'. If c > '0', first digit 0..c-1, to be >= min? Since non-top_level maybe fixed length context? more_digits(1, less) yields longer numbers. okay.
+- In has_max max_value >=0: if top_level out negative: `"-" [1-9] more_digits(0, less_decimals)` allows negative numbers with magnitude at least 1 and up to less+1 digits. If max_value positive, all negative numbers allowed. Good. Then build_min_max_int(0,max_value, decimals_left, top_level=true). But if top_level already output negative and " | ", then build positive. Good.
+- If max_value <0: out << "\"-\" ("; build_min_max_int(-max_value, max, decimals_left, false); out << ")"; This matches negative numbers with magnitude >= -max_value? Wait max_value=-5, allowed numbers <= -5, i.e. negative with magnitude >=5. build_min_max_int(5, max, top_level=false) matches magnitude >=5. Good.
+- If no min/max throw.
+
+Potential bug: `build_min_max_int(i.minimum, i.maximum, out);` for integer with min/max. If min/max default? okay.
+
+PRIMITIVE_RULES:
+- decimal-part [0-9]{1,16}; integral-part [0] | [1-9] [0-9]{0,15}; number uses integral-part. okay.
+- object deps missing "space"? It uses space but not in deps. But space rule added in constructor. okay.
+- array deps missing "space". okay.
+- value deps includes object etc. okay.
+- char rule: `[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})` In C++ string literal? Let's parse: `"[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})"` Might be intended GBNF: `[^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})`. In C++ need escape backslashes. Provided maybe correct? Let's count: `[^\"\\\\\\x7F\\x00-\\x1F]` -> chars: [ ^ " \ \ \ x? Hard. Could be bug? Original llama.cpp: `{"char",   {"[^\"\\\\\\x7F\\x00-\\x1F] | [\\\\] ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4})", {}}},` likely same.
+- string rule: `"\"\\\"\" char* \"\\\"\""` -> GBNF `"\"" char* "\""`? okay.
+
+STRING_FORMAT_RULES: date, time. time rule: `([01] [0-9] | \"2\" [0-3])` missing quotes around [01]? In GBNF, [01] is char class, okay. But for hour 00-19? `[01] [0-9]` matches 00-19, okay. minute etc.
+
+is_reserved_name: static set includes root and all rules. okay.
+
+GRAMMAR_LITERAL_ESCAPE_RE: `[\r\n\"\\\\]` matches CR LF quote backslash. GRAMMAR_RANGE_LITERAL_ESCAPE_RE: `[\r\n\"\\]\\-\\\\]`? In C++: "[\r\n\"\\]\\-\\\\]" -> regex char class includes CR LF quote ] - backslash? okay.
+GRAMMAR_LITERAL_ESCAPES includes '-' and ']' but format_literal uses GRAMMAR_LITERAL_ESCAPE_RE not range, so '-' not escaped. okay.
+
+replacePattern: uses std::regex_search with searchStart, searchEnd, match, regex. `result.append(searchStart, searchStart + match.position());` match.position() returns difference_type relative to searchStart? Yes. `searchStart = match.suffix().first;` okay. But if regex can match empty string, infinite loop? Not here.
+
+format_literal: `char c = match.str()[0]; return GRAMMAR_LITERAL_ESCAPES.at(c);

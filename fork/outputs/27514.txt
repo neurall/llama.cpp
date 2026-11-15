@@ -1,0 +1,21 @@
+run 27514 | hot_tree5 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 104.91 t/s | prompt 430.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 12:20:55
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, crushing weight of centuries pressing against his ribs. The air in the habitation module smelled of ozone and stale recycled moisture, a scent that had lingered in his dreams for three hundred years. He blinked, his vision swimming through the haze of frost, until the emergency lights flickered on, casting a pale, sickly glow over the rows of sleeping pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The ship’s AI, dormant for decades, hummed to life. "We have arrived. Destination: Kepler-4b. Estimated time since departure: 300 years."
+
+Elias stumbled toward the observation deck, his legs trembling like new-born calves. He was the Archivist, the keeper of the ship’s memory, the one who had recorded the history of humanity before it left Earth. He expected to see a barren rock, a world waiting for the first seeds of civilization. Instead, he saw light.
+
+Through the reinforced glass, the planet glowed. Not with the dull, rocky darkness of an uncolonized world, but with the intricate, spider-web pattern of urban illumination. Cities sprawled across the continents, rivers of gold and white light cutting through the dark. It was a civilization. A thriving, breathing civilization.
+
+Elias pressed his face against the cold pane, his breath fogging the glass. "Impossible," he whispered. "We are the first. We are the only ones."
+
+The ship’s navigation computer chimed softly. "Anomaly detected. Signal received from surface. Origin: Local population. Date of transmission: 200 years post-departure."
+
+Elias froze. The math was simple, brutal, and undeniable. The generation ship *Aethel* had left Earth in 2150. It was a slow vessel, powered by fusion drives that required frequent maintenance. It would take three centuries to reach Kepler-4b. But a century after *Aethel* departed, a second ship, *Aethel II*, had launched. It was faster, sleeker, equipped with experimental warp technology. It would arrive in two hundred years.
+
+They were not the first. They were the echo.
+
+Elias turned to his crewmates, who were waking up in the adjacent modules. Captain Vance, his face

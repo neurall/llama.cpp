@@ -1,0 +1,21 @@
+run 27660 | tree_phase_maps | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 59.5 t/s | prompt 56.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/ini | power 280+280 W | 2026-11-13 15:59:23
+
+
+---
+The thawing of the cryo-gel felt less like waking and more like drowning in reverse. Elias, the ship’s archivist, gasped as the viscous fluid drained from his lungs, replacing the cold numbness with a sharp, burning heat. His eyes, crusted with the residue of a century’s sleep, blinked against the sudden glare of the artificial dawn. The silence of the *Aethelgard* was broken not by alarms, but by the hum of the ventilation systems, a low, rhythmic thrum that vibrated in his teeth.
+
+He stumbled toward the observation deck, his legs trembling like wet paper. The viewports were massive, curved sheets of reinforced glass, offering a panoramic gaze of the world they had been sent to colonize. Planet Xylos. They had left Earth when the skies were choked with ash, carrying the seed of humanity in a vessel designed to drift for three hundred years. They were the first. The pioneers. The ones who would break the ground and plant the first trees.
+
+But as Elias pressed his face against the cold glass, his breath fogged the surface, and he froze.
+
+Below, the planet was not a wilderness. It was a tapestry of light. Cities sprawled across the continents like glowing neural networks, pulsing with electric veins. The night side of Xylos was brighter than the day side. There were no forests, no wild oceans, only the geometric precision of urban sprawl. Towers pierced the clouds, and the atmosphere shimmered with the haze of industry.
+
+"Impossible," Elias whispered, his voice raspy from disuse. He turned to his colleague, Commander Vance, who had just emerged from the adjacent pod. Vance looked pale, his uniform wrinkled and stained with the cryo-residue.
+
+"Look," Elias said, pointing at the window. "They’re here. They’re already here."
+
+Vance squinted, his eyes widening. "That’s not possible. We are the first generation. The ship’s logs confirm we left in 2140. We should be arriving in 2440. The planet should be empty."
+
+"Unless," Elias said, the archivist’s mind racing through the data he had curated for centuries, "someone else left. Someone who left later, but faster."
+
+The realization hit them with the force of a physical blow. The *Aethelgard* was a slow vessel, powered by nuclear fusion but limited by the physics

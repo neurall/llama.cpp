@@ -1,0 +1,15 @@
+run 27358 | hot_tree2 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 177.17 t/s | prompt 734.9 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:34:30
+
+
+---
+The hum of the cryogenic chambers was a lullaby, a symphony of anticipation that had played out countless times before. Each member of the crew, from the captain to the youngest engineer, had slumbered through the void, dreaming of the new world awaiting them on the distant planet below. The ship, a colossal vessel named Gaia's Heart, had been their home for generations, a testament to human ingenuity and the unyielding spirit of exploration.
+
+As the first rays of dawn crept across the heavens, the crew stirred from their slumber. The lights within Gaia's Heart flickered to life, casting a warm glow through the corridors and chambers. It was a familiar and comforting sight, one that filled the archivist, Elara, with a profound sense of duty and wonder. She rose from her berth, her joints protesting the return to consciousness, and made her way to the observation deck.
+
+The view beyond the windows was nothing short of miraculous. Below, the planet that would soon be their home was alive with light. Cities sprawled across the landscape, their streets alive with the buzz of activity. Buildings, gleaming under the sun, mirrored the sky, their windows reflecting the azure heavens like vast mirrors. It was as if the planet itself had anticipated their arrival, awakening from a long slumber to greet its twin stars with a radiant smile.
+
+Elara approached the archivist's station, a console lined with data pads and holographic displays. She tapped on the nearest pad, calling up historical records that detailed the journey from Earth to this distant world. The logs spoke of a second generation ship, a sister vessel to Gaia's Heart, launched a century after her own vessel had set out. It had followed the same path through the stars, carrying a new crew to claim this world for humanity.
+
+"The descendants," Elara whispered to herself, a mix of disbelief and awe coloring her voice. The planet below was their legacy, a living testament to the resilience and adaptability of the human spirit. The crew of Gaia's Heart had left their descendants a world teeming with life, a paradise waiting to be tamed.
+
+She pored over the data, tracing the lineage of the ships, the journeys, and the years that had passed. The descendants had not merely survived; they had thrived, transforming the barren landscape into a tapestry of cities and farms. They had learned to live in harmony with

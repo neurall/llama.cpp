@@ -1,0 +1,288 @@
+run 28564 | ring_window_worker | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 52.13 t/s | prompt 2144.0 t/s | 4096 tokens | args: -np 1 --moe staging=1 | power 280+280 W | 2026-11-14 14:51:53
+
+<think>
+We need answer user's request. Need return complete fixed version of source file: every line from first to last, every bug fixed and each change marked by comment. They provided two files concatenated? They say // file: common/json-schema-to-grammar.cpp then code, then // file: common/arg.cpp then code. Need return complete fixed version of following source file? It includes two files? Need likely fix bugs in both? Need output entire code with comments marking changes. Need not summarize. Need ensure complete. Need analyze bugs.
+
+We need produce fixed source. Need identify bugs in provided code. It seems from llama.cpp? json-schema-to-grammar.cpp and arg.cpp. Need fix bugs. Could be intentionally introduced bugs. Need inspect carefully.
+
+We need output complete fixed version of following source file: every line, with every bug fixed and each change marked by comment. Do not summarise, skip unchanged, stop early.
+
+Need likely include both files as given? They say source file but includes two file headers. Maybe need return both files? The prompt includes two files. We should return complete fixed version of all provided content, preserving file comments. Need mark changes with comments. Need not add extra explanation.
+
+Need find bugs. Let's parse code.
+
+First file json-schema-to-grammar.cpp.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. algorithm limits map regex sstream string unordered_map unordered_set vector. using json = common_json;
+
+build_repetition:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+
+Potential bug: if max_items == 0 and min_items >0? invalid but returns empty. If min_items > max_items? not handled. If separator and max_items=1? build_repetition with max_items-1=0 returns empty, result item_rule + " " + empty -> trailing space. But min_items maybe 0 or1. For min=0 max=1 with separator, earlier min=0 max=1 returns item_rule? Actually if min_items==0 && max_items==1 returns item_rule + "?" before separator, okay. For min=1 max=1 separator: result = item_rule + " " + build_repetition(...,0,0) => item_rule + " " + "" trailing. Should be item_rule. But maybe not bug? Could be.
+
+Original llama.cpp build_repetition? Let's recall. It likely:
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (min_items == 1 && !has_max) return item_rule + "+";
+    if (min_items == 0 && !has_max) return item_rule + "*";
+    if (separator_rule.empty()) {
+       return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) result = "(" + result + ")?";
+    return result;
+}
+Maybe max_items==0 return "" is okay? If max=0, repetition zero times. But if min=0 max=0 should return ""? In grammar maybe empty rule invalid? But okay.
+
+Potential bug: if min_items > max_items? not.
+
+build_min_max_int:
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) {
+        out << "[";
+        if (from == to) {
+            out << from;
+        } else {
+            out << from << "-" << to;
+        }
+        out << "]";
+    };
+    auto more_digits = [&](int min_digits, int max_digits) {
+        out << "[0-9]";
+        if (min_digits == max_digits && min_digits == 1) {
+            return;
+        }
+        out << "{";
+        out << min_digits;
+        if (max_digits != min_digits) {
+            out << ",";
+            if (max_digits != std::numeric_limits<int>::max()) {
+                out << max_digits;
+            }
+        }
+        out << "}";
+    };
+...
+
+Potential bug: more_digits if min_digits=0 max_digits=0 outputs [0-9]{0,0}? okay. If min_digits=1 max_digits=1 returns after [0-9] no braces. Good.
+
+uniform_range lambda:
+std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+    [&](const std::string_view & from, const std::string_view & to) {
+        size_t i = 0;
+        while (i < from.length() && i < to.length() && from[i] == to[i]) {
+            i++;
+        }
+        if (i > 0) {
+            out << "\"" << from.substr(0, i) << "\"";
+        }
+        if (i < from.length() && i < to.length()) {
+            if (i > 0) {
+                out << " ";
+            }
+            auto sub_len = from.length() - i - 1;
+            if (sub_len > 0) {
+                auto from_sub = from.substr(i + 1);
+                auto to_sub = to.substr(i + 1);
+                auto sub_zeros = string_repeat("0", sub_len);
+                auto sub_nines = string_repeat("9", sub_len);
+
+                auto to_reached = false;
+                out << "(";
+                if (from_sub == sub_zeros) {
+                    digit_range(from[i], to[i] - 1);
+                    out << " ";
+                    more_digits(sub_len, sub_len);
+                } else {
+                    out << "[" << from[i] << "] ";
+                    out << "(";
+                    uniform_range(from_sub, sub_nines);
+                    out << ")";
+                    if (from[i] < to[i] - 1) {
+                        out << " | ";
+                        if (to_sub == sub_nines) {
+                            digit_range(from[i] + 1, to[i]);
+                            to_reached = true;
+                        } else {
+                            digit_range(from[i] + 1, to[i] - 1);
+                        }
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    }
+                }
+                if (!to_reached) {
+                    out << " | ";
+                    digit_range(to[i], to[i]);
+                    out << " ";
+                    uniform_range(sub_zeros, to_sub);
+                }
+                out << ")";
+            } else {
+                out << "[" << from[i] << "-" << to[i] << "]";
+            }
+        }
+    };
+
+Potential bug: if from[i] > to[i]? Should not. If from_sub == sub_zeros and from[i] == to[i]? digit_range(from[i], to[i]-1) invalid if equal. But if from_sub zeros and from[i]==to[i], then from==to? Actually if from_sub zeros and to_sub maybe? Example from=100, to=199: i=1? from[1]=0 to[1]=9, okay. If from=100 to=100? i reaches length, no. If from=100 to=109: i=2? from[2]=0 to[2]=9. okay. If from=100 to=100? no. If from=100 to=101: i=2? from[2]=0 to[2]=1. okay. If from=100 to=100? no. If from=100 to=100? no. If from=100 to=100? okay. If from=100 to=100? no.
+
+But if from_sub == sub_zeros and from[i] == to[i]? Could happen from=100, to=100? no because i would be length? from=100, to=100? i=3. from=100, to=100? no. from=100, to=100? no. from=100, to=100? okay.
+
+Potential bug: string_repeat? Need exists in common.h? likely.
+
+In has_min && has_max:
+if (min_value < 0 && max_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(-max_value, -min_value, out, decimals_left, /* top_level= */ true);
+    out << ")";
+    return;
+}
+
+if (min_value < 0) {
+    out << "\"-\" (";
+    build_min_max_int(0, -min_value, out, decimals_left, /* top_level= */ true);
+    out << ") | ";
+    min_value = 0;
+}
+
+auto min_s = std::to_string(min_value);
+auto max_s = std::to_string(max_value);
+auto min_digits = min_s.length();
+auto max_digits = max_s.length();
+
+for (auto digits = min_digits; digits < max_digits; digits++) {
+    uniform_range(min_s, string_repeat("9", digits));
+    min_s = "1" + string_repeat("0", digits);
+    out << " | ";
+}
+uniform_range(min_s, max_s);
+return;
+
+Potential bug: if min_value=0 max_value=0: min_digits=1 max_digits=1, uniform_range("0","0") outputs nothing? uniform_range: i=1, i>0 out << "\"0\""; i<length false. So outputs "0". Good.
+
+If min_value=0 max_value=9: uniform_range("0","9") i=0, sub_len=0, out [0-9]. Good.
+
+If min_value=10 max_value=99: min_digits=2 max_digits=2 uniform_range("10","99") i=0 sub_len=1 from_sub="0" sub_zeros="0" -> digit_range('1','8') more_digits(1,1) | digit_range('9','9') uniform_range("0","9") => [1-8] [0-9] | [9] [0-9]. Good.
+
+If min_value=100 max_value=999: uniform_range("100","999") from_sub="00" zeros -> digit_range('1','8') more_digits(2,2) | [9] uniform_range("00","99")? Wait to_reached false, digit_range(to[i],to[i]) = [9], uniform_range(sub_zeros, to_sub) where to_sub="99". uniform_range("00","99") outputs [0-9][0-9]? Let's see i=0 sub_len=1 from_sub="0" zeros -> digit_range('0','8') more_digits(1,1) | [9] uniform_range("0","9") => [0-8][0-9] | [9][0-9]. Combined [9] ([0-8][0-9] | [9][0-9]) = 900-999. Good.
+
+Potential bug: for loop digits < max_digits: if min_digits=1 max_digits=3, min_s="0", digits=1: uniform_range("0","9") then min_s="10"; digits=2: uniform_range("10","99") then min_s="100"; out << " | " after each. Then uniform_range("100", max_s). Good. But if min_value=0 max_value=999: outputs [0-9] | [1-9][0-9]? Wait uniform_range("0","9") outputs [0-9]. min_s="10". uniform_range("10","99") outputs [1-9][0-9]? Actually uniform_range("10","99") i=0 sub_len=1 from_sub="0" zeros -> digit_range('1','8') more_digits(1,1) | [9] uniform_range("0","9") => [1-8][0-9] | [9][0-9]. That's 10-99. Good. Then 100-999. But missing? okay.
+
+Potential bug: top_level handling for leading zeros. In has_min only:
+auto less_decimals = std::max(decimals_left - 1, 1);
+
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    } else if (min_value == 0) {
+        if (top_level) {
+            out << "[0] | [1-9] ";
+            more_digits(0, less_decimals);
+        } else {
+            more_digits(1, decimals_left);
+        }
+    } else if (min_value <= 9) {
+        char c = '0' + min_value;
+        auto range_start = top_level ? '1' : '0';
+        if (c > range_start) {
+            digit_range(range_start, c - 1);
+            out << " ";
+            more_digits(1, less_decimals);
+            out << " | ";
+        }
+        digit_range(c, '9');
+        out << " ";
+        more_digits(0, less_decimals);
+    } else {
+        auto min_s = std::to_string(min_value);
+        auto len = min_s.length();
+        auto c = min_s[0];
+
+        if (c > '1') {
+            digit_range(top_level ? '1' : '0', c - 1);
+            out << " ";
+            more_digits(len, less_decimals);
+            out << " | ";
+        }
+        digit_range(c, c);
+        out << " (";
+        build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, /* top_level= */ false);
+        out << ")";
+        if (c < '9') {
+            out << " | ";
+            digit_range(c + 1, '9');
+            out << " ";
+            more_digits(len - 1, less_decimals);
+        }
+    }
+    return;
+}
+
+Potential bug: min_value <=9 but min_value could be negative? handled. min_value int64_t to char okay 0-9.
+
+Potential bug: more_digits(len, less_decimals) when len > less_decimals? For min_value >=10, len maybe 2, less_decimals maybe 1 if decimals_left=2? Could produce min_digits > max_digits. But decimals_left default 16. Recursion less_decimals decreases. Could be bug? Original maybe more_digits(len, less_decimals) but if len > less_decimals? Let's inspect original llama.cpp build_min_max_int. I recall:
+if (min_value <= 9) {
+ char c = '0' + min_value;
+ auto range_start = top_level ? '1' : '0';
+ if (c > range_start) {
+  digit_range(range_start, c - 1);
+  out << " ";
+  more_digits(1, less_decimals);
+  out << " | ";
+ }
+ digit_range(c, '9');
+ out << " ";
+ more_digits(0, less_decimals);
+} else {
+ auto min_s = std::to_string(min_value);
+ auto len = min_s.length();
+ auto c = min_s[0];
+ if (c > '1') {
+  digit_range(top_level ? '1' : '0', c - 1);
+  out << " ";
+  more_digits(len, less_decimals);
+  out << " | ";
+ }
+ digit_range(c, c);
+ out << " (";
+ build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false);
+ out << ")";
+ if (c < '9') {
+  out << " | ";
+  digit_range(c + 1, '9');
+  out << " ";
+  more_digits(len - 1, less_decimals);
+ }
+}
+Maybe okay because decimals_left is

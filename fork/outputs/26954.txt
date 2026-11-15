@@ -1,0 +1,8 @@
+run 26954 | fix_ds_kv_clear_rows | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.0 t/s | prompt 956.8 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-12 21:06:40
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static void spec_types_set_default(common_params & params) {
+    params.speculative.num_draft = 8;
+    params.speculative.num_reuse = 256;

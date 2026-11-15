@@ -1,0 +1,86 @@
+run 28376 | lp_check_before_lock | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 62.28 t/s | prompt 181.7 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-11-14 07:11:04
+
+The user wants the smallest HTML Tetris game. The literal ask is "smallest" — so code golf-ish, minimal. But I want it to actually feel like a real, playable game rather than a bare canvas: crisp, alive, with good feedback.
+
+Balance: give a compact single-file Tetris that's small but polished. I'll aim for genuinely small code (a few hundred bytes-ish... realistically ~1-2KB) while still feeling alive: next piece preview, hold, level, line-clear flash, score, ghost piece, keyboard controls, touch.
+
+But "smallest" is the explicit request. I should honor it: produce a compact minified-ish version, then maybe a slightly expanded readable one. I think best: give the tiny version (~700 bytes) as the main deliverable, plus a short note on controls. Maybe also offer a "still small but nicer" version. Let me not over-bloat. I'll give the smallest one first, tight, then a compact-but-featured one as an optional second block.
+
+Let me write the smallest Tetris.
+
+Classic tiny Tetris approach using a matrix and string/array manipulation.
+
+Let me craft a known-compact approach:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// 10x20 board
+</script>
+```
+
+A very compact implementation:
+
+```js
+B=[];W=10;H=20;S=0;L=0;
+P=0; // current piece
+```
+
+Tetromino definitions compactly. A common golf trick: define pieces as strings.
+
+Let me write a readable-but-tiny version:
+
+```html
+<canvas id=C width=150 height=300></canvas>
+<script>
+c=C.getContext`2d`,B=[...Array(20)].map(_=>Array(10).fill(0)),P,N
+T='0000,0000,0000,0000'
+```
+
+Better: use the classic golfed Tetris based on the "tetris in 140 lines" or the famous one-liner.
+
+Compact piece representation: each piece as a 4x4 bit pattern rotated via matrix transpose+reverse.
+
+```js
+K={'I':[0,15], 'O':[5,5], 'T':[1,3,1], 'S':[2,3,1], 'Z':[1,3,2], 'J':[1,3,1]...}
+```
+
+Hmm, use the standard trick: pieces defined as arrays of rows of bits; rotation = transpose then reverse rows.
+
+Pieces:
+- I: [[1,1,1,1]] → but easier as 4x4.
+- O: [[1,1],[1,1]]
+- T: [[1,1,1],[0,1,0]]
+- S: [[0,1,1],[1,1,0]]
+- Z: [[1,1,0],[0,1,1]]
+- J: [[1,0,0],[1,1,1]]
+- L: [[0,0,1],[1,1,1]]
+
+Rotation: r = m[0].map((_,i)=>m.map(r=>r[i]).reverse())
+
+That's compact: `R=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse())`
+
+Piece spawn: pick random from array of [matrix, color].
+
+Collision check: for each cell in matrix, if set and board out of bounds or occupied → collide.
+
+Compact:
+```js
+C=(p,x,y)=>p.m.some((r,j)=>r.some((v,i)=>v&&y+j>=0&&(y+j>19||x+i<0||x+i>9||B[y+j][x+i])))
+```
+
+Draw: board cells + piece + ghost.
+
+Game loop with setInterval / requestAnimationFrame with drop timer.
+
+Controls: ArrowLeft/Right/Down/Up, Space for hard drop, P pause.
+
+Let me write it out minified-ish but still working. Target ~600-800 bytes of JS.
+
+Let me write the full HTML:
+
+```html
+<canvas id=C width=120 height=240 style=background:#000>
+<script>
+c=C.getContext`2d`,S=12,B=[],P,N
+---

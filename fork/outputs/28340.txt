@@ -1,0 +1,7 @@
+run 28340 | lp_yields_to_split | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 28.69 t/s | prompt 754.5 t/s | 64 tokens | args: -np 1 --moe pp-path=mix,dense-split=0,staging=1 | power 200+200 W | 2026-11-14 05:11:48
+
+    return params.spec_types.empty() || params.spec_types == std::vector<std::string>{"draft"};
+}
+
+static void handle_model_result(const std::string & url, const std::string & local_path, handle_model_result & result, common_params & params) {
+    if (url.find("mmproj") !=

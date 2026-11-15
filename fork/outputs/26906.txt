@@ -1,0 +1,21 @@
+run 26906 | dq_upcount2 | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.44 t/s | prompt 1696.9 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-12 19:00:00
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided a C++ source file snippet, likely truncated. Need review. Need analyze code. Need produce final code review. Need be thorough. Need consider file common/json-schema-to-grammar.cpp. It includes headers, using json = common_json; functions build_repetition, build_min_max_int, constants, PRIMITIVE_RULES truncated. Need review for correctness, style, safety, performance, maintainability, potential bugs. Since file truncated, note incomplete. Need maybe infer context: converting JSON schema to grammar (likely llama.cpp grammar?). Need review code as given. Need identify issues:
+
+- build_repetition:
+  - max_items == 0 returns empty string. But if min_items >0 and max_items==0 invalid; should maybe throw or handle. If min_items > max_items invalid.
+  - min_items ==0 && max_items==1 returns item_rule + "?". OK.
+  - separator_rule empty: if min_items==1 && !has_max -> +; if min_items==0 && !has_max -> *; else {min,max}. If min_items==0 max_items==0 handled earlier. If min_items > max_items? e.g. min=2 max=1 -> {2,1} invalid. Need validate.
+  - separator_rule non-empty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?".
+    Potential bug: if max_items == 0 handled. If max_items == 1 and min_items ==0? separator branch: result = item_rule + " " + build_repetition(..., 0, 0) -> build_repetition returns "" for max=0? Then result = item_rule + " " + "" -> trailing space? Then if min=0 wrap? Let's test: min=0 max=1 separator: result = item_rule + " " + build_repetition(...,0,0). build_repetition max=0 returns "". result = "item " (trailing space). min=0 -> "(item )?" invalid grammar maybe. Should special-case max_items==1 return item_rule + "?" before separator? Actually if max=1, separator irrelevant. Current code has if min=0 max=1 returns item_rule + "?" before separator, so OK. If min=1 max=1? min=0 max=1 handled? min=1 max=1 not handled; separator branch: result = item_rule + " " + build_repetition(...,0,0) -> trailing space. Should handle max_items==1 generally return item_rule. Also if min_items==max_items? Could use exact repetition.
+    If min_items=0 max_items=2 separator: result = item_rule + " " + build_repetition((sep item),0,1) -> (sep item)?; wrap? min=0 -> (item (sep item)?)? OK.
+    If min_items=1 max_items=2 separator: result = item_rule + " " + build_repetition((sep item),0,1) -> item (sep item)? OK.
+    If min_items=2 max_items=2 separator: result = item_rule + " " + build_repetition((sep item),1,1) -> item (sep item) OK.
+    If min_items=2 max_items=3 separator: result = item_rule + " " + build_repetition((sep item),1,2) -> item (sep item){1,2} OK.
+    If min_items=0 max_items=0 handled. If min_items=0 max_items=1 handled. If min_items=1 max_items=1 bug.
+    If min_items > max_items invalid.
+    If max_items == INT_MAX? has_max false. For separator with max_items INT_MAX: has_max ? max_items -1 : max_items -> max_items (INT_MAX) OK. But if max_items == INT_MAX and min_items? OK.
+    If min_items negative? invalid.
+    Grammar string concatenation may need parentheses around item_rule if it contains alternation? build_repetition returns item_rule + "?", etc. If item_rule is alternation, e.g. "a | b" + "?" may parse as a | (b?) depending grammar precedence. Need wrap item_rule in parentheses when applying quantifiers. Similarly separator branch wraps separator+item in parentheses but item_rule not wrapped. Should use "(" + item_rule + ")" for quantifiers. Also separator_rule may need parentheses? It wraps whole group.
+    build_repetition with separator_rule non-empty and min_items=0 max_items=1 returns item_rule + "?" before separator

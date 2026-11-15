@@ -1,0 +1,25 @@
+run 26885 | dq_h2d | pf2k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.52 t/s | prompt 1696.3 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-12 18:04:33
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided a C++ source file snippet, likely truncated. Need review. Need analyze code. Need produce final code review. Need be thorough. Need consider file common/json-schema-to-grammar.cpp. It includes headers, using json = common_json; functions build_repetition, build_min_max_int, constants, PRIMITIVE_RULES truncated. Need review for correctness, style, safety, performance, maintainability, potential bugs. Since file truncated, note incomplete. Need maybe infer context: converting JSON schema to grammar (likely llama.cpp grammar?). Need review code as given. Need identify issues:
+
+- build_repetition:
+  - max_items == 0 returns empty string. If min_items >0 and max_items==0 invalid? Should maybe return empty or error? If min_items > max_items invalid. Could produce invalid grammar.
+  - min_items ==0 && max_items==1 returns item_rule + "?". If separator_rule non-empty? It returns before separator handling, so for separator with max 1, returns item_rule? Actually if min=0 max=1 and separator non-empty, returns item_rule + "?" ignoring separator. That's okay because separator irrelevant for <=1. But if min=1 max=1? returns item_rule + "{1,1}"? Could optimize.
+  - separator_rule empty: if min=1 max unbounded returns +; min=0 unbounded returns *; else {min,max}. If min=0 max=0 handled earlier. If min=0 max=1 handled. If min=1 max=1 returns {1,1}. Could return item_rule.
+  - separator_rule non-empty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?".
+    Potential bug: if max_items == 1 and min_items == 0 handled earlier returns item_rule + "?". If max_items == 1 and min_items ==1? separator_rule non-empty: has_max true, min_items=1 => inner min=0, max=0. build_repetition(inner,0,0) returns "" (because max_items==0). result = item_rule + " " + "" => trailing space. Then min_items !=0, returns "item_rule " invalid? Need check: if min=1 max=1 with separator, should just item_rule. But code returns item_rule + " " + empty. That's a bug. If min=0 max=1 handled. If min=1 max=1 not handled. If min=2 max=2: inner min=1 max=1 => build_repetition(inner,1,1) returns inner + "{1,1}"? Actually separator empty inner? inner is "(sep item)" and separator_rule empty in recursive call? Yes recursive call passes separator_rule default empty. So returns "(sep item){1,1}". result = item + " (sep item){1,1}". okay. But min=1 max=1 bug.
+    Also if max_items == 0 and min_items ==0 returns empty. If min_items >0 max_items==0 returns empty silently.
+    If min_items > max_items invalid, not checked.
+    If max_items == INT_MAX? has_max false. For separator with max unbounded: inner max = max_items (INT_MAX) because has_max false? Code: has_max ? max_items - 1 : max_items. If max_items == INT_MAX, passes INT_MAX. build_repetition sees max_items == INT_MAX? has_max false. okay. But if max_items == INT_MAX and min_items? okay.
+    If max_items == 0 and min_items ==0 returns empty. If max_items == 0 and min_items >0 invalid.
+    If min_items negative? not checked.
+    Grammar syntax: repetition {min,max} with empty max? For unbounded: {min,}. If min=0 max unbounded handled *; if min>0 unbounded returns {min,}. Good.
+    Separator rule: result = item_rule + " " + build_repetition(...). If inner repetition returns empty for max=0, trailing space. Need trim or handle.
+    If separator_rule contains spaces? It wraps in parentheses. okay.
+    If item_rule or separator_rule empty? Could produce weird.
+
+- build_min_max_int:
+  - Recursive function with std::function lambda uniform_range. Potential performance overhead, but okay.
+  - decimals_left default 16, top_level true. Magic number 16 tied to decimal-part/integral-part max digits. Need constants.
+  - Uses int64_t min/max sentinel

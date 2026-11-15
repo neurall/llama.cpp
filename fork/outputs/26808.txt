@@ -1,0 +1,24 @@
+run 26808 | ns_probe_cells | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 24.99 t/s | prompt 19.3 t/s | 987 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 280+280 W | 2026-11-12 15:45:27
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, restart. Need minimal code.
+
+Let's design compact single-file HTML.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes represented as arrays of coordinates or matrices. Need rotation. Could use 4x4 matrices for I, O, T, S, Z, J, L. Simpler: define shapes as arrays of [x,y] relative coordinates. Rotation around center? Need handle. Could use matrix representation and rotate matrix. For minimal, define each tetromino as 4x4 matrix with 1s. Rotation function rotates matrix clockwise. Collision checks cells. Spawn at x=3? For 4x4 matrix, board width 10. Use x offset. Need ensure shapes fit. Use matrix 4x4. For I shape horizontal row at y=1? Let's define matrices.
+
+Tetromino matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]] maybe row 1. Rotation works.
+O: [[1,1],[1,1]]? But 4x4 easier: [[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]].
+T: [[0,1,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]]? Need 4x4. Could use [[0,1,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]].
+S: [[0,1,1,0],[1,1,0,0],[0,0,0,0],[0,0,0,0]]
+Z: [[1,1,0,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]]
+J: [[1,0,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]]
+L: [[0,0,1,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]]
+Need rotation. Rotating 4x4 matrix clockwise: new[i][j] = old[3-j][i]? Let's verify. For matrix rows y, cols x. Clockwise rotation: new[y][x] = old[3-x][y]? Let's derive. Coordinates (r,c). Clockwise 90: (r,c)->(c, n-1-r). New at (r',c') = old? If new[r'][c'] = old[n-1-c'][r']? Let's test simple: old top row [1,0,0,0] at (0,0). Clockwise should move to (0,3)? Actually coordinate row down, col right. Rotate clockwise: top-left -> top-right? Visual: point at top-left rotates to top-right? Wait 90 clockwise around center: (x,y) -> (y,-x) in Cartesian. In matrix row/col, top-left (r=0,c=0) -> (r=0,c=3)? Let's use formula new[r][c] = old[n-1-c][r]. For old (0,0)=1, new[0][3] = old[3-3=0][0]=1. Yes top-left -> top-right. Good. So rotate: new[r][c] = old[n-1-c][r]. Or new[i][j] = old[3-j][i]. Good.
+
+Need board array 20 rows x 10 cols. Use 0/1. Current piece: matrix, x, y. Spawn x=3, y=0? For
+---

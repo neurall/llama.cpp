@@ -1,0 +1,10 @@
+run 28911 | kv_stage_past_zone | pf1k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.31 t/s | prompt 283.9 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=1 | power 280+280 W | 2026-11-15 10:21:13
+
+<think>Let me carefully review this C++ source file for code quality, correctness, potential bugs, style issues, and other concerns.
+
+Let me go through the code systematically.
+
+**1. `build_repetition` function:**
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int

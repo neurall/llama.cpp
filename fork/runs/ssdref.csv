@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+ssd-refresh,glm,1,scific,16,--moe refresh-ssd=1,

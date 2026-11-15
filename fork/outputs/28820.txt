@@ -1,0 +1,12 @@
+run 28820 | split_ab | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.25 t/s | prompt 13.6 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,split-ab=0 | power 200+200 W | 2026-11-15 02:47:10
+
+ } else {
+            digit_range(from[i], to[i]);
+        }
+    };
+    auto range = [&](const std::string & from, const std::string & to) {
+        out << (has_min && has_max ? "(" : "(");
+        uniform_range(from, to);
+        out << ")";
+    };
+   

@@ -1,0 +1,21 @@
+run 27512 | hot_tree5 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 104.6 t/s | prompt 495.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 12:19:42
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold, heavy weight of the pod’s lid pressing against his chest. The air in the archive sector smelled of ozone and stale recycled water, a scent that had lingered for three centuries. He blinked, his vision swimming in the gray haze of hypothermia, until the emergency lights flickered on, casting long, jagged shadows across the rows of dormant pods.
+
+"Status report," he croaked, his voice rasping like dry leaves. The AI, dormant for decades, hummed to life. "We have arrived. Destination: Kepler-4b. Estimated time since departure: 300 years."
+
+Elias stumbled toward the observation deck, his legs trembling like wet paper. He expected to see a barren rock, a world waiting for the first breath of human life. Instead, he saw light.
+
+Through the reinforced glass, the planet glowed. Not with the dull, rocky darkness of an uncolonized sphere, but with the electric brilliance of a civilization. Cities sprawled across the continents like veins of gold, pulsing with energy. The night side was brighter than the day side. Elias pressed his face against the cold pane, his breath fogging the glass. He looked for the launch site, the place where the *Aethelgard* had left Earth. He found it, but it was buried under a metropolis of glass and steel.
+
+"Impossible," he whispered. "We are the first."
+
+The AI’s voice was calm, devoid of surprise. "Correction. We are not the first. A second vessel, the *Aethelgard II*, departed Earth one hundred years after your launch. It utilized faster propulsion technology. It arrived here eighty years ago. The population below is your genetic descendant."
+
+Elias felt a hollow ache in his stomach. The mission had been a race against time, a gamble that the first ship would beat the second. They had been the pioneers, the dreamers who left behind the dying Earth to plant a new seed. But the seed had sprouted before they even opened their eyes.
+
+He turned to the crew, who were waking up in waves. Captain Vane, his face pale and drawn, stood beside him. "Look at them," Vane said, pointing at the glowing cities. "They are us. But they are not us."
+
+E

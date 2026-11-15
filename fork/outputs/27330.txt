@@ -1,0 +1,23 @@
+run 27330 | hot_tree | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 177.06 t/s | prompt 750.7 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 10:16:26
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Thalia, the archivist of the generation ship Aetheria, had watched over the slumbering souls for what felt like an eternity. Aeons, perhaps. The journey had been long, a testament to human ingenuity and the unyielding drive to seek out new worlds. We had left Earth not just as explorers but as refugees, seeking a new home among the stars.
+
+The Aetheria had been designed to carry us through the void, a colossal ark brimming with hope and the seeds of a new civilization. Our mission was simple: to settle upon the planet we named Nova Terra and begin anew. Yet, as we approached its welcoming arms, a strange anomaly unfolded before us.
+
+The planet, once shrouded in darkness, now pulsed with a soft glow. Cities, vibrant and alive, sprawled across its surface like a waking titan. It was as if the colonists below had ignited a beacon, a signal of their presence long before our arrival.
+
+I awoke with a start, my eyes snapping open to the sterile, white walls of the cryosleep chamber. The familiar hum of the ship's life support system was absent, replaced by a silence that seemed to press against my ears. I sat up, my head swimming with questions. The crew stirred around me, each waking to a world that defied all our expectations.
+
+"What is this place?" I heard Captain Varrick's voice, his tone laced with disbelief.
+
+"It looks like... it looks like Earth," another crew member murmured, her words tinged with wonder.
+
+I rose, my feet touching the cold, metallic floor of the chamber. The air was thick with a strange, sweet scent—a blend of alien flora and the metallic tang of space. I made my way to the observation deck, my fingers trembling with anticipation.
+
+The planet below unfolded before us, a tapestry of lights and shadows. Cities sprawled like intricate webs, their glow casting a soft illumination on the landscape. The architecture was a marvel of adaptation and innovation, a testament to the ingenuity of the people who had called this place home for generations.
+
+"They've been here all along," I whispered, my voice barely audible. "We've arrived to find our descendants."
+
+The crew

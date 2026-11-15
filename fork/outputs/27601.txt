@@ -1,0 +1,35 @@
+run 27601 | hot_tree7 | poemseac | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 107.23 t/s | prompt 311.1 t/s | 197 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 13:20:00
+
+
+---
+The black water swells, a restless beast
+breathing in the dark,
+its surface rippling with the ghostly
+reflections of a moon that refuses
+to stay still.
+
+Far out, the lighthouse stands
+like a solitary finger
+pointing into the void,
+casting a beam of pale gold
+that cuts through the heavy mist.
+
+It is a beacon for the lost,
+a steady pulse against the chaos,
+but the light is thin,
+barely reaching the horizon’s edge.
+
+A small boat drifts in the shadows,
+its hull creaking softly,
+a speck of wood and canvas
+adrift in the endless expanse.
+
+The sailor grips the wheel,
+eyes fixed on the distant glow,
+knowing that the shore is gone,
+left behind in the silence.
+
+Here, only the sea and the light
+remain,
+two ancient forces
+wrestling in the night.

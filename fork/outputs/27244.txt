@@ -1,0 +1,94 @@
+run 27244 | oneexe | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 24.86 t/s | prompt 604.5 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini | power 200+200 W | 2026-11-13 05:57:50
+
+ params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+             params.speculative.ngram_simple.size_n = 4;
+             params.speculative.ngram_simple.size_m = 1;
+             params.speculative.ngram_simple.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-default"},
+        string_format("enable default ngram speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
+            params.speculative.ngram_mod.n_match = 24;
+            params.speculative.ngram_mod.n_min = 48;
+            params.speculative.ngram_mod.n_max = 64;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-simple-default"},
+        string_format("enable default ngram-simple speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+            params.speculative.ngram_simple.size_n = 4;
+            params.speculative.ngram_simple.size_m = 1;
+            params.speculative.ngram_simple.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-map-k-default"},
+        string_format("enable default ngram-map-k speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+            params.speculative.ngram_map_k.size_n = 4;
+            params.speculative.ngram_map_k.size_m = 1;
+            params.speculative.ngram_map_k.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-map-k4v-default"},
+        string_format("enable default ngram-map-k4v speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V);
+            params.speculative.ngram_map_k4v.size_n = 4;
+            params.speculative.ngram_map_k4v.size_m = 1;
+            params.speculative.ngram_map_k4v.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-lookup-default"},
+        string_format("enable default ngram-lookup speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_LOOKUP);
+            params.speculative.ngram_lookup.size_n = 4;
+            params.speculative.ngram_lookup.size_m = 1;
+            params.speculative.ngram_lookup.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-lookup-4-default"},
+        string_format("enable default ngram-lookup-4 speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_LOOKUP_4);
+            params.speculative.ngram_lookup_4.size_n = 4;
+            params.speculative.ngram_lookup_4.size_m = 1;
+            params.speculative.ngram_lookup_4.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-lookup-8-default"},
+        string_format("enable default ngram-lookup-8 speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_LOOKUP_8);
+            params.speculative.ngram_lookup_8.size_n = 8;
+            params.speculative.ngram_lookup_8.size_m = 1;
+            params.speculative.ngram_lookup_8.min_hits = 1;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    add_opt(common_arg(
+        {"--spec-ngram-lookup-16-default"},
+        string_format("enable default ngram-lookup-16 speculative decoding config"),
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_LOOKUP_16);
+            params.speculative.ngram_lookup_16.size_n = 16;
+            params.speculative.ngram_lookup_16.size_m = 1;
+            params.speculative.ngram

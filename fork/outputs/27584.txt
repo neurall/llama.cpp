@@ -1,0 +1,64 @@
+run 27584 | hot_tree7 | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 91.13 t/s | prompt 71.3 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,state=/tmp/runstate/hottree-q/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/ini | power 280+280 W | 2026-11-13 13:09:40
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input (no external libraries like ncurses).
+
+### Key Features:
+- **Terminal-based**: Uses standard ASCII characters.
+- **Minimal**: ~100 lines of code.
+- **Input**: Arrow keys (or WASD).
+- **Game Loop**: Runs until collision or quit.
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+using namespace std;
+
+int main() {
+    // Grid size
+    const int W = 20, H = 15;
+    vector<int> snake(W * H, 0); // 0 = empty, 1 = snake, 2 = food
+    int head = W * H / 2; // Start in middle
+    int dir = 0; // 0=right, 1=down, 2=left, 3=up
+    int score = 0;
+
+    // Place food
+    int food = rand() % (W * H);
+    snake[food] = 2;
+
+    auto move = [&](int d) {
+        dir = d;
+    };
+
+    while (true) {
+        // Input
+        char c = getchar();
+        if (c == 'w') move(3);
+        else if (c == 's') move(1);
+        else if (c == 'a') move(2);
+        else if (c == 'd') move(0);
+        else if (c == 'q') break;
+
+        // Calculate new head position
+        int nx = head % W, ny = head / W;
+        if (dir == 0) nx++;
+        else if (dir == 1) ny++;
+        else if (dir == 2) nx--;
+        else if (dir == 3) ny--;
+
+        // Check bounds
+        if (nx < 0 || nx >= W || ny < 0 || ny >= H) break;
+
+        int new_head = ny * W + nx;
+
+        // Check collision with self or food
+        if (snake[new_head] == 1) break; // Hit self
+
+        // Move

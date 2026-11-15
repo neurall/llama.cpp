@@ -1,0 +1,36 @@
+run 26789 | ns_probe_cells | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.67 t/s | prompt 40.6 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-11-12 15:12:42
+
+The user wants the smallest HTML Tetris game. The request is minimal: "generate smallest html tetris game." So the core deliverable is a compact, self-contained Tetris in one HTML file.
+
+The instruction is "smallest" — so brevity is the point. But I don't want to ship a bare black rectangle with dots; even a tiny game deserves to feel alive. I can keep it small while adding a layered background, some motion, micro-interactions, and strong typographic contrast on the score panel. Small code and a crafted look aren't in conflict — the extra polish can come from a handful of CSS rules that do a lot of work.
+
+So: a compact single-file Tetris, minified-ish JS but readable, with a distinctive design. Let me think about the design:
+
+- Tetris aesthetic: blocky, grid, arcade. A near-black field with one neon accent is the obvious move, but it's also the tired one — I'd rather do a lighter, bolder palette. Maybe a warm off-white/paper background with a dark board and vivid multi-color pieces (classic Tetris colors: cyan, blue, orange, yellow, green, purple, red). That's inherently multi-color, so it sidesteps the single-accent trap.
+
+Let me do: a dark slate-blue field with a subtle grid texture and an ambient animated background (drifting faint tetromino shapes). A bold display typeface for the title — something blocky. Use Google Fonts? Smallest game... loading fonts adds weight. I could use system fonts but pair a distinctive display face with a readable body face. I can link Google Fonts with two families — it's a couple of lines. Let's use a blocky/display face like "Archivo Black" or "Bungee" (very arcade/blocky) paired with "Space Grotesk" or "IBM Plex Mono" for body/scores. Bungee is very Tetris-blocky. Good pairing: Bungee (display) + Space Grotesk (body/UI numerals). Or "Chivo Mono". Let's do Bungee + Space Grotesk.
+
+Layout: rather than a generic centered title block, I'll open with the game itself as the hero — the playfield front and center-left, with a left rail containing the big title vertically, score stack, next piece, hold. Something like an arcade cabinet layout: left column = title + stats, center = board, right = next/hold + controls legend.
+
+For a game, the most characteristic thing to open with is the game itself, so the board should be immediately visible.
+
+Implementation: canvas for the board, canvas or DOM for next/hold. Use a single canvas with CSS scaling. Grid 10x20, cell 24px → 240x480. Maybe cell 26.
+
+Features to keep it feeling alive:
+- Ghost piece
+- Line clear flash animation + particle-ish
+- Score/level/lines with animated counters
+- Level speed up
+- Hold piece, next queue (3 pieces)
+- 7-bag randomizer
+- Keyboard controls + touch buttons? Keep it reasonable. Maybe add on-screen buttons for mobile — adds size. I'll add a compact touch pad row that's hidden on desktop... that adds size. I'll include a small one; it's worth it for completeness. Actually "smallest" — I'll keep touch controls minimal (a row of 5 buttons).
+
+Hmm, balance: the user asked for smallest. I should deliver something genuinely compact (~100 lines?) but well-designed. Let me aim for a tight single file, maybe ~120-160 lines total, and briefly note the size. I'll keep the JS dense but readable.
+
+Let me write it.
+
+Design details:
+- Background: deep ink (#101418-ish) but not near-black... Let's use a mid-dark palette: background #14181f with layered radial + repeating grid lines, plus drifting tetromino silhouettes (CSS animated divs with low opacity). A dark field with multiple vivid piece colors reads as arcade, not the flat neon-on-black cliché. Let me push the background to a deep blue-slate #1b2028 with a subtle diagonal stripe texture and a warm accent.
+
+Actually, alternative: a bold "paper + ink" arcade look — light background (#f2ede4-ish) would drift toward cream-beige, which feels wrong for an arcade game. Let's go dark-slate with vivid pieces and a hot coral/
+---

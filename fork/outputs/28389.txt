@@ -1,0 +1,30 @@
+run 28389 | lp_check_before_lock | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 40.1 t/s | prompt 21.2 t/s | 987 tokens | args: -np 1 | power 280+280 W | 2026-11-14 07:28:26
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, line clearing, rotation, gravity. Need maybe use canvas and keyboard. Need avoid bugs.
+
+Let's design compact single-file Tetris.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates. Need rotation. Simpler: use 4x4 matrices for each tetromino and rotate matrix. Or use coordinate arrays and rotate around center. Need minimal.
+
+Approach:
+- Board 10x20, array of 20 rows of 10 zeros.
+- Pieces: I, J, L, O, S, T, Z represented as 4x4 matrices? Use arrays of [x,y] cells. Rotation function rotate coordinates around center? For tetrominoes, rotation around center of 4x4 bounding box. If using 4x4 matrices, rotate matrix. But for I piece, 4x4 matrix with row? Need handle.
+
+Could use shapes as arrays of 4 cells in a 4x4 grid. Rotation: new coords = (3-y, x) for 4x4 matrix? Actually rotate 90 clockwise around center of 4x4: (x,y) -> (3-y, x). This works for all shapes if coordinates in 0..3. But for I horizontal at y=1 x=0..3, rotate -> x=2? Let's test: (0,1)->(2,0), (1,1)->(2,1), (2,1)->(2,2), (3,1)->(2,3): vertical at x=2. Good. For O at (1,1),(2,1),(1,2),(2,2) rotate -> (2,1),(2,2),(1,1),(1,2) same. Good. For T at (1,0),(0,1),(1,1),(2,1) rotate -> (3,1),(2,0),(2,1),(1,1) maybe T rotated. Good.
+
+Need spawn piece at top. Use piece object {shape: array coords, x: 3, y: 0?}. Board coordinates. Need collision check: for each cell (cx,cy) in shape, board x = piece.x + cx, y = piece.y + cy. If out of bounds or occupied -> collision. Spawn at x=3, y=-? Need top. If shape has cells at y=0..3, spawn y=0. But if shape has cells at y=0, okay. Need ensure no collision. If spawn collision game over. For I horizontal at y=1, spawn y=0 means cells at y=1. Fine. For vertical after rotation, cells y=0..3. Fine. Spawn x=3. Board width 10, shape width 4, x=3 fits. Good.
+
+Need gravity: setInterval or requestAnimationFrame. Use setInterval tick every maybe 500ms. Need drop piece by 1. If collision, lock piece into board, clear lines, spawn new. Need handle keyboard left/right/down/rotate. Need prevent moving into collision. Need maybe hard drop? Not necessary. Need score.
+
+Need line clearing: for each row from bottom to top, if all 10 filled, remove row, unshift empty row, score += 10? Need maybe multiple lines. Use while? Simpler: iterate rows, if full, splice row and unshift empty row, score += 10. But if multiple full rows, need handle. Could use filter? Let's implement:
+for (let y=19; y>=0; y--) if (board[y].every(v=>v)) { board.splice(y,1); board.unshift(Array(10).fill(0)); score += 10; y++; } But careful after unshift, indices shift. Could use while loop:
+let cleared=0;
+for (let y=19; y>=0; y--) {
+ if (board[y].every(v=>v)) {
+   board.splice(y,1);
+   board.unshift(
+---

@@ -1,0 +1,21 @@
+run 28390 | lp_check_before_lock | pf2k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 36.42 t/s | prompt 102.9 t/s | 1024 tokens | args: -np 1 -md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1,pin-budget=96636764160 -lm mmap | power 280+280 W | 2026-11-14 07:29:23
+
+<think>We need answer code review. Need inspect source. Need identify issues. Need likely from llama.cpp? common/json-schema-to-grammar.cpp. Need review. Need maybe full file truncated? User provided partial ending at array. Need review given source. Need mention incomplete? We can review visible. Need be thorough but desired oververbosity 5. Need code review: bugs, style, correctness, edge cases, performance, maintainability. Need analyze functions.
+
+Let's parse.
+
+File includes json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json.
+
+build_repetition(item_rule, min_items, max_items, separator_rule=""):
+- has_max = max_items != INT_MAX.
+- if max_items == 0 return "".
+- if min_items == 0 && max_items == 1 return item_rule + "?";
+- if separator empty:
+  - min=1 no max -> item_rule + "+"
+  - min=0 no max -> item_rule + "*"
+  - return item_rule + "{" + min + "," + (has_max ? max : "") + "}";
+Potential bug: if min_items == max_items? It emits {n,n}? Grammar repetition syntax maybe {n,n} accepted? Could simplify. If min_items==0 and max_items>1, emits item_rule + "{0,max}" okay. If min_items==1 and max_items==1? It doesn't hit min=0 max=1; separator empty; min=1 has_max true; returns item_rule + "{1,1}" rather than item_rule. Not bug but inefficient. If max_items < min_items? Should validate. If max_items negative? max_items==0 only; negative leads weird. Need validate min>=0 max>=min. Also if max_items == INT_MAX and min_items? okay. If separator nonempty:
+ result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+ if min_items == 0 result = "(" + result + ")?";
+ return result;
+Need analyze separator repetition. For min_items=0, max_items maybe 1: earlier returns item_rule+"?" before separator? Wait if separator nonempty and min=0 max=1, first condition min_items==0 && max_items==1 returns item_rule + "?" ignoring separator. That's correct for zero or one item no separator. For min=0 max>1: result = item_rule + " " + build_repetition("(sep item)", 0, max-1). Then wrap optional. This grammar: item_rule space (sep item){0,max-1}? optional whole. For max=2: item_rule space ((sep item){0,1})? => item or item sep item. Good. For min=1 max=2: result = item_rule + " " + build_repetition("(sep item)", 0, 1) = item_rule + " " + "(sep item)?"? Wait build_repetition with min=0 max=1 returns item_rule + "?" where item_rule is "(sep item)" => "(sep item)?"; result = item_rule + " " + "(sep item)?"; no optional wrap because min_items !=0. This allows item_rule followed by space and optional sep item. But if no sep item, trailing space remains. Grammar may allow trailing space? In JSON grammar, spaces can be around separators? Need check. For array/object rules, they use space around. For repetition with separator, likely should be item (sep item)*, not item space optional. The result includes a mandatory space after item before optional separator. If max=1? earlier returns item? For min=1 max=2, grammar: item " " (sep item)? This allows item followed by space even if no second item. Is that acceptable? In JSON, whitespace after item before closing bracket is allowed, so maybe yes. But if separator_rule includes comma? Let's see build_repetition used for object/array? Need infer. For object: string ":" space value ("," space string ":" space value)*. They may call build_repetition? Need full file. The separator_rule likely includes comma and spaces. Need inspect. The function's separator handling: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...). This creates item_rule space (sep item) repetitions. For min=1 max=2: item_rule space (sep item)?; if no second, trailing space. In JSON grammar,

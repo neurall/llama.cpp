@@ -1,0 +1,7 @@
+run 28715 | engram_late_fill | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 24.0 t/s | prompt 816.1 t/s | 64 tokens | args: -np 1 --moe dense-split=0,staging=1 | power 280+280 W | 2026-11-14 21:33:45
+
+    return params.speculative.num_draft == 0 && params.speculative.num_reuse == 0 && params.speculative.num_gpu == 0;
+}
+
+static bool spec_types_is_set(const common_params & params) {
+    return params.speculative.num_draft > 0 && params.speculative.num_reuse > 0

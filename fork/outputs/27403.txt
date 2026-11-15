@@ -1,0 +1,72 @@
+run 27403 | hot_tree3 | breakoutc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 217.65 t/s | prompt 181.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 11:02:09
+
+
+---
+Creating a complete breakout game from scratch in HTML involves a lot of code, but I'll guide you through the basics to get you started. A breakout game is a simple puzzle game where the player controls a paddle at the bottom of the screen to bounce a ball against bricks at the top. The goal is to break all the bricks.
+
+Here's a basic structure for a breakout game using HTML, CSS, and JavaScript:
+
+**HTML:**
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Breakout Game</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="gameArea">
+        <div class="brick" data-x="0" data-y="0"></div>
+        <!-- Add more bricks here -->
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
+```
+
+**CSS (styles.css):**
+
+```css
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background-color: #f0f0f0;
+    margin: 0;
+}
+
+#gameArea {
+    width: 400px;
+    height: 400px;
+    border: 1px solid #333;
+    position: relative;
+}
+
+.brick {
+    width: 100px;
+    height: 100px;
+    background-color: #333;
+    position: absolute;
+    cursor: pointer;
+}
+```
+
+**JavaScript (script.js):**
+
+```javascript
+const paddle = document.querySelector('.paddle');
+const bricks = document.querySelectorAll('.brick');
+const canvas = document.createElement('canvas');
+
+const paddleWidth = 50;
+const paddleHeight = 50;
+const ballRadius = 10;
+
+const paddleX = canvas.width / 2 - paddleWidth / 2;
+const paddleY = canvas.height / 2 - paddleHeight / 2;
+
+const ballX = canvas

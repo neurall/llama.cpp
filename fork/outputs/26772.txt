@@ -1,0 +1,51 @@
+run 26772 | ns_probe_cells | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.03 t/s | prompt 38.4 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-12 14:59:46
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf/minimalism request. I should honor that: a single self-contained HTML file, as compact as reasonably possible while still being a real, playable Tetris.
+
+Let me think about what "smallest" means here. There are famous minimal Tetris implementations. The goal: single HTML file, minimal bytes, but still genuinely playable — 7 tetrominoes, rotation, line clearing, scoring, game over, gravity/speed increase.
+
+I need to balance:
+1. Actual smallness (byte count matters — I should try to write genuinely compact code)
+2. Playability (arrow keys, rotation, drop, line clear, score)
+3. Some minimal visual polish so it doesn't look like garbage — but the user asked for smallest, so polish is secondary. Still, I can make it look decent with very few bytes: a dark background, colored blocks via a palette string, a subtle border.
+
+Let me design the code.
+
+Core approach: canvas rendering, single IIFE, minimal variable names.
+
+Tetris essentials:
+- Board: 10 wide, 20 tall (or 18 tall visible). Use a 2D array or a flat array.
+- 7 pieces with 4 rotations. Compact encoding: each piece as a set of coordinates per rotation, or use the classic encoding where each rotation is stored as 16-bit masks (4x4 grid).
+
+A very compact classic trick: store pieces as strings of 16 binary digits per rotation, or store each tetromino as a 2x2/3x3/4x4 matrix and rotate by transposing.
+
+Compact rotation trick: represent piece as array of [x,y] cells; rotate 90° CW: (x,y) -> (y, maxX - x) or using matrix rotation: for a square matrix of size n, rotated cell (x,y) -> (y, n-1-x).
+
+Let me write compact piece definitions. Classic compact form:
+
+```js
+P=[[1,1,1,1],[[1,1],[1,1]],...]
+```
+
+Hmm. A well-known ultra-compact approach: define shapes as arrays of strings.
+
+Let me think about the classic minimal tetromino data. One compact encoding: each piece is a list of 4 rotation states, each state a list of [x,y] offsets. That's verbose. Better: define base shape as matrix, rotate programmatically.
+
+Base shapes as binary matrices:
+- I: [[1,1,1,1]] (1x4) — rotations via matrix rotate of bounding box... rotating a 1x4 gives 4x1. If I use a square bounding box 4x4 with the bar at row 1 (SRS-ish), rotation works within 4x4. But simpler: use minimal bounding boxes and rotate with formula (x,y)->(y, w-1-x) where w is the bounding width... that only works for square boxes. For non-square, rotation swaps dimensions.
+
+Simplest robust approach: store each piece as array of cell coordinates relative to origin, rotate points: (x,y) -> (y, -x) then normalize. Actually for Tetris, rotating around a point: new position = (y, -x) for 90° CW rotation (in screen coords where y down, this is... let's check: rotating CW in screen coordinates (x right, y down): a point (x,y) maps to (-y, x)? Let's verify: CW rotation by 90° in standard math coords (y up): (x,y)->(y,-x). In screen coords (y down), CW visual rotation equals CCW math rotation: (x,y)->(-y,x). Hmm, let me just be careful.
+
+Screen coords: x right, y down. A visual clockwise rotation: point at right (1,0) goes to bottom (0,1). So (x,y) -> (-y, x)? Check: (1,0) -> (0,1). Yes bottom. (0,1) bottom -> (-1,0) left. Yes, CW: right→bottom→left→top. So CW: (x,y) -> (-y, x). Then normalize so min x,y >= 0.
+
+So: rotate cells: c.map(([x,y])=>[-y,x]) then shift by min. That's compact:
+
+```js
+r=s=>s.map(p=>[p[1],-p[0]])  // hmm need normalization
+```
+
+Normalization: after rotation, compute min x and min y, subtract. 
+
+```js
+R=(s)=>{s=s.map(p=>
+---

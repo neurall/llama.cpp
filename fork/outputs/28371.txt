@@ -1,0 +1,52 @@
+run 28371 | lp_check_before_lock | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.7 t/s | prompt 25.8 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-14 07:06:26
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: make it genuinely tiny, but still functional and playable. The constraint is the point here.
+
+Let me think about what "smallest" means: fewest bytes possible while still being a real, playable Tetris. I should aim for a single-file HTML with no external dependencies (that also keeps it small — no CDN needed). I'll write extremely compact JavaScript.
+
+Key features a real Tetris needs:
+- 10×20 board
+- 7 tetrominoes with rotation
+- Gravity, lock, line clear, scoring
+- Controls: left/right/down movement, rotate, maybe hard drop
+- Game over
+- Some rendering (canvas is most compact)
+
+Let me try to write it as compactly as possible. I'll use canvas rendering, single-letter variable names, minimal whitespace but still readable-ish. Actually for "smallest" I could go full golf with no whitespace, but I want it to still be somewhat comprehensible. The user asked for smallest — I'll golf it hard but keep it working. I can present the code with minimal formatting (short lines) and explain briefly.
+
+Let me design the golfed Tetris.
+
+Classic approach: 
+- Board as array of rows, each row a string or array of 10 cells.
+- Pieces defined as arrays of rotation states, each state as list of cell coordinates, or as bit patterns.
+
+Compact piece representation: Use a string encoding. A common golf trick: define shapes as arrays of [x,y] offsets per rotation, or use the "SRS-lite" approach with a base shape and rotate via (x,y)->(y,-x) transformation.
+
+Simplest compact approach: each piece is a set of 4 cells; rotation computed by rotating coordinates around a pivot. For simplicity, rotate within a 4x4 or use offset-based rotation: for cell (x,y) relative to pivot, new = (y, -x) or (-y, x). This gives naive rotation which isn't SRS but is fine for a tiny game.
+
+Even more compact: store pieces as strings of 4 numbers each? Or store each piece as an array of 4 [x,y] pairs in one rotation, and compute rotations on the fly.
+
+Let me write:
+
+```js
+P=[[[1,0],[1,1],[0,1],[2,1]], ...] // etc
+```
+
+Hmm, let me think of the classic ultra-compact tetris implementations. There's a famous one: "Tetris in 140 bytes" etc. Let me just write my own clean-ish golfed version.
+
+Plan:
+
+```html
+<body><canvas id=c width=120 height=240></canvas><script>...</script>
+```
+
+Actually to be smallest, I can even create canvas via JS: `document.body.appendChild(c=document.createElement('canvas'))`. But `<canvas>` tag is short anyway. Let me use `<canvas id=c>`.
+
+Rendering: draw each cell as a filled rect with color per piece. To keep small, maybe draw all cells same color? That would be less nice. Colors per piece type add bytes but improve playability a lot. I'll include 7 colors — worth it. Actually I could compute color from piece index via hsl: `hsl(i*51,50%,50%)` — that's compact and gives distinct colors! `f.fillStyle='hsl('+i*51+',60%,50%)'` — nice trick, very few bytes.
+
+Board: `B=[]` 20 rows of 10. Represent occupied cells as piece index+1 (so color = value-1). Use `B[r][c]`.
+
+Piece data: I'll define shapes as arrays of 4 coordinate pairs, one canonical orientation, and rotate by transformation. Rotation around what pivot? For naive rotation, use pivot at (1,1) in a 3x3 box for most pieces; I-piece needs 4x4 handling; O-piece doesn't rotate.
+
+Simplest uniform approach: store each piece as 4 cells in a 4x4 grid coordinates (0-3), rotate with formula (x,y) -> (3-y, x) or (y, 3-x) within the 4x4 box. That's the classic "rotate in bounding box" method. For 3x3 pieces (T,S,Z,L,J), bounding box 4x4 rotation produces offsets that drift... Actually rotating within a 4x4 box for a 3x3 piece: cells at coords 0..2; rotating (x,y)->(3-y,x) maps 0..2 to 1..3, shifting the piece.
+---

@@ -1,0 +1,91 @@
+run 27243 | ns_fcls | pf60k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 0.0 t/s | prompt 213.3 t/s | 512 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini | power 200+200 W | 2026-11-13 05:50:16
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure if this is a good config - explore more settings and potentially enable it
+            
+
+
+            // TODO: not sure

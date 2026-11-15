@@ -1,0 +1,20 @@
+run 27745 | k_late_steal | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 61.9 t/s | prompt 19.8 t/s | 256 tokens | args: -np 1 --moe pp-path=stream,pp-k=1,dense-split=0 | power 280+280 W | 2026-11-13 16:58:41
+
+
+---
+Here's a complete, self-contained Tetris in a single HTML file — keyboard + touch controls, ghost piece, hold, next queue, lock delay, wall kicks, line-clear animation, and a synthesized sound engine.
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>TETRIS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0e18; --panel:#111a2b; --panel2:#0d1524; --line:#22304a;
+  --ink:#eaf1ff; --dim:#8ea0c0; --accent:#3

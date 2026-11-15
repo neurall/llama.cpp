@@ -1,0 +1,11 @@
+run 28888 | cpu_mask_drift_gate | pf1k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.36 t/s | prompt 273.7 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=1 | power 280+280 W | 2026-11-15 09:42:40
+
+<think>Let me carefully review this C++ source file for code quality, correctness, potential bugs, style issues, and other concerns.
+
+Let me go through the code systematically.
+
+**File: common/json-schema-to-grammar.cpp**
+
+**Includes and using declaration:**
+- Includes look reasonable for the functionality described.
+- `using

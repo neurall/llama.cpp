@@ -1,0 +1,17 @@
+run 27361 | hot_tree2 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 193.93 t/s | prompt 491.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 10:36:15
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Thalia, the archivist of the generation ship Aetheria, had watched over the slumbering souls for what felt like an eternity. A century of silence had enveloped us, a blanket of frozen dreams while we hurtled through the cold expanse of space. Now, at last, the stars had begun to blur into a tapestry of light ahead, and the distant glow of a planet beckoned us closer.
+
+The planet, we had been told, was to be our new home. A world teeming with life, rich in resources, and ripe for settlement. Our mission had been meticulously planned, our crew carefully selected. Yet, as we approached its atmosphere, a strange realization settled upon us like a shroud. The cities below, bathed in the soft glow of artificial lights, were alive with movement. The structures we had left behind on the Aetheria, the very symbols of our isolation and our resolve, were now mere shadows of their former selves.
+
+I awoke with a start, the gentle thrum of the ship's engines replaced by a new, unsettling sound—a distant, rhythmic pounding that resonated through the hull. It was as if the planet itself was calling out to us, its heartbeat echoing through the void. I stumbled to the observation deck, my feet barely making a sound on the smooth, polished floor.
+
+The sight that greeted me was beyond imagining. Below, the cities were alive with light and motion. Buildings that once stood as monuments to our isolation now shone with a warm, inviting glow. Streets teemed with figures, their movements fluid and purposeful, as if the very essence of life had been breathed into the dormant structures.
+
+"What sorcery is this?" I whispered to myself, my voice barely audible.
+
+A hand reached out beside me, its owner equally astonished. Captain Elara stood there, her eyes wide with wonder and a touch of disbelief. "It seems our descendants have done more than just survive," she said, her voice a mixture of awe and confusion. "They've thrived."
+
+We watched, transfixed, as a group of people descended from the cityscape, their faces etched with a blend of curiosity and relief. They approached the Aetheria, their hands reaching out as if to touch the ship that had brought them here

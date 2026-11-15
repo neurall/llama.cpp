@@ -1,0 +1,19 @@
+run 27357 | hot_tree2 | scific | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 166.16 t/s | prompt 561.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 10:33:57
+
+
+---
+The hum of the ship's engines had faded into a distant murmur, a lullaby for the sleepers. I, Thalia, the archivist of the generation ship Aetheria, had watched over the slumbering souls for what felt like an eternity. Aeons of stars had blinked into existence and dimmed again, their light a silent witness to our journey. We had set out from Earth with dreams of a new world, a sanctuary amidst the cold void. A century had passed, and now, at the cusp of our destination, we awoke to a revelation that shattered the foundations of our mission.
+
+The planet below, once a blank canvas of blue and green, now teemed with lights—a sprawling constellation of illumination that danced across its surface. It was as if the colonists had ignited the very heart of their world, kindling it into a beacon of life. I watched through the panoramic viewports, my eyes widening with disbelief. The cities below were not the desolate landscapes we had been taught to expect; they were vibrant, alive with structures that mirrored our own, yet distinctly their own in design and purpose.
+
+"Report," I commanded, my voice steady despite the tumult in my chest.
+
+"The planet is as we anticipated," replied the ship's AI, its tone neutral, yet imbued with a hint of wonder. "The atmosphere is breathable, the climate temperate. The cities are fully illuminated, suggesting habitation and activity."
+
+I turned away from the viewport, my mind racing. "Prepare the landing parties. We must ascertain if these people are our descendants, our legacy."
+
+The crew stirred from their slumber, their faces etched with a mix of excitement and apprehension. We donned our explorer's gear, each piece meticulously chosen for its functionality and symbolism—our connection to the past, now a question mark suspended in the vastness of space.
+
+As we descended, the ship's engines hummed a low, mournful note, as if mourning the passage of time and the certainty of our mission's direction. We landed on the planet's surface with a gentle thud, the ground soft beneath our feet, a stark contrast to the sterile decks of the Aetheria.
+
+The first to step out was Captain Elara, her eyes wide with disbelief. "It's as if they've been here all along," she whispered, her voice barely above

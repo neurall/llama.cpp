@@ -1,0 +1,56 @@
+run 26830 | oneexe | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.0 t/s | prompt 18.2 t/s | 1005 tokens | args: -np 1 | power 220+280 W | 2026-11-12 16:48:52
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but readable-ish implementation, maybe minified-ish but with some structure. I should aim for something genuinely small — maybe under 1KB or a bit more — while keeping it actually playable: piece movement, rotation, gravity, line clears, score, game over, restart.
+
+Let me design the game logic compactly.
+
+Core Tetris:
+- Playfield: 10 wide × 20 tall (or smaller grid for compactness, but standard 10×20 is fine).
+- 7 pieces (tetrominoes) with rotation. Compact encoding: use a string of piece shapes encoded as binary matrices, or use the classic encoding where each piece is defined by a set of coordinates.
+
+A very compact approach: represent each tetromino as a 4×4 (or 3×3/4×4) matrix encoded in a string of bits. Rotation can be done by matrix rotation function: rotate = (x,y) -> (y, N-1-x) etc.
+
+Classic compact tetris in JS (there's a famous one by "tiny tetris" — 219 bytes-ish? Actually there's a well-known one: "Tetris in 140 bytes"? There's the famous one by Román Cortés? Hmm. There's "smallest tetris in JS" competitions. A known compact implementation:
+
+```js
+c=canvas.getContext('2d');
+b={}; // board
+...
+```
+
+Let me write my own compact version.
+
+Plan:
+- Canvas 200×400 (cell 20px) or smaller cells. Actually for "smallest HTML" the code size matters, not the canvas size. Let's use cell size 20, canvas width 200 height 400. Or scale via CSS.
+
+Data:
+- Board as array of 200 cells (10×20), values 0 or color index.
+- Pieces: define shapes as arrays of coordinate pairs? Compact: encode each tetromino as a string of 16 bits in a 4×4 grid, then rotate via bit manipulation.
+
+Alternative super-compact trick: represent each rotation state as a bitmask in a 4×4 grid, and rotate the bitmask with bit shifts. For a 4×4 grid stored row-major as 16 bits, rotation 90° CW: new bit at (r,c) = old bit at (c, 3-r). That's a permutation. Could precompute rotation via a function.
+
+Even more compact classic trick: use the "SRS-less" simple rotation with a lookup of all 4 rotation states of all 7 pieces as a single string. Each piece has 4 rotations; each rotation is 16 bits → 7×4×16 = 448 bits = 112 hex chars? Or store as numbers.
+
+Actually a known ultra-compact approach: define pieces as arrays of [x, y] offsets relative to a pivot, and rotate by swapping: (x,y) -> (y, -x) or (y, x). For tetrominoes with a pivot point, rotation about pivot works for I, J, L, S, T, Z if pivot chosen well; O doesn't need rotation. Using integer offsets avoids floating point.
+
+Let me define pieces as sets of 4 cells in a small grid, and rotation function rot(p) that maps (x,y)->(y, maxX - x) or similar to keep in bounds. Hmm, need care.
+
+Simplest robust approach: each piece is a 2D array (matrix) of 0/1; rotation = transpose + reverse rows. Then collision check against board. This is straightforward and compact-ish.
+
+Compact encoding of the 7 pieces: use a string like "01 02..." Hmm.
+
+Let me think about a genuinely small implementation. I'll write it as compactly as I reasonably can while keeping it working. Target: maybe ~600–900 bytes of JS plus minimal HTML/CSS. I could present both a "readable" explanation and the golfed code. The user asked for smallest — deliver the golfed single-file HTML, and explain briefly how it works.
+
+Let me actually write the code carefully and test mentally.
+
+Design:
+
+HTML skeleton:
+```html
+<body><canvas id=c width=200 height=400></canvas><script>...</script>
+```
+
+Plus minimal styling
+---

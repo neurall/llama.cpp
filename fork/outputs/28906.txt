@@ -1,0 +1,89 @@
+run 28906 | kv_stage_past_zone | pf128k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 78.07 t/s | prompt 3876.2 t/s | 1000 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini --moe sim-vram=4608 | power 280+280 W | 2026-11-15 10:09:34
+
+    if (num_physical_cores > 0) {
+        return num_physical_cores;
+    }
+#endif
+    return std::thread::hardware_concurrency();
+}
+
+bool parse_cpu_mask(const std::string & mask, std::vector<int32_t> & cpumask) {
+    if (mask.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    for (size_t i = 0; i < mask.size(); i++) {
+        char c = mask[i];
+        if (c == '0' || c == '1') {
+            cpumask.push_back(c - '0');
+        } else {
+            throw std::invalid_argument("invalid cpumask");
+        }
+    }
+    return true;
+}
+
+bool parse_cpu_range(const std::string & range, std::vector<int32_t> & cpumask) {
+    if (range.empty()) {
+        return false;
+    }
+    cpumask.clear();
+    auto parts = string_split<std::string>(range, '-');
+    if (parts.size() != 2) {
+        throw std::invalid_argument("invalid range");
+    }
+    int32_t lo = std::stoi(parts[0]);
+    int32_t hi = std::stoi(parts[1]);
+    if (lo > hi) {
+        throw std::invalid_argument("invalid range");
+    }
+    for (int32_t i = lo; i <= hi; i++) {
+        cpumask.push_back(i);
+    }
+    return true;
+}
+
+static bool is_cpu_affinity_valid(const std::vector<int32_t> & cpumask) {
+    if (cpumask.empty()) {
+        return false;
+    }
+    for (int32_t cpu : cpumask) {
+        if (cpu < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool is_cpu_affinity_valid(const common_params_cpu & cpuparams) {
+    return cpuparams.mask_valid && is_cpu_affinity_valid(cpuparams.cpumask);
+}
+
+static bool is_cpu_affinity_valid(const common_params_cpu & cpuparams, const common_params_cpu & cpuparams_batch) {
+    return is_cpu_affinity_valid(cpuparams) && is_cpu_affinity_valid(cpuparams_batch);
+}
+
+static bool is_cpu_affinity_valid(const common_params_cpu & cpuparams, const common_params_cpu & cpuparams_batch,
+                                  const common_params_cpu & cpuparams_draft) {
+    return is_cpu_affinity_valid(cpuparams) && is_cpu_affinity_valid(cpuparams_batch) && is_cpu_affinity_valid(cpuparams_draft);
+}
+
+static bool is_cpu_affinity_valid(const common_params_cpu & cpuparams, const common_params_cpu & cpuparams_batch,
+                                  const common_params_cpu & cpuparams_draft, const common_params_cpu & cpuparams_draft_batch) {
+    return is_cpu_affinity_valid(cpuparams) && is_cpu_affinity_valid(cpuparams_batch) &&
+           is_cpu_affinity_valid(cpuparams_draft) && is_cpu_affinity_valid(cpuparams_draft_batch);
+}
+
+static bool is_cpu_affinity_valid(const common_params_cpu & cpuparams, const common_params_cpu & cpuparams_batch,
+                                  const common_params_cpu & cpuparams_draft, const common_params_cpu & cpuparams_draft_batch,
+                                  const common_params_cpu & cpuparams_mmproj) {
+    return is_cpu_affinity_valid(cpuparams) && is_cpu_affinity_valid(cpuparams_batch) &&
+           is_cpu_affinity_valid(cpuparams_draft) && is_cpu_affinity_valid(cpuparams_draft_batch) &&
+           is_cpu_affinity_valid(cpuparams_mmproj);
+}
+
+static bool is_cpu_affinity_valid(const common_params_cpu & cpuparams, const common_params_cpu & cpuparams_batch,
+                                  const common_params_cpu & cpuparams_draft, const common_params_cpu & cpuparams_draft_batch,
+                                  const common_params_cpu & cpuparams_mmproj, const common_params_cpu & cpuparams_mmproj_batch) {
+    return is_cpu_affinity_valid(cpuparams) && is_cpu_affinity_valid(cpuparams_batch) &&
+           is_cpu_affinity_valid(cpuparams_draft) && is_cpu_affinity_valid(cpuparams_draft_batch)

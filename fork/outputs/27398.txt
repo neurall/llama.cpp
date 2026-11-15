@@ -1,0 +1,46 @@
+run 27398 | hot_tree3 | snakecppc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 217.71 t/s | prompt 549.2 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 10:59:17
+
+
+---
+Creating a full Snake game in a single response is quite extensive, but I can guide you through a minimalist version of the Snake game in C++ that you can expand upon. This version will be very basic, focusing on the core mechanics: moving the snake, eating food, and growing in length.
+
+```cpp
+#include <iostream>
+#include <cstdlib> // For exit()
+#include <ctime> // For time()
+
+const int SNAKE_LENGTH = 10; // Initial length of the snake
+const int SNAKE_SPEED = 5; // Initial speed of the snake
+const int FOOD_POSITION_RANGE = 10; // Range within which food can appear
+
+void print_game_state() {
+    std::cout << "|  Snake |  Score |  Game Over |" << std::endl;
+    for (int i = 0; i < SNAKE_LENGTH; ++i) {
+        std::cout << "| " << i << " | ";
+    }
+    std::cout << "|      |      |" << std::endl;
+}
+
+void move_snake(int head, int snake_length, int direction) {
+    int new_head = (head + direction) % snake_length;
+    if (new_head < 0 || new_head >= snake_length) {
+        new_head = (new_head + SNAKE_LENGTH - 1) % snake_length; // Wrap around
+    }
+    std::cout << "Movement successful! New position: (" << head << ", " << new_head << ")" << std::endl;
+}
+
+void eat_food(int head) {
+    int food_position = (head + SNAKE_LENGTH - 1) % FOOD_POSITION_RANGE;
+    std::cout << "You ate the food at position: " << food_position << std::endl;
+    // Increase the length of the snake
+    SNAKE_LENGTH++;
+}
+
+int main() {
+    srand(static_cast<unsigned int>(time(nullptr))); // Seed the random number generator
+
+    int length = SNAKE_LENGTH;
+    int score = 0;
+    int game_over = 0;
+
+    std::cout <<

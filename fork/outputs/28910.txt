@@ -1,0 +1,26 @@
+run 28910 | kv_stage_past_zone | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 23.7 t/s | prompt 1083.5 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-15 10:18:37
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `separator_rule` is non-empty and `max_items` is `std::numeric_limits<int>::max()`, `max_items - 1` is fine.
+   - Wait, there's a subtle bug: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `min_items` is 0 and `max_items` is 1, the inner call gets min=0, max=0, which returns "" — then result = item_rule + " " + "" and then wrapped in `(...)?`. Hmm, actually let me check: `min_items == 0 && max_items == 1` case is handled early (returns `item_rule + "?"`), so that's before the separator path. OK.
+   - Actually wait, there's a potential issue: if `min_items == 0 && max_items == 1` with a separator, the early return happens before separator handling, so `item_rule + "?"` — correct since only one item, no separator needed.
+   - What if `max_items == 0`? Returns "" — but then the caller wraps it: `"\"[\" space " + build_repetition(...) + " space \"]\""` — this would produce `"[" space  space "]"` with double space. Minor cosmetic issue in grammar output. Actually in the array case: `build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space")` — if max_items == 0, returns "", so rule becomes `"[" space  space "]"`. That's a double space in the grammar, which is probably harmless but sloppy. Actually wait — is it valid GBNF? `"[" space  space "]"` — two consecutive rule references with a space between... Actually the string is `"\"[" space " + "" + " space \"]\""` = `"[" space  space "]"`. GBNF rules are whitespace-separated, so `space space` means space followed by space — that requires two whitespace characters! That's a semantic bug, not just cosmetic. Hmm, wait — in GBNF, whitespace in a rule body is a separator between tokens; `space space` would be two references to the space rule, requiring two whitespace chars. Actually let me think. In llama.cpp's GBNF parser, whitespace between symbols is ignored (it's a separator). So `space space` = two `space` symbols in sequence = requires two whitespace characters. That would make empty arrays unmatchable... Actually wait, for `max_items == 0`, the correct rule should be `"[" space "]"`. With `space space`, the grammar requires two whitespace characters between `[` and `]`. Since space rule is `" " | "\n"{1,2} [ \t]{0,20}`, two spaces would be needed. So `[]` (no space) wouldn't match, but `[ ]` (one space)... hmm, `[` then space then space then `]` — needs two whitespace chars. So `[]` fails to match. That's a real bug for empty arrays with max_items=0. But how often does max_items == 0 happen? `maxItems: 0` in JSON schema. Edge case, but a bug nonetheless. Let me double check the original llama.cpp code... In the original json-schema-to-grammar (Python and C++), there's similar handling. Actually in the original C++ implementation:
+
+```cpp
+std::string _build_array_rule(...)
+```
+
+Hmm, I recall the original code has the same structure. Let me not worry about matching upstream exactly; I should review the code as given.
+
+Actually, let me re-check: in `build_repetition`, `if (max_items == 0) { return ""; }`. And in KIND_ARRAY: `"\"[\" space " + build_repetition(...) + " space \"]\""`. So yes, empty string → `"[" space  space "]"`. The GBNF grammar would have `space space` which requires two whitespace. Hmm, but actually is that true? Let me think about how llama.cpp parses GBNF rule bodies. The parser skips whitespace between symbols. `space space` parses as two `space` rule references. So yes, two whitespace chars required. Bug.
+
+Wait, but actually, maybe I should double-check the upstream code. In llama

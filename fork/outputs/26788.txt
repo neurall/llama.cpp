@@ -1,0 +1,53 @@
+run 26788 | ns_probe_cells | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 56.57 t/s | prompt 187.1 t/s | 965 tokens | args: -np 1 | power 280+280 W | 2026-11-12 15:11:54
+
+The user wants the smallest HTML Tetris game. The literal ask is "smallest" — so code golf-ish, minimal. But I can deliver a compact yet genuinely playable Tetris that feels alive: tight code, but with real polish (ghost piece, next queue, hold, levels, keyboard + touch). The word "smallest" means I shouldn't bloat it into a sprawling page — the whole thing should be one tight file. I'll keep it compact but complete: a single self-contained HTML file with a canvas, a compact but readable implementation, plus a minimal HUD (score, level, lines, next, hold) and a subtle layered background.
+
+Balance: "smallest" is the request. I should honor it — deliver a genuinely small file — but make it feel crafted: good typography, a subtle background, micro-interactions. Keep it tight. Maybe ~60-80 lines.
+
+Let me write compact Tetris.
+
+Key design: single HTML file, canvas, minimal CSS but with character. I don't want the generic dark-neon-on-near-black look — for Tetris, a bold primary-color palette on a warm off-white / light background reads more like a vintage arcade cabinet than a moody terminal. Tetromino colors are canonical: cyan, blue, orange, yellow, green, purple, red. So use a light-ish or mid-tone background with those colors popping. Let's do a deep slate-blue background with a subtle grid/scanline ambient, and the pieces in canonical colors. Actually a near-black background with a single neon accent is exactly the cliché I want to dodge — but here we have 7 colors, so it's not "single neon accent". Still, let me pick something more distinctive: a warm dark plum/ink background with a subtle diagonal stripe texture, chunky display type (e.g., a Google font like "Bungee" or "Archivo Black" paired with body "Space Grotesk"). Pair a strong display face with a readable body/mono face.
+
+Fonts: display "Bungee" (blocky, arcade-y, characteristic of Tetris) + body "IBM Plex Mono" or "Space Grotesk". Good contrast.
+
+Open with whatever's most characteristic of Tetris — the board itself, immediately. No hero. So the page IS the game: board left/center, HUD column with HOLD / NEXT / stats, title small in a corner as a cabinet marquee.
+
+Let me write the code compactly.
+
+Implementation plan (compact but readable-ish):
+
+```html
+<canvas id=c width=300 height=600></canvas>
+```
+Cell = 20px? Let's do cell 24 → 240x480 for 10x20. Plus side panels in HTML.
+
+Compact Tetris logic:
+
+```js
+const W=10,H=20,S=24,C=c.getContext('2d');
+let g=K(),p,n=[],hold,q,sc=0,li=0,lv=1,dk=0,t=0,over=0;
+function K(){return Array.from({length:H},()=>Array(W).fill(0))}
+```
+
+Piece definitions via strings — compact approach: use matrices per piece with rotation by transpose+reverse.
+
+```js
+const P='I.O.L.J.S.Z.T'.split('.'),
+M={I:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+O:[[1,1],[1,1]],
+L:[[0,1,0],[0,1,0],[1,1,0]],
+J:[[1,0,0],[1,0,0],[1,1,0]],
+S:[[0,1,1],[1,1,0],[0,0,0]],
+Z:[[1,1,0],[0,1,1],[0,0,0]],
+T:[[0,1,0],[1,1,1],[0,0,0]]};
+```
+
+Rotation: rotate matrix clockwise: `m.map((r,i)=>r.map((_,j)=>m[H-1-j][i]))`.
+
+Bag randomizer: shuffle 7.
+
+Collision:
+```js
+const hit=(x,y,m)=>m.some((r,i)=>r.some((v,j)=>v&&x+j<0||x+j>=W||y+i>=H||(y+i>=0&&g[y+i][x+j])));
+```
+---

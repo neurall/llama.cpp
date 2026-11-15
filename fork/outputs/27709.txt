@@ -1,0 +1,29 @@
+run 27709 | tree_phase_maps | poemseac | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 89.0 t/s | prompt 38.5 t/s | 208 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph/ini | power 280+280 W | 2026-11-13 16:28:39
+
+
+---
+The dark water breathes in heavy, rhythmic waves,
+swallowing the moon’s pale, fractured light.
+Salt spray clings to the hull like cold iron,
+and the wind screams through the rigging,
+a lonely, hollow throat.
+
+Far from the harbor’s warm embrace,
+the boat drifts on the edge of the void.
+Its engine hums a low, desperate prayer,
+fighting the silence of the deep.
+
+Above, the lighthouse stands as a solitary eye,
+piercing the blackness with a beam of gold.
+It cuts through the fog, a steady hand
+guiding the lost toward the shore.
+
+The light flickers, then holds firm,
+a beacon in the endless night.
+The boat turns toward that glowing point,
+leaving the shadows behind.
+
+Stars are scattered like broken glass,
+frozen in the sky’s cold dome.
+The sea stretches out, infinite and dark,
+waiting for the dawn to break.

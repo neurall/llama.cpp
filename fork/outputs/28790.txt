@@ -1,0 +1,11 @@
+run 28790 | k_ahead_room | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.15 t/s | prompt 12.6 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,pp-k=2 | power 200+200 W | 2026-11-15 01:26:14
+
+ } else if (from.length() == to.length()) {
+            out << "\"" << from << "\"";
+        } else {
+            out << "[0-9] ";
+            more_digits(from.length(), from.length());
+        }
+    };
+
+    auto min_digits = std::to_string(has_min ? min_value : 0

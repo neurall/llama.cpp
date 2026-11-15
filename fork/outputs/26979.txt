@@ -1,0 +1,10 @@
+run 26979 | ns_router_compute | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 17.46 t/s | prompt 132.9 t/s | 64 tokens | args: -np 1 --moe staging=0,verify=2,poison=3 | power 280+280 W | 2026-11-12 21:59:34
+
+    return params.speculative.types == common_speculative_types_default();
+}
+
+static bool spec_types_is_ngram(const common_params & params) {
+    return params.speculative.types == common_speculative_types_ngram();
+}
+
+static bool spec_types_is_ngram_simple(const common_params

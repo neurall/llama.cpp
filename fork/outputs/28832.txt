@@ -1,0 +1,12 @@
+run 28832 | split_ab | pf1k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 2.02 t/s | prompt 13.3 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini | power 200+200 W | 2026-11-15 03:39:22
+
+ } else {
+            if (from.length() != to.length()) {
+                throw std::runtime_error("Bad range");
+            }
+            out << "\"" << from << "\"";
+        }
+    };
+    auto less_than = [&](int64_t value) {
+        auto value_str = std::to_string(value);
+        build

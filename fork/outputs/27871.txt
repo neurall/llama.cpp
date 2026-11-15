@@ -1,0 +1,13 @@
+run 27871 | cs_read_release | pf4k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 26.74 t/s | prompt 293.6 t/s | 64 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10240,pp-path=stream,pp-k=0,dense-split=0 | power 280+280 W | 2026-11-13 18:44:47
+
+
+                for (const auto & item : ret) {
+                    results.push_back(to_rule(item));
+                }
+                return string_join(results, "");
+            };
+
+            while (i < length) {
+                char c = sub_pattern[i];
+                if (c == '\\') {
+                   

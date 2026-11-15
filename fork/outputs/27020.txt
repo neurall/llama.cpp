@@ -1,0 +1,9 @@
+run 27020 | ns_card_stamps_stream | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.48 t/s | prompt 76.1 t/s | 64 tokens | args: -np 1 --moe staging=0,split-experts=1,verify=2,poison=3 | power 280+280 W | 2026-11-12 23:11:44
+
+    return params.speculative_type == COMMON_SPEC_TYPE_NONE
+        || params.speculative_type == COMMON_SPEC_TYPE_MTP
+        || params.speculative_type == COMMON_SPEC_TYPE_DRAFT;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.speculative_type == COMMON_SPEC_TYPE_M

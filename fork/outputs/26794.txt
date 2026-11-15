@@ -1,0 +1,82 @@
+run 26794 | ns_probe_cells | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.84 t/s | prompt 36.0 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-12 15:19:48
+
+The user wants the smallest HTML Tetris game. This is a classic code-golf style challenge. Let me think about what "smallest" means here — likely minimal bytes while still being a playable Tetris. I should aim for a genuinely playable, compact Tetris in a single HTML file.
+
+Let me think about the classic minimal Tetris approaches. There are famous tiny Tetris implementations (like the 229-byte one, or "tiny tetris" in C). For HTML/JS, a well-known compact one is around 300-500 bytes.
+
+Let me design my own minimal Tetris:
+
+Core requirements:
+- 10x20 grid
+- 7 tetromino shapes
+- Rotation
+- Movement left/right
+- Gravity (falling)
+- Line clearing
+- Game over
+- Keyboard controls
+
+Let me write compact code.
+
+Approach: use a canvas, draw blocks. Use a compact piece encoding.
+
+A very compact way to encode tetrominoes: each piece as a 4x4 or use bit encoding. A classic trick: encode all rotations via a single number per piece and extract cells.
+
+One famous compact encoding: pieces defined as arrays of coordinates. Or use the "binary digit" trick: each piece rotation encoded as 16-bit number.
+
+Let me think of a compact representation. A common minimal approach:
+
+```js
+P = [[...shapes]]
+```
+
+Shapes as arrays of [x,y] pairs.
+
+Alternative compact trick: represent each tetromino as a 2x2 matrix of nibbles? Actually a neat trick: each tetromino can be encoded in a single number where each 4 bits represents a row of 4 cells. E.g., I piece: 0x0F00 (top row empty... depends). Rotations can be computed via bit manipulation but that's complex.
+
+Simpler: store shapes as strings. E.g.:
+
+```js
+S="0110 0110..." 
+```
+
+Actually a very compact known approach: 
+
+```js
+const K = 'I,J,L,O,S,T,Z'.split(',').map(...)
+```
+
+Let me just write it pragmatically and keep it small but readable-ish. The user asked for "smallest" — I'll aim for a genuinely tiny single file, maybe under ~600 bytes of code, while still playable. But I also want it to look decent — though "smallest" implies code golf, so visual polish is secondary. Still, I can make it look clean with minimal CSS (dark background, colored blocks). Colors add bytes though. Maybe monochrome-ish with per-piece colors via a compact color string.
+
+Let me write a compact Tetris:
+
+```html
+<body onload="setInterval(f,300)"><canvas id=c width=120 height=240></canvas><script>
+D=[],P=[[...]],...
+```
+
+Let me carefully design.
+
+Grid: 10 wide, 20 tall, cell 12px → canvas 120x240.
+
+Piece representation: I'll use arrays of coordinates relative to a pivot, rotation by swapping x/y. A compact trick: define each piece as a list of 4 [x,y] cells; rotation: (x,y) → (y, -x) or (y, x). That gives 4 rotations naturally. O piece rotation is identity-ish (fine).
+
+Define pieces compactly:
+
+```js
+p=[
+[[0,1],[1,1],[2,1],[3,1]], // I
+[[0,0],[1,0],[1,1],[2,1]], // S? 
+...
+]
+```
+
+That's verbose. Alternative: encode each piece as a 16-bit number, cells = bits. Then rotation = rotate bits in 4x4 grid. Rotating a 4x4 bit grid: bit index i (0-15), row r=i>>2, col c=i&3. After rotation (x,y)→(y,3-x): new index = c*4 + (3-r)... Let me define: cell at (col c, row r) → after 90° CW rotation becomes (3-r, c)? For a grid rotated CW: new[r'][c'] = old[3-c'][r']. So old bit i at (r,c) goes to new position r'=c, c'=3-r, index = c*4+(3-r) = (i&3)*4 + 3-(i>>2).
+
+So rotation function: `R=(b)=>b.reduce?` — b is a number. Compute new number: for each bit set in b, set bit ((i&3)*4+3-(i>>2)).
+
+Compact: 
+
+```js
+R=n=>[...Array(16)].reduce((a,_,i)=>n>>i&1?a|1<<(i&3)*4+3-(
+---

@@ -1,0 +1,10 @@
+run 28913 | kv_stage_past_zone | pf1k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.42 t/s | prompt 310.3 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=0 | power 280+280 W | 2026-11-15 10:22:38
+
+<think>Let me carefully review this C++ source file for code quality, correctness, potential bugs, style issues, and other concerns.
+
+Let me go through the code systematically.
+
+**File: common/json-schema-to-grammar.cpp**
+
+**Includes and using declaration:**
+- `using json = common_json;` - This is

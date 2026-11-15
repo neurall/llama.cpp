@@ -1,0 +1,19 @@
+run 27817 | tree_emb_key | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 80.5 t/s | prompt 129.1 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,dynhot=tree,tree-key=emb,rp-steer=0,state=/tmp/runstate/q36ph3/tsoff/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/tsoff | power 280+280 W | 2026-11-13 18:05:00
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias woke with the taste of copper in his mouth and the cold ache of bone-deep frost clinging to his marrow. The air in the habitation module smelled of ozone and stale recycled moisture, a scent he had not encountered in three centuries. He blinked against the harsh, artificial luminescence of the emergency lights, his vision swimming in a haze of gray static. Beside him, the other crew members stirred, groaning like wounded beasts, their bodies stiff and unresponsive to the sudden return of consciousness.
+
+Elias, the ship’s archivist, was the first to sit up. His mind, trained to catalog the history of humanity before it left Earth, immediately sought order in the chaos. He checked the navigation console. The coordinates were correct. The planet, designated Terra Nova, hung in the viewport like a marble of sapphire and emerald. But something was wrong. The planet was not dark. It was glowing.
+
+Through the thick glass of the observation deck, Elias saw the night side of the world illuminated by a web of golden light. Cities. Sprawling, intricate, and alive. The silence of the ship was broken by the collective gasp of the crew. They had expected a virgin world, a blank slate to carve their new civilization upon. Instead, they found a civilization already thriving.
+
+"Who is there?" Captain Vance asked, his voice rough, stripped of its usual authority by the shock of the awakening.
+
+Elias moved to the comms array. His hands trembled, not from fear, but from the sheer impossibility of the data streaming in. The signals were strong, structured, and unmistakably human. He decoded the first transmission. It was a greeting, broadcast on a frequency that matched the old Earth standards, but with a dialect that had evolved.
+
+"Welcome home," the voice said. It was warm, welcoming, and terrifyingly familiar.
+
+Elias looked at the crew. They were the first generation. They had left Earth when the population was dwindling, carrying the seed of humanity in a vessel designed to sleep for three hundred years. They were the pioneers. But the lights below told a different story. A copy of their ship, launched a century later, had traveled faster. It had arrived first. It had built the cities. It had lived the lives.
+
+The crew below, the descendants of the second launch, had grown up in the

@@ -1,0 +1,60 @@
+run 27411 | hot_tree3 | pyasyncc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 206.61 t/s | prompt 269.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=1536,state=/tmp/runstate/hottree-o/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/ini | power 280+280 W | 2026-11-13 11:06:42
+
+
+---
+Certainly! Below is a Python script that uses `asyncio` and `aiohttp` to download URLs concurrently, implements retries with increasing delays for failed downloads, and saves the downloaded pages to disk. This script assumes you have `aiohttp` installed (``pip install aiohttp``).
+
+```python
+import asyncio
+import aiohttp
+import random
+
+# Function to handle retries
+async def retry_download(session, url, max_retries=3):
+    delay = 0
+    while max_retries > 0:
+        try:
+            async with session.get(url) as response:
+                await response.text()  # Save the page content to disk
+                print(f"Downloaded {url} successfully.")
+                return
+        except Exception as e:
+            print(f"Error downloading {url}: {e}")
+            delay += 1
+            if delay > 10:  # Max delay after three failures is 10 seconds
+                delay = 10
+            else:
+                delay *= 2
+        max_retries -= 1
+
+# Define your list of URLs to download
+urls = [
+    "https://example.com/page1.html",
+    "https://example.com/page2.html",
+    "https://example.com/page3.html",
+    # Add more URLs as needed
+]
+
+# Initialize asyncio loop
+async def main():
+    # Create a session for handling HTTP connections
+    session = aiohttp.ClientSession()
+
+    # Define the list of URLs to download
+    tasks = []
+    for url in urls:
+        task = asyncio.ensure_future(retry_download(session, url))
+        tasks.append(task)
+
+    # Start the asyncio loop and run the tasks
+    asyncio.run(tasks)
+
+# Run the main function
+if __name__ == "__main__":
+    main()
+```
+
+### Key Points:
+
+- **Concurrency**: The `asyncio` library is used to handle multiple network operations (downloads) concurrently.
+- **Retry Logic**: The `retry_download` function handles retries with increasing delays. It stops after a certain number of retries (configurable via `max_retries`) and uses exponential backoff to avoid overwhelming

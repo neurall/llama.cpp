@@ -1,0 +1,11 @@
+run 28285 | lp_yields_to_split | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.63 t/s | prompt 1286.2 t/s | 64 tokens | args: -np 1 --moe dense-split=1,staging=0 | power 200+200 W | 2026-11-14 04:14:30
+
+    return params.spec_types.empty();
+}
+
+static bool spec_types_is_none(const common_params & params) {
+    return params.spec_types.size() == 1 && params.spec_types.front() == LLAMA_SPEC_TYPE_NONE;
+}
+
+static bool spec_types_is_draft_only(const common_params & params) {
+    return params.spec_types

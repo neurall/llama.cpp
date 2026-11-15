@@ -1,0 +1,39 @@
+run 28826 | split_ab | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.67 t/s | prompt 1.7 t/s | 256 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,split-ab=0 | power 200+200 W | 2026-11-15 03:05:28
+
+
+---
+To parse a CSV file and calculate the average of each column, you can use the `csv` module in Python. Below is a function that reads a CSV file, calculates the average for each numeric column, and returns a dictionary with the column names and their corresponding averages.
+
+```python
+import csv
+
+def average_csv_columns(filename):
+    averages = {}
+    column_sums = {}
+    column_counts = {}
+    
+    with open(filename, mode='r', newline='') as file:
+        reader = csv.DictReader(file)
+        
+        for row in reader:
+            for column, value in row.items():
+                try:
+                    # Convert the value to a float and add to the sum
+                    column_sums[column] = column_sums.get(column, 0) + float(value)
+                    column_counts[column] = column_counts.get(column, 0) + 1
+                except ValueError:
+                    # Ignore non-numeric columns
+                    continue
+        
+        for column in column_sums:
+            averages[column] = column_sums[column] / column_counts[column]
+    
+    return averages
+
+# Example usage:
+# averages = average_csv_columns('data.csv')
+# print(averages)
+```
+
+### Explanation:
+1. **Reading the CSV**: The function uses `

@@ -1,0 +1,21 @@
+run 27571 | hot_tree7 | scific | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 104.16 t/s | prompt 426.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,dynhot=tree,state=/tmp/runstate/hottree-q/act/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-q/act | power 280+280 W | 2026-11-13 13:01:50
+
+
+---
+The thawing of the cryo-gel was not a gentle awakening, but a violent rupture of silence. Elias, the ship’s archivist, felt the cold shards of ice shatter against his skin, replaced by the sudden, suffocating warmth of the revival chamber. His lungs, dormant for three centuries, gasped like bellows, pulling in air that tasted of recycled ozone and stale metal. He blinked, his vision swimming in the haze of neuro-stimulant residue, until the lights of the command deck stabilized into a harsh, clinical white.
+
+"Status report," Commander Vance’s voice cut through the fog, sharp and authoritative. Elias rubbed his eyes, his fingers trembling as he reached for the console. The data streams were already flooding his neural link. They had arrived. The destination, Kepler-4b, was no longer a distant star in the void, but a glowing marble suspended in the blackness.
+
+But the data was wrong.
+
+Elias stared at the telemetry. The planet was not dark. It was illuminated. A web of golden light spanned the continents, pulsing with the rhythm of civilization. Cities, sprawling and dense, glittered like jewels against the dark oceans. There were no ruins. There were no signs of the primitive, struggling settlement that the original colonization protocols predicted. There was only order.
+
+"Impossible," Vance muttered, leaning over Elias’s shoulder. "We are the first. We left Earth two hundred years ago. The ship *Aethelgard* is the pioneer."
+
+Elias typed the query, his heart hammering against his ribs. He cross-referenced the orbital decay and the launch logs. The math was irrefutable. A second vessel, the *Aethelgard II*, had launched exactly one century after the first. It carried a faster propulsion drive, a more efficient cryo-sleep cycle, and a smaller crew. It had overtaken them. It had arrived fifty years ago.
+
+"Who is down there?" Elias asked, his voice raspy. He looked out the viewport. The planet spun slowly, its atmosphere thick with the haze of industry. He could see the lights of the capital city, a sprawling metropolis that dwarfed the size of the ship above.
+
+"They are us," Elias whispered. The realization hit him with the force of a physical blow. The descendants of the original crew had not waited for the pioneers. They had left earlier. They had built a world while the pioneers slept.
+
+The com

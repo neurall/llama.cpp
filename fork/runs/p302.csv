@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+p302-warm,qwen36,1,pf4k,8,"--moe state=/p/bw/data/state_sane.ini",--ctx 140000 --hog-gpu 4.5 --nothink
+p302-ns,qwen36,1,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,log=w",--ctx 140000 --hog-gpu 4.5
+p302-stg,qwen36,1,pf128k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1,log=w",--ctx 140000 --hog-gpu 4.5

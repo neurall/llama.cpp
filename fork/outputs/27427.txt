@@ -1,0 +1,16 @@
+run 27427 | hot_tree3 | arithc | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 193.89 t/s | prompt 186.1 t/s | 72 tokens | args: -np 1 --moe sim-vram=1536,dynhot=tree,tree-key=pool,state=/tmp/runstate/hottree-o/pool/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/hottree-o/pool | power 280+280 W | 2026-11-13 11:15:20
+
+
+---
+1x1=1
+2x2=4
+3x3=9
+4x4=16
+5x5=25
+6x6=36
+7x7=49
+8x8=64
+9x9=81
+10x10=100
+11x11=121
+12x12=144

@@ -1,0 +1,61 @@
+run 27842 | tree_emb_key | snakecppc | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 53.66 t/s | prompt 34.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=3072,sim-ram=10752,state=/tmp/runstate/q36ph3/ini/s.ini,hotmaps=/home/o/.cache/llama.cpp/hotmaps/q36ph3/ini | power 280+280 W | 2026-11-13 18:19:37
+
+
+---
+Here is the smallest possible functional Snake game in C++ that runs in a terminal. It uses a single file, minimal dependencies, and relies on `std::cin` for input to avoid platform-specific libraries like `<ncurses>` or `<windows.h>`.
+
+### Key Features:
+- **Terminal-based**: Uses standard input/output.
+- **Minimal**: ~100 lines of code.
+- **Controls**: Arrow keys (↑, ↓, ←, →) to move.
+- **Game Logic**: Snake grows when eating food, game ends on collision with walls or self.
+
+### Code:
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <thread>
+
+using namespace std;
+
+int main() {
+    // Game state
+    vector<pair<int, int>> snake = {{5, 5}}; // Start at (5,5)
+    pair<int, int> food = {10, 10};
+    int dx = 0, dy = 1; // Initial direction: down
+    int score = 0;
+    bool running = true;
+
+    // Clear terminal
+    cout << "\033[2J\033[H"; // Clear screen and move to top-left
+
+    while (running) {
+        // Render the board
+        cout << "\033[2J\033[H"; // Clear screen each frame
+        for (int y = 0; y < 20; y++) {
+            for (int x = 0; x < 20; x++) {
+                if (x == food.first && y == food.second) {
+                    cout << "O"; // Food
+                } else {
+                    bool isSnake = false;
+                    for (auto& s : snake) {
+                        if (s.first == x && s.second == y) {
+                            isSnake = true;
+                            break;
+                        }
+                    }
+                    cout << (isSnake ? "#" : " ");
+                }
+            }
+            cout << "\n";
+        }
+        cout << "Score: " << score << "\n";
+
+        // Input handling
+        char input;
+        cin >> input;
+        if (input == 'w') dy = -1;
+        else if (input == 's') dy = 1

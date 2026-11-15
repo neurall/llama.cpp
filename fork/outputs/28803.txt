@@ -1,0 +1,5 @@
+run 28803 | k_ahead_room | chatv | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.52 t/s | prompt 1.6 t/s | 64 tokens | args: -np 1 --moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,jit-all=1 | power 200+200 W | 2026-11-15 02:03:37
+
+
+---
+Every evening, Elias climbed the spiral stairs of the lighthouse with a brass lantern in one hand and a notebook in the other. He had kept the light for twenty-three years, long enough to know the sea’s moods by the color of the clouds. His notebook was full of ordinary things: gulls nesting on the

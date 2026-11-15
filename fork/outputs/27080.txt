@@ -1,0 +1,10 @@
+run 27080 | ns_split_home_part | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 22.33 t/s | prompt 706.5 t/s | 64 tokens | args: -np 1 | power 200+200 W | 2026-11-13 01:00:15
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_DRAFT;
+}
+
+static bool spec_types_is_mtp(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_MTP;
+}
+
+static bool spec_types_is_mtp_or_default(const common_params & params)

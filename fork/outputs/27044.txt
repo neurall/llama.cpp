@@ -1,0 +1,7 @@
+run 27044 | ns_balance_home_experts | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 16.9 t/s | prompt 98.0 t/s | 64 tokens | args: -np 1 --moe staging=0,verify=2,poison=3 | power 280+280 W | 2026-11-12 23:48:14
+
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_DRAFT;
+}
+
+static bool spec_types_is_preset_only(const common_params & params) {
+    return params.spec_type == COMMON_SPEC_TYPE_NONE || params.spec_type == COMMON_SPEC_TYPE_DRAFT || params.spec_type == COMMON_SPEC

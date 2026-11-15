@@ -1,0 +1,45 @@
+run 26803 | ns_probe_cells | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 36.53 t/s | prompt 38.4 t/s | 987 tokens | args: -np 1 | power 280+280 W | 2026-11-12 15:38:53
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 300x600? Board 10x20, cell 30. Canvas width 300 height 600. Draw grid. Use JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Tetromino definitions:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotation function. Use matrix rotate clockwise: new matrix rows = old columns reversed? For matrix m with rows, rotate: m[0].map((_, i)=>m.map(row=>row[i]).reverse())? Let's verify. For T [[0,1,0],[1,1,1]], rotate clockwise should [[1,0],[1,1],[1,0]]? Actually T rotated clockwise: original:
+0 1 0
+1 1 1
+Rotate clockwise: rows become columns reversed:
+col0 [0,1] reversed [1,0]
+col1 [1,1] reversed [1,1]
+col2 [0,1] reversed [1,0]
+=> [[1,0],[1,1],[1,0]] yes. Good.
+
+Need board 10x20. Use array of 20 rows x 10 cols, 0 empty, color index maybe. Need current piece with shape matrix, x,y, color. Spawn at x=3? y=0? Need ensure top. For I width 4, x=3. For O width 2, x=4. For others width 3, x=3. Could spawn x = Math.floor((10 - shape[0].length)/2), y=0. But if shape height? y=0. Need collision check. If spawn collides, game over.
+
+Need gravity: setInterval or requestAnimationFrame. Use setInterval tick every 500ms. On tick, if can move down, y++; else lock piece, clear lines, spawn new. Need handle keyboard: left/right/down/up rotate/space hard drop. Need prevent default for arrows/space. Need maybe pause? Not necessary.
+
+Need draw. Use canvas. Draw board cells with colors. Need colors for pieces. Use array colors. Need draw current piece. Need draw grid maybe. Need score. Need game over overlay. Need restart on R.
+
+Need minimal code. Could use CSS body background. Need maybe canvas id. Need score div. Need instructions.
+
+Need ensure line clearing. Board rows. When lock, for each cell in shape, set board[y+r][x+c] = color index. Then clear full rows: filter rows where every cell nonzero. Need remove and unshift empty rows. Score += lines*100 maybe. Need spawn.
+
+Need collision function: for each filled cell in shape, nx=x+c, ny=y+r; if nx<0 or nx>=10 or ny>=20 or board[ny][nx] then collision. Need allow ny<0? Spawn y=0. Rotation may go out? Need check. If y negative? Not. But rotation can cause cells above? We only rotate at current y; if shape extends above? Since y>=0, no. But if rotation changes height and y maybe? Could be okay. Need if rotation collides, ignore.
+
+Need hard drop: while can move down, y++; then lock. Need maybe call lock immediately. Need avoid double lock? In tick, if can't move down, lock. Hard drop should move down until collision then lock. Need function lock().
+
+Need game loop. Use setInterval(tick, 500). Need maybe use
+---
