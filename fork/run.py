@@ -2071,8 +2071,12 @@ def _server_start_once(build, env, args):
     if os.path.exists(logf): os.replace(logf, logf + ".prev")   # the previous start's log stays readable: in a clean-state cell the cold run is the start before the warm one
     global WATCH_LOG; WATCH_LOG = logf   # post() watches this file
     runlog(f"server start: {build} {os.path.basename(MODEL)} {' '.join(args)}")
+    joe = simjoe_cfg()
+    if joe:   # simjoe: the first chiplet only; ours probes its bandwidth there (the probe cache cannot see a cap); stock takes the cores joe's box has
+        env = {**env, "LLAMA_CPU_BW_PROBE": "fresh"}
+        if build.startswith("stock") and not {"-t", "--threads"} & set(map(str, args)): args = list(args) + ["-t", str(joe["cores"])]
     with open(logf, "w") as lf:
-        p = subprocess.Popen(WRAP + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
+        p = subprocess.Popen(WRAP + (["taskset", "-c", joe["cpus"]] if joe else []) + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
                              + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=None if DETACH[0] else _die_with_parent, start_new_session=DETACH[0])
     subprocess.Popen([sys.executable, os.path.abspath(__file__), "memwatch", str(p.pid), logf]
                      + (["--min-avail", "1"] if any("sim-ram=" in str(x) for x in args) else []),   # a simulated small machine runs near its end on purpose: the pressure rules guard it (3 GiB killed 8 GiB cells at pressure 0)
@@ -7454,10 +7458,88 @@ def stock_latest(dry=False):
     return name
 
 
+# run.py simjoe (user 2026-11-15: "run gainers simjoe shall produce similar numbers in mimo gainers as old hw without need to move gpus and ssd back"): the old desktop
+# (Ryzen 7 3700X, 8 cores / 16 threads on one chiplet, 2-channel RAM read at 38-41 GB/s, 128 GB) on PC1 with real limits that hold for ours and stock alike: the servers
+# under taskset on the first chiplet (one Zen 2 chiplet of the 3975WX reads 40-42 GB/s by itself, so no cap is needed for that), the rest of the RAM held as 2 MiB huge
+# pages nobody maps, no huge-page pool (joe has none), stock at the 8 threads it picks on such a box. --joe-bw caps lower through AMD MBA (resctrl, measured 96% of the
+# asked rate). Rows go under machine pc1joe, never paired with PC1's own. The limits go at the end of the list, at run.py stop, or at the start of the next list.
+JOE = {"ram": 128, "threads": 16, "bw": 0.0}
+JOE_HOG = "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+JOE_RG = "/sys/fs/resctrl/simjoe"
+JOE_MARK = "/tmp/simjoe.active"   # written by the setup: the teardown touches only limits this harness set
+
+
+def simjoe_cfg():
+    """the limits of the running simjoe list (env RUN_SIMJOE, set by run_list for its cells), None outside one"""
+    v = os.environ.get("RUN_SIMJOE")
+    if not v: return None
+    c = dict(JOE)
+    for kv in v.split(","):
+        k, _, x = kv.partition("=")
+        if k in c and x: c[k] = float(x) if k == "bw" else int(float(x))
+    c["cpus"], c["cores"], c["l3"] = simjoe_cpus(c["threads"])
+    return c
+
+
+def simjoe_cpus(threads):
+    """(taskset list, cores, L3 ids): L3 groups in CPU order until threads/2 cores, each core with its SMT siblings (PC1: 0-7,32-39 = the first chiplet)"""
+    groups = {}
+    for d in sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*"), key=lambda q: int(q.rsplit("cpu", 1)[1])):
+        try: groups.setdefault(int(open(d + "/cache/index3/id").read()), []).append((int(d.rsplit("cpu", 1)[1]), open(d + "/topology/thread_siblings_list").read().strip()))
+        except (OSError, ValueError): continue
+    want, cores, cpus, ids = max(1, threads // 2), set(), [], []
+    for l3, members in groups.items():   # first seen = lowest CPU first
+        if len(cores) >= want: break
+        ids.append(l3)
+        for c, sib in members:
+            if sib in cores or len(cores) < want: cores.add(sib); cpus.append(c)
+    return ",".join(map(str, sorted(cpus))), len(cores), ids
+
+
+def simjoe_setup(c):
+    """the limits for the whole list, before its first cell"""
+    simjoe_teardown(quiet=True)
+    if os.path.ismount("/mnt/huge1g"):
+        while subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0: time.sleep(5)
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
+    tot_kb = int(next(l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal:")))
+    keep_kb = c["ram"] * 0.982 * 2**20   # MemTotal of a box is ~98.2% of its installed RAM (PC1: 251.4 GiB of 256)
+    pages = max(0, int((tot_kb - keep_kb) // 2048))
+    open(JOE_MARK, "w").write(str(pages))
+    _sudo_write(JOE_HOG, pages)
+    got = int(open(JOE_HOG).read())
+    bw = ""
+    if c["bw"] > 0:
+        if not os.path.ismount("/sys/fs/resctrl"): subprocess.run(["sudo", "-n", "mount", "-t", "resctrl", "resctrl", "/sys/fs/resctrl"], capture_output=True)
+        subprocess.run(["sudo", "-n", "mkdir", "-p", JOE_RG], capture_output=True)
+        _sudo_write(JOE_RG + "/cpus_list", c["cpus"])
+        u = max(1, round(c["bw"] / max(1, len(c["l3"])) * 8))   # AMD MBA: 1/8 GB/s units per L3 group
+        _sudo_write(JOE_RG + "/schemata", "MB:" + ";".join(f"{i}={u}" for i in c["l3"]))
+        bw = f", memory read capped at {c['bw']:.0f} GB/s (MBA {u}/8 GB/s on L3 groups {','.join(map(str, c['l3']))})"
+    left = (tot_kb - got * 2048) / 2**20
+    print(col(33, f"simjoe: CPUs {c['cpus']} ({c['cores']} cores, {c['threads']} threads), RAM {left:.1f} GiB (held {got * 2 / 1024:.1f} GiB as 2 MiB pages"
+              + ("" if got == pages else f", wanted {pages * 2 / 1024:.1f}: the rest is in use") + f"), no huge-page pool, stock -t {c['cores']}{bw}; rows as machine {os.environ.get('PERF_HW')}"), flush=True)
+
+
+def simjoe_teardown(quiet=False):
+    """undo what simjoe_setup set (only with its mark: someone else's huge pages stay)"""
+    if not os.path.exists(JOE_MARK): return
+    did = []
+    if os.path.exists(JOE_HOG) and int(open(JOE_HOG).read() or 0) > 0:
+        subprocess.run(["sudo", "-n", "tee", JOE_HOG], input="0", capture_output=True, text=True); did.append("RAM")
+    if os.path.isdir(JOE_RG):
+        subprocess.run(["sudo", "-n", "rmdir", JOE_RG], capture_output=True); did.append("bandwidth cap")
+    try: os.remove(JOE_MARK)
+    except OSError: pass
+    if did and not quiet: print(col(33, f"simjoe: {' and '.join(did)} limits removed"), flush=True)
+
+
 def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
     """The huge-page pool for the next model. A model above the pool limit (pool_most_gib: RAM less max(20%, 24 GiB)) gets none and a mounted pool goes. Otherwise a pool
     the model fits in is kept; a missing or smaller one is replaced by one of this model's size. The list orders our cells of pool models biggest first, then stock and
     the models above the limit, so the first mount serves every pool model (user 2026-11-15) and its pages take no more RAM from the engine's RAM pool than needed."""
+    if os.environ.get("RUN_SIMJOE"): return   # simjoe: joe has no huge-page pool (simjoe_setup took it down)
     need = max(-(-model_bytes >> 30), 1)
     have = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
     why = ""
@@ -7857,6 +7939,10 @@ def run_list(name, argv):
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
     ap.add_argument("-ng", "--gpus", dest="n_gpus", type=int, metavar="N", help="use only N cards: the best N (fastest slot, then fastest card), the fastest one last; 0 = CPU only. Remote machines (-pc) and this host")
     ap.add_argument("-dbg", "--dbg", dest="dbg", action="store_true", help="a dev run: stats and logging on (the engine's research logs and stats.log with planner events, TOK lines every 10 tokens and NVML samples every 100 ms, split pass stamps; run.py's machine samplers, live status probes and server polls). Off by default (user 2026-11-15): a plain run and every benchmark (gainers, gate) measure what users get")
+    ap.add_argument("-joe", "--simjoe", action="store_true", help="the old desktop on PC1 (also the word simjoe): one chiplet (16 threads, 40-42 GB/s), RAM held down to 128 GiB, no huge-page pool, stock -t 8; rows as machine pc1joe")
+    ap.add_argument("--joe-ram", type=int, metavar="GIB", help="simjoe: installed RAM of the emulated box (default 128)")
+    ap.add_argument("--joe-threads", type=int, metavar="N", help="simjoe: hardware threads of the emulated box (default 16 = 8 cores)")
+    ap.add_argument("--joe-bw", type=float, metavar="GBS", help="simjoe: cap the chiplet's memory reads to GBS (AMD MBA; default: none, the chiplet itself reads 40-42)")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
     ap.add_argument("-day", "--day", action="store_true", help="the day power limits (x4 card 220 W, x16 card 280 W) for the whole run, also at night (the schedule drops to 200/200 W from 23:50): same as -pl 220/280")
@@ -7885,7 +7971,7 @@ def run_list(name, argv):
     ap.add_argument("-from-smallest", "--from-smallest", dest="asc", action="store_true", help="smallest model files first: the first results come quickly")
     ap.add_argument("-pc", "--machine", default="pc1", help="run the cells on another machine over ssh (`run.py machine`): the builds must be there (`run.py remote ID push BUILD...`), the model is found there by file name, the server and the request run on that machine (`run.py remote`), run.py stays here; -nrt does not apply")
     ap.add_argument("-ssh", "--ssh", metavar="LINE", help="the ssh line of a rented box for this session, in quotes (\" -p 47086 root@93.91.156.104 -L 8080:localhost:8080\"): the machine named by -pc (cld when -pc is not given) is set to it first (~/.ssh/config and machines.csv), see `run.py machine add`")
-    o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
+    o = ap.parse_args([x for x in argv if x not in ("desc", "simjoe")])   # `run gainers desc` works too, and `run gainers simjoe`
     NOSTATS[0] = not o.dbg; NGPU[0] = o.n_gpus
     for opt, key in ((o.hog_gpu, "sim-vram"), (o.hog_ram, "sim-ram")):   # GiB -> the server's MiB
         if opt:
@@ -7897,6 +7983,17 @@ def run_list(name, argv):
     if o.day and not o.power: o.power = "220/280"
     if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
     if o.dbg: os.environ["RUN_DBG"] = "1"   # the cells and servers of the list see it
+    if "simjoe" in argv or o.simjoe:   # the old desktop on PC1 (simjoe_setup): set for the cells, undone at the end
+        if o.machine != "pc1": sys.exit("simjoe: PC1 only")
+        jc = {"ram": o.joe_ram or JOE["ram"], "threads": o.joe_threads or JOE["threads"], "bw": o.joe_bw or 0.0}
+        os.environ["RUN_SIMJOE"] = ",".join(f"{k}={v}" for k, v in jc.items())
+        os.environ["PERF_HW"] = "pc1joe" + "".join(f"-{k}{v:g}" for k, v in jc.items() if v and v != JOE[k])
+        import atexit, signal
+        atexit.register(simjoe_teardown)
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))   # run.py stop: the limits go with the list
+        if not o.dry: simjoe_setup(simjoe_cfg())
+    elif not o.dry:
+        simjoe_teardown()   # limits a stopped simjoe list left behind
     if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
     if o.n_gpus is not None and o.machine == "pc1":   # this host: the children (cells, servers) see the chosen cards only, numbered in the listed order
         _vis = pick_gpus(o.n_gpus, subprocess.run(GPU_Q_NG, shell=True, capture_output=True, text=True).stdout) if o.n_gpus > 0 else ""
@@ -8063,7 +8160,7 @@ def run_list(name, argv):
         rows.sort(key=lambda r: (-size(r), r["model"]))   # the same model stays together: one pool, one load
     elif o.asc:
         rows.sort(key=lambda r: (size(r), r["model"]))
-    elif not o.no_pool:
+    elif not o.no_pool and not ("simjoe" in argv or o.simjoe):   # simjoe has no pool: the list keeps its order (-sc: stock first)
         # user 2026-11-15: "reorder gainers so first runs fit biggest pool then unmount for rest". Our cells of models that fit the biggest pool go first, biggest model
         # first (one mount of the biggest pool while RAM is still whole, no remount between models); then stock (it knows no pool) and the models above the pool's limit
         _, _, most = pool_most_gib()
@@ -9548,6 +9645,7 @@ def cmd_stop(a):
             break
         time.sleep(2)
     print(f"stop: {len(targets)} processes ended; GPU memory in use {used} MiB" + ("" if used is None or used < 800 else "  <-- NOT free"))
+    simjoe_teardown()   # a simjoe list killed before its own exit: its RAM hold and bandwidth cap go too
     if not a.no_power:
         apply_power_schedule()
 
