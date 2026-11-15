@@ -8311,6 +8311,7 @@ def run_list(name, argv):
     rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) and not (r.get("args") or "").strip() else (o.build,))]   # a cell with forced server args (dense-split=0/1) is a test of our own settings: stock has none of them, no stock partner   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
     if o.hog_gpu and not o.dry and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
+        import atexit   # (run_list imports it further down for simjoe: without this line the name is a local there and unbound here)
         hog = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vramhog.py"), str(free_mib), os.path.join(DEVBUILDS, rows[0]["_b"])], stdout=subprocess.PIPE, text=True)
         atexit.register(lambda: (hog.terminate(), hog.wait(30)))   # our own child, by handle
         for _ in range(8):
