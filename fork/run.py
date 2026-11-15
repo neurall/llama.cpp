@@ -7453,8 +7453,8 @@ def stock_latest(dry=False):
 
 def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
     """The huge-page pool for the next model. A model above the pool limit (pool_most_gib: RAM less max(20%, 24 GiB)) gets none and a mounted pool goes. Otherwise a pool
-    the model fits in is kept; a missing or smaller one is replaced by the biggest pool the limit allows (user 2026-11-15), so the list's next models fit it too and
-    run on one mount (the list puts those first: run_list orders our cells of pool models biggest first, then stock and the models above the limit)."""
+    the model fits in is kept; a missing or smaller one is replaced by one of this model's size. The list orders our cells of pool models biggest first, then stock and
+    the models above the limit, so the first mount serves every pool model (user 2026-11-15) and its pages take no more RAM from the engine's RAM pool than needed."""
     need = max(-(-model_bytes >> 30), 1)
     have = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
     why = ""
@@ -7478,9 +7478,10 @@ def run_list_pool(model_bytes, mnt="/mnt/huge1g"):
         with quiet(0): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
         # the old pool is gone: its RAM is back. Mounting more than the machine can spare is what froze PC1 (110g): check first, mount only what leaves headroom
         avail = mem_avail_kb() >> 20
-        want = min(most, avail - 8)   # the biggest pool (user 2026-11-15): the next models of the list fit it too, no remount (each one fragments RAM); 8 GiB stay free beyond MemAvailable
-        if need <= want:   # 110g froze PC1 and core-dumped other programs when RAM was 126 GiB (2026-10-19): the limit keeps the rest of the run its RAM
-            with quiet(0): cmd_hugepool(argparse.Namespace(action="mount", what=[f"{want}g"]))
+        # this model's size, no more: pool pages are lost to the engine's RAM pool and the page cache (user 2026-11-15: "pool steals ram from rampool"). The list runs the
+        # biggest pool model first, so later ones fit this pool: one mount, no remount fragmenting RAM. 8 GiB stay free beyond MemAvailable
+        if need + 8 <= avail:   # 110g froze PC1 and core-dumped other programs when RAM was 126 GiB (2026-10-19)
+            with quiet(0): cmd_hugepool(argparse.Namespace(action="mount", what=[f"{need}g"]))
     except SystemExit as e:
         why = "memory fragmented (a reboot clears it)" if "fragmented" in str(e) else str(e)[:70]   # the mount's own text is long: one short reason on the pool line
     got = int(open(HUGE_NR).read()) if os.path.exists(HUGE_NR) else 0
@@ -8058,7 +8059,7 @@ def run_list(name, argv):
         rows.sort(key=lambda r: (-size(r), r["model"]))   # the same model stays together: one pool, one load
     elif o.asc:
         rows.sort(key=lambda r: (size(r), r["model"]))
-    elif not o.no_pool and not o.dry:
+    elif not o.no_pool:
         # user 2026-11-15: "reorder gainers so first runs fit biggest pool then unmount for rest". Our cells of models that fit the biggest pool go first, biggest model
         # first (one mount of the biggest pool while RAM is still whole, no remount between models); then stock (it knows no pool) and the models above the pool's limit
         _, _, most = pool_most_gib()
