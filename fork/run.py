@@ -7475,11 +7475,11 @@ def stock_latest(dry=False):
 # under taskset on the first chiplet (one Zen 2 chiplet of the 3975WX reads 40-42 GB/s by itself, so no cap is needed for that), the rest of the RAM held as 2 MiB huge
 # pages nobody maps, no huge-page pool (joe has none), stock at the 8 threads it picks on such a box. --joe-bw caps lower through AMD MBA (resctrl, measured 96% of the
 # asked rate). Rows go under machine pc1joe, never paired with PC1's own. The limits go at the end of the list, at run.py stop, or at the start of the next list.
-JOE = {"ram": 128, "threads": 16, "bw": 0.0, "link": 6.0}   # link: CUDA0's PCIe rate in GB/s (the old box's CUDA0 sat on x4: pageable uploads 6.1 GB/s, stock's prompt uploads its CPU experts there)
+JOE = {"ram": 128, "threads": 16, "bw": 0.0, "link": 6.0, "os": 12}   # os: GiB the old desktop's OS and apps held (user 2026-11-15: "128-12g for os")   # link: CUDA0's PCIe rate in GB/s (the old box's CUDA0 sat on x4: pageable uploads 6.1 GB/s, stock's prompt uploads its CPU experts there)
 JOE_GEN_GBS = {1: 3.2, 2: 6.4, 3: 12.4, 4: 25.0}   # x16 pageable upload per PCIe generation (Gen 3 measured on the old x16 card, Gen 4 on PC1; Gen 1-2 by the line rate)
 JOE_HOG = "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
 JOE_RG = "/sys/fs/resctrl/simjoe"
-JOE_MARK = "/tmp/simjoe.active"   # written by the setup: the teardown touches only limits this harness set
+JOE_MARK = "/tmp/simjoe.active"; JOE_HOGFS = "/mnt/joehog"   # written by the setup: the teardown touches only limits this harness set
 
 
 def simjoe_cfg():
@@ -7541,9 +7541,9 @@ def simjoe_setup(c):
         while subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0: time.sleep(5)
         import contextlib, io
         with contextlib.redirect_stdout(io.StringIO()): cmd_hugepool(argparse.Namespace(action="unmount", what=[]))
-    tot_kb = int(next(l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal:")))
-    keep_kb = c["ram"] * 0.982 * 2**20   # MemTotal of a box is ~98.2% of its installed RAM (PC1: 251.4 GiB of 256)
-    pages = max(0, int((tot_kb - keep_kb) // 2048))
+    mi = lambda k: int(next(l.split()[1] for l in open("/proc/meminfo") if l.startswith(k + ":")))
+    keep_kb = (c["ram"] * 0.982 - c["os"]) * 2**20   # what joe's runs found: MemTotal (~98.2% of the installed RAM; PC1 251.4 GiB of 256) less what its OS and apps held
+    pages = max(0, int((mi("MemAvailable") - keep_kb) // 2048))
     open(JOE_MARK, "w").write(str(pages))
     keep = {int(x) for x in c["cpus"].split(",")}
     down = [n for n in cpu_list(open("/sys/devices/system/cpu/online").read()) if n not in keep]
@@ -7551,6 +7551,13 @@ def simjoe_setup(c):
     for n in down: _sudo_write(f"/sys/devices/system/cpu/cpu{n}/online", 0)
     _sudo_write(JOE_HOG, pages)
     got = int(open(JOE_HOG).read())
+    # the pages held by a file on a 2 MiB hugetlbfs: free huge pages are the engine's to take (its pinned buffers map MAP_HUGETLB first: relcand3 took 104 GiB of a free hog, 2026-11-15)
+    open(JOE_MARK, "a").write("\nhogfs")
+    subprocess.run(["sudo", "-n", "mkdir", "-p", JOE_HOGFS], capture_output=True)
+    subprocess.run(["sudo", "-n", "mount", "-t", "hugetlbfs", "-o", "pagesize=2M", "none", JOE_HOGFS], capture_output=True)
+    r = subprocess.run(["sudo", "-n", "fallocate", "-l", f"{got * 2}M", JOE_HOGFS + "/hold"], capture_output=True, text=True)
+    free = int(open(os.path.dirname(JOE_HOG) + "/free_hugepages").read())
+    if free: sys.exit(f"simjoe: {free} of the hog's {got} huge pages stay free, the engine would take them (fallocate: {r.stderr.strip()[:100]})")
     bw = ""
     if c["bw"] > 0:
         if not os.path.ismount("/sys/fs/resctrl"): subprocess.run(["sudo", "-n", "mount", "-t", "resctrl", "resctrl", "/sys/fs/resctrl"], capture_output=True)
@@ -7567,8 +7574,8 @@ def simjoe_setup(c):
         open(JOE_MARK, "a").write(f"\nlink {rp} {was}")
         now = joe_link_gen(rp, gen)
         link = f", CUDA0 ({dev}) link Gen {now} x16 (about {JOE_GEN_GBS.get(now, 0):.1f} GB/s, was Gen {was})" + ("" if now == gen else f" <-- wanted Gen {gen}")
-    left = (tot_kb - got * 2048) / 2**20
-    print(col(33, f"simjoe: CPUs {c['cpus']} ({c['cores']} cores, {c['threads']} threads), RAM {left:.1f} GiB (held {got * 2 / 1024:.1f} GiB as 2 MiB pages"
+    left = mi("MemAvailable") / 2**20
+    print(col(33, f"simjoe: CPUs {c['cpus']} ({c['cores']} cores, {c['threads']} threads), RAM available {left:.1f} GiB (held {got * 2 / 1024:.1f} GiB in a 2 MiB hugetlbfs file"
               + ("" if got == pages else f", wanted {pages * 2 / 1024:.1f}: the rest is in use") + f"), {len(down)} other CPUs offline, no huge-page pool, stock -t {c['cores']}{bw}{link}; rows as machine {os.environ.get('PERF_HW')}"), flush=True)
 
 
@@ -7580,6 +7587,8 @@ def simjoe_teardown(quiet=False):
         if ln.startswith("cpus ") and ln[5:].strip():
             for n in ln[5:].split(","): subprocess.run(["sudo", "-n", "tee", f"/sys/devices/system/cpu/cpu{n}/online"], input="1", capture_output=True, text=True)
             did.append(f"{len(ln[5:].split(','))} CPUs")
+        if ln == "hogfs":   # the file first: pages a file holds do not go back to the kernel
+            subprocess.run(["sudo", "-n", "rm", "-f", JOE_HOGFS + "/hold"], capture_output=True); subprocess.run(["sudo", "-n", "umount", JOE_HOGFS], capture_output=True)
     if os.path.exists(JOE_HOG) and int(open(JOE_HOG).read() or 0) > 0:
         subprocess.run(["sudo", "-n", "tee", JOE_HOG], input="0", capture_output=True, text=True); did.append("RAM")
     if os.path.isdir(JOE_RG):
@@ -8002,6 +8011,7 @@ def run_list(name, argv):
     ap.add_argument("--joe-ram", type=int, metavar="GIB", help="simjoe: installed RAM of the emulated box (default 128)")
     ap.add_argument("--joe-threads", type=int, metavar="N", help="simjoe: hardware threads of the emulated box (default 16 = 8 cores)")
     ap.add_argument("--joe-link", type=float, metavar="GBS", help="simjoe: CUDA0's PCIe upload rate (default 6: the old box's x4 card, as PCIe Gen 2 x16 on its root port; 0 = untouched)")
+    ap.add_argument("--joe-os", type=int, metavar="GIB", help="simjoe: GiB the emulated box's OS and apps held (default 12): the hog leaves joe's MemTotal less this available")
     ap.add_argument("--joe-bw", type=float, metavar="GBS", help="simjoe: cap the chiplet's memory reads to GBS (AMD MBA; default: none, the chiplet itself reads 40-42)")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
