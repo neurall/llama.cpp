@@ -2188,6 +2188,17 @@ HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and refer
 # a host whose hardware changed keeps its name: rows before the change are another machine (2026-11-12 PC1: Ryzen 7 3700X with 2-channel RAM and x16 + x4 became a
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
 HW_SINCE = {"pc1": "2026-11-12"}
+def stock_arm_sql():
+    """SQL on the args column that picks the stock rows of the arm in use: with -sm (upstream's expert cache) only the rows that ran with --moe-cache-mib, else only the plain ones: moe to moe, plain to plain"""
+    return " and coalesce(args,'') like '%moe-cache-mib%'" if os.environ.get("STOCK_MOE") else " and coalesce(args,'') not like '%moe-cache-mib%'"
+
+
+def stock_moe_args(spec):
+    """-sm MIB[,SHARE] -> the server arguments of upstream's expert cache"""
+    mib, _, share = spec.partition(",")
+    return f" --cpu-moe --moe-cache-mib {mib} --moe-cache-cpu-share {share or '0.5'}"
+
+
 def hw_filter(hw):
     if hw == "pc1" and os.environ.get("RUN_SIMJOE") and os.environ.get("JOE_REF") == "joe":   # --joe-ref joe: stock and reference rows of simjoe's own machine (pc1joe..., the same link cap), measured here with -sc
         return f" and hw='{os.environ['PERF_HW']}'"
@@ -7208,7 +7219,7 @@ def known_gain(model, test):
     ours = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
     if not ours: return 0
     v = c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), (mo, t, ours[0])).fetchall() or c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "", (mo, t, ours[0])).fetchall()
-    st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by ts desc limit 1", (mo, t)).fetchone()
+    st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + stock_arm_sql() + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by ts desc limit 1", (mo, t)).fetchone()
     if not v or not st or not st[0]: return 0
     ti = TEST_IN.get(test) or TEST_IN.get(t) or ""
     gs = [statistics.median(x[0] for x in v) / st[0]] + ([statistics.median(x[1] for x in v if x[1]) / st[1]] if st[1] and any(x[1] for x in v) else [])
@@ -8164,6 +8175,7 @@ def run_list(name, argv):
     ap.add_argument("-nrt", "--not-today", nargs="?", type=int, const=1, default=0, metavar="DAYS", help="skip cells (and so models) that already have their runs in runs.db from the last DAYS days (default 1 = today); a stock pulled within those days is not replaced by a newer release")
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
+    ap.add_argument("-sm", "--stock-moe", metavar="MIB[,SHARE]", help="stock cells (-s, -sc, and the stock cells -nrt adds) use upstream's expert cache: --cpu-moe --moe-cache-mib MIB --moe-cache-cpu-share SHARE (default 0.5); their rows are named <stock build>-moe-<cell> so they never mix with plain stock rows")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
     ap.add_argument("-ledger", "--ledger", action="store_true", help="the pool write ledger on in every cell (who wrote which bytes of a card's pool, when): a debug record, about 25%% slower decode; printed at the start, recorded in the row (PERF_LEDGER=1); off by default, never turned on by a build name")
@@ -8274,12 +8286,13 @@ def run_list(name, argv):
             except Exception: gk[(r["name"], r["test"])] = 0
         rows.sort(key=lambda r: -gk[(r["name"], r["test"])])
     sb = stock_latest(o.dry) if o.stock_first and not o.stock else None
+    if o.stock_moe: os.environ["STOCK_MOE"] = o.stock_moe   # the cell processes read it (run_one)
     if o.not_today and not o.stock and not sb and not o.no_stock_gap and not name.endswith("onepass"): sb = stock_latest(o.dry)   # (not for the one-pass lists: they measure our best prompt size, stock cells there cost hours and compare nothing)   # -nrt also runs the stock cell of a row that has no stock run of its answer length yet (gap filling)
     def stock_missing(r):
         import sqlite3
         gen = int(r["tokens"]) if r.get("tokens") else None
         try:
-            q = "select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%' and hw='" + HW + "'" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1"
+            q = "select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + stock_arm_sql() + " and hw='" + HW + "'" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1"
             c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); a = (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"]))
             for tb in ("runs", "bad_runs"):   # failed runs are moved to bad_runs (run.py bad-runs)
                 try:
@@ -8426,8 +8439,8 @@ def run_list(name, argv):
                         except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
                 else: run_list_pool(size(r))
             if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)   # after the pool line: which model the next cells run
-            tag = f"{r['_b']}-{r['name']}"
-            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], (" " + r["args"]) if r.get("args") else ""] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else []) + (["--ledger"] if o.ledger else [])
+            tag = f"{r['_b']}-moe-{r['name']}" if o.stock_moe and str(r["_b"]).startswith("stock") else f"{r['_b']}-{r['name']}"
+            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], ((" " + r["args"]) if r.get("args") else "") + (stock_moe_args(o.stock_moe) if o.stock_moe and str(r["_b"]).startswith("stock") else "")] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else []) + (["--ledger"] if o.ledger else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
             if o.dry: print(f"[{name}] {tag}: {re.sub(r' pf(?=\d+k)', ' ', shlex.join(cmd[3:]))}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
