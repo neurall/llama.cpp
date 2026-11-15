@@ -7594,40 +7594,51 @@ static size_t alias_release(moe_cache * mc) {
 // --moe reheat=0 turns it off. With --moe fixed=1 (repeatable runs) the jobs are ordinary ones the step waits for and publishes in order.
 // the refill after a prompt runs at normal priority (user 2026-11-15): background jobs waited behind every miss-driven upload of the first decode tokens, half
 // their misses ran on the CPU (Qwen3.8 IQ4_XS 12k, 8 GiB a card: tokens 1-50 at 22-48 ms against 18 steady, 5.7% of a 512-token answer). --moe reheat-bg=1: background, as before
+// Two parts since 2026-11-15 (poolx_refill_parts): the missed experts among each layer's top k (experts per token) at normal priority, the rest in the
+// background. --moe reheat-bg=1: all in the background. --moe fixed=1: all at normal priority (the step publishes them in order)
 static bool reheat_bg() { static const bool v = [] { const char * e = moe_opt("reheat-bg"); return e && atoi(e) != 0; }(); return v; }
+static bool fixed_on() { static const bool v = [] { const char * e = moe_opt("fixed"); return e && atoi(e) != 0; }(); return v; }
 static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false) {   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window
     static const bool on = [] { const char * e = moe_opt("reheat"); return !e || atoi(e) != 0; }();
     if (!on) {
         return 0;
     }
-    struct cand { double sc; size_t li; int32_t e; };
+    struct cand { int8_t part; double sc; size_t li; int32_t e; };
     std::vector<upload_job> jobs;
-    double bytes = 0.0;
+    double bytes = 0.0, bytes1 = 0.0;
+    size_t n1 = 0;
+    const int32_t k = (int32_t) std::max<int64_t>(0, mc->n_expert_used);
     for (size_t pc = 0; pc < mc->pool.size(); ++pc) {
         const size_t n_free = mc->pool[pc].free.size();
         if (n_free == 0) {
             continue;
         }
         std::vector<cand> c;
+        std::vector<double> sc;
+        std::vector<bool>   held;
         for (size_t li = 0; li < mc->layers.size(); ++li) {
             const layer_state & ls = mc->layers[li];
             if (ls.pcls != (int32_t) pc) {
                 continue;
             }
-            for (int32_t e = 0; e < (int32_t) ls.expert_slot.size(); ++e) {
-                if (ls.expert_slot[e] >= 0 || ls.queued[e] || ls.adopt_slot[e] >= 0) {
-                    continue;
-                }
+            const int32_t ne = (int32_t) ls.expert_slot.size();
+            sc.assign((size_t) ne, 0.0);
+            held.assign((size_t) ne, false);
+            for (int32_t e = 0; e < ne; ++e) {
+                held[(size_t) e] = ls.expert_slot[e] >= 0 || ls.queued[e] || ls.adopt_slot[e] >= 0;
                 // (hot maps per topic: the score, whose lifetime term is the topic's map and the request's own uses, not the ini's map)
-                const double sc = ini_only && !g_topic_on.load(std::memory_order_relaxed) ? (double) ls.glob_count[e] / (double) std::max<uint64_t>(1, mc->gmax_all)
-                                                                                         : xscore(mc, ls, e);
-                if (sc > 0.0) {
-                    c.push_back({ sc, li, e });
+                sc[(size_t) e] = ini_only && !g_topic_on.load(std::memory_order_relaxed) ? (double) ls.glob_count[e] / (double) std::max<uint64_t>(1, mc->gmax_all)
+                                                                                        : xscore(mc, ls, e);
+            }
+            const std::vector<int8_t> part = poolx_refill_parts(sc, held, k);   // the cached ones count toward a layer's top k too
+            for (int32_t e = 0; e < ne; ++e) {
+                if (part[(size_t) e] > 0) {
+                    c.push_back({ part[(size_t) e], sc[(size_t) e], li, e });
                 }
             }
         }
         const size_t n = std::min(n_free, c.size());
-        std::partial_sort(c.begin(), c.begin() + (ptrdiff_t) n, c.end(), [](const cand & a, const cand & b) { return a.sc > b.sc; });
+        std::partial_sort(c.begin(), c.begin() + (ptrdiff_t) n, c.end(), [](const cand & a, const cand & b) { return a.part != b.part ? a.part < b.part : a.sc > b.sc; });
         for (size_t i = 0; i < n; ++i) {
             layer_state & ls = mc->layers[c[i].li];
             double best;
@@ -7639,10 +7650,12 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
             ls.slot_in_flight[slot] = true;
             ls.queued[c[i].e]       = 1;
             upload_job j { c[i].li, c[i].e, slot };
-            j.bg       = !wait;
+            j.bg       = !(fixed_on() || (wait && c[i].part == 1));   // part 1 at normal priority (wait), the rest behind decode's own misses
             j.t_queued = ggml_time_us();
             jobs.push_back(j);
-            bytes += (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
+            const double xb = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
+            bytes += xb;
+            if (!j.bg) { n1++; bytes1 += xb; }
         }
     }
     if (jobs.empty()) {
@@ -7658,8 +7671,8 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
     mc->wcv.notify_all();
     static int logged = 0;
     if (logged++ < 16) {
-        LLAMA_LOG_WARN("moe-cache: after the prompt: %zu experts (%.2f GB) queued to refill the blocks it borrowed, best score first%s\n", jobs.size(), bytes / 1e9,
-                wait ? "" : " (background uploads)");
+        LLAMA_LOG_WARN("moe-cache: after the prompt: %zu experts (%.2f GB) queued to refill the blocks it borrowed, best score first: %zu (%.2f GB) at normal priority "
+                "(each layer's top %d by decode score the cache misses), the rest in the background\n", jobs.size(), bytes / 1e9, n1, bytes1 / 1e9, (int) k);
     }
     return jobs.size();
 }
@@ -15584,6 +15597,18 @@ extern "C" { GGML_API void ggml_backend_set_link_rate_fork(ggml_backend_dev_t de
 void llama_moe_cache_prompt_call_fork(bool on) {
     if (!on && g_cache) { cs_end(g_cache); }
     if (!on && g_cache && g_cs_pick_held.exchange(false)) { cs_rest_set(g_cache); }   // the ring back to its smallest: the KV and the decode graphs get the pool
+    static const bool refill_end = [] { const char * e = moe_opt("refill-end"); return !e || atoi(e) != 0; }();   // --moe refill-end=0: off (the step's refill only)
+    if (!on && refill_end && g_cache && g_prompt_call.load(std::memory_order_relaxed)) {
+        // a prompt call ended: its free blocks are refilled now, whatever freed them. The step's refill ran only when blocks lent to a graph came back
+        // (alias_release); MiMo V2.6 12k gives its blocks back through the classes' homes (cls_home) and the ring, so decode started with 1742 of 4748
+        // blocks holding an expert and filled them one miss at a time: tokens 1-256 at 68.8 ms against 25.7 steady (2026-11-15)
+        std::lock_guard<std::mutex> lk(g_cache->mtx);
+        if (reheat_free_blocks(g_cache, fixed_on() || !reheat_bg()) > 0 && g_cache->fill_from < 0) {
+            pool_fill_log(g_cache, "after a prompt call (its blocks back home)");
+            g_cache->fill_from = (int64_t) g_cache->n_steps;
+            g_cache->fill_t0   = ggml_time_us();
+        }
+    }
     if (!on) { g_pp_cstream_call = false; }
     if (!on && g_prompt_call.load(std::memory_order_relaxed) && g_cache && g_cache->rp_on) { rp_dec_mark(); }   // a prompt call ended: the decode part of the request starts
     g_prompt_call.store(on, std::memory_order_relaxed);

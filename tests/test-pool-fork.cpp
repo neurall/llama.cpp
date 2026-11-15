@@ -826,6 +826,18 @@ static void test_regress_ring_costly() {
     // every other computed block, before any layer to come's (that one goes up twice, this one only waits for its compute)
     report("the layer still computing after every other computed block and claim", poolx_ring_rank(8) > poolx_ring_rank(2) && poolx_ring_rank(8) > poolx_ring_rank(3) && poolx_ring_rank(8) > poolx_ring_rank(5));
     report("the layer still computing before any layer to come", poolx_ring_rank(8) < poolx_ring_rank(4) && poolx_ring_rank(8) < poolx_ring_rank(6));
+    {   // two-part refill after a prompt (2026-11-15): part 1 = the missed experts among a layer's top k by decode score, part 2 = every other missed one with a score
+        const std::vector<double> sc = { 5, 4, 3, 2, 1, 0 };
+        const std::vector<bool>   ca = { true, false, false, false, false, false };
+        const std::vector<int8_t> pt = poolx_refill_parts(sc, ca, 2);
+        report("refill parts: a missed expert in the layer's top k goes first", pt[1] == 1);
+        report("refill parts: a cached top expert is not refilled, it still counts toward k", pt[0] == 0 && pt[2] == 2);
+        report("refill parts: the rest with a score in the background, none without one", pt[3] == 2 && pt[4] == 2 && pt[5] == 0);
+        const std::vector<double> tie = { 1, 1, 1 };
+        const std::vector<bool>   none = { false, false, false };
+        const std::vector<int8_t> pt2 = poolx_refill_parts(tie, none, 1);
+        report("refill parts: equal scores keep the expert order (exactly k first)", pt2[0] == 1 && pt2[1] == 2 && pt2[2] == 2);
+    }
     {   // ring keep-hot (Qwen3.8 IQ4_XS 12k 2026-11-15: the stream took decode-hot experts, staging=0 refilled 24-26 GB against staged's 14-15)
         const std::vector<uint64_t> cnt = { 0, 0, 10, 1, 1 };
         const double cut = poolx_hot_cut(cnt);

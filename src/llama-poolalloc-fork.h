@@ -97,6 +97,23 @@ static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return 
 // after the prompt against staged's 14-15 GB, decode 45.8 against 49.95 t/s)
 static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6 || tier == 9 || tier == 10; }
 static inline int  poolx_ring_rank(int tier) { static const int r[11] = { 0, 1, 2, 4, 8, 3, 9, 10, 5, 6, 7 }; return tier >= 0 && tier < 11 ? r[tier] : 11; }
+// The refill after a prompt in two parts (user 2026-11-15): part 1 = the experts the next tokens most likely use, the ones the cache misses among a layer's
+// top k by decode score (k: the model's experts per token), at normal priority, so the step after waits for them; part 2 = every other missed expert with a
+// score, in the background behind decode's own misses. All at normal priority made a 121-token answer wait 0.9 s for 24 GB (Qwen3.8 IQ4_XS 11k: 34.0
+// against 45.8 t/s). score: the layer's experts' decode scores; cached: held, queued or adopting already. part[e]: 0 none, 1 first, 2 rest.
+template <class S, class C> static std::vector<int8_t> poolx_refill_parts(const S & score, const C & cached, int32_t k) {
+    const size_t n = score.size();
+    std::vector<int32_t> ord(n);
+    for (size_t i = 0; i < n; ++i) { ord[i] = (int32_t) i; }
+    std::stable_sort(ord.begin(), ord.end(), [&](int32_t a, int32_t b) { return score[(size_t) a] > score[(size_t) b]; });
+    std::vector<int8_t> part(n, 0);
+    for (size_t r = 0; r < n; ++r) {
+        const size_t e = (size_t) ord[r];
+        if (cached[e] || !(score[e] > 0)) { continue; }
+        part[e] = (int64_t) r < (int64_t) k ? 1 : 2;
+    }
+    return part;
+}
 // decode-hot: decode visits at or above the layer's mean over all its experts
 template <class V> static double poolx_hot_cut(const V & cnt) { double s = 0; for (const auto v : cnt) { s += (double) v; } return cnt.empty() ? 0.0 : s / (double) cnt.size(); }
 static inline bool poolx_is_hot(double visits, double cut) { return visits > 0 && visits >= cut; }
