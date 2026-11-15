@@ -2054,12 +2054,14 @@ def cell_diag(env, a):
 
 def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
-        args = list(args) + ["--moe", f"log={LOG_LETTERS},logdir={DATA}" + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
-                             + f",stats=/tmp/perf-{build}{LOGTAG}.stats.log"   # every event and status sample of the run, one a line, with timestamps: tail -f it during a run; the cell keeps it as TAG.stats.log
+        # user 2026-11-15: "to have stats and logging cli switches must enable it", "but not gainers which is benchmark and max perf run": the research logs, stats.log (planner events,
+        # TOK lines every 10 tokens, NVML samples every 100 ms) and the split pass stamps only on a dev run (-dbg); a plain run measures what users get
+        args = list(args) + ["--moe", f"logdir={DATA}" + ("" if NOSTATS[0] else f",log={LOG_LETTERS}") + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
+                             + ("" if NOSTATS[0] else f",stats=/tmp/perf-{build}{LOGTAG}.stats.log")   # -dbg: every event and status sample of the run, one a line, with timestamps: tail -f it during a run; the cell keeps it as TAG.stats.log
                              + f",hotmaps={HOTMAPS}"   # the hot maps per topic of every model (--moe dynhot) in the repo's fork/hotmaps, published with runs.db (branch runs-db); a cell's own hotmaps= comes after and wins
                              + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): `run LIST --ledger` turns it on, see cmd_cell
                              + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
-                             + ("" if NOSTATS[0] else ",pass-stats=1")]   # the split pass report per card (extra stream stamps, off in the engine by default): -ns leaves it off
+                             + ("" if NOSTATS[0] else ",pass-stats=1")]   # -dbg: the split pass report per card (extra stream stamps, off in the engine by default)
     elif not build.startswith("stock") and STATE_FILE["v"]:
         env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
     env, args = drop_moe_flag(build, env, args)
@@ -2566,9 +2568,10 @@ def server_run(build, env, args, path, body, render=None):
         pdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench", "perf"); os.makedirs(pdir, exist_ok=True)
         pbase = os.path.join(pdir, time.strftime("%Y%m%d-%H%M%S") + "-" + build)
         perf = (subprocess.Popen(["perf", "record", "-F", "499", "-o", pbase + ".data", "-p", str(p.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL), pbase)
-    _sys = subprocess.Popen(["bash", "-c", SYS_SH], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True); _sys_t0 = time.time()
+    # -dbg only: CPU MHz from /proc/cpuinfo every second interrupts every core while the decode threads spin, and nvidia-smi opens both cards each time
+    _sys = None if NOSTATS[0] else subprocess.Popen(["bash", "-c", SYS_SH], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True); _sys_t0 = time.time()
     bwstop = pcie_sampler() if GPULOG else (lambda: None)   # the engine's own byte and time counters are the bandwidth record; the nvidia-smi view only with --gpulog
-    stats_stop = stats_sampler(f"/tmp/perf-{build}{LOGTAG}.stats.log", build.startswith("stock"))
+    stats_stop = (lambda: None) if NOSTATS[0] else stats_sampler(f"/tmp/perf-{build}{LOGTAG}.stats.log", build.startswith("stock"))
     try:
         def clamp_text(txt, n_cl):   # --clamp N: cut to N tokens (the server counts them, so it is right for every tokenizer)
             full = txt
@@ -2671,7 +2674,7 @@ def server_run(build, env, args, path, body, render=None):
         except Exception:
             pass
         try:
-            _sys.terminate(); PROCSTAT.update(sys_summary(_sys.stdout.read(), _sys_t0 - 1))
+            if _sys: _sys.terminate(); PROCSTAT.update(sys_summary(_sys.stdout.read(), _sys_t0 - 1))
         except Exception:
             pass
         try:
@@ -6576,7 +6579,7 @@ def gen_expect(model, test):
 
 PHASE = {}   # per cell: t0 and when the first decoded token was seen (cell_status colours and times the phases)
 LAST_ST = [""]
-NOSTATS = [os.environ.get("RUN_NS") == "1"]   # -ns: nothing that samples the machine or polls the server while a cell runs (no status probes, no nvidia-smi / sys / slots samplers on a remote box): the timings are the engine's alone
+NOSTATS = [os.environ.get("RUN_DBG") != "1"]   # user 2026-11-15: stats and logging only with -dbg (dev runs); a plain run, every benchmark (gainers, gate), samples and logs nothing.   # -ns: nothing that samples the machine or polls the server while a cell runs (no status probes, no nvidia-smi / sys / slots samplers on a remote box): the timings are the engine's alone
 TRACE, TRACE_LAST, TRACE_T0, TRACE_H, TRACE_P = [], {}, [None], [], []   # one cell's tuning timeline: (seconds into the cell, knob, old, new), from the status ticks
 LIVE_PASS = [0, 0]   # (passes finished, passes of the call) of the running prompt call, from /moe/stats live; [0, 0] = one pass or an older engine
 LIVE_DONE = [0]   # tokens of the running prompt call the engine has finished (its own /moe/stats live block): the server counts only after a whole decode call
@@ -7853,7 +7856,8 @@ def run_list(name, argv):
     ap.add_argument("-b", "--build", default="latest"); ap.add_argument("-onl", "-o", "--only", help="rows whose name contains TEXT; comma list: glm-,mimo-"); ap.add_argument("-t", "--test", help="rows whose test is TEXT (comma list): best1k = only the best-prompt input rows, edit4c, tetrisc"); ap.add_argument("-n", "--dry", action="store_true")
     ap.add_argument("-skp", "--skip", help="skip rows whose name contains TEXT; comma list: glm-,mimo-")
     ap.add_argument("-ng", "--gpus", dest="n_gpus", type=int, metavar="N", help="use only N cards: the best N (fastest slot, then fastest card), the fastest one last; 0 = CPU only. Remote machines (-pc) and this host")
-    ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="no live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
+    ap.add_argument("-dbg", "--dbg", dest="dbg", action="store_true", help="a dev run: stats and logging on (the engine's research logs and stats.log with planner events, TOK lines every 10 tokens and NVML samples every 100 ms, split pass stamps; run.py's machine samplers, live status probes and server polls). Off by default (user 2026-11-15): a plain run and every benchmark (gainers, gate) measure what users get")
+    ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
     ap.add_argument("-day", "--day", action="store_true", help="the day power limits (x4 card 220 W, x16 card 280 W) for the whole run, also at night (the schedule drops to 200/200 W from 23:50): same as -pl 220/280")
     ap.add_argument("--status", action="store_true", help="print the table of the cells run today (the -nrt table: t/s, pp, stock, gains) and the cells still to run; nothing is run, started or touched (the web view calls this)")
@@ -7882,7 +7886,7 @@ def run_list(name, argv):
     ap.add_argument("-pc", "--machine", default="pc1", help="run the cells on another machine over ssh (`run.py machine`): the builds must be there (`run.py remote ID push BUILD...`), the model is found there by file name, the server and the request run on that machine (`run.py remote`), run.py stays here; -nrt does not apply")
     ap.add_argument("-ssh", "--ssh", metavar="LINE", help="the ssh line of a rented box for this session, in quotes (\" -p 47086 root@93.91.156.104 -L 8080:localhost:8080\"): the machine named by -pc (cld when -pc is not given) is set to it first (~/.ssh/config and machines.csv), see `run.py machine add`")
     o = ap.parse_args([x for x in argv if x != "desc"])   # `run gainers desc` works too
-    NOSTATS[0] = o.no_stats; NGPU[0] = o.n_gpus
+    NOSTATS[0] = not o.dbg; NGPU[0] = o.n_gpus
     for opt, key in ((o.hog_gpu, "sim-vram"), (o.hog_ram, "sim-ram")):   # GiB -> the server's MiB
         if opt:
             v = str(opt).lower().rstrip("ib").rstrip("b")   # 16g, 16gb, 16gib, 16384m, 16
@@ -7892,7 +7896,7 @@ def run_list(name, argv):
     if o.status: o.not_today = o.not_today or 1; o.nodl = True
     if o.day and not o.power: o.power = "220/280"
     if o.no_pool is not None: os.environ["RUN_KEEP_POOL"] = "1"   # -nm: the cells never unmount the pool either (pool_sanity); a model bigger than the pool loads without it, the pool stays for the next ones
-    if o.no_stats: os.environ["RUN_NS"] = "1"
+    if o.dbg: os.environ["RUN_DBG"] = "1"   # the cells and servers of the list see it
     if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
     if o.n_gpus is not None and o.machine == "pc1":   # this host: the children (cells, servers) see the chosen cards only, numbered in the listed order
         _vis = pick_gpus(o.n_gpus, subprocess.run(GPU_Q_NG, shell=True, capture_output=True, text=True).stdout) if o.n_gpus > 0 else ""
@@ -8541,12 +8545,14 @@ def cmd_cell(a):
     with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
         f.write(f"== {re.sub(r'^pf(?=\d+k)', '', a.test)} {args}\n" + "".join(l + "\n" for l in lines))
     if a.builds.count(",") == 0:
-        try: shutil.copy(f"/tmp/perf-{a.builds}.stats.log", os.path.join(Q5, a.tag + ".stats.log"))
-        except OSError: pass
-        try:   # the same file into stats.db (table stats, its events in table ppev), with the build's commit and the cell's command line
+        kept = False
+        try: shutil.copy(f"/tmp/perf-{a.builds}.stats.log", os.path.join(Q5, a.tag + ".stats.log")); kept = True
+        except OSError: pass   # a plain run writes none (stats only with -dbg)
+        if kept:
+          try:   # the same file into stats.db (table stats, its events in table ppev), with the build's commit and the cell's command line
             import runlog
             runlog.insert_stats(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t_cell0)), local_hw(), a.builds, a.test, a.tag, args, open(os.path.join(Q5, a.tag + ".stats.log"), errors="replace").read(), model=a.model)
-        except Exception as e: print("stats.db:", e, file=sys.stderr)
+          except Exception as e: print("stats.db:", e, file=sys.stderr)
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
         try:   # the start before the last one (the cold run of a clean-state cell), when it belongs to this cell
