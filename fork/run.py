@@ -1459,6 +1459,12 @@ def _power_targets_raw(widths, spec=None, maxes=None):
     return [narrow if w < max(widths) else wide for w in widths]
 
 
+def joe_widths(widths):
+    """simjoe with the link cap: CUDA0 is the old box's x4 card, so the schedule gives it that card's power (220 W by day, as every old row); else the widths as read"""
+    j = simjoe_cfg() if os.environ.get("RUN_SIMJOE") else None
+    return [min(widths[0], 4)] + list(widths[1:]) if j and j["link"] > 0 and widths else list(widths)
+
+
 X4_MAX_W = 220   # the x4 card throttles and faults above this (user 2026-10-23): no spec, schedule or `-pl max` may set a narrower-link card higher
 
 
@@ -1473,7 +1479,7 @@ def apply_power_schedule():
     try:
         q = [l.split(",") for l in subprocess.run([NVSMI, "--query-gpu=power.limit,pcie.link.width.current,power.max_limit", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout.splitlines() if l.count(",") == 2]
         cur = [int(float(a)) for a, _, _ in q]
-        want = power_targets([int(b) for _, b, _ in q], maxes=[int(float(c)) for _, _, c in q])
+        want = power_targets(joe_widths([int(b) for _, b, _ in q]), maxes=[int(float(c)) for _, _, c in q])
     except Exception:
         return
     for i, w in enumerate(want):
@@ -2117,7 +2123,13 @@ HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and refer
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
 HW_SINCE = {"pc1": "2026-11-12"}
 def hw_filter(hw):
+    if hw == "pc1" and os.environ.get("RUN_SIMJOE"):   # simjoe rows against the old desktop's (PC1 before its change) at the same power (user 2026-11-15: "why dont we see best old runs on same prompt and pl")
+        # shortcut: the power of the list's start; a list crossing 23:50 compares its night cells with day rows, split such a list in two
+        return f" and hw='pc1' and ts < '{HW_SINCE['pc1']}' and pl='{'+'.join(map(str, power_targets(joe_widths([16, 16]))))}'"
     return f" and hw='{hw}'" + (f" and ts >= '{HW_SINCE[hw]}'" if hw in HW_SINCE else "")
+def row_hw():
+    """the machine the cell's rows are stored under: simjoe's own (pc1joe...), else the list's"""
+    return os.environ["PERF_HW"] if os.environ.get("RUN_SIMJOE") and os.environ.get("PERF_HW") else (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1]
 REMOTE_SLOTS = [None]   # file the progress of a cell on another machine is mirrored to (slots_progress reads it instead of the local /slots)
 SLOT_EXACT = [None]   # (prompt total, prompt done, decoded, decode total) from /slots, None when the server does not report them
 
@@ -7375,10 +7387,10 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     if peek: passes_save(peek[0], peek[1], cmd[5]); prompt_passes_save(peek[0], peek[1], cmd[5])
     CELL_REC.append(dict(asked=CELL_ASKED[0], ref=ours_reference(peek[0], peek[1]) if peek and str(cmd[5]).startswith("stock") and res else None, sbno=own_build_no(cmd[5]), xfer="" if str(cmd[5]).startswith("stock") else xfer_of(own_build_no(cmd[5]), " ".join(map(str, cmd))), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, cmd[5], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, cmd[5], "llama-server")) else "", rid=run_id(f"{cmd[3]}-{peek[1]}") if peek else None, build=str(cmd[5]), prompt=CELL_PROMPT[0], model=peek[0] if peek else None, test=peek[1] if peek else None, name=label, el=el, lt=lt, rc=rc or (0 if res else 1), res=res, st=STOCK_REC[0], stock_row=str(cmd[5]).startswith("stock")))
     try:
-        if peek: store_gains(CELL_REC[-1], str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0)
+        if peek: store_gains(CELL_REC[-1], str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), row_hw(), t0)
     except Exception as e: print(f"gains not stored: {e}", flush=True)   # a display problem or a locked db never ends the list
     try:
-        if peek and not rc: store_cell_time(str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1], t0, el, *CELL_PG)
+        if peek and not rc: store_cell_time(str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), row_hw(), t0, el, *CELL_PG)
     except Exception as e: print(f"time not stored: {e}", flush=True)
     CELL_LINES.append(col(1, f"{label[:NAMEW[0]]:<{NAMEW[0]}}") + f" {int(el // 60):>3}:{int(el % 60):02d} " + col(37, "cell") + (col(37, ",") + " " + col(33, lt) if lt else "") + "  " + (col(31, "FAILED ") if rc or not res else "") + "  ".join(speed_txt(t, p) for t, p in res) + gain )   # decode blue, prompt green, load yellow: the colors of the status bar
     try:   # the end-of-cell engine state, if the cell saved one: one more status build with it (the live ticks of a short cell miss the engine)
@@ -7482,6 +7494,14 @@ def simjoe_cfg():
     return c
 
 
+def cpu_list(s):
+    """'0-7,32-39' (the kernel's CPU list format) -> [0, ..., 7, 32, ..., 39]"""
+    out = []
+    for part in s.strip().split(","):
+        if part: a, _, b = part.partition("-"); out += range(int(a), int(b or a) + 1)
+    return out
+
+
 def simjoe_cpus(threads):
     """(taskset list, cores, L3 ids): L3 groups in CPU order until threads/2 cores, each core with its SMT siblings (PC1: 0-7,32-39 = the first chiplet)"""
     groups = {}
@@ -7525,6 +7545,10 @@ def simjoe_setup(c):
     keep_kb = c["ram"] * 0.982 * 2**20   # MemTotal of a box is ~98.2% of its installed RAM (PC1: 251.4 GiB of 256)
     pages = max(0, int((tot_kb - keep_kb) // 2048))
     open(JOE_MARK, "w").write(str(pages))
+    keep = {int(x) for x in c["cpus"].split(",")}
+    down = [n for n in cpu_list(open("/sys/devices/system/cpu/online").read()) if n not in keep]
+    open(JOE_MARK, "a").write("\ncpus " + ",".join(map(str, down)))   # before the writes: a stop in between still brings them back
+    for n in down: _sudo_write(f"/sys/devices/system/cpu/cpu{n}/online", 0)
     _sudo_write(JOE_HOG, pages)
     got = int(open(JOE_HOG).read())
     bw = ""
@@ -7545,13 +7569,17 @@ def simjoe_setup(c):
         link = f", CUDA0 ({dev}) link Gen {now} x16 (about {JOE_GEN_GBS.get(now, 0):.1f} GB/s, was Gen {was})" + ("" if now == gen else f" <-- wanted Gen {gen}")
     left = (tot_kb - got * 2048) / 2**20
     print(col(33, f"simjoe: CPUs {c['cpus']} ({c['cores']} cores, {c['threads']} threads), RAM {left:.1f} GiB (held {got * 2 / 1024:.1f} GiB as 2 MiB pages"
-              + ("" if got == pages else f", wanted {pages * 2 / 1024:.1f}: the rest is in use") + f"), no huge-page pool, stock -t {c['cores']}{bw}{link}; rows as machine {os.environ.get('PERF_HW')}"), flush=True)
+              + ("" if got == pages else f", wanted {pages * 2 / 1024:.1f}: the rest is in use") + f"), {len(down)} other CPUs offline, no huge-page pool, stock -t {c['cores']}{bw}{link}; rows as machine {os.environ.get('PERF_HW')}"), flush=True)
 
 
 def simjoe_teardown(quiet=False):
     """undo what simjoe_setup set (only with its mark: someone else's huge pages stay)"""
     if not os.path.exists(JOE_MARK): return
     did = []
+    for ln in open(JOE_MARK).read().split("\n"):   # the CPUs it took offline, first: the box whole again before anything else
+        if ln.startswith("cpus ") and ln[5:].strip():
+            for n in ln[5:].split(","): subprocess.run(["sudo", "-n", "tee", f"/sys/devices/system/cpu/cpu{n}/online"], input="1", capture_output=True, text=True)
+            did.append(f"{len(ln[5:].split(','))} CPUs")
     if os.path.exists(JOE_HOG) and int(open(JOE_HOG).read() or 0) > 0:
         subprocess.run(["sudo", "-n", "tee", JOE_HOG], input="0", capture_output=True, text=True); did.append("RAM")
     if os.path.isdir(JOE_RG):
