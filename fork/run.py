@@ -2132,7 +2132,7 @@ def hw_filter(hw):
         return f" and hw='{os.environ['PERF_HW']}'"
     if hw == "pc1" and os.environ.get("RUN_SIMJOE"):   # simjoe rows against the old desktop's (PC1 before its change) at the same power (user 2026-11-15: "why dont we see best old runs on same prompt and pl")
         # shortcut: the power of the list's start; a list crossing 23:50 compares its night cells with day rows, split such a list in two
-        return f" and hw='pc1' and ts < '{HW_SINCE['pc1']}' and pl='{'+'.join(map(str, power_targets(joe_widths([16, 16]))))}'"
+        return f" and hw='pc1' and ts < '{HW_SINCE['pc1']}' and pl='{'+'.join(map(str, sorted(power_targets(joe_widths([16, 16])))))}'"
     return f" and hw='{hw}'" + (f" and ts >= '{HW_SINCE[hw]}'" if hw in HW_SINCE else "")
 def row_hw():
     """the machine the cell's rows are stored under: simjoe's own (pc1joe...), else the list's"""
