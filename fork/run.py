@@ -8161,6 +8161,7 @@ def run_list(name, argv):
     ap.add_argument("--joe-ref", choices=["old", "joe"], default="old", help="simjoe: the stock and reference rows the gains divide by: old = the old desktop's real rows (PC1 before 2026-11-12, same power; default), joe = simjoe's own rows of this machine name (measure the stock arm with -sc)")
     ap.add_argument("--joe-card", type=int, default=0, metavar="N", help="simjoe: the card that is the old box's x4 card (link cap and 220 W): CUDA0 (default) or CUDA1; the other is the x16 card at 280 W")
     ap.add_argument("--joe-bw", type=float, metavar="GBS", help="simjoe: cap the chiplet's memory reads to GBS (AMD MBA; default: none, the chiplet itself reads 40-42)")
+    ap.add_argument("--no-stock-gap", dest="no_stock_gap", action="store_true", help="-nrt: no stock cell for a row that has none yet (the one-pass lists never get them)")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
     ap.add_argument("-day", "--day", action="store_true", help="the day power limits (x4 card 220 W, x16 card 280 W) for the whole run, also at night (the schedule drops to 200/200 W from 23:50): same as -pl 220/280")
@@ -8278,7 +8279,7 @@ def run_list(name, argv):
             except Exception: gk[(r["name"], r["test"])] = 0
         rows.sort(key=lambda r: -gk[(r["name"], r["test"])])
     sb = stock_latest(o.dry) if o.stock_first and not o.stock else None
-    if o.not_today and not o.stock and not sb: sb = stock_latest(o.dry)   # -nrt also runs the stock cell of a row that has no stock run of its answer length yet (gap filling)
+    if o.not_today and not o.stock and not sb and not o.no_stock_gap and not name.endswith("onepass"): sb = stock_latest(o.dry)   # (not for the one-pass lists: they measure our best prompt size, stock cells there cost hours and compare nothing)   # -nrt also runs the stock cell of a row that has no stock run of its answer length yet (gap filling)
     def stock_missing(r):
         import sqlite3
         gen = int(r["tokens"]) if r.get("tokens") else None
