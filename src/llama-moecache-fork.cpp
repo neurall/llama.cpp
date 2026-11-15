@@ -17261,7 +17261,7 @@ void llama_moe_cache_split_feed_fork(int64_t dt_us) {
         ab.abort();
     } else if (ab.feed((double) dt_us, g_split_differs.exchange(false, std::memory_order_relaxed))) {
         const bool adopted = ab.base != ab.last_base, confirm = ab.pending;
-        LLAMA_LOG_INFO("moe-cache: split A/B: CPU weighed x%.3g %.1f ms/token vs x%.3g %.1f ms/token, %d of %d pairs won, %d tokens split some layer differently -> %s x%.3g\n",
+        LLAMA_LOG_WARN("moe-cache: split A/B: CPU weighed x%.3g %.1f ms/token vs x%.3g %.1f ms/token, %d of %d pairs won, %d tokens split some layer differently -> %s x%.3g\n",
                 ab.last_base, ab.last_b / 1e3, ab.last_cand, ab.last_c / 1e3, ab.last_wins, ab.last_pairs,
                 ab.last_diff, adopted ? "adopted" : confirm ? "confirming" : "keep", ab.base);
         if (ab.st == 0) {
