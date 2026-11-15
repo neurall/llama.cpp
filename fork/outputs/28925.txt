@@ -1,0 +1,50 @@
+run 28925 | cross_fix | pf128k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 50.42 t/s | prompt 2562.7 t/s | 512 tokens | args: -np 1 | power 280+280 W | 2026-11-15 10:53:51
+
+alesce(p, wrapped_content, tools_parser) + p.end();
+    }
+    return ctx.reasoning_parser + tools_parser + p.end();
+}
+
+common_peg_parser analyze_tools::build_tool_parser_tag_json(parser_build_context & ctx) const {
+    auto &       p      = ctx.p;
+    const auto & inputs = ctx.inputs;
+
+    // Build effective field names with dot notation if function_field is set
+    std::string name_field = format.name_field;
+    std::string args_field = format.args_field;
+
+    if (!format.function_field.empty() && format.function_field != "function" &&
+        name_field.find('.') == std::string::npos) {
+        name_field = format.function_field + "." + name_field;
+        args_field = format.function_field + "." + args_field;
+    }
+
+    // Build tool call parser
+    auto tool_call_parser = p.standard_json_tools(
+        format.per_call_start, format.per_call_end, inputs.tools, inputs.parallel_tool_calls,
+        inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED, name_field, args_field, format.tools_array_wrapped,
+        format.fun_name_is_key, format.id_field, format.gen_id_field, format.parameter_order, format.openai_wrapper_trigger);
+
+    // Build section parser
+    auto tools_parser = p.trigger_rule("tool-calls", p.one_or_more(tool_call_parser + p.space()));
+
+    // Handle content wrappers if present
+    if (ctx.content && ctx.content->is_always_wrapped()) {
+        auto wrapped_content = ctx.content->build_optional_wrapped(ctx);
+        return wrapped_coalesce(p, wrapped_content, tools_parser) + p.end();
+    }
+    return ctx.reasoning_parser + tools_parser + p.end();
+}
+
+common_peg_parser analyze_tools::build_tool_parser_tag_tagged(parser_build_context & ctx) const {
+    auto &       p      = ctx.p;
+    const auto & inputs = ctx.inputs;
+
+    // Build tool call parser
+    auto tool_call_parser = p.tagged_tool_call(
+        format.per_call_start, format.per_call_end, inputs.tools, inputs.parallel_tool_calls,
+        inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED, format.name_field, format.args_field,
+        format.id_field, format.gen_id_field, format.parameter_order);
+
+    // Build section parser
+    auto tools_parser = p.trigger_rule("tool-c

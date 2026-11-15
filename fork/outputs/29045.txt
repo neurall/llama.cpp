@@ -1,0 +1,68 @@
+run 29045 | refill_at_prompt_end | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 40.72 t/s | prompt 2062.0 t/s | 512 tokens | args: -np 1 --moe sim-vram=8192,refill-end=0 -lm pin | power 280+280 W | 2026-11-15 17:09:47
+
+    return params.speculative.types.get() == COMMON_SPEC_TYPE_MASK_DEFAULT;
+}
+
+static bool is_model_url(const std::string & value) {
+    return value.compare(0, 5, "hf://") == 0 || value.compare(0, 8, "hf-bench://") == 0 || value.compare(0, 5, "ms://") == 0;
+}
+
+static bool is_model_url(const common_params_model & model) {
+    return is_model_url(model.url);
+}
+
+static bool is_model_url(const common_params_model * model) {
+    return model && is_model_url(*model);
+}
+
+static bool is_model_url(const std::optional<common_params_model> & model) {
+    return model.has_value() && is_model_url(*model);
+}
+
+static bool is_model_url(const std::shared_ptr<common_params_model> & model) {
+    return model && is_model_url(*model);
+}
+
+static bool is_model_url(const std::vector<std::shared_ptr<common_params_model>> & models) {
+    for (const auto & model : models) {
+        if (is_model_url(model)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool is_model_url(const std::vector<std::shared_ptr<common_adapter_lora_info>> & adapters) {
+    for (const auto & adapter : adapters) {
+        if (is_model_url(adapter->path)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool is_model_url(const std::vector<std::string> & values) {
+    for (const auto & value : values) {
+        if (is_model_url(value)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool is_model_url(const std::vector<common_sampler_name> & values) {
+    for (const auto & value : values) {
+        if (is_model_url(value.str)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool is_model_url(const std::vector<common_sampler_type> & values) {
+    for (const auto & value : values) {
+        if (is_model_url(value.str)) {
+            return true;
+        }
+    }
+    return false;

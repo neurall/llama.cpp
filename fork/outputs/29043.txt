@@ -1,0 +1,51 @@
+run 29043 | refill_at_prompt_end | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 42.72 t/s | prompt 2063.8 t/s | 512 tokens | args: -np 1 --moe sim-vram=8192 -lm pin | power 280+280 W | 2026-11-15 17:08:07
+
+    return params.speculative.types.get() == (LLAMA_SPEC_TYPE_DRAFT | LLAMA_SPEC_TYPE_NGRAM);
+}
+
+static bool is_default_model(const common_params_model & model) {
+    return model.path.empty() && model.url.empty() && model.hf_repo.empty();
+}
+
+static bool is_default_mmproj(const common_params_model & mmproj) {
+    return is_default_model(mmproj) && mmproj.auto_download == MMFILE_AUTO;
+}
+
+static bool is_default_mtp(const common_params_model & mtp) {
+    return is_default_model(mtp) && mtp.auto_download == MMFILE_NONE;
+}
+
+static bool is_default_preset(const std::string & preset) {
+    return preset.empty();
+}
+
+static bool is_default_model_config(const common_params_model_config & config) {
+    return config.vocab_bpe.empty() && config.tokensets.empty() && config.add_bos_token == -1;
+}
+
+static bool is_default_model_path(const common_params & params) {
+    return is_default_model(params.model) && is_default_mmproj(params.mmproj) && is_default_mtp(params.mtp) && is_default_preset(params.model_config.preset) && params.model_config.lora.empty();
+}
+
+static bool is_default_model_url(const common_params & params) {
+    return params.model.url.empty() && params.mmproj.url.empty() && params.mtp.url.empty() && is_default_preset(params.model_config.preset) && params.model_config.lora.empty();
+}
+
+static bool is_default_hf_repo(const common_params & params) {
+    return params.model.hf_repo.empty() && params.mmproj.hf_repo.empty() && params.mtp.hf_repo.empty() && is_default_preset(params.model_config.preset) && params.model_config.lora.empty();
+}
+
+static bool is_default_model_path_or_url(const common_params & params) {
+    return is_default_model_path(params) && is_default_model_url(params);
+}
+
+static bool is_default_model_path_or_hf_repo(const common_params & params) {
+    return is_default_model_path(params) && is_default_hf_repo(params);
+}
+
+static bool is_default_model_url_or_hf_repo(const common_params & params) {
+    return is_default_model_url(params) && is_default_hf_repo(params);
+}
+
+static bool is_default_model_all(const common_params & params) {
+    return is_default_model

@@ -1,0 +1,46 @@
+run 28945 | refill_fg | pf1k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 41.25 t/s | prompt 275.5 t/s | 1024 tokens | args: -np 1 --moe staging=1 | power 280+280 W | 2026-11-15 11:21:11
+
+<think>Let me carefully review this C++ source file for code quality, correctness, potential bugs, style issues, and other concerns.
+
+Let me go through the code systematically.
+
+**File: common/json-schema-to-grammar.cpp**
+
+**Includes and using declaration:**
+- `using json = common_json;` - This is fine, aliasing for convenience.
+
+**Function: `build_repetition`**
+
+1. The function signature takes `int min_items, int max_items` - using `int` for counts could be limiting. Should these be `size_t` or at least `unsigned`? Negative values would be problematic.
+
+2. `max_items == 0` returns `""` - but what if `min_items > 0` and `max_items == 0`? That's an invalid constraint (min > max). The function silently returns empty string instead of handling this error case.
+
+3. `min_items == 0 && max_items == 1` returns `item_rule + "?"` - correct.
+
+4. For the separator case:
+   - `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` - When `min_items == 0`, the first item is optional, and then we need `min_items - 1` more items after separators. But wait, if `min_items == 0`, we set the inner repetition to 0, which means 0 additional items after the first. That's correct for min=0.
+   - When `min_items == 1`, inner repetition min is 0, meaning just the first item. Correct.
+   - When `min_items == 2`, inner repetition min is 1, meaning first item + at least 1 more. Correct.
+   - `has_max ? max_items - 1 : max_items` - when `has_max` is false, `max_items` is `INT_MAX`, so passing `INT_MAX` is correct (no max). When `has_max` is true, `max_items - 1` is correct.
+   - But what if `max_items == 1` and `min_items == 0` with a separator? Then inner max would be 0, and `build_repetition` would return `""`. Then `result = item_rule + " " + ""` = `item_rule + " "`. Then wrapped in `(...)?`. So it becomes `(item_rule + " ")?`. The trailing space is a bit odd but grammatically it should work.
+
+5. When `min_items == 0` with separator, the result is wrapped in `(...)?`. But the first `item_rule` is always included in the result before the optional part. So if `min_items == 0`, we get `(item_rule + " " + ...)?`. This means the entire thing including the first item is optional. Correct.
+
+6. **Potential issue**: When `min_items == 0` and `max_items == 1` with a separator, the early return `item_rule + "?"` happens before the separator logic. So the separator is ignored. Is this correct? If max is 1, there can only be one item, so no separator needed. This seems correct.
+
+7. **Potential issue**: When `max_items == 0`, returns `""`. But if `min_items > 0`, this is an invalid schema. Should probably assert or handle this.
+
+**Function: `build_min_max_int`**
+
+1. `int64_t min_value, int64_t max_value` - using `int64_t` for integer bounds. The sentinel values `INT64_MIN` and `INT64_MAX` are used to indicate "no bound". This is a common pattern but could be error-prone if actual values equal the sentinel.
+
+2. `decimals_left = 16` - hardcoded limit of 16 digits. This limits the range of integers that can be handled. For `int64_t`, the max is 19 digits (9223372036854775807). So 16 digits is insufficient for full `int64_t` range. This could be a bug or intentional limitation.
+
+3. `top_level = true` - parameter is declared but I don't see it used in the visible portion of the code. It might be used later in the function (the code is truncated).
+
+4. The `digit_range` lambda - fine.
+
+5. The `more_digits` lambda:
+   - When `min_digits == max_digits && min_digits == 1`, outputs `[0-9]` without repetition. Correct.
+   - Otherwise outputs `[0-9]{min,max}` or `[0-9]{min,}`. Correct.
+   - But what if `min_digits ==

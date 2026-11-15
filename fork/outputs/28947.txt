@@ -1,0 +1,64 @@
+run 28947 | refill_fg | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.12 t/s | prompt 1773.3 t/s | 1024 tokens | args: -np 1 --moe staging=1 | power 280+280 W | 2026-11-15 11:23:21
+
+<think>The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - For separator case: when `min_items == 0`, it wraps the result in `(...)?` - correct
+  - The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for the separator pattern
+
+### build_min_max_int function
+- Complex function with many branches. Let me check:
+  - `decimals_left` parameter is used but seems to be about digit count, not decimals - naming is misleading
+  - The `top_level` parameter controls whether leading zeros are allowed
+  - The `uniform_range` lambda is complex but seems to handle digit ranges
+  - Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is empty or invalid, but since `min_s` is from `std::to_string(min_value)` and `min_value > 9`, `min_s` has at least 2 characters, so `min_s.substr(1)` is non-empty
+
+### _add_rule function
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop condition `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct.
+
+### _visit_pattern function
+- Takes a snapshot of `_rules` before attempting to parse, and reverts on failure. This is a good pattern for rollback.
+- However, `_rules` is a `std::map` and the snapshot copies the entire map, which could be expensive for large schemas.
+
+### _pattern_to_rule function
+- The `transform` lambda is a recursive function that parses regex patterns.
+- `paren_depth` is tracked but the check `if (paren_depth > MAX_PATTERN_DEPTH)` happens after incrementing - this is correct.
+- The character class parsing: `while (i < length && sub_pattern[i] != ']')` - this doesn't handle `]` as the first character in a class (which is allowed in regex as `[]abc]`). This could be a bug.
+- The curly bracket parsing: `while (i < length && sub_pattern[i] != '}')` - similar issue with `}` in some regex flavors.
+- The literal parsing section: the condition for consuming characters is complex and could have edge cases.
+
+### _not_strings function
+- Uses a trie to build a rule that matches strings not in a given set.
+- The `rejects` string accumulates characters for the negated character class. If a character is a regex metacharacter (like `]`, `-`, `^`), it could break the character class. This is a potential bug.
+
+### _resolve_ref function
+- Handles `$ref` resolution with cycle detection using `_refs_being_resolved`.
+- The `ref_fragment` extraction: `schema.ref.find('#')` - if there's no `#`, `ref_fragment` is the entire ref. This seems correct.
+
+### _build_object_rule function
+- Complex function that builds object rules with required and optional properties.
+- The `get_recursive_refs` lambda generates alternatives for optional properties.
+- Potential issue: the rule generation for optional properties creates many alternatives, which could lead to exponential growth in grammar size.
+
+### _add_primitive function
+- Recursively adds primitive rules and their dependencies.
+- The dependency lookup: first checks `PRIMITIVE_RULES`, then `STRING_FORMAT_RULES`. If not found in either, pushes an error. This seems correct.
+
+### visit function
+- The main dispatch function. Let me check each case:
+  - `KIND_REF`: resolves the ref and adds a rule
+  - `KIND_ANY_OF`: generates a union rule
+  - `KIND_ALL_OF`: visits all-of schema
+  - `KIND_CONST`: generates a constant rule
+  - `KIND_ENUM`: generates an enum rule
+  - `KIND_OBJECT`: builds object rule
+  - `KIND_TUPLE`: builds tuple rule
+  - `KIND_ARRAY`: builds array rule
+  - `KIND_STRING

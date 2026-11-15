@@ -1,0 +1,9 @@
+run 28918 | kv_stage_past_zone | pf4k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.13 t/s | prompt 1072.3 t/s | 64 tokens | args: -np 1 --moe state=/p/bw/data/state_sane.ini,staging=0 | power 280+280 W | 2026-11-15 10:26:38
+
+<think>Let me carefully review this source file for code quality, correctness, potential bugs, style issues, and other concerns.
+
+Let me go through it systematically.
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check edge cases:
+   - When `max_items ==

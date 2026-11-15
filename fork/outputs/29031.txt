@@ -1,0 +1,46 @@
+run 29031 | refill_at_prompt_end | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 36.0 t/s | prompt 1390.5 t/s | 1024 tokens | args: -np 1 --moe refill-end=0 | power 280+280 W | 2026-11-15 16:56:47
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1, "")`
+  - For `min_items=0, max_items=5`: inner is `item{0,4}` which is `item*` or `item{0,4}`. Then wrapped as `(item (sep item)*)?`. This seems correct.
+  - For `min_items=1, max_items=5`: inner is `item{0,4}`. Result is `item (sep item){0,4}`. Correct.
+  - For `min_items=0, max_items=INT_MAX`: inner is `item*`. Result is `(item (sep item)*)?`. Correct.
+  - For `min_items=1, max_items=INT_MAX`: inner is `item*`. Result is `item (sep item)*`. Correct.
+
+Wait, there's a subtle issue. When `min_items == 0` and `has_max` is true, `max_items - 1` could be -1 if `max_items == 0`, but we already return "" for `max_items == 0`. So that's fine.
+
+Actually wait - when `min_items == 0` and `max_items == 1`, we return `item_rule + "?"` before reaching the separator logic. So the separator case with `min_items=0, max_items=1` returns `item?` which is correct (just one item, no separator needed).
+
+### build_min_max_int function
+- This is complex. Let me look for potential issues:
+  - `decimals_left` parameter is used to limit digit depth. The default is 16.
+  - `top_level` parameter controls whether leading zeros are allowed.
+  - The `uniform_range` lambda is recursive via `std::function`, which has overhead but is necessary for recursion.
+  - When `min_value < 0 && max_value < 0`, it negates both and recurses. But what about `min_value == INT64_MIN`? `-min_value` would overflow. Let me check: if `min_value = INT64_MIN` and `max_value = -1`, then `-min_value` overflows. This is a potential bug.
+  
+  Actually, looking more carefully: `min_value < 0 && max_value < 0` case does `build_min_max_int(-max_value, -min_value, ...)`. If `min_value = INT64_MIN`, then `-min_value` overflows (undefined behavior for signed integers). This is a bug.
+
+  Similarly, in the `min_value < 0` case (mixed sign), it does `build_min_max_int(0, -min_value, ...)`. If `min_value = INT64_MIN`, `-min_value` overflows.
+
+  And in the `has_min` case with `min_value < 0`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Same issue.
+
+  And in the `has_max` case with `max_value < 0`: `build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), ...)`. If `max_value = INT64_MIN`, `-max_value` overflows.
+
+  These are all potential integer overflow bugs.
+
+- The `uniform_range` lambda captures `out` by reference and uses `string_repeat`. It's complex but seems logically correct for generating regex ranges.
+
+- The `more_digits` lambda: when `min_digits == max_digits && min_digits == 1`, it outputs `[0-9]` without repetition. Otherwise it adds `{min,max}`. But if `min_digits == 0`, it outputs `[0-9]{0,...}` which is fine.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- These are `static` non-const `unordered_map`s. They should probably be `const` to prevent accidental modification. Also, they're initialized at namespace scope which means they're initialized before `main()` - this is fine but could be a concern if there are initialization order issues.
+
+### is_reserved_name
+- Uses a static local with a lambda initializer. This is thread-safe in C++11+ (magic

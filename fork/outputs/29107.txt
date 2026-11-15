@@ -1,0 +1,50 @@
+run 29107 | thread_search_bracket | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 39.79 t/s | prompt 2056.6 t/s | 512 tokens | args: -np 1 --moe sim-vram=8192 -lm pin | power 280+280 W | 2026-11-15 18:32:45
+
+    return params.speculative.types.get() == (1u << COMMON_SPEC_TYPE_NONE);
+}
+
+static bool is_download_enabled(const common_params & params) {
+    return !params.model.hf_repo.empty() || !params.model.url.empty() || !params.model.mtp.hf_repo.empty() || !params.model.mtp.url.empty();
+}
+
+static bool is_spec_type_enabled(const common_params & params, enum common_spec_type type) {
+    return params.speculative.types.is_enabled(type);
+}
+
+static bool is_dft_spec_type_enabled(const common_params & params, enum common_spec_type type) {
+    return spec_types_is_default(params) && is_spec_type_enabled(params, type);
+}
+
+static bool is_spec_mtp_enabled(const common_params & params) {
+    return is_spec_type_enabled(params, COMMON_SPEC_TYPE_MTP);
+}
+
+static bool is_dft_spec_mtp_enabled(const common_params & params) {
+    return is_dft_spec_type_enabled(params, COMMON_SPEC_TYPE_MTP);
+}
+
+static bool is_spec_draft_enabled(const common_params & params) {
+    return is_spec_type_enabled(params, COMMON_SPEC_TYPE_DRAFT);
+}
+
+static bool is_dft_spec_draft_enabled(const common_params & params) {
+    return is_dft_spec_type_enabled(params, COMMON_SPEC_TYPE_DRAFT);
+}
+
+static bool is_spec_ngram_enabled(const common_params & params) {
+    return is_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM)
+        || is_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM_MAP_K32)
+        || is_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM_MAP_K56)
+        || is_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM_MAP_K56P);
+}
+
+static bool is_dft_spec_ngram_enabled(const common_params & params) {
+    return is_dft_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM)
+        || is_dft_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM_MAP_K32)
+        || is_dft_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM_MAP_K56)
+        || is_dft_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM_MAP_K56P);
+}
+
+static bool is_spec_ngram_map_enabled(const common_params & params) {
+    return is_spec_type_enabled(params, COMMON_SPEC_TYPE_NGRAM_MAP_K32)
+        || is

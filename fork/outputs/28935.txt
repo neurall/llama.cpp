@@ -1,0 +1,42 @@
+run 28935 | refill_fg | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.36 t/s | prompt 1514.5 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-15 11:08:10
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1, "")` 
+  - For `min_items=0, max_items=5`: inner is `item{0,4}` which is `item?` or `item{0,4}`... wait, `build_repetition` with `min_items=0, max_items=4` and empty separator returns `item{0,4}`. Then result = `item (sep item){0,4}`. Then wrapped as `(item (sep item){0,4})?`. That seems correct.
+  - For `min_items=1, max_items=5`: inner is `item{0,4}`. Result = `item (sep item){0,4}`. Not wrapped. Correct.
+  - For `min_items=0, max_items=INT_MAX`: inner is `build_repetition(..., 0, INT_MAX-1, "")`. `has_max` for `INT_MAX-1` is true (since `INT_MAX-1 != INT_MAX`). So it returns `item{0,INT_MAX-1}`. Hmm, that's a huge number. Actually wait, `max_items` is `INT_MAX`, so `has_max` is false. Then `max_items - 1` = `INT_MAX - 1`. In the recursive call, `has_max` = `INT_MAX-1 != INT_MAX` = true. So it would produce `{0,2147483646}` which is wrong - it should be unbounded.
+  
+  Actually wait, let me re-read. The outer call has `max_items = INT_MAX`. `has_max = false`. Then `build_repetition(..., min_items-1, max_items-1, "")` where `max_items-1 = INT_MAX-1`. In the recursive call, `has_max = (INT_MAX-1 != INT_MAX) = true`. So it produces `{0,2147483646}` instead of `{0,}` (unbounded). This is a bug!
+
+  Actually, let me look more carefully. When `separator_rule` is empty and `min_items=0, max_items=INT_MAX-1`:
+  - `has_max = true` (since `INT_MAX-1 != INT_MAX`)
+  - `min_items == 0 && max_items == 1`? No.
+  - `separator_rule.empty()`? Yes.
+  - `min_items == 1 && !has_max`? No.
+  - `min_items == 0 && !has_max`? No (has_max is true).
+  - Falls through to: `item{0,2147483646}` - this is a bug when the original max was unbounded.
+
+  So when `max_items == INT_MAX` (unbounded) and separator is non-empty, the recursive call gets `max_items = INT_MAX - 1` which is treated as bounded. This is a bug.
+
+  Wait, but actually for arrays with separator, if max is unbounded, we'd want `item (sep item)*`. Let me check: `build_repetition(item, 0, INT_MAX, sep)`:
+  - `has_max = false`
+  - `min_items == 0 && max_items == 1`? No.
+  - separator not empty.
+  - `build_repetition("(" + sep + " " + item + ")", 0, INT_MAX-1, "")` 
+  - In recursive call: `has_max = true` (INT_MAX-1 != INT_MAX)
+  - `min_items == 0 && max_items == 1`? No.
+  - separator empty.
+  - `min_items == 0 && !has_max`? No.
+  - Falls to `item{0,2147483646}` - BUG!
+
+  So yes, this is a real bug. When max_items is unbounded (INT_MAX) and there's a separator, the inner repetition incorrectly treats it as bounded.
+
+### build_min_max_int function
+- The `decimals_left` parameter is confusingly named - it's

@@ -1,0 +1,54 @@
+run 29034 | refill_at_prompt_end | pf1k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 43.94 t/s | prompt 344.8 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-15 17:00:35
+
+<think>Let me carefully review this C++ source file for code quality, correctness, potential bugs, style issues, and other concerns.
+
+Let me go through the code systematically.
+
+**File: common/json-schema-to-grammar.cpp**
+
+**Includes and using:**
+- Includes look reasonable for the functionality.
+- `using json = common_json;` - aliasing is fine.
+
+**`build_repetition` function:**
+
+1. The function signature takes `int min_items, int max_items` - using `int` for counts could be limiting. Should probably use `size_t` or at least `unsigned` for non-negative counts, or `int64_t`.
+
+2. `max_items == 0` returns `""` - but what if `min_items > 0` and `max_items == 0`? That's an invalid input (min > max). The function silently returns empty string instead of handling this edge case or asserting.
+
+3. `min_items == 0 && max_items == 1` returns `item_rule + "?"` - correct.
+
+4. For the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` - this is a clever approach for building `item (sep item)*` patterns. But there's a subtle issue: when `min_items == 0`, the recursive call gets `min_items = 0`, and then the result is wrapped in `(...)?`. When `min_items >= 1`, the first item is emitted, and then `min_items - 1` more are required. This seems correct.
+
+5. When `has_max` is false and `max_items` is `std::numeric_limits<int>::max()`, the recursive call passes `max_items` unchanged (since `has_max ? max_items - 1 : max_items`), which is correct.
+
+6. The `min_items == 0 && !has_max` case with separator: the recursive call gets `min_items=0, max_items=INT_MAX`, and the result is wrapped in `(...)?`. But wait - if `min_items == 0` and `has_max` is false, the recursive call is `build_repetition(..., 0, INT_MAX)`. In the recursive call, `min_items == 0 && !has_max` would return `item_rule + "*"`. So the result would be `item_rule + " (" + separator_rule + " " + item_rule + ")*"` wrapped in `(...)?`. That gives `(item (sep item)*)?` which is correct for 0 or more items.
+
+Actually wait, let me re-read. When `min_items == 0` and separator is present:
+- `result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, INT_MAX)` 
+- The recursive call with `min_items=0, max_items=INT_MAX, separator=""` returns `"(sep item)*"` 
+- So `result = "item (sep item)*"`
+- Then since `min_items == 0`, `result = "(item (sep item)*)?"`
+- This is correct: 0 or more items separated by separator.
+
+When `min_items == 1` and separator is present:
+- `result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, INT_MAX)` 
+- Same as above: `result = "item (sep item)*"`
+- `min_items != 0`, so no wrapping
+- This is correct: 1 or more items.
+
+When `min_items == 2` and separator is present:
+- `result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 1, INT_MAX)`
+- Recursive call with `min_items=1, max_items=INT_MAX, separator=""` returns `"(sep item)+"`
+- So `result = "item (sep item)+"`
+- This is correct: 2 or more items.
+
+Looks correct.
+
+**`build_min_max_int` function:**
+
+1. The function is quite complex and handles integer ranges. Let me trace through the logic.
+
+2. `decimals_left = 16` - this limits recursion depth. But what happens when `decimals_left` reaches 0? The code doesn't seem to handle this case explicitly - it would just continue recursing. This could be a stack overflow risk if the input numbers are very long (more than 16 digits). Actually, looking at the code, `decimals_left` is decremented somewhere (I need to see more of the code to confirm), but if it's not handled, this is a potential issue.
+
+3. The `uniform_range` lambda captures `out

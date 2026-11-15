@@ -1,0 +1,65 @@
+run 28948 | refill_fg | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.04 t/s | prompt 1469.2 t/s | 1024 tokens | args: -np 1 --moe staging=1 | power 280+280 W | 2026-11-15 11:24:03
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` cases - correct
+  - When separator is non-empty, builds `item (sep item)*` pattern - looks correct
+  - The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for the separator pattern
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda is recursive (via `std::function`) - potential for deep recursion but bounded by digit length
+- The `decimals_left` parameter is used to limit digit depth - default 16
+- The `top_level` parameter controls whether leading zeros are allowed
+- Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is empty (when min_value is a single digit like 10... wait, this is in the `min_value > 9` branch, so min_s has at least 2 characters)
+- Actually wait, `min_value <= 9` is handled separately, so `min_value > 9` means `min_s.length() >= 2`, so `min_s.substr(1)` is non-empty. OK.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization order issue: `is_reserved_name` uses `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` in a static local, which is fine since they're initialized before first use (they're file-scope statics initialized before `main`).
+
+### _add_rule
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. The while loop finds the first available slot. Looks correct.
+
+### _visit_pattern / _pattern_to_rule
+- The pattern parser is complex. Let me check for issues:
+  - `paren_depth` tracking looks correct
+  - Character class parsing handles escapes
+  - The `join_seq` function merges consecutive literals
+  - The literal accumulation logic in the `else` branch is complex - the condition for continuing to accumulate literals seems tricky
+  - The `sub_rule_ids` map is used for `{n,m}` repetitions - potential issue: the key is the sub-rule content, and the value is the rule ID. If two different positions have the same sub-rule content, they'd share the same rule ID, which is actually correct (deduplication).
+
+### _not_strings
+- Generates a rule that matches strings that are none of the provided strings
+- Uses a trie for efficiency
+- The `rejects` string accumulates characters for the negated character class - potential issue: if characters include regex special characters like `]`, `-`, `^`, they could break the character class. The function doesn't escape these characters.
+- Wait, looking more carefully: `rejects` is used in `[^"rejects]` - if any character in `rejects` is `]`, `-`, `^`, or `\`, this would break the character class. This is a potential bug.
+
+### _resolve_ref
+- Handles `$ref` resolution with cycle detection via `_refs_being_resolved`
+- Looks correct
+
+### _build_object_rule
+- Complex function for building object rules
+- The `get_recursive_refs` function builds optional property combinations
+- The `additional_properties` handling adds a wildcard key rule
+- Potential issue: the `prop_kv_rule_names` map uses `prop_name` as key, but `additional_properties` uses `"*"` as key. If a property is literally named `"*"`, there could be a collision.
+
+### _add_primitive
+- Recursively adds primitive rules and their dependencies
+- Looks correct
+
+### visit function
+- The main dispatch function
+- `is_reserved_name(name)` check: if name is reserved, appends `-`. This could lead to issues if `name + "-"` is also reserved.
+- The `KIND_STRING` case: handles pattern, format, length constraints
+- The `KIND_INTEGER` case: handles min/max constraints
+- The `KIND_ARRAY` case: handles min/max items
+- The `KIND_TUPLE` case

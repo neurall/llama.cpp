@@ -1,0 +1,68 @@
+run 28938 | refill_fg | pf1k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 42.91 t/s | prompt 352.9 t/s | 1024 tokens | args: -np 1 --moe reheat-bg=1 | power 280+280 W | 2026-11-15 11:11:18
+
+<think>Let me carefully review this C++ source file for code quality, correctness, potential bugs, style issues, and other concerns.
+
+Let me go through the code systematically.
+
+**File: common/json-schema-to-grammar.cpp**
+
+**Includes and using:**
+- Includes look reasonable for the functionality.
+- `using json = common_json;` - aliasing is fine.
+
+**Function: `build_repetition`**
+
+1. The function signature takes `int min_items, int max_items` - using `int` for counts could be limiting. Should probably use `size_t` or at least `unsigned int` for non-negative counts.
+
+2. `max_items == 0` returns `""` - but what if `min_items > 0`? If `min_items > 0` and `max_items == 0`, that's an invalid input (you can't have at least N items but at most 0). This should probably be an error or handled differently. Currently it silently returns empty string.
+
+3. `min_items == 0 && max_items == 1` returns `item_rule + "?"` - correct.
+
+4. For the separator case:
+   - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` - This builds the first item followed by repetitions of (separator + item). The logic seems correct for building comma-separated lists.
+   - When `min_items == 0`, wraps in optional: `"(" + result + ")?"` - correct.
+
+5. The `has_max` variable is computed but only used in certain branches. In the non-separator case with `min_items == 1 && !has_max`, it returns `item_rule + "+"`. But what about `min_items > 1 && !has_max`? It falls through to the `{min,}` case which is correct.
+
+6. **Potential issue**: When `min_items == 0 && max_items == 0`, the early return of `""` happens before the `min_items == 0 && max_items == 1` check. That's fine since `max_items == 0` is checked first.
+
+7. **Bug**: If `min_items > max_items` (e.g., `min_items=3, max_items=1`), the function doesn't validate this. It would produce `{3,1}` which is invalid regex.
+
+**Function: `build_min_max_int`**
+
+1. `int64_t min_value, int64_t max_value` - using `int64_t` for integer bounds is appropriate.
+
+2. `decimals_left = 16` - this is a recursion depth limit. The parameter name `decimals_left` is misleading for integers - it should be something like `depth_left` or `recursion_left`.
+
+3. `top_level = true` - used for tracking whether we're at the top level. Need to see how it's used later (code is cut off).
+
+4. The `digit_range` lambda - fine.
+
+5. The `more_digits` lambda - fine, handles the `{min,max}` quantifier.
+
+6. The `uniform_range` lambda - this is the core logic for generating a regex that matches numbers in a range. Let me analyze:
+   - It finds common prefix between `from` and `to`.
+   - Outputs the common prefix as a quoted string.
+   - Then handles the differing part.
+   - The logic for splitting into cases based on the first differing digit seems correct.
+
+7. **Potential issue**: The `uniform_range` lambda captures `out` by reference (via `[&]`), which is fine since `out` is a parameter.
+
+8. **Potential issue**: `std::function` is used for `uniform_range` because it's recursive. This is correct but has overhead. Could use a struct with a call operator instead.
+
+9. **Potential issue**: The `to_reached` variable is declared inside the `if (i < from.length() && i < to.length())` block but used in the `if (!to_reached)` check below. Need to verify scoping - actually looking at the code, `to_reached` is declared before the `if (!to_reached)` check, so it should be in scope. But wait, looking more carefully at the indentation, `to_reached` is declared inside the `if (from_sub == sub_zeros)` / `else` block... no, it's declared before the `if (from_sub == sub_zeros)` check. Let me re-read:
+
+```cpp
+auto to_reached = false;
+out << "(";
+if (from_sub == sub_zeros) {
+    ...
+} else {
+    ...
+}
+if (!to_reached) {
+    ...
+}
+```
+
+Wait, `to_reached` is set to `

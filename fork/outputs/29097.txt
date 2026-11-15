@@ -1,0 +1,54 @@
+run 29097 | thread_search_bracket | pf1k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 40.45 t/s | prompt 249.0 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-15 18:23:51
+
+<think>Let me carefully review this C++ source file for code quality, correctness, potential bugs, and style issues.
+
+Let me go through the code systematically.
+
+**File: common/json-schema-to-grammar.cpp**
+
+**Includes and using declaration:**
+- Standard includes look appropriate for the functionality.
+- `using json = common_json;` - aliasing for convenience.
+
+**Function: `build_repetition`**
+
+1. **Parameter `max_items` default handling**: The function uses `std::numeric_limits<int>::max()` as a sentinel for "no maximum". This is a common pattern but could be error-prone if someone passes a very large but not max value.
+
+2. **Logic issues in `build_repetition`:**
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - For the separator case: The recursive call passes `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items`. When `min_items == 0`, it passes 0 for min, which means the separator repetition can have 0 occurrences. But wait - if `min_items == 0`, the first item is optional (handled by wrapping in `()?`), and then the separator+item repetition should also be optional (0 or more). That seems correct.
+   - When `min_items == 1` and separator exists: passes `min_items - 1 = 0` for the recursive call, meaning 0 or more separator+item pairs. That's correct for 1 or more total items.
+   - When `min_items == 0` and separator exists: passes 0 for min, and the result is wrapped in `()?`. So it becomes `(item (sep item)*)?` which is correct for 0 or more items.
+
+3. **Potential issue**: When `min_items == 0 && max_items == 1` with a separator rule, the early return `item_rule + "?"` ignores the separator. But if max is 1, there can only be one item, so no separator is needed. That's correct.
+
+4. **Edge case**: What if `min_items > max_items`? No validation for this. Could produce invalid grammar.
+
+5. **Edge case**: What if `min_items < 0`? No validation.
+
+**Function: `build_min_max_int`**
+
+1. **Sentinel values**: Uses `std::numeric_limits<int64_t>::min()` and `std::numeric_limits<int64_t>::max()` as sentinels for "no min/max". This means you can't actually specify min = INT64_MIN or max = INT64_MAX. This is a design limitation.
+
+2. **`digit_range` lambda**: Correctly handles single character vs range.
+
+3. **`more_digits` lambda**: 
+   - When `min_digits == max_digits == 1`, outputs just `[0-9]` without repetition - correct.
+   - Otherwise outputs `[0-9]{min,max}` or `[0-9]{min,}` - correct.
+
+4. **`uniform_range` lambda**: This is the complex part.
+   - It finds common prefix between `from` and `to`.
+   - Outputs the common prefix as a quoted string.
+   - Then handles the differing part.
+   - The logic for splitting into cases based on the first differing digit seems correct but is complex.
+   - **Potential issue**: The `to_reached` flag is used to avoid adding a redundant case when `to_sub == sub_nines`. This seems correct.
+   - **Potential issue**: When `from[i] == to[i] - 1` (adjacent digits), the `if (from[i] < to[i] - 1)` condition is false, so the middle case is skipped. But then `to_reached` remains false, and the `if (!to_reached)` block adds the `to[i]` case. Let me trace through:
+     - If `from[i] == to[i] - 1` and `from_sub != sub_zeros`:
+       - First case: `[from[i]] (uniform_range(from_sub, sub_nines))`
+       - `from[i] < to[i] - 1` is false, so middle case skipped
+       - `to_reached` is false, so: `| [to[i]] (uniform_range(sub_zeros, to_sub))`
+     - This gives: `[from[i]] (from_sub to nines) | [to[i]] (zeros to to_sub)` - correct!
+   
+   - **Potential issue**: When `from[i] == to[i] - 1` and `from_sub == sub_zeros`:
+     - First case: `digit_range(from[i], to[i]-1)` = `

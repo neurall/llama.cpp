@@ -1,0 +1,43 @@
+run 29108 | thread_search_bracket | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 38.32 t/s | prompt 2252.4 t/s | 512 tokens | args: -np 1 --moe sim-vram=8192 -lm pin | power 280+280 W | 2026-11-15 18:33:38
+
+    return params.speculative.types.all == (
+        SPEC_TYPE_DRAFT_SIMPLE | SPEC_TYPE_DRAFT_MTP | SPEC_TYPE_NGRAM_SIM | SPEC_TYPE_NGRAM_MAP);
+}
+
+static bool is_model_url(const std::string & url) {
+    return url.compare(0, 7, "hf://") == 0 || url.compare(0, 8, "ms://") == 0;
+}
+
+static bool is_model_url(const common_params_model & model) {
+    return is_model_url(model.url);
+}
+
+static bool is_model_url(const common_params & params) {
+    return is_model_url(params.model) || (params.model.mmproj && is_model_url(params.model.mmproj->path));
+}
+
+static bool is_model_url(const common_params_speculative & spec) {
+    return is_model_url(spec.draft.model) || is_model_url(spec.mtp.model);
+}
+
+static bool is_model_url(const common_params & params, const common_params_speculative & spec) {
+    return is_model_url(params) || is_model_url(spec);
+}
+
+static bool is_model_url(const common_params & params, const common_params_speculative & spec, const common_params & draft_params) {
+    return is_model_url(params, spec) || is_model_url(draft_params);
+}
+
+static bool is_model_url(const common_params & params, const common_params_speculative & spec, const common_params & draft_params, const common_params & mtp_params) {
+    return is_model_url(params, spec, draft_params) || is_model_url(mtp_params);
+}
+
+static bool is_model_url(const common_params & params, const common_params_speculative & spec, const common_params & draft_params, const common_params & mtp_params, const common_params & draft_mtp_params) {
+    return is_model_url(params, spec, draft_params, mtp_params) || is_model_url(draft_mtp_params);
+}
+
+static bool is_model_url(const common_params & params, const common_params_speculative & spec, const common_params & draft_params, const common_params & mtp_params, const common_params & draft_mtp_params, const common_params & preset_params) {
+    return is_model_url(params, spec, draft_params, mtp_params, draft_mtp_params) || is_model_url(preset_params);
+}
+
+static bool is_model_url(const common_params & params, const common_params_speculative &
