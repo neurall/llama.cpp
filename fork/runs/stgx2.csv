@@ -1,13 +1,13 @@
 name,model,n,test,tokens,args,extra
-stgx2-q36-1k-stg,qwen36,2,pf1k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--hog-gpu 4.5
-stgx2-q36-1k-ns,qwen36,2,pf1k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--hog-gpu 4.5
-stgx2-q36-4k-stg,qwen36,2,pf4k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--hog-gpu 4.5
-stgx2-q36-4k-ns,qwen36,2,pf4k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--hog-gpu 4.5
-stgx2-q36-12k-stg,qwen36,2,pf12k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--hog-gpu 4.5
-stgx2-q36-12k-ns,qwen36,2,pf12k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--hog-gpu 4.5
-stgx2-q36-32k-stg,qwen36,2,pf32k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 37437 --hog-gpu 4.5
-stgx2-q36-32k-ns,qwen36,2,pf32k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 37437 --hog-gpu 4.5
-stgx2-q36-64k-stg,qwen36,2,pf64k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 72826 --hog-gpu 4.5
-stgx2-q36-64k-ns,qwen36,2,pf64k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 72826 --hog-gpu 4.5
-stgx2-q36-128k-stg,qwen36,2,pf128k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 143605 --hog-gpu 4.5
-stgx2-q36-128k-ns,qwen36,2,pf128k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 143605 --hog-gpu 4.5
+stgx2-q36-1k-stg,qwen36,2,pf1k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",--hog-gpu 4.5
+stgx2-q36-1k-ns,qwen36,2,pf1k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",--hog-gpu 4.5
+stgx2-q36-4k-stg,qwen36,2,pf4k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",--hog-gpu 4.5
+stgx2-q36-4k-ns,qwen36,2,pf4k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",--hog-gpu 4.5
+stgx2-q36-12k-stg,qwen36,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",--hog-gpu 4.5
+stgx2-q36-12k-ns,qwen36,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",--hog-gpu 4.5
+stgx2-q36-32k-stg,qwen36,2,pf32k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 37437 --hog-gpu 4.5
+stgx2-q36-32k-ns,qwen36,2,pf32k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 37437 --hog-gpu 4.5
+stgx2-q36-64k-stg,qwen36,2,pf64k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 72826 --hog-gpu 4.5
+stgx2-q36-64k-ns,qwen36,2,pf64k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 72826 --hog-gpu 4.5
+stgx2-q36-128k-stg,qwen36,2,pf128k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 143605 --hog-gpu 4.5
+stgx2-q36-128k-ns,qwen36,2,pf128k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 143605 --hog-gpu 4.5

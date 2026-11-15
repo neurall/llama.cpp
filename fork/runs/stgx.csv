@@ -1,23 +1,27 @@
 name,model,n,test,tokens,args,extra
-stgx-qni4-1k-stg,qn_iq4xs,2,pf1k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",
-stgx-qni4-1k-ns,qn_iq4xs,2,pf1k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",
-stgx-qni4-4k-stg,qn_iq4xs,2,pf4k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",
-stgx-qni4-4k-ns,qn_iq4xs,2,pf4k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",
-stgx-qni4-12k-stg,qn_iq4xs,2,pf12k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",
-stgx-qni4-12k-ns,qn_iq4xs,2,pf12k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",
-stgx-qni4-32k-stg,qn_iq4xs,2,pf32k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",--ctx 37437
-stgx-qni4-32k-ns,qn_iq4xs,2,pf32k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",--ctx 37437
-stgx-qni4-64k-stg,qn_iq4xs,2,pf64k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",--ctx 72826
-stgx-qni4-64k-ns,qn_iq4xs,2,pf64k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",--ctx 72826
-stgx-qni4-128k-stg,qn_iq4xs,2,pf128k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",--ctx 143605
-stgx-qni4-128k-ns,qn_iq4xs,2,pf128k1k,64,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",--ctx 143605
-stgx-mimo-1k-stg,mimo,2,pf1k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",
-stgx-mimo-1k-ns,mimo,2,pf1k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",
-stgx-mimo-4k-stg,mimo,2,pf4k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",
-stgx-mimo-4k-ns,mimo,2,pf4k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",
-stgx-mimo-12k-stg,mimo,2,pf12k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",
-stgx-mimo-12k-ns,mimo,2,pf12k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",
-stgx-mimo-32k-stg,mimo,2,pf32k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 37437
-stgx-mimo-32k-ns,mimo,2,pf32k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 37437
-stgx-mimo-64k-stg,mimo,2,pf64k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 72826
-stgx-mimo-64k-ns,mimo,2,pf64k1k,64,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 72826
+stgx-qni4-1k-stg,qn_iq4xs,2,pf1k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",
+stgx-qni4-1k-ns,qn_iq4xs,2,pf1k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",
+stgx-qni4-4k-stg,qn_iq4xs,2,pf4k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",
+stgx-qni4-4k-ns,qn_iq4xs,2,pf4k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",
+stgx-qni4-12k-stg,qn_iq4xs,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",
+stgx-qni4-12k-ns,qn_iq4xs,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",
+stgx-qni4-32k-stg,qn_iq4xs,2,pf32k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",--ctx 37437
+stgx-qni4-32k-ns,qn_iq4xs,2,pf32k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",--ctx 37437
+stgx-qni4-64k-stg,qn_iq4xs,2,pf64k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",--ctx 72826
+stgx-qni4-64k-ns,qn_iq4xs,2,pf64k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",--ctx 72826
+stgx-qni4-128k-stg,qn_iq4xs,2,pf128k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1",--ctx 143605
+stgx-qni4-128k-ns,qn_iq4xs,2,pf128k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0",--ctx 143605
+stgx-mimo-1k-stg,mimo,2,pf1k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",
+stgx-mimo-1k-ns,mimo,2,pf1k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",
+stgx-mimo-4k-stg,mimo,2,pf4k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",
+stgx-mimo-4k-ns,mimo,2,pf4k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",
+stgx-mimo-12k-stg,mimo,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",
+stgx-mimo-12k-ns,mimo,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",
+stgx-mimo-32k-stg,mimo,2,pf32k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 37437
+stgx-mimo-32k-ns,mimo,2,pf32k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 37437
+stgx-mimo-64k-stg,mimo,2,pf64k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1",--ctx 72826
+stgx-mimo-64k-ns,mimo,2,pf64k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0",--ctx 72826
+stgx-mimo-12k-x4-stg,mimo,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=1 --moe simlink=16,4",
+stgx-mimo-12k-x4-ns,mimo,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,staging=0 --moe simlink=16,4",
+stgx-qni4-12k-x4-stg,qn_iq4xs,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=1 --moe simlink=16,4",
+stgx-qni4-12k-x4-ns,qn_iq4xs,2,pf12k1k,1024,"--moe state=/p/bw/data/state_sane.ini,sim-vram=8192,staging=0 --moe simlink=16,4",
