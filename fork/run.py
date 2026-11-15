@@ -1971,7 +1971,11 @@ def drop_moe_flag(build, env, args):
     return env, out
 
 
-STATE_FILE = {"v": None}   # --clean-state: the learned-state file of the running cell (empty before its first repetition, kept for the next)
+STATE_FILE = {"v": None}
+def cur_state():
+    """the learned-state file of the start: the clean-state cell's own, else under simjoe its own file in ~/.cache/llama.cpp/simjoe (the emulated box learns apart from PC1's state and reuses its own between runs), else None = the engine's default"""
+    return STATE_FILE["v"] or (os.path.expanduser("~/.cache/llama.cpp/simjoe/moe-state.ini") if os.environ.get("RUN_SIMJOE") else None)
+   # --clean-state: the learned-state file of the running cell (empty before its first repetition, kept for the next)
 STATE_SNAP = {"v": None}   # the learned state this cell's server started from: kept with a row that beats its cell's best (column state_snap)
 SNAP_DIR = os.path.join(os.path.dirname(QDIR), "state-snaps")
 RUNS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
@@ -1983,7 +1987,7 @@ def state_paths(args):
     for i, x in enumerate(args):
         if x == "--moe" and i + 1 < len(args):
             st = next((kv[6:] for kv in args[i + 1].split(",") if kv.startswith("state=")), st)
-    st = st or STATE_FILE["v"] or os.path.expanduser("~/.cache/llama.cpp/moe-state.ini")
+    st = st or cur_state() or os.path.expanduser("~/.cache/llama.cpp/moe-state.ini")
     return st, [d for d in glob.glob(os.path.join(os.path.dirname(st), glob.escape(os.path.basename(MODEL)) + "_*")) if os.path.isdir(d)]
 
 
@@ -2062,14 +2066,14 @@ def _server_start_once(build, env, args):
     if not build.startswith("stock") and build_has_moe_flag(build, env):   # the fork's research logs and a cold tuner, as --moe settings (older fork builds that do not know a key ignore it; the first releases have no --moe at all)
         # user 2026-11-15: "to have stats and logging cli switches must enable it", "but not gainers which is benchmark and max perf run": the research logs, stats.log (planner events,
         # TOK lines every 10 tokens, NVML samples every 100 ms) and the split pass stamps only on a dev run (-dbg); a plain run measures what users get
-        args = list(args) + ["--moe", f"logdir={DATA}" + ("" if NOSTATS[0] else f",log={LOG_LETTERS}") + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={STATE_FILE['v']}" if STATE_FILE["v"] else "")
+        args = list(args) + ["--moe", f"logdir={DATA}" + ("" if NOSTATS[0] else f",log={LOG_LETTERS}") + (f",tag={TAGBOX['v']}" if TAGBOX["v"] else "") + (f",state={cur_state()}" if cur_state() else "")
                              + ("" if NOSTATS[0] else f",stats=/tmp/perf-{build}{LOGTAG}.stats.log")   # -dbg: every event and status sample of the run, one a line, with timestamps: tail -f it during a run; the cell keeps it as TAG.stats.log
                              + f",hotmaps={HOTMAPS}"   # the hot maps per topic of every model (--moe dynhot) in the repo's fork/hotmaps, published with runs.db (branch runs-db); a cell's own hotmaps= comes after and wins
                              + (",ledger=1" if os.environ.get("PERF_LEDGER") == "1" else "")   # the pool write ledger (who writes which bytes of a card's pool): `run LIST --ledger` turns it on, see cmd_cell
                              + (",statsjson=1" if os.environ.get("POOL_LIVE") == "1" else "")   # the live pool view (livelist.py, port 7000): pool maps and ledger writes to /dev/shm
                              + ("" if NOSTATS[0] else ",pass-stats=1")]   # -dbg: the split pass report per card (extra stream stamps, off in the engine by default)
-    elif not build.startswith("stock") and STATE_FILE["v"]:
-        env = {**env, "LLAMA_MOE_STATE": STATE_FILE["v"]}   # the first releases (no --moe flag) read the environment variable
+    elif not build.startswith("stock") and cur_state():
+        env = {**env, "LLAMA_MOE_STATE": cur_state()}   # the first releases (no --moe flag) read the environment variable
     env, args = drop_moe_flag(build, env, args)
     args = merge_moe(args)
     if not build.startswith("stock"): state_snapshot(args, build)
