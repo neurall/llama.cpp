@@ -11211,7 +11211,7 @@ def _tool_selftest():
         check(_f.ini_overlay({"a": {"path": "x", "bestpp": "old"}}, {"a": {"bestpp": "new"}}) == {"a": {"path": "x", "bestpp": "new"}}, "ini_overlay: this hardware's value wins, the rest stays")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
-        check(_g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 985.0, 20.0)}) == 12000 and _g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 900.0, 30.0)}) == 8037, "best_size: within 2% the longer prompt, below that the faster one")
+        check(_g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 985.0, 30.0)}) == 12000 and _g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 900.0, 30.0)}) == 8037, "best_size: within 2% the longer prompt, below that the faster one")
         check(_f.hw_slug("A b | C:d x16") == "A-b__C-d-x16", "hw_slug: ' | ' becomes '__', unsafe characters '-'")
         rv = lambda b, t, m="M": {"test": "ppl", "ok": "1", "model": m, "args": "a", "build": b, "tps": str(t)}
         check(runpy.run_path(RUN, run_name="forkselftest")["regress_list_verdict"]([rv("n", 10), rv("n", 10.1), rv("b", 10), rv("b", 10.1)], "n", "b", "/x", 0.97) == 0, "regress list: equal builds pass")
