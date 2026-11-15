@@ -6479,20 +6479,10 @@ static ggml_backend_t kv_conv_backend(ggml_backend_dev_t dev) {
     return be;
 }
 
-// a staging range: the longest run of whole blocks of one size class between the dense split's copies and the KV zone (the compute lend), at most 256 MiB; never a
-// class's zero block (it sits after the class's last block). Its experts are evicted for the conversion, the zone's final layout gives the blocks back free.
-static bool kv_stage_range(const moe_cache::alias_pool & ap, size_t & lo, size_t & hi) {
-    const size_t from = kv_lend_round(ap, ap.mirror_b);
-    lo = hi = 0;
-    for (const auto & sg : ap.segs) {
-        const size_t c0 = std::max(sg.base, from), c1 = std::min(sg.base + (size_t) sg.n * sg.B, ap.kv_start);
-        if (c1 <= c0 || sg.B == 0) { continue; }
-        const size_t b0 = sg.base + (c0 - sg.base + sg.B - 1) / sg.B * sg.B;
-        if (b0 >= c1) { continue; }
-        const size_t len = std::min<size_t>((c1 - b0) / sg.B * sg.B, (size_t) 256 << 20);
-        if (len > hi - lo) { lo = b0; hi = b0 + len; }
-    }
-    return hi > lo;
+// a staging range for the conversion (kvz_stage_range): whole blocks of one size class, at most 256 MiB, in front of the zone or past both its extents. Its experts
+// are evicted for the conversion, the zone's final layout gives the blocks back free.
+static bool kv_stage_range(const moe_cache::alias_pool & ap, size_t zend, size_t & lo, size_t & hi) {
+    return kvz_stage_range(ap, kv_lend_round(ap, ap.mirror_b), zend, (size_t) 256 << 20, lo, hi);
 }
 
 struct kv_cv_part { const std::vector<llama_kv_tail_fork::seg> * so; const std::vector<llama_kv_tail_fork::seg> * sn; size_t so_add, sn_add; const std::function<ggml_tensor *(int32_t, bool)> * rot; };
@@ -6624,7 +6614,7 @@ bool llama_moe_cache_kv_retype_fork(ggml_backend_sched_t sched, int32_t tier, ch
         // the staging is for rows to convert: an empty KV (a request's start) has none, and with the dense split's copies in front there may be no blocks to stage in
         bool has_rows = cp.cells > 0;
         for (const auto & r : ap.kvt) { has_rows = has_rows || r.fixed; }
-        if (has_rows && !g_kv_rows_by_caller && !kv_stage_range(ap, cp.s_lo, cp.s_hi)) { say("kv-fit: %s: no lend in front of the KV to stage the conversion", dn); return false; }
+        if (has_rows && !g_kv_rows_by_caller && !kv_stage_range(ap, ap.kv_start + std::max(kvz_bytes(ap, std::max(ap.kv_h, cp.cells)), cp.F + cp.h * cp.R), cp.s_lo, cp.s_hi)) { say("kv-fit: %s: no whole blocks in front of or past the KV to stage the conversion", dn); return false; }
         cp.be = kv_conv_backend(ap.dev);
         if (!cp.be) { say("kv-fit: %s: no backend for the conversion", dn); return false; }
         plans.push_back(std::move(cp));

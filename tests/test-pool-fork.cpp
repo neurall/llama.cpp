@@ -956,6 +956,31 @@ static void test_regress_k_ahead_room() {
     report("the engine: cs_ahead bounds the k arm by cs_k_ahead_max", y != std::string::npos && src.substr(x, y - x).find("cs_k_ahead_max(") != std::string::npos);
 }
 
+// [bug 317] a cold start's zone sits ~10 MiB from the pool start: no whole block in front of it, the retype's staging must come from past the zone
+static void test_regress_stage_past_zone() {
+    printf("Testing [bug 317] KV retype staging range past the zone:\n");
+    tpool p = shaped({ { 100, 50 } }, 10);
+    p.kv_start = 10; p.kv_h = 30;                       // zone [10, 310): inside the first blocks, nothing whole in front
+    const size_t zend = p.kv_start + kvz_bytes(p, p.kv_h);
+    size_t lo = 0, hi = 0;
+    const bool ok = kvz_stage_range(p, 0, zend, 1000, lo, hi);
+    report("a range is found past the zone", ok && lo >= zend && hi <= p.floor_end && lo % 100 == 0 && hi - lo == 1000, fmt("ok %d [%zu, %zu) zone end %zu", ok, lo, hi, zend));
+    std::mt19937_64 rng(g_seed + 317);
+    long bad = 0; std::string first;
+    for (long it = 0; it < g_iters && !bad; ++it) {
+        tpool q = shaped({ { 16 * (1 + rng() % 8), (int) (1 + rng() % 30) }, { 16 * (1 + rng() % 8), (int) (rng() % 30) } }, 1 + rng() % 30);
+        q.floor_end = q.tail_end - rng() % (q.tail_end / 4 + 1);
+        const size_t from = rng() % (q.tail_end / 3 + 1);
+        q.kv_start = from + rng() % (q.tail_end / 3 + 1); q.kv_h = rng() % 20;
+        const size_t ze = q.kv_start + kvz_bytes(q, q.kv_h + rng() % 10);
+        size_t a = 0, b = 0;
+        if (!kvz_stage_range(q, from, ze, 1 + rng() % 2000, a, b)) { continue; }
+        bool in_seg = false;
+        for (const auto & sg : q.segs) { if (a >= sg.base && b <= sg.base + (size_t) sg.n * sg.B && (a - sg.base) % sg.B == 0 && (b - a) % sg.B == 0) { in_seg = true; } }
+        if (a < from || (a < ze && b > q.kv_start) || b > std::max(q.floor_end, q.kv_start) || !in_seg) { bad++; first = fmt("[%zu, %zu) from %zu zone [%zu, %zu) floor %zu", a, b, from, q.kv_start, ze, q.floor_end); }
+    }
+    report("a staging range is whole blocks of one class, off the zone, behind the lend, before the floor", bad == 0, first);
+}
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -980,6 +1005,7 @@ int main(int argc, char ** argv) {
     test_regress_least_over_cards();
     test_regress_chain_reuses_claimed_grid();
     test_regress_k_ahead_room();
+    test_regress_stage_past_zone();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

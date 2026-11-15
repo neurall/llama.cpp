@@ -113,3 +113,22 @@ template <class P> static unsigned kvz_pass_cap(const P & ap, size_t n_prompt, u
     const unsigned cap = std::max<unsigned>(64, (unsigned) std::min(u, 4294967000.0) / 32 * 32);
     return std::min(ub, cap);
 }
+
+// A staging range for a KV retype: the longest run of whole blocks of one size class, at most `cap` bytes, either between the lend's end (`from`) and the zone, or
+// past the zone (`zend`, the larger of the old and new extents) up to the experts' floor. Never a class's zero block (segs end before it). Bug 317: on a cold start
+// the zone sits about 10 MiB from the pool start, no whole block is in front of it, and the first request's retype failed; past the zone there are plenty.
+template <class P> static bool kvz_stage_range(const P & ap, size_t from, size_t zend, size_t cap, size_t & lo, size_t & hi) {
+    lo = hi = 0;
+    const std::pair<size_t, size_t> win[2] = { { from, ap.kv_start }, { std::max(from, zend), ap.floor_end } };
+    for (const auto & w : win) {
+        for (const auto & sg : ap.segs) {
+            const size_t c0 = std::max(sg.base, w.first), c1 = std::min(sg.base + (size_t) sg.n * sg.B, w.second);
+            if (c1 <= c0 || sg.B == 0) { continue; }
+            const size_t b0 = sg.base + (c0 - sg.base + sg.B - 1) / sg.B * sg.B;
+            if (b0 >= c1) { continue; }
+            const size_t len = std::min<size_t>((c1 - b0) / sg.B * sg.B, cap / sg.B * sg.B);
+            if (len > hi - lo) { lo = b0; hi = b0 + len; }
+        }
+    }
+    return hi > lo;
+}
