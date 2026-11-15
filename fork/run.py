@@ -8545,17 +8545,15 @@ def ini_set_maxpp(sec, tokens):
 BESTPP_MEM = {}   # (alias, VRAM GiB) -> request time per token (ms) of the best prompt so far: read from models.ini once, then only in memory
 
 
-REF_REQUEST = (8192, 64)   # prompt tokens, answer tokens of the request every size is rated on (the sweep's cells: a prompt, a 64-token answer)
-
-
-def total_time(v, ref=REF_REQUEST):
-    """(answer tokens, prompt t/s, decode t/s) of one run -> seconds of the reference request at that run's speeds: the prompt's time per token (1 / prompt t/s) and the answer's time per token (1 / decode t/s), each times the tokens of the reference request. The rating no longer depends on how long the run's own prompt was"""
-    return ref[0] / v[1] + ref[1] / v[2]
+def total_time(n_prompt, v):
+    """one run: n_prompt prompt tokens and v = (answer tokens, prompt t/s, decode t/s) -> its time per token: the average time of a prompt token (1 / prompt t/s) and of an answer token (1 / decode t/s), each weighted by the share of the request's tokens it covers, then added (3 prompt : 1 answer tokens, 3 s and 2 s: 0.75 * 3 + 0.25 * 2 = 2.75). Divided by the token counts first, so a run of a longer prompt is not rated slower for its length"""
+    n_ans = v[0]; n = n_prompt + n_ans
+    return (n_prompt / n) * (1.0 / v[1]) + (n_ans / n) * (1.0 / v[2])
 
 
 def best_size(seen, tol=0.02):
-    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> the best prompt size: the lowest total_time, and among the sizes within tol of it the longest prompt. Totals of runs with different prompt lengths are never compared (9 s of an 11k prompt against 7 s of an 8k one said nothing about speed)"""
-    t = {k: total_time(v) for k, v in seen.items()}; low = min(t.values())
+    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> the best prompt size: the lowest total_time, and among the sizes within tol of it the longest prompt"""
+    t = {k: total_time(k, v) for k, v in seen.items()}; low = min(t.values())
     return max(k for k, x in t.items() if x <= low * (1 + tol))
 
 
@@ -11209,6 +11207,7 @@ def _tool_selftest():
         check(_g["ini_put_text"]("[a]\npath = x\n\n[b]\nk = 1\n", "a", "bestpp", "v") == "[a]\npath = x\nbestpp = v\n\n[b]\nk = 1\n", "ini_put_text: a key goes to its section's end")
         check(_g["ini_put_text"]("", "m", "k", "v") == "[m]\nk = v\n" and _g["ini_put_text"]("[m]\nk = 1\n", "m", "k", "2").count("k =") == 1, "ini_put_text: a new section, a replaced key")
         check(_f.ini_overlay({"a": {"path": "x", "bestpp": "old"}}, {"a": {"bestpp": "new"}}) == {"a": {"path": "x", "bestpp": "new"}}, "ini_overlay: this hardware's value wins, the rest stays")
+        check(abs(_g["total_time"](3, (1, 1 / 3.0, 1 / 2.0)) - 2.75) < 1e-9, "total_time: 3 prompt : 1 answer tokens, 3 s and 2 s per token = 0.75 * 3 + 0.25 * 2 = 2.75")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
         check(_g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 985.0, 30.0)}) == 12000 and _g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 900.0, 30.0)}) == 8037, "best_size: within 2% the longer prompt, below that the faster one")

@@ -9480,3 +9480,4 @@ rel_small_gpus-q27mtp-p7-pf7k1k,2026-11-15 23:56:29,bench /m/q/5/Qwen3.8-27B-MTP
 rel_small_gpus-q27mtp-p6-pf6k1k,2026-11-15 23:57:10,bench /m/q/5/Qwen3.8-27B-MTP-Q5_K_M.gguf builds rel_small_gpus variants v test pf6k n=2,,
 rel_small_gpus-q27mtp-p5-pf5k1k,2026-11-15 23:57:51,bench /m/q/5/Qwen3.8-27B-MTP-Q5_K_M.gguf builds rel_small_gpus variants v test pf5k n=2,,
 rel_small_gpus-q27mtp-p4-pf4k1k,2026-11-15 23:58:33,bench /m/q/5/Qwen3.8-27B-MTP-Q5_K_M.gguf builds rel_small_gpus variants v test pf4k n=2,,
+rel_small_gpus-ds-p12-pf12k1k,2026-11-15 23:59:14,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds rel_small_gpus variants v test pf12k n=2,,
