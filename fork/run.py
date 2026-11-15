@@ -7475,7 +7475,7 @@ def stock_latest(dry=False):
 # under taskset on the first chiplet (one Zen 2 chiplet of the 3975WX reads 40-42 GB/s by itself, so no cap is needed for that), the rest of the RAM held as 2 MiB huge
 # pages nobody maps, no huge-page pool (joe has none), stock at the 8 threads it picks on such a box. --joe-bw caps lower through AMD MBA (resctrl, measured 96% of the
 # asked rate). Rows go under machine pc1joe, never paired with PC1's own. The limits go at the end of the list, at run.py stop, or at the start of the next list.
-JOE = {"ram": 128, "threads": 16, "bw": 0.0, "link": 6.0, "os": 12}   # os: GiB the old desktop's OS and apps held (user 2026-11-15: "128-12g for os")   # link: CUDA0's PCIe rate in GB/s (the old box's CUDA0 sat on x4: pageable uploads 6.1 GB/s, stock's prompt uploads its CPU experts there)
+JOE = {"ram": 128, "threads": 16, "bw": 0.0, "link": 6.0, "os": 6}   # os: GiB the old desktop's OS and apps held: its watch log of the best MiMo runs (2026-11-08 19:26-23:24) shows avail 10-12 GiB beside a 109.3 GiB server, ~120 of 125.7 for runs (12 left relcand3 2.6 GiB, the guard killed it)   # link: CUDA0's PCIe rate in GB/s (the old box's CUDA0 sat on x4: pageable uploads 6.1 GB/s, stock's prompt uploads its CPU experts there)
 JOE_GEN_GBS = {1: 3.2, 2: 6.4, 3: 12.4, 4: 25.0}   # x16 pageable upload per PCIe generation (Gen 3 measured on the old x16 card, Gen 4 on PC1; Gen 1-2 by the line rate)
 JOE_HOG = "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
 JOE_RG = "/sys/fs/resctrl/simjoe"
@@ -8011,7 +8011,7 @@ def run_list(name, argv):
     ap.add_argument("--joe-ram", type=int, metavar="GIB", help="simjoe: installed RAM of the emulated box (default 128)")
     ap.add_argument("--joe-threads", type=int, metavar="N", help="simjoe: hardware threads of the emulated box (default 16 = 8 cores)")
     ap.add_argument("--joe-link", type=float, metavar="GBS", help="simjoe: CUDA0's PCIe upload rate (default 6: the old box's x4 card, as PCIe Gen 2 x16 on its root port; 0 = untouched)")
-    ap.add_argument("--joe-os", type=int, metavar="GIB", help="simjoe: GiB the emulated box's OS and apps held (default 12): the hog leaves joe's MemTotal less this available")
+    ap.add_argument("--joe-os", type=int, metavar="GIB", help="simjoe: GiB the emulated box's OS and apps held (default 6, measured on the old desktop): the hog leaves joe's MemTotal less this available")
     ap.add_argument("--joe-bw", type=float, metavar="GBS", help="simjoe: cap the chiplet's memory reads to GBS (AMD MBA; default: none, the chiplet itself reads 40-42)")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
