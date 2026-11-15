@@ -8867,7 +8867,7 @@ def cmd_cell(a):
     while not kept_get():   # nothing may still hold GPU memory (a killed script leaves its children running); the kept server is meant to
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True)
         used = [int(x) for i, x in enumerate(r.stdout.split()) if card_is_mine(i)]
-        if used and max(used) < 600: break   # strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
+        if used and max(used) < 600 + int(os.environ.get("VRAM_HELD_MIB") or 0): break   # (a list that really holds VRAM, -rh, leaves that much used)  strict: a stray GPU process is never mistaken for a hold (one GPU process at a time)
         time.sleep(5)
     try: os.remove(f"/tmp/perf-{a.builds}.stats.log")   # the planner log appends: one cell, one file
     except OSError: pass
