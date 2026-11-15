@@ -243,6 +243,42 @@ int main() {
         printf("ab_tune noise: 2000 tokens flat cost +-5%%: multiplier %.4g\n", nz.base);
     }
 
+    // the decode thread search (thread_search) on made-up tokens. A token's time: a base, its upload MiB at 0.012 ms each, its CPU work (half fixed, half by its CPU MiB) at
+    // the shape's speed for that thread count, 4% unexplained and a slow token in 30. CPU MiB scatter 35% around 180; uploads mostly about 40 MiB, one token in 7 about 400,
+    // and 6x more on the first tokens (the cache refills after the prompt): raw times scatter 10-15% as after the sane cells' long prompts (2026-11-15: DeepSeek settled on
+    // 63 threads where 30 ran 8% faster, MiMo on 16 where 30-32 ran 10% faster), and the bytes explain most of it as they did in those cells' TOK lines. The old rule (2-3
+    // pairs, majority) landed within 5% of the best count in 72-79% of seeds of plain 12% noise. 200 seeds per shape; 95% must land within 5% of the best count's time.
+    {
+        struct shape { const char * name; double base; double (*cpu)(int); bool cache; };
+        const shape shapes[] = {
+            { "memory-bound, best at the 32 cores (DeepSeek, MiMo)", 28.9, [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); }, true },
+            { "contention, best near 16",                            20.0, [](int n) { return 80.0 / n + 0.3 * n; }, true },
+            { "compute-bound, SMT helps, best at 64",                20.0, [](int n) { return 400.0 / (std::min(n, 32) + 0.3 * std::max(0, n - 32)); }, true },
+            { "no expert cache (no byte counters), best at 32",      28.9, [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); }, false },
+        };
+        for (const shape & sh : shapes) {
+            double best = 1e30; int nbest = 0;
+            for (int n = 1; n <= 64; ++n) { if (sh.base + sh.cpu(n) < best) { best = sh.base + sh.cpu(n); nbest = n; } }
+            int good = 0, low = 0, high = 0; double tokens = 0.0;
+            for (int seed = 1; seed <= 200; ++seed) {
+                std::mt19937 rng(seed); std::normal_distribution<double> g(0.0, 1.0); std::uniform_real_distribution<double> u01(0.0, 1.0);
+                thread_search ts; ts.start(64); int i = 0;
+                for (; !ts.settled() && i < 4000; ++i) {
+                    const double x = 180.0 * std::exp(0.35 * g(rng));
+                    const double up = (u01(rng) < 1.0 / 7.0 ? 400.0 : 40.0) * std::exp(0.5 * g(rng)) * (1.0 + 5.0 * std::exp(-i / 30.0));
+                    double t = (sh.base + 0.012 * up) * (1.0 + 0.05 * std::exp(-i / 40.0)) + sh.cpu(ts.now()) * (0.5 + 0.5 * x / 180.0);
+                    t *= std::exp(0.04 * g(rng)) * (u01(rng) < 1.0 / 30.0 ? 1.25 : 1.0);
+                    if (sh.cache) { ts.feed(t, x, up); } else { ts.feed(t); }
+                }
+                tokens += i;
+                const double r = (sh.base + sh.cpu(ts.b)) / best;
+                if (r <= 1.05) { ++good; } else if (ts.b < nbest) { ++low; } else { ++high; }
+            }
+            printf("thread search, %s: %d of 200 within 5%% of the best (off: %d too low, %d too high), %.0f tokens to settle\n", sh.name, good, low, high, tokens / 200.0);
+            check("thread search: within 5% of the best count's time in 95% of the seeds", good >= 190);
+        }
+    }
+
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

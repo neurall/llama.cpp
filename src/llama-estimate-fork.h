@@ -263,3 +263,89 @@ struct ab_tune {
         return true;
     }
 };
+
+// ---- decode thread search (user 2026-10-26: alternate the best count so far with one lower candidate, token by token) ----
+// Starts on every hardware thread: too many threads cost little (barriers, SMT siblings), too few a lot, and on a multi-die CPU only all of them reach every die's memory
+// path. Tokens run b c b c b ...; candidates b/2 first (64 -> 32 -> 16); a lost candidate becomes the lower bound L and the next one is the midpoint of b and L (16 lost
+// -> 24, then 28, 30, 31). llama_context::thread_tune_feed drives it on decode tokens.
+// 2026-11-15: 2 pairs (3 when mixed) decided by majority settled by noise: the same sane cells landed DeepSeek on 63 threads where 30 ran 8% faster and MiMo on 16 where
+// 30-32 ran 10% faster. Most of a token's scatter is its own work: the bytes of experts it computes on the CPU and the bytes it uploads explain 84-94% of the variance of
+// 10-token windows (TOK lines of those cells; 2-6% left). So a comparison fits token time = a + arm + CPU MiB + upload MiB + trend by least squares and decides on the
+// arm's coefficient (the candidate's ms per token over b's at the same work) once it is z standard errors from 0, at least min_pairs, at most max_pairs; then by its
+// sign (a near tie costs little either way). The cost in tokens does not matter (user), the quality of the decision does.
+// Least squares of y on the columns of X (row-major, n rows, p columns), a tiny ridge on columns from 2 on (a covariate without variance gets 0). Returns false when singular;
+// beta: the coefficients, se1: the standard error of coefficient 1.
+static inline bool small_ols(const std::vector<double> & X, const std::vector<double> & y, int n, int p, std::vector<double> & beta, double & se1) {
+    std::vector<double> A((size_t) p * p, 0.0), r((size_t) p, 0.0);
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < p; ++j) { r[j] += X[(size_t) i * p + j] * y[i]; for (int l = 0; l < p; ++l) { A[(size_t) j * p + l] += X[(size_t) i * p + j] * X[(size_t) i * p + l]; } }
+    }
+    for (int j = 2; j < p; ++j) { A[(size_t) j * p + j] += 1e-9 * (double) n + 1e-12; }
+    // solve A [beta | e1] by Gauss-Jordan with partial pivoting
+    std::vector<double> M((size_t) p * (p + 2));
+    for (int j = 0; j < p; ++j) { for (int l = 0; l < p; ++l) { M[(size_t) j * (p + 2) + l] = A[(size_t) j * p + l]; } M[(size_t) j * (p + 2) + p] = r[j]; M[(size_t) j * (p + 2) + p + 1] = j == 1 ? 1.0 : 0.0; }
+    for (int c = 0; c < p; ++c) {
+        int piv = c;
+        for (int j = c + 1; j < p; ++j) { if (std::fabs(M[(size_t) j * (p + 2) + c]) > std::fabs(M[(size_t) piv * (p + 2) + c])) { piv = j; } }
+        if (std::fabs(M[(size_t) piv * (p + 2) + c]) < 1e-300) { return false; }
+        if (piv != c) { for (int l = 0; l < p + 2; ++l) { std::swap(M[(size_t) c * (p + 2) + l], M[(size_t) piv * (p + 2) + l]); } }
+        const double d = M[(size_t) c * (p + 2) + c];
+        for (int l = 0; l < p + 2; ++l) { M[(size_t) c * (p + 2) + l] /= d; }
+        for (int j = 0; j < p; ++j) {
+            if (j == c) { continue; }
+            const double f = M[(size_t) j * (p + 2) + c];
+            if (f != 0.0) { for (int l = 0; l < p + 2; ++l) { M[(size_t) j * (p + 2) + l] -= f * M[(size_t) c * (p + 2) + l]; } }
+        }
+    }
+    beta.assign((size_t) p, 0.0);
+    for (int j = 0; j < p; ++j) { beta[j] = M[(size_t) j * (p + 2) + p]; }
+    double rss = 0.0;
+    for (int i = 0; i < n; ++i) { double f = 0.0; for (int j = 0; j < p; ++j) { f += X[(size_t) i * p + j] * beta[j]; } rss += (y[i] - f) * (y[i] - f); }
+    se1 = n > p ? std::sqrt(std::max(0.0, rss / (n - p) * M[(size_t) 1 * (p + 2) + p + 1])) : 0.0;
+    return true;
+}
+struct thread_search {
+    int st = 0, b = 0, c = 0, lo = 0, k = 0, warm = 0;   // st 0 idle, 1 sampling, 3 settled; k: tokens into the sequence (odd: ran on c)
+    int min_pairs = 5, max_pairs = 24; double z = 2.5;
+    std::vector<double> tt, tx, tu;   // this comparison's tokens: time, CPU MiB, upload MiB
+    double last_b = 0.0, last_c = 0.0, last_d = 0.0, last_se = 0.0; int last_nb = 0, last_nc = 0, last_pairs = 0;   // the last comparison, for the caller's log
+    int now() const { return st == 1 && (k % 2) == 1 ? c : b; }
+    bool settled() const { return st == 3; }
+    void start(int n) { b = n; lo = 0; st = 1; warm = 2; plan(); }   // the first tokens warm the expert cache: not sampled
+    void plan() {   // the next candidate below b, or settled on b
+        const int cn = lo == 0 ? b / 2 : (b + lo) / 2;
+        if (cn < 1 || cn >= b || cn <= lo) { st = 3; return; }
+        c = cn; k = 0; tt.clear(); tx.clear(); tu.clear();
+    }
+    // the candidate's ms per token over b's at the same CPU and upload work (and trend), with its standard error
+    void effect(double & d, double & se) const {
+        const int n = (int) tt.size(), p = 5;
+        double mx = 0.0, mu = 0.0;
+        for (int i = 0; i < n; ++i) { mx += tx[i]; mu += tu[i]; }
+        mx /= n; mu /= n;
+        std::vector<double> X((size_t) n * p), beta;
+        for (int i = 0; i < n; ++i) {
+            double * row = &X[(size_t) i * p];
+            row[0] = 1.0; row[1] = i % 2 == 1 ? 1.0 : 0.0; row[2] = tx[i] - mx; row[3] = tu[i] - mu; row[4] = i - 0.5 * (n - 1);
+        }
+        d = 0.0; se = 1e30;
+        if (small_ols(X, tt, n, p, beta, se)) { d = beta[1]; }
+    }
+    // t: the time of the token that ran on now(); x, u: its CPU and upload MiB. True when a comparison finished (last_* set; settled() says whether that ended the search).
+    bool feed(double t, double x = 0.0, double u = 0.0) {
+        if (st != 1) { return false; }
+        if (warm > 0) { --warm; return false; }
+        tt.push_back(t); tx.push_back(x); tu.push_back(u);
+        const int n = k / 2;   // complete pairs once this b token (k even) is in
+        if (k % 2 == 1 || n < min_pairs) { ++k; return false; }
+        double d = 0.0, se = 0.0;
+        effect(d, se);
+        if (std::fabs(d) <= z * se && n < max_pairs) { ++k; return false; }
+        double mb = 0.0, mc = 0.0;
+        for (size_t i = 0; i < tt.size(); ++i) { (i % 2 == 1 ? mc : mb) += tt[i]; }
+        last_b = mb / (double) (n + 1); last_c = mc / (double) n; last_d = d; last_se = se; last_nb = b; last_nc = c; last_pairs = n;
+        if (d < 0.0) { b = c; } else { lo = c; }
+        plan();
+        return true;
+    }
+};
