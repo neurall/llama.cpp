@@ -6561,8 +6561,10 @@ def cell_results(path, since):
     out = []
     try:
         for l in open(path, errors="replace"):
-            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +\S+ +\{.*?\} +([\d.]+) t/s(?:.*?pp ([\d.]+) t/s)?", l)   # a ppl cell has no prompt rate: 0
-            if m and time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) >= since - 2: out.append((float(m.group(2)), float(m.group(3) or 0)))
+            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +(\S+) +\{.*?\} +([\d.]+) t/s(?:.*?pp ([\d.]+) t/s)?", l)
+            if not m or time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) < since - 2: continue
+            if m.group(4) is None and m.group(2) != "ppl": continue   # every test but ppl (one token per call: no prompt phase) reports a prompt rate; a line without it is no result
+            out.append((float(m.group(3)), float(m.group(4) or 0)))
     except OSError: pass
     return out
 
@@ -11032,6 +11034,10 @@ def _tool_selftest():
         os.environ["FORK_PATHS_RELS"] = "/from/env"
         check(c.path("rels") == "/from/env", "the FORK_* variable wins over the file")
         del os.environ["FORK_PATHS_RELS"], os.environ["FORK_CONFIG"]
+        cr = c_mod = runpy.run_path(RUN, run_name="forkselftest")["cell_results"]
+        ro = os.path.join(d, "x.run.out")
+        open(ro, "w").write("2026-11-15 18:59:06 b ppl {-np 1} 26.60 t/s hit 99.2% ok\n2026-11-15 18:59:07 b chat {-np 1} 36.3 t/s hit 99% ok\n2026-11-15 18:59:08 b pf12k {-np 1} 36.3 t/s hit 99% pp 1601.9 t/s\n")
+        check(cr(ro, 0) == [(26.60, 0.0), (36.3, 1601.9)], "a cell result needs a prompt rate, except for ppl (one token per call)")
 
     # 4. markdown links
     bad = []
