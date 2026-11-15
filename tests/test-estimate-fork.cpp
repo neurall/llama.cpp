@@ -250,12 +250,15 @@ int main() {
     // 63 threads where 30 ran 8% faster, MiMo on 16 where 30-32 ran 10% faster), and the bytes explain most of it as they did in those cells' TOK lines. The old rule (2-3
     // pairs, majority) landed within 5% of the best count in 72-79% of seeds of plain 12% noise. 200 seeds per shape; 95% must land within 5% of the best count's time.
     {
-        struct shape { const char * name; double base; double (*cpu)(int); bool cache; };
+        struct shape { const char * name; double base; double (*cpu)(int); bool cache; double tol; };
         const shape shapes[] = {
-            { "memory-bound, best at the 32 cores (DeepSeek, MiMo)", 28.9, [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); }, true },
-            { "contention, best near 16",                            20.0, [](int n) { return 80.0 / n + 0.3 * n; }, true },
-            { "compute-bound, SMT helps, best at 64",                20.0, [](int n) { return 400.0 / (std::min(n, 32) + 0.3 * std::max(0, n - 32)); }, true },
-            { "no expert cache (no byte counters), best at 32",      28.9, [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); }, false },
+            { "memory-bound, best at the 32 cores (DeepSeek, MiMo)", 28.9, [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); }, true, 1.05 },
+            { "contention, best near 16",                            20.0, [](int n) { return 80.0 / n + 0.3 * n; }, true, 1.05 },
+            { "compute-bound, SMT helps, best at 64",                20.0, [](int n) { return 400.0 / (std::min(n, 32) + 0.3 * std::max(0, n - 32)); }, true, 1.05 },
+            { "no expert cache (no byte counters), best at 32",      28.9, [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); }, false, 1.05 },
+            // MiMo V2.6 12k/1k measured at fixed counts (2026-11-15, search off, tokens 200-999 of both runs): 16 threads 26.8 ms a token, 24 25.6, 31 25.8. 16 is 4.7%
+            // slower, inside 5%, so this shape asks for 2%: the searches of that day settled on 16 in one run of two (32 against 16 undecided after 24 pairs, by the sign)
+            { "flat top at 24-31, 16 4.7% slower (MiMo measured)",   23.2, [](int n) { return 57.6 / n + 0.1 * std::max(0, n - 24); }, true, 1.02 },
         };
         for (const shape & sh : shapes) {
             double best = 1e30; int nbest = 0;
@@ -273,10 +276,10 @@ int main() {
                 }
                 tokens += i;
                 const double r = (sh.base + sh.cpu(ts.b)) / best;
-                if (r <= 1.05) { ++good; } else if (ts.b < nbest) { ++low; } else { ++high; }
+                if (r <= sh.tol) { ++good; } else if (ts.b < nbest) { ++low; } else { ++high; }
             }
-            printf("thread search, %s: %d of 200 within 5%% of the best (off: %d too low, %d too high), %.0f tokens to settle\n", sh.name, good, low, high, tokens / 200.0);
-            check("thread search: within 5% of the best count's time in 95% of the seeds", good >= 190);
+            printf("thread search, %s: %d of 200 within %.0f%% of the best (off: %d too low, %d too high), %.0f tokens to settle\n", sh.name, good, (sh.tol - 1.0) * 100.0, low, high, tokens / 200.0);
+            check("thread search: within the shape's tolerance of the best count's time in 95% of the seeds", good >= 190);
         }
     }
 

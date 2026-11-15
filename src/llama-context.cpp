@@ -2854,7 +2854,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         llama_moe_cache_split_feed_fork(dt_us);   // the CPU/GPU split's A/B: no thread search to wait for
         return;
     }
-    // First tokens: find the decode thread count by ALTERNATING between the best count so far (b) and one lower candidate (c) on consecutive tokens (user 2026-10-26).
+    // First tokens: find the decode thread count by ALTERNATING between the best count so far (b) and one candidate (c) on consecutive tokens (user 2026-10-26).
     // The rule is thread_search (src/llama-estimate-fork.h, tested in tests/test-estimate-fork.cpp): each comparison is decided at the same CPU and upload work per token,
     // from the expert cache's byte counters (llama_moe_cache_counters_fork), since those bytes, not the thread count, make most of a token's scatter. Then the +-2 tuner
     // below stays off (settled, with the drift watch). File-local state: one decoding context per process.
@@ -2875,16 +2875,16 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     if (!ts.settled()) {
         auto testing = [&]() {
             char v[48]; snprintf(v, sizeof v, "%d vs %d (testing)", ts.b, ts.c);
-            llama_moe_decision_fork("threads_decode", v, "searching: alternating the best count so far with one lower candidate, token by token");
+            llama_moe_decision_fork("threads_decode", v, "searching: alternating the best count so far with one candidate, token by token");
         };
         if (ts.st == 0) { ts.start(thr.base); if (!ts.settled()) { testing(); } }
         if (!ts.settled() && ts.feed((double) dt_us, x_mib, u_mib)) {
-            LLAMA_LOG_WARN("%s: thread search: %d threads %.2f ms/token vs %d threads %.2f ms/token; at the same CPU and upload work the lower count %+.2f +- %.2f ms/token over %d pairs -> %s\n",
-                    __func__, ts.last_nb, ts.last_b/1000.0, ts.last_nc, ts.last_c/1000.0, ts.last_d/1000.0, ts.last_se/1000.0, ts.last_pairs, ts.b == ts.last_nc ? "lower" : "keep");
+            LLAMA_LOG_WARN("%s: thread search: %d threads %.2f ms/token vs %d threads %.2f ms/token; at the same CPU and upload work the candidate %+.2f +- %.2f ms/token over %d pairs -> %s\n",
+                    __func__, ts.last_nb, ts.last_b/1000.0, ts.last_nc, ts.last_c/1000.0, ts.last_d/1000.0, ts.last_se/1000.0, ts.last_pairs, ts.b == ts.last_nc ? "take it" : "keep");
             if (!ts.settled()) { testing(); }
         }
         if (ts.settled()) {
-            llama_moe_decision_fork("threads_decode", std::to_string(ts.b).c_str(), "from every hardware thread down, alternating with a lower count token by token; each comparison decided at the same CPU and upload work per token");
+            llama_moe_decision_fork("threads_decode", std::to_string(ts.b).c_str(), "from every hardware thread: halving down, then the gaps beside the best, alternating token by token; each comparison decided at the same CPU and upload work per token");
             if (ts.b != thr.base) { thr.base = ts.b; threads_save(model, "threads", thr.base0, ts.b); }
             dw.reset();   // settled: the count stays until the box changes (below)
         }

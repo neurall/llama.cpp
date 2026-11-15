@@ -1,0 +1,4 @@
+name,model,n,test,tokens,args,extra
+thr-mimo-t16,mimo,2,pf12k1k,1024,-t 16 --moe thread-tune=0,
+thr-mimo-t31,mimo,2,pf12k1k,1024,-t 31 --moe thread-tune=0,
+thr-mimo-t24,mimo,2,pf12k1k,1024,-t 24 --moe thread-tune=0,

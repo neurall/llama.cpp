@@ -273,6 +273,10 @@ struct ab_tune {
 // 10-token windows (TOK lines of those cells; 2-6% left). So a comparison fits token time = a + arm + CPU MiB + upload MiB + trend by least squares and decides on the
 // arm's coefficient (the candidate's ms per token over b's at the same work) once it is z standard errors from 0, at least min_pairs, at most max_pairs; then by its
 // sign (a near tie costs little either way). The cost in tokens does not matter (user), the quality of the decision does.
+// 2026-11-15 (MiMo V2.6 12k/1k): fixed counts measured 24 and 31 threads at 25.6-25.8 ms a token, 16 at 26.8 (4.7% slower). 32 against 16 came out -0.38 +- 0.78 over
+// 24 pairs in one run, +1.91 +- 1.12 in the other: by the sign one run settled on 16, and the search then only went lower (16 against 8, 12, 14, 15). Now at most 64
+// pairs (the standard error x0.6), and a lower count that won is not final: the gap up to the count it beat is tried too (16 won over 32: 24 against 16 next).
+// Steps stop once both gaps beside b are within a quarter of b (16 against 15 was noise every time).
 // Least squares of y on the columns of X (row-major, n rows, p columns), a tiny ridge on columns from 2 on (a covariate without variance gets 0). Returns false when singular;
 // beta: the coefficients, se1: the standard error of coefficient 1.
 static inline bool small_ols(const std::vector<double> & X, const std::vector<double> & y, int n, int p, std::vector<double> & beta, double & se1) {
@@ -305,16 +309,20 @@ static inline bool small_ols(const std::vector<double> & X, const std::vector<do
     return true;
 }
 struct thread_search {
-    int st = 0, b = 0, c = 0, lo = 0, k = 0, warm = 0;   // st 0 idle, 1 sampling, 3 settled; k: tokens into the sequence (odd: ran on c)
-    int min_pairs = 5, max_pairs = 24; double z = 2.5;
+    int st = 0, b = 0, c = 0, lo = 0, hi = 0, k = 0, warm = 0;   // st 0 idle, 1 sampling, 3 settled; lo, hi: the nearest counts below and above b that ran slower; k: tokens into the sequence (odd: ran on c)
+    int min_pairs = 5, max_pairs = 64; double z = 2.5;
     std::vector<double> tt, tx, tu;   // this comparison's tokens: time, CPU MiB, upload MiB
     double last_b = 0.0, last_c = 0.0, last_d = 0.0, last_se = 0.0; int last_nb = 0, last_nc = 0, last_pairs = 0;   // the last comparison, for the caller's log
     int now() const { return st == 1 && (k % 2) == 1 ? c : b; }
     bool settled() const { return st == 3; }
-    void start(int n) { b = n; lo = 0; st = 1; warm = 2; plan(); }   // the first tokens warm the expert cache: not sampled
-    void plan() {   // the next candidate below b, or settled on b
-        const int cn = lo == 0 ? b / 2 : (b + lo) / 2;
-        if (cn < 1 || cn >= b || cn <= lo) { st = 3; return; }
+    void start(int n) { b = n; lo = 0; hi = n + 1; st = 1; warm = 2; plan(); }   // the first tokens warm the expert cache: not sampled; nothing above n can run (the pool's size)
+    // the next candidate: halve while nothing below b ran slower, then the middle of the wider gap beside b, until both gaps are within a quarter of b (neighbours that
+    // close differ by less than the noise); or settled on b. A lower count that won once is not final: the gap up to the count it beat is tried as well
+    void plan() {
+        const int glo = lo == 0 ? b : b - lo, ghi = hi - b;
+        if (std::max(glo, ghi) <= std::max(1, b / 4)) { st = 3; return; }
+        const int cn = glo >= ghi ? (lo == 0 ? b / 2 : (b + lo) / 2) : (b + hi) / 2;
+        if (cn < 1 || cn == b || cn <= lo || cn >= hi) { st = 3; return; }
         c = cn; k = 0; tt.clear(); tx.clear(); tu.clear();
     }
     // the candidate's ms per token over b's at the same CPU and upload work (and trend), with its standard error
@@ -344,7 +352,7 @@ struct thread_search {
         double mb = 0.0, mc = 0.0;
         for (size_t i = 0; i < tt.size(); ++i) { (i % 2 == 1 ? mc : mb) += tt[i]; }
         last_b = mb / (double) (n + 1); last_c = mc / (double) n; last_d = d; last_se = se; last_nb = b; last_nc = c; last_pairs = n;
-        if (d < 0.0) { b = c; } else { lo = c; }
+        if (d < 0.0) { (c < b ? hi : lo) = b; b = c; } else { (c < b ? lo : hi) = c; }
         plan();
         return true;
     }
