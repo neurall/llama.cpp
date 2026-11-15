@@ -92,7 +92,7 @@ static inline size_t poolx_ring_retire(size_t in_flight, size_t depth) { return 
 // again when its layer comes (Qwen3.8 IQ4_XS 12k staging=0, 2026-11-14: 2825 of pass 1's 23013 blocks were layers ahead and 4510 were claims ranked before computed
 // experts; 55.9 GB uploaded against staged's 47.9). Rank: the order taken, cheap before costly, the layer still computing after every other cheap block; a costly
 // block only for an entry needed now (poolx_ring_cheap).
-// 9 a decode-hot cached expert of a computed layer, 10 another class's bytes over one (--moe ring-keep-hot, default on): the stream takes them after every
+// 9 a decode-hot cached expert of a computed layer, 10 another class's bytes over one (--moe ring-keep-hot=1, default off): the stream takes them after every
 // other cheap block and only for the entry needed now, so a prompt leaves decode its hot experts (Qwen3.8 IQ4_XS 12k, 2026-11-15: staging=0 refilled 24-26 GB
 // after the prompt against staged's 14-15 GB, decode 45.8 against 49.95 t/s)
 static inline bool poolx_ring_costly(int tier) { return tier == 4 || tier == 6 || tier == 9 || tier == 10; }

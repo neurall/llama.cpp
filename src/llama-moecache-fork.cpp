@@ -12527,10 +12527,10 @@ static const std::vector<uint8_t> * cs_used(moe_cache * mc, int il, int64_t ne) 
 // sel: null = every uncached expert of the entry's range (the stream), else only those with sel[e] != 0 (the k arm's predicted or used experts)
 // cheap: an entry planned ahead of its need takes no costly block (poolx_ring_cheap: an expert of a layer to come would go up twice); it waits for computed layers' blocks
 // wait_at: 0, or 1 + the pass position whose done event the copies wait for (the newest computed entry whose block they take, cs_cov: the event recorded over it)
-// ring keep-hot (--moe ring-keep-hot, default on; =0 the old order): a cached expert at or above its layer's decode-hot cut (poolx_hot_cut over its decode uses:
+// ring keep-hot (--moe ring-keep-hot=1; default off: A/B 2026-11-15 on ring_keep_hot, MiMo 12k decode 35.2/34.1 t/s on vs 37.0/37.0 off, Qwen3.8 IQ4_XS within noise): a cached expert at or above its layer's decode-hot cut (poolx_hot_cut over its decode uses:
 // the heat file's, else its lifetime count, as vis_next) goes after every other cheap block and only to the entry needed now. Qwen3.8 IQ4_XS 12k 2026-11-15:
 // the stream took them like cold ones, so staging=0 refilled 24-26 GB after the prompt (staged 14-15) and decoded 45.8 t/s against staged's 49.95
-static bool ring_keep_hot() { static const bool on = [] { const char * e = moe_opt("ring-keep-hot"); return !e || atoi(e) != 0; }(); return on; }
+static bool ring_keep_hot() { static const bool on = [] { const char * e = moe_opt("ring-keep-hot"); return e && atoi(e) != 0; }(); return on; }
 static bool ring_hot(const moe_cache * mc, size_t lx, int32_t e) {
     if (!ring_keep_hot() || e < 0 || lx >= mc->layers.size() || lx >= mc->cs_hot_cut.size()) { return false; }
     const layer_state & lo = mc->layers[lx];
