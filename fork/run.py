@@ -2082,9 +2082,8 @@ def _server_start_once(build, env, args):
     global WATCH_LOG; WATCH_LOG = logf   # post() watches this file
     runlog(f"server start: {build} {os.path.basename(MODEL)} {' '.join(args)}")
     joe = simjoe_cfg()
-    if joe:   # simjoe: the first chiplet only; ours probes its bandwidth there (the probe cache cannot see a cap); stock takes the cores joe's box has
+    if joe:   # simjoe: the first chiplet only; ours probes its bandwidth there (the probe cache cannot see a cap); stock gets no thread switches (user 2026-11-15: it chooses its own, as for a user)
         env = {**env, "LLAMA_CPU_BW_PROBE": "fresh"}
-        if build.startswith("stock") and not {"-t", "--threads"} & set(map(str, args)): args = list(args) + ["-t", str(joe["cores"])] + ([] if {"-tb", "--threads-batch"} & set(map(str, args)) else ["-tb", str(joe["cores"])]) + ([] if {"-td", "--threads-draft"} & set(map(str, args)) else ["-td", str(joe["cores"])])
     with open(logf, "w") as lf:
         p = subprocess.Popen(WRAP + (["taskset", "-c", joe["cpus"]] if joe else []) + [os.path.join(HERE, build, "llama-server"), "-m", MODEL, "--port", str(PORT)] + ([] if BARE else ["-np", "1"])
                              + args, stdout=lf, stderr=subprocess.STDOUT, env=env, preexec_fn=None if DETACH[0] else _die_with_parent, start_new_session=DETACH[0])
