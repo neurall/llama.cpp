@@ -1462,7 +1462,9 @@ def _power_targets_raw(widths, spec=None, maxes=None):
 def joe_widths(widths):
     """simjoe with the link cap: CUDA0 is the old box's x4 card, so the schedule gives it that card's power (220 W by day, as every old row); else the widths as read"""
     j = simjoe_cfg() if os.environ.get("RUN_SIMJOE") else None
-    return [min(widths[0], 4)] + list(widths[1:]) if j and j["link"] > 0 and widths else list(widths)
+    if not (j and j["link"] > 0 and widths): return list(widths)
+    w = list(widths); i = min(j["card"], len(w) - 1); w[i] = min(w[i], 4)   # the old box's x4 card: CUDA0 (--joe-card N: card N)
+    return w
 
 
 X4_MAX_W = 220   # the x4 card throttles and faults above this (user 2026-10-23): no spec, schedule or `-pl max` may set a narrower-link card higher
@@ -7528,7 +7530,7 @@ def stock_latest(dry=False):
 # under taskset on the first chiplet (one Zen 2 chiplet of the 3975WX reads 40-42 GB/s by itself, so no cap is needed for that), the rest of the RAM held as 2 MiB huge
 # pages nobody maps, no huge-page pool (joe has none), stock at the 8 threads it picks on such a box. --joe-bw caps lower through AMD MBA (resctrl, measured 96% of the
 # asked rate). Rows go under machine pc1joe, never paired with PC1's own. The limits go at the end of the list, at run.py stop, or at the start of the next list.
-JOE = {"ram": 128, "threads": 16, "bw": 0.0, "link": 6.0, "os": 6}   # os: GiB the old desktop's OS and apps held: its watch log of the best MiMo runs (2026-11-08 19:26-23:24) shows avail 10-12 GiB beside a 109.3 GiB server, ~120 of 125.7 for runs (12 left relcand3 2.6 GiB, the guard killed it)   # link: CUDA0's PCIe rate in GB/s (the old box's CUDA0 sat on x4: pageable uploads 6.1 GB/s, stock's prompt uploads its CPU experts there)
+JOE = {"ram": 128, "threads": 16, "bw": 0.0, "link": 6.0, "os": 6, "card": 0}   # os: GiB the old desktop's OS and apps held: its watch log of the best MiMo runs (2026-11-08 19:26-23:24) shows avail 10-12 GiB beside a 109.3 GiB server, ~120 of 125.7 for runs (12 left relcand3 2.6 GiB, the guard killed it)   # link: CUDA0's PCIe rate in GB/s (the old box's CUDA0 sat on x4: pageable uploads 6.1 GB/s, stock's prompt uploads its CPU experts there)
 JOE_GEN_GBS = {1: 3.2, 2: 6.4, 3: 12.4, 4: 25.0}   # x16 pageable upload per PCIe generation (Gen 3 measured on the old x16 card, Gen 4 on PC1; Gen 1-2 by the line rate)
 JOE_HOG = "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
 JOE_RG = "/sys/fs/resctrl/simjoe"
@@ -7570,9 +7572,9 @@ def simjoe_cpus(threads):
     return ",".join(map(str, sorted(cpus))), len(cores), ids
 
 
-def joe_root_port():
-    """(PCI address of CUDA0's upstream port, CUDA0's own) from nvidia-smi index 0"""
-    bus = subprocess.run([NVSMI, "-i", "0", "--query-gpu=pci.bus_id", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip().lower()
+def joe_root_port(card=0):
+    """(PCI address of the card's upstream port, the card's own) from nvidia-smi index `card` (the old box's x4 card: CUDA0 unless --joe-card)"""
+    bus = subprocess.run([NVSMI, "-i", str(card), "--query-gpu=pci.bus_id", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip().lower()
     dev = bus[-12:] if len(bus) >= 12 else bus   # 00000000:41:00.0 -> 0000:41:00.0
     return os.path.basename(os.path.realpath(f"/sys/bus/pci/devices/{dev}/..")), dev
 
@@ -7621,12 +7623,12 @@ def simjoe_setup(c):
         bw = f", memory read capped at {c['bw']:.0f} GB/s (MBA {u}/8 GB/s on L3 groups {','.join(map(str, c['l3']))})"
     link = ""
     if c["link"] > 0:   # the old box's CUDA0 link: the PCIe generation whose x16 upload is closest, set on its upstream port (both ends of the link obey it)
-        rp, dev = joe_root_port()
+        rp, dev = joe_root_port(c["card"])
         was = joe_link_gen(rp)
         gen = min(JOE_GEN_GBS, key=lambda g: abs(JOE_GEN_GBS[g] - c["link"]))
         open(JOE_MARK, "a").write(f"\nlink {rp} {was}")
         now = joe_link_gen(rp, gen)
-        link = f", CUDA0 ({dev}) link Gen {now} x16 (about {JOE_GEN_GBS.get(now, 0):.1f} GB/s, was Gen {was})" + ("" if now == gen else f" <-- wanted Gen {gen}")
+        link = f", CUDA{c['card']} ({dev}) link Gen {now} x16 (about {JOE_GEN_GBS.get(now, 0):.1f} GB/s, was Gen {was})" + ("" if now == gen else f" <-- wanted Gen {gen}")
     left = mi("MemAvailable") / 2**20
     print(col(33, f"simjoe: CPUs {c['cpus']} ({c['cores']} cores, {c['threads']} threads), RAM available {left:.1f} GiB (held {got * 2 / 1024:.1f} GiB in a 2 MiB hugetlbfs file"
               + ("" if got == pages else f", wanted {pages * 2 / 1024:.1f}: the rest is in use") + f"), {len(down)} other CPUs offline, no huge-page pool, stock -t {c['cores']}{bw}{link}; rows as machine {os.environ.get('PERF_HW')}"), flush=True)
@@ -8066,6 +8068,7 @@ def run_list(name, argv):
     ap.add_argument("--joe-link", type=float, metavar="GBS", help="simjoe: CUDA0's PCIe upload rate (default 6: the old box's x4 card, as PCIe Gen 2 x16 on its root port; 0 = untouched)")
     ap.add_argument("--joe-os", type=int, metavar="GIB", help="simjoe: GiB the emulated box's OS and apps held (default 6, measured on the old desktop): the hog leaves joe's MemTotal less this available")
     ap.add_argument("--joe-ref", choices=["old", "joe"], default="old", help="simjoe: the stock and reference rows the gains divide by: old = the old desktop's real rows (PC1 before 2026-11-12, same power; default), joe = simjoe's own rows of this machine name (measure the stock arm with -sc)")
+    ap.add_argument("--joe-card", type=int, default=0, metavar="N", help="simjoe: the card that is the old box's x4 card (link cap and 220 W): CUDA0 (default) or CUDA1; the other is the x16 card at 280 W")
     ap.add_argument("--joe-bw", type=float, metavar="GBS", help="simjoe: cap the chiplet's memory reads to GBS (AMD MBA; default: none, the chiplet itself reads 40-42)")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
@@ -8109,7 +8112,7 @@ def run_list(name, argv):
     if o.dbg: os.environ["RUN_DBG"] = "1"   # the cells and servers of the list see it
     if "simjoe" in argv or o.simjoe:   # the old desktop on PC1 (simjoe_setup): set for the cells, undone at the end
         if o.machine != "pc1": sys.exit("simjoe: PC1 only")
-        jc = {"ram": o.joe_ram or JOE["ram"], "threads": o.joe_threads or JOE["threads"], "bw": o.joe_bw or 0.0, "link": JOE["link"] if o.joe_link is None else o.joe_link}
+        jc = {"ram": o.joe_ram or JOE["ram"], "threads": o.joe_threads or JOE["threads"], "bw": o.joe_bw or 0.0, "link": JOE["link"] if o.joe_link is None else o.joe_link, "card": o.joe_card}
         os.environ["RUN_SIMJOE"] = ",".join(f"{k}={v}" for k, v in jc.items())
         base = {**JOE, "link": 0.0}   # the first simjoe rows (2026-11-15 08:30) ran without the link cap as plain pc1joe: a cap is named in the machine (pc1joe-link6)
         os.environ["JOE_REF"] = o.joe_ref
