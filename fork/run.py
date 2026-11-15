@@ -1583,7 +1583,7 @@ def wait_vram_free():
         out = subprocess.run([NVSMI, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout.split()
         out = [x for i, x in enumerate(out) if x.isdigit() and card_is_mine(i)]   # no GPU, or an nvidia-smi that fails: nothing to wait for
-        if not out or max(int(x) for x in out) < 500:
+        if not out or max(int(x) for x in out) < 500 + int(os.environ.get("VRAM_HELD_MIB") or 0):   # a list that holds VRAM for real (-rh, vramhog.py) leaves that much used on every card
             wait_host_free()
             return
         time.sleep(1)
@@ -8314,9 +8314,12 @@ def run_list(name, argv):
         import atexit   # (run_list imports it further down for simjoe: without this line the name is a local there and unbound here)
         hog = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vramhog.py"), str(free_mib), os.path.join(DEVBUILDS, rows[0]["_b"])], stdout=subprocess.PIPE, text=True, preexec_fn=_die_with_parent)   # ends with the list, even when the list is killed
         atexit.register(lambda: (hog.terminate(), hog.wait(30)))   # our own child, by handle
+        held = 0
         for _ in range(8):
             ln = hog.stdout.readline(); print(col(90, ln.strip()), flush=True)
+            m_ = re.search(r"(\d+) MiB held", ln); held = max(held, int(m_.group(1)) if m_ else 0)
             if "ready" in ln: break
+        os.environ["VRAM_HELD_MIB"] = str(held + 400)   # the hold's own context sits on top; wait_vram_free of the cells treats this much as free
     if o.not_today:   # -nrt: a cell with enough ok rows (warm-up passes and loop retries do not count) from today in runs.db is not run again; a model with no cell left is not loaded or mounted
         import sqlite3
         done = {}   # campaign -> [(t/s, pp t/s) of today's ok runs of the build under test (a campaign named `latest-...` holds the runs of every build `latest` ever pointed to: only this build's count)]
