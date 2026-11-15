@@ -84,6 +84,7 @@ void     llama_dsplit_pass_abandon_fork();   // a pass that ran out of CUDA memo
 void     llama_dsplit_note_fill_fork(double ms, double pin_ms);   // the fill's whole wall and its staging pins (the planner takes each apart)
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);   // llama-dsplit-fork.cpp: the largest dense-split pass (sliding-window cells)        // src/llama-moecache-fork.cpp: the largest pass every pool can lend for
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
+uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all);   // a refused pass: its path's ceiling, the retry size
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
 extern "C" void ggml_backend_sched_upload_weight_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy,
                                                       size_t off, size_t n);   // ggml-backend.cpp: a host expert weight to its card from the RAM pool, else O_DIRECT; the mapping only if a read fails
@@ -4855,11 +4856,15 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                         if (passes > 1) { u2 = std::max<uint32_t>(64, ((left + passes - 1) / passes + 31) / 32 * 32); }
                     }
                     {   // the ceiling in tokens x cells (g_oom_tc, as after a CUDA out-of-memory): later calls and requests never ask for the pass that did not fit
-                        // (DeepSeek 64k, 2026-11-08: every request paid a refused 16384-token reserve at 57k cells before its 2 x 8192)
+                        // (DeepSeek 64k, 2026-11-08: every request paid a refused 16384-token reserve at 57k cells before its 2 x 8192). A path another path can
+                        // stand in for keeps it as its own and the call runs again at the same size (llama_moe_cache_pp_refused_fork; Kimi K3.1 2026-11-15: layer
+                        // parallel's refusal halved every later pass, 31-33 t/s against 57-63)
                         llama_pos cells = 0;
                         for (uint32_t i = 0; i < ubatch.n_tokens; ++i) { cells = std::max(cells, ubatch.pos[i] + 1); }
-                        const uint64_t tc = (uint64_t) ((double) ubatch.n_tokens * (double) std::max<llama_pos>(cells, 1) * std::min(share, 0.9)), prev = g_oom_tc.load();
-                        g_oom_tc = prev ? std::min(prev, tc) : tc;
+                        uint64_t tc = 0;
+                        u2 = llama_moe_cache_pp_refused_fork(ubatch.n_tokens, (uint64_t) std::max<llama_pos>(cells, 1), share, u2, &tc);
+                        const uint64_t prev = g_oom_tc.load();
+                        if (tc > 0) { g_oom_tc = prev ? std::min(prev, tc) : tc; }
                     }
                     LLAMA_LOG_WARN("%s: the pool refused a pass of %u tokens: the rest of this call, %zu tokens, in passes of at most %u\n", __func__, ubatch.n_tokens, tk.size() - (size_t) n_tokens_prev, u2);
                     call_abandon();

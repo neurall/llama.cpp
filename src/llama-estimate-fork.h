@@ -2,6 +2,7 @@
 // The prompt planner's strategy estimators. Pure functions: no globals, no locks, no logging, so each one is unit tested alone (tests/test-estimate-fork.cpp).
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 // ---- strategy estimators (user 2026-11-10: "all our strategy deciders implemented as properly named functions taking all key metrics and returning new estimated time per token,
@@ -120,6 +121,19 @@ static inline double estimate_layerparallel_time(const pp_metrics & m) {
     return t;
 }
 static inline double estimate_layerparallel_time_per_token(const pp_metrics & m) { return estimate_layerparallel_time(m) / m.n; }
+
+// A pass the pool refused (its graph and the KV did not fit a card's pool). Kimi K3.1, 4588 tokens, 2026-11-15: layer parallel (never measured, picked on its prior,
+// 45.7 s against the one card's 46.6) wanted a 5329.6 MiB graph on CUDA1 beside the KV in a 6206.6 MiB pool; the refusal became an out-of-memory ceiling for
+// every path, so the call and the next ran 2304 + 2436-token passes at 31-33 t/s where one card had run 3936-4190-token passes at 57-63 t/s.
+// A path with another path to fall back on (layer parallel, the mix, the k arms: the stream on one card takes their call) keeps the ceiling as its own, and the
+// call runs again at the same pass size on the others; a refusal of the last resort halves the passes of every path, as before.
+struct pp_refusal { uint64_t tc; bool path_only; uint32_t retry_pass; };
+static inline pp_refusal pp_refusal_of(bool has_fallback, uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller_pass) {
+    const uint64_t tc = (uint64_t) ((double) n_tokens * (double) std::max<uint64_t>(cells, 1) * std::min(share, 0.9));   // tokens x cells this path may ask for
+    return has_fallback ? pp_refusal{ tc, true, n_tokens } : pp_refusal{ tc, false, smaller_pass };
+}
+// a path's ceiling (0: none) admits a pass of n tokens that ends at `cells`
+static inline bool pp_pass_under(uint64_t tc, double n, double cells) { return tc == 0 || n * std::max(1.0, cells) <= (double) tc; }
 
 // ---- a machine and a model as numbers (user 2026-11-10: tune on unit tests without a model: simulated SSD, memory and PCIe rates, card count, card memory, compute speed) ----
 // pp_metrics_for builds a pass's metrics from them through the same sums llama_moe_cache_pp_decide_fork fills from the loaded model (pp_sums_add): the layers go to the cards,

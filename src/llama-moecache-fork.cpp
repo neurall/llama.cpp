@@ -15781,6 +15781,7 @@ static double pp_pass_floor(double n) {
 // PP_RING: the stream, every expert staged on the fastest link's card. PP_MIX: the stream with the prompt mix. PP_DEC: the decode chain. PP_K + i: the stream with predicted staging, q2 up to 2^i x a token's picks.
 // PP_LP: the stream layer parallel, each card its own layers' experts (staging=0 only).
 enum { PP_RING = 0, PP_MIX = 1, PP_CHAIN = 2, PP_DENSE = 3, PP_DEC = 4, PP_K = 5, PP_KN = 8, PP_LP = PP_K + PP_KN, PP_PATHS = PP_LP + 1 };
+static uint64_t g_pp_tc[PP_PATHS] = {};   // per path: the tokens x cells of a pass the pool refused it (pp_refusal_of), 0 = none; g_pp_mu
 static constexpr double PP_MIX_COLD = 4096.0;   // below it the prompt mix competes on its mean from the first request, above it only a trial (shortcut: a fixed size, the data has wins to 4.5k and losses at 12k; compute it from the cross-card traffic when 5-10k is measured)
 static constexpr double PP_MIN_BATCH = 32.0;   // GGML_OP_OFFLOAD_MIN_BATCH's default: under it a pass's experts run on the CPU, whichever path was planned
 static constexpr double PP_K_LATE = 1.3;   // predicted staging's real cost over the upload of the experts it calculates; the forced sweep's break-even at 77% of a layer's experts needed (2026-10-31, campaign predictor-upload-bw-reducer)
@@ -17032,6 +17033,14 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             if (!cs_fits) { ok[PP_RING] = false; ok[PP_MIX] = false; for (int p = PP_K; p < PP_PATHS; ++p) { ok[p] = false; } }
             if (moe_split_mode() == 1 && ok[PP_LP]) { ok[PP_RING] = false; }   // --moe moe-split=home: the stream runs layer parallel
         }
+        // a path the pool refused a pass of this size (llama_moe_cache_pp_refused_fork) sits out the calls that would ask it for one again
+        for (int p = 0; p < PP_PATHS; ++p) {
+            if (ok[p] && !pp_pass_under(g_pp_tc[p], n, (double) g_pp_cells)) {
+                ok[p] = false;
+                LLAMA_LOG_WARN("moe-cache: planner: %s sits out a pass of %.0f tokens at %llu cells (the pool refused it %llu tokens x cells)\n", pp_path_name(p).c_str(), n,
+                        (unsigned long long) g_pp_cells, (unsigned long long) g_pp_tc[p]);
+            }
+        }
         // Router or full stream (user 2026-11-10): time per token of the path that ran here against the estimate of the other, and the stream as soon as it costs the same or less.
         // A path measured at this size counts with its real time. The estimates: the router waits for its ids, uploads its picks and computes; the full stream uploads every expert
         // (one expert's upload x the experts) while it computes, so it takes the longer of the two. No stored threshold. --moe pp-switch=0: both compete on their means, as before.
@@ -17202,6 +17211,25 @@ double llama_moe_cache_pp_best_one_us_fork(int64_t n_tokens) {
     }
     return o;
 }
+// A pass the pool refused (llama-context.cpp): the running path's own ceiling when another path can take the call (pp_refusal_of), else the caller's ceiling for
+// every path (*tc_all). Returns the pass size the rest of the call runs again with.
+uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all) {
+    const int p = g_pp_path_call.load(std::memory_order_relaxed);
+    // the dense split's refusals stay with the caller's ceiling: the split planner reads it (shortcut: the split has no ceiling of its own yet, add one when a split refusal shows)
+    const bool fb = g_cache && llama_dsplit_cur_fork() != 1 && (p == PP_LP || p == PP_MIX || (p >= PP_K && p < PP_K + PP_KN));
+    const pp_refusal r = pp_refusal_of(fb, n_tokens, cells, share, smaller);
+    *tc_all = r.path_only ? 0 : r.tc;
+    if (r.path_only) {
+        std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
+        g_pp_tc[p] = g_pp_tc[p] ? std::min(g_pp_tc[p], r.tc) : r.tc;
+        const std::string s = format("the pool refused %s a pass of %u tokens at %llu cells: %s keeps passes of at most %llu tokens x cells, the call runs again at %u tokens on the other paths",
+                pp_path_name(p).c_str(), n_tokens, (unsigned long long) cells, pp_path_name(p).c_str(), (unsigned long long) g_pp_tc[p], r.retry_pass);
+        LLAMA_LOG_WARN("moe-cache: %s\n", s.c_str());
+        llama_moe_stats_log_fork("DEC", s.c_str());
+    }
+    return r.retry_pass;
+}
+
 // the split is expected faster than this call's path: the call streams instead (no decode chain, no prompt chain, no predicted staging), so the split can run under it
 bool llama_moe_cache_pp_yield_fork(const char * why) {
     static const bool k_auto = moe_opt("pp-k") == nullptr, forced = moe_opt("pp-path") != nullptr;

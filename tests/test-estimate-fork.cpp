@@ -177,6 +177,18 @@ int main() {
         check("a measured time decides without other measured inputs", pp_switch_pick(r, 5e3 * 512.0, 0.0, false) == PP_SWITCH_ROUTER_OUT);
         check("a tie goes to the stream", pp_switch_pick(r, 1e6, 1e6, true) == PP_SWITCH_ROUTER_OUT);
     }
+    // a refused pass (Kimi K3.1 k3onepass, 2026-11-15): layer parallel's 4588-token pass at 4588 cells, its CUDA1 graph 5329.6 MiB beside the KV in a 6206.6 MiB pool
+    {
+        const uint32_t n = 4588; const uint64_t cells = 4588;
+        const pp_refusal lp = pp_refusal_of(true, n, cells, 0.88, 2304);
+        check("layer parallel refused: the ceiling is its own", lp.path_only);
+        check("layer parallel refused: the call runs again at the same pass size (the one card held 4190-token passes, 57-63 t/s)", lp.retry_pass == n);
+        check("layer parallel refused: its ceiling keeps it off a pass of that size", !pp_pass_under(lp.tc, n, (double) cells));
+        check("layer parallel refused: a pass of half the tokens and cells stays its own", pp_pass_under(lp.tc, n / 2, cells / 2.0));
+        check("no ceiling: every pass", pp_pass_under(0, 1e6, 1e6));
+        const pp_refusal one = pp_refusal_of(false, n, cells, 0.88, 2304);
+        check("the last resort refused: every path, smaller passes (as before)", !one.path_only && one.retry_pass == 2304);
+    }
 
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);
     return g_fail ? 1 : 0;
