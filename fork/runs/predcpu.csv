@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+p1k-off,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+p1k-cpu,k31,2,pf1k,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,jit-cpu=1",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+cv-off,k31,2,chatv,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0
+cv-cpu,k31,2,chatv,64,"--moe rp-grow=0,state=/tmp/runstate/k3pin/s.ini,jit-cpu=1",--state-from /p/bw/data/state-snaps/Kimi-K3.1-Pro-IQ1_S-00001-of-00031/20261113-151822-heat_decode_only --env PERF_LEDGER=0

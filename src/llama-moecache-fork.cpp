@@ -11725,6 +11725,10 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // the CPU: the CPU's float results differ from the GPU's, and greedy runs of one prompt diverged after a median 5 tokens when the CPU computed some
     static const bool jit_all = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();
     if (jit_all || rc <= 0.0) { kb = m; }
+    // --moe jit-cpu=1 (user 2026-11-15: "what about cpu only misses then"): the other end of jit-all, every miss the CPU can read from RAM on the CPU, to measure the
+    // planner's split against both ends; an expert only the SSD has still goes up (cpu_eq: no expert is computed from page faults), it sorts first
+    static const bool jit_cpu = [] { const char * v = moe_opt("jit-cpu"); return v && atoi(v) > 0; }();
+    if (jit_cpu && !jit_all && rc > 0.0) { kb = 0; while (kb < m && cpu_eq(miss[kb]) >= 1e300) { ++kb; } }
     {   // stats.log SWT: the call's misses switch between the CPU, a mix and uploads (user 2026-11-02: "in stats.log log switching from missed moes from cpu to uploads"); one line per switch, not per layer
         static std::atomic<int> last_mode[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };   // per link: the cards' pass sizes differ, the rule can flip on one and not on the other
         const int mode = kb == 0 ? 0 : kb == m ? 2 : 1;
