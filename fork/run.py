@@ -2126,6 +2126,8 @@ HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and refer
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
 HW_SINCE = {"pc1": "2026-11-12"}
 def hw_filter(hw):
+    if hw == "pc1" and os.environ.get("RUN_SIMJOE") and os.environ.get("JOE_REF") == "joe":   # --joe-ref joe: stock and reference rows of simjoe's own machine (pc1joe..., the same link cap), measured here with -sc
+        return f" and hw='{os.environ['PERF_HW']}'"
     if hw == "pc1" and os.environ.get("RUN_SIMJOE"):   # simjoe rows against the old desktop's (PC1 before its change) at the same power (user 2026-11-15: "why dont we see best old runs on same prompt and pl")
         # shortcut: the power of the list's start; a list crossing 23:50 compares its night cells with day rows, split such a list in two
         return f" and hw='pc1' and ts < '{HW_SINCE['pc1']}' and pl='{'+'.join(map(str, power_targets(joe_widths([16, 16]))))}'"
@@ -8063,6 +8065,7 @@ def run_list(name, argv):
     ap.add_argument("--joe-threads", type=int, metavar="N", help="simjoe: hardware threads of the emulated box (default 16 = 8 cores)")
     ap.add_argument("--joe-link", type=float, metavar="GBS", help="simjoe: CUDA0's PCIe upload rate (default 6: the old box's x4 card, as PCIe Gen 2 x16 on its root port; 0 = untouched)")
     ap.add_argument("--joe-os", type=int, metavar="GIB", help="simjoe: GiB the emulated box's OS and apps held (default 6, measured on the old desktop): the hog leaves joe's MemTotal less this available")
+    ap.add_argument("--joe-ref", choices=["old", "joe"], default="old", help="simjoe: the stock and reference rows the gains divide by: old = the old desktop's real rows (PC1 before 2026-11-12, same power; default), joe = simjoe's own rows of this machine name (measure the stock arm with -sc)")
     ap.add_argument("--joe-bw", type=float, metavar="GBS", help="simjoe: cap the chiplet's memory reads to GBS (AMD MBA; default: none, the chiplet itself reads 40-42)")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
@@ -8109,6 +8112,7 @@ def run_list(name, argv):
         jc = {"ram": o.joe_ram or JOE["ram"], "threads": o.joe_threads or JOE["threads"], "bw": o.joe_bw or 0.0, "link": JOE["link"] if o.joe_link is None else o.joe_link}
         os.environ["RUN_SIMJOE"] = ",".join(f"{k}={v}" for k, v in jc.items())
         base = {**JOE, "link": 0.0}   # the first simjoe rows (2026-11-15 08:30) ran without the link cap as plain pc1joe: a cap is named in the machine (pc1joe-link6)
+        os.environ["JOE_REF"] = o.joe_ref
         os.environ["PERF_HW"] = "pc1joe" + "".join(f"-{k}{v:g}" for k, v in jc.items() if v and v != base[k])
         import atexit, signal
         atexit.register(simjoe_teardown)
