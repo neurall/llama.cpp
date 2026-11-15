@@ -177,6 +177,8 @@ def judge(cells):
         if cand and cand[1] < c["took"] * (1 - YARD): bad += 1; lost += c["took"] - cand[1]; ev.append(f"{c['n']}{cw} {c['path']} {c['took']:.0f} ms, {cand[0]} measured {cand[1]:.0f}")
     band = (f"; band 64-512: {len(small)} calls, {bad} lost >5% ({lost / 1e3:.1f} of {tot / 1e3:.1f} s): " + "; ".join(ev[:2])) if small else "; no prompt call in the band 64-512 (pf512 would show the chains' crossover)"
     if not first: out[XO[0]] = ("unverified", 0.0, bad, "no decode window" + band)
+    elif not swt and not small:   # no decode miss went anywhere (the experts all on the card, or no expert cache): no CPU-vs-upload decision to judge; the ramp is warm-up
+        out[XO[0]] = ("n/a", 0.0, 0, f"no decode misses (first 100 tokens {statistics.mean(first):.1f} ms per token vs steady {statistics.mean(steady):.1f}): no CPU-vs-upload decision" + band)
     else:
         pct = 100 * ramp / max(total, 1e-9)
         out[XO[0]] = ("FAIL" if pct > 100 * YARD or lost > YARD * max(tot, 1e-9) else "PASS", pct, bad,
