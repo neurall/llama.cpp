@@ -9482,3 +9482,8 @@ rel_small_gpus-q27mtp-p5-pf5k1k,2026-11-15 23:57:51,bench /m/q/5/Qwen3.8-27B-MTP
 rel_small_gpus-q27mtp-p4-pf4k1k,2026-11-15 23:58:33,bench /m/q/5/Qwen3.8-27B-MTP-Q5_K_M.gguf builds rel_small_gpus variants v test pf4k n=2,,
 rel_small_gpus-ds-p12-pf12k1k,2026-11-15 23:59:14,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds rel_small_gpus variants v test pf12k n=2,,
 latest-glm35-i-pf12k1k,2026-11-16 00:13:15,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds state_split_heat variants v test pf12k n=2,,
+stock-b12426-official-moe-glm35-i-pf12k1k,2026-11-16 00:17:06,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds stock-b12426-official variants v test pf12k n=2,,
+stock-b12426-official-olmoe-i-pf4k1k,2026-11-16 00:20:31,bench /m/o/4/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf builds stock-b12426-official variants v test pf4k n=2,,
+stock-b12426-official-q36-i-pf14k1k,2026-11-16 00:21:19,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds stock-b12426-official variants v test pf14k n=2,,
+stock-b12426-official-moe-olmoe-i-pf2k1k,2026-11-16 00:22:47,bench /m/o/4/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf builds stock-b12426-official variants v test pf2k n=2,,
+stock-b12426-official-moe-q36-i-pf14k1k,2026-11-16 00:24:04,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds stock-b12426-official variants v test pf14k n=2,,

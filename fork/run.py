@@ -2188,6 +2188,11 @@ HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and refer
 # a host whose hardware changed keeps its name: rows before the change are another machine (2026-11-12 PC1: Ryzen 7 3700X with 2-channel RAM and x16 + x4 became a
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
 HW_SINCE = {"pc1": "2026-11-12"}
+def stock_prefix(r):
+    """the label prefix of a cell in the tables: "" ours, "s" plain stock, "smoe-" stock with upstream's expert cache (-sm): the two stock arms never look alike"""
+    return "" if not str(r["_b"]).startswith("stock") else ("smoe-" if os.environ.get("STOCK_MOE") else "s")
+
+
 def stock_arm_sql():
     """SQL on the args column that picks the stock rows of the arm in use: with -sm (upstream's expert cache) only the rows that ran with --moe-cache-mib, else only the plain ones: moe to moe, plain to plain"""
     return " and coalesce(args,'') like '%moe-cache-mib%'" if os.environ.get("STOCK_MOE") else " and coalesce(args,'') not like '%moe-cache-mib%'"
@@ -8328,8 +8333,8 @@ def run_list(name, argv):
             if STOCK_REC[0] and _rid:   # the label is the build that made the run, not the one `latest` points to now
                 _b = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select bno, start_ts from runs where rowid=?", (_rid,)).fetchone()
                 if _b and _b[0]: STOCK_REC[0]["ob"] = int(_b[0]); STOCK_REC[0]["od"] = str(_b[1])[:10]
-            CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, build=r["_b"], prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
-            CELL_LINES.append(col(1, f"{('s' if r['_b'].startswith('stock') else '') + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
+            CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, build=r["_b"], prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=stock_prefix(r) + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
+            CELL_LINES.append(col(1, f"{stock_prefix(r) + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
     if o.status:   # one table in the -nrt columns: the cells done today, the one running now, the cells queued next (the rest of the list, then the queue daemon's waiting tasks); nothing else happens
@@ -8339,7 +8344,7 @@ def run_list(name, argv):
             tag = f"{r['_b']}-{r['name']}"; run_ = tag == run_tag
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)
             rec = dict(tag=tag, section="running" if run_ else "queued", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=None, sbno="", xfer="", sdate="", rid=None, prompt=prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"],
-                       name=("s" if r["_b"].startswith("stock") else "") + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, exp=ex if run_ else None, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock"))
+                       name=stock_prefix(r) + r["name"], el=time.time() - run_since if run_ and run_since else None, est=None if run_ else ex, exp=ex if run_ else None, lt="", rc=0, res=[], st=None, stock_row=r["_b"].startswith("stock"))
             rec.update(last_run_rec(r, HW))   # the values of its last run, with the gain over stock: what it is expected to beat
             if not run_: rec["res"] = []   # a cell that has not run shows no speed: the last run of the same model and test is another cell's number
             CELL_REC.append(rec)
@@ -8422,7 +8427,7 @@ def run_list(name, argv):
     if not o.dry: CUR_HWL[0] = hw_line(); print(col(1, CUR_HWL[0]), flush=True)
     _diag = cell_diag(os.environ, argparse.Namespace(ledger=o.ledger, env=[]))[1]
     print(col(33, "diagnostics ON in every cell: " + ", ".join(_diag)) if _diag else col(90, "diagnostics off (--ledger: pool write ledger)"), flush=True)
-    NAMEW[0] = max((len(("s" if r["_b"].startswith("stock") else "") + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
+    NAMEW[0] = max((len(stock_prefix(r) + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
     exp_all = [cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm) for r in rows]
     known = [x for x in exp_all if x]; fill = (sum(known) / len(known)) if known else 600.0   # a cell without history counts the average of the known ones, so the whole-run bar and its time cover every cell of the list
     total_s = sum(x or fill for x in exp_all); done_s = 0; run_t0 = time.time()   # expected seconds of the whole list, from runs.db
@@ -8448,7 +8453,7 @@ def run_list(name, argv):
             CELL_BUILD[0] = str(r.get("_b") or ""); CELL_REF[0] = (os.path.basename(r["model"]), r["test"]); CELL_PROMPT[0] = prompt_txt(r["test"], r.get("tokens")); CELL_ASKED[0] = int(r["tokens"]) if r.get("tokens") else 0
             CELL_TEST[0] = (re.sub(r"^(\d+k)/(\w+)$", r"\1\2", CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k", r["test"]) else CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k(1k)?", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")   # "12k in 1k out", "64t in 1k out"
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
-            if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, ("s" if r["_b"].startswith("stock") else "") + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
+            if not o.dry and run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), ex, stock_prefix(r) + r["name"], total=(done_s, total_s, run_t0, rows.index(r) + 1, len(rows)), log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
             if not o.dry and not r["_b"].startswith("stock") and not (r.get("args") or "").strip(): learn_bestpp(r["model"], r["test"], tag)
             if not o.dry and not r["_b"].startswith("stock"): learn_att(r["model"], tag)
             done_s += ex or fill
@@ -8697,7 +8702,7 @@ def run_list_remote(o, rows, name):
             r = hsh(f"nvidia-smi -i {i} -pl {w} 2>&1 | head -1", 60).strip()   # the first line is the result or the reason ("Insufficient Permissions"); the last line is always "Terminating early"
             print(f"power: {o.machine} GPU {i} -> {w} W: {r[:110]}", flush=True)
     if not o.dry: CUR_HWL[0] = hw_line(); print(col(1, CUR_HWL[0]), flush=True)
-    NAMEW[0] = max((len(("s" if r["_b"].startswith("stock") else "") + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
+    NAMEW[0] = max((len(stock_prefix(r) + r["name"]) for r in rows), default=NAMEW[0] - 1) + 1
     try: _run_list_remote(o, rows, name, m, here, bad)
     finally:
         pass   # the final block, complete for a screenshot, like a local list
@@ -8767,7 +8772,7 @@ def _run_list_remote(o, rows, name, m, here, bad):
             CELL_TEST[0] = (re.sub(r"^(\d+k)/(\w+)$", r"\1\2", CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k", r["test"]) else CELL_PROMPT[0]) if re.fullmatch(r"pf\d+k(1k)?", r["test"]) else r["test"] + "  " + (f"{tin}{'t' if tin[-1].isdigit() else ''} in" if tin and tin[0].isdigit() else tin or "") + (f" {tout // 1024}k out" if tout and tout % 1024 == 0 else f" {tout} out" if tout else "")
             CELL_TEST[0] += f"  {r['_b']}" + (f"  {r['args'].strip()}" if r.get("args") and r["args"].strip() else "")   # what runs: build, extra server args
             try:
-                if run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), cell_expect(r["model"], r["test"], r["n"], r["_b"], False), ("s" if r["_b"].startswith("stock") else "") + r["name"],
+                if run_watched(cmd, dict(os.environ, PERF_BUILDS=DEVBUILDS), cell_expect(r["model"], r["test"], r["n"], r["_b"], False), stock_prefix(r) + r["name"],
                                log=f"{QDIR}/{tag}.list.log", results=f"{QDIR}/{tag}-{r['test']}.run.out", peek=(r["model"], r["test"])): bad.append(tag)
             except KeyboardInterrupt: bad.append(tag); break
     finally: REMOTE_SLOTS[0] = None
