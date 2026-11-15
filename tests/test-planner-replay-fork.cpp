@@ -27,7 +27,7 @@
 // cards, the measured fill wall, rampool10's logged split prior
 struct ev { std::string log; int req; double n, cells, Ts, Um, up, ch, dec_max = 1e9, U = 0;
             std::string model{}, cls{}; int n_used = 8, n_exp = 512; double fill_est = 740e3, fill_ms = 1478, split_prior = 2034.2, lp = 0, n_call = 0;
-            std::string path{}; double took = 0; };   // what the logged call ran and took (the report's)
+            std::string path{}; double took = 0; double ratio = 0; };   // what the logged call ran and took (the report's); the plan's split / one compute ratio (0: not logged)
 enum { A_RING, A_MIX, A_CHAIN, A_DEC, A_K, A_KN = 6, A_LP = A_K + A_KN, A_N };
 static const int PICK_MODE = 3;
 static bool g_carry = false;   // replay with the previous start's stored state (R4), else every start fresh   // the mode the planner runs (keep equal to the code)   // GLM 3.5: k steps x1..x32 (the arms rampool9/10 listed)
@@ -124,16 +124,20 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
         if (fill.k == 0) { const double o = 1; rls_init(fill, 1, &o, nullptr); }
         double vs, ds, fd = 0, fv, dd1 = mode == 0 ? std::max(0.0, dr[pick1]) : mode == 1 ? mu[pick1] : lcb[pick1];
         double ms = rls_pred(split, sphi, &vs); rls_draw(split, sphi, rls_mix(rseed + 0x51), &ds);
-        if (mode == 3 && split.n == 0) { ms = mu[pick1] * RLS_SPLIT_ONE_RATIO; vs = ms * ms * RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG + var[pick1] * RLS_SPLIT_ONE_RATIO * RLS_SPLIT_ONE_RATIO; }   // the data prior (dsf_plan)   // never ran (a loaded posterior keeps its n)
         if (est > 0) { const double fm = rls_pred(fill, &est, &fv); if (mode == 0) { rls_draw(fill, &est, rls_mix(rseed + 0xf1), &fd); fd = std::max(0.0, fd); } else { fd = fm; } }
         const double d2 = mode == 0 ? ds : mode == 1 ? ms : ms - std::sqrt(std::max(0.0, vs));
         int sp = rls_split_choice(dd1 - d2, std::max(0.0, dd1 - d2), fd);
         double m2[2] = {}, v2[2] = {}; bool me2[2] = {};   // mode 3's two arms, kept for the report
-        if (mode == 3) {   // two arms for the call: the one-card pick's mean and the split's mean plus the fill owed
-            m2[0] = mu[pick1]; m2[1] = ms + (est > 0 ? rls_pred(fill, &est, &fv) : 0); v2[0] = var[pick1]; v2[1] = vs + (est > 0 ? fv : 0);
-            const bool o2[2] = { true, true };
-            me2[0] = rls_known(one[pick1], m2[0], v2[0]); me2[1] = split.n > 0 && rls_known(split, m2[1] - (est > 0 ? rls_pred(fill, &est, &fv) : 0), vs);
-            sp = rls_voi_pick(m2, v2, o2, 2, Rn, nullptr, me2);
+        if (mode == 3) {   // one card against the split plus the fill owed: the split planner's own pick (dsf_pick, llama-rls-fork.h), one pass per call (the logged calls ran as one)
+            dsf_arm_pass q; q.T = e.n; q.U = e.Ts * 1e3; q.mu1 = mu[pick1]; q.v1 = var[pick1]; q.kn1 = meas[pick1]; q.n1 = one[pick1].n; q.mu2 = ms; q.v2 = vs;
+            dsf_call dc; dc.ratio = e.ratio > 0 ? e.ratio : RLS_SPLIT_ONE_RATIO;
+            dc.c_one_bench = e.split_prior > 0 ? e.split_prior / dc.ratio : 0.0;   // the plan's one-card compute per token: its split prior / their ratio (the ratio is min(1, split / one))
+            dc.split_prior = split.n == 0; dc.split = &split;
+            if (est > 0) { dc.f_mu = rls_pred(fill, &est, &dc.f_v); }
+            for (size_t i = 0; i + 1 < seen.size(); ++i) { dc.seen_before += dsf_size_class((int64_t) seen[i]) == dsf_size_class((int64_t) e.n); }   // seen holds this call last
+            const dsf_pick_out pk = dsf_pick({ q }, dc);
+            sp = pk.choice; ms = pk.mu2_0;
+            m2[0] = pk.am[0]; m2[1] = pk.am[1]; v2[0] = pk.av[0]; v2[1] = pk.av[1]; me2[0] = pk.known1; me2[1] = pk.known2;
             // R2 (planner-crossovers.md): neither side known here - split iff the one-card pass is compute-bound by r over the LINK-bound upload
             // (max(U, C1) > r U; C1 = the one-card mean) and, with REPLAY_R2_FILL, its predicted gain beats the fill owed
             if (getenv("REPLAY_R2") && !me2[0] && !me2[1] && e.U > 0) {
@@ -165,7 +169,7 @@ static result replay(const std::vector<ev> & E, std::map<std::string, double> & 
                 o += b;
             }
             snprintf(b, sizeof b, "      one card or split: one %.1f +- %.1f s%s, split %.1f + fill %.1f = %.1f +- %.1f s%s (split n %d%s) -> %s\n", m2[0] / 1e6, std::sqrt(std::max(0.0, v2[0])) / 1e6,
-                     me2[0] ? " known" : "", ms / 1e6, (m2[1] - ms) / 1e6, m2[1] / 1e6, std::sqrt(std::max(0.0, v2[1])) / 1e6, me2[1] ? " known" : "", split.n, split.n == 0 ? ", prior one x 0.96" : "",
+                     me2[0] ? " known" : "", ms / 1e6, (m2[1] - ms) / 1e6, m2[1] / 1e6, std::sqrt(std::max(0.0, v2[1])) / 1e6, me2[1] ? " known" : "", split.n, split.n == 0 ? ", prior max(upload, one x ratio)" : "",
                      sp ? "split" : "one card");
             double cf = 0;   // the factor rls_prior_cal put on the never-run arms (1: none measured at this size yet)
             for (int a = 0; a < A_N; ++a) { if (ok[a] && con[a] > 0 && con[a] != 1) { cf = con[a]; } }
@@ -226,6 +230,7 @@ int main(int argc, char ** argv) {
             if (c.size() >= 22) {   // planner_events.py --all: the model and its machine's numbers
                 e.model = c[13]; e.cls = c[14]; e.n_used = atoi(c[15].c_str()); e.n_exp = atoi(c[16].c_str()); e.fill_est = atof(c[17].c_str()) * 1e3; e.fill_ms = atof(c[18].c_str());
                 e.split_prior = atof(c[19].c_str()); e.lp = atof(c[20].c_str()); e.n_call = atof(c[21].c_str()); e.path = c[8]; e.took = atof(c[9].c_str());
+                if (c.size() >= 24) { e.ratio = atof(c[23].c_str()); }
             }
             E.push_back(e);
         }

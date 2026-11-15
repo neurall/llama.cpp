@@ -94,6 +94,41 @@ int main() {
         rls_prior_cal(m2, v2, s2, 2, 0.0);
         check("no calibration yet: the priors stay", m2[0] == 10.0 && m2[1] == 20.0, m2[0]);
     }
+    // one card against the split (dsf_pick, the split planner's pick): cases from logged calls (stats.db 2026-11-05..15), the engine's own PLN inputs, seconds.
+    // Of 116 real one-vs-two losses with logged inputs: 63 lost trials (exploration), 33 estimates on the wrong side (GLM 3.0 cold one card ~ its upload alone:
+    // 4.0 s against 5.5 measured at 2268 tokens), 2 coin flips (K3 995 cold, priors 0.1% apart); none a rule picking against estimates that were right.
+    {
+        const double s = 1e6;
+        auto pass = [&](double T, double U, double mu1, double sd1, bool kn1, int n1, double mu2 = 0, double sd2 = 0) {
+            dsf_arm_pass p; p.T = T; p.U = U * s; p.mu1 = mu1 * s; p.v1 = sd1 * sd1 * s * s; p.kn1 = kn1; p.n1 = n1; p.mu2 = mu2 * s; p.v2 = sd2 * sd2 * s * s; return p; };
+        dsf_rls meas; meas.n = 3; meas.s2 = 0.01;   // a split measured three times, 10% noise
+        // K3 995 tokens cold (hot_tree8, 11-13): neither side ran; the plan's split / one ratio 1.31 is capped at 1 (above 1 the plan is wrong on most models:
+        // median 1.45 on GLM 3.5, whose split measures 0.73-1.09 of one card), so the split's prior is one card's and a trial of it is the exploration (measured 87.1 s vs 77.4)
+        dsf_call k3; k3.ratio = 1.0;
+        const dsf_pick_out a = dsf_pick({ pass(995, 22.2, 81.1, 11.0, false, 1) }, k3);
+        check("K3 995 cold, equal priors: the split is a trial, never a mean pick", a.choice == 1 && a.trial, a.am[1] / s);
+        dsf_call k3m; k3m.ratio = 1.0; k3m.split_prior = false; k3m.split = &meas;
+        const dsf_pick_out b = dsf_pick({ pass(995, 22.2, 77.4, 2.0, true, 3, 87.1, 3.0) }, k3m);
+        check("K3 995, the split measured slower (87.1 vs 77.4 s): one card, no trial", b.choice == 0 && !b.trial, b.am[0] / s);
+        // GLM 3.0 2268 tokens cold (var1, 11-09): one card priced 4.02 +- 1.45 against its upload 3.99, fill 0.74 owed: upload-bound, no trial of the split, one card;
+        // measured one card 5.51, split 4.88 with its fill: the miss is the estimate (one card's compute left out), not the rule
+        dsf_call g; g.ratio = 1.0; g.f_mu = 0.74 * s; g.f_v = 0.74 * 0.74 * s * s;
+        const dsf_pick_out c = dsf_pick({ pass(2268, 3.99, 4.02, 1.45, false, 0) }, g);
+        check("GLM 3.0 2268 cold as logged: upload-bound, one card", c.choice == 0 && c.upload_bound, c.am[0] / s);
+        const dsf_pick_out d0 = dsf_pick({ pass(2268, 3.99, 5.51, 0.3, true, 3) }, g);
+        check("GLM 3.0 2268, one card known at its measured 5.51 s, the plan's capped ratio 1.00: still one card (the ratio is the miss)", d0.choice == 0, d0.am[1] / s);
+        g.ratio = 0.90;   // GLM 3.0's measured split / one card (12 classes, staging=0 logs): the split is tried
+        const dsf_pick_out d = dsf_pick({ pass(2268, 3.99, 5.51, 0.3, true, 3) }, g);
+        check("GLM 3.0 2268, one card known at 5.51 s, the measured ratio 0.90: the split is tried", d.choice == 1 && d.trial, d.am[1] / s);
+        // the rampool13 deadlock guard: neither known, the split's prior a hair above one card by the fill - still tried where the stake pays
+        dsf_call h; h.ratio = 1.0; h.f_mu = 0.2 * s; h.f_v = 0.04 * s * s;
+        const dsf_pick_out e = dsf_pick({ pass(10144, 4.0, 14.0, 5.0, false, 1) }, h);
+        check("GLM 3.0 12k, split prior one x 1.00 + fill above one card: a trial of the split", e.choice == 1 && e.trial, e.am[1] / s);
+        // the bench cap (MiMo 3k, 11-08): one card never measured, its cold prior 8.7 s against 4.0-4.3 measured: capped to max(upload, bench compute)
+        dsf_call mi; mi.ratio = 0.9; mi.c_one_bench = 4.2 * s / 3000.0;
+        const dsf_pick_out f = dsf_pick({ pass(3000, 2.0, 8.7, 3.0, false, 0) }, mi);
+        check("MiMo 3k: a never-measured one card is capped by the bench (8.7 -> 4.2 s)", std::fabs(f.mu1_0 / s - 4.2) < 1e-9, f.mu1_0 / s);
+    }
     printf("%s\n", n_failed ? "FAILED" : "all passed");
     return n_failed ? 1 : 0;
 }

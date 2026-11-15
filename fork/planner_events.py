@@ -113,29 +113,34 @@ def every(out):
     for rid, ts, build, tag, args, blob in db.execute('select rowid, ts, build, tag, args, log from stats order by ts'):
         m = ct.model_key(files.get(rid) or '') or ct.model_key(tag)
         if m not in EXPERTS: continue
-        cs, fest = calls(zlib.decompress(blob).decode(errors='replace').splitlines())
+        L = zlib.decompress(blob).decode(errors='replace').splitlines()
+        cs, fest = calls(L)
         if not cs: continue
         rg = regime(args)
-        starts.append((m, build + (' ' + rg if rg else ''), f'{tag}@{ts[5:16]}', cs, fest, split_prior(tag)))
+        # the split planner's split / one-card compute ratio (the plan's bench), printed while the split never ran: "split prior = max(upload U s, one x R)"
+        ratio = next((float(x.group(1)) for l in L if ' PLN plan: pass of ' in l and (x := re.search(r'one x ([\d.]+)\)', l))), 0.0)
+        starts.append((m, build + (' ' + rg if rg else ''), f'{tag}@{ts[5:16]}', cs, fest, split_prior(tag), ratio))
     # per model and machine: the measured copy fill (its median), the fill estimate and the split prior where a start logged none (the first one logged there,
     # else the model's: a start that loaded a stored split posterior logs no prior)
-    fills, fests, priors = collections.defaultdict(list), {}, {}
-    for m, mach, _, cs, fest, sp in starts:
+    fills, fests, priors, ratios = collections.defaultdict(list), {}, {}, {}
+    for m, mach, _, cs, fest, sp, ra in starts:
         fills[(m, mach)] += [c['fill'] for c in cs if c['fill'] > 0]
         if fest is not None: fests.setdefault((m, mach), fest)
         if sp > 0: priors.setdefault((m, mach), sp); priors.setdefault(m, sp)
+        if ra > 0: ratios.setdefault((m, mach), ra); ratios.setdefault(m, ra)
     w = csv.writer(open(out + '/events.csv', 'w'))
     w.writerow(['log', 'req', 'n', 'cells', 'Ts', 'Um', 'up', 'ch', 'path', 'took_ms', 'fill_ms', 'dec_max', 'U_link', 'model', 'cls', 'n_used', 'n_exp', 'fill_est_ms',
-                'fill_wall_ms', 'split_prior_us', 'lp_ms', 'n_call', 'mixed'])
+                'fill_wall_ms', 'split_prior_us', 'lp_ms', 'n_call', 'mixed', 'ratio'])
     T = collections.defaultdict(list)   # (class, cold/warm, arm) -> ms per token of every call that ran one replayed arm (a mixed one measures none)
-    for m, mach, log, cs, fest, sp in starts:
+    for m, mach, log, cs, fest, sp, ra in starts:
         k = (m, mach)
         fe = fest if fest is not None else fests.get(k, 0.0)
         fw = (st.median(fills[k]) if fills[k] else fe) if fe > 0 else 0.0   # what this start's first split pays (none where its copies were in place)
         for c in cs:
             cls = f'{m} {mach} {ct.size_class(c["n"])}'
             w.writerow([log, c['req'], int(c['n']), round(c.get('cells', c['n'] / 2)), c['Ts'], c['Um'], c['up'], c['ch'], c['path'], int(c['took']), round(c['fill']), c['dm'], c['U'],
-                        m, cls, EXPERTS[m][1], EXPERTS[m][0], round(fe), round(fw), sp or priors.get(k) or priors.get(m, 0.0), c['lp'], c['n_call'], int(c['mixed'])])
+                        m, cls, EXPERTS[m][1], EXPERTS[m][0], round(fe), round(fw), sp or priors.get(k) or priors.get(m, 0.0), c['lp'], c['n_call'], int(c['mixed']),
+                        ra or ratios.get(k) or ratios.get(m, 0.0)])
             if c['mixed']: continue
             a, cw, p = ct.arm_class(c['path']), 'c' if c['req'] == 0 else 'w', c['path']
             tok = (c['took'] - (c['fill'] if a == 'dense' else 0.0)) / c['n_call']   # the split's pass without its copy fill (the replay adds it where owed)

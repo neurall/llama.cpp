@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 // Priors (weak: each is replaced by the run's own samples as they come; source given for each):
 //   RLS_S2_0             the noise, until two samples of a path exist (then its own residuals)
@@ -273,6 +274,84 @@ static inline int rls_voi_pick(const double * mu, const double * var, const bool
     }
     if (trial) { *trial = t != b; }
     return t;
+}
+
+// One card against the split for the passes left of a call: the split planner's pick (dsf_plan, llama-dsplit-fork.cpp) and the replay gate's
+// (tests/test-planner-replay-fork.cpp), one code (user 2026-11-15: "make picking one or 2 gpus unit test ... picks correctly").
+// Per pass: its tokens T, the link-bound expert upload U (us), the one-card estimate (the moe-cache's pick, or the split planner's own one-card model where
+// that is narrower; kn1 known here, n1 its samples) and the split model's prediction (unused while the split never ran). Per call: the bench's one-card
+// compute, the split / one ratio, the split's model (rls_known), the fill owed and how often a one-pass call of this size came before in this process.
+struct dsf_arm_pass { double T = 0.0, U = 0.0, mu1 = 0.0, v1 = 0.0, mu2 = 0.0, v2 = 0.0; bool kn1 = false; int n1 = 0; };
+struct dsf_call {
+    double c_one_bench = 0.0;             // the bench's one-card compute per token (us), 0: none
+    double ratio = RLS_SPLIT_ONE_RATIO;   // the split / one-card compute ratio (the plan's matmul bench and link probe, else the measured constant)
+    bool split_prior = true;              // the split never ran on this build: its prior
+    const dsf_rls * split = nullptr;      // the split's model (known here: rls_known)
+    double f_mu = 0.0, f_v = 0.0;         // the fill owed (us, us^2); 0: the copies are in place
+    int seen_before = 0;                  // calls of one pass in this size class (dsf_size_class) decided before in this process
+};
+struct dsf_pick_out {
+    int choice = 0, np = 0;               // 0 one card, 1 the split; the passes priced
+    bool trial = false, upload_bound = false, known1 = false, known2 = false;
+    double stake = 1.0, am[2] = {}, av[2] = {};                         // one card, the split plus the fill, over the passes left
+    double mu1_0 = 0.0, v1_0 = 0.0, mu2_0 = 0.0, v2_0 = 0.0, u0 = 0.0;  // the first pass's, priced (the log's)
+};
+static inline int dsf_size_class(int64_t n_tokens) { return (int) std::floor(4.0 * std::log2((double) std::max<int64_t>(1, n_tokens))); }   // a quarter octave
+static inline dsf_pick_out dsf_pick(const std::vector<dsf_arm_pass> & passes, const dsf_call & c) {
+    dsf_pick_out o;
+    const double sd2 = RLS_SPLIT_ONE_SDLOG * RLS_SPLIT_ONE_SDLOG;
+    double m1 = 0.0, v1s = 0.0, m2 = 0.0, v2s = 0.0;
+    for (const dsf_arm_pass & p : passes) {
+        double mu1 = p.mu1, v1 = p.v1, mu2 = p.mu2, v2 = p.v2;
+        // MiMo 12k relcand2: one card measured 11.98 +- 0.76 s, the cap made it 11.97 +- 4.31, nothing was known, and the wide one card won a trial every request; the split (9 s) never ran.
+        // So the cap is for an arm never measured (n1 0), not one measured once (rls_known wants more). One card never measured here: the moe-cache's cold prior (MiMo 3k,
+        // no-map-reads 2026-11-08: 8.7 s for a pass b14929 ran in 4.0-4.3 s on one card) sent every call to the split (5.2-5.5 s) and one pass of stake never paid the trial.
+        // Same rule as the split's prior: max(upload, the bench's one-card compute), uncertain by RLS_SPLIT_ONE_SDLOG
+        if (!p.kn1 && p.n1 == 0 && c.c_one_bench > 0.0) {
+            const double b = std::max(p.U, p.T * c.c_one_bench);
+            if (b < mu1) { mu1 = b; v1 = b * b * sd2; }
+        }
+        if (c.split_prior) {
+            // The split shortens the compute only: a pass bound by its expert upload U gains nothing from it (the release's rule, dsf_decide: max(U, compute)).
+            // So the prior is max(U, one card x the bench's split/one compute ratio), not a flat ratio: at 2k GLM 3.0 one card is its 4.5 s upload and the
+            // split's fill can only lose, at 10k one card is 14 s of compute and the split saves its share from the first pass (rel_b14244 split there,
+            // 783 against 663 tokens/s; rampool13's flat 0.96 prior sat above one card by the fill and was never tried). The crossover is where the
+            // compute passes the upload: computed per pass from measured link rate and bytes, no size constant.
+            mu2 = std::max(p.U, mu1 * c.ratio);
+            v2  = mu2 * mu2 * sd2 + v1 * c.ratio * c.ratio;
+        }
+        // the mirror of the split's prior: a split measured against a one card never measured, its bench figure counts neither the hand-offs nor the other card's layers
+        // (GLM 3.0 12k, first request: split 6.46 s measured, one card 4.90 +- 1.76 from the bench, picked, took 9.4 s)
+        if (!p.kn1 && p.n1 == 0 && !c.split_prior && mu2 / c.ratio > mu1) { mu1 = std::max(p.U, mu2 / c.ratio); v1 = mu1 * mu1 * sd2; }
+        if (o.np == 0) {
+            o.mu1_0 = mu1; o.v1_0 = v1; o.mu2_0 = mu2; o.v2_0 = v2; o.u0 = p.U;
+            o.known1 = p.kn1; o.known2 = !c.split_prior && c.split && rls_known(*c.split, mu2, v2);
+        }
+        m1 += mu1; v1s += v1; m2 += mu2; v2s += v2;
+        ++o.np;
+    }
+    o.am[0] = m1; o.am[1] = m2 + c.f_mu; o.av[0] = v1s; o.av[1] = v2s + c.f_v;
+    // No trial of the split on a call its expert upload bounds (prior = U): the split shortens the compute only, so the trial cannot win there, and its sample
+    // teaches the split model an upload-bound time it then extrapolates (GLM 3.5 12k, both-splits 2026-11-08: the 2194-token first call, U 5.32 s, was the
+    // trial; the 10240-token call then saw split 17.0 +- 9.2 s against one card 6.0 and stayed one card, 648 against 821-839 t/s on the builds that split).
+    // And no trial where even a perfect split saves less than the fill it owes: it can only shorten the compute above the upload (GLM 3.0, 100-token prompt: one card 3.99 s,
+    // upload 3.76 s, fill 0.74 s; the trial ran the split with the fill, 5.8 s against about 4)
+    o.upload_bound = c.split_prior && (o.mu1_0 * c.ratio <= o.u0 || (o.mu1_0 - o.u0) * (double) std::max(1, o.np) <= c.f_mu);
+    const bool aok[2] = { true, !o.upload_bound }, akn[2] = { o.known1, o.known2 };
+    // the trial's stake: the passes left in this call. The count of passes of this size seen so far grew with every pass and forced a trial of the
+    // never-known one-card arm once per request (GLM 3.5 64k, 2026-11-08: a 25.9 s one-card pass at 36k cells against 11.9 s split, 10% of the prompt);
+    // what a trial learns pays over the passes still to come here, and the next request starts from the stored posterior (R4) anyway.
+    // A one-pass call is the exception (user 2026-11-08, Qwen3.8 3.5k edit prompt: the dense split ran 1127 t/s for every repeat, 3.1 s, while one card, never tried, is 2.4 s in b14244; its prior
+    // was a cold 11.4 s and one pass of stake never paid a trial): its next calls come with the same features, so the trial's two samples make the arm known and end the trials, and the
+    // calls of this size class so far are the stake. Multi-pass calls keep the passes left: their features move with every pass, the arm never becomes known (GLM 3.5 64k).
+    // + 1 for a one-pass call: a trial's sample is stored with the posteriors (dsf.rls.*), so it also pays the next call of this size, in this process or the
+    // next one. Without it a stake of 1 never tries anything (EI x 1 >= EI + mu_t - mu_b only where the trial is already the lower mean), and every server
+    // starts with seen_before 0: GLM 3.0 12k ran one card on every build since rampool11 against 782 t/s split on b14244 (prior one x 1.00 + fill, p_split 0.45-0.49)
+    o.stake = o.np == 1 ? 2.0 + (double) c.seen_before : (double) std::max(1, o.np);
+    // the split is tried where its stake pays even before one card is known here. Only when one card has the lower mean: with the split already lower the same step ran the reverse trial,
+    // a whole first request on one card (first / second request, 200 W: GLM 3.0 12k 538 / 703 t/s, Qwen3.8 IQ4_XS 13.7k 1387 / 1782)
+    o.choice = rls_voi_pick(o.am, o.av, aok, 2, o.stake, &o.trial, akn, nullptr, o.am[1] >= o.am[0]);
+    return o;
 }
 
 // the normal CDF, for the logged p_split only (never a decision input)
