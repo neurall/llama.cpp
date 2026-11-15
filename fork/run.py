@@ -6561,8 +6561,8 @@ def cell_results(path, since):
     out = []
     try:
         for l in open(path, errors="replace"):
-            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +\S+ +\{.*?\} +([\d.]+) t/s.*?pp ([\d.]+) t/s", l)
-            if m and time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) >= since - 2: out.append((float(m.group(2)), float(m.group(3))))
+            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +\S+ +\{.*?\} +([\d.]+) t/s(?:.*?pp ([\d.]+) t/s)?", l)   # a ppl cell has no prompt rate: 0
+            if m and time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) >= since - 2: out.append((float(m.group(2)), float(m.group(3) or 0)))
     except OSError: pass
     return out
 

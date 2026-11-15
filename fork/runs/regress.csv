@@ -1,0 +1,8 @@
+name,model,n,test,tokens,args,extra
+rg-olmoe,olmoe,4,ppl,0,"--cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0",--clean-state --env CUDA_VISIBLE_DEVICES=1
+rg-qwen36,qwen36,4,ppl,0,"--cpu-moe --moe-expert-cache 90 -t 6 -tb 8",--clean-state --env CUDA_VISIBLE_DEVICES=1
+rg-qwen38-iq3,qwen38,2,ppl,0,"--cpu-moe -t 6 -tb 8",--clean-state
+rg-glm,glm,2,ppl,0,"--cpu-moe -t 6 -tb 8",--clean-state
+rg-mimo,mimo,2,ppl,0,"--cpu-moe -t 6 -tb 8",--clean-state
+rg-q27-iq4nl,q27_iq4nl,4,ppl,0,"-t 6 -tb 8",--clean-state --env CUDA_VISIBLE_DEVICES=1
+rg-qni4,qn_iq4xs,2,ppl,0,"--cpu-moe -t 6 -tb 8",--clean-state
