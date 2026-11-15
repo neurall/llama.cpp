@@ -9375,3 +9375,5 @@ rel_small_gpus-rg-q27-iq4nl-ppl,2026-11-15 19:09:46,bench /m/q/4/Qwen3.8-27B-IQ4
 rel_small_gpus-rg-qwen36-ppl,2026-11-15 19:12:06,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds rel_small_gpus variants v test ppl n=2,,
 rel_small_gpus-rg-olmoe-ppl,2026-11-15 19:13:34,bench /m/o/4/OLMoE-1B-7B-0924-Q4_K_M.gguf builds rel_small_gpus variants v test ppl n=2,,
 rel_small_gpus-k31-p2-pf2k1k,2026-11-15 20:41:09,bench /m/k/1/Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf builds rel_small_gpus variants v test pf2k n=2,,
+rel_small_gpus-mimo-i-pf12k1k,2026-11-15 20:42:58,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds rel_small_gpus variants v test pf12k n=2,,
+stock-b12401-official-mimo-i-pf12k1k,2026-11-15 20:46:46,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds stock-b12401-official variants v test pf12k n=2,,
