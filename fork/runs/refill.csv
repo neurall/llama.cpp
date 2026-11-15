@@ -5,3 +5,6 @@ refill-mimo-1k-fg,mimo,2,pf1k1k,1024,,
 refill-mimo-12k-fg,mimo,2,pf12k1k,1024,,
 refill-mimo-1k-bg,mimo,2,pf1k1k,1024,--moe reheat-bg=1,
 refill-mimo-12k-bg,mimo,2,pf12k1k,1024,--moe reheat-bg=1,
+refill-mimo-1k-staged,mimo,2,pf1k1k,1024,--moe staging=1,
+refill-mimo-12k-staged,mimo,2,pf12k1k,1024,--moe staging=1,
+refill-qni4-staged,qn_iq4xs,3,pf128k,512,--moe staging=1,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1
