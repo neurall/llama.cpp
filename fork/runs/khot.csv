@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+khot-qni4-on,qn_iq4xs,3,pf128k,512,,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1
+khot-qni4-off,qn_iq4xs,3,pf128k,512,--moe ring-keep-hot=0,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1
+khot-qni4-staged,qn_iq4xs,3,pf128k,512,--moe staging=1,--clamp 12k --vary --keep-server --ctx 16384 --env PERF_LEDGER=0 --env LLAMA_SPLIT_CTL_DEBUG=1
+khot-mimo-12k-on,mimo,2,pf12k1k,1024,,
+khot-mimo-12k-off,mimo,2,pf12k1k,1024,--moe ring-keep-hot=0,
