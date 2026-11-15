@@ -2190,7 +2190,7 @@ HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and refer
 HW_SINCE = {"pc1": "2026-11-12"}
 def stock_prefix(r):
     """the label prefix of a cell in the tables: "" ours, "s" plain stock, "sm" stock with upstream's expert cache (-sm), "sr"/"smr" the same on restricted VRAM (-sa): the two stock arms never look alike"""
-    return "" if not str(r["_b"]).startswith("stock") else ("s" + ("m" if os.environ.get("STOCK_MOE") else "") + ("r" if os.environ.get("STOCK_RES") else ""))
+    return "" if not str(r["_b"]).startswith("stock") else ("s" + ("m" if os.environ.get("STOCK_MOE") else "") + ("r" if os.environ.get("STOCK_RES") else "") + (" " if os.environ.get("STOCK_MOE") or os.environ.get("STOCK_RES") else ""))
 
 
 def stock_arm_sql():
