@@ -25,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(os.path.dirname(os.path.realpath(os.path.join(HERE, "runs.db"))), "stats.db")   # the kept stats.logs (run.py runlog STATS_DB)
 YARD = 0.05   # a pick within 5% of the measured best passes (planner-crossovers.md: the replay gate's yardstick)
 XO = ["X1 cpu-vs-upload", "X2 stream-vs-chain/k", "X3 stream-vs-mix", "X4 one-vs-split", "X5 split-vs-expert"]
-KNOWN = ("glm30", "glm35", "mimo", "ds", "qwen36", "qni4", "qni3", "qn1m", "olmoe", "k31")
+KNOWN = ("glm30", "glm35", "mimo", "ds", "qwen36", "qni4", "qni3", "olmoe", "k31")   # qn1m (Qwen3.8 IQ1_M) removed 2026-11-15: the model file is gone
 ONE = ("stream", "mix", "k", "chain", "dec")   # the one-card arms (DON path names map onto them); "dense" (the dense split) and "lp" (layer parallel) use both cards
 TWO = ("dense", "lp")
 TO_RUN = {XO[0]: "pf512 with --moe pp-path=dec | chain | stream", XO[1]: "the gate size with --moe pp-path=chain and pp-path=stream,pp-k=1|2",
@@ -40,7 +40,7 @@ def model_key(name):
     if "deepseek" in s or re.search(r"(^|[-_])ds([-_]|$)", s): return "ds"
     if "qwen3.6" in s or "qwen36" in s or re.search(r"(^|[-_])q35([-_]|$)", s): return "qwen36"
     if "olmoe" in s: return "olmoe"   # before the quant names: OLMoE-1B-7B-0924-IQ1_M is no Qwen3.8 IQ1_M
-    if "iq1_m" in s or re.search(r"(^|[-_])qn1([-_]|$)", s): return "qn1m"
+    if "iq1_m" in s or re.search(r"(^|[-_])qn1([-_]|$)", s): return ""   # Qwen3.8 IQ1_M: model removed 2026-11-15, its old logs are not audited
     if "iq3_s" in s or "qni3" in s: return "qni3"
     if "iq4_xs" in s or "qni4" in s or "qwen3.8" in s or "qwen38" in s: return "qni4"
     if "kimi" in s or re.search(r"(^|[-_])k3", s): return "k31"
