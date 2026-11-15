@@ -37,6 +37,21 @@ static std::vector<int> parse_cpu_list(const std::string & s) {   // "0-3,8-11"
     return v;
 }
 
+const std::vector<int> & common_cpu_allowed_fork() {
+    static const std::vector<int> v = [] {   // the first call comes before any thread of the process pins itself (only probe and helper threads do, each its own)
+        std::vector<int> a;
+#if defined(__linux__)
+        cpu_set_t cs; CPU_ZERO(&cs);
+        if (sched_getaffinity(0, sizeof(cs), &cs) == 0) { for (int c = 0; c < CPU_SETSIZE; ++c) { if (CPU_ISSET(c, &cs)) { a.push_back(c); } } }
+#endif
+        if (a.empty()) { const int n = std::max(1, (int) std::thread::hardware_concurrency()); for (int c = 0; c < n; ++c) { a.push_back(c); } }
+        return a;
+    }();
+    return v;
+}
+
+int common_cpu_allowed_count_fork() { return (int) common_cpu_allowed_fork().size(); }
+
 static std::string cpu_brand() {
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
     unsigned r[12];
@@ -51,13 +66,16 @@ static std::string cpu_brand() {
 
 static void detect(common_cpu_topo_fork & t) {
     t.model = cpu_brand();
-    t.n_logical = (int) std::thread::hardware_concurrency();
+    const std::vector<int> & allowed = common_cpu_allowed_fork();   // only the CPUs this process may run on (taskset, a container's cpuset)
+    t.n_logical = (int) allowed.size();
+    const int n_ids = allowed.back() + 1;   // CPU ids run to the highest allowed one: a mask need not start at 0
+    (void) n_ids;
     std::map<int, std::vector<int>> dies;      // first CPU of the group -> members
     std::set<std::vector<int>> cores;          // sets of SMT siblings
     std::set<int> nodes;
 #if defined(__linux__)
     t.source = "sysfs";
-    for (int c = 0; c < t.n_logical; ++c) {
+    for (int c : allowed) {
         const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(c);
         std::string l;
         { std::ifstream f(base + "/cache/index3/shared_cpu_list"); if (std::getline(f, l)) { auto m = parse_cpu_list(l); if (!m.empty()) { dies[m[0]] = m; } } }
@@ -87,16 +105,18 @@ static void detect(common_cpu_topo_fork & t) {
             if (!__get_cpuid_count(0x8000001D, sub, &a, &b, &c, &d) && !__get_cpuid_count(4, sub, &a, &b, &c, &d)) { break; }
             if (((a >> 5) & 7) == 3) { share = (int) (((a >> 14) & 0xfff) + 1); break; }
         }
-        if (share > 0) { for (int c0 = 0; c0 < t.n_logical; c0 += share) { std::vector<int> m; for (int i = c0; i < c0 + share && i < t.n_logical; ++i) { m.push_back(i); } dies[c0] = m; } }
+        if (share > 0) { for (int c0 = 0; c0 < n_ids; c0 += share) { std::vector<int> m; for (int i = c0; i < c0 + share && i < n_ids; ++i) { m.push_back(i); } dies[c0] = m; } }
 #endif
     }
-    if (dies.empty()) { t.source = "guess"; std::vector<int> m; for (int i = 0; i < t.n_logical; ++i) { m.push_back(i); } dies[0] = m; }
+    if (dies.empty()) { t.source = "guess"; dies[allowed[0]] = allowed; }
     for (auto & kv : dies) { t.dies.push_back(kv.second); }
+    t.dies = common_cpu_groups_masked_fork(t.dies, allowed);   // the groups read for all CPUs, cut to the allowed ones
+    const std::vector<std::vector<int>> core_sets = common_cpu_groups_masked_fork(std::vector<std::vector<int>>(cores.begin(), cores.end()), allowed);
     t.n_numa = std::max<int>(1, (int) nodes.size());
     // one CPU per physical core: the lowest id of every sibling set (without sibling info every logical CPU is a core)
     std::set<int> first;
-    if (!cores.empty()) { for (auto & m : cores) { first.insert(*std::min_element(m.begin(), m.end())); } }
-    else { for (int i = 0; i < t.n_logical; ++i) { first.insert(i); } }
+    if (!core_sets.empty()) { for (auto & m : core_sets) { first.insert(*std::min_element(m.begin(), m.end())); } }
+    else { for (int c : allowed) { first.insert(c); } }
     t.n_physical = (int) first.size();
     // deal the cores round-robin over the dies
     std::vector<std::vector<int>> per_die;
@@ -147,13 +167,15 @@ static double probe(const std::vector<int> & cpus) {
 static std::string cache_path(const common_cpu_topo_fork & t) {
     const char * home = getenv("HOME"); if (!home) { home = getenv("USERPROFILE"); } if (!home) { return ""; }
     std::string key = t.model + "|" + std::to_string(t.n_logical) + "|" + std::to_string(t.dies.size());
+    if (t.n_logical < (int) std::thread::hardware_concurrency()) { for (int c : common_cpu_allowed_fork()) { key += "," + std::to_string(c); } }   // a masked process probes its own CPUs (keys of unmasked runs stay as they were)
     uint64_t h = 1469598103934665603ull; for (char c : key) { h = (h ^ (uint8_t) c) * 1099511628211ull; }
     char b[32]; snprintf(b, sizeof b, "%016llx", (unsigned long long) h);
     return std::string(home) + "/.cache/llama-cpu-bw-" + b + ".txt";
 }
 
 static void run_probe(common_cpu_topo_fork & t) {
-    const std::string path = cache_path(t);
+    const char * fresh = getenv("LLAMA_CPU_BW_PROBE");   // =fresh: probe now, keep nothing (run.py simjoe: a memory bandwidth cap the cache key cannot see)
+    const std::string path = fresh && strcmp(fresh, "fresh") == 0 ? std::string() : cache_path(t);
     if (!path.empty()) {
         std::ifstream f(path); int k; double g;
         while (f >> k >> g) { t.bw.push_back({ k, g }); }

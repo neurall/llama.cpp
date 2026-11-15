@@ -87,6 +87,7 @@ uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
 uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all);
 int  llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
+int  llama_cpu_allowed_count_fork();                          // src/llama-moecache-fork.cpp: the CPUs this process may run on
 static int64_t g_thr_cpu_bytes = -1, g_thr_up_bytes = -1;   // the decode thread search's byte baseline; a prompt call resets it (thread_tune_feed_batch)
 void llama_moe_cache_split_feed_fork(int64_t dt_us);   // a decode token's time: the CPU/GPU split's A/B (llama-moecache-fork.cpp); < 0 voids its samples   // a refused pass: its path's ceiling, the retry size
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
@@ -2782,7 +2783,7 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
     auto set = [&](int n) { cparams.n_threads_batch = (uint32_t) n; };
     if (thrb.cand.empty()) {
         if (thrb.hold > 0 && --thrb.hold > 0) { return; }
-        const int hw   = std::max(2, (int) std::thread::hardware_concurrency());
+        const int hw   = std::max(2, llama_cpu_allowed_count_fork());   // fork: the CPUs this process may run on
         const int base = thrb.base;
         // an attached thread pool has a fixed size: never ask for more threads than it has (the caller says how many)
         const int cap = threadpool_batch ? std::max(base, thrb.n_max) : hw;
@@ -2858,17 +2859,19 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     // from the expert cache's byte counters (llama_moe_cache_counters_fork), since those bytes, not the thread count, make most of a token's scatter. Then the +-2 tuner
     // below stays off (settled, with the drift watch). File-local state: one decoding context per process.
     static thread_search ts;
-    static struct { int drift = 0, wn = 0; double best = 0, wsum = 0; } d;
+    static drift_watch dw;   // the settled count stays until the box changes (src/llama-estimate-fork.h, tested in tests/test-estimate-fork.cpp)
+    const bool fresh = g_thr_cpu_bytes < 0;   // the first token, or the first after a prompt call: its bytes are unknown, not a sample
     double x_mib = 0.0, u_mib = 0.0;
     {
         int64_t v[8];
         if (llama_moe_cache_counters_fork(v, 8) >= 3) {
-            const bool fresh = g_thr_cpu_bytes < 0;   // the first token, or the first after a prompt call: its bytes are unknown, not a sample
-            x_mib = (double) (v[0] - g_thr_cpu_bytes) / 1048576.0; u_mib = (double) (v[1] - g_thr_up_bytes) / 1048576.0;
+            if (!fresh) { x_mib = (double) (v[0] - g_thr_cpu_bytes) / 1048576.0; u_mib = (double) (v[1] - g_thr_up_bytes) / 1048576.0; }
             g_thr_cpu_bytes = v[0]; g_thr_up_bytes = v[1];
-            if (fresh && !ts.settled() && ts.st != 0) { return; }
+        } else {
+            g_thr_cpu_bytes = 0;   // no byte counters: the work stays 0 and the next token is not fresh
         }
     }
+    if (fresh && !ts.settled() && ts.st != 0) { return; }
     if (!ts.settled()) {
         auto testing = [&]() {
             char v[48]; snprintf(v, sizeof v, "%d vs %d (testing)", ts.b, ts.c);
@@ -2883,22 +2886,19 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         if (ts.settled()) {
             llama_moe_decision_fork("threads_decode", std::to_string(ts.b).c_str(), "from every hardware thread down, alternating with a lower count token by token; each comparison decided at the same CPU and upload work per token");
             if (ts.b != thr.base) { thr.base = ts.b; threads_save(model, "threads", thr.base0, ts.b); }
-            d.drift = 0; d.wn = 0; d.wsum = 0; d.best = 0;   // settled: the count stays until the token time drifts (below)
+            dw.reset();   // settled: the count stays until the box changes (below)
         }
         cparams.n_threads = (uint32_t) ts.now();
         return;
     }
-    {   // settled: stay, and watch. Windows of 64 tokens; a mean 10% above the best seen, twice in a row, means the box changed (other load, a new prompt mix): search again from the default
+    {   // settled: stay, and watch. Windows of 64 tokens; one 10% slower than the best at comparable CPU and upload work, twice in a row, means the box changed (other load):
+        // search again from the default. A new request starts its own baseline (its context and expert mix are its own)
         llama_moe_cache_split_feed_fork(dt_us);   // the CPU/GPU split's A/B runs on settled thread counts only: two searches at once confound each other
-        d.wsum += (double) dt_us;
-        if (++d.wn < 64) { return; }
-        const double m = d.wsum/64.0; d.wsum = 0; d.wn = 0;
-        if (d.best <= 0 || m < d.best) { d.best = d.best <= 0 ? m : 0.7*d.best + 0.3*m; d.drift = 0; return; }
-        d.drift = m > 1.10*d.best ? d.drift + 1 : 0;
-        if (d.drift >= 2) {
-            LLAMA_LOG_INFO("%s: thread search again: %.2f ms/token against %.2f settled\n", __func__, m/1000.0, d.best/1000.0);
+        if (fresh) { dw.reset(); return; }
+        if (dw.feed((double) dt_us, x_mib + u_mib)) {
+            LLAMA_LOG_WARN("%s: thread search again: 64 tokens at %.2f ms/token against %.2f settled, at comparable CPU and upload work\n", __func__, dw.last_m/1000.0, dw.last_best/1000.0);
             thr.base = thr.base0;
-            ts = thread_search(); d.best = 0;
+            ts = thread_search();
             llama_moe_cache_split_feed_fork(-1);   // its samples ran on the old count
         }
         return;
@@ -2908,7 +2908,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         if (thr.hold > 0) {
             if (--thr.hold > 0) { return; }
         }
-        const int hw   = std::max(2, (int) std::thread::hardware_concurrency());
+        const int hw   = std::max(2, llama_cpu_allowed_count_fork());   // fork: the CPUs this process may run on
         const int base = thr.base;
         std::vector<int> c = { base };
         // an attached thread pool (llama-cli) has a fixed size: never ask for more threads than it has

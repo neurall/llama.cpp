@@ -1,6 +1,7 @@
 // Unit tests of the prompt planner's strategy estimators (src/llama-estimate-fork.h): each strategy's time from hand-made metrics. CPU only, no model.
 #include "../src/llama-estimate-fork.h"
 #include "../src/llama-passplan-fork.h"
+#include "../common/cpu-topo-fork.h"
 
 #include <cmath>
 #include <cstdio>
@@ -277,6 +278,57 @@ int main() {
             printf("thread search, %s: %d of 200 within 5%% of the best (off: %d too low, %d too high), %.0f tokens to settle\n", sh.name, good, low, high, tokens / 200.0);
             check("thread search: within 5% of the best count's time in 95% of the seeds", good >= 190);
         }
+    }
+
+    // the drift watch beside the settled thread search (drift_watch). MiMo's decode after a 60k prompt runs in phases of about 320 tokens with and without expert uploads
+    // (2026-11-15 TOK lines: 26-28 ms at about 520 MiB of CPU + upload work a token, 30-33 ms at about 850 MiB): the box did not change, so no search again. The old rule
+    // (time alone, a 64-token window 10% over the best twice) restarted the search from 64 threads once a cell. A box 20% slower at the same work must still be seen, as must
+    // one without byte counters (work 0).
+    {
+        auto run = [](double comparable, bool phases, bool load, int seed) {
+            drift_watch dw; dw.comparable = comparable;
+            std::mt19937 rng(seed); std::normal_distribution<double> g(0.0, 1.0);
+            for (int i = 0; i < 2000; ++i) {
+                const bool up = phases && (i / 320) % 2 == 1;
+                double t = (up ? 31.0 : 27.0) * std::exp(0.04 * g(rng));
+                const double w = phases ? (up ? 850.0 : 520.0) * std::exp(0.15 * g(rng)) : 0.0;
+                if (load && i >= 1000) { t *= 1.2; }
+                if (dw.feed(t, w)) { return i; }
+            }
+            return -1;
+        };
+        int false_old = 0, false_new = 0, seen = 0, seen_flat = 0, false_flat = 0;
+        for (int seed = 1; seed <= 100; ++seed) {
+            false_old  += run(1e9, true, false, seed) >= 0;
+            false_new  += run(0.25, true, false, seed) >= 0;
+            const int at = run(0.25, true, true, seed);
+            seen       += at >= 1000 && at < 1600;   // the load starts in an upload phase: seen in the next phase without uploads (1280) plus two windows
+            false_flat += run(0.25, false, false, seed) >= 0;
+            const int af = run(0.25, false, true, seed);
+            seen_flat  += af >= 1000 && af < 1000 + 4 * 64;
+        }
+        printf("drift watch: upload phases restart the search in %d of 100 seeds by time alone, %d at the same work; a 20%% slower box seen in %d (phases) and %d (no byte counters, %d false)\n",
+                false_old, false_new, seen, seen_flat, false_flat);
+        check("drift watch: upload phases are no drift", false_new == 0);
+        check("drift watch: a slower box at the same work is seen", seen >= 98 && seen_flat >= 98 && false_flat == 0);
+        drift_watch dw; for (int i = 0; i < 64; ++i) { dw.feed(27.0, 520.0); }
+        dw.reset(); for (int i = 0; i < 64; ++i) { dw.feed(40.0, 520.0); }   // a new request: a 128k context runs slower; its own first window is its baseline
+        bool again = false; for (int i = 0; i < 256; ++i) { again |= dw.feed(40.0, 520.0); }
+        check("drift watch: a new request starts its own baseline", !again);
+    }
+
+    // the CPUs this process may use cut the topology (common_cpu_groups_masked_fork). PC1's 3975WX: 8 L3 groups of 4 cores, CPU c and c+32 are siblings. Under taskset to the
+    // first chiplet (0-7,32-39, run.py simjoe: an 8-core desktop) 2 groups of 8 CPUs and 8 cores are left; until 2026-11-15 the probe and the default thread counts took all 64
+    {
+        std::vector<std::vector<int>> l3, cores;
+        for (int g3 = 0; g3 < 8; ++g3) { std::vector<int> m; for (int c = 4 * g3; c < 4 * g3 + 4; ++c) { m.push_back(c); } for (int c = 4 * g3; c < 4 * g3 + 4; ++c) { m.push_back(c + 32); } l3.push_back(m); }
+        for (int c = 0; c < 32; ++c) { cores.push_back({ c, c + 32 }); }
+        std::vector<int> allowed; for (int c = 0; c < 8; ++c) { allowed.push_back(c); } for (int c = 32; c < 40; ++c) { allowed.push_back(c); }
+        const auto d = common_cpu_groups_masked_fork(l3, allowed), k = common_cpu_groups_masked_fork(cores, allowed);
+        check("cpu mask: 2 L3 groups left", d.size() == 2);
+        check("cpu mask: 8 cores left", k.size() == 8);
+        check("cpu mask: the first group is 0-3 and 32-35", !d.empty() && d[0] == std::vector<int>({ 0, 1, 2, 3, 32, 33, 34, 35 }));
+        check("cpu mask: no mask keeps every group", common_cpu_groups_masked_fork(l3, {}).size() == 8);
     }
 
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);

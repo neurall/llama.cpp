@@ -349,3 +349,26 @@ struct thread_search {
         return true;
     }
 };
+
+// The watch beside a settled thread search: windows of 64 decode tokens; the box changed (other load) when a window runs 10% above the best window at comparable work, twice
+// in a row. Work = CPU + upload MiB a token (the expert cache's byte counters); a window with over 25% more work than the best is no evidence either way (2026-11-15: MiMo's
+// uploads come and go in ~320-token phases at +12% token time and restarted the search from 64 threads once a cell). reset() at a new request: its context and expert mix
+// make its own baseline. shortcut: a load change between two requests is not seen; upgrade to a best per context band if that matters (tests/test-estimate-fork.cpp).
+struct drift_watch {
+    int n = 64, need = 2; double slow = 1.10, comparable = 0.25;
+    int wn = 0, drift = 0; double wsum = 0.0, wwork = 0.0, best = 0.0, best_work = 0.0;
+    double last_m = 0.0, last_best = 0.0;   // the window and the best when it last fired (for the log line)
+    void reset() { wn = 0; drift = 0; wsum = 0.0; wwork = 0.0; best = 0.0; best_work = 0.0; }
+    bool feed(double t, double work) {   // one token's time and work; true: search again
+        wsum += t; wwork += work;
+        if (++wn < n) { return false; }
+        const double m = wsum / n, w = wwork / n;
+        wn = 0; wsum = 0.0; wwork = 0.0;
+        if (best <= 0.0) { best = m; best_work = w; drift = 0; return false; }
+        if (w > best_work * (1.0 + comparable)) { return false; }   // more work: slower for that alone
+        if (m < best) { best = 0.7 * best + 0.3 * m; best_work = 0.7 * best_work + 0.3 * w; drift = 0; return false; }
+        drift = m > slow * best ? drift + 1 : 0;
+        if (drift >= need) { last_m = m; last_best = best; reset(); return true; }
+        return false;
+    }
+};

@@ -2635,7 +2635,8 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     // (llama_context::thread_tune_feed). User 2026-10-26: on an EPYC all threads gained; too many threads costs little, too few a lot. The decode pool is
     // created this big and the search only lowers the count inside it. Only for a count that came from the default; the batch count is not changed here.
     if (params.cpuparams.auto_threads && common_autotune_on(params)) {
-        params.cpuparams.n_threads = std::max<int32_t>(params.cpuparams.n_threads, (int32_t) std::thread::hardware_concurrency());
+        params.cpuparams.n_threads = common_cpu_allowed_count_fork();   // every CPU this process may run on: a taskset or container mask cuts it (the physical-core default can exceed it)
+        if (!params.threads_batch_set) { params.cpuparams_batch.n_threads = std::min<int32_t>(params.cpuparams_batch.n_threads, params.cpuparams.n_threads); }
     }
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
@@ -2809,7 +2810,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         llama_set_thread_autotune(lctx, true); // the count came from the default, not from the user: tune it on measured decode time
         if (!params.threads_batch_set) {
             // likewise the batch count, on measured prompt batches, up to the logical cores (the batch pool is created that big)
-            llama_set_batch_thread_autotune(lctx, true, (int32_t) std::thread::hardware_concurrency());
+            llama_set_batch_thread_autotune(lctx, true, (int32_t) common_cpu_allowed_count_fork());
         }
     }
     if (lctx == NULL) {
@@ -3394,7 +3395,7 @@ void common_threadpools::init(llama_context * ctx, const common_params & params)
     if (params.cpuparams.auto_threads && !params.threads_batch_set) {
         // the batch tuner may use up to the logical cores: size the batch pool for it, so it differs from the decode pool
         // (graph_compute uses n_threads_batch of them, the rest idle)
-        tpp_batch.n_threads = std::max(tpp_batch.n_threads, (int) std::thread::hardware_concurrency());
+        tpp_batch.n_threads = std::max(tpp_batch.n_threads, common_cpu_allowed_count_fork());
     }
     struct ggml_threadpool_params tpp =
             ggml_threadpool_params_from_cpu_params(params.cpuparams);

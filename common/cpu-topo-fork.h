@@ -22,3 +22,20 @@ struct common_cpu_topo_fork {
 const common_cpu_topo_fork & common_cpu_topo_get_fork();          // detects once (the bandwidth probe runs on first use and is cached on disk per CPU)
 void common_cpu_topo_print_fork();                                // the info-level report
 std::vector<int> common_cpu_topo_cpus_fork(int n_threads);        // the first n_threads of `order` (pin them one per core, spread over the dies)
+
+// The logical CPUs this process may run on: its affinity mask at start-up (taskset, a container's cpuset, run.py simjoe), read before any thread pins itself; every CPU where
+// the platform has no mask. The topology, the probe and the default thread counts use these only (until 2026-11-15 they took all 64 CPUs of PC1 under a 16-CPU mask).
+const std::vector<int> & common_cpu_allowed_fork();
+int common_cpu_allowed_count_fork();
+
+// pure: CPU groups (L3 groups, SMT sibling sets) cut to the allowed CPUs, empty groups dropped, order kept; an empty `allowed` keeps everything
+inline std::vector<std::vector<int>> common_cpu_groups_masked_fork(const std::vector<std::vector<int>> & groups, const std::vector<int> & allowed) {
+    if (allowed.empty()) { return groups; }
+    std::vector<std::vector<int>> out;
+    for (const auto & g : groups) {
+        std::vector<int> m;
+        for (int c : g) { for (int a : allowed) { if (a == c) { m.push_back(c); break; } } }
+        if (!m.empty()) { out.push_back(m); }
+    }
+    return out;
+}

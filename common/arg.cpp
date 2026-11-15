@@ -3,6 +3,7 @@
 #include "build-info.h"
 #include "chat.h"
 #include "common.h"
+#include "cpu-topo-fork.h"   // fork: common_cpu_allowed_count_fork
 #include "download.h"
 #include "http.h"
 #include "json-schema-to-grammar.h"
@@ -1495,7 +1496,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, int value) {
             params.cpuparams.n_threads = value;
             if (params.cpuparams.n_threads <= 0) {
-                params.cpuparams.n_threads = std::thread::hardware_concurrency();
+                params.cpuparams.n_threads = common_cpu_allowed_count_fork();   // fork: the CPUs this process may run on
             }
         }
     ).set_env("LLAMA_ARG_THREADS"));
@@ -1506,7 +1507,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.cpuparams_batch.n_threads = value;
             params.threads_batch_set = true;
             if (params.cpuparams_batch.n_threads <= 0) {
-                params.cpuparams_batch.n_threads = std::thread::hardware_concurrency();
+                params.cpuparams_batch.n_threads = common_cpu_allowed_count_fork();   // fork: the CPUs this process may run on
             }
         }
     ));
