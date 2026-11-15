@@ -3827,13 +3827,6 @@ static cpu_set_t g_proc_mask = [] {
 }();
 #endif
 
-int llama_cpu_allowed_count_fork() {   // the CPUs this process may run on (its mask at start-up): no thread count goes above it
-#if defined(__linux__)
-    if (CPU_COUNT(&g_proc_mask) > 0) { return CPU_COUNT(&g_proc_mask); }
-#endif
-    return std::max(1, (int) std::thread::hardware_concurrency());
-}
-
 #if defined(__linux__)
 static const cpu_set_t * helper_cpu_set_mc() {
     static const cpu_set_t cs = [] {
@@ -4849,6 +4842,13 @@ void flush_tables() {
 }
 
 } // namespace
+
+int llama_cpu_allowed_count_fork() {   // the CPUs this process may run on (its mask at start-up): no thread count goes above it
+#if defined(__linux__)
+    if (CPU_COUNT(&g_proc_mask) > 0) { return CPU_COUNT(&g_proc_mask); }
+#endif
+    return std::max(1, (int) std::thread::hardware_concurrency());
+}
 
 // --moe ledger=1: a write into a card's pool by code outside this file (the dense split's copies, llama-context.cpp), logged with its byte range; every
 // block under it must be lent to the graph (-2) at that moment, and it must not touch the KV zone or a zero block. Declared where it is called (no header edit).
