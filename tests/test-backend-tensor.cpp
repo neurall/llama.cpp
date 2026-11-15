@@ -11,6 +11,9 @@
 #include <cstring>
 #include <vector>
 
+extern "C" void ggml_backend_vram_guard_fork(int mode);                       // fork, ggml-backend.cpp: counts device buffers outside the block pool
+extern "C" void ggml_backend_vram_guard_stats_fork(uint64_t * n, uint64_t * bytes);
+
 static size_t align_up(size_t x, size_t align) {
     return (x + align - 1) / align * align;
 }
@@ -164,8 +167,18 @@ static bool test_tensor_n(ggml_backend_buffer_type_t buft) {
             expected[i] = input[offsets[i]];
         }
 
+        // fork: the gather path takes no device memory (user 2026-11-14: no VRAM outside the block pool; the server's prompt save ran it after the pool owned the cards)
+        uint64_t n0 = 0, b0 = 0, n1 = 0, b1 = 0;
+        ggml_backend_vram_guard_fork(1);
+        ggml_backend_vram_guard_stats_fork(&n0, &b0);
         ggml_backend_tensor_get_n(tensors.data(), out, offsets.data(), sizes.data(), data_offsets.data(), tensors.size());
+        ggml_backend_vram_guard_stats_fork(&n1, &b1);
+        ggml_backend_vram_guard_fork(0);
         if (memcmp(out, expected, sizeof(out)) != 0) {
+            return false;
+        }
+        if (n1 != n0) {
+            printf("%s: batched read allocated %llu device bytes outside the pool\n", ggml_backend_buft_name(buft), (unsigned long long) (b1 - b0));
             return false;
         }
     }
