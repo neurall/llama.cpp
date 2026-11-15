@@ -25,8 +25,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(os.path.dirname(os.path.realpath(os.path.join(HERE, "runs.db"))), "stats.db")   # the kept stats.logs (run.py runlog STATS_DB)
 YARD = 0.05   # a pick within 5% of the measured best passes (planner-crossovers.md: the replay gate's yardstick)
 XO = ["X1 cpu-vs-upload", "X2 stream-vs-chain/k", "X3 stream-vs-mix", "X4 one-vs-split", "X5 split-vs-expert"]
-KNOWN = ("glm30", "glm35", "mimo", "ds", "qwen36", "qni4", "qni3", "qn1m", "olmoe")
-ONE = ("stream", "mix", "k", "chain", "dec")   # the one-card arms (DON path names map onto them); "dense" is the card-level arm
+KNOWN = ("glm30", "glm35", "mimo", "ds", "qwen36", "qni4", "qni3", "qn1m", "olmoe", "k31")
+ONE = ("stream", "mix", "k", "chain", "dec")   # the one-card arms (DON path names map onto them); "dense" (the dense split) and "lp" (layer parallel) use both cards
+TWO = ("dense", "lp")
 TO_RUN = {XO[0]: "pf512 with --moe pp-path=dec | chain | stream", XO[1]: "the gate size with --moe pp-path=chain and pp-path=stream,pp-k=1|2",
           XO[2]: "the gate size with --moe pp-path=mix", XO[3]: "the gate size with --moe dense-split=0 and dense-split=1", XO[4]: "the gate size with --moe dense-split=1,prefill-split=1"}
 
@@ -42,11 +43,13 @@ def model_key(name):
     if "iq3_s" in s or "qni3" in s: return "qni3"
     if "iq4_xs" in s or "qni4" in s or "qwen3.8" in s or "qwen38" in s: return "qni4"
     if "olmoe" in s: return "olmoe"
+    if "kimi" in s or re.search(r"(^|[-_])k3", s): return "k31"
     return ""
 
 def arm_class(p):
     """the DON/CAL path name -> arm"""
     if p.startswith("dense"): return "dense"
+    if ", layer parallel" in p: return "lp"
     if p == "decode chain": return "dec"
     if p == "prompt chain": return "chain"
     if ", mix" in p: return "mix"
@@ -127,7 +130,7 @@ def judge(cells):
     out[XO[1]] = score(XO[1], ONE, lambda a: ("k", "chain", "dec") if a in ("stream", "mix") else ("stream", "mix"), 1000, "no chain or k arm ever measured at these sizes: the planner never tried one (R5: trial only)")
     out[XO[2]] = score(XO[2], ONE, lambda a: ("mix",) if a != "mix" else ("stream",), 1000, "mix never measured at these sizes: the slower link's share was never tried")
     # X4: the dense split's calls against the one-card arms and the other way round (DON), plus the picks the planner made against its own one/split buckets (PRE)
-    x4 = score(XO[3], ONE + ("dense",), lambda a: ("dense",) if a != "dense" else ONE, 1000, "the other card arm never ran at these sizes")
+    x4 = score(XO[3], ONE + TWO, lambda a: TWO if a not in TWO else ONE, 1000, "the other card arm never ran at these sizes")
     knew = []   # passes that ran the arm the planner's own buckets, as they stood BEFORE the pass (the PRE line is written after it), said was slower
     prior = {}
     for tag, reqs, pre in cells:

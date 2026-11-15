@@ -109,6 +109,14 @@ static inline poolx_take_kind poolx_ring_take(int tier) {
 // an entry planned beyond the one needed now (must) and the card's next (lead) takes cheap blocks only: it waits for computed layers' blocks or its own turn
 // (SIZE_MAX: none needed now, as at a pass edge)
 static inline bool poolx_ring_cheap(size_t must, size_t nx, size_t lead) { return must == SIZE_MAX || (nx > must && nx != lead); }
+// The k arm's entries a card may plan ahead of the one it computes now. Its lists upload only predicted experts, and each planned entry keeps up to its range of
+// the class's blocks until its kernels ran; the entry being computed and its late fix (what its real ids use beyond the list) need up to two ranges more.
+// Kimi K3.1 2026-11-15, the first build with its prompt rankings: the plans ahead held 716 of a class's 831 blocks (340 in flight, 376 uploaded and not
+// computed, 115 lent), layer 11's late fix found no block and the server aborted. held: the blocks lent to graphs and under KV rows.
+static inline int poolx_k_ahead_max(int32_t class_blocks, int32_t held, int32_t entry_max) {
+    if (entry_max <= 0) { return 1; }
+    return std::max<int32_t>(1, (class_blocks - held - 2 * entry_max) / entry_max);
+}
 // the tier of a cached expert's block for the entry at pass position p, -1 when the entry may not take it. q: the position of the layer (or shadow) holding it;
 // done: the card's entries queued; up_now: streamed in this pass; mix_home: a mix home's (its shadow left those out); cheap: poolx_ring_cheap
 static inline int poolx_ring_tier(size_t q, size_t done, size_t p, bool up_now, bool mix_home, bool cheap) {

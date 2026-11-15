@@ -12992,6 +12992,21 @@ static void cs_begin(moe_cache * mc) {
     }
 }
 
+// how many entries the k arm may plan ahead of the one its card computes (poolx_k_ahead_max) in entry nx's class (cache lock held)
+static int cs_k_ahead_max(moe_cache * mc, size_t nx) {
+    const layer_state & ls = csl(mc, mc->cs_order[nx]);
+    const auto & ps = mc->pool[ls.pcls];
+    int32_t held = 0;
+    for (int32_t b = ps.ring_lo; b < (int32_t) ps.owner.size(); ++b) { const int32_t o = ps.owner[b]; held += o >= 0 && cs_li_of(mc, o) < 0; }
+    int32_t emax = 0;
+    for (size_t q = 0; q < mc->cs_rng.size() && q < mc->cs_order.size(); ++q) {
+        const int32_t ne = (int32_t) csl(mc, mc->cs_order[q]).expert_slot.size();
+        emax = std::max(emax, std::min(ne, mc->cs_rng[q].second) - std::max(0, mc->cs_rng[q].first));
+    }
+    if (emax <= 0) { emax = (int32_t) ls.expert_slot.size(); }
+    return poolx_k_ahead_max((int32_t) ps.owner.size() - ps.ring_lo, held, emax);
+}
+
 // the uploads that can start now (cache lock held). Each card's ring runs ahead over its own layers (one cursor over all layers held card 1's uploads back until card 0's
 // ring reached its last layers: on a layer split card 1's link started 0.5 s before its turn, Qwen3.8 12k 2 x 3090, 2026-11-12): card k's first, as far as its blocks
 // allow; another card's one layer per call, so a layer whose experts the RAM pool still reads from the SSD does not hold this card's next split back for long.
@@ -13006,6 +13021,11 @@ static void cs_ahead(moe_cache * mc, int k, size_t must, std::vector<cs_job> & j
             for (int n_other = 0; c == k || n_other < 1; ++n_other) {
                 while (nx < mc->cs_order.size() && csl(mc, mc->cs_order[nx]).link != c) { ++nx; }
                 if (nx >= mc->cs_order.size()) { mc->cs_why[c] = 2; break; }
+                if (g_cs_k_pass > 0.0) {   // the k arm: its entries ahead keep their blocks until computed, the late fixes need the rest (poolx_k_ahead_max)
+                    int ahead = 0;
+                    for (size_t q = mc->cs_hooked[c]; q < nx; ++q) { ahead += csl(mc, mc->cs_order[q]).link == c; }
+                    if (ahead >= cs_k_ahead_max(mc, nx)) { mc->cs_why[c] = 1; break; }
+                }
                 cs_job j { mc->cs_order[nx], {}, 0 };
                 // the k arm: only an entry whose layer's ranking came back, its predicted experts (q1 alone when the blocks hold no more); else its split plans it
                 const std::vector<uint8_t> * sel = g_cs_k_pass > 0.0 ? cs_sel(mc, nx) : nullptr;

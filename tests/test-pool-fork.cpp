@@ -931,6 +931,31 @@ static void test_regress_chain_reuses_claimed_grid() {
     report("the engine: the chain's misses pick from poolx_chain_scan", y != std::string::npos && src.substr(x, y - x).find("poolx_chain_scan(") != std::string::npos);
 }
 
+// Kimi K3.1 2026-11-15, the first build with its prompt rankings: the k arm planned entries ahead while cheap blocks lasted; their blocks stay until their kernels
+// ran, and layer 11's late fix found none of its class's 831 (340 in flight, 376 uploaded and not computed, 115 lent): abort. A class of 831 ring blocks, 115 lent,
+// a layer of 896 experts in 8 entries of 112: every entry ahead holds its whole range (a 995-token call ranks every expert), the entry being computed holds its
+// range, its late fix needs up to a range more.
+static void test_regress_k_ahead_room() {
+    const int32_t blocks = 831, lent = 115, entry = 112;
+    auto late_fix_room = [&](int ahead) { return blocks - lent - entry * (ahead + 1); };   // what the late fix of the entry being computed may still take
+    int unbounded = 0;   // as before: entries ahead while a whole range of blocks is left
+    while (late_fix_room(unbounded) >= entry) { unbounded++; }
+    report("k arm, unbounded plans ahead: the late fix finds less than a range (the K3 abort)", late_fix_room(unbounded) < entry);
+    const int m = poolx_k_ahead_max(blocks, lent, entry);
+    report("k arm, bounded by poolx_k_ahead_max: the late fix keeps a whole range", m >= 1 && late_fix_room(m) >= entry);
+    report("k arm: at least the lead entry ahead", poolx_k_ahead_max(300, 100, 112) == 1 && poolx_k_ahead_max(831, 115, 0) == 1);
+    // the engine: cs_ahead asks for it under the k arm
+    std::string src;
+    {
+        std::string path = __FILE__;
+        path = path.substr(0, path.rfind('/') + 1) + "../src/llama-moecache-fork.cpp";
+        FILE * f = fopen(path.c_str(), "rb");
+        if (f) { char b[65536]; size_t r; while ((r = fread(b, 1, sizeof b, f)) > 0) { src.append(b, r); } fclose(f); }
+    }
+    const size_t x = src.find("static void cs_ahead("), y = x == std::string::npos ? x : src.find("\n}\n", x);
+    report("the engine: cs_ahead bounds the k arm by cs_k_ahead_max", y != std::string::npos && src.substr(x, y - x).find("cs_k_ahead_max(") != std::string::npos);
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -954,6 +979,7 @@ int main(int argc, char ** argv) {
     test_regress_capacity_is_gap();
     test_regress_least_over_cards();
     test_regress_chain_reuses_claimed_grid();
+    test_regress_k_ahead_room();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;
