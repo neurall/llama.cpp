@@ -7589,6 +7589,9 @@ static size_t alias_release(moe_cache * mc) {
 // does not wait for them, a worker takes one only when no miss-driven upload waits on its link, and they cost no swap budget (a free block evicts
 // nothing). The link is idle right after a prompt: the refill of 10 GB takes about 0.5 s of a x16 link, 2 s of a x4.
 // --moe reheat=0 turns it off. With --moe fixed=1 (repeatable runs) the jobs are ordinary ones the step waits for and publishes in order.
+// the refill after a prompt runs at normal priority (user 2026-11-15): background jobs waited behind every miss-driven upload of the first decode tokens, half
+// their misses ran on the CPU (Qwen3.8 IQ4_XS 12k, 8 GiB a card: tokens 1-50 at 22-48 ms against 18 steady, 5.7% of a 512-token answer). --moe reheat-bg=1: background, as before
+static bool reheat_bg() { static const bool v = [] { const char * e = moe_opt("reheat-bg"); return e && atoi(e) != 0; }(); return v; }
 static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = false) {   // ini_only: by the lifetime counts alone (the state ini's hot map and this run's use), no recent window
     static const bool on = [] { const char * e = moe_opt("reheat"); return !e || atoi(e) != 0; }();
     if (!on) {
@@ -14785,7 +14788,7 @@ void llama_moe_cache_step_fork() {
         tail_refill_now(mc);
         const size_t n_back = alias_release(mc);
         if (mc->kv_gave_back.exchange(false)) { reheat_free_blocks(mc, det, true); }
-        if (n_back > 0) { reheat_free_blocks(mc, det); }
+        if (n_back > 0) { reheat_free_blocks(mc, det || !reheat_bg()); }
         return;
     }
     // wait for and publish the previous step's uploads (default; LLAMA_MOE_CACHE_WAIT_SWAPS=0
@@ -15218,7 +15221,7 @@ void llama_moe_cache_step_fork() {
     // after a smaller pass that is still a prompt pass the next pass may take the blocks again)
     if ((n_back > 0 || n_drop > 0) && (decode_graph || tail_now)) {
         pool_fill_log(mc, tail_now ? "after the prompt's last big call (its blocks back before the checkpoint's tail)" : "after a prompt (its blocks back)");
-        reheat_free_blocks(mc, det);
+        reheat_free_blocks(mc, det || !reheat_bg());
         mc->fill_from = (int64_t) mc->n_steps;
         mc->fill_t0   = ggml_time_us();
     } else if (mc->fill_from >= 0) {
