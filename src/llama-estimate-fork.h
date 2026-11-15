@@ -134,6 +134,12 @@ static inline pp_refusal pp_refusal_of(bool has_fallback, uint32_t n_tokens, uin
 }
 // a path's ceiling (0: none) admits a pass of n tokens that ends at `cells`
 static inline bool pp_pass_under(uint64_t tc, double n, double cells) { return tc == 0 || n * std::max(1.0, cells) <= (double) tc; }
+// The record of graph sizes every path's pass cap reads (llama-moecache-fork.cpp need_tok: per pass size the most a graph of that size borrowed on a card) took the
+// refused graph's size before the pool refused it. A path-only refusal takes it back out: that graph never ran and its layout is the refused path's (layer parallel
+// computes layers 47-92's experts on CUDA1: 5329.6 MiB for 4588 tokens, the stream's graph there 0.953 MiB a token). Kept, it was CUDA1's only real size, the start-up
+// sizes left the fit, and the stream's cap read 1.16 MiB a token: 4512 tokens, the call ran as 2304 + 2284 in 151.4 s where its plan before the refusal was one pass
+// (Kimi K3.1, 2026-11-15). The last resort's refusal keeps it: its next pass is that same layout, smaller.
+template <class M> static inline void pp_refusal_drop(const pp_refusal & r, uint32_t n_tokens, M & sizes) { if (r.path_only) { sizes.erase((int32_t) n_tokens); } }
 
 // ---- a machine and a model as numbers (user 2026-11-10: tune on unit tests without a model: simulated SSD, memory and PCIe rates, card count, card memory, compute speed) ----
 // pp_metrics_for builds a pass's metrics from them through the same sums llama_moe_cache_pp_decide_fork fills from the loaded model (pp_sums_add): the layers go to the cards,

@@ -1,9 +1,12 @@
 // Unit tests of the prompt planner's strategy estimators (src/llama-estimate-fork.h): each strategy's time from hand-made metrics. CPU only, no model.
 #include "../src/llama-estimate-fork.h"
+#include "../src/llama-passplan-fork.h"
 
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <random>
+#include <set>
 
 static int g_fail = 0;
 static void near(const char * what, double got, double want) {
@@ -189,6 +192,29 @@ int main() {
         check("no ceiling: every pass", pp_pass_under(0, 1e6, 1e6));
         const pp_refusal one = pp_refusal_of(false, n, cells, 0.88, 2304);
         check("the last resort refused: every path, smaller passes (as before)", !one.path_only && one.retry_pass == 2304);
+        // CUDA1's record of graph sizes after that refusal (split_ab-k3-1pass.server.log): the start-up probes, estimates in the stream's layout (graph + CUDA scratch),
+        // and the refused graph. A real size of 512 tokens or more takes the estimates out of the fit (need_real_only); the cap is the largest pass whose line leaves the
+        // KV of 4608 cells (19968 B each) under the 8-chunk ring floor, 861 MiB short of the 6206.6 MiB pool
+        const double MiB = 1048576.0;
+        auto record = [&] { return std::map<int32_t, size_t>{ { 2720, (size_t) (2601.3 * MiB) }, { 5120, (size_t) (4891.2 * MiB) }, { 5152, (size_t) (4921.7 * MiB) },
+                                                              { 5440, (size_t) (5196.5 * MiB) }, { 4588, (size_t) (5329.6 * MiB) } }; };
+        const std::set<int32_t> est = { 2720, 5120, 5152, 5440 };
+        auto cap = [&](const std::map<int32_t, size_t> & need) {
+            bool real = false;
+            for (const auto & kv : need) { real = real || (kv.first >= 512 && !est.count(kv.first)); }
+            std::vector<std::pair<int32_t, size_t>> pts;
+            for (const auto & kv : need) { if (!real || !est.count(kv.first)) { pts.push_back(kv); } }
+            double a = 0.0, b = 0.0;
+            return ppx_lend_line(pts, a, b) ? ((6206.6 - 861.0) * MiB - 4608.0 * 19968.0 - a) / b : 0.0;
+        };
+        std::map<int32_t, size_t> kept = record(), lp_rec = record(), one_rec = record();
+        check("kept, the refused size alone is the fit: the stream's cap under the call (2304 + 2284 ran)", cap(kept) < n);
+        pp_refusal_drop(lp, n, lp_rec);
+        check("layer parallel refused: its graph's size leaves the record", lp_rec.count((int32_t) n) == 0 && lp_rec.size() == 4);
+        check("layer parallel refused: the stream's cap holds the 4588-token call in one pass", cap(lp_rec) >= n);
+        pp_refusal_drop(one, n, one_rec);
+        check("the last resort refused: its size stays (its next pass is that layout, smaller)", one_rec.count((int32_t) n) == 1);
+        printf("refused 4588-token pass: the stream's pool cap on CUDA1 %.0f tokens with the refused size kept, %.0f with it dropped\n", cap(kept), cap(lp_rec));
     }
 
     // the CPU/GPU split's A/B (ab_tune): token times from a made-up cost of the multiplier, the search must land on its optimum

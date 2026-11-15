@@ -17282,6 +17282,10 @@ uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, doub
     const pp_refusal r = pp_refusal_of(fb, n_tokens, cells, share, smaller);
     *tc_all = r.path_only ? 0 : r.tc;
     if (r.path_only) {
+        {   // the other paths' caps fit graphs that ran, not the refused layout's (need_tok is written under the cache lock, moe_alias)
+            std::lock_guard<std::mutex> lk(g_cache->mtx);
+            for (auto & ap : g_cache->alias) { pp_refusal_drop(r, n_tokens, ap.need_tok); }
+        }
         std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
         g_pp_tc[p] = g_pp_tc[p] ? std::min(g_pp_tc[p], r.tc) : r.tc;
         const std::string s = format("the pool refused %s a pass of %u tokens at %llu cells: %s keeps passes of at most %llu tokens x cells, the call runs again at %u tokens on the other paths",
