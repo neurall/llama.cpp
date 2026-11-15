@@ -134,7 +134,7 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         cp.read(os.path.join(here, "models.ini"))
         base = {k: dict(cp[k]) for k in cp.sections()}
         hp = os.path.join(hw_dir(), "models.ini")
-        if os.path.exists(hp):   # this hardware's own values (bestpp, maxpp ...): fork/hw/<key>/models.ini over the [alias] sections of fork/models.ini
+        if os.path.exists(hp):   # this hardware's own values (bestpp, maxpp ...): fork/cfg/<key>/models.ini over the [alias] sections of fork/models.ini
             cq = configparser.ConfigParser(interpolation=None); cq.read(hp)
             base = ini_overlay(base, {k: dict(cq[k]) for k in cq.sections()})
         return base
@@ -153,8 +153,8 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
 
 
     def hw_dir():
-        """fork/hw/<slug of this hardware's key>: the machine's own ini files (models.ini holds its bestpp and maxpp); not created here"""
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "hw", hw_slug(hw_id()))
+        """fork/cfg/<slug of this hardware's key>: the machine's own ini files (models.ini holds its bestpp and maxpp; moe-state.ini and the like belong here too); not created here"""
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "cfg", hw_slug(hw_id()))
 
 
     def hw_id_str(board, cpu, ram, gpus, drive, tag=""):
@@ -8520,7 +8520,7 @@ def ini_put_text(text, sec, key, value):
 
 
 def ini_put(sec, key, value):
-    """this hardware's own models.ini (fork/hw/<key>/models.ini, created with a key.txt that names the hardware): the values a run learned here (bestpp, maxpp) go there, never into the shared fork/models.ini"""
+    """this hardware's own models.ini (fork/cfg/<key>/models.ini, created with a key.txt that names the hardware): the values a run learned here (bestpp, maxpp) go there, never into the shared fork/models.ini"""
     d = fcfg.hw_dir(); os.makedirs(d, exist_ok=True)
     f = os.path.join(d, "models.ini")
     open(os.path.join(d, "key.txt"), "w").write(fcfg.hw_id() + "\n")
