@@ -5324,6 +5324,36 @@ def regress_promote(name, src, med, n, camp, old, why):
         f.write(f"{time.strftime('%F %T')},{name},{med:.2f},{n},{camp},{old or ''},{why}\n")
 
 
+def regress_list_verdict(rows, label, ref, src, tol):
+    """verdict of the regress list for build `label` against the best build `ref`: per ppl cell (same model and args) the median tps of each build;
+    the worst ratio decides. Prints the table, promotes a build that is above 1/tol in every cell with ranges not overlapping. Returns the exit code."""
+    cells = {}
+    for x in rows:
+        if x.get("test") == "ppl" and x.get("ok") != "0" and num(x, "tps") is not None and x.get("build") in (label, ref):
+            cells.setdefault((x["model"], x["args"]), {}).setdefault(x["build"], []).append(num(x, "tps"))
+    mine = {k: v[label] for k, v in cells.items() if label in v}
+    if not mine:
+        print("regress: FAILED, this build has no valid ppl row in run-history.csv"); return 2
+    worst, allhi, n = None, True, 0
+    for k, v in sorted(mine.items()):
+        m = statistics.median(v); r = cells[k].get(ref)
+        line = f"  {k[0][:28]:28s} {m:8.2f} t/s n={len(v)}"
+        if r:
+            q = m / statistics.median(r); n += 1
+            line += f"  best {statistics.median(r):8.2f}  x{q:.3f}"
+            worst = q if worst is None else min(worst, q)
+            allhi = allhi and q > 1 / tol and min(v) > max(r)
+        print(line)
+    if worst is None:
+        print("regress: PASS, no reference rows for the same cells"); return 0
+    if worst < tol:
+        print(f"regress: REGRESSION, worst cell {worst:.3f} x the best (limit {tol})"); return 1
+    if allhi and n:
+        regress_promote(label, src, statistics.median(sum(mine.values(), [])), len(sum(mine.values(), [])), "regress-list", ref, f"worst {worst:.3f} x {ref}")
+        print(f"regress: NEW BEST, every cell above the best; kept in {BEST}/{label}"); return 0
+    print(f"regress: PASS, worst cell {worst:.3f} x the best"); return 0
+
+
 def queue_lock(wait=True):
     """/tmp/queue.lock for this process, unless it runs as a queue task (the daemon holds the lock for the task then: QUEUE_HOLDS_LOCK=1).
     Returns the open lock file (keep it referenced), None when the daemon holds it, or raises OSError when wait=False and the lock is taken."""
@@ -5727,8 +5757,13 @@ def cmd_build(a):
         lnk = os.path.join(DEVBUILDS, ".latest.tmp"); os.path.lexists(lnk) and os.remove(lnk); os.symlink(name, lnk); os.replace(lnk, os.path.join(DEVBUILDS, "latest"))
     if a.tree: set_latest_link(a.tree)
     if not a.no_regress:
-        r = subprocess.run([sys.executable, os.path.abspath(__file__), "regress", dst, "--wait"])
-        sys.exit(r.returncode)
+        # the regress is the list fork/runs/regress.csv through `run run` (visible in `run.py run`, rows in the run db); the verdict reads those rows
+        r = subprocess.run([sys.executable, os.path.abspath(__file__), "run", "regress", "-b", name, "-nrt"])
+        if r.returncode:
+            sys.exit(r.returncode)
+        cur = os.path.join(BEST, "current")
+        ref = os.path.basename(os.path.realpath(cur)) if os.path.exists(cur) else None
+        sys.exit(regress_list_verdict(csv_load("run-history.csv"), regress_label(dst), ref, dst, 0.97))
 
 
 def cmd_quick(a):
@@ -11041,6 +11076,10 @@ def _tool_selftest():
         ro = os.path.join(d, "x.run.out")
         open(ro, "w").write("2026-11-15 18:59:06 b ppl {-np 1} 26.60 t/s hit 99.2% ok\n2026-11-15 18:59:07 b chat {-np 1} 36.3 t/s hit 99% ok\n2026-11-15 18:59:08 b pf12k {-np 1} 36.3 t/s hit 99% pp 1601.9 t/s\n")
         check(cr(ro, 0) == [(26.60, None), (36.3, 1601.9)], "a cell result needs a prompt rate, except for ppl (one token per call)")
+        rv = lambda b, t, m="M": {"test": "ppl", "ok": "1", "model": m, "args": "a", "build": b, "tps": str(t)}
+        check(runpy.run_path(RUN, run_name="forkselftest")["regress_list_verdict"]([rv("n", 10), rv("n", 10.1), rv("b", 10), rv("b", 10.1)], "n", "b", "/x", 0.97) == 0, "regress list: equal builds pass")
+        check(runpy.run_path(RUN, run_name="forkselftest")["regress_list_verdict"]([rv("n", 8), rv("n", 8.1), rv("b", 10), rv("b", 10.1)], "n", "b", "/x", 0.97) == 1, "regress list: 20% slower is a regression")
+        check(runpy.run_path(RUN, run_name="forkselftest")["regress_list_verdict"]([{"test": "ppl", "ok": "0", "model": "M", "args": "a", "build": "n", "tps": "5"}], "n", "b", "/x", 0.97) == 2, "regress list: no valid row fails")
 
     # 4. markdown links
     bad = []
