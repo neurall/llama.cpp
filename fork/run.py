@@ -8308,6 +8308,13 @@ def run_list(name, argv):
             return not c.execute(q, a).fetchone()
         except sqlite3.Error: return False
     rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) and not (r.get("args") or "").strip() else (o.build,))]   # a cell with forced server args (dense-split=0/1) is a test of our own settings: stock has none of them, no stock partner   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
+    if o.hog_gpu and not o.dry and rows and all(str(r["_b"]).startswith("stock") for r in rows):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
+        v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
+        hog = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vramhog.py"), str(free_mib), os.path.join(DEVBUILDS, rows[0]["_b"])], stdout=subprocess.PIPE, text=True)
+        atexit.register(lambda: (hog.terminate(), hog.wait(30)))   # our own child, by handle
+        for _ in range(8):
+            ln = hog.stdout.readline(); print(col(90, ln.strip()), flush=True)
+            if "ready" in ln: break
     if o.not_today:   # -nrt: a cell with enough ok rows (warm-up passes and loop retries do not count) from today in runs.db is not run again; a model with no cell left is not loaded or mounted
         import sqlite3
         done = {}   # campaign -> [(t/s, pp t/s) of today's ok runs of the build under test (a campaign named `latest-...` holds the runs of every build `latest` ever pointed to: only this build's count)]
