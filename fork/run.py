@@ -8545,10 +8545,18 @@ def ini_set_maxpp(sec, tokens):
 BESTPP_MEM = {}   # (alias, VRAM GiB) -> request time per token (ms) of the best prompt so far: read from models.ini once, then only in memory
 
 
+REF_REQUEST = (8192, 64)   # prompt tokens, answer tokens of the request every size is rated on (the sweep's cells: a prompt, a 64-token answer)
+
+
+def total_time(v, ref=REF_REQUEST):
+    """(answer tokens, prompt t/s, decode t/s) of one run -> seconds of the reference request at that run's speeds: the prompt's time per token (1 / prompt t/s) and the answer's time per token (1 / decode t/s), each times the tokens of the reference request. The rating no longer depends on how long the run's own prompt was"""
+    return ref[0] / v[1] + ref[1] / v[2]
+
+
 def best_size(seen, tol=0.02):
-    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> the best prompt size: the highest prompt speed, and among the sizes within tol of it the longest prompt. Decode speed does not rank sizes: it hardly depends on the prompt and moves 25% from cell to cell (MiMo 26.8 vs 34.4 t/s), which once made a slower 8k beat the faster 11k"""
-    top = max(v[1] for v in seen.values())
-    return max((k for k, v in seen.items() if v[1] >= top * (1 - tol)))
+    """{prompt tokens: (answer tokens, prompt t/s, decode t/s)} -> the best prompt size: the lowest total_time, and among the sizes within tol of it the longest prompt. Totals of runs with different prompt lengths are never compared (9 s of an 11k prompt against 7 s of an 8k one said nothing about speed)"""
+    t = {k: total_time(v) for k, v in seen.items()}; low = min(t.values())
+    return max(k for k, x in t.items() if x <= low * (1 + tol))
 
 
 def scores(seen):
@@ -11201,9 +11209,9 @@ def _tool_selftest():
         check(_g["ini_put_text"]("[a]\npath = x\n\n[b]\nk = 1\n", "a", "bestpp", "v") == "[a]\npath = x\nbestpp = v\n\n[b]\nk = 1\n", "ini_put_text: a key goes to its section's end")
         check(_g["ini_put_text"]("", "m", "k", "v") == "[m]\nk = v\n" and _g["ini_put_text"]("[m]\nk = 1\n", "m", "k", "2").count("k =") == 1, "ini_put_text: a new section, a replaced key")
         check(_f.ini_overlay({"a": {"path": "x", "bestpp": "old"}}, {"a": {"bestpp": "new"}}) == {"a": {"path": "x", "bestpp": "new"}}, "ini_overlay: this hardware's value wins, the rest stays")
-        _sm = {8037: (1024, 1422.0, 34.4), 11015: (1024, 1465.0, 26.8), 9937: (1024, 1461.0, 32.9), 4000: (1024, 1300.0, 36.0)}
-        check(_g["best_size"](_sm) == 11015, "best_size: decode noise (26.8 vs 34.4 t/s) never moves the pick; the highest prompt speed wins, and within 2% the longer prompt")
-        check(_g["best_size"]({8037: (1024, 1000.0, 30.0), 12000: (1024, 985.0, 20.0)}) == 12000 and _g["best_size"]({8037: (1024, 1000.0, 30.0), 12000: (1024, 900.0, 30.0)}) == 8037, "best_size: within 2% the longer prompt, below that the faster one")
+        _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
+        check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
+        check(_g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 985.0, 20.0)}) == 12000 and _g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 900.0, 30.0)}) == 8037, "best_size: within 2% the longer prompt, below that the faster one")
         check(_f.hw_slug("A b | C:d x16") == "A-b__C-d-x16", "hw_slug: ' | ' becomes '__', unsafe characters '-'")
         rv = lambda b, t, m="M": {"test": "ppl", "ok": "1", "model": m, "args": "a", "build": b, "tps": str(t)}
         check(runpy.run_path(RUN, run_name="forkselftest")["regress_list_verdict"]([rv("n", 10), rv("n", 10.1), rv("b", 10), rv("b", 10.1)], "n", "b", "/x", 0.97) == 0, "regress list: equal builds pass")
