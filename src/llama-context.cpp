@@ -84,7 +84,8 @@ void     llama_dsplit_pass_abandon_fork();   // a pass that ran out of CUDA memo
 void     llama_dsplit_note_fill_fork(double ms, double pin_ms);   // the fill's whole wall and its staging pins (the planner takes each apart)
 uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch);   // llama-dsplit-fork.cpp: the largest dense-split pass (sliding-window cells)        // src/llama-moecache-fork.cpp: the largest pass every pool can lend for
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
-uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all);   // a refused pass: its path's ceiling, the retry size
+uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all);
+void llama_moe_cache_split_feed_fork(int64_t dt_us);   // a decode token's time: the CPU/GPU split's A/B (llama-moecache-fork.cpp); < 0 voids its samples   // a refused pass: its path's ceiling, the retry size
 extern "C" void ggml_backend_sched_upload_add_fork(ggml_backend_dev_t dev, uint64_t n);   // ggml-backend.cpp: bytes a card received from host memory (pass statistics)
 extern "C" void ggml_backend_sched_upload_weight_fork(ggml_backend_sched_t sched, ggml_backend_t backend, const struct ggml_tensor * input, struct ggml_tensor * input_cpy,
                                                       size_t off, size_t n);   // ggml-backend.cpp: a host expert weight to its card from the RAM pool, else O_DIRECT; the mapping only if a read fails
@@ -2836,9 +2837,6 @@ void llama_context::thread_tune_feed_batch(int64_t dt_us, int64_t n_tokens) {
 }
 
 void llama_context::thread_tune_feed(int64_t dt_us) {
-    if (!thr.on || cparams.n_threads < 2) {
-        return;
-    }
     // The RAM pool's demand reads (--moe rampool) stall the token on the SSD before the kernel runs; the thread count does not change that time, but spinning
     // threads starve the readers, so with it inside the token time every lower count "won" (GLM 3.5 rampool3: 16 -> 8 -> 4 -> 2 -> 1 threads, decode 15.8 -> 6.5 t/s)
     {
@@ -2846,6 +2844,10 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         const uint64_t w = ggml_rampool_wait_us_fork();
         dt_us -= std::min<int64_t>(dt_us, (int64_t) (w - wait_seen));
         wait_seen = w;
+    }
+    if (!thr.on || cparams.n_threads < 2) {
+        llama_moe_cache_split_feed_fork(dt_us);   // the CPU/GPU split's A/B: no thread search to wait for
+        return;
     }
     // First tokens: find the decode thread count by ALTERNATING between the best count so far (b) and one lower candidate (c) on consecutive tokens (user 2026-10-26).
     // The search starts on every hardware thread (common_init_result): too many threads costs little (barriers, SMT siblings), too few costs a lot, and on a multi-die
@@ -2890,6 +2892,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         return;
     }
     if (d.st == 3) {   // settled: stay, and watch. Windows of 64 tokens; a mean 10% above the best seen, twice in a row, means the box changed (other load, a new prompt mix): search again from the default
+        llama_moe_cache_split_feed_fork(dt_us);   // the CPU/GPU split's A/B runs on settled thread counts only: two searches at once confound each other
         d.wsum += (double) dt_us;
         if (++d.wn < 64) { return; }
         const double m = d.wsum/64.0; d.wsum = 0; d.wn = 0;
@@ -2899,6 +2902,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
             LLAMA_LOG_INFO("%s: thread search again: %.2f ms/token against %.2f settled\n", __func__, m/1000.0, d.best/1000.0);
             thr.base = thr.base0;
             d.st = 0; d.b = d.c = d.lo = 0; d.best = 0;
+            llama_moe_cache_split_feed_fork(-1);   // its samples ran on the old count
         }
         return;
     }

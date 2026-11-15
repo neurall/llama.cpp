@@ -2520,6 +2520,10 @@ size_t profile_preload(moe_cache * mc, const llama_model & model) {
 }
 
 moe_cache * g_cache = nullptr;
+// the CPU/GPU split's A/B multiplier (ab_tune, llama-estimate-fork.h): the settled value, the one this decode token runs, the one it is compared against; set a layer that
+// would split differently under the other one
+static std::atomic<double> g_split_base{1.0}, g_split_now{1.0}, g_split_other{1.0};
+static std::atomic<bool> g_split_differs{false};
 std::mutex g_init_mtx;
 bool g_init_done = false;
 
@@ -11712,15 +11716,21 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     const double rdm = mc->jit_rd_gbs > 0 ? std::min(rlb, mc->jit_rd_gbs * 1e3) : rlb;
     std::vector<double> up_head(m + 1, 0.0);   // up_head[k]: the upload time of the first k
     for (int i = 0; i < m; ++i) { up_head[i + 1] = up_head[i] + S / (mapped(miss[i]) ? rdm : rlb); }
-    auto T = [&](int k) {
-        const double tl = up_head[k], bc = cpu_tail[k];
+    // the CPU side weighed by the split's A/B multiplier (llama_moe_cache_split_feed_fork: decode token times decide it, user 2026-11-15 "or do abab every 100 tokens");
+    // a prompt call takes the settled value, a decode token the one its A/B runs
+    const double bias = (prompt ? g_split_base : g_split_now).load(std::memory_order_relaxed);
+    auto Tb = [&](int k, double b) {
+        const double tl = up_head[k], bc = cpu_tail[k] * b;
         if (k == 0) { return bc / rc; }
         return bc <= tl * rcc ? std::max(tl, rcc > 0 ? bc / rcc : 1e300) : tl + (bc - tl * rcc) / rc;
     };
-    int kb = 0;
-    for (int k = 1; k <= m; ++k) {   // measured, not a rule: the k that finishes the layer first, for a prompt call or a decode step alike
-        if (T(k) < T(kb)) { kb = k; }
-    }
+    auto T = [&](int k) { return Tb(k, bias); };
+    auto best = [&](double b) {   // measured, not a rule: the k that finishes the layer first, for a prompt call or a decode step alike
+        int k0 = 0;
+        for (int k = 1; k <= m; ++k) { if (Tb(k, b) < Tb(k0, b)) { k0 = k; } }
+        return k0;
+    };
+    int kb = best(bias);
     // --moe jit-all=1 (user 2026-10-29: "no point until you achieve fully deterministic moe replay"): every miss of this token goes to the GPU, none to
     // the CPU: the CPU's float results differ from the GPU's, and greedy runs of one prompt diverged after a median 5 tokens when the CPU computed some
     static const bool jit_all = [] { const char * v = moe_opt("jit-all"); return v && atoi(v) > 0; }();
@@ -11729,13 +11739,17 @@ void llama_moe_cache_jit_fork(const llama_moe_cache_layer_fork * pub, const ggml
     // planner's split against both ends; an expert only the SSD has still goes up (cpu_eq: no expert is computed from page faults), it sorts first
     static const bool jit_cpu = [] { const char * v = moe_opt("jit-cpu"); return v && atoi(v) > 0; }();
     if (jit_cpu && !jit_all && rc > 0.0) { kb = 0; while (kb < m && cpu_eq(miss[kb]) >= 1e300) { ++kb; } }
+    if (!prompt && !jit_all && !jit_cpu && rc > 0.0) {   // the A/B's other value would split this layer differently: the comparison is not void
+        const double bo = g_split_other.load(std::memory_order_relaxed);
+        if (bo != bias && best(bo) != kb) { g_split_differs.store(true, std::memory_order_relaxed); }
+    }
     {   // stats.log SWT: the call's misses switch between the CPU, a mix and uploads (user 2026-11-02: "in stats.log log switching from missed moes from cpu to uploads"); one line per switch, not per layer
         static std::atomic<int> last_mode[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };   // per link: the cards' pass sizes differ, the rule can flip on one and not on the other
         const int mode = kb == 0 ? 0 : kb == m ? 2 : 1;
         if (last_mode[lk & 7].exchange(mode) != mode) {
             static const char * const nm[3] = { "CPU", "CPU and uploads", "uploads" };
-            llama_moe_stats_log_fork("SWT", format("%s call, link %d (%.1f GB/s), layer %d: misses go to %s (%d of %d uploaded, %d mapped, %d tokens; layer takes %.2f ms with them, %.2f ms all on the CPU (%.1f GB/s, mapped %.1f), %.2f ms all uploaded)",
-                    prompt ? "prompt" : "decode", lk, rl, pub->il, nm[mode], kb, m, n_mapped, (int) ids->ne[1], T(kb) / 1e3, T(0) / 1e3, rc / 1e3, rcm / 1e3, T(m) / 1e3).c_str());
+            llama_moe_stats_log_fork("SWT", format("%s call, link %d (%.1f GB/s), layer %d: misses go to %s (%d of %d uploaded, %d mapped, %d tokens; layer takes %.2f ms with them, %.2f ms all on the CPU (%.1f GB/s, mapped %.1f, weighed x%.3g), %.2f ms all uploaded)",
+                    prompt ? "prompt" : "decode", lk, rl, pub->il, nm[mode], kb, m, n_mapped, (int) ids->ne[1], T(kb) / 1e3, T(0) / 1e3, rc / 1e3, rcm / 1e3, bias, T(m) / 1e3).c_str());
         }
     }
     if (kb == 0) {
@@ -17237,6 +17251,30 @@ double llama_moe_cache_pp_best_one_us_fork(int64_t n_tokens) {
 }
 // A pass the pool refused (llama-context.cpp): the running path's own ceiling when another path can take the call (pp_refusal_of), else the caller's ceiling for
 // every path (*tc_all). Returns the pass size the rest of the call runs again with.
+// A decode token's time feeds the CPU/GPU split's A/B (llama_context::thread_tune_feed, once the thread count is settled; the RAM pool's demand waits taken out, as there).
+// dt_us < 0: the samples are void (the thread search starts again), the search restarts after it.
+void llama_moe_cache_split_feed_fork(int64_t dt_us) {
+    static const bool on = [] { const char * v = moe_opt("split-ab"); return !v || atoi(v) > 0; }();   // --moe split-ab=0: the multiplier stays 1 (the arm without it)
+    if (!g_cache || !on) { return; }
+    static ab_tune ab;
+    if (dt_us < 0) {
+        ab.abort();
+    } else if (ab.feed((double) dt_us, g_split_differs.exchange(false, std::memory_order_relaxed))) {
+        const bool adopted = ab.base != ab.last_base, confirm = ab.pending;
+        LLAMA_LOG_INFO("moe-cache: split A/B: CPU weighed x%.3g %.1f ms/token vs x%.3g %.1f ms/token, %d of %d pairs won, %d tokens split some layer differently -> %s x%.3g\n",
+                ab.last_base, ab.last_b / 1e3, ab.last_cand, ab.last_c / 1e3, ab.last_wins, ab.last_pairs,
+                ab.last_diff, adopted ? "adopted" : confirm ? "confirming" : "keep", ab.base);
+        if (ab.st == 0) {
+            char v[32]; snprintf(v, sizeof v, "%.3g", ab.base);
+            llama_moe_decision_fork("split_bias", v, "the CPU side of each layer's miss split weighed by this: decode tokens alternate it with x2 and /2 (b c b c b c b), a value replaces it after "
+                    "winning every pair by the noise bar twice in a row; again every 100 tokens, prompt calls take the settled value");
+        }
+    }
+    g_split_base.store(ab.base, std::memory_order_relaxed);
+    g_split_now.store(ab.now(), std::memory_order_relaxed);
+    g_split_other.store(ab.other(), std::memory_order_relaxed);
+}
+
 uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all) {
     const int p = g_pp_path_call.load(std::memory_order_relaxed);
     // the dense split's refusals stay with the caller's ceiling: the split planner reads it (shortcut: the split has no ceiling of its own yet, add one when a split refusal shows)

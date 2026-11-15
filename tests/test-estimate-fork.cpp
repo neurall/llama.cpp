@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <random>
 
 static int g_fail = 0;
 static void near(const char * what, double got, double want) {
@@ -188,6 +189,32 @@ int main() {
         check("no ceiling: every pass", pp_pass_under(0, 1e6, 1e6));
         const pp_refusal one = pp_refusal_of(false, n, cells, 0.88, 2304);
         check("the last resort refused: every path, smaller passes (as before)", !one.path_only && one.retry_pass == 2304);
+    }
+
+    // the CPU/GPU split's A/B (ab_tune): token times from a made-up cost of the multiplier, the search must land on its optimum
+    {
+        auto drive = [](ab_tune & a, int n, auto && cost, bool differs = true) { for (int i = 0; i < n; ++i) { a.feed(cost(a.now(), i), differs); } };
+        auto vee = [](double opt) { return [opt](double b, int) { return 400.0 + 20.0 * std::fabs(std::log2(b) - std::log2(opt)); }; };
+        ab_tune up; drive(up, 60, vee(4.0));
+        check("uploads cheaper than priced: the multiplier climbs to 4 and stops", up.base == 4.0 && up.st == 0);
+        ab_tune dn; drive(dn, 60, vee(0.25));
+        check("the CPU cheaper than priced: x2 loses, then halves to 0.25", dn.base == 0.25 && dn.st == 0);
+        ab_tune same; drive(same, 60, vee(4.0), false);
+        check("a candidate that splits no layer differently never wins", same.base == 1.0);
+        ab_tune warm; drive(warm, 60, [](double, int i) { return 400.0 - 2.0 * i; });
+        check("a warming cache alone (later tokens faster) moves nothing", warm.base == 1.0);
+        ab_tune top; drive(top, 80, [](double b, int) { return 400.0 - 10.0 * std::log2(b); });
+        check("cheaper the higher: stops at the bound 16", top.base == 16.0 && top.st == 0);
+        // settled: the next search starts after `every` tokens (the user's 100)
+        ab_tune rs; int i = 0, at = -1;
+        for (; i < 1000; ++i) { const bool done = rs.feed(vee(4.0)(rs.now(), i), true); if (done && rs.st == 0 && at < 0) { at = i; } if (at >= 0 && rs.st == 1) { break; } }
+        check("the search runs again 100 tokens after it settled", at >= 0 && i - at == 100);
+        ab_tune ab; drive(ab, 1, vee(4.0)); ab.abort(); check("abort: the samples are dropped, the search restarts on the next token", ab.st == 0 && ab.since == ab.every);
+        // noise: +-5% per token around a flat cost, 20 searches; the multiplier may move only when a pair series says so, never past the bounds
+        ab_tune nz; std::mt19937 rng(7); std::uniform_real_distribution<double> u(0.95, 1.05);   // not an LCG: its consecutive outputs correlate with the b c alternation
+        drive(nz, 2000, [&](double, int) { return 400.0 * u(rng); });
+        check("noise: the multiplier stays within one step of 1", nz.base >= 0.5 && nz.base <= 2.0);
+        printf("ab_tune noise: 2000 tokens flat cost +-5%%: multiplier %.4g\n", nz.base);
     }
 
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);

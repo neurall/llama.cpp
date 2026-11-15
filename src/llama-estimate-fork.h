@@ -198,3 +198,62 @@ static inline double pp_crossover_tokens(const pp_machine & hw, const pp_model &
     }
     return limit + 1.0;
 }
+
+// ---- paired A/B of one multiplier on token times (user 2026-11-15: "or do abab every 100 tokens") ----
+// The CPU/GPU split of a layer's misses (llama_moe_cache_jit_fork) weighs the CPU side by this multiplier: 2 counts the CPU twice as dear (more uploads), 0.5 half (more on the
+// CPU). The token times decide it, as the decode thread search does: tokens run base and candidate in turn, b c b c b, every c against the mean of its two b neighbours (a
+// warming cache cancels); the candidate wins only when it was faster in every one of 3 pairs by the batch thread search's noise-scaled bar (0.5% to 3% from the b tokens'
+// spread: with the decode search's looser rule, a mixed result then more wins than losses, +-5% noise alone walked the multiplier 1 -> 8 in 2000 tokens). A comparison in
+// which the candidate split no layer differently is a loss. As in the batch thread search, two won comparisons in a row replace the base (one alone: flat +-5% noise moved
+// the multiplier in 79 of 200 runs of 1000 tokens). Candidates base*2 first, then base/2; a won step goes on in its direction until it loses or reaches a bound.
+// Settled, the search runs again after `every` tokens; the first one starts at once.
+// shortcut: steps of x2 only, bisect between two steps when the measured optimum sits between them
+struct ab_tune {
+    double base = 1.0, cand = 1.0, lo = 1.0 / 16, hi = 16.0;
+    int every = 100, since = 100;   // tokens between two searches; since the last one
+    int st = 0, dir = 0;            // 0 settled, 1 sampling; the direction tried (+1 base*2, -1 base/2)
+    bool won = false, pending = false;   // a step of this search won: no turn to the other direction; the candidate won once, the next comparison confirms it
+    int pairs = 3, k = 0, diff = 0; // pairs sampled, tokens into the sequence, tokens on which the two values split some layer differently
+    std::vector<double> sb, sc;
+    double last_b = 0.0, last_c = 0.0, last_base = 1.0, last_cand = 0.0; int last_wins = 0, last_pairs = 0, last_diff = 0;   // the last comparison, for the caller's log
+    double now() const { return st == 1 && (k % 2) == 1 ? cand : base; }
+    double other() const { return st == 1 ? ((k % 2) == 1 ? base : cand) : base; }   // the value the token is compared against
+    bool plan(int d) {
+        const double c = base * (d > 0 ? 2.0 : 0.5);
+        if (c > hi * (1.0 + 1e-9) || c < lo * (1.0 - 1e-9)) { return false; }
+        cand = c; dir = d; k = 0; pairs = 3; diff = 0; sb.clear(); sc.clear(); st = 1;
+        return true;
+    }
+    void settle() { st = 0; since = 0; }
+    void abort() { if (st == 1) { st = 0; since = every; } }   // the samples are void (the thread count changed under them): the search starts again
+    // t: the time of the token that ran at now(); differs: on that token some layer's split under other() would have differed. True when a comparison finished (last_* set).
+    bool feed(double t, bool differs) {
+        if (st == 0) {
+            if (++since < every) { return false; }
+            won = false;
+            if (!plan(+1) && !plan(-1)) { since = 0; }
+            return false;   // this token ran before the search: not a sample
+        }
+        (k % 2 == 0 ? sb : sc).push_back(t);
+        diff += differs;
+        if (k < 2 * pairs) { ++k; return false; }
+        const double bmin = *std::min_element(sb.begin(), sb.end()), bmax = *std::max_element(sb.begin(), sb.end());
+        const double bar = std::min(0.03, std::max(0.005, 0.5 * (bmax / std::max(bmin, 1e-9) - 1.0)));
+        int wins = 0;
+        for (int i = 0; i < pairs; ++i) { wins += sc[i] < (1.0 - bar) * 0.5 * (sb[i] + sb[i + 1]); }
+        double mb = 0.0, mc = 0.0;
+        for (double x : sb) { mb += x; }
+        for (double x : sc) { mc += x; }
+        last_b = mb / (double) sb.size(); last_c = mc / (double) sc.size(); last_base = base; last_cand = cand; last_wins = wins; last_pairs = pairs; last_diff = diff;
+        if (diff > 0 && wins == pairs && !pending) {
+            pending = true; plan(dir);   // the same candidate again
+        } else if (diff > 0 && wins == pairs) {
+            base = cand; won = true; pending = false;
+            if (!plan(dir)) { settle(); }
+        } else {
+            pending = false;
+            if (!(!won && dir > 0 && plan(-1))) { settle(); }
+        }
+        return true;
+    }
+};
