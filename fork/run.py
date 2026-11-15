@@ -7463,7 +7463,8 @@ def stock_latest(dry=False):
 # under taskset on the first chiplet (one Zen 2 chiplet of the 3975WX reads 40-42 GB/s by itself, so no cap is needed for that), the rest of the RAM held as 2 MiB huge
 # pages nobody maps, no huge-page pool (joe has none), stock at the 8 threads it picks on such a box. --joe-bw caps lower through AMD MBA (resctrl, measured 96% of the
 # asked rate). Rows go under machine pc1joe, never paired with PC1's own. The limits go at the end of the list, at run.py stop, or at the start of the next list.
-JOE = {"ram": 128, "threads": 16, "bw": 0.0}
+JOE = {"ram": 128, "threads": 16, "bw": 0.0, "link": 6.0}   # link: CUDA0's PCIe rate in GB/s (the old box's CUDA0 sat on x4: pageable uploads 6.1 GB/s, stock's prompt uploads its CPU experts there)
+JOE_GEN_GBS = {1: 3.2, 2: 6.4, 3: 12.4, 4: 25.0}   # x16 pageable upload per PCIe generation (Gen 3 measured on the old x16 card, Gen 4 on PC1; Gen 1-2 by the line rate)
 JOE_HOG = "/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
 JOE_RG = "/sys/fs/resctrl/simjoe"
 JOE_MARK = "/tmp/simjoe.active"   # written by the setup: the teardown touches only limits this harness set
@@ -7476,7 +7477,7 @@ def simjoe_cfg():
     c = dict(JOE)
     for kv in v.split(","):
         k, _, x = kv.partition("=")
-        if k in c and x: c[k] = float(x) if k == "bw" else int(float(x))
+        if k in c and x: c[k] = float(x) if k in ("bw", "link") else int(float(x))
     c["cpus"], c["cores"], c["l3"] = simjoe_cpus(c["threads"])
     return c
 
@@ -7494,6 +7495,23 @@ def simjoe_cpus(threads):
         for c, sib in members:
             if sib in cores or len(cores) < want: cores.add(sib); cpus.append(c)
     return ",".join(map(str, sorted(cpus))), len(cores), ids
+
+
+def joe_root_port():
+    """(PCI address of CUDA0's upstream port, CUDA0's own) from nvidia-smi index 0"""
+    bus = subprocess.run([NVSMI, "-i", "0", "--query-gpu=pci.bus_id", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip().lower()
+    dev = bus[-12:] if len(bus) >= 12 else bus   # 00000000:41:00.0 -> 0000:41:00.0
+    return os.path.basename(os.path.realpath(f"/sys/bus/pci/devices/{dev}/..")), dev
+
+
+def joe_link_gen(rp, gen=None):
+    """the port's Target Link Speed (PCIe generation, LnkCtl2 bits 3:0); with gen: set it and retrain the link (no server may run)"""
+    if gen:
+        subprocess.run(["sudo", "-n", "setpci", "-s", rp, f"CAP_EXP+30.w={gen:04x}:000f"], capture_output=True)
+        subprocess.run(["sudo", "-n", "setpci", "-s", rp, "CAP_EXP+10.w=0020:0020"], capture_output=True)   # Retrain Link
+        time.sleep(1)
+    r = subprocess.run(["sudo", "-n", "setpci", "-s", rp, "CAP_EXP+30.w"], capture_output=True, text=True)
+    return int(r.stdout.strip() or "0", 16) & 0xf
 
 
 def simjoe_setup(c):
@@ -7517,9 +7535,17 @@ def simjoe_setup(c):
         u = max(1, round(c["bw"] / max(1, len(c["l3"])) * 8))   # AMD MBA: 1/8 GB/s units per L3 group
         _sudo_write(JOE_RG + "/schemata", "MB:" + ";".join(f"{i}={u}" for i in c["l3"]))
         bw = f", memory read capped at {c['bw']:.0f} GB/s (MBA {u}/8 GB/s on L3 groups {','.join(map(str, c['l3']))})"
+    link = ""
+    if c["link"] > 0:   # the old box's CUDA0 link: the PCIe generation whose x16 upload is closest, set on its upstream port (both ends of the link obey it)
+        rp, dev = joe_root_port()
+        was = joe_link_gen(rp)
+        gen = min(JOE_GEN_GBS, key=lambda g: abs(JOE_GEN_GBS[g] - c["link"]))
+        open(JOE_MARK, "a").write(f"\nlink {rp} {was}")
+        now = joe_link_gen(rp, gen)
+        link = f", CUDA0 ({dev}) link Gen {now} x16 (about {JOE_GEN_GBS.get(now, 0):.1f} GB/s, was Gen {was})" + ("" if now == gen else f" <-- wanted Gen {gen}")
     left = (tot_kb - got * 2048) / 2**20
     print(col(33, f"simjoe: CPUs {c['cpus']} ({c['cores']} cores, {c['threads']} threads), RAM {left:.1f} GiB (held {got * 2 / 1024:.1f} GiB as 2 MiB pages"
-              + ("" if got == pages else f", wanted {pages * 2 / 1024:.1f}: the rest is in use") + f"), no huge-page pool, stock -t {c['cores']}{bw}; rows as machine {os.environ.get('PERF_HW')}"), flush=True)
+              + ("" if got == pages else f", wanted {pages * 2 / 1024:.1f}: the rest is in use") + f"), no huge-page pool, stock -t {c['cores']}{bw}{link}; rows as machine {os.environ.get('PERF_HW')}"), flush=True)
 
 
 def simjoe_teardown(quiet=False):
@@ -7530,6 +7556,11 @@ def simjoe_teardown(quiet=False):
         subprocess.run(["sudo", "-n", "tee", JOE_HOG], input="0", capture_output=True, text=True); did.append("RAM")
     if os.path.isdir(JOE_RG):
         subprocess.run(["sudo", "-n", "rmdir", JOE_RG], capture_output=True); did.append("bandwidth cap")
+    for ln in open(JOE_MARK).read().split("\n"):   # the link speed it lowered, back to what it was
+        f = ln.split()
+        if len(f) == 3 and f[0] == "link":
+            while subprocess.run(["pgrep", "-x", "llama-server"], capture_output=True).returncode == 0: time.sleep(5)   # no retrain under a running server
+            joe_link_gen(f[1], int(f[2])); did.append(f"PCIe Gen {f[2]} on {f[1]}")
     try: os.remove(JOE_MARK)
     except OSError: pass
     if did and not quiet: print(col(33, f"simjoe: {' and '.join(did)} limits removed"), flush=True)
@@ -7942,6 +7973,7 @@ def run_list(name, argv):
     ap.add_argument("-joe", "--simjoe", action="store_true", help="the old desktop on PC1 (also the word simjoe): one chiplet (16 threads, 40-42 GB/s), RAM held down to 128 GiB, no huge-page pool, stock -t 8; rows as machine pc1joe")
     ap.add_argument("--joe-ram", type=int, metavar="GIB", help="simjoe: installed RAM of the emulated box (default 128)")
     ap.add_argument("--joe-threads", type=int, metavar="N", help="simjoe: hardware threads of the emulated box (default 16 = 8 cores)")
+    ap.add_argument("--joe-link", type=float, metavar="GBS", help="simjoe: CUDA0's PCIe upload rate (default 6: the old box's x4 card, as PCIe Gen 2 x16 on its root port; 0 = untouched)")
     ap.add_argument("--joe-bw", type=float, metavar="GBS", help="simjoe: cap the chiplet's memory reads to GBS (AMD MBA; default: none, the chiplet itself reads 40-42)")
     ap.add_argument("-ns", "--no-stats", dest="no_stats", action="store_true", help="the default now (kept for old command lines). No live stats: nothing samples the machine or polls the server while a cell runs (status probes, nvidia-smi / sys / slots samplers on a remote box); only the clock is shown. For timings the monitor cannot touch")
     ap.add_argument("-sc", "-su", "--stock-first", action="store_true", help="every cell runs on the newest official stock binary first, then on -b (same session, so the gain line compares like with like)")
@@ -7985,9 +8017,10 @@ def run_list(name, argv):
     if o.dbg: os.environ["RUN_DBG"] = "1"   # the cells and servers of the list see it
     if "simjoe" in argv or o.simjoe:   # the old desktop on PC1 (simjoe_setup): set for the cells, undone at the end
         if o.machine != "pc1": sys.exit("simjoe: PC1 only")
-        jc = {"ram": o.joe_ram or JOE["ram"], "threads": o.joe_threads or JOE["threads"], "bw": o.joe_bw or 0.0}
+        jc = {"ram": o.joe_ram or JOE["ram"], "threads": o.joe_threads or JOE["threads"], "bw": o.joe_bw or 0.0, "link": JOE["link"] if o.joe_link is None else o.joe_link}
         os.environ["RUN_SIMJOE"] = ",".join(f"{k}={v}" for k, v in jc.items())
-        os.environ["PERF_HW"] = "pc1joe" + "".join(f"-{k}{v:g}" for k, v in jc.items() if v and v != JOE[k])
+        base = {**JOE, "link": 0.0}   # the first simjoe rows (2026-11-15 08:30) ran without the link cap as plain pc1joe: a cap is named in the machine (pc1joe-link6)
+        os.environ["PERF_HW"] = "pc1joe" + "".join(f"-{k}{v:g}" for k, v in jc.items() if v and v != base[k])
         import atexit, signal
         atexit.register(simjoe_teardown)
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))   # run.py stop: the limits go with the list
