@@ -8204,7 +8204,7 @@ def run_list(name, argv):
         if cur is None and re.fullmatch(r"b\d+", os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))): cur = int(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))[1:])   # --version failed: the directory is named by the build number
         try:
             for c, t, p, bn in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
-                    "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' and hw='%s' order by ts" % (o.not_today - 1, HW)):
+                    "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' and hw='%s' order by ts" % (o.not_today - 1, row_hw() if os.environ.get("RUN_SIMJOE") else HW)):   # simjoe rows are stored under pc1joe...: -nrt must look there
                 if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
                 done.setdefault(c, []).append((float(t), float(p or 0)))
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)

@@ -9383,3 +9383,4 @@ rel_small_gpus-mimo-i-pf12k1k,2026-11-15 21:06:58,bench /m/m/3/MiMo-V2.6-Flash-R
 latest-mimo-i-pf12k1k,2026-11-15 21:11:40,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds rel_small_gpus variants v test pf12k n=2,,
 latest-mimo-io-edit4c,2026-11-15 21:15:43,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds rel_small_gpus variants v test edit4c n=2,,
 latest-mimo-o-tetrisc,2026-11-15 21:18:43,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds rel_small_gpus variants v test tetrisc n=2,,
+latest-mimo-i-pf12k1k,2026-11-15 21:23:35,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds rel_small_gpus variants v test pf12k n=2,,
