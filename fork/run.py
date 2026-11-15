@@ -8181,6 +8181,7 @@ def run_list(name, argv):
     ap.add_argument("-pin", dest="force_pin", action="store_true", help="force pinned RAM for every cell (-lm pin) instead of the default auto; `-nm` is the mmap counterpart. In a row's args column: -pin")
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-sa", "--stock-args", metavar="ARGS", help="server arguments for the stock cells only (-s, -sc, -nrt stock gap), both stock arms: -sa '-fitt 20000' leaves 20000 MiB free on every card, a restricted-VRAM stock (the rows keep them in their args column)")
+    ap.add_argument("-rh", "--real-hold", action="store_true", help="-sim holds the VRAM for real (vramhog.py) for every cell, ours and stock alike, instead of our server faking the free memory: all arms of a comparison see the same cards")
     ap.add_argument("-sm", "--stock-moe", metavar="MIB[,SHARE]", help="stock cells (-s, -sc, and the stock cells -nrt adds) use upstream's expert cache: --cpu-moe --moe-cache-mib MIB --moe-cache-cpu-share SHARE (default 0.5); their rows are named <stock build>-moe-<cell> so they never mix with plain stock rows")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
@@ -8205,7 +8206,7 @@ def run_list(name, argv):
     ap.add_argument("-ssh", "--ssh", metavar="LINE", help="the ssh line of a rented box for this session, in quotes (\" -p 47086 root@93.91.156.104 -L 8080:localhost:8080\"): the machine named by -pc (cld when -pc is not given) is set to it first (~/.ssh/config and machines.csv), see `run.py machine add`")
     o = ap.parse_args([x for x in argv if x not in ("desc", "simjoe")])   # `run gainers desc` works too, and `run gainers simjoe`
     NOSTATS[0] = not o.dbg; NGPU[0] = o.n_gpus
-    for opt, key in ((o.hog_gpu, "sim-vram"), (o.hog_ram, "sim-ram")):   # GiB -> the server's MiB
+    for opt, key in ((None if o.real_hold else o.hog_gpu, "sim-vram"), (o.hog_ram, "sim-ram")):   # GiB -> the server's MiB (-rh: the VRAM is held for real below, the server fakes nothing)
         if opt:
             v = str(opt).lower().rstrip("ib").rstrip("b")   # 16g, 16gb, 16gib, 16384m, 16
             mib = float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * 1024
@@ -8308,7 +8309,7 @@ def run_list(name, argv):
             return not c.execute(q, a).fetchone()
         except sqlite3.Error: return False
     rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) and not (r.get("args") or "").strip() else (o.build,))]   # a cell with forced server args (dense-split=0/1) is a test of our own settings: stock has none of them, no stock partner   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
-    if o.hog_gpu and not o.dry and rows and all(str(r["_b"]).startswith("stock") for r in rows):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
+    if o.hog_gpu and not o.dry and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
         hog = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vramhog.py"), str(free_mib), os.path.join(DEVBUILDS, rows[0]["_b"])], stdout=subprocess.PIPE, text=True)
         atexit.register(lambda: (hog.terminate(), hog.wait(30)))   # our own child, by handle
