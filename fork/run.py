@@ -2189,8 +2189,8 @@ HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and refer
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
 HW_SINCE = {"pc1": "2026-11-12"}
 def stock_prefix(r):
-    """the label prefix of a cell in the tables: "" ours, "s" plain stock, "smoe-" stock with upstream's expert cache (-sm): the two stock arms never look alike"""
-    return "" if not str(r["_b"]).startswith("stock") else ("smoe-" if os.environ.get("STOCK_MOE") else "s")
+    """the label prefix of a cell in the tables: "" ours, "s" plain stock, "sm" stock with upstream's expert cache (-sm): the two stock arms never look alike"""
+    return "" if not str(r["_b"]).startswith("stock") else ("sm" if os.environ.get("STOCK_MOE") else "s")
 
 
 def stock_arm_sql():
