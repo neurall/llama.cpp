@@ -9489,3 +9489,4 @@ stock-b12426-official-moe-olmoe-i-pf2k1k,2026-11-16 00:22:47,bench /m/o/4/OLMoE-
 stock-b12426-official-moe-q36-i-pf14k1k,2026-11-16 00:24:04,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds stock-b12426-official variants v test pf14k n=2,,
 stock-b12426-official-olmoe-i-pf2k1k,2026-11-16 00:26:08,bench /m/o/4/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf builds stock-b12426-official variants v test pf2k n=2,,
 rel_small_gpus-q36-i-pf14k1k,2026-11-16 00:27:21,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds rel_small_gpus variants v test pf14k n=2,,
+rel_small_gpus-olmoe-i-pf2k1k,2026-11-16 00:29:20,bench /m/o/4/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf builds rel_small_gpus variants v test pf2k n=2,,

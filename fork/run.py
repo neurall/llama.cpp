@@ -2189,8 +2189,8 @@ HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and refer
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
 HW_SINCE = {"pc1": "2026-11-12"}
 def stock_prefix(r):
-    """the label prefix of a cell in the tables: "" ours, "s" plain stock, "sm" stock with upstream's expert cache (-sm): the two stock arms never look alike"""
-    return "" if not str(r["_b"]).startswith("stock") else ("sm" if os.environ.get("STOCK_MOE") else "s")
+    """the label prefix of a cell in the tables: "" ours, "s" plain stock, "sm" stock with upstream's expert cache (-sm), "sr"/"smr" the same on restricted VRAM (-sa): the two stock arms never look alike"""
+    return "" if not str(r["_b"]).startswith("stock") else ("s" + ("m" if os.environ.get("STOCK_MOE") else "") + ("r" if os.environ.get("STOCK_RES") else ""))
 
 
 def stock_arm_sql():
@@ -8292,6 +8292,7 @@ def run_list(name, argv):
             except Exception: gk[(r["name"], r["test"])] = 0
         rows.sort(key=lambda r: -gk[(r["name"], r["test"])])
     sb = stock_latest(o.dry) if o.stock_first and not o.stock else None
+    if o.stock_args: os.environ["STOCK_RES"] = "1"   # restricted stock: its rows and labels are their own
     if o.stock_moe: os.environ["STOCK_MOE"] = o.stock_moe   # the cell processes read it (run_one)
     if o.not_today and not o.stock and not sb and not o.no_stock_gap and not name.endswith("onepass"): sb = stock_latest(o.dry)   # (not for the one-pass lists: they measure our best prompt size, stock cells there cost hours and compare nothing)   # -nrt also runs the stock cell of a row that has no stock run of its answer length yet (gap filling)
     def stock_missing(r):
@@ -8445,7 +8446,7 @@ def run_list(name, argv):
                         except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
                 else: run_list_pool(size(r))
             if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)   # after the pool line: which model the next cells run
-            tag = f"{r['_b']}-moe-{r['name']}" if o.stock_moe and str(r["_b"]).startswith("stock") else f"{r['_b']}-{r['name']}"
+            tag = f"{r['_b']}{'-moe' if o.stock_moe else ''}{'-res' if o.stock_args else ''}-{r['name']}" if str(r["_b"]).startswith("stock") and (o.stock_moe or o.stock_args) else f"{r['_b']}-{r['name']}"
             cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], ((" " + r["args"]) if r.get("args") else "") + (((" " + o.stock_args) if o.stock_args else "") + (stock_moe_args(o.stock_moe) if o.stock_moe else "") if str(r["_b"]).startswith("stock") else "")] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else []) + (["--ledger"] if o.ledger else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
             if o.dry: print(f"[{name}] {tag}: {re.sub(r' pf(?=\d+k)', ' ', shlex.join(cmd[3:]))}", flush=True)
