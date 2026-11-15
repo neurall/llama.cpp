@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+olmoe-i,olmoei,2,pf2k1k,512,,
+q36-i,qwen36,2,pfbest1k,1024,,
