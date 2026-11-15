@@ -7655,6 +7655,10 @@ def simjoe_teardown(quiet=False):
             joe_link_gen(f[1], int(f[2])); did.append(f"PCIe Gen {f[2]} on {f[1]}")
     try: os.remove(JOE_MARK)
     except OSError: pass
+    joe = os.environ.pop("RUN_SIMJOE", None)   # the link is back at x16: the schedule's own limits again (the capped card held 220 W)
+    try: apply_power_schedule()
+    except Exception: pass
+    if joe: os.environ["RUN_SIMJOE"] = joe
     if did and not quiet: print(col(33, f"simjoe: {' and '.join(did)} limits removed"), flush=True)
 
 
