@@ -132,7 +132,68 @@ and per setting with the environment variable FORK_<SECTION>_<KEY> (upper case),
         here = os.path.dirname(os.path.abspath(__file__))
         cp = configparser.ConfigParser(defaults={"dir": os.environ.get("FORK_MODELS_DIR") or _FILE.get("models", {}).get("dir") or _BASE + "/models"})
         cp.read(os.path.join(here, "models.ini"))
-        return {k: dict(cp[k]) for k in cp.sections()}
+        base = {k: dict(cp[k]) for k in cp.sections()}
+        hp = os.path.join(hw_dir(), "models.ini")
+        if os.path.exists(hp):   # this hardware's own values (bestpp, maxpp ...): fork/hw/<key>/models.ini over the [alias] sections of fork/models.ini
+            cq = configparser.ConfigParser(interpolation=None); cq.read(hp)
+            base = ini_overlay(base, {k: dict(cq[k]) for k in cq.sections()})
+        return base
+
+
+    def ini_overlay(base, over):
+        """{alias: values} with the values of `over` laid over those of `base`, per alias: this hardware's value wins, the rest stays"""
+        out = {k: dict(v) for k, v in base.items()}
+        for k, v in over.items(): out[k] = {**out.get(k, {}), **v}
+        return out
+
+
+    def hw_slug(hwid):
+        """a folder name from the hardware key: ' | ' becomes '__', anything else not safe in a path '-'"""
+        return re.sub(r"[^A-Za-z0-9._-]+", "-", hwid.replace(" | ", "__"))[:200]
+
+
+    def hw_dir():
+        """fork/hw/<slug of this hardware's key>: the machine's own ini files (models.ini holds its bestpp and maxpp); not created here"""
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "hw", hw_slug(hw_id()))
+
+
+    def hw_id_str(board, cpu, ram, gpus, drive, tag=""):
+        """the hardware key of the ini sections: stable ids only (board, CPU model, RAM layout, GPU PCI ids with link width, drive), no serial, no measured rate"""
+        return " | ".join(x for x in [board, cpu, ram, *gpus, drive, tag] if x)
+
+
+    _HWID = [None]
+
+
+    def hw_id():
+        """this machine's hardware key, read once (FORK_HW_ID overrides); simjoe lists add `simjoe` so the emulated box keeps sections of its own"""
+        if _HWID[0] is None:
+            import subprocess
+            rd = lambda f: open(f).read().strip() if os.path.exists(f) else ""
+            try:
+                board = (rd("/sys/class/dmi/id/board_vendor") + "-" + rd("/sys/class/dmi/id/board_name")).strip("-")
+                ci = rd("/proc/cpuinfo").split("\n\n")[0]; g = lambda k: next((l.split(":", 1)[1].strip() for l in ci.split("\n") if l.startswith(k)), "")
+                cpu = f"{re.sub(r' +[0-9]+-Core.*$', '', g('model name'))} fam{g('cpu family')} mod{g('model')} step{g('stepping')}"
+                mt = next((int(l.split()[1]) for l in rd("/proc/meminfo").split("\n") if l.startswith("MemTotal")), 0) / 2**20
+                ram = f"{-(-int(mt) // 8) * 8}g"
+                dm = subprocess.run(["sudo", "-n", "dmidecode", "-t", "memory"], capture_output=True, text=True, timeout=10).stdout
+                nd = len(re.findall(r"^\s*Size: \d+ [MG]B", dm, re.M)); ty = next(iter(re.findall(r"^\s*Type: (DDR\d)", dm, re.M)), ""); sp = next(iter(re.findall(r"Configured Memory Speed: (\d+) MT/s", dm)), "")
+                if nd: ram += f" {nd}ch {ty}" + (f"-{sp}" if sp else "")
+                gpus = []
+                for d in sorted(glob.glob("/sys/bus/pci/devices/*")):   # display controllers: NVIDIA, AMD, Intel
+                    if rd(d + "/class")[:6] in ("0x0300", "0x0302") and rd(d + "/vendor") in ("0x10de", "0x1002", "0x8086"):
+                        gpus.append(f"{rd(d + '/vendor')[2:]}:{rd(d + '/device')[2:]}/{rd(d + '/subsystem_vendor')[2:]}:{rd(d + '/subsystem_device')[2:]} x{rd(d + '/max_link_width')}")
+                drive = ""
+                try:
+                    st = os.stat(os.path.expanduser(os.environ.get("FORK_MODELS_DIR") or "/m"))
+                    dev = os.path.realpath(f"/sys/dev/block/{os.major(st.st_dev)}:{os.minor(st.st_dev)}")
+                    if os.path.exists(dev + "/partition"): dev = os.path.dirname(dev)
+                    mdl = " ".join(rd(dev + "/device/model").split()); pci = rd(dev + "/device/device/vendor")[2:] + ":" + rd(dev + "/device/device/device")[2:]
+                    drive = f"{pci} {mdl}" if mdl else ""   # no size: the model says it, and a rounded size flips with the unit
+                except (OSError, ValueError): pass
+                _HWID[0] = hw_id_str(board, cpu, ram, gpus, drive, "simjoe" if os.environ.get("RUN_SIMJOE") else "")
+            except Exception: _HWID[0] = "unknown"
+        return os.environ.get("FORK_HW_ID") or _HWID[0] + ("" if os.environ.get("RUN_SIMJOE") and "simjoe" in _HWID[0] or not os.environ.get("RUN_SIMJOE") else " | simjoe")
 
 
     def model(key):
@@ -8443,30 +8504,41 @@ def bestpp_run(t):
     except (KeyError, TypeError, ZeroDivisionError): return ""
 
 
-def ini_set_bestpp(sec, tok, out, pp, tps, pp_s, tg_s, score):
-    """models.ini [sec]: the line bestpp = [(VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s, score), ...] with the entry of this VRAM (hw_key) set; other VRAM entries stay"""
-    ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
-    i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+def ini_put_text(text, sec, key, value):
+    """`text` of an ini file with `key = value` set in [sec]: the line replaced, or added at the section's end, or the section added at the end of the file"""
+    lines = text.split("\n") if text else []
+    i0 = next((i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"), None)
+    if i0 is None:
+        while lines and not lines[-1].strip(): lines.pop()
+        return "\n".join(lines + ([""] if lines else []) + [f"[{sec}]", f"{key} = {value}", ""])
+    i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
     while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
-    j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == "bestpp"), None)
-    e = bestpp_entries(lines[j].split("=", 1)[1]) if j is not None else {}; e[int(hw_key()[:-1])] = (tok, out, pp, tps, pp_s, tg_s, score)
-    new = "bestpp = [" + ",".join(f"({g},{t},{o},{p:.0f},{d:.1f},{ps:.1f},{ts:.1f},{sc:.2f})" for g, (t, o, p, d, ps, ts, sc) in sorted(e.items(), reverse=True)) + "]"
-    if j is not None: lines[j] = new
-    else: lines.insert(i1, new)
-    open(ini, "w").write("\n".join(lines))
+    j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
+    if j is not None: lines[j] = f"{key} = {value}"
+    else: lines.insert(i1, f"{key} = {value}")
+    return "\n".join(lines)
+
+
+def ini_put(sec, key, value):
+    """this hardware's own models.ini (fork/hw/<key>/models.ini, created with a key.txt that names the hardware): the values a run learned here (bestpp, maxpp) go there, never into the shared fork/models.ini"""
+    d = fcfg.hw_dir(); os.makedirs(d, exist_ok=True)
+    f = os.path.join(d, "models.ini")
+    open(os.path.join(d, "key.txt"), "w").write(fcfg.hw_id() + "\n")
+    open(f, "w").write(ini_put_text(open(f).read() if os.path.exists(f) else "", sec, key, value))
+
+
+def ini_set_bestpp(sec, tok, out, pp, tps, pp_s, tg_s, score):
+    """this hardware's models.ini [sec]: the line bestpp = [(VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s, score), ...] with the entry of this VRAM (hw_key) set; other VRAM entries stay"""
+    cur = (fcfg.models_ini().get(sec) or {}).get("bestpp", "")
+    e = bestpp_entries(cur); e[int(hw_key()[:-1])] = (tok, out, pp, tps, pp_s, tg_s, score)
+    ini_put(sec, "bestpp", "[" + ",".join(f"({g},{t},{o},{p:.0f},{d:.1f},{ps:.1f},{ts:.1f},{sc:.2f})" for g, (t, o, p, d, ps, ts, sc) in sorted(e.items(), reverse=True)) + "]")
 
 
 def ini_set_maxpp(sec, tokens):
-    """models.ini [sec]: the line maxpp = [(VRAM GiB, tokens), ...] with the entry of this VRAM (hw_key) set: the biggest pass the engine says fits ("this call fits the ceiling N" in the log of a probe), the start of the search for the best prompt"""
-    ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); lines = open(ini).read().split("\n")
-    i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
-    while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1
-    j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == "maxpp"), None)
-    e = {int(g): int(t) for g, t in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", lines[j].split("=", 1)[1])} if j is not None else {}; e[int(hw_key()[:-1])] = int(tokens)
-    new = "maxpp = [" + ",".join(f"({g},{t})" for g, t in sorted(e.items(), reverse=True)) + "]"
-    if j is not None: lines[j] = new
-    else: lines.insert(i1, new)
-    open(ini, "w").write("\n".join(lines))
+    """this hardware's models.ini [sec]: the line maxpp = [(VRAM GiB, tokens), ...] with the entry of this VRAM (hw_key) set: the biggest pass the engine says fits ("this call fits the ceiling N" in the log of a probe), the start of the search for the best prompt; other VRAM entries stay"""
+    cur = (fcfg.models_ini().get(sec) or {}).get("maxpp", "")
+    e = {int(g): int(t) for g, t in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", cur)}; e[int(hw_key()[:-1])] = int(tokens)
+    ini_put(sec, "maxpp", "[" + ",".join(f"({g},{t})" for g, t in sorted(e.items(), reverse=True)) + "]")
 
 
 BESTPP_MEM = {}   # (alias, VRAM GiB) -> request time per token (ms) of the best prompt so far: read from models.ini once, then only in memory
@@ -11118,6 +11190,11 @@ def _tool_selftest():
         ro = os.path.join(d, "x.run.out")
         open(ro, "w").write("2026-11-15 18:59:06 b ppl {-np 1} 26.60 t/s hit 99.2% ok\n2026-11-15 18:59:07 b chat {-np 1} 36.3 t/s hit 99% ok\n2026-11-15 18:59:08 b pf12k {-np 1} 36.3 t/s hit 99% pp 1601.9 t/s\n")
         check(cr(ro, 0) == [(26.60, None), (36.3, 1601.9)], "a cell result needs a prompt rate, except for ppl (one token per call)")
+        _g = runpy.run_path(RUN, run_name="forkselftest"); _f = _g["fcfg"]
+        check(_g["ini_put_text"]("[a]\npath = x\n\n[b]\nk = 1\n", "a", "bestpp", "v") == "[a]\npath = x\nbestpp = v\n\n[b]\nk = 1\n", "ini_put_text: a key goes to its section's end")
+        check(_g["ini_put_text"]("", "m", "k", "v") == "[m]\nk = v\n" and _g["ini_put_text"]("[m]\nk = 1\n", "m", "k", "2").count("k =") == 1, "ini_put_text: a new section, a replaced key")
+        check(_f.ini_overlay({"a": {"path": "x", "bestpp": "old"}}, {"a": {"bestpp": "new"}}) == {"a": {"path": "x", "bestpp": "new"}}, "ini_overlay: this hardware's value wins, the rest stays")
+        check(_f.hw_slug("A b | C:d x16") == "A-b__C-d-x16", "hw_slug: ' | ' becomes '__', unsafe characters '-'")
         rv = lambda b, t, m="M": {"test": "ppl", "ok": "1", "model": m, "args": "a", "build": b, "tps": str(t)}
         check(runpy.run_path(RUN, run_name="forkselftest")["regress_list_verdict"]([rv("n", 10), rv("n", 10.1), rv("b", 10), rv("b", 10.1)], "n", "b", "/x", 0.97) == 0, "regress list: equal builds pass")
         check(runpy.run_path(RUN, run_name="forkselftest")["regress_list_verdict"]([rv("n", 8), rv("n", 8.1), rv("b", 10), rv("b", 10.1)], "n", "b", "/x", 0.97) == 1, "regress list: 20% slower is a regression")
