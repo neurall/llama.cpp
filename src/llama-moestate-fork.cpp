@@ -1,4 +1,5 @@
 #include "llama-moestate-fork.h"
+#include "llama-moestate-route-fork.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -76,6 +77,14 @@ std::string state_path() {
     }
     const std::string dir = moe_user_dir();
     return dir.empty() ? "" : dir + "/moe-state.ini";
+}
+
+// the heat file (--moe heat=FILE, LLAMA_MOE_HEAT): the hot.<layer> keys of every model, shared by machines; unset = the state file holds them as before, "0" = no heat
+std::string heat_path() {
+    const char * e = moe_opt("heat");
+    if (!e) { e = getenv("LLAMA_MOE_HEAT"); }
+    if (!e || !*e) { return state_path(); }
+    return strcmp(e, "0") == 0 ? "" : e;
 }
 
 std::string trim(const std::string & s) {
@@ -206,7 +215,7 @@ bool moe_state_enabled() {
 
 bool moe_state_get(const std::string & section, const std::string & key, std::string & value) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    const std::string path = state_path();
+    const std::string path = moe_state_is_heat_key(key) ? heat_path() : state_path();
     if (path.empty() || section.empty()) {
         return false;
     }
@@ -223,9 +232,7 @@ bool moe_state_get(const std::string & section, const std::string & key, std::st
     return true;
 }
 
-bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std::string, std::string>> & kv, bool any_size) {
-    std::lock_guard<std::mutex> lk(g_mtx);
-    const std::string path = state_path();
+static bool section_kv_at(const std::string & path, const std::string & section, std::vector<std::pair<std::string, std::string>> & kv, bool any_size) {
     kv.clear();
     if (path.empty() || section.empty()) {
         return false;
@@ -256,12 +263,23 @@ bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std
     return true;
 }
 
-bool moe_state_set(const std::string & section, const std::vector<std::pair<std::string, std::string>> & kv) {
+
+bool moe_state_section_kv(const std::string & section, std::vector<std::pair<std::string, std::string>> & kv, bool any_size) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    const std::string path = state_path();
-    if (path.empty() || section.empty() || g_suppress) {
-        return false;
+    const std::string sp = state_path();
+    const std::string hp = heat_path();
+    bool ok = section_kv_at(sp, section, kv, any_size);
+    if (!hp.empty() && hp != sp) {   // the heat lives in a file of its own: its hot.* keys replace those of the hardware file
+        moe_state_kv h;
+        if (section_kv_at(hp, section, h, any_size)) {
+            kv = moe_state_merge(ok ? kv : moe_state_kv(), h);
+            ok = true;
+        }
     }
+    return ok;
+}
+
+static bool set_at(const std::string & path, const std::string & section, const std::vector<std::pair<std::string, std::string>> & kv) {
     const state_file_lock file_lock(path);
     file_t f = load(path);
     for (const auto & p : kv) {
@@ -271,9 +289,25 @@ bool moe_state_set(const std::string & section, const std::vector<std::pair<std:
     return save(path, f);
 }
 
+bool moe_state_set(const std::string & section, const std::vector<std::pair<std::string, std::string>> & kv) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    const std::string sp = state_path();
+    const std::string hp = heat_path();
+    if (sp.empty() || section.empty() || g_suppress) {
+        return false;
+    }
+    if (hp.empty() || hp == sp) {
+        return set_at(sp, section, kv);
+    }
+    moe_state_kv heat, rest;
+    moe_state_split(kv, heat, rest);
+    const bool a = set_at(sp, section, rest);
+    return (heat.empty() || set_at(hp, section, heat)) && a;
+}
+
 bool moe_state_erase(const std::string & section, const std::string & prefix) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    const std::string path = state_path();
+    const std::string path = moe_state_is_heat_key(prefix) ? heat_path() : state_path();
     if (path.empty() || section.empty()) {
         return false;
     }
