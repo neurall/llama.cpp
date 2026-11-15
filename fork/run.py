@@ -7828,12 +7828,14 @@ def cmd_onepass(a):
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
     b = resolve_build(a.build) if a.build != "latest" else a.build
-    rows = c.execute("select campaign, model, test, pf_passes, pf_pass, pp, note, ts from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts", (f"{b}-%-p%-pf%k1k",)).fetchall()
+    rows = c.execute("select campaign, model, test, pf_passes, pf_pass, pp, note, ts, tps, n_gen from runs where campaign like ? and cast(ok as integer)=1 and pp is not null order by ts", (f"{b}-%-p%-pf%k1k",)).fetchall()
     cells = {}
-    for camp, model, test, ps, pt, pp, note, ts in rows:
+    seen_all = {}   # model -> {prompt tokens: (answer tokens, prompt t/s, decode t/s)}: the last (warm) run of every size, any pass count
+    for camp, model, test, ps, pt, pp, note, ts, tps, n_gen in rows:
         m = re.search(r"-p(\d+)-pf\d+k1k$", camp)
         if not m: continue
         nt = re.search(r"prompt_n=(\d+)", note or "")
+        if nt and tps: seen_all.setdefault(model, {})[int(nt.group(1))] = (int(n_gen or 64), float(pp), float(tps))
         cells[(model, int(m.group(1)))] = dict(passes=int(ps) if str(ps or "").isdigit() else 0, pass_tok=pt, pp=float(pp), tokens=int(nt.group(1)) if nt else 0)   # the last run of the cell wins (warm)
     if not cells: sys.exit(f"onepass: no rows for build {b}; run `run.py jobs onepass -b {b} -day -nodl` first")
     cards = n_cards(); ini = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models.ini"); picks = {}
@@ -7849,19 +7851,12 @@ def cmd_onepass(a):
             print(f"  {col('1;92' if n == pick else '1', f'{n:>3}k')}   {x['tokens']:>13}   {x['passes']:>6}   {str(x['pass_tok'] or ''):>11}   {x['pp']:>10.1f}" + (col("1;92", "   <- best one-pass prompt") if n == pick else ""))
         if pick is None: print(col(33, "  no size ran in one pass: nothing to pick (the biggest tested size stays the default)"))
         else: picks[model] = pick
-    if a.write and picks:
-        lines = open(ini).read().split("\n")
-        for model, n in picks.items():
+    if a.write:   # bestpp of this machine's models.ini (fork/cfg/<key>/): the size of the lowest total time per token (best_size), the rows' own numbers
+        for model, seen in sorted(seen_all.items()):
             sec = model_alias(model if os.path.isabs(model) else next((v["path"] for v in fcfg.models_ini().values() if os.path.basename(v.get("path", "")) == model), model))
             if not sec: print(col(31, f"{model}: no models.ini section, not written")); continue
-            key = f"{hw_key()}bestpp"
-            i0 = next(i for i, l in enumerate(lines) if l.strip() == f"[{sec}]"); i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("[")), len(lines))
-            while i1 > i0 + 1 and not lines[i1 - 1].strip(): i1 -= 1   # before the blank lines that end the section
-            j = next((i for i in range(i0 + 1, i1) if lines[i].split("=")[0].strip() == key), None)
-            new = f"{key} = {n}k"
-            if j is not None: lines[j] = new
-            else: lines.insert(i1, new)
-        open(ini, "w").write("\n".join(lines)); print(col(92, f"written to models.ini ({cards} card(s))"))
+            k = best_size(seen); o_, p_, d_ = seen[k]; ini_set_bestpp(sec, k, o_, p_, d_, k / p_, o_ / d_, total_time(k, seen[k]) * 1000)
+            print(col(92, f"{sec} at {hw_key()}: {k} tokens, prompt {p_:.0f} t/s, decode {d_:.1f} t/s, written to {os.path.relpath(fcfg.hw_dir())}"))
 
 
 def cmd_calib(a):
@@ -8491,7 +8486,7 @@ def model_alias(model_path):
 
 def bestpp_entries(text):
     """models.ini value '[(48,8018,1024,733,18.9,10.9,54.2,1.89),...]' -> {48: (8018, 1024, 733.0, 18.9, 10.9, 54.2, 1.89)}: total VRAM of the cards in GiB -> (prompt tokens, answer tokens, prompt t/s,
-    decode t/s, prompt seconds, answer seconds, score); the request takes prompt + answer seconds"""
+    decode t/s, prompt seconds, answer seconds, average ms per token (total_time: lower is better, whatever the prompt or answer length)); the request takes prompt + answer seconds"""
     num = r"\s*,\s*([\d.]+)"
     return {int(g[0]): (int(g[1]), int(g[2])) + tuple(float(x) for x in g[3:]) for g in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)" + num * 5 + r"\s*\)", str(text))}
 
@@ -8533,7 +8528,7 @@ def ini_set_bestpp(sec, tok, out, pp, tps, pp_s, tg_s, score):
     """this hardware's models.ini [sec]: the line bestpp = [(VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s, score), ...] with the entry of this VRAM (hw_key) set; other VRAM entries stay"""
     cur = (fcfg.models_ini().get(sec) or {}).get("bestpp", "")
     e = bestpp_entries(cur); e[int(hw_key()[:-1])] = (tok, out, pp, tps, pp_s, tg_s, score)
-    ini_put(sec, "bestpp", "[" + ",".join(f"({g},{t},{o},{p:.0f},{d:.1f},{ps:.1f},{ts:.1f},{sc:.2f})" for g, (t, o, p, d, ps, ts, sc) in sorted(e.items(), reverse=True)) + "]")
+    ini_put(sec, "bestpp", "[" + ",".join(f"({g},{t},{o},{p:.0f},{d:.1f},{ps:.1f},{ts:.1f},{sc:.3f})" for g, (t, o, p, d, ps, ts, sc) in sorted(e.items(), reverse=True)) + "]")
 
 
 def ini_set_maxpp(sec, tokens):
@@ -8608,10 +8603,10 @@ def learn_bestpp(model, test, tag):
             e0 = bestpp_entries((fcfg.models_ini().get(sec) or {}).get("bestpp", "")).get(hw); BESTPP_MEM[key] = {e0[0]: e0[1:4]} if e0 else {}
         seen = BESTPP_MEM[key]; was = best_size(seen) if seen else None   # the stored best before this run
         seen[new[0]] = new[1:]
-        sc_all = scores(seen); best = best_size(seen)   # all seen sizes against the same best prompt speed: no order effects
+        best = best_size(seen)   # all seen sizes against the same best prompt speed: no order effects
         if best != was or new[0] == best:
-            o_, p_, d_ = seen[best]; ini_set_bestpp(sec, best, o_, p_, d_, best / p_, o_ / d_, sc_all[best])
-            if best != was: print(col(92, f"best prompt of {sec} at {hw}g: {best} tokens, prompt {p_:.0f} t/s, decode {d_:.1f} t/s, total {best / p_ + o_ / d_:.1f} s, score {sc_all[best]:.2f}, written to models.ini"), flush=True)
+            o_, p_, d_ = seen[best]; ini_set_bestpp(sec, best, o_, p_, d_, best / p_, o_ / d_, total_time(best, seen[best]) * 1000)
+            if best != was: print(col(92, f"best prompt of {sec} at {hw}g: {best} tokens, prompt {p_:.0f} t/s, decode {d_:.1f} t/s, total {best / p_ + o_ / d_:.1f} s, average {total_time(best, seen[best]) * 1000:.3f} ms a token, written to models.ini"), flush=True)
     except Exception as e: print(col(90, f"best prompt not updated: {e}"), flush=True)
 
 
