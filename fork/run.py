@@ -2690,6 +2690,9 @@ def server_run(build, env, args, path, body, render=None):
                 o = ((IDX + n_cl) * len(txt)) % len(full)
                 txt = (full + full)[o:o + len(txt)]
             return txt
+        if os.environ.get("PERF_PTOK") and body.get("messages") and not render:   # a chat cell of a best prompt: the user text is cut so the server's prompt is exactly PERF_PTOK tokens
+            _m = list(body["messages"]); _m[-1] = {**_m[-1], "content": best_prompt_chat(post, _m[-1]["content"], int(os.environ["PERF_PTOK"]), os.environ.get("PERF_PNAME", ""))}
+            body = {**body, "messages": _m}
         if render:   # the server renders the model's chat template into the prompt text; a clamp cuts the user text first (cutting the rendered text would drop the assistant header)
             if OVR.get("clamp"):
                 render = [{**m, "content": clamp_text(m["content"], int(OVR["clamp"]))} if m.get("role") == "user" else m for m in render]
@@ -2961,7 +2964,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _d = _next_lp(_s, True)
                 print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
-                   "note": (f"bprompt={os.environ.get('PERF_PNAME') or os.environ.get('PERF_PMARK')} " if os.environ.get("PERF_PNAME") or os.environ.get("PERF_PMARK") else "") + f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
+                   "note": (f"bp2={os.environ.get('PERF_PNAME') or os.environ.get('PERF_PMARK')} " if os.environ.get("PERF_PNAME") or os.environ.get("PERF_PMARK") else "") + f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
@@ -8421,7 +8424,7 @@ def run_list(name, argv):
             for c, t, p, bn, nt in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
                     "select campaign, tps, pp, bno, note from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' and hw='%s' order by ts" % (o.not_today - 1, row_hw() if os.environ.get("RUN_SIMJOE") else HW)):   # simjoe rows are stored under pc1joe...: -nrt must look there
                 if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
-                done.setdefault(c, []).append((float(t), float(p or 0))); donepn.setdefault(c, []).append((re.search(r"bprompt=(\S+)", nt or "") or [None, None])[1])
+                done.setdefault(c, []).append((float(t), float(p or 0))); donepn.setdefault(c, []).append((re.search(r"bp2=(\S+)", nt or "") or [None, None])[1])
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
         def today(r):   # today's ok runs of this cell on this build; a campaign named after another label of the same build (um3d-..., latest-...) counts, the build number decides
             k = f"{r['_b']}-{r['name']}-{r['test']}"
@@ -8792,6 +8795,38 @@ def best_prompt_cell_label(r):
     if not m: return ""
     n, o = int(m[1]), int(r.get("tokens") or 1024)
     return f"b{round(n / 1000)}k/{out_k(o)} {n}"
+
+
+def best_prompt_chat(post, text, n, name):
+    """the user text cut so the server's chat prompt (template and text, as its tokenizer counts it) is exactly n tokens: read from fork/prompts/<name>.json when it holds that, else searched once (characters, binary search, then a step to the exact count), saved there and described in prompts.ini ([name]: len, in, out, path)"""
+    def count(t):
+        r = post("/apply-template", {"messages": [{"role": "user", "content": t}]})["prompt"]
+        return len(post("/tokenize", {"content": r, "add_special": False, "parse_special": True})["tokens"])
+    fp = os.path.join(PROMPT_DIR, f"{name}.json") if name else ""
+    if fp and os.path.exists(fp):
+        try:
+            t = json.load(open(fp))["messages"][-1]["content"]
+            if count(t) == n: return t
+        except (OSError, ValueError, KeyError, IndexError): pass
+    while count(text) < n: text = text + text
+    lo, hi = 0, len(text)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if count(text[:mid]) < n: lo = mid
+        else: hi = mid
+    L = hi
+    for _ in range(64):   # the exact count: a character can add 0 or 2 tokens, step to the nearest length that makes n
+        c = count(text[:L])
+        if c == n: break
+        L += 1 if c < n else -1
+    out = text[:L]
+    print(f"best prompt {name}: {count(out)} chat tokens wanted {n}, {L} characters", flush=True)
+    if fp:
+        json.dump({"messages": [{"role": "user", "content": out}], "n": n}, open(fp, "w"))
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts.ini"), "a") as f:
+            f.write(f"\n[{name}]\npath = {fp}\nlen = {n}\nin = {round(n / 1000)}k\nout = 1k\n")
+        ini_put(name.rsplit("-", 1)[-1], "bestprompt", f"{name} {n}")
+    return out
 
 
 def best_prompt_label(ptok, out_tokens=1024):
@@ -11403,6 +11438,9 @@ def _tool_selftest():
         check(_st["max"] == {"pp": 1000.0, "t": 10.0} and _g["live_rate_text"](_st).startswith("t 10.0 t/s 100.0 ms/token (max 10.0)") and "pp max 1000.0" in _g["live_rate_text"](_st), "live_rate_step: pp and t rates per 3 s sample, the maximum kept per phase")
         check(_g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 0.5, 0.5) == (512, 32) and _g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 300.0, 40.0) == (12000, 1000) and _g["stock_scaled_request"](12562, 1024, 0, 25.0, 1.0, 1.0) == (12562, 1024), "stock_scaled_request: each phase takes as long as ours, floors 512/32, unknown rates = the full request")
         check(_g["best_prompt_cell_label"]({"extra": "--env PERF_PTOK=12438", "tokens": "1024"}) == "b12k/1k 12438" and _g["best_prompt_cell_label"]({"extra": ""}) == "", "best_prompt_cell_label: name and exact tokens in the prompt column")
+        _fk = {"/apply-template": lambda b: {"prompt": "<s>" + b["messages"][-1]["content"] + "<a>"}, "/tokenize": lambda b: {"tokens": list(range(len(b["content"]) // 3 + len(b["content"]) // 17))}}
+        _cut = _g["best_prompt_chat"](lambda path, body: _fk[path](body), "word " * 400, 120, "")
+        check(len(_fk["/tokenize"]({"content": _fk["/apply-template"]({"messages": [{"content": _cut}]})["prompt"]})["tokens"]) == 120, "best_prompt_chat: the user text is cut so the chat prompt is exactly N tokens")
         check(_g["best_prompt_label"](8900) == "b9k1k" and _g["best_prompt_label"](12438) == "b12k1k", "best_prompt_label: the label rounds, the prompt does not")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
