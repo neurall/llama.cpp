@@ -74,8 +74,10 @@ layout (push_constant) uniform parameter {
     uint32_t k_num;
 } p;
 
-#define SINK_ENABLE_BIT (1<<24)
-#define N_LOG2_MASK 0xFFFF
+// mask_n_head_log2: bits 0..14 n_head_log2, bit 15 sinks, bits 16..31 k0/256 (fork, llama_kv_cache::kq_mask_k0): the mask covers K's cells from k0 on (KV - k0
+// columns), every cell before k0 is visible to every row and in no mask. 0 = a mask of all KV cells.
+#define SINK_ENABLE_BIT (1<<15)
+#define N_LOG2_MASK 0x7FFF
 
 layout (binding = 4) readonly buffer S {float data_s[];};
 
@@ -148,12 +150,14 @@ ACC_TYPE perElemOpGetSink(const in uint32_t r, const in uint32_t c, const in ACC
 
 uint32_t i, N, KV, split_k_index, Tr, start_j, end_j,
          gqa_iq1, iq2, iq3, rk2, rk3, rv2, rv3, ik2, ik3, iv2, iv3,
-         q_stride, k_stride, v_stride, m_stride, sparse_base;
+         q_stride, k_stride, v_stride, m_stride, sparse_base, mask_k0, mask_cols;
 
 void init_indices()
 {
     N = p.N;
     KV = p.KV;
+    mask_k0 = (p.mask_n_head_log2 >> 16) * 256;   // a multiple of every Bc: a block lies wholly on one side of k0
+    mask_cols = KV - mask_k0;
 
     if (p.k_num > 1) {
         if (p.gqa_ratio > 1) {
@@ -211,7 +215,7 @@ void init_indices()
     // "p.gqa_ratio >> 16" is just a roundabout way of writing zero
     // that prevents the compiler from folding the "&" through the select
     // and breaking the alignment detection.
-    m_stride = (p.gqa_ratio > 1) ? (p.gqa_ratio >> 16) : KV;
+    m_stride = (p.gqa_ratio > 1) ? (p.gqa_ratio >> 16) : mask_cols;
 
     // Sparse: the tile shares one mask row (gqa heads, or Br==1). split_k
     // partitions the n_kv_max blocks.

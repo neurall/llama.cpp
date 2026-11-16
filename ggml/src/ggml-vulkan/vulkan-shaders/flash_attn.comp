@@ -174,16 +174,16 @@ void main() {
         }
     }
 
-    const uint32_t mo_stride = CEIL_DIV(KV, 16 * Bc);
+    const uint32_t mo_stride = CEIL_DIV(mask_cols, 16 * Bc);
     // mo_offset will point to the tile starting at row i*Br and col 0
     uint32_t mo_offset = mo_stride * i;
 
     // FaBlockBytesK/V == 2 for f16, 16 for f32, ggml block byte size for quants.
     uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / FaBlockBytesK;
     uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / FaBlockBytesV;
-    uint32_t m_offset = gqa_iq1*KV;
+    uint32_t m_offset = gqa_iq1*mask_cols;
     if (p.nem2 != 1 || p.nem3 != 1) {
-        m_offset += ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * p.nem1 * KV;
+        m_offset += ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * p.nem1 * mask_cols;
         mo_offset += ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * CEIL_DIV(p.nem1, Br) * mo_stride;
     }
 
@@ -194,11 +194,16 @@ void main() {
     [[dont_unroll]]
     for (uint32_t j = start_j; j < end_j; ++j) {
         if (MASK_ENABLE) {
-            if (USE_MASK_OPT && mask_opt_idx != j / 16) {
-                mask_opt_idx = j / 16;
-                mask_opt = data_mask_opt[mo_offset + mask_opt_idx];
+            if (j * Bc < mask_k0) {
+                mask_opt_bits = MASK_OPT_ALL_ZERO;   // fork: a block before k0 is visible to every row and in no mask
+            } else {
+                const uint32_t jm = j - mask_k0 / Bc;   // the block's place in the mask and in the mask opt bits
+                if (USE_MASK_OPT && mask_opt_idx != jm / 16) {
+                    mask_opt_idx = jm / 16;
+                    mask_opt = data_mask_opt[mo_offset + mask_opt_idx];
+                }
+                mask_opt_bits = (mask_opt >> ((jm % 16) * 2)) & 0x3;
             }
-            mask_opt_bits = (mask_opt >> ((j % 16) * 2)) & 0x3;
             if (mask_opt_bits == MASK_OPT_ALL_NEG_INF) {
                 // skip this block
                 continue;
@@ -216,7 +221,7 @@ void main() {
                         uint32_t kcol;
                         bool kv_active = fa_kv_index(j * Bc + c, kcol);
                         if (kv_active && (!nem1_bounds_check || i * Br + r < p.nem1)) {
-                            FLOAT_TYPE m = FLOAT_TYPE(data_m[m_offset + (i * Br + r) * m_stride + kcol]);
+                            FLOAT_TYPE m = FLOAT_TYPE(data_m[m_offset + (i * Br + r) * m_stride + kcol - mask_k0]);
                             masksh[c * masksh_stride + r] = m;
                             max_mask = max(max_mask, float(m));
                         } else {

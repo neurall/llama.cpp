@@ -8332,6 +8332,10 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     const uint32_t nem1 = mask ? mask->ne[1] : 0;
     const uint32_t nem2 = mask ? mask->ne[2] : 0;
     const uint32_t nem3 = mask ? mask->ne[3] : 0;
+    // fork: a mask with fewer columns than K's cells covers the cells from k0 on, every cell before them is visible to every row (llama_kv_cache::kq_mask_k0,
+    // the shaders take k0/256 in mask_n_head_log2; supports_op lets in multiples of 256 only)
+    const uint32_t mask_k0 = (mask && mask->ne[0] < k->ne[1]) ? (uint32_t) (k->ne[1] - mask->ne[0]) : 0;
+    GGML_ASSERT(mask_k0 % 256 == 0 && mask_k0 / 256 <= 0xFFFF);
 
     const uint32_t HSK = nek0;
     const uint32_t HSV = nev0;
@@ -8499,7 +8503,8 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     bool xe_fa_supported_platform =
         (ctx->device.get()->architecture == INTEL_XE2 && ctx->device.get()->properties.deviceID != 0xFD80 && ctx->device.get()->properties.deviceID != 0xFD81) ||
         (ctx->device.get()->architecture == INTEL_XE1 && ctx->device.get()->coopmat_support && ctx->device.get()->uma);
-    bool xe_fa_supported_usage = neq0 % 32 == 0 && nev0 % 16 == 0 && q->nb[1] > q->nb[2] && k->nb[1] > k->nb[2] && v->nb[1] > v->nb[2] && mask != nullptr;
+    bool xe_fa_supported_usage = neq0 % 32 == 0 && nev0 % 16 == 0 && q->nb[1] > q->nb[2] && k->nb[1] > k->nb[2] && v->nb[1] > v->nb[2] && mask != nullptr &&
+                                 mask_k0 == 0;   // fork: the Xe decode shaders read a mask of all K's cells
     bool xe_fa_supported_dtype = q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_F16 && v->type == GGML_TYPE_F16 && (mask != nullptr && mask->type == GGML_TYPE_F16);
     std::pair<vk_pipeline, vk_pipeline> xe_fa_pipeline_dual_phases = { nullptr , nullptr };
     vk_pipeline xe_fa_pipeline = nullptr;
@@ -8735,7 +8740,8 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         v_buf = v_dst;
     }
 
-    uint32_t mask_n_head_log2 = ((sinks != nullptr) << 24) | n_head_log2;
+    GGML_ASSERT(n_head_log2 <= 0x7FFF);
+    uint32_t mask_n_head_log2 = ((mask_k0 / 256) << 16) | ((sinks != nullptr) << 15) | n_head_log2;   // flash_attn_base.glsl: bits of mask_n_head_log2
 
     if (use_mask_opt)
     {
@@ -15927,6 +15933,13 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 }
                 if (op->src[3] && op->src[3]->type != GGML_TYPE_F16) {
                     return false;
+                }
+                // fork: a mask of the cells from k0 on (llama_kv_cache::kq_mask_k0): k0 must be a multiple of 256 below 2^24 (flash_attn_base.glsl)
+                if (op->src[3] && op->src[3]->ne[0] < op->src[1]->ne[1]) {
+                    const int64_t k0 = op->src[1]->ne[1] - op->src[3]->ne[0];
+                    if (k0 % 256 != 0 || k0 / 256 > 0xFFFF) {
+                        return false;
+                    }
                 }
                 auto fa_kv_ok = [](ggml_type t) {
                     switch (t) {

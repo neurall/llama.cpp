@@ -9109,7 +9109,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
         const int32_t * rows = kv_rows ? (const int32_t *) ((const char *) kv_rows->data + iq3*kv_rows->nb[1]) : nullptr;
 
         // fork: a mask with fewer columns than K's cells covers the cells from k0 on, every cell before them is visible (llama_kv_cache::kq_mask_k0)
-        const int64_t mask_k0 = (mask && !kv_rows) ? nek1 - mask->ne[0] : 0;
+        const int64_t mask_k0 = (mask && !kv_rows && mask->ne[0] < nek1) ? nek1 - mask->ne[0] : 0;
 
         // online softmax / attention
         // loop over n_kv and n_head_kv
@@ -9314,7 +9314,7 @@ static void ggml_compute_forward_flash_attn_ext_tiled(
     // with kv_rows the loop runs over the mask columns and reads K/V rows through kv_rows
     const ggml_tensor * kv_rows = dst->src[5];
     const int64_t n_kv_cols = kv_rows ? kv_rows->ne[0] : nek1;
-    const int64_t mask_k0   = (mask && !kv_rows) ? nek1 - mask->ne[0] : 0;   // fork: cells before k0 are visible and in no mask (llama_kv_cache::kq_mask_k0)
+    const int64_t mask_k0   = (mask && !kv_rows && mask->ne[0] < nek1) ? nek1 - mask->ne[0] : 0;   // fork: cells before k0 are visible and in no mask (llama_kv_cache::kq_mask_k0)
 
     int ir = ir0;
     while (ir < ir1) {
