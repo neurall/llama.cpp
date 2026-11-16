@@ -2631,6 +2631,67 @@ def pcie_sampler():
     return stop
 
 
+def box_pp_rate(samples, t0):
+    """prompt t/s of a request stopped by the clock: tokens done at the last sample over the time since the request started (samples = [(time, prompt tokens done)])"""
+    if not samples: return 0.0
+    t, n = samples[-1]
+    return n / max(t - t0, 1e-3)
+
+
+def box_t_rate(samples):
+    """decode t/s of a request stopped by the clock: tokens written between the first sample with a token and the last one (samples = [(time, tokens written)]), 0 with fewer than two such samples"""
+    v = [(t, n) for t, n in samples if n >= 1]
+    return (v[-1][1] - v[0][1]) / max(v[-1][0] - v[0][0], 1e-3) if len(v) >= 2 else 0.0
+
+
+def timeboxed_request(path, body, pp_s, tg_s, port):
+    """a stock cell on a model that thrashes the SSD, measured by the clock: the full request runs until our prompt time has passed (at least two 512-token batches done, at most 4x our time) and is cancelled, its prompt rate is tokens done over time; then a short prompt (64 tokens) with a long answer runs until our answer time has passed and is cancelled, its decode rate is tokens written over time. Returns a result with the server's timings fields the row code reads (prompt_n = tokens done)"""
+    import http.client
+    def slots():
+        try: return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/slots", timeout=10))
+        except Exception: return None
+    def fire(b, box):
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=None); box["c"] = c
+            c.request("POST", path, json.dumps(b), {"Content-Type": "application/json"}); box["r"] = c.getresponse().read()
+        except BaseException as e: box["e"] = e
+    def cancel(box):
+        try: box["c"].sock.shutdown(2); box["c"].close()
+        except Exception: pass
+        t_end = time.time() + 1500
+        while time.time() < t_end:   # the running batch finishes first: wait for the slot to go idle
+            sl = slots()
+            if sl is not None and not any(x.get("is_processing") for x in sl): return
+            time.sleep(2)
+    def seen(box):
+        sl = slots()
+        if not sl: return None
+        x = next((y for y in sl if y.get("is_processing")), sl[0])
+        return int(x.get("n_prompt_tokens_processed", 0) or 0) + int(x.get("n_prompt_tokens_cache", 0) or 0), int(((x.get("next_token") or [{}])[0]).get("n_decoded", 0) or 0)
+    box = {}; threading.Thread(target=fire, args=(body, box), daemon=True).start(); t0 = time.time(); pp_samples = []
+    while "r" not in box and "e" not in box:
+        time.sleep(1); v = seen(box)
+        if v: pp_samples.append((time.time(), v[0]))
+        el = time.time() - t0
+        if (el >= pp_s and v and v[0] >= 1024) or el >= 4 * pp_s: break
+    pp_rate = box_pp_rate(pp_samples, t0); pp_done = pp_samples[-1][1] if pp_samples else 0; pp_el = (pp_samples[-1][0] - t0) if pp_samples else 0
+    cancel(box)
+    sb = dict(body); sb["n_predict"] = max(int(body.get("n_predict") or 0), 1024); sb["max_tokens"] = sb["n_predict"]
+    if "messages" in sb: sb["messages"] = [{"role": "user", "content": str(body["messages"][-1]["content"])[:200]}]
+    else: sb["prompt"] = str(body.get("prompt"))[:200]
+    box2 = {}; threading.Thread(target=fire, args=(sb, box2), daemon=True).start(); t1 = time.time(); t_samples = []; tstart = None
+    while "r" not in box2 and "e" not in box2:
+        time.sleep(1); v = seen(box2)
+        if v: t_samples.append((time.time(), v[1]))
+        if v and v[1] >= 1 and tstart is None: tstart = time.time()
+        if tstart and ((time.time() - tstart >= tg_s and v[1] >= 8) or time.time() - tstart >= 4 * tg_s): break
+        if not tstart and time.time() - t1 >= 4 * max(pp_s, 60) + 4 * tg_s: break
+    t_rate = box_t_rate(t_samples); n_dec = t_samples[-1][1] if t_samples else 0
+    cancel(box2)
+    PROCSTAT["boxed"] = f"pp {pp_done} tok in {pp_el:.0f} s (budget {pp_s:.0f} s), t {n_dec} tok (budget {tg_s:.0f} s)"
+    return {"timings": {"prompt_n": pp_done, "prompt_per_second": pp_rate, "prompt_ms": pp_el * 1000, "predicted_n": n_dec, "predicted_per_second": t_rate, "predicted_ms": (n_dec / t_rate * 1000) if t_rate else 0}, "content": "", "choices": [{"message": {"content": ""}, "finish_reason": "box"}]}
+
+
 def server_run(build, env, args, path, body, render=None):
     PROCSTAT.clear()
     LAST_ASK["v"] = body.get("prompt") if isinstance(body.get("prompt"), str) else str((body.get("messages") or [{}])[-1].get("content") or "")
@@ -2733,6 +2794,10 @@ def server_run(build, env, args, path, body, render=None):
             PROCSTAT["par_req_tps_mean"] = round(sum(t.get("predicted_per_second", 0) for t in tm) / len(tm), 2)
             res = dict(ok[0]); res["timings"] = {**tm[0], "predicted_n": gen, "prompt_n": pn,
                       "predicted_per_second": gen / max(wall - pms, 1e-3), "prompt_per_second": pn / max(pms, 1e-3), "prompt_ms": pms * 1000}
+            return res, logf
+        if os.environ.get("PERF_BOX"):   # PERF_BOX=<our prompt s>,<our answer s>: a stock cell measured by the clock (see timeboxed_request)
+            _pb, _tb = (float(x) for x in os.environ["PERF_BOX"].split(","))
+            res = timeboxed_request(path, body, _pb, _tb, PORT); t_req[1] = time.time()
             return res, logf
         rep = max(1, int(OVR.get("repeat") or 1))   # --repeat N: N requests to this server, the last one is the result (warm)
         if OVR.get("lead"):   # --lead N: a request with a prompt of about N tokens to the same server first (the KV grows for it, the measured request then shrinks it)
@@ -2964,10 +3029,10 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _d = _next_lp(_s, True)
                 print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
             _want = os.environ.get("PERF_PTOK")
-            if _want and int(t["prompt_n"]) != int(_want):   # a best-prompt cell must feed exactly its stored length: a different one measures another prompt (a pass more or less)
+            if _want and not os.environ.get("PERF_BOX") and int(t["prompt_n"]) != int(_want):   # a best-prompt cell must feed exactly its stored length: a different one measures another prompt (a pass more or less)
                 raise SystemExit(f"PROMPT LENGTH MISMATCH: the cell asked for {_want} prompt tokens, the server counted {t['prompt_n']}: stop, fix the feed, run again")
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
-                   "note": (f"bp2={os.environ.get('PERF_PNAME') or os.environ.get('PERF_PMARK')} " if os.environ.get("PERF_PNAME") or os.environ.get("PERF_PMARK") else "") + f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
+                   "note": (f"boxed: {PROCSTAT['boxed']} " if PROCSTAT.get("boxed") else "") + (f"bp2={os.environ.get('PERF_PNAME') or os.environ.get('PERF_PMARK')} " if os.environ.get("PERF_PNAME") or os.environ.get("PERF_PMARK") else "") + f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
@@ -8392,34 +8457,19 @@ def run_list(name, argv):
             return not c.execute(q, a).fetchone()
         except sqlite3.Error: return False
     rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) and not (r.get("args") or "").strip() else (o.build,))]   # a cell with forced server args (dense-split=0/1) is a test of our own settings: stock has none of them, no stock partner   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
-    for r in rows:   # a slow stock cell of a best-prompt cell is fed less (prompt and answer), so it takes about as long as ours; the speeds it shows stay comparable
-        mt = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "")
-        if str(r["_b"]).startswith("stock") and not mt and "--clamp" not in (r.get("extra") or ""):   # another test of a model that thrashes stock: shortened by the speed dividers of ours and stock on this very test
-            _sz0 = sum(os.path.getsize(q) for q in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
-            _rm0 = int(next((l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")), "0")) * 1024
-            if _sz0 > 0.8 * _rm0:
-                ref = ours_reference(r["model"], r["test"]); sr0 = stock_rates(r["model"]) or (5.0, 0.5)
-                pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
-                out0 = int(r.get("tokens") or og0 or 1024)
-                if ref and ref.get("p") and ref.get("t"):
-                    n0 = int(min(pn0 or 10**9, -(-max(256, (pn0 or 0) * sr0[0] / ref["p"]) // 512) * 512)) if pn0 else 0
-                    m0 = min(out0, max(32, int(out0 * sr0[1] / ref["t"])))
-                    if m0 < out0 or (pn0 and n0 < pn0):
-                        r["extra"] = " ".join(re.sub(r"--tokens \d+", "", r.get("extra") or "").split() + (["--clamp", str(n0)] if pn0 and n0 < pn0 else []) + ["--tokens", str(m0)]); r["tokens"] = str(m0)
-                        print(col(90, f"{r['name']}: stock fed {n0 or '-'} prompt / {m0} answer tokens (ours {pn0 or '-'} / {out0}): stock {sr0[0]:.1f} / {sr0[1]:.1f} t/s, ours {ref['p']:.0f} / {ref['t']:.1f} t/s"), flush=True)
-            continue
-        if not (str(r["_b"]).startswith("stock") and mt): continue
-        ot = our_best_times(r["model"], int(r.get("tokens") or 1024)); sr = stock_rates(r["model"]); out0 = int(r.get("tokens") or 1024)
+    for r in rows:   # a stock cell of a model that thrashes the SSD is measured by the clock (PERF_BOX): the same request as ours, stopped when our prompt time and our answer time have passed
+        if not str(r["_b"]).startswith("stock") or "PERF_BOX" in (r.get("extra") or ""): continue
         _sz = sum(os.path.getsize(q) for q in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
         _rm = int(next((l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")), "0")) * 1024
-        if not sr and _sz > 0.8 * _rm: sr = (5.0, 0.5)   # no stock run stored and the model is bigger than the RAM can map: stock thrashes the SSD (0.5 t/s measured on Kimi K3.1), the first row corrects it
-        if not (ot and sr): continue
-        n, m = stock_scaled_request(int(mt[1]), out0, ot[0], ot[1], *sr)
-        if (n, m) == (int(mt[1]), out0): continue
-        _dp, _dt = int(mt[1]) / n, out0 / m   # the dividers: how many times shorter the stock prompt and answer are than ours
-        ex = re.sub(r"--env PERF_PNAME=\S+", "", r["extra"]); ex = re.sub(r"PERF_PTOK=\d+", f"PERF_PTOK={n} --env PERF_PMARK=b{n}-o{m}", ex); ex = re.sub(r"--tokens \d+", f"--tokens {m}", ex)
-        r["extra"] = " ".join(ex.split()); r["tokens"] = str(m)
-        print(col(90, f"{r['name']}: stock fed {n} prompt / {m} answer tokens (ours {mt[1]} / {out0}, dividers pp /{_dp:.1f} t /{_dt:.1f}): stock reads {sr[0]:.1f} and writes {sr[1]:.1f} t/s, about our {ot[0]:.0f} s + {ot[1]:.0f} s"), flush=True)
+        if _sz <= 0.8 * _rm: continue
+        out0 = int(r.get("tokens") or 1024); mt = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "")
+        if mt: ot = our_best_times(r["model"], out0)
+        else:
+            ref = ours_reference(r["model"], r["test"]); pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
+            ot = ((pn0 or 64) / ref["p"], out0 / ref["t"]) if ref and ref.get("p") and ref.get("t") else None
+        if not ot: continue
+        r["extra"] = (r.get("extra") or "") + f" --env PERF_BOX={max(ot[0], 30):.0f},{max(ot[1], 30):.0f}"
+        print(col(90, f"{r['name']}: stock measured by the clock: prompt stopped after {ot[0]:.0f} s, answer after {ot[1]:.0f} s (ours)"), flush=True)
     if o.hog_gpu and not o.dry and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
         import atexit   # (run_list imports it further down for simjoe: without this line the name is a local there and unbound here)
@@ -11459,6 +11509,7 @@ def _tool_selftest():
         _fk = {"/apply-template": lambda b: {"prompt": "<s>" + b["messages"][-1]["content"] + "<a>"}, "/tokenize": lambda b: {"tokens": list(range(len(b["content"]) // 3 + len(b["content"]) // 17))}}
         _cut = _g["best_prompt_chat"](lambda path, body: _fk[path](body), "word " * 400, 120, "")
         check(len(_fk["/tokenize"]({"content": _fk["/apply-template"]({"messages": [{"content": _cut}]})["prompt"]})["tokens"]) == 120, "best_prompt_chat: the user text is cut so the chat prompt is exactly N tokens")
+        check(_g["box_pp_rate"]([(10, 0), (110, 512), (310, 1024)], 0) == 1024 / 310 and _g["box_t_rate"]([(0, 0), (5, 1), (15, 11), (25, 21)]) == 1.0 and _g["box_t_rate"]([(0, 0), (5, 1)]) == 0.0, "box_pp_rate / box_t_rate: rates of requests stopped by the clock")
         check(_g["best_prompt_label"](8900) == "b9k1k" and _g["best_prompt_label"](12438) == "b12k1k", "best_prompt_label: the label rounds, the prompt does not")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
