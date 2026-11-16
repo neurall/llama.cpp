@@ -6265,10 +6265,39 @@ bool llama_moe_cache_kv_tail_prepare_fork(ggml_backend_sched_t sched, int32_t n_
 
 // the KV zone grows on the fly (user 2026-11-11: "and grow on the fly?"): at a call's start, before find_slot, to the cells in use plus the call's n tokens (a new
 // request's call shrinks it to that). The last graph may still read the blocks that change hands: a change waits for it. Declared in llama-context.cpp (no header edit).
+// --moe kv-dump=N (debug): the calls that find cells in use, up to the Nth, first write the zone's rows in use to kv-dump-<card>-<k>.bin in the log directory (raw
+// combined rows, one after another), so one prompt run on two backends compares row by row and layer by layer (fork/kv_dump_cmp.py). Made for the KV tail on Vulkan,
+// whose answer went wrong after a right first token (2026-11-16): are the prompt's rows wrong in the pool, or read wrong?
+static void kv_dump(moe_cache * mc, ggml_backend_sched_t sched) {
+    static const int want = [] { const char * e = moe_opt("kv-dump"); return e ? atoi(e) : 0; }();
+    static int done = 0;
+    if (want <= 0 || done >= want) { return; }
+    bool any = false;
+    for (auto & ap : mc->alias) {
+        size_t cells = 0;
+        for (auto & r : ap.kvt) { if (!r.fixed) { cells = std::max(cells, r.rows ? r.rows() : 0); } }
+        if (ap.kvt.empty() || ap.kv_row == 0 || cells == 0) { continue; }
+        if (!any && sched) { ggml_backend_sched_synchronize(sched); }   // the last graph's rows are written
+        any = true;
+        const size_t lo = kvz_row_at(ap, 0), bytes = kvz_row_at(ap, cells) - lo;
+        std::vector<uint8_t> buf(bytes);
+        ggml_tensor z = {};
+        z.type = GGML_TYPE_I8; z.buffer = ap.buf; z.data = (uint8_t *) ggml_backend_buffer_get_base(ap.buf) + lo;
+        z.ne[0] = (int64_t) bytes; z.ne[1] = z.ne[2] = z.ne[3] = 1; z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = bytes;
+        ggml_backend_tensor_get(&z, buf.data(), 0, bytes);
+        const std::string path = moe_log_file(tr_fmt("kv-dump-%s-%d.bin", led_card(ap), done + 1).c_str());
+        FILE * f = fopen(path.c_str(), "wb");
+        if (f) { fwrite(buf.data(), 1, bytes, f); fclose(f); }
+        LLAMA_LOG_WARN("kv-dump: %s: %zu cells of %zu B (fixed part %zu B skipped) at pool offset %zu -> %s\n", led_card(ap), cells, ap.kv_row, ap.kv_fixed, lo, f ? path.c_str() : "(not written)");
+    }
+    if (any) { done++; }
+}
+
 bool llama_moe_cache_kv_tail_grow_fork(ggml_backend_sched_t sched, uint32_t n);
 bool llama_moe_cache_kv_tail_grow_fork(ggml_backend_sched_t sched, uint32_t n) {
     moe_cache * mc = g_cache;
     if (!mc || n == 0) { return false; }
+    kv_dump(mc, sched);
     const bool grow = kv_tail_plan(mc, n, false, true, 0, true);
     if (grow) {
         if (sched) { ggml_backend_sched_synchronize(sched); }
