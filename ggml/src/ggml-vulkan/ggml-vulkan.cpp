@@ -16003,6 +16003,12 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 if (ggml_prec_get_src(op, 1) == GGML_PREC_F32) {
                     return false;
                 }
+                // fork: a quantized weight view must start on the descriptor alignment. The shaders address whole blocks from the binding, so a start between
+                // two boundaries (experts in a shared pool, test_mul_mat_id with pad = 4 blocks: Q3_K at 440 bytes against 16) cannot be bound and asserted in
+                // ggml_vk_tensor_subbuffer; the CPU runs such a view
+                if (ggml_is_quantized(src0_type) && op->src[0]->view_offs % device->properties.limits.minStorageBufferOffsetAlignment != 0) {
+                    return false;
+                }
                 switch (src0_type) {
                     case GGML_TYPE_F32:
                     case GGML_TYPE_F16:
