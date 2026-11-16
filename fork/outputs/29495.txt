@@ -1,0 +1,69 @@
+run 29495 | room_chunks | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 26.84 t/s | prompt 950.0 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 16:38:51
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears truncated)
+
+Let me do a thorough code review of both files, focusing on:
+- Correctness issues (bugs)
+- Security issues
+- Performance issues
+- Style/readability issues
+- Maintainability issues
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition`:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Wait, there's a subtle issue: if `max_items == 0` but `min_items > 0`, this is contradictory (min > max). The function returns "" which would silently produce an empty rule. Actually in JSON schema, if min_items > max_items, the schema is invalid. But the code silently returns "". Hmm, actually returning "" for max_items == 0 means the grammar rule becomes empty string... Let me think. If max_items == 0, then the repetition can't match anything, so returning "" is semantically correct (matches empty). But if min_items > 0, the schema is unsatisfiable. Returning "" would allow matching nothing, which is wrong-ish but arguably fine.
+
+Actually wait, there's a bug: `if (max_items == 0) return "";` — but what if min_items == 0 and max_items == 0? Then "" is correct. What if min_items == 1 and max_items == 0? Invalid schema. The code returns "" which silently accepts. Minor.
+
+Also `if (min_items == 0 && max_items == 1) return item_rule + "?";` — correct.
+
+Then:
+```cpp
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+```
+
+Hmm, what if min_items == 1 and max_items == 1? Then `{1,1}` — could be simplified but fine. What about min_items == 0, max_items == 1 handled above. What about min_items == 2, max_items == 2? `{2,2}` fine.
+
+Wait, there's an issue: if `min_items == 1 && has_max` — falls to the general case `{1,max}`. Fine.
+
+But what if min_items > max_items? e.g., min=5, max=3. `{5,3}` — invalid regex-ish. GBNF might not handle it. Minor validation issue.
+
+Now the separator case:
+```cpp
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+Hmm wait. Let me think about this. For a repetition with separator: item (sep item)*. The first item is `item_rule`, then repeated `(sep item)` with min_items-1 to max_items-1 repetitions. That looks right.
+
+But wait — there's a subtle bug: if `min_items == 0` and `max_items == 1`, we return `item_rule + "?"` early — correct for separator case too since separator only appears between items.
+
+Hmm, but actually there's a bug in the separator case when `min_items == 0 && max_items == 1`: handled by early return. OK.
+
+What about `min_items == 1 && max_items == 1` with separator? result = item + " " + build_repetition("(sep item)", 0, 0). build_repetition with max_items == 0 returns "". So result = "item " — trailing space! Then `if (min_items == 0)` no. So result = "item " with trailing space. Hmm, that produces "item  " — wait: `item_rule + " " + ""` = "item ". Then rule += " space \"}\"" etc. Actually in the array case: `"\"[\" space " + build_repetition(...) + " space \"]\""` —

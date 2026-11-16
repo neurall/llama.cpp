@@ -1,0 +1,72 @@
+run 29401 | state_split_heat | edit4c | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 43.92 t/s | prompt 1033.8 t/s | 906 tokens | args: -np 1 | power 280+280 W | 2026-11-16 09:03:40
+
+Let me analyze this file carefully to identify which code is never used.
+
+Let me go through each function, variable, and definition:
+
+1. `build_repetition` - Let me check if it's used anywhere in this file... I don't see it being called in this file. But it might be used elsewhere (declared in header). Let me check - it's `static`, so it's only used within this file. I don't see any calls to it in the visible code. But the file is truncated, so there might be more code below.
+
+2. `build_min_max_int` - Also `static`, not called in visible code.
+
+3. `SPACE_RULE` - Not referenced in visible code.
+
+4. `BuiltinRule` struct - Used by `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+
+5. `PRIMITIVE_RULES` - Not referenced in visible code (but `is_reserved_name` iterates over it).
+
+6. `STRING_FORMAT_RULES` - Not referenced in visible code (but `is_reserved_name` iterates over it).
+
+7. `is_reserved_name` - Not called in visible code.
+
+8. `INVALID_RULE_CHARS_RE` - Not referenced in visible code.
+
+9. `GRAMMAR_LITERAL_ESCAPE_RE` - Used in `format_literal`.
+
+10. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - Not referenced in visible code.
+
+11. `GRAMMAR_LITERAL_ESCAPES` - Used in `format_literal`.
+
+12. `MAX_PATTERN_DEPTH` - Not referenced in visible code.
+
+13. `NON_LITERAL_SET` - Not referenced in visible code.
+
+14. `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - Not referenced in visible code.
+
+15. `replacePattern` - Used in `format_literal`.
+
+16. `format_literal` - Used by `gbnf_format_literal`.
+
+17. `gbnf_format_literal` - This is likely declared in the header and used elsewhere.
+
+18. `gbnf_escape_length` - Not referenced in visible code (but might be declared in header).
+
+Wait, the file is truncated. The user says "Delete the code in this file that is never used." This means I need to consider the entire file, but the file is cut off. Let me re-read...
+
+Actually, the file content is truncated at `gbnf_escape_length`. The user wants me to identify code that is never used within this file.
+
+But wait - some functions might be declared in the header file (`json-schema-to-grammar.h`) and used by other files. Functions like `gbnf_format_literal` and `gbnf_escape_length` are likely exported.
+
+Let me think about this differently. The question is about code that is "never used" - meaning code within this file that is never referenced by any other code in this file or by external code.
+
+Since the file is truncated, I should focus on what's visible. Let me identify items that are:
+1. `static` (file-local) and not called within the file
+2. Non-static but not declared in the header (so not accessible externally)
+
+Let me go through:
+
+- `build_repetition` - static, not called in visible code → **unused**
+- `build_min_max_int` - static, not called in visible code → **unused**
+- `SPACE_RULE` - not static but also not referenced → **unused** (unless declared in header)
+- `BuiltinRule` - used by PRIMITIVE_RULES and STRING_FORMAT_RULES → **used**
+- `PRIMITIVE_RULES` - used by `is_reserved_name` → **used**
+- `STRING_FORMAT_RULES` - used by `is_reserved_name` → **used**
+- `is_reserved_name` - not called in visible code → **unused**
+- `INVALID_RULE_CHARS_RE` - not referenced → **unused**
+- `GRAMMAR_LITERAL_ESCAPE_RE` - used in `format_literal` → **used**
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - not referenced → **unused**
+- `GRAMMAR_LITERAL_ESCAPES` - used in `format_literal` → **used**
+- `MAX_PATTERN_DEPTH` - not referenced → **unused**
+- `NON_LITERAL_SET` - not referenced → **unused**
+- `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - not referenced → **unused**
+- `replacePattern
+---

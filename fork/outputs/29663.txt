@@ -1,0 +1,9 @@
+run 29663 | ledger_all_writes_vk | paris | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 191.51 t/s | prompt 164.9 t/s | 64 tokens | args: -np 1 -dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0 | power 280+280 W | 2026-11-16 21:44:30
+
+
+---
+What is the capital of France? Answer in one short sentence.<|im_end|>
+<|im_start|>assistant
+What is the capital of France? Answer in one short sentence.<|im_end|>
+<|im_start|>assistant
+What is the capital of France? Answer

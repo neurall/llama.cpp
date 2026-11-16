@@ -1,0 +1,3 @@
+run 29314 | rel_small_gpus | pf4k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 399.12 t/s | prompt 23245.5 t/s | 64 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-15 23:41:13
+
+The provided file `common/json-schema-to-grammar.cpp` contains a C++ implementation for converting JSON schemas to a Greta Resource Grammar (GRG) format. The implementation is comprehensive, covering various aspects of JSON schema to GRG conversion, including parsing JSON schemas, generating GR

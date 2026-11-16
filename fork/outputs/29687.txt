@@ -1,0 +1,4 @@
+run 29687 | fa_input_dump_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 15.82 t/s | prompt 350.3 t/s | 4 tokens | args: -np 1 -dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0 | power 280+280 W | 2026-11-16 22:17:03
+
+}},
+    //

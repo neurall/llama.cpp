@@ -1,0 +1,44 @@
+run 29359 | rel_small_gpus | pf14k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 103.18 t/s | prompt 5257.2 t/s | 1024 tokens | args: -np 1 --moe sim-vram=4096 | power 200+200 W | 2026-11-16 00:27:52
+
+<think>
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of two provided source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The code appears to be part of a larger C++ project (likely Llama.cpp or similar, given the naming conventions like `common_chat_schema_converter`, `common_arg`, `ggml`, `LLAMA_EXAMPLE_*`).
+
+2.  **Analyze File 1: `common/json-schema-to-grammar.cpp`**
+    *   **Purpose:** Converts JSON schemas to a grammar format (likely for LLM context/grammar generation).
+    *   **Key Components:**
+        *   `build_repetition`: Handles repetition syntax (`*`, `+`, `?`, `{min,max}`).
+        *   `build_min_max_int`: Generates regex-like grammar for integer ranges. Complex recursive logic.
+        *   `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`: Predefined grammar rules for JSON types.
+        *   `common_chat_schema_converter`: Main class handling conversion.
+        *   `visit`: Dispatches based on schema kind.
+        *   `_pattern_to_rule`: Converts regex patterns to grammar.
+        *   `_not_strings`: Generates a trie-based grammar to exclude specific strings.
+        *   `_build_object_rule`: Handles JSON object properties, required/optional, additional properties.
+        *   `json_schema_to_grammar`, `build_grammar`: Entry points.
+    *   **Potential Issues/Improvements:**
+        *   *Complexity/Readability:* `build_min_max_int` is extremely complex and hard to follow. It uses nested lambdas and recursive calls. Could be refactored or documented better.
+        *   *Performance:* `build_min_max_int` might generate very long strings for large ranges. Could be optimized or capped.
+        *   *Regex Handling:* `_pattern_to_rule` manually parses regex. It's fragile. Uses `std::regex` for validation but then parses manually. Could be more robust.
+        *   *Memory/State:* `_rules` map is modified during recursion. `rules_snapshot` is used to revert on error, which is good but might be inefficient for deep recursion.
+        *   *Error Handling:* Throws exceptions, catches them, reverts state. Good, but could be cleaner with a try-catch block at the top level or a dedicated error collector.
+        *   *Magic Numbers/Constants:* `MAX_PATTERN_DEPTH = 100`, `decimals_left = 16`, `SPACE_RULE`. These are hardcoded. Could be configurable or documented.
+        *   *Trie Implementation:* `_not_strings` uses a trie. The trie class isn't shown, but the logic assumes it works. The grammar generation for exclusion is clever but might be verbose.
+        *   *Object Rule Generation:* `_build_object_rule` generates recursive rules for optional properties. The logic for `get_recursive_refs` is complex and might produce deeply nested or inefficient grammar.
+        *   *Namespace/Scope:* Uses `static` functions and maps. Good for performance but might cause issues if multiple converters are instantiated concurrently (though `_rules` is instance-specific).
+        *   *Type Safety:* Uses `int64_t` for min/max, but `build_min_max_int` uses `std::numeric_limits<int64_t>::min()`. The logic handles negative numbers recursively, which is correct but complex.
+        *   *Missing Includes/Dependencies:* References `common_trie`, `common_unicode_cpt_to_utf8`, `string_repeat`, `string_split`, `string_join`, `regex_replace`. These are likely in `common.h` or similar, but not shown.
+        *   *Code Style:* Uses C++17 features (structured bindings, lambdas, `std::function`). Generally clean. Some indentation/spacing could be improved.
+
+3.  **Analyze File 2: `common/arg.cpp`**
+    *   **Purpose:** Command-line argument parsing and handling for a CLI tool (likely Llama.cpp).
+    *   **Key Components:**
+        *   `common_arg` class: Stores argument metadata, help text, env vars, examples.
+        *   `get_common_arg_defs()`: Initializes common arguments.
+        *   `common_models_handler`: Handles model downloading/loading logic.
+        *   `parse_tensor_buffer_overrides`: Parses GPU buffer type overrides.
+        *   `arg_removed`: Helper for deprecated args.
+        *   Platform-specific includes (`WIN32_LEAN_AND_MEAN`, `NOMINMAX`, `windows.h`).
+    *   **Potential Issues/Improvements:**
+        *   *Platform Specificity:* Heavy use of `#ifdef _WIN32`, `#ifdef __linux__`,

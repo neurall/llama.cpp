@@ -1,0 +1,46 @@
+run 29419 | state_split_heat | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 33.02 t/s | prompt 640.8 t/s | 680 tokens | args: -np 1 | power 280+280 W | 2026-11-16 09:20:48
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code in common/json-schema-to-grammar.cpp and provide cleaned code? Need infer task likely from code review: remove unused functions/variables/includes? Need analyze entire file. They only pasted partial? It ends at gbnf_escape_length with blank. Need maybe file truncated? We need answer with code after deleting unused code. Need determine unused code in this file. Need inspect.
+
+We have file common/json-schema-to-grammar.cpp. It includes headers and functions. Need identify code never used. Could be functions like gbnf_format_literal? gbnf_escape_length? Need know rest of file not shown? The snippet ends mid-function. Maybe user expects us to delete unused code from provided file. But file incomplete. Need maybe answer with modifications? Let's parse.
+
+We need identify unused code in this file. The code includes:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- regexes INVALID_RULE_CHARS_RE, GRAMMAR_LITERAL_ESCAPE_RE, GRAMMAR_RANGE_LITERAL_ESCAPE_RE, GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length (incomplete)
+
+Need know which are used later in file. Since file truncated, cannot know. But likely many are used in rest of file. The question "Delete the code in this file that is never used." Maybe from a benchmark where they want remove unused code from a specific file. Need produce final code with unused code removed. Need know full file? We only have partial. Maybe the file is from llama.cpp common/json-schema-to-grammar.cpp. We can reconstruct full file? Let's recall llama.cpp source. There is common/json-schema-to-grammar.cpp. It has functions. Need identify unused code in that file. Could be from actual repo. Let's search memory.
+
+I know llama.cpp has common/json-schema-to-grammar.cpp. It defines json_schema_to_grammar. There are functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length
+- gbnf_escape_char
+- gbnf
+---

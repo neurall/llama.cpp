@@ -1,0 +1,51 @@
+run 29380 | state_split_heat | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.93 t/s | prompt 35.6 t/s | 1005 tokens | args: -np 1 | power 200+200 W | 2026-11-16 01:24:37
+
+The user wants the smallest HTML Tetris game. This is a code-golf style challenge — "smallest" means minimal bytes. This is different from my usual approach of making polished, memorable experiences. The user explicitly asked for "smallest" — so the goal here is extreme minification while keeping it functional and playable.
+
+Let me think about what "smallest" means here. A truly minimal Tetris in a single HTML file. I should aim for a genuinely tiny byte count while keeping it fully playable: 10×20 board, 7 tetrominoes, rotation, movement, soft drop, line clearing, scoring maybe, game over.
+
+Let me design a compact Tetris. I'll write it as one HTML file with inline JS, heavily golfed but still readable enough? No — "smallest" means golf it. But I should also provide a brief explanation of how it works and controls, since a golfed blob is unreadable.
+
+Let me think about the architecture for minimal bytes:
+
+Approach: Use a canvas, draw cells as filled rects. Board as a 2D array or a single array of 200 entries. Pieces as arrays of rotation states or use rotation math.
+
+Classic minimal tetris implementations exist (like "tiny tetris in C", or JS ones around 300-500 bytes). Let me write my own and golf it carefully.
+
+Key components:
+1. Canvas setup: `<canvas id=c width=100 height=200>` — actually I can use `document.write` or just create canvas in JS to save bytes? Creating via `document.body.appendChild` is longer than just writing the HTML tag. Actually the HTML tag `<canvas id=c width=120 height=240>` is short. Or I can set width/height in JS: `c.width=120` etc. Hmm.
+
+Actually a trick: use `<body onload=...>`? Or just script at end of body.
+
+Let me think about the smallest structure:
+
+```html
+<body onload="...script...">
+```
+
+Or:
+
+```html
+<script>...code that creates canvas...</script>
+```
+
+Creating canvas in JS: `C=document.body.appendChild(document.createElement('canvas'))` — that's ~55 chars. HTML tag: `<canvas id=c width=120 height=240>` — ~35 chars plus need `c=document.getElementById('c')` or use `c` directly? Named element access: elements with id are accessible as global variables! So `<canvas id=c width=120 height=240>` gives us global `c`. That's efficient.
+
+Actually even shorter: `<canvas id=c>` and set `c.width=120,c.height=240` in JS — `c.width=120` is 11 chars, `c.height=240` is 12. Total 23 + `<canvas id=c>` (13) = 26 vs `<canvas id=c width=120 height=240>` = 35 chars. So setting in JS saves bytes. Wait but we need `with(c.getContext'2d')`? Hmm, `getContext('2d')` — can we call it without parens? `c.getContext'2d'` is invalid syntax in strict... actually it's always invalid — you can't call a function without parentheses in JS except with template literals: `c.getContext\`2d\`` works! Tagged template. That's a known golf trick: `c.getContext`2d`` calls getContext with "2d". Saves 2 bytes.
+
+So: `x=c.getContext`2d`` — then use `x.fillRect(...)`.
+
+Even better: use `with(Math)` style? `with` is discouraged but works in non-strict sloppy mode. For golfing, `with(x)` lets us call `fillRect` directly. Hmm, but `with` statements... In a normal script (not module), sloppy mode allows `with`. That saves bytes: instead of `x.fillRect` each time, `with(x){...fillRect...}`.
+
+Let me now design the game logic compactly.
+
+Board: 10 wide, 20 tall. Represent as array `b` of 200 numbers, 0 = empty, else color index. Or use strings? 
+
+Pieces: The classic compact representation: each tetromino as a list of 4 [x,y] offsets per rotation. A very compact known encoding: store each piece as 4 binary-encoded coordinates, or use the "rotation by matrix" trick.
+
+A famous compact approach: represent each piece as a 4x4 (or 3x3) binary matrix and rotate by transposing. E.g., piece data as numbers.
+
+Alternative super-compact: define pieces via a string. Let me think.
+
+Known minimal tetromino encoding: each of 7 pieces can be defined by 4 cells. Use encoding: for each piece, an array of 4 numbers where each number encodes x
+---

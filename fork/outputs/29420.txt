@@ -1,0 +1,52 @@
+run 29420 | state_split_heat | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 34.01 t/s | prompt 45.4 t/s | 987 tokens | args: -np 1 | power 280+280 W | 2026-11-16 09:21:46
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need maybe use canvas and keyboard. Need implement tetrominoes, rotation, collision, line clearing, gravity, drop. Need minimal code.
+
+Let's design compact single-file Tetris.
+
+Use canvas 10x20 grid, cell size maybe 24. Canvas width 240 height 480. Use JS.
+
+Tetromino shapes represented as arrays of coordinates or matrices. Need rotation. Could use 4x4 matrices for each piece. Simpler: define pieces as arrays of [x,y] cells relative to top-left? Rotation around center. Need handle rotation. Could use matrices.
+
+Option: Use 4x4 matrices for I, J, L, O, S, T, Z. Each piece matrix with 1s. Rotation by rotating matrix. Collision checks cells. Spawn at x=3, y=0? For 4x4 matrices, top-left at x=3? Board width 10. Need spawn x=3, y=-? Actually matrix 4x4, spawn x=3, y=0. Some pieces have empty top row, so okay. Need collision with board. If spawn overlaps? At y=0, matrix cells may be at row 1 etc. Fine. But if piece has cells at row 0 and x=3, okay. Need game over if collision at spawn.
+
+Need line clearing. Board as 2D array 20 rows x 10 cols. Use 0/1. Draw.
+
+Need gravity: setInterval or requestAnimationFrame. Use drop every e.g. 500ms. Keyboard: left/right, down, up rotate, space hard drop. Need prevent default for arrows/space. Need maybe pause? Not necessary.
+
+Need minimal code. Could use canvas and CSS. Need maybe no external assets.
+
+Let's craft robust code.
+
+Pseudo:
+
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Tetris</title>
+<style>
+body{margin:0;background:#111;color:#eee;font:14px monospace;display:flex;justify-content:center;align-items:center;height:100vh}
+canvas{background:#000;border:1px solid #444}
+#hud{position:fixed;top:10px;left:10px}
+</style>
+</head>
+<body>
+<canvas id=c width=240 height=480></canvas>
+<div id=hud>Score: <span id=s>0</span></div>
+<script>
+const c=document.getElementById('c'), ctx=c.getContext('2d'), W=10,H=20,S=24;
+let board=Array.from({length:H},()=>Array(W).fill(0));
+let score=0, piece, x, y, matrix, gameOver=false;
+const pieces=[
+ [[1,1,1,1],[0,0,0,0],[0,0,0,0],[0,0,0,0]], // I
+ [[1,0,0,0],[1,1,1,0],[0,0,0,0],[0,0,0,0]], // J? Actually J shape: row0 [1,0,0,0], row1 [1,1,1,0]? That's L? Let's define standard.
+ ...
+];
+Need ensure shapes.
+
+Let's define 4x4 matrices:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]] maybe spawn y=0, cells row1. But rotation around center? If matrix 4x4, rotating I yields vertical. Fine. But spawn x=3, y=0. I horizontal at row1. Good.
+O: [[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]]
+T: [[0,0,0,0],[0,1,0,0],[1,1,1,0],[0,0,0,0]]? Actually T top row center, bottom row three. Use
+---

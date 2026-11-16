@@ -1,0 +1,58 @@
+run 29389 | state_split_heat | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 26.47 t/s | prompt 887.8 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 08:44:28
+
+<think>Let me analyze this code carefully. The user wants a code review of the source file(s). Actually, there are two files shown: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated). Let me focus on reviewing both, but primarily the first one since it's complete.
+
+Let me go through the code carefully looking for bugs, issues, style problems, etc.
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+1. `using json = common_json;` — This is suspicious. Typically `json` is `nlohmann::json`. Here it's aliased to `common_json`. Then `format_literal(json(prop_name).dump())` — constructing a `common_json` from a string? That seems odd. If `common_json` is a wrapper around nlohmann json, maybe it works. But the alias `json = common_json` is confusing and potentially wrong. Actually in llama.cpp, `common_json` is a struct with `std::string dump() const` etc. Hmm, actually in the real llama.cpp code, `json` is `nlohmann::json`. Here the code seems modified. Let me note this as a potential issue: aliasing `json` to `common_json` may break `json(prop_name).dump()` if `common_json` doesn't have a constructor from string. But we can't be sure. Worth flagging.
+
+2. `build_repetition`: 
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+Wait — if `max_items == 0`, return "". But what if `min_items > 0`? Then the schema requires at least `min_items` items but max is 0 — contradictory schema. Returning "" means the grammar matches empty string, which would fail to satisfy min_items. Actually if max_items == 0 and min_items > 0, the schema is unsatisfiable; returning "" silently produces a grammar that doesn't enforce min_items. Hmm, but actually returning "" means the repetition matches nothing — the grammar would then not match valid JSON per schema (there is none valid). It's an edge case; maybe acceptable but worth noting.
+
+Also `has_max` computed before checking `max_items == 0`. Fine.
+
+3. In `build_repetition` with separator: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If `max_items == 0` handled earlier. If min_items == 0 and max_items == 1 with separator: result = item_rule + " " + build_repetition(..., 0, 0) → inner returns "" → result = item_rule + " " then wrapped in "(...)?" → `(item_rule )?` — hmm wait: `result = item_rule + " " + ""` = `item_rule + " "`, then `result = "(" + result + ")?"` = `(item_rule )?`. That matches item_rule optionally — OK but includes trailing space inside the group; harmless.
+
+Wait, actually there's a subtle bug: if `min_items == 0 && max_items == 1`, the early return `item_rule + "?"` happens before separator handling, so separator is ignored — fine since only one item.
+
+4. `build_min_max_int`: This is complex. Let me check the recursion for negative numbers:
+
+```cpp
+if (has_min && has_max) {
+    if (min_value < 0 && max_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, -min_value, out, decimals_left, true);
+        out << ")";
+        return;
+    }
+```
+OK.
+
+```cpp
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(0, -min_value, out, decimals_left, true);
+        out << ") | ";
+        min_value = 0;
+    }
+```
+Then falls through to the digit loop. OK.
+
+The `uniform_range` lambda: uses `std::function` with recursion — fine.
+
+Potential issue: `digit_range(from[i] + 1, to[i])` — `from[i]` is char; `from[i] + 1` promotes to int; passing to `digit_range(char, char)` — implicit conversion, fine.
+
+In `more_digits`, `max_digits != std::numeric_limits<int>::max()` — but max_digits is int parameter. OK.
+
+Hmm, one thing: in `build_min_max_int`, the

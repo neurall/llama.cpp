@@ -1,0 +1,8 @@
+run 29290 | rel_small_gpus | pf7k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 148.11 t/s | prompt 7885.7 t/s | 64 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-15 23:34:48
+
+<think>
+Here's a thinking process:
+
+1.  **Understand the User Request:**
+   - The user wants a code review of a provided C++ source file: `common/json-schema-to-grammar.cpp`.
+   - The file is cut off at the end (`std::function<std::string(const std:`

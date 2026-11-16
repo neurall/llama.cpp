@@ -1,0 +1,44 @@
+run 29421 | state_split_heat | tetrisc | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 35.19 t/s | prompt 20.8 t/s | 987 tokens | args: -np 1 | power 280+280 W | 2026-11-16 09:23:08
+
+We need answer user asks "generate smallest html tetris game." Need provide HTML code minimal Tetris game. Need likely single file. Need be careful "smallest" maybe compact code. Need produce working Tetris. Need decide implementation. Need include HTML, CSS, JS. Need minimal but functional. Need maybe use canvas. Need explain? Desired oververbosity 5. We can provide code only maybe brief. Need ensure game works. Need think through Tetris mechanics.
+
+Need generate smallest HTML Tetris game. Could be very compact. Need include controls, scoring, game over, restart. Need use canvas. Need implement tetrominoes, rotation, collision, line clear, gravity, keyboard. Need minimal code.
+
+Let's design compact single-file HTML.
+
+Canvas dimensions: 10 cols x 20 rows, block size maybe 24. Canvas width 240 height 480. Use CSS center. JS.
+
+Tetromino shapes. Could represent as arrays of coordinates for each rotation? Simpler: define shapes as matrices and rotate. Need minimal.
+
+Option: Use 7 tetrominoes as arrays of 4 cells relative coordinates. Rotation around center? For simplicity use matrices:
+I: [[1,1,1,1]]
+O: [[1,1],[1,1]]
+T: [[0,1,0],[1,1,1]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+Need rotate matrix clockwise. But for I matrix 1x4 rotation becomes 4x1. Good. For O 2x2. For T etc. Rotation matrix dimensions change. Need collision with board. Use shape matrix. Need spawn at x=3? For width 10. Need y=0. Need ensure spawn not colliding. Use x = Math.floor((10 - shape[0].length)/2). y=0. But for I width 4 x=3. For O width2 x=4. For T width3 x=3. Good.
+
+Need board 20 rows x 10 cols. Use array of strings? Could use 2D array. Need draw.
+
+Game loop: requestAnimationFrame or setInterval. Need gravity. Use timestamp. Simpler setInterval 500ms? But need smooth? Minimal. Use setInterval(update, 500). Keyboard moves. Need handle drop. Need line clear. Need score. Need game over.
+
+Need implement collision: for each cell in shape matrix where 1, check board[y+row][x+col] if out of bounds or occupied. Need board rows 20, cols 10. Need allow y+row < 20. x+col >=0 <10. If collision false.
+
+Need rotate: create rotated matrix. Need check collision at current x,y. If valid, set shape. Need maybe wall kick? Minimal no. If rotation invalid, ignore. Need maybe rotate around matrix center. For I 1x4 -> 4x1. Good.
+
+Need move left/right: check collision at x-1/x+1. Need down: if valid y+1 else lock. Lock: add cells to board. Clear lines. Spawn new. If spawn collision game over.
+
+Need scoring: lines cleared * 100 maybe. Need display score. Need maybe level? Minimal.
+
+Need draw: clear canvas, draw board cells, draw current shape. Use colors. Need maybe grid. Use block size 24. Canvas 240x480. Draw background. Use fillRect. Need color per tetromino. Could assign color array. Need draw board with color? Board stores color index or 1. If store 1, draw gray. Better store color index. But minimal. Could store 1 and draw #444. Current shape color. Need maybe board cells colored? Could store color. Let's store board as 2D array of 0 or color string? Simpler board[y][x] = color. Collision if truthy. Draw board with board[y][x]. Current shape with current color. Need line clear.
+
+Need define shapes with color. Could define array of objects {m: matrix, c: color}. Need random.
+
+Need rotate function:
+function rot(m){return m[0].map((_,i)=>m.map(r=>r[i]).reverse());} Wait clockwise rotation: new matrix rows = old columns reversed? Let's derive. For matrix m with rows. Clockwise rotation: new[r][c] = old[m.length-1-c][r]? Actually for 2x3:
+old:
+a b c
+d e
+---

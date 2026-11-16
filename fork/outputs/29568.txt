@@ -1,0 +1,3 @@
+run 29568 | vk_gpu_wait_same_dev_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 127.01 t/s | prompt 967.6 t/s | 64 tokens | args: -np 1 -dev Vulkan0,Vulkan1 --moe mode=cache,dense-split=0 | power 280+280 W | 2026-11-16 19:18:46
+
+", "comic"", "comic"", "comic"", "comic"", "comic"", "comic", "comic", "comic", "comic", "comic", "comic", "comic", "comic", "comic", "com

@@ -1,0 +1,6 @@
+run 29192 | rel_small_gpus | pf11k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 25.7 t/s | prompt 1027.6 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 22:54:39
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A complete file
+2. `common/arg.cpp` - A file that appears to be cut off mid-function (it ends with `while (std::getline(iss,

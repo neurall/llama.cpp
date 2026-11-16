@@ -1,0 +1,5 @@
+run 29168 | rel_small_gpus | pf10k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.14 t/s | prompt 1061.5 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 22:02:37
+
+<think>Let me analyze this code carefully. This is a code review request for `common/json-schema-to-grammar.cpp` (and a partial `common/arg.cpp` that got cut off).
+
+This appears to be from llama.cpp's common library — the JSON schema to GBNF grammar converter. Let me do a thorough

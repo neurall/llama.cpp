@@ -1,0 +1,31 @@
+run 29367 | stock-b12426-official | pf14k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 123.87 t/s | prompt 1079.6 t/s | 879 tokens | args: -np 1 --cpu-moe --moe-cache-mib 5500 --moe-cache-cpu-share 0 | power 200+200 W | 2026-11-16 00:35:43
+
+<think>
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of two provided source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The code appears to be part of a C++ project (likely Llama.cpp or similar, given the naming conventions like `common_chat_schema_converter`, `common_arg`, `ggml`, `llama`, etc.).
+
+2.  **Analyze File 1: `common/json-schema-to-grammar.cpp`**
+    *   **Purpose:** Converts JSON schemas to a grammar format (likely for LLM context/grammar generation).
+    *   **Key Components:**
+        *   `build_repetition`: Handles repetition rules (min/max items, separators).
+        *   `build_min_max_int`: Generates regex-like grammar for integer ranges.
+        *   `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`: Predefined grammar rules for JSON types.
+        *   `common_chat_schema_converter`: Main class that traverses a JSON schema and builds grammar rules.
+        *   `visit`: Dispatches based on schema kind (ref, any_of, all_of, const, enum, object, tuple, array, string, integer, number, boolean, null, any).
+        *   `_pattern_to_rule`: Converts regex patterns to grammar rules.
+        *   `_not_strings`: Generates a trie-based rule to exclude specific strings.
+        *   `_build_object_rule`: Handles JSON object properties, required/optional, additional properties.
+        *   Helper functions: `format_literal`, `gbnf_escape_length`, `replacePattern`, etc.
+    *   **Potential Issues/Improvements:**
+        *   *Complexity & Readability:* The code is quite dense. `_pattern_to_rule` has a complex recursive lambda `transform` that parses regex manually. This is error-prone and hard to maintain.
+        *   *Regex Handling:* The manual regex parser handles `^`, `$`, `.`, `()`, `[]`, `|`, `*`, `+`, `?`, `{}`. It throws `unsupported_pattern` or `invalid_pattern`. This is good for safety but might miss edge cases. The `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` set is hardcoded.
+        *   *Integer Range Generation (`build_min_max_int`):* Very complex logic for generating character ranges. It handles negative numbers, min/max, decimals. It's likely correct but hard to verify. Could be simplified or tested thoroughly.
+        *   *Object Rule Generation (`_build_object_rule`):* Handles required/optional properties and additional properties. The recursive `get_recursive_refs` logic for optional properties seems complex. It generates a grammar that allows any combination of optional keys, which might be inefficient or produce large grammars.
+        *   *Trie for `_not_strings`:* Uses a trie to exclude strings. The logic `out << " | [^\"" << rejects << "] " << char_rule << "*";` might be flawed. It's trying to match strings that don't start with the trie paths. This is a known technique but needs careful validation.
+        *   *Memory/Performance:* `_rules` is a `std::map`. Using `std::unordered_map` might be faster, but map is fine for this scale. `string_join`, `string_split`, `string_repeat` are likely custom helpers (not shown, but assumed).
+        *   *Error Handling:* Uses `_errors` and `_warnings` vectors. `check_errors()` throws or prints. Good.
+        *   *Constants/Types:* `MAX_PATTERN_DEPTH = 100` is reasonable. `decimals_left = 16` is hardcoded.
+        *   *Code Style:* Uses `static` functions, lambdas, `std::function`. Some naming conventions are mixed (`gbnf_format_literal` vs `format_literal`). `common_chat_schema_converter` is a class but used in free functions.
+        *   *Potential Bugs:*
+            *   `build_repetition` logic for separators: `auto result = item_rule + " " + build_repetition("("

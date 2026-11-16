@@ -1,0 +1,3 @@
+run 29658 | ledger_all_writes_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 8.73 t/s | prompt 328.6 t/s | 64 tokens | args: -np 1 -dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0,ledger=1,poison=3,guard=1 | power 280+280 W | 2026-11-16 21:41:28
+
+}}, string | string null null null null null \\t\\\"\\\"\\\"\\s\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\" | string", string | string | string | string | | | | | | | | | | | | \\\\\"

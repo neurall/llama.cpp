@@ -1,0 +1,18 @@
+run 29438 | state_split_heat | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 24.35 t/s | prompt 873.7 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 12:26:53
+
+<think>Let me analyze this code carefully. The user wants a code review of the source file(s). Actually, they've provided two files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (the second one is truncated mid-function).
+
+Let me go through the code and identify issues:
+
+## json-schema-to-grammar.cpp
+
+1. **`build_repetition`**: 
+   - `has_max` is computed before checking `max_items == 0`. If `max_items == 0`, returns "" — but wait, if `min_items > 0` and `max_items == 0`, that's an impossible constraint (min > max), and returning "" silently produces an empty rule. Actually returning "" would produce invalid grammar output potentially. Hmm, but maybe min_items == 0 in that case. Edge case worth noting.
+   - When `separator_rule` is non-empty and `max_items` is `INT_MAX`, `max_items - 1` is fine. But if `min_items == 0` and `has_max`, e.g., min=0, max=1 with separator: `build_repetition("(sep item)", 0, 0)` → returns "" — so result is `item_rule ("(" + "" + ")?")`? Wait let me trace: `result = item_rule + " " + build_repetition(...)` with min=0, max=0 → inner returns "" → result = `item_rule + " "` then wrapped in `(...)?`. So trailing space. Minor formatting issue.
+   - Actually wait, for min_items=0, max_items=1 with separator: the code first checks `if (min_items == 0 && max_items == 1) return item_rule + "?";` — this ignores the separator, which is fine since a single item has no separator.
+   - Negative min_items? Not validated.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could be a static member or lambda with explicit `std::function` (it is).
+   - `decimals_left` default 16, decrements. When `decimals_left` reaches... `less_decimals = std::max(decimals_left - 1, 1)` — so it never goes below 1, meaning potential infinite recursion? Let's check: if `min_value` is e.g. 10^17 (more than 16 digits), then in the `else` branch (min_value > 9), it calls `build_min_max_int(std::stoll(min_s.substr(1)), INT64_MAX, out, less_decimals, false)`. The min_s.substr(1) has one fewer digit. Eventually min_value becomes <= 9, then the `min_value <= 9` branch calls `more_digits(0, less_decimals)` — no recursion. So recursion terminates because the number of digits decreases. OK.
+   - But wait — what if `min_value` has more than 16 digits? int64 max is 9223372036854775807 which is 19 digits. The `more_digits(0, decimals_left - 1)` with decimals_left=16 limits to 16 digits total... but int64 can have 19 digits. Hmm, the initial call has decimals_left=16. For min_value = 9223372036854775807 (19 digits), the else branch: c='9', so no `c > '1'` branch... digit_range('9','9') then recursion on stoll("223372036854775807") with less_decimals=15. That recursion: min_value=223372036854775807 (18 digits), c='2', c > '1' so digit_range('0','1') more_digits(18, 15)?? Wait `more_digits(len, less_decimals)` where len = 18, less_decimals = 15. That produces `[0-9]{18,15}` — an invalid repetition (min > max)! Hmm wait, let me re-check. Actually `more_digits(len, less_decimals)` — len is the length of min_s which is 18, less_decimals is 15. `{18,15}` is invalid. Hmm, but wait — is that reachable? The initial decimals_left is 16. For a 19-digit min_value... Actually let me re-check: in the else branch, `more_digits(len, less_decimals)` where len = min_s.length() = 18 and less_decimals = 15. That's `{18,15}`. That seems like a bug for large numbers. But maybe the caller clamps? In KIND_INTEGER, `i.minimum` and `i.maximum` are int64. If minimum = 10^18 (19 digits

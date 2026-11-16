@@ -1,0 +1,40 @@
+run 29397 | state_split_heat | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.02 t/s | prompt 23.7 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-16 08:57:30
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and not totally ugly.
+
+Let me think about what "smallest tetris" means. There are famous tiny Tetris implementations. The classic "smallest tetris" is around a few hundred bytes of JS. I want to write a compact but readable-ish implementation, maybe minified-ish but with some structure. I should aim for genuinely small — single file, no external deps, canvas rendering, keyboard controls.
+
+Key features needed for a real Tetris:
+- 10×20 board
+- 7 tetrominoes with rotation (can use a compact encoding)
+- Gravity/tick falling
+- Move left/right, rotate, maybe soft drop / hard drop
+- Line clear + scoring
+- Game over
+- Next piece preview (optional — adds bytes; maybe skip or include tiny)
+- Collision detection
+
+Compact encoding trick: represent pieces as lists of rotation states encoded in a string. A well-known trick: encode each tetromino as 4 cells in a 4x4 or use binary numbers per rotation.
+
+A very compact approach: pieces as arrays of coordinate pairs derived from bit patterns. E.g., each rotation state as a 16-bit number (4x4 grid), extract cells.
+
+Even more compact: use the "tetris in 140 bytes" style tricks. But I want it playable and reasonably robust.
+
+Let me design my own compact Tetris. I'll aim for maybe ~600-900 bytes of JS, plus minimal HTML/CSS. Actually let me try to make it really small — like under 1KB total? That's ambitious but doable with aggressive minification. But I also want it to not look broken. Hmm — the user asked for "smallest", so golfing is the point. I'll write heavily minified code but keep it correct and playable. I can include a brief explanation after the code listing what's supported.
+
+Let me think about the design of the game logic.
+
+Board: 10 wide, 20 tall. Represent as array of rows, each row an array, or a single array of length 200. Use a string or array of ints. Colors: could color by piece (7 colors) — adds bytes. Minimal: single color blocks, or color per piece via a small palette string. Colors add fun but bytes. For "smallest", maybe monochrome or 7 colors via a compact palette. I'll include 7 colors — it's like 60 bytes for palette string and makes it feel like Tetris. Actually to keep it truly small, maybe use piece index to pick from a palette string like "#0af#f82#fc0#0c0#c00#92c#f6a" — that's compact.
+
+Piece representation: The classic compact trick — define shapes as strings of rotation states. E.g.:
+
+```js
+P=[[9,0],[3,1],[6,0],[1,1],...]
+```
+
+Hmm. Let me think of a known compact scheme: each tetromino rotation encoded as 4 numbers where each number is a bitmask row of a 4x4 grid? Or encode each piece as a set of 4 cells (x,y) in a 4x4 box, and rotation = transform (x,y) -> (y, 3-x) or similar. That's elegant: store one orientation per piece as 4 coordinate pairs, rotate mathematically. Rotation about a pivot in a 4x4 box: (x,y) -> (y, size-1-x)? For I piece that doesn't give the standard SRS but gives a playable rotation. Many tiny tetris implementations use this: rotate within bounding box.
+
+Simplest: represent each piece as array of 4 [x,y] pairs in a 4x4 (or 2x2 for O) box; rotation: (x,y) -> (y, 3-x) for 4x4 box. For O piece (2x2), rotation is identity — but if we use 4x4 box with cells at (1,1),(2,1),(1,2),(2,2), rotating maps (1,1)->(1,2)? Let's check: (x,y)->(y,3-x): (1,1)->(1,2); (2,1)->(1,1); (1,2)->(2,2); (2,2)->(2,1). That's a rotation of the 2x2 block within itself — visually identical square. Fine.
+
+For
+---

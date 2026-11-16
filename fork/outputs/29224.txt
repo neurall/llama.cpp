@@ -1,0 +1,9 @@
+run 29224 | rel_small_gpus | pf4k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 38.3 t/s | prompt 1147.3 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 23:10:38
+
+<think>Let me carefully review this source file for code quality, correctness, potential bugs, and style issues.
+
+Let me go through the file systematically.
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check edge cases:
+   - When `max_items == 0

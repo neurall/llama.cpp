@@ -1,0 +1,48 @@
+run 29396 | state_split_heat | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 27.51 t/s | prompt 35.8 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-16 08:56:07
+
+The user wants the smallest HTML Tetris game. This is a fun challenge — code golf style Tetris. But I also care about quality. The user explicitly asks for "smallest" — so this is a code-golf request. I should honor that: produce a genuinely tiny Tetris in a single HTML file, while still making it playable and looking decent (minimal but not ugly).
+
+Let me think about what "smallest" means here. I'll aim for a very compact single-file HTML with inline JS, no external dependencies. I can write extremely dense code. Let me design a minimal Tetris:
+
+Core features needed for it to actually be Tetris:
+- 10×20 board
+- 7 tetrominoes with rotation
+- Gravity (fall speed increases per level or per lines)
+- Line clearing
+- Score
+- Keyboard controls: left/right/down, rotate, maybe hard drop
+- Game over
+
+I can compress heavily:
+- Use a canvas, small cells.
+- Encode pieces as arrays of rotation states or use a compact representation.
+- Use bitwise or string encoding for shapes.
+
+Classic golfed Tetris approaches: represent pieces as 4 rotations × 4 cells. A common trick: define shapes as arrays of [x,y] offsets per rotation, or use a single string.
+
+Let me write a compact but readable-ish version. Since the user asked for "smallest", I'll go full golf but keep it functional. I'll also add a tiny bit of visual polish that costs almost nothing: distinct colors per piece, a subtle grid, score display. Colors can be a compact palette string.
+
+Let me plan the code.
+
+Board: 10 wide, 20 tall. Store as array of arrays, or a single array of 200 cells where 0 = empty, else color index.
+
+Pieces: 7 shapes. Compact encoding: for each piece, a list of rotation states, each state a list of 4 [x,y]. That's verbose. Alternative: encode each piece as a 2D matrix and rotate the matrix programmatically. Rotating a matrix: rotated[x][y] = m[N-1-y][x] or similar. That's compact.
+
+Shapes as binary matrices (minimal bounding):
+- I: 4x1 → [[1,1,1,1]] (1 row of 4)
+- O: 2x2
+- T: [[1,1,1],[0,1,0]]
+- S: [[0,1,1],[1,1,0]]
+- Z: [[1,1,0],[0,1,1]]
+- J: [[1,0,0],[1,1,1]]
+- L: [[0,0,1],[1,1,1]]
+
+Rotation of matrix m (w×h): newM[x][y]... Let me define rotate(m): for a matrix with h rows, w cols, rotated has w rows, h cols: r[y][x] = m[h-1-x][y]? Let me be careful.
+
+Standard rotation clockwise: r[x][y] = m[h-1-y][x] where r is w×h... Actually let's think: m is h rows, w cols. Clockwise rotation: result has w rows, h cols. result[i][j] = m[h-1-j][i]. Check with I piece: m = [[1,1,1,1]] (h=1, w=4). result should be 4 rows, 1 col, all 1s. result[i][j] = m[1-1-j][i] = m[0-j][i] — for j=0: m[0][i]=1 ✓; for j>0: m[-j] undefined → treat as 0. Hmm, that gives column of 1s at j=0 only. Actually rotating a horizontal I clockwise gives vertical I: 4 rows × 1 col, each row [1]. result[i][j] for all i (0..3), j (0..0): result[i][0] = m[h-1-0][i] = m[0][i] = 1 ✓. Good.
+
+Check T: m = [[1,1,1],[0,1,0]] (h=2,w=3). Clockwise: result 3 rows × 2 cols. result[i][j] = m[2-1-j][i] = m[1-j][i]. 
+- i=0: j=0: m[1][0]=0; j=1: m[0][0]=1 → [0,1]
+- i=1: j=0: m[1][1]=1; j=1: m[0][1]=1 → [1,1]
+- i=
+---

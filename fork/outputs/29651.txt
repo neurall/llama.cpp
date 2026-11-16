@@ -1,0 +1,8 @@
+run 29651 | no_static_kv_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 178.64 t/s | prompt 13180.2 t/s | 64 tokens | args: -np 1 -dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0 | power 280+280 W | 2026-11-16 21:31:27
+
+}},
+    //  //  (space?
+    //
+    //  //////////////////))? )? )?)? ")"? )? nullable_? )? ")")")")")")")")")")")"
+}
+#{1#1

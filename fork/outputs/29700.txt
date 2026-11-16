@@ -1,0 +1,16 @@
+run 29700 | vk_fa_mask_tail_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 0.0 t/s | prompt 14020.3 t/s | 512 tokens | args: -np 1 -dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0 | power 280+280 W | 2026-11-16 23:14:03
+
+    }},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"value", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"\"(\" space ( string \":\" space value (\",\" space string \":\" space value)* )? space \")\"", {"string", "value"}}},
+    {"string", {"

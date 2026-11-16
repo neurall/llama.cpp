@@ -1,0 +1,50 @@
+run 29379 | state_split_heat | edit4c | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.8 t/s | prompt 717.7 t/s | 918 tokens | args: -np 1 | power 200+200 W | 2026-11-16 01:23:24
+
+The user wants me to delete code in this file that is never used. Let me analyze the file carefully.
+
+The file is `common/json-schema-to-grammar.cpp`. Let me look at what's defined and what's used.
+
+Let me trace through the code:
+
+1. `build_repetition` - static function. Is it used? In the shown portion of the file, I don't see it being called. But the file is truncated — it ends mid-function `gbnf_escape_length`. The file shown is incomplete. Hmm, the user says "Delete the code in this file that is never used." The file shown ends abruptly at `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` followed by blank lines.
+
+Wait — this is a known file from llama.cpp. The actual file `common/json-schema-to-grammar.cpp` contains more code: `gbnf_escape_length`, `gbnf_escape_regex`, `gbnf_escape_regex_class`, `SchemaConverter` class, etc. But the user only provided this truncated portion. The instruction says "Delete the code in this file that is never used" — presumably within the shown file, we need to determine what's unused.
+
+But since the file is truncated, we can't see the rest. However, the task likely expects us to analyze only what's shown. Let me think about what's used within the shown portion:
+
+- `build_repetition`: not called anywhere in the shown code. But in the full llama.cpp file, it's used by the SchemaConverter. Hmm.
+
+Actually, wait. Let me reconsider. The user gave a truncated file. The task: "Delete the code in this file that is never used." Perhaps the intended answer is to identify dead code within the shown snippet.
+
+Let me carefully check each item:
+
+1. Includes: `json-schema-to-grammar.h`, `common.h`, `trie.h`, `unicode.h`, `<algorithm>`, `<limits>`, `<map>`, `<regex>`, `<sstream>`, `<string>`, `<unordered_map>`, `<unordered_set>`, `<vector>`.
+
+Which are used in the shown code?
+- `common_json` — from common.h presumably (using json = common_json). Actually `using json = common_json;` — is `json` used anywhere in the shown code? No! `json` alias is not used in the shown portion. But in the full file it's used by SchemaConverter. Hmm.
+- `trie.h` — not used in shown code.
+- `unicode.h` — not used in shown code.
+- `<algorithm>` — not used in shown code (no std::sort etc.).
+- `<limits>` — used (std::numeric_limits).
+- `<map>` — not used (only unordered_map).
+- `<regex>` — used (std::regex, std::smatch).
+- `<sstream>` — used (std::stringstream).
+- `<string>` — used.
+- `<unordered_map>` — used.
+- `<unordered_set>` — used.
+- `<vector>` — used (std::vector<std::string> deps).
+
+2. `build_repetition` — not called in shown code. In the full llama.cpp file, it IS called (in visit_array, visit_string with min/max lengths, etc.). Hmm.
+
+3. `build_min_max_int` — not called in shown code. In the full file, it's called by visit_int? Actually in llama.cpp's json-schema-to-grammar.cpp, `build_min_max_int` is used in the SchemaConverter for integer ranges. Let me recall... Yes, in the actual file there's a call in `visit` for integer with minimum/maximum. Actually I recall `build_min_max_int` is used in `_build_min_max_int` wrapper and called from visit rules for "integer" type with min/max. Yes it's used.
+
+4. `SPACE_RULE` — a const std::string. Used in the full file (in SchemaConverter, e.g., `add_rule("space", SPACE_RULE)`). Not used in shown code.
+
+5. `BuiltinRule` struct — used by PRIMITIVE_RULES and STRING_FORMAT_RULES maps.
+
+6. `PRIMITIVE_RULES` — used by `is_reserved_name` (shown). Also used in full file by SchemaConverter.
+
+7. `STRING_FORMAT_RULES` — used by `is_reserved_name` (shown). Also used in full file.
+
+8. `
+---

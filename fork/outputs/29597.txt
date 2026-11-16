@@ -1,0 +1,52 @@
+run 29597 | vk_mmid_chunks_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.79 t/s | prompt 395.1 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 20:00:05
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with pattern matching, rule building, and schema traversal
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is provided and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` case. Let me trace through:
+     - `min_items=0, max_items=5, separator="sep"`:
+       - `result = item + " " + build_repetition("(sep item)", 0, 4)` 
+       - Inner: `min=0, max=4, no separator` → `item{0,4}` → `"(sep item){0,4}"`
+       - So result = `item (sep item){0,4}`
+       - Then wrapped: `(item (sep item){0,4})?`
+     - This seems correct for 0-5 items with separator.
+   - When `min_items=1, max_items=1, separator="sep"`:
+     - `result = item + " " + build_repetition("(sep item)", 0, 0)` → returns `""` (max_items==0)
+     - So result = `item ` (with trailing space)
+     - This is a minor issue - trailing space in the rule.
+
+2. **`build_min_max_int` function:**
+   - Complex recursive function for generating integer ranges
+   - The `uniform_range` lambda captures `out` by reference - this is fine since it's used within the same scope
+   - `decimals_left` parameter is used to limit digit depth - good for preventing infinite recursion
+   - When `min_value < 0 && max_value < 0`, it negates both and recurses - but what about `min_value = INT64_MIN`? `-INT64_MIN` would overflow. Let me check... Actually, `has_min` checks `min_value != INT64_MIN`, so if `min_value` is `INT64_MIN`, `has_min` is false. But in the `min_value < 0 && max_value < 0` branch, `has_min` and `has_max` are both true, so `min_value` is not `INT64_MIN`. But `-min_value` could still be problematic if `min_value` is very negative... Actually no, if `has_min` is true, `min_value != INT64_MIN`, so `-min_value` is safe.
+
+3. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion - good for rollback
+   - But `_rules` is a `std::map` and the snapshot is a full copy - this could be expensive for large schemas
+   - The `std::move(rules_snapshot)` in the catch blocks - this is fine since `rules_snapshot` is a local variable
+
+4. **`_pattern_to_rule` function:**
+   - The `transform` lambda is recursive (calls itself for groups) - this could cause stack overflow for deeply nested patterns, but `MAX_PATTERN_DEPTH` guards against this
+   - The character class parsing doesn't handle `]` as first character (e.g., `[]abc]`) - in regex, `[]abc]` means character class containing `]`, `a`, `b`, `c`. The code would stop at the first `]`.
+   - Actually wait, looking more carefully: the loop `while (i < length && sub_pattern[i] != ']')` - if the first character after `[` is `]`, it would immediately exit the loop. This is a bug for patterns like `[]abc]`.
+   - The `{` parsing doesn't handle escaped characters inside curly brackets
+   - The literal parsing logic is complex and has a condition that's hard to follow:
+     ```cpp
+     } else if (!is_non_literal(sub_pattern[i]) &&
+             (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+     ```
+     This condition is trying to decide whether to include a character in a literal. It's quite convoluted.
+
+5. **`_not_strings` function:**
+   - The `rejects` string is built by concatenating UTF-8 characters directly into a character class `[...]` - this could be problematic if characters contain

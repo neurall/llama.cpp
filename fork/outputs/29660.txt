@@ -1,0 +1,6 @@
+run 29660 | ledger_all_writes_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 9.72 t/s | prompt 369.8 t/s | 64 tokens | args: -np 1 -dev CUDA0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0,ledger=1,poison=3,guard=1 | power 280+280 W | 2026-11-16 21:42:50
+
+}},
+    {"string", {"\"(\" space ( value (\",\" space value)* )? space \")\"", {"value"}}},
+    {"value", {"\"(\" space ( value (\",\" space value)* )? space \")\"", {"value"}}},
+    {"space",

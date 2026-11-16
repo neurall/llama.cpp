@@ -1,0 +1,55 @@
+run 29594 | vk_mmid_chunks_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 13.42 t/s | prompt 77.1 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-16 19:50:58
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, security issues, and general code quality.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - For separator case: when `min_items == 0`, it wraps the result in `(...)?` - correct
+  - The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for the pattern `item (sep item)*`
+
+### build_min_max_int function
+- Complex function for generating integer ranges. Let me check:
+  - `decimals_left` parameter defaults to 16 - this limits digit depth
+  - `top_level` parameter controls whether leading zeros are allowed
+  - The `uniform_range` lambda is complex but seems to handle digit-by-digit range generation
+  - Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is empty or invalid, but since `min_s` is from `std::to_string(min_value)` and `min_value > 9`, `min_s` has at least 2 characters, so `min_s.substr(1)` is non-empty.
+  - The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - ensures at least 1
+
+### _add_rule function
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. The while loop condition checks both existence and content match. This seems correct but could be slow for many rules.
+
+### _visit_pattern function
+- Takes a snapshot of `_rules` for rollback on error - good pattern
+- The `_pattern_to_rule` function is complex regex-to-grammar conversion
+- Potential issue: The `sub_rule_ids` map is local to `_pattern_to_rule`, so rule IDs for sub-rules within a pattern are tracked per-pattern. This seems intentional.
+
+### _pattern_to_rule function
+- The `transform` lambda is a recursive descent parser for regex patterns
+- `paren_depth` tracking for balanced parentheses
+- `MAX_PATTERN_DEPTH` = 100 prevents stack overflow
+- The character class parsing: handles escapes but could have issues with nested brackets
+- The `{}` repetition parsing: handles `{n}`, `{n,m}`, `{n,}` formats
+- Potential issue: In the `{}` handling, `std::stoi` could throw `std::out_of_range` which is a subclass of `std::logic_error`... wait, actually `std::out_of_range` derives from `std::logic_error`. Let me check... Actually, `std::out_of_range` derives from `std::logic_error`. So catching `std::logic_error` would catch both `std::invalid_argument` and `std::out_of_range`. That's correct.
+
+Wait, actually `std::out_of_range` derives from `std::logic_error`. And `std::invalid_argument` also derives from `std::logic_error`. So catching `std::logic_error` catches both. Good.
+
+- The literal parsing: handles escapes, quotes, and non-literal characters
+- Potential issue: The condition for consuming a character as literal is complex:
+```cpp
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+```
+This checks if the current char is not a special char AND (it's the last char, or literal is empty, or next is '.', or next is not special). This seems to handle cases where a literal should be consumed even if followed by a special char (when literal is empty or next is '.').
+
+Actually wait, there's a subtle issue: if `literal.empty()` is true, it will consume any non-special character even if followed by another special character. This could cause issues where a single character is consumed as a literal when it should be treated differently. But looking at the logic more carefully, this seems intentional - it ensures at least one character is consumed to avoid infinite loops.
+
+### _not_strings function
+- Generates a rule that matches strings not in a given set using a trie
+- The `rejects` string accumulates characters for the negation class
+- Potential issue: If a character

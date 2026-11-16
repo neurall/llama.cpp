@@ -1,0 +1,86 @@
+run 29414 | state_split_heat | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 62.51 t/s | prompt 181.9 t/s | 965 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-16 09:14:50
+
+The user wants the smallest HTML Tetris game. The request is minimal and functional: "generate smallest html tetris game." So the primary goal is compactness — a tiny single-file Tetris.
+
+But I don't want the result to feel like a bare terminal dump just because it's small. Even a tiny game can have a bit of character. So I'll make it small but still pleasant: a compact single-file Tetris with keyboard controls, score, next piece, and a bit of styling — while keeping the code genuinely small.
+
+Balance: "smallest" is the explicit ask. I should deliver something genuinely tiny (like ~30-60 lines), but I can still give it a dark background with a subtle gradient, a monospace display font paired with a clean sans body, and a couple of live touches (score counter, next piece, level).
+
+Let me write compact but readable-ish Tetris in minimal code.
+
+Classic minimal Tetris approach using canvas:
+
+```html
+<canvas id=c width=160 height=320></canvas>
+<script>
+// 10x20 grid, 16px cells
+</script>
+```
+
+Let me write a compact but working Tetris.
+
+```html
+<canvas id=C width=160 height=320></canvas>
+<script>
+c=C.getContext`2d`,S=0,L=1,N=0,P=[],B=[],T=setInterval
+// pieces as matrices
+```
+
+Let me write it carefully so it actually works.
+
+Approach:
+- Board: 20 rows x 10 cols array of color indices.
+- Piece: array of [x,y] offsets or a matrix; rotation by transposing.
+- Use a simple representation: each piece is a matrix (array of rows). Rotate = transpose + reverse.
+
+Compact code:
+
+```js
+const W=10,H=20,U=16;
+let b=Array.from({length:H},()=>Array(W).fill(0));
+let p,r,x,y,s=0,l=1,t=0;
+const K='1111 010 111 010 011 110 11 11 011 111 010'.split(' ') // messy
+```
+
+Better: define tetrominoes as strings.
+
+```js
+const S=[
+".... .... #### .... ..#. .### #... #### .#.. .#.. .#.. ##.. ##.. ##.. .#.. .### #.#. #.#.",
+]
+```
+
+Simplest: define 7 pieces each as a 4x4 or NxN matrix string, and rotate by matrix rotation.
+
+```js
+P=[
+[0,[1,1,1,1]], // I as 1x4 -> rotate gives 4x1
+...
+]
+```
+
+Rotation of arbitrary matrix: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())` for clockwise.
+
+For I as [[1,1,1,1]] rotating gives [[1],[1],[1],[1]] — works fine.
+For O as [[1,1],[1,1]] rotation is identity — good.
+For S: [[0,1,1],[1,1,0],[0,0,0]] — rotation works but with empty row it shifts. Let's use minimal bounding boxes:
+
+- I: [[1,1,1,1]] (1x4)
+- O: [[1,1],[1,1]] (2x2)
+- T: [[1,1,1],[0,1,0]] (2x3)
+- S: [[0,1,1],[1,1,0]] (2x3)
+- Z: [[1,1,0],[0,1,1]] (2x3)
+- J: [[1,0,0],[1,1,1]] (2x3)
+- L: [[0,0,1],[1,1,1]] (2x3)
+
+Rotation with these bounding boxes works reasonably (not perfect SRS but fine for a tiny game).
+
+Colors: index per piece.
+
+Code:
+
+```js
+c=C.getContext`2d`
+B=Array(200).fill(0)
+D=[[[1,1,1,1]],[[1,1],[1,1]],[[
+---

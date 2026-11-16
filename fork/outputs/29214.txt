@@ -1,0 +1,10 @@
+run 29214 | rel_small_gpus | pf9k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 31.35 t/s | prompt 1439.2 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 23:06:49
+
+<think>The file appears to be truncated at the end. Let me review what's provided carefully.
+
+Let me go through this systematically.</think># Code Review: `common/json-schema-to-grammar.cpp`
+
+## Critical Issues
+
+### 1. Truncated File
+The file is cut off mid-function at `_visit_prim`

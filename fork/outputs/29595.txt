@@ -1,0 +1,51 @@
+run 29595 | vk_mmid_chunks_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 15.54 t/s | prompt 223.7 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-16 19:55:41
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with pattern matching, grammar building, and schema visiting logic
+
+### Issues I can identify:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` case. Let me trace through:
+     - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1)` 
+     - Then wraps in `(...)?`
+     - This seems correct for the separator case.
+
+2. **`build_min_max_int` function:**
+   - The `uniform_range` lambda captures `out` by reference, which is fine since it's used within the function scope.
+   - The `digit_range` lambda has a potential issue: if `from > to`, it would produce an invalid range like `[9-1]`. This could happen with negative numbers or edge cases.
+   - The `more_digits` lambda: when `min_digits == 0`, it outputs `[0-9]{0,...}` which is fine.
+   - The `uniform_range` function: when `from[i] == to[i]`, the `digit_range(from[i], to[i] - 1)` could produce `from[i]` to `from[i] - 1` which would be invalid if `from[i] == to[i]`. Wait, let me re-read... Actually the condition is `from[i] < to[i] - 1` for the middle case, so if `from[i] == to[i]`, it goes to the `to_reached` path. Let me trace more carefully.
+   
+   Actually, looking at `uniform_range` more carefully:
+   - It finds common prefix `i`
+   - If `i < from.length() && i < to.length()`, it processes the differing character
+   - `from[i]` and `to[i]` are the first differing characters, so `from[i] < to[i]` (assuming from <= to)
+   - The `digit_range(from[i], to[i] - 1)` case: if `from[i] == to[i] - 1`, this produces `[from[i]-from[i]]` which is fine.
+   - But wait, if `from[i] == to[i]`, we wouldn't be in this branch since the while loop would have continued. So `from[i] < to[i]` is guaranteed.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if a rule with the same name exists but different content, it appends a number. The while loop condition checks both existence and content match. This seems correct but could be O(n) in the worst case.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` for rollback on error. This is a full copy of the map, which could be expensive for large schemas.
+   - The `unsupported_pattern` and `invalid_pattern` exceptions are used for control flow, which is a common pattern but could be considered an anti-pattern.
+
+5. **`_pattern_to_rule` function:**
+   - The `transform` lambda is recursive (calls itself for groups), which could lead to stack overflow for deeply nested patterns. However, `MAX_PATTERN_DEPTH` limits this to 100.
+   - The character class parsing: when encountering `]` inside a character class, it stops. But what about `]` as the first character (which is allowed in regex)? This could be a bug - `[]abc]` in regex means `]`, `a`, `b`, `c` but here it would stop at the first `]`.
+   - Actually wait, looking more carefully: the loop starts after `[` and checks `sub_pattern[i] != ']'`. So `[]abc]` would immediately see `]` and close the class, producing `[]` which is an empty class. This is a bug - in regex, `[]abc]` means the character class `]abc`.
+   
+   Actually, let me re-read. The code does:
+   ```
+   i++;  // skip '['
+   while (i < length && sub_pattern[i] != ']') {
+   ```
+   So for `[]abc]`, after skipping `[`, `i` points to `]`, the while loop doesn't execute

@@ -1,0 +1,6 @@
+run 29166 | rel_small_gpus | pf11k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 23.9 t/s | prompt 1077.6 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 22:01:40
+
+<think>Let me analyze this code carefully. The user has provided two source files from what appears to be the llama.cpp project:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - An argument parsing file (which appears to be

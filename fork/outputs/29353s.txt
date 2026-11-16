@@ -1,0 +1,27 @@
+run 29353 | stock-b12426-official | pf2k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 142.06 t/s | prompt 2233.2 t/s | 512 tokens | args: -np 1 --cpu-moe --moe-cache-mib 2000 --moe-cache-cpu-share 0.5 | power 200+200 W | 2026-11-16 00:23:02
+
+The `json-schema-to-grammar.cpp` file provided appears to be a part of a tool or library that converts JSON schema definitions into a format suitable for parsing JSON data according to specific rules. The file includes several static `std::string` instances that define various JSON schema patterns, including repetition, min/max values, and other JSON schema constructs like arrays and objects.
+
+Here's a review of the code:
+
+1. **`build_repetition` Function**:
+   - This function constructs a JSON schema repetition pattern, such as `"a+"` for one or more occurrences of `a`. It handles min/max values correctly and separates items with a separator rule.
+   - The function is well-structured and handles edge cases like empty min/max values.
+
+2. **`build_min_max_int` Function**:
+   - This function builds a JSON integer pattern from a minimum and maximum value, ensuring that the separator is correctly handled.
+   - The function is clear and efficient, using a range-based loop to generate the pattern.
+
+3. **`json-schema-to-grammar.h` Header**:
+   - This header defines a class `JsonSchemaToGrammar` that seems to encapsulate the logic for converting JSON schema patterns into a grammar format.
+   - The class has static member functions for common JSON schema patterns like `boolean`, `decimal-part`, `integral-part`, `number`, `integer`, `value`, `object`, and `array`.
+   - The implementation for these patterns is straightforward and effectively translates the schema rules into a grammar format.
+
+4. **`SPACE_RULE` Constant**:
+   - This constant defines a regular expression for whitespace and line breaks, which is used in the `json-schema-to-grammar.cpp` file to handle whitespace in the generated grammar.
+
+5. **`BuiltinRule` Struct**:
+   - This struct defines a simple data structure to store a JSON schema pattern along with its dependencies (e.g., other patterns it depends on).
+   - It's used to store the patterns for primitive JSON types (`boolean`, `decimal-part`, `integral-part`, `number`, `integer`, `value`, `object`, `array`) and for more complex constructs like `object` and `array`.
+
+6. **`PRIMITIVE_

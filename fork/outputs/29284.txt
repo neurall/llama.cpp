@@ -1,0 +1,8 @@
+run 29284 | rel_small_gpus | pf10k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 148.05 t/s | prompt 8535.1 t/s | 64 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-15 23:33:10
+
+<think>
+Here's a thinking process:
+
+1.  **Understand the User Request:**
+   - The user provided a C++ source file (`common/json-schema-to-grammar.cpp`) and asked for a code review.
+   - The file contains a significant amount of code for converting JSON schemas to a grammar format (

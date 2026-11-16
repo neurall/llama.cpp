@@ -1,0 +1,15 @@
+run 29713 | vk_fa_mask_tail_vk | pf2k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 150.6 t/s | prompt 5997.4 t/s | 256 tokens | args: -np 1 -dev CUDA0 | power 280+280 W | 2026-11-16 23:21:11
+
+},
+    {"null", {"\"null\"", {}}},
+    {"string", {"\"\"\" (\"\\\\\" | \"\\\"\" | \"\\n\" | \"\\t\" | \"\\r\" | \"\\b\" | \"\\f\" | \"\\\\u\" hex-hex-hex-hex | [\\x20-\\x7e])* \"\"\"", {"hex-hex-hex-hex"}}},
+    {"hex-hex-hex-hex", {"[0-9a-fA-F]{4}", {}}},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULES_CONTENT = {
+    {"boolean", "(\"true\" | \"false\")"},
+    {"decimal-part", "[0-9]{1,16}"},
+    {"integral-part", "[0] | [1-9] [0-9]{0,15}"},
+    {"number", "(\"-\"? integral-part) (\".\" decimal-part)? ([eE] [-+]? integral-part)?"},
+    {"integer", "(\"-\"? integral-part)"},
+    {"value", "object | array | string | number

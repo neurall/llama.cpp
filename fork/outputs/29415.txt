@@ -1,0 +1,64 @@
+run 29415 | state_split_heat | tetrisc | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 63.14 t/s | prompt 44.0 t/s | 965 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-16 09:15:33
+
+The user wants the smallest HTML Tetris game. The request is minimal and functional: "generate smallest html tetris game." So the priority is compactness — a tiny single-file Tetris. I should deliver a small, dense but working HTML file.
+
+Since the ask is explicitly "smallest," I'll honor that: a compact single-file build. But I can still make it not ugly with minimal CSS. Balance: keep it genuinely small but playable and decent-looking. I'll aim for something like ~1KB-ish minified-ish but readable enough.
+
+Let me write a compact Tetris:
+
+```html
+<meta charset=utf-8><title>Tetris</title>
+<style>body{background:#111;color:#fff;font:12px monospace;display:grid;place-items:center;height:100vh;margin:0}canvas{background:#000;image-rendering:pixelated}</style>
+<canvas id=c width=160 height=320></canvas>
+<script>
+// compact tetris
+</script>
+```
+
+Let me write the game logic compactly.
+
+Standard approach: board 10x20, cells 8px → canvas 80x160? Let's use cell 16 → 160x320.
+
+Pieces as strings/arrays. A compact way: use the "SRS-ish" approach with rotation via matrix transpose+reverse.
+
+Compact representation: define pieces as arrays of coords in a bounding box, or as bitmasks.
+
+A classic tiny approach:
+
+```
+P='000,000,000'...
+```
+
+Let me use this compact method: each piece defined by a 4x4 or 3x3 bitmask per rotation? Simpler: define pieces as matrices and rotate by transposing/reversing.
+
+```js
+T=[[[0,1,0],[1,1,1]],[[1,0],[1,1],[0,1]]...]
+```
+Rotation via function rot(m)=m[0].map((_,i)=>m.map(r=>r[i]).reverse())
+
+Pieces:
+I: [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]
+O: [[1,1],[1,1]]
+T: [[1,1,1],[0,1,0]]
+S: [[0,1,1],[1,1,0]]
+Z: [[1,1,0],[0,1,1]]
+J: [[1,0,0],[1,1,1]]
+L: [[0,0,1],[1,1,1]]
+
+Rotating with transpose+reverse works fine for these (clockwise rotation: rotate each row of the square matrix). For non-square matrices, m[0].map((_,i)=>m.map(r=>r[i]).reverse()) gives a square-ish result of size cols x rows. That works fine for collision.
+
+Colors per piece index.
+
+Game loop with setInterval or requestAnimationFrame with drop timer.
+
+Controls: arrows + space (hard drop) + P pause. Also mobile touch? Keep small — maybe skip, but a tiny bit of touch support is nice. Keep it small though.
+
+Let me write it:
+
+```js
+B=[],W=10,H=20,S=16,C=c.getContext`2d`,P=[[[0,1,0],[1,1,1]],[[1,1],[1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]],K='JLOSZTI',n=0,g=0,d=0,x=0,y=0,p=0;
+for(i=W*H;i--;)B[i]=0;
+function R(m){return m[0].map((_,i)=>m.map(r=>r[i]).reverse())}
+function T(){p=P[n=Math.random()*7|0];x=3;y=0;if(h(p,x,y))over()}
+function h(m,a,b){for(j=0;j<m.length;j++)for(i
+---

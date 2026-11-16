@@ -1,0 +1,84 @@
+run 29698 | vk_fa_mask_tail_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 0.0 t/s | prompt 14020.3 t/s | 896 tokens | args: -np 1 -dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0 | power 280+280 W | 2026-11-16 23:13:55
+
+    // TODO: add more primitive rules
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_SPACES = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_SPACES_WITH_SPACES = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_SPACES_WITH_SPACES_WITH_SPACES = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_SPACES_WITH_SPACES_WITH_SPACES_WITH_SPACES = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_SPACES_WITH_SPACES_WITH_SPACES_WITH_SPACES_WITH_SPACES = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_SPACES_WITH_SPACES_WITH_SPACES_WITH_SP

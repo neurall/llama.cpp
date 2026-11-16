@@ -1,0 +1,6 @@
+run 29584 | vk_mmid_chunks_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 131.95 t/s | prompt 11081.5 t/s | 64 tokens | args: -np 1 -dev Vulkan0,Vulkan1 --moe mode=cache,dense-split=0 | power 280+280 W | 2026-11-16 19:34:23
+
+}},
+    {"string", {"\"(\" space ( value (\",\" space value)* )? space \")\"", {"value"}}},
+    {"value", {"\"(\" space ( value (\",\" space value)* )? space \")\"", {"value"}}},
+    {"space",

@@ -1,0 +1,31 @@
+run 29388 | state_split_heat | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 26.03 t/s | prompt 874.0 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 08:42:48
+
+<think>Let me analyze this code carefully. The user wants a code review of the source file(s). Actually, they've provided two files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (though the second one appears truncated). Let me focus on reviewing both, but primarily the first one since it's complete.
+
+Let me go through the first file carefully:
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    ...
+```
+- If `max_items == 0` but `min_items > 0`, this returns empty string — that's a contradiction in the schema (min > max). It silently produces an empty rule. Might be worth noting.
+- `has_max` is computed before checking `max_items == 0`. Fine.
+- The separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 0` we already returned. If `min_items == 0` and `has_max`, then max_items - 1 could be -1 if max_items == 0... but we returned already. OK.
+- Wait, if `min_items == 0` and `max_items == 1` with separator: `build_repetition(..., 0, 0)` → returns "" then result = item_rule + " " + "" = item_rule + " ", then wrapped in `(...)?`. Hmm, that gives `item_rule (sep item)?` — wait no. Let me re-check: `result = item_rule + " " + build_repetition(...)` where inner call has min=0, max=0 → returns "". So result = `item_rule ` then `result = "(" + result + ")?"` → `(item_rule )?`. That matches 0 or 1 items. OK that's correct but produces slightly odd formatting with trailing space. Minor.
+
+2. `build_min_max_int`:
+- Uses `std::function` for recursion — fine but has overhead; could be a free function since it doesn't capture anything except `out`... Actually it captures `out`, `digit_range`, `more_digits` by reference. It's recursive so std::function is needed or a separate helper. OK.
+- `decimals_left = 16` default. `less_decimals = std::max(decimals_left - 1, 1)`.
+- Potential issue: `std::stoll(min_s.substr(1))` — could overflow? min_value <= 9 branch handles small values; else branch: min_s length could be up to 20 digits for int64 min... wait, in the `has_min` branch with `min_value > 9`, `min_s = std::to_string(min_value)`. If min_value is negative... no, we're in the else branch of `min_value < 0`, so min_value > 0. `min_s.substr(1)` could be up to 19 digits, which fits in int64 (max 9223372036854775807 is 19 digits). But `std::stoll` on "9223372036854775807" is fine. However, if min_value = 1000000000000000000 (19 digits), substr(1) = "000000000000000000" → 0. OK. But what if min_s has 19 digits and starts with 9, e.g., 9223372036854775807? substr(1) = "223372036854775807" → fits. OK.
+- Actually wait — there's a subtle issue: in the recursion `build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false)` — the second arg is max, so has_max is true. Fine.
+- The `uniform_range` lambda: `out << "\"" << from.substr(0, i) << "\""` — common prefix. Then handles the differing digit. Looks correct-ish. This is complex code that deserves unit tests.
+- Edge: `digit_range(from[i] + 1, to[i])` — char arithmetic; from[i] and to[i] are digit chars, fine.
+- In `has_min && has_max` with both negative: `build_min_max_int(-max_value, -min_value

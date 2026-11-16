@@ -1,0 +1,7 @@
+run 29320 | rel_small_gpus | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.47 t/s | prompt 1384.8 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 23:49:19
+
+<think>The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, security issues, and general code quality.
+
+Let me go through each file systematically.
+
+## File 1:

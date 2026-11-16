@@ -1,0 +1,78 @@
+run 29409 | state_split_heat | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 53.84 t/s | prompt 34.1 t/s | 965 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-16 09:10:51
+
+The user wants the smallest HTML Tetris game. Let me make a compact but actually good Tetris game in a single HTML file. "Smallest" — they want minimal code. But I don't want to just dump a bare canvas with no feel; even a tiny game can have a bit of life to it.
+
+Balance: make it small but polished. A compact single-file Tetris with a nice look. Let me write genuinely terse code but with good aesthetics — dark background, neon pieces, score, next piece, level.
+
+Let me write compact Tetris.
+
+```html
+<!DOCTYPE html><meta charset=utf-8><title>TETRIS</title>
+<style>
+body{margin:0;background:#0b0e14;color:#e8e8f0;font:14px/1.4 system-ui;display:grid;place-items:center;height:100vh}
+...
+</style>
+<canvas id=c width=252 height=504></canvas>
+```
+
+Let me do a compact implementation:
+
+```js
+const W=10,H=20,S=25;
+const c=document.getElementById`c`,x=c.getContext`2d`;
+const P='I J L O S T Z';
+shapes as matrices rotations computed.
+```
+
+Classic compact approach: define pieces as strings of rotation states, or use the tetromine coordinate trick.
+
+Compact trick: pieces defined as 4x4 bit patterns rotated.
+
+Let me use the well-known minimal approach:
+
+```js
+const O=[
+ [0,[1,1,1,1]],[0,[1,0,0,0],[1,1,1]],[0,[0,0,1],[1,1,1]],[1,[1,1,1],[1,0,0]],
+ [0,[1,1,1],[0,1,0]],[0,[1,1],[1,1]],[0,[1,0,1],[1,1,0]]
+]
+```
+Wait, standard: I, J, L, O, S, T, Z.
+
+I: [[0,1,1,1,1,0,0,0]] hmm. Let me use 4x4 for I and 3x3 for others. Simpler: use a matrix and rotate function.
+
+```js
+const R=m=>m[0].map((_,i)=>m.map(r=>r[i]).reverse());
+```
+
+Pieces:
+```js
+const P=[[[1],[1],[1],[1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1],[1,1]],[[0,1,1],[1,1,0]],[[0,1,0],[1,1,1]],[[1,1,0],[0,1,1]]];
+```
+Colors: cyan, blue, orange, yellow, green, purple, red.
+
+Rotation with wall kicks: simple try offsets [0,-1,1,-2,2].
+
+Game loop with setInterval or requestAnimationFrame.
+
+Controls: arrows, space for hard drop, up rotate.
+
+Let me also add: score, lines, level, next piece preview, hold maybe (keeps it bigger). Keep it small-ish but complete: score, lines, level, next.
+
+Rendering: draw board grid + current piece. Ghost piece — nice touch, small code.
+
+Let me write it.
+
+```html
+<!doctype html><meta charset=utf-8><title>TETRIS</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{height:100vh;display:grid;place-items:center;background:#0a0c12;color:#cfd6e4;font:600 13px/1 ui-monospace,monospace;user-select:none}
+main{display:flex;gap:18px;padding:22px;background:#0f131d;border:1px solid #232a3a;border-radius:14px;box-shadow:0 30px 80px #000}
+canvas{background:#080a10;border-radius:6px}
+#n{width:96px;height:96px}
+...
+</style>
+```
+
+Hmm, "smallest" — I should keep the file genuinely compact. But I also want it
+---

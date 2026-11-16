@@ -1,0 +1,9 @@
+run 29165 | rel_small_gpus | pf11k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 22.95 t/s | prompt 1080.1 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 22:01:25
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated at the end).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### build

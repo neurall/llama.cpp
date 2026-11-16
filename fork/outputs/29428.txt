@@ -1,0 +1,23 @@
+run 29428 | state_split_heat | pf13k | Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf | decode 1.66 t/s | prompt 42.8 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 09:32:09
+
+I need respond to user code review of following source file. User pasted two files? Header says // file common/json-schema-to-grammar.cpp then full file, then // file common/arg.cpp and partial ending build_url_tasks. Should review likely focus source file? User says following source file singular but includes two. Should do thorough code review identify bugs, correctness, security, performance, maintainability. Should not overdo speculative. Should inspect carefully. I have huge token budget. Should analyze actual code deeply, find concrete issues with line references perhaps no line numbers. Should prioritize. Should probably expected code review findings. Should examine json-schema-to-grammar.cpp for bugs. arg.cpp partial perhaps review too, note truncated. Should identify issues.
+
+I'll parse code systematically.
+
+Includes: uses std::function but no <functional> include; std::runtime_error, invalid_argument but no <stdexcept>; std::stoll etc string included; int64_t no <cstdint>; fprintf no <cstdio>; regex_replace unqualified in _add_rule: `std::string esc_name = regex_replace(name, INVALID_RULE_CHARS_RE, "-");` There is no `using namespace std`, likely common.h defines regex_replace? Could be custom function in namespace? Since static function in global, unqualified regex_replace could resolve `std::regex_replace`? No, std not implicit. Perhaps common.h has `using std::regex_replace`? Should not assert compile unless know. It likely llama.cpp source actual. Could be common.h includes using? Should focus logic.
+
+build_repetition:
+has_max = max != INT_MAX.
+if max==0 return "".
+if min==0 max==1 item?.
+if separator empty:
+ if min==1 !hasmax item+
+ if min==0 !hasmax item*
+ return item{min,max}
+with separator:
+ result = item + " " + build_repetition("(" + separator + " " + item + ")", min==0 ?0:min-1, hasmax?max-1:max)
+ if min==0 result=(result)?
+ return result.
+Potential invalid min > max or negative min not checked. For arrays min_items likely int nonnegative. max=0 and min>0 returns empty silently. For separator and max=INT_MAX min=0: recursive call with min=0 max=INT_MAX separator nonempty; inner build repetition with sep empty? I'll compute: build_repetition(item,0,INT_MAX, sep): result = item + " " + build_repetition("(sep item)",0,INT_MAX) [default separator empty] -> `(sep item)*`; result `(item (sep item)*)?`. Good. min=1 max=INT_MAX: item + repetition(...,0,INT_MAX) => item (sep item)*. min=0 max=1: early item? even with separator, correct zero or one item no trailing sep. min=1 max=1 with separator: result item + build_repetition("(sep item)",0,0) => item + " " + "" = item. Good. min=2 max=2: item + build_repetition("(sep item)",1,1) => item (sep item){1,1}? Wait recursive separator empty, min=1 max=1 -> item{1,1}; item_rule argument is "(sep item)" so output `(sep item){1,1}` correct. min=0 max=2: result item + build_repetition("(sep item)",0,1) => `(sep item)?`; then `(item (sep item)?)?` correct. max=0 returns "" even separator. Fine. If min=0 max=INT_MAX and sep empty item*. Good.
+
+build_min_max_int complex. Should inspect for numeric edge cases and grammar correctness. It generates integer range within JSON integral constraints, decimals_left max digits 16. Inputs min/max int64. has_min = min != INT64_MIN, has_max = max != INT64_MAX. This treats sentinel as absence. If actual bound equals INT64_MIN or MAX, indistinguishable, but schema likely uses these as no bound. Negative handling overflow: `-min_value` when min_value == INT64_MIN? has_min false if sentinel so branches avoid? has_min&&has_max with min<0 max<0: if min=INT64_MIN then has_min false so not both. If min e.g. -1 max=-? -max safe except max could INT64_MIN? has_max false if max=INT64_MAX only, max could INT64_MIN with has_min? If min less? Schema invalid min>max perhaps. `-max_value` if max=INT64_MIN and has_min true? min must <= max? Could be min negative and max INT64_MIN impossible valid unless min sentinel. Not concern valid schema. In has_min only min<0, `-min_value` safe because has_min means min != INT64_MIN. In has_max max<0, `-

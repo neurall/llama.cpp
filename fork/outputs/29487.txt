@@ -1,0 +1,69 @@
+run 29487 | room_graphs_clear | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 25.79 t/s | prompt 952.6 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 16:25:03
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears truncated)
+
+Let me do a thorough code review of both files, focusing on:
+- Correctness issues (bugs)
+- Security concerns
+- Performance issues
+- Style/maintainability issues
+- Potential undefined behavior
+
+Let me go through the first file carefully:
+
+**json-schema-to-grammar.cpp**
+
+1. `build_repetition`:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Potential issue: if `max_items == 0` but `min_items > 0`, this returns "" which is contradictory (schema says min_items required but max 0). Actually in JSON schema, minItems > maxItems is invalid, so maybe fine. But the function silently returns "" — could be worth noting.
+
+Also `max_items - 1` when `has_max` is false: `max_items` is INT_MAX, so `max_items - 1` is fine (INT_MAX - 1). Wait, look:
+
+```cpp
+auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+```
+
+If `has_max` is false, max_items stays INT_MAX. OK.
+
+But if `min_items == 0` and `has_max` is true, e.g. min=0, max=5: result = item + " " + build_repetition(sep-item, 0, 4). Then `result = "(" + result + ")?"`. OK.
+
+If min_items == 1, max_items == 1 with separator: result = item + " " + build_repetition(sep-item, 0, 0) → build_repetition with max_items == 0 returns "". So result = item + " " + "" = item + " ". Hmm, trailing space. Then rule = item + " " — trailing whitespace in grammar rule. GBNF might tolerate trailing space? Actually the rule string would be "item_rule " with trailing space. In GBNF, whitespace between symbols is ignored, so trailing space is harmless. But it's sloppy.
+
+Wait, actually let me check: `build_repetition("(" + separator_rule + " " + item_rule + ")", 0, 0)` returns "" because max_items == 0. So result = item_rule + " " + "" = "item_rule ". Then min_items == 0? No, min_items == 1, so no "?" appended. Result: "item_rule ". Trailing space. Fine for GBNF but sloppy.
+
+Hmm, but wait: what if min_items == 1 and max_items == 1? The generated grammar is just `item_rule ` — correct semantics (one item, no separator). OK.
+
+What about min_items == 2, max_items == 2? result = item + " " + build_repetition(sep-item, 1, 1) = item + " " + (sep-item) → "item (sep item)". Correct.
+
+2. `build_min_max_int` — this is complex recursive logic for generating regex-like grammar for integer ranges. Let me look for bugs.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+```
+
+Note: uses INT64_MIN/MAX as sentinel for "unset". This conflates actual bound values with unset. If a schema actually specifies minimum = INT64_MIN, it's treated as unset. Edge case, probably acceptable but worth noting.
+
+The recursion: `build_min_max_int(-max_value, -min_value, out, decimals_left, true)` for negative range. Note decimals_left is passed unchanged (16). Hmm.
+
+In the `has_min` branch with `min_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+out <<

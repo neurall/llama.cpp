@@ -1,0 +1,72 @@
+run 29479 | room_tag_fix | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.77 t/s | prompt 1273.6 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 16:09:26
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` - correct
+  - When separator is non-empty, builds `item (separator item)*` pattern - looks correct
+  - The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for the separator pattern
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- `decimals_left` parameter defaults to 16 - this limits digit depth
+- The `uniform_range` lambda is recursive via `std::function` - potential performance concern but functionally correct
+- The `to_reached` variable is declared inside the `if (sub_len > 0)` block but used outside... wait, no, it's used within the same block. Let me re-check... Actually `to_reached` is declared inside the `if (sub_len > 0)` block and used within the same block. That's fine.
+- The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - ensures at least 1
+- When `has_min` and `min_value < 0`, it recursively calls with `std::numeric_limits<int64_t>::min()` as min - this could cause issues with the negation logic
+- The `top_level` parameter controls whether leading zeros are allowed
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization order - these are file-scope statics, should be fine since they're initialized before use
+- `is_reserved_name` uses a static local with lambda initialization - good pattern
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE` - replaces invalid chars with `-`
+- `GRAMMAR_LITERAL_ESCAPE_RE` - escapes special chars in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - defined but never used! This is dead code.
+
+### gbnf_escape_length
+- Handles various escape sequences
+- Comment says "keep in sync with parse_char() in src/llama-grammar.cpp" - good documentation
+- Returns 0 for invalid escapes - correct
+
+### common_chat_schema_converter class
+
+#### _add_rule
+- Handles name collisions by appending numbers
+- The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this could be O(n) in worst case but is fine for practical purposes
+
+#### _generate_union_rule
+- Generates alternatives with numbered suffixes
+
+#### _visit_pattern
+- Takes a snapshot of `_rules` before attempting pattern conversion
+- On failure, reverts `_rules` to snapshot - good rollback mechanism
+- On `unsupported_pattern`, falls back to accepting any string with a warning
+- On `invalid_pattern`, records an error and returns empty string
+
+#### _pattern_to_rule
+- Complex regex-to-grammar conversion
+- `paren_depth` tracking for balanced parentheses
+- `MAX_PATTERN_DEPTH` = 100 - prevents stack overflow from deeply nested patterns
+- The `transform` lambda is recursive via `std::function` - potential stack overflow if pattern is deeply nested, but MAX_PATTERN_DEPTH limits this
+- Character class handling: reads until `]`, handles escapes
+- Quantifier handling: `*`, `+`, `?`, `{n,m}`
+- Literal accumulation with merging
+
+Potential issues:
+1. In the `{` handling, `std::stoi` could throw `std::out_of_range` which is not caught (only `std::logic_error` is caught). `std::out_of_range` derives from `std::runtime_error`, not `std::logic_error`.
+2. The `sub_rule_ids` map uses the rule content as key - if two different rules have the same content, they'd share the same sub-rule ID. This could be intentional (deduplication) but might cause issues.
+3. The literal accumulation logic is complex and hard to follow.
+
+#### _not_strings
+- Generates a rule that matches strings that are NOT in a given set
+- Uses a trie for efficiency
+- The `rejects` string accumulates characters for

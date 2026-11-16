@@ -1,0 +1,8 @@
+run 29222 | rel_small_gpus | pf5k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 35.05 t/s | prompt 1279.4 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 23:09:53
+
+<think>The user wants a code review of this C++ source file. Let me analyze it carefully for bugs, style issues, performance concerns, and potential problems.
+
+Let me go through the file systematically.
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min

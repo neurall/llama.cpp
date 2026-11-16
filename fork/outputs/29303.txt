@@ -1,0 +1,3 @@
+run 29303 | rel_small_gpus | pf9k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 393.17 t/s | prompt 19439.6 t/s | 64 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-15 23:38:37
+
+The provided file `common/json_schema_to_grammar.cpp` contains a C++ implementation that converts a JSON schema to a set of regular expressions (regex) that can be used to parse JSON data conforming to that schema. The conversion process involves several steps, including parsing the JSON schema to extract

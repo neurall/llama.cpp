@@ -1,0 +1,32 @@
+run 29408 | state_split_heat | tetrisc | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 53.1 t/s | prompt 116.2 t/s | 965 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-16 09:10:01
+
+The user wants the smallest HTML Tetris game. I'll build it as a single self-contained HTML file. The ask is "smallest" — so they want compact. But I don't want to just dump a minified blob; I'd rather make something that's genuinely small in code but still feels crafted and alive. Let me make a compact Tetris that's actually fun and looks great — small code, but with polish: next-piece preview, ghost piece, score/lines/level, hold maybe, keyboard controls, particle/flash on line clear, ambient background.
+
+Balance: "smallest" is the explicit ask. So I should keep the code tight and readable-ish, but not bloated. I'll aim for a single file, maybe ~100 lines, dense but working. I'll give it a distinctive look — a terminal/CRT arcade aesthetic fits Tetris perfectly. Rather than a flat near-black screen with one neon accent, I'll use a dark background carrying several colors — the seven tetromino colors themselves are a natural multi-color palette.
+
+Let me design: a CRT-ish arcade cabinet feel, amber/teal, monospace display face + readable body. Pair a distinctive display face with a body face. Use Google Fonts? That adds weight. For "smallest", maybe use system fonts but with a distinctive stack. Hmm — I still want a distinctive display face. I can load one Google font for display (e.g., 'Chakra Petch' or 'VT323' or 'Silkscreen') plus a readable body. But smallest... I'll include one lightweight font link — acceptable. Actually to keep it truly self-contained and small, I could use font stacks. Let me include a single Google Fonts link for a display face — it's one line.
+
+Let me pick: display = "Silkscreen" or "VT323"? VT323 is very CRT. Or 'Chakra Petch' — techy. I'll go with a pairing: 'Chakra Petch' (display, angular, arcade) + system-ui/`ui-monospace` for numbers. Actually numbers in a game should be tabular monospace. Let me do display: 'Chakra Petch' 700; body: 'IBM Plex Sans'? That's two fonts loaded. Keep it to one Google font + system fallback for body. Hmm, I want a distinctive display face paired with a readable body face — so two. I'll load two families in one link: `Chakra Petch:wght@600;700` and `IBM Plex Sans:wght@400;500`. Or use 'Space Grotesk'. 
+
+Let me go: display = 'Bungee'? Too heavy. Arcade → 'Press Start 2P' is the classic but it's huge-ish and hard to read. I'll use 'Chakra Petch' for display headings and 'IBM Plex Mono' for stats/body — mono reads well for a game HUD and is readable. Actually body face should be readable — IBM Plex Mono is readable. But pairing display + mono is nice.
+
+Palette: deep blue-black #06080f with a subtle scanline + grid glow, and the 7 tetromino colors as the accents (cyan, yellow, purple, green, red, blue, orange) — a full multi-color palette. Plus a warm amber for UI text highlights.
+
+Layout: the playfield itself is the most characteristic thing here, so I'll lead with it rather than some generic header block. Left column: title + stats stacked. Center: board. Right: next queue + hold + controls. Actually let's do: board center-left, HUD right rail, title top-left overlapping.
+
+Features to keep it alive:
+- Canvas rendering with soft inner highlight on blocks (bevel) — cheap.
+- Ghost piece.
+- Next queue (3 pieces) rendered in small canvases or one canvas.
+- Hold with C.
+- Line clear flash animation (row flashes white then collapses).
+- Score/level/lines, speed up.
+- Ambient background: animated subtle grid drift + vignette + scanlines via CSS.
+- Pause, game over overlay, restart.
+- Key repeat handling, DAS-ish.
+- Sound? A tiny WebAudio blip adds life. Small code: a function `beep(f,d)`. Yes, cheap and delightful. Mute toggle.
+- 7-bag randomizer (small and better).
+- Lock delay? Keep simple: lock on successful-down-fail.
+
+Let me write compact but readable code
+---

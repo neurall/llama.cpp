@@ -1,0 +1,9 @@
+run 29221 | rel_small_gpus | pf5k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 32.27 t/s | prompt 1247.1 t/s | 64 tokens | args: -np 1 | power 280+280 W | 2026-11-15 23:09:44
+
+<think>The user wants a code review of a C++ source file that converts JSON schemas to GBNF grammars. Let me analyze this carefully.
+
+Let me go through the code systematically.</think># Code Review: `common/json-schema-to-grammar.cpp`
+
+## Critical Issues
+
+### 1. Incomplete file

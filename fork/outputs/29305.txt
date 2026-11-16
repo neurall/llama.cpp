@@ -1,0 +1,3 @@
+run 29305 | rel_small_gpus | pf8k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 390.97 t/s | prompt 18534.3 t/s | 64 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-15 23:39:08
+
+The provided file `common/json-schema-to-grammar.cpp` defines a utility function `build_repetition` which generates a JSON schema repetition rule based on the provided parameters. This function is used in `json-schema-to-grammar.h` to convert JSON schema patterns into regular

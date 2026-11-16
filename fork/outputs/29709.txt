@@ -1,0 +1,97 @@
+run 29709 | vk_fa_mask_tail_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 0.0 t/s | prompt 18536.9 t/s | 1024 tokens | args: -np 1 -dev CUDA0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0 | power 280+280 W | 2026-11-16 23:17:14
+
+    // TODO: add more primitive rules
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_DEPS = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_DEPS_WITH_DEPS = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_DEPS_WITH_DEPS_WITH_DEPS = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_DEPS_WITH_DEPS_WITH_DEPS_WITH_DEPS = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_DEPS_WITH_DEPS_WITH_DEPS_WITH_DEPS_WITH_DEPS = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_DEPS_WITH_DEPS_WITH_DEPS_WITH_DEPS_WITH_DEPS_WITH_DEPS = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal-part"},
+    {"integral-part", "integral-part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"string", "string"},
+    {"null", "null"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULE_TO_RULE_WITH_DEPS_WITH_DEPS_

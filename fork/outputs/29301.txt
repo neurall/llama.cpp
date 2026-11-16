@@ -1,0 +1,3 @@
+run 29301 | rel_small_gpus | pf10k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 392.46 t/s | prompt 17709.7 t/s | 64 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-15 23:38:07
+
+The provided code snippet defines a JSON schema to grammar converter (`json_schema_to_grammar`) and a utility function (`build_grammar`) to format the grammar string. The converter class handles the conversion from JSON schemas to grammar rules, and the `build_grammar` function is a helper that

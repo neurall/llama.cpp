@@ -1,0 +1,37 @@
+run 29480 | room_tag_fix | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.24 t/s | prompt 1412.3 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-16 16:10:38
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, max-1, "")` 
+  - For min=0, max=1 with separator: first check `max_items == 0` → no; then `min_items == 0 && max_items == 1` → returns `item_rule + "?"` — but this is the separator case, so it returns just `item_rule + "?"` without the separator. Wait, the early return for `min_items == 0 && max_items == 1` happens before the separator check. So for arrays with separator and min=0, max=1, it returns `item_rule + "?"` which is correct (0 or 1 items, no separator needed).
+  
+  Actually wait, for min=0, max=1 with separator: the early return `item_rule + "?"` is correct since 0 or 1 items don't need a separator.
+
+- For `min_items == 0` with separator: `build_repetition("(" + sep + " " + item + ")", 0, max-1, "")` — this builds the repetition of separator+item. Then wraps in `(...)?`. This seems correct.
+
+- For `min_items == 1` with separator: `build_repetition("(" + sep + " " + item + ")", 0, max-1, "")` — this builds 0 or more separator+item pairs. The result is `item (sep item)*` or `item (sep item){0,n}`. This seems correct.
+
+- For `min_items == 2` with separator: `build_repetition("(" + sep + " " + item + ")", 1, max-1, "")` — this builds 1 or more separator+item pairs. Result is `item (sep item)+`. Correct.
+
+- Edge case: `min_items == 0, max_items == 0` with separator → returns "" (correct, empty array).
+- Edge case: `min_items == 1, max_items == 1` with separator → `item + " " + build_repetition("(" + sep + " " + item + ")", 0, 0, "")` → `item + " " + ""` = `item `. Trailing space. Minor issue.
+
+Actually wait, for min=1, max=1 with separator: `has_max` is true, `max_items == 0` is false, `min_items == 0 && max_items == 1` is false. Then separator is non-empty, so: `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, 0, "")`. The inner call has max=0, returns "". So result is `item_rule + " "`. That's a trailing space. Minor but could cause issues.
+
+### build_min_max_int function
+- Complex function with many branches. Let me check for potential issues:
+  - `decimals_left` parameter is used but the name is misleading — it's about digit count, not decimals.
+  - The `top_level` parameter controls whether leading zeros are allowed.
+  - When `min_value < 0 && max_value < 0`: negates both and recurses. But what about `min_value == INT64_MIN`? `-min_value` would overflow. Let me check: if `min_value = INT64_MIN` and `max_value = -1`, then `-max_value = 1` and `-min_value` would be `INT64_MIN` negated which overflows. Actually, `-INT64_MIN` is undefined behavior in C++. This is a potential bug.
+
+  Wait, let me re-read: `build_min_max_int(-max_value, -min_value, out, ...)`. If `min_value = INT64_MIN`, then `-min_value` overflows. This is UB.
+
+  Actually, looking more carefully at the code flow: if `min_value < 0 && max_value < 0`, it calls `build_min_max_int(-max_value, -min_value, ...)`. If `min_value = INT64_MIN`, `-min_value` is UB. This is a real bug.
+
+  Similarly, if `min_value < 

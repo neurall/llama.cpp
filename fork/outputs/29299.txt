@@ -1,0 +1,7 @@
+run 29299 | rel_small_gpus | pf11k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 390.8 t/s | prompt 18177.5 t/s | 64 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-15 23:37:36
+
+The provided code snippet contains several issues and inconsistencies that need to be addressed for it to function correctly and efficiently. Here's a breakdown of the problems and how they can be fixed:
+
+### 1. Incorrect Includes
+
+The code includes `json-schema-to-grammar.h` and

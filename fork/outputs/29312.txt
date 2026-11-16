@@ -1,0 +1,3 @@
+run 29312 | rel_small_gpus | pf5k | OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf | decode 397.41 t/s | prompt 23707.4 t/s | 64 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-15 23:40:42
+
+The provided file `common/json-schema-to-grammar.cpp` aims to convert JSON schema grammar into a JSON schema grammar (JSON-schema-to-grammar) format. It does this by parsing the JSON schema grammar, identifying the rules and patterns, and then generating a corresponding grammar rule.

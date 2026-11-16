@@ -1,0 +1,49 @@
+run 29155 | oneexe | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 14.69 t/s | prompt 876.9 t/s | 1024 tokens | args: -np 1 | power 220+280 W | 2026-11-15 21:27:08
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General observations:
+- This file converts JSON schemas to GBNF grammars
+- It's a complex file with many functions and a class
+
+### Issues I can spot:
+
+1. **`build_repetition` function:**
+   - When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` by passing `0` to the recursive call. This seems correct but the logic is subtle.
+   - When `max_items == 0`, returns empty string - but what if `min_items > 0`? That would be an invalid schema (min > max), but it's not checked.
+
+2. **`build_min_max_int` function:**
+   - Very complex recursive function. The `decimals_left` parameter is used to limit digit depth.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+   - Potential issue: when `min_value == 0` and `top_level` is true, it outputs `[0] | [1-9] ...` which allows "0" but also multi-digit numbers starting with 1-9. This seems correct.
+   - When `min_value < 0` and only `has_min`, it recursively calls with `std::numeric_limits<int64_t>::min()` as min - but this could cause issues with the negation logic.
+   - The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - this ensures at least 1 decimal left.
+
+3. **`_add_rule` function:**
+   - The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop condition `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the rule doesn't exist or the content matches. This seems correct.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting to parse, and reverts on failure. This is a good pattern for rollback.
+   - However, `_rules` is a `std::map` and the snapshot is a full copy - this could be expensive for large schemas.
+
+5. **`_pattern_to_rule` function:**
+   - Complex regex-to-grammar conversion
+   - The `sub_rule_ids` map is used to deduplicate sub-rules within a pattern
+   - Potential issue: `sub_rule_ids[sub]` uses `sub` as key, but `sub` could be a rule reference (not a literal), so two different patterns could map to the same rule ID incorrectly... actually no, `sub_rule_ids` is local to each call.
+   - The `paren_depth` tracking seems correct.
+   - The character class parsing: it reads until `]` but doesn't handle `]` as first character in a class (which is valid in regex). This could be a bug - `[]abc]` in regex means `]` or `a` or `b` or `c`, but this code would stop at the first `]`.
+
+6. **`_not_strings` function:**
+   - Builds a trie-based rule to match strings that are NOT in a given set
+   - The `rejects` string accumulates characters for the negation class
+   - Potential issue: if a character in `rejects` is a regex metacharacter (like `]`, `-`, `^`), it could break the character class. The function doesn't escape these characters.
+
+7. **`_resolve_ref` function:**
+   - Handles `$ref` resolution with cycle detection via `_refs_being_resolved`
+   - The `ref_name` is computed before checking if the rule exists - if the rule already exists, it returns the pre-computed name. But if the rule doesn't exist and we're already resolving, we return the pre-computed name which might not match what `visit` returns. Actually wait - if `_refs_being_resolved` contains `schema.ref`, we skip the visit and return `ref_name`. But `ref_name` was computed from the fragment, not from `visit`. This could return a name that doesn't exist in `_rules`.
+
+   Actually, looking more carefully: if the rule already exists (`_rules.find(ref_name) != _rules.end()`), we return `ref_name
