@@ -341,6 +341,17 @@ static bool ggml_cuda_hip_blas_has_arch(const char * gcn_arch) {
 static ggml_cuda_device_info ggml_cuda_init() {
     ggml_cuda_device_info info = {};
 
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    // fork: load every kernel at start. Lazy loading needs VRAM the first time a kernel runs; once the expert pool
+    // has taken the free VRAM that first use (a second request, a smaller micro-batch) dies of out of memory.
+    // An explicit CUDA_MODULE_LOADING from the user wins.
+#ifdef _WIN32
+    if (!getenv("CUDA_MODULE_LOADING")) _putenv_s("CUDA_MODULE_LOADING", "EAGER");
+#else
+    setenv("CUDA_MODULE_LOADING", "EAGER", 0);
+#endif
+#endif
+
     cudaError_t err = cudaGetDeviceCount(&info.physical_device_count);
     if (err != cudaSuccess) {
         GGML_LOG_ERROR("%s: failed to initialize " GGML_CUDA_NAME ": %s\n", __func__, cudaGetErrorString(err));
