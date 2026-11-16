@@ -13781,6 +13781,10 @@ void ggml_vk_synchronize(ggml_backend_vk_context * ctx) {
     }
 }
 
+// fork: GGML_VK_EVENT_LOG=1: every event record, wait and synchronize with its thread, context and timeline value (a hang's last lines name its event)
+static bool ggml_vk_event_log_on() { static const bool on = getenv("GGML_VK_EVENT_LOG") != nullptr; return on; }
+static unsigned ggml_vk_tid() { return (unsigned) (std::hash<std::thread::id>{}(std::this_thread::get_id()) % 100000); }
+
 static void ggml_backend_vk_synchronize(ggml_backend_t backend) {
     VK_LOG_DEBUG("ggml_backend_vk_synchronize()");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
@@ -15437,10 +15441,6 @@ void ggml_vk_graph_optimize(ggml_backend_t backend, struct ggml_cgraph * graph, 
         graph->nodes[i] = new_order[i];
     }
 }
-
-// fork: GGML_VK_EVENT_LOG=1: every event record, wait and synchronize with its thread, context and timeline value (a hang's last lines name its event)
-static bool ggml_vk_event_log_on() { static const bool on = getenv("GGML_VK_EVENT_LOG") != nullptr; return on; }
-static unsigned ggml_vk_tid() { return (unsigned) (std::hash<std::thread::id>{}(std::this_thread::get_id()) % 100000); }
 
 static void ggml_backend_vk_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
     VK_LOG_DEBUG("ggml_backend_vk_event_record(backend=" << backend << ", event=" << event << ")");
