@@ -1087,6 +1087,13 @@ static void test_regress_pool_start_pins() {
     report("new: the pool and the rest of the pins fit the card", pool + pt_rest <= free_after_probe,
            fmt("pool %zu + pins %zu <= %zu MiB", pool / M, pt_rest / M, free_after_probe / M));
     report("new: nothing left to pin keeps nothing", poolx_pins_vram(pin_total, pin_total) == 0 && poolx_pins_vram(0, 0) == 0, "");
+    // the pins' reserve inside the tail area (CUDA's room from the start, not VRAM kept beside the pool): once they took their page tables (1.47 MiB per GiB
+    // measured on GLM 3.5) the rest goes back to the cache in whole blocks
+    const size_t Bk = (size_t) (7.88 * M), reserve = poolx_up(poolx_pins_vram(pin_total, pinned), Bk);
+    const size_t took = (size_t) ((double) (pin_total - pinned) / (double) G * 1.47 * (double) M);
+    const size_t kept = poolx_room_give_back(reserve, reserve - took, 0, Bk);
+    report("new: the pins' reserve left over goes back to the cache", kept >= took && kept - took < Bk,
+           fmt("room %zu MiB for %zu MiB of page tables, %zu MiB back", kept / M, took / M, (reserve - kept) / M));
     // a chunk the driver could not back at creation is CUDA's from the start, as long as it stays inside the tail area
     const size_t B = 50, vsz = 1000, tail = 900, vol = 700;
     report("room start: nothing unmapped", poolx_room_start(vsz, 0, vol, tail, vol, B) == tail, "");

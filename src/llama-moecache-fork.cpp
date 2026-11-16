@@ -10107,7 +10107,11 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
         d.grow_max = std::max<int64_t>(d.grow_max, outside - d.u_prev);
         d.u_prev   = outside;
         if (rap && !g_rp_growing.load() && rap->room_lo_want >= rap->room_lo) {   // whole free blocks of the room go back at once; a RAM pool pinning keeps its page tables' room
-            const size_t room = rap->tail_real - rap->room_lo, next = poolx_room_give_back(room, f, rap->room_keep, rap->room_step);
+            // pins the loader has not made yet keep their page tables' share (the warmup can run before the last reads end)
+            typedef size_t (*pending_t)(void);
+            auto pend = (pending_t) llama_fork_proc_dev(d.dev, "ggml_backend_fork_pins_pending_fork");
+            const size_t keep = rap->room_keep + poolx_pins_vram(pend ? pend() : 0, 0);
+            const size_t room = rap->tail_real - rap->room_lo, next = poolx_room_give_back(room, f, keep, rap->room_step);
             if (next < room) {
                 rap->room_lo_want = room_edge_down(*rap, rap->tail_real - next);
                 room_shrink(g_cache, *rap);
@@ -10324,7 +10328,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             int64_t stored_mb = -1;
             bool from_cold = false;
             size_t margin = vram_margin(dev, vram_section, vram_cold, &stored_mb, &from_cold);
-            if (area > 0) { margin = pins; }
+            if (area > 0) { margin = 0; }   // the pins still to come get their page tables from the tail area (CUDA's room from the start), not from VRAM kept beside the pool
             // no pool (router prediction keeps per-layer cache tensors): the KV arena comes after the cache and keeps its own margin free behind it, on top of what
             // CUDA takes after the cache; leave it the whole context (GLM 3.5 pred-top 2026-11-12: the cache took 32.7 GiB, 297 MiB were left, "kv-arena: no room for the KV")
             if (!pool_on) {
@@ -10519,7 +10523,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 size_t area_b = 0, room_max = 0, room_gran = 0, room_vsz = 0;
                 if (sz_area > 0 && sz_dev == ggml_backend_buft_get_device(buft) && !order.empty() && !split) {
                     const pool_class & lc = pl.cls[order.back()];
-                    area_b = std::min<size_t>((size_t) nblk[order.back()] / 2, (sz_area + lc.B - 1) / lc.B) * lc.B;
+                    area_b = std::min<size_t>((size_t) nblk[order.back()] / 2, (sz_area + sz_pins + lc.B - 1) / lc.B) * lc.B;   // the kernels and the pins still to come
                 }
                 if (split) {
                     // a class past the limit is split into classes of fewer layers (each a buffer of its own) rather than cut: a layer belongs to one class
@@ -10782,7 +10786,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         ap.room_vsz  = room_vsz;
                         // the most CUDA can get: the tail area's blocks inside the chunked bytes at the end of the address space
                         ap.room_max  = std::min(ap.tail_real - vol_lo, room_max > room_vsz - ap.tail_real ? room_max - (room_vsz - ap.tail_real) : 0);
-                        ap.room_keep = sz_margin - std::min(sz_margin, sz_pins);   // the pins' page tables are used VRAM once they land, not free
+                        ap.room_keep = sz_margin;
                         LLAMA_LOG_WARN("moe-cache: tail area on %s: the last %.0f MiB of the pool (%zu blocks of %.2f MiB) hold cached experts only, no stream, lend or KV "
                                 "there; CUDA's own memory takes whole blocks from its top when it runs out (up to %.0f MiB) and gives them back when its use drops; "
                                 "%.0f MiB of VRAM kept free beside the pool\n", ggml_backend_buft_name(buft), (ap.tail_real - vol_lo) / 1048576.0,
@@ -10790,7 +10794,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         // chunks the driver could not back at creation (VRAM taken between the sizing and the allocation) are CUDA's from the start: their blocks never
                         // enter the cache. Nothing uses the pool yet, so a shortfall past the tail area moves the area's start down instead of losing the pool
                         if (auto fn = (room_set_t) llama_fork_proc_dev(ap.dev, "ggml_backend_fork_set_room_fork")) {
-                            const size_t u = fn(ap.buf, 0);   // maps again what it can, the bytes left unmapped at the end
+                            // the pins still to come (sz_pins, their page tables on this card) get whole blocks of the area now; what they leave goes back to the cache
+                            // at the first VRAM watch after a call. Chunks the driver could not back stay CUDA's too: the bytes left unmapped at the end
+                            const size_t u = fn(ap.buf, sz_pins ? (room_vsz - ap.tail_real) + poolx_up(sz_pins, ap.room_step) : 0);
                             const pool_class & lc = pl.cls[order.back()];
                             size_t lo = u == SIZE_MAX ? ap.tail_real : poolx_room_start(room_vsz, u, ap.vol_lo, ap.tail_real, ap.room_base, ap.room_step);
                             if (lo == SIZE_MAX) {
@@ -10811,8 +10817,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                                 ap.room_lo = ap.room_lo_want = lo;
                                 ap.room_unmapped = u;
                                 ap.room_max = std::max(ap.room_max, ap.tail_real - lo);
-                                LLAMA_LOG_WARN("moe-cache: tail area on %s: the driver could not back its last %.0f MiB at creation (VRAM taken since the sizing): CUDA's "
-                                        "room from the start, %zu blocks\n", ggml_backend_buft_name(buft), u / 1048576.0, (size_t) ((ap.tail_real - lo) / lc.B));
+                                LLAMA_LOG_WARN("moe-cache: tail area on %s: CUDA's room from the start, %zu blocks (%.0f MiB unmapped: %.0f MiB of page tables for the "
+                                        "%.1f GiB the loader still pins%s)\n", ggml_backend_buft_name(buft), (size_t) ((ap.tail_real - lo) / lc.B), u / 1048576.0,
+                                        sz_pins / 1048576.0, sz_pins / 8.0 * 4096 / 1073741824.0, u > (room_vsz - ap.tail_real) + poolx_up(sz_pins, ap.room_step)
+                                        ? ", more: the driver could not back it (VRAM taken since the sizing)" : "");
                             }
                         }
                     }
