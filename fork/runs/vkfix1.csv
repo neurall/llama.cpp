@@ -1,0 +1,6 @@
+name,model,n,test,tokens,args,extra
+tail-noalias-vk,olmoe,1,pf2k,64,"-dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+tail-alias-vk,olmoe,1,pf2k,64,"-dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ub512-vk,olmoe,1,pf2k,64,"-dev Vulkan0 -ub 512 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+tail-1k-vk,olmoe,1,pf2k,1024,"-dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+tail-alias-cu,olmoe,1,pf2k,64,"-dev CUDA0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=1",
