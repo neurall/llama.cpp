@@ -1584,7 +1584,8 @@ llama_model_dflash::graph_dsv41::graph_dsv41(const llm_graph_params & params) :
 
         ggml_tensor * l_out = ggml_reshape_2d(ctx0, inpL, n_embd*hc, n_tokens);
         cb(l_out, "l_out", il);
-        ggml_build_forward_expand(gf, l_out);
+        // fork: not expanded: nothing reads the view, and in the graph it held each layer's HC output to the graph's end (DSpark draft, 3 x 40 MiB,
+        // galloc UNREAD; ds-i-sp engine check FAIL 2026-11-16)
     }
 
     // no hc_head: collapse with the last FFN's pre-mix
