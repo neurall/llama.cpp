@@ -4031,3 +4031,7 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-16 08:28:30,state_split_heat -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.422
 2026-11-16 08:30:31,state_split_heat -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3764
 2026-11-16 08:30:31,state_split_heat -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4313
+2026-11-16 08:32:58,state_split_heat -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4599
+2026-11-16 08:32:58,state_split_heat -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5743
+2026-11-16 08:34:28,state_split_heat -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4468
+2026-11-16 08:34:28,state_split_heat -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.57

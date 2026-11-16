@@ -8363,19 +8363,22 @@ def run_list(name, argv):
         os.environ["VRAM_HELD_MIB"] = str(held + 400)   # the hold's own context sits on top; wait_vram_free of the cells treats this much as free
     if o.not_today:   # -nrt: a cell with enough ok rows (warm-up passes and loop retries do not count) from today in runs.db is not run again; a model with no cell left is not loaded or mounted
         import sqlite3
+        donepn = {}   # campaign -> the prompt_n of each of those runs (a best-prompt cell counts only runs of its exact prompt)
         done = {}   # campaign -> [(t/s, pp t/s) of today's ok runs of the build under test (a campaign named `latest-...` holds the runs of every build `latest` ever pointed to: only this build's count)]
         cur = own_build_no(o.build); cur = int(cur) if str(cur).isdigit() else None
         if cur is None and re.fullmatch(r"b\d+", os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))): cur = int(os.path.basename(os.path.realpath(os.path.join(DEVBUILDS, o.build)))[1:])   # --version failed: the directory is named by the build number
         try:
-            for c, t, p, bn in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
-                    "select campaign, tps, pp, bno from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' and hw='%s' order by ts" % (o.not_today - 1, row_hw() if os.environ.get("RUN_SIMJOE") else HW)):   # simjoe rows are stored under pc1joe...: -nrt must look there
+            for c, t, p, bn, nt in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
+                    "select campaign, tps, pp, bno, note from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' and hw='%s' order by ts" % (o.not_today - 1, row_hw() if os.environ.get("RUN_SIMJOE") else HW)):   # simjoe rows are stored under pc1joe...: -nrt must look there
                 if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
-                done.setdefault(c, []).append((float(t), float(p or 0)))
+                done.setdefault(c, []).append((float(t), float(p or 0))); donepn.setdefault(c, []).append((re.search(r"prompt_n=(\d+)", nt or "") or [None, None])[1])
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
         def today(r):   # today's ok runs of this cell on this build; a campaign named after another label of the same build (um3d-..., latest-...) counts, the build number decides
             k = f"{r['_b']}-{r['name']}-{r['test']}"
-            if k in done or r['_b'].startswith("stock"): return done.get(k, [])
-            return next((v for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
+            want = (re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "") or [None, None])[1]   # the exact best prompt: runs of an older, rounded prompt do not count
+            def only(c, v): return [x for x, n in zip(v, donepn.get(c, [])) if not want or n == want]
+            if k in done or r['_b'].startswith("stock"): return only(k, done.get(k, []))
+            return next((only(c, v) for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
         keep = [r for r in rows if len(today(r)) < (1 if o.status else int(r["n"] or 1))]   # --status: a cell with any run today has its line
         for r in rows:   # the skipped cells keep their line, with the results of today's runs and the gain over stock, as if they had just run
             if r in keep: continue
