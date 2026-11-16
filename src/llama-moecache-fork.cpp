@@ -2639,7 +2639,7 @@ static void led_kind(const char * kind, const char *& rw, const char *& st) {
         { "cuda-capture", "rw", "once" }, { "cuda-replay", "rw", "once" },
         { "chain-up", "w", "once" }, { "jit-up", "w", "once" }, { "adopt", "w", "once" },
         { "node-w", "w", "once" }, { "node-r", "r", "once" }, { "mix-read", "r", "once" }, { "split-replay", "rw", "once" }, { "verify-bad", "x", "once" },
-        { "dma-start", "w", "start" }, { "dma-done", "w", "done" }, { "table", "w", "once" },
+        { "dma-start", "w", "start" }, { "dma-done", "w", "done" }, { "table", "w", "once" }, { "ggml-w", "w", "once" },
     };
     for (const auto & e : t) { if (strcmp(kind, e.kind) == 0) { rw = e.rw; st = e.st; return; } }
     rw = "?"; st = "once";
@@ -2768,16 +2768,41 @@ static std::atomic<int64_t> g_guard_n{0}, g_guard_bad{0};
 // guard: each layer's device table as flush_tables last sent it (what the kernels read), checked against the block owners before every split
 static std::mutex g_gtbl_mu;
 static std::unordered_map<const void *, std::vector<int32_t>> g_gtbl;
+extern "C" bool ggml_backend_buffer_same_memory_fork(ggml_backend_buffer_t a, ggml_backend_buffer_t b);   // ggml-backend.cpp (no header edit)
+// where a tensor's bytes lie in this pool: only a tensor of the pool's buffer (or of the gallocr twin copied from it) lies there, at its address less the buffer's
+// base. Never by the address alone: every Vulkan buffer's addresses start at the same fake base, so a compute buffer outside the pool read as the KV zone (64 false
+// violations, 2026-11-16).
+static bool pool_off(const moe_cache::alias_pool & ap, const ggml_tensor * t, const void * ptr, size_t & lo) {
+    const ggml_backend_buffer_t b = t->buffer ? t->buffer : t->view_src ? t->view_src->buffer : nullptr;
+    if (!ap.buf || !b || !ptr || !ggml_backend_buffer_same_memory_fork(b, ap.buf)) { return false; }
+    const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
+    const uint8_t * p    = (const uint8_t *) ptr;
+    if (p < base || p >= base + ggml_backend_buffer_get_size(ap.buf)) { return false; }
+    lo = (size_t) (p - base);
+    return true;
+}
+// an access the host cannot bound by its tensor (k: the input, -1: the output): SET_ROWS writes the rows its ids name (its destination view spans the whole cache:
+// 512 MiB of combined KV rows for a 32 MiB zone, OLMoE 2026-11-16; its src 2 is that destination, not read); MUL_MAT_ID, ADD_ID and GET_ROWS read the rows their
+// ids name from a whole stack (2 GB of a class; guard_tables checks every block the tables send them to)
+static bool node_indexed(const ggml_tensor * node, int k) {
+    switch (node->op) {
+        case GGML_OP_SET_ROWS:   return k == -1 || k == 2;
+        case GGML_OP_MUL_MAT_ID: return k == 0;
+        case GGML_OP_ADD_ID:     return k == 1;
+        case GGML_OP_GET_ROWS:   return k == 0;
+        default:                 return false;
+    }
+}
 static void pool_guard_access(const ggml_tensor * t, const void * ptr, size_t len, const char * op) {
     moe_cache * mc = g_cache;
-    if (!mc || !t || t->name[0] == '\0') { return; }
+    if (!mc || !t || t->name[0] == '\0') { return; }   // unnamed: our own writers, each with its own ledger line
     for (const auto & ap : mc->alias) {
-        if (!ap.buf) { continue; }
-        const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
-        const uint8_t * p    = (const uint8_t *) ptr;
-        if (p < base || p >= base + ggml_backend_buffer_get_size(ap.buf)) { continue; }
+        size_t lo = 0;
+        if (!pool_off(ap, t, ptr, lo)) { continue; }
+        const size_t hi = lo + len;
+        if (led_on()) { led_line(led_card(ap), "ggml-w", lo, hi, tr_fmt("%s '%s'", op, t->name)); }
+        if (guard_level() == 0) { return; }
         g_guard_n++;
-        const size_t lo = (size_t) (p - base), hi = lo + len;
         const bool graph = t->buffer && ggml_backend_buffer_get_usage(t->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE;
         const bool cls   = strncmp(t->name, "moe_cache_", 10) == 0 || strncmp(t->name, "moe_jit_", 8) == 0;
         const size_t zlo = ap.kv_start, zhi = ap.kv_h > 0 ? led_kv_end(ap) : 0;
@@ -2916,9 +2941,11 @@ static void led_cuda_graph_hook(int device, const void * graph, const char * wha
     }
 }
 
-// --moe ledger=2: on top of the writers above, what the graphs themselves touch: per split, one node-w line per pool range a node writes and one node-r line per input it reads
-// there (card, byte range, split, node, op, tensor names). A split seen before (same uid, so the same addresses) gives one split-replay line. So `fork/pool_ledger.py LEDGER --addr
-// CARD:MIB` answers who last wrote and who read a byte. Debug only: 5-10 thousand lines per new graph. The kernels' own reads of the expert blocks go by the tables: mix-read lines.
+// --moe ledger=1 logs, besides our own writers, what ggml and the graphs write (user 2026-11-16: "it only sees the engine's own writes? so fix that"): ggml-w lines for
+// ggml's tensor set, memset and copy into the pool (pool_guard_access), and per split one node-w line per pool range a node writes (card, byte range, split, node, op,
+// tensor name; an indexed write, SET_ROWS, is logged as the range its rows may fall in). ledger=2 adds one node-r line per input a node reads there. A split seen before (same
+// uid, so the same addresses) gives one split-replay line. So `fork/pool_ledger.py LEDGER --addr CARD:MIB` answers who last wrote and who read a byte. Debug only: 5-10
+// thousand lines per new graph. The kernels' own reads of the expert blocks go by the tables: mix-read lines.
 static int led_level() {
     static const int v = [] { const char * e = moe_opt("ledger"); return e ? atoi(e) : 0; }();
     return v;
@@ -2939,22 +2966,23 @@ static void led_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id
                 return;
             }
         }
-        const char * base = (const char *) ggml_backend_buffer_get_base(ap.buf);
-        const size_t size = ggml_backend_buffer_get_size(ap.buf);
-        const auto line = [&](const char * kind, const ggml_tensor * t, const std::string & who) {
-            if (!t || !t->data) { return; }
-            const char * d = (const char *) t->data;
-            if (d < base || d >= base + size) { return; }
-            const size_t lo = (size_t) (d - base);
-            led_line(card, kind, lo, lo + ggml_nbytes(t), who);
+        const size_t zlo = ap.kv_start, zhi = ap.kv_h > 0 ? led_kv_end(ap) : 0;
+        const auto line = [&](const char * kind, const ggml_tensor * t, const std::string & who, bool indexed) {
+            size_t lo = 0;
+            if (!t || !pool_off(ap, t, t->data, lo)) { return; }
+            size_t hi = lo + ggml_nbytes(t);
+            if (indexed) {   // the rows its ids name lie somewhere in the region its first row lies in: a "may write" range up to the zone's or the lend's end
+                if (zhi > zlo && lo >= zlo && lo < zhi) { hi = std::min(hi, zhi); } else if (lo < ap.want_b) { hi = std::min(hi, ap.want_b); }
+            }
+            led_line(card, kind, lo, hi, indexed ? who + " (rows by index)" : who);
         };
         for (int j = 0; j < ggml_graph_n_nodes(g); ++j) {
             const ggml_tensor * t = ggml_graph_node(g, j);
             const std::string who = tr_fmt("split %d of %d node %d %s %s", split_id, n_splits, j, ggml_op_name(t->op), t->name);
             const bool view = t->op == GGML_OP_NONE || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
-            if (!view) { line("node-w", t, who); }
-            for (int k = 0; k < GGML_MAX_SRC && !view; ++k) {
-                if (t->src[k]) { line("node-r", t->src[k], who + tr_fmt(" reads src %d %s", k, t->src[k]->name)); }
+            if (!view) { line("node-w", t, who, node_indexed(t, -1)); }
+            for (int k = 0; k < GGML_MAX_SRC && !view && led_level() >= 2; ++k) {   // an indexed read would claim a whole stack: the mix-read lines say which blocks
+                if (t->src[k] && !node_indexed(t, k)) { line("node-r", t->src[k], who + tr_fmt(" reads src %d %s", k, t->src[k]->name), false); }
             }
         }
         return;
@@ -3046,22 +3074,15 @@ static void guard_tables(moe_cache * mc) {
 }
 static std::atomic<int64_t> g_guard_splits{0}, g_guard_nodes{0};
 static void guard_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_id, int n_splits, uint64_t uid) {
-    if (led_level() >= 2) { led_split_cb(be, g, split_id, n_splits, uid); }
+    if (led_on()) { led_split_cb(be, g, split_id, n_splits, uid); }
     moe_cache * mc = g_cache;
     if (!mc) { return; }
     guard_tables(mc);
     const ggml_backend_dev_t dev = ggml_backend_get_device(be);
     for (const auto & ap : mc->alias) {
         if (ap.dev != dev || !ap.buf) { continue; }
-        const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(ap.buf);
-        const size_t size = ggml_backend_buffer_get_size(ap.buf);
         const size_t zlo = ap.kv_start, zhi = ap.kv_h > 0 ? led_kv_end(ap) : 0;
-        const auto off = [&](const ggml_tensor * t, size_t & lo) {
-            const uint8_t * p = (const uint8_t *) t->data;
-            if (!p || p < base || p >= base + size) { return false; }
-            lo = (size_t) (p - base);
-            return true;
-        };
+        const auto off = [&](const ggml_tensor * t, size_t & lo) { return pool_off(ap, t, t->data, lo); };
         int64_t n = 0;
         for (int j = 0; j < ggml_graph_n_nodes(g); ++j) {
             const ggml_tensor * t = ggml_graph_node(g, j);
@@ -3069,7 +3090,8 @@ static void guard_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_
             n++;
             size_t lo = 0;
             if (off(t, lo)) {   // the output: graph memory (the lend), or an in-place write through a view into the zone (KV rows, recurrent state)
-                const size_t hi = lo + ggml_nbytes(t);
+                // an indexed write (SET_ROWS) by its first row: the rows its ids name are not known here
+                const size_t hi = lo + (node_indexed(t, -1) ? std::min(ggml_nbytes(t), ggml_row_size(t->type, t->ne[0])) : ggml_nbytes(t));
                 if (!(hi <= ap.want_b || (t->view_src && zhi > zlo && lo >= zlo && hi <= zhi))) {
                     guard_violation(mc, ap, lo, hi, tr_fmt("split %d of %d node %d %s '%s' (%s) writes outside %s", split_id, n_splits, j, ggml_op_name(t->op), t->name,
                             ggml_type_name(t->type), t->view_src ? "the lend and the KV zone" : "the lend"));
@@ -3077,7 +3099,7 @@ static void guard_split_cb(ggml_backend_t be, struct ggml_cgraph * g, int split_
             }
             for (int k = 0; k < GGML_MAX_SRC; ++k) {   // the inputs, as far as a kernel reads them: a matmul's quantized weights with their padding (MMQ/MMVQ read the last row's)
                 const ggml_tensor * sr = t->src[k];
-                if (!sr || !off(sr, lo)) { continue; }
+                if (!sr || node_indexed(t, k) || !off(sr, lo)) { continue; }   // indexed reads: guard_tables checks the blocks the ids reach
                 const bool padded = k == 0 && (t->op == GGML_OP_MUL_MAT || t->op == GGML_OP_MUL_MAT_ID) && ggml_is_quantized(sr->type) && !sr->view_src && sr->buffer;
                 const size_t hi = lo + (padded ? ggml_backend_buffer_get_alloc_size(sr->buffer, sr) : ggml_nbytes(sr));
                 std::string why;
@@ -10631,7 +10653,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     pool_fill(tmp, 0, total - 4096, 5);
                 }
                 if (poison_on()) { ggml_sched_set_nan_hook_fork(pool_dump_all); }
-                if (led_level() >= 2 || guard_level() > 0) {   // the guard chains to the ledger; a cstream pass puts its hook in front (cs_begin)
+                if (led_on() || guard_level() > 0) {   // the guard chains to the ledger; a cstream pass puts its hook in front (cs_begin)
                     g_cs_hook_next = guard_level() > 0 ? guard_split_cb : led_split_cb;
                     ggml_sched_set_split_hook_fork(g_cs_hook_next);
                 }
@@ -11814,8 +11836,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             static const int vg = [] { const char * e = moe_opt("vram-guard"); return e ? atoi(e) : 1; }();
             ggml_backend_vram_guard_fork(vg);
         }
-        if (guard_level() > 0) {
+        if (guard_level() > 0 || led_on()) {   // the ledger logs ggml's own writes into the pool too (ggml-w lines)
             ggml_backend_fork_set_pool_access(pool_guard_access);
+        }
+        if (guard_level() > 0) {
             LLAMA_LOG_WARN("%s: pool guard on (--moe guard=%d): ggml's own writes into the pool are checked against their owners, %s\n", __func__, guard_level(),
                     guard_level() >= 2 ? "the first violation aborts" : "violations are logged");
         }

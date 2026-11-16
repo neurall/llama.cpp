@@ -572,6 +572,11 @@ extern "C" GGML_API void ggml_backend_fork_set_pool_access(void (*fn)(const stru
 extern "C" GGML_API void ggml_backend_fork_pool_access(const struct ggml_tensor * t, const void * ptr, size_t len, const char * op) {
     if (g_pool_access_fork != NULL && len > 0) { g_pool_access_fork(t, ptr, len, op); }
 }
+// fork: two handles over the same memory (a buffer and the gallocr twin copied from it share its context). The guard and the ledger place a tensor in a pool by
+// this, never by its address alone: every Vulkan buffer's addresses start at the same fake base (a compute buffer outside the pool read as the KV zone, 2026-11-16).
+extern "C" GGML_API bool ggml_backend_buffer_same_memory_fork(ggml_backend_buffer_t a, ggml_backend_buffer_t b) {
+    return a == b || (a != NULL && b != NULL && a->context != NULL && a->context == b->context && a->buft == b->buft);
+}
 
 void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(backend);
