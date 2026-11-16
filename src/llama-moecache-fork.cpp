@@ -362,7 +362,7 @@ struct moe_cache {
         int32_t               n    = 0;
         int32_t               blocked = 0;
         int32_t               want    = 0;
-        int                   cuda_dev = -1;    // CUDA device index (the backend's scratch region lives in the lent blocks), -1: other backend
+        int                   cuda_dev = -1;    // the device's index in its backend when that backend has the scratch hooks (CUDA, HIP, Vulkan): its scratch lives in the lent blocks; -1: none
         size_t                hwm       = 0;    // the largest scratch a graph asked for so far (reported with log=a)
         int32_t               last_n    = 0;    // the previous graph: its tokens and the scratch it was lent (checked against what it asked for)
         size_t                last_scr  = 0;
@@ -5365,24 +5365,26 @@ GGML_API size_t ggml_backend_sched_node_max_dev(ggml_backend_sched_t sched, ggml
 // whole batch lent cuda0x4 648 MiB where its share asked for 119 MiB (DeepSeek 4.1, 3389 tokens, 2026-10-27). Nothing is learned or guessed on top: a rate
 // learned from a graph that was lent too little (a 2-token decode graph whose flash attention took 2.02 MiB) once lent a 3389-token pass 3416 MiB on each card
 // where its nodes took at most 678 (DeepSeek 4.1, 2026-10-27). The scheduler holds the graph's splits: the graph about to run (llama_moe_cache_alias_fork), the
-// reserved one (llama_moe_cache_alias_fit_fork) or a measure-only reserve (llama_moe_cache_graph_scratch_fork). A card that is no CUDA device gets none.
+// reserved one (llama_moe_cache_alias_fit_fork) or a measure-only reserve (llama_moe_cache_graph_scratch_fork). A card whose backend has no scratch hooks gets none.
+// The hooks come from the card's own backend (llama_fork_proc_dev): with CUDA and Vulkan both loaded, the first backend's hook answered for every card.
 // --moe log=a: what computing the scratch costs the lend (host time, calls, splits whose nodes were asked: a reused graph asks none)
 static std::atomic<int64_t> g_scr_us{0}, g_scr_n{0}, g_scr_splits{0};
+struct scratch_nodes_hook { int dev; size_t (*fn)(int, const ggml_tensor * const *, int); };
 static size_t node_scratch(void * user, struct ggml_tensor * const * nodes, int n) {
-    using nodes_fn_t = size_t (*)(int, const ggml_tensor * const *, int);
-    static nodes_fn_t fn = (nodes_fn_t) llama_fork_proc("ggml_backend_fork_nodes_scratch_fork");
+    const scratch_nodes_hook * h = (const scratch_nodes_hook *) user;
     g_scr_splits++;
-    return fn ? fn(*(const int *) user, nodes, n) : 0;
+    return h->fn ? h->fn(h->dev, nodes, n) : 0;
 }
 static size_t alias_scratch(const moe_cache::alias_pool & ap, ggml_backend_sched_t sched) {
-    if (ap.cuda_dev < 0 && cuda_dev_index(ap.dev) < 0) {
+    const int dev = ap.cuda_dev >= 0 ? ap.cuda_dev : cuda_dev_index(ap.dev);
+    if (dev < 0) {
         return 0;
     }
     using copy_fn_t = size_t (*)(ggml_backend_t, ggml_backend_t, const ggml_tensor *, const ggml_tensor *);
-    static copy_fn_t copy_fn = (copy_fn_t) llama_fork_proc("ggml_backend_fork_copy_scratch_fork");   // the inputs other cards copy from this one: a gappy view is gathered here first
+    const copy_fn_t copy_fn = (copy_fn_t) llama_fork_proc_dev(ap.dev, "ggml_backend_fork_copy_scratch_fork");   // the inputs other cards copy from this one: a gappy view is gathered here first
+    const scratch_nodes_hook h = { dev, (size_t (*)(int, const ggml_tensor * const *, int)) llama_fork_proc_dev(ap.dev, "ggml_backend_fork_nodes_scratch_fork") };
     const int64_t t0 = ggml_time_us();
-    int dev = ap.cuda_dev >= 0 ? ap.cuda_dev : cuda_dev_index(ap.dev);
-    const size_t need = ggml_backend_sched_node_max_dev(sched, ap.dev, node_scratch, copy_fn, &dev);
+    const size_t need = ggml_backend_sched_node_max_dev(sched, ap.dev, node_scratch, copy_fn, (void *) &h);
     g_scr_us += ggml_time_us() - t0;
     g_scr_n++;
     return need;
@@ -7459,14 +7461,16 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         // (alias_scratch); every graph then reports what it really asked for (fitting or not), and one that asked for more than it was lent is logged as an
         // error with both numbers: an op whose scratch mirror is missing or wrong (GGML_CUDA_SCRATCH_CHECK=1 names it). Nothing is learned from it.
         // the region serves only the backend passed with it (ap_be): another context on the card (a DSpark draft between two target steps) takes its scratch
-        // from the device pool, and its asks do not count in the high-water mark compared below
-        static size_t (*scratch_fn)(int, void *, size_t, ggml_backend_t) = (size_t (*)(int, void *, size_t, ggml_backend_t)) llama_fork_proc("ggml_backend_fork_scratch_fork");
+        // from the device pool, and its asks do not count in the high-water mark compared below.
+        // The region is the lent buffer and an offset in it, not an address: every Vulkan buffer's addresses start at the same fake base.
+        typedef size_t (*scratch_fn_t)(int, ggml_backend_buffer_t, size_t, size_t, ggml_backend_t);
+        const scratch_fn_t scratch_fn = (scratch_fn_t) llama_fork_proc_dev(ap.dev, "ggml_backend_fork_scratch_fork");
         if (ap.cuda_dev < 0 && scratch_fn) {
             ap.cuda_dev = cuda_dev_index(ap.dev);
         }
         size_t scratch = 0;
         if (ap.cuda_dev >= 0) {
-            const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0, nullptr);   // what the previous graph asked for, fitting or not
+            const size_t asked = scratch_fn(ap.cuda_dev, nullptr, 0, 0, nullptr);   // what the previous graph asked for, fitting or not
             ap.hwm = std::max(ap.hwm, asked);
             if (asked > ap.last_scr && ap.last_n > 0) {
                 // the previous graph asked for more than it was lent: the rest came from the device pool (the VRAM beside the pool)
@@ -7584,7 +7588,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         }
         ap.want   = ap.segs.empty() ? 0 : (int32_t) std::min<size_t>((size_t) ap.n, (ap.want_b + ap.B - 1) / ap.B);
         if (ap.cuda_dev >= 0) {
-            scratch_fn(ap.cuda_dev, scratch > 0 ? (char *) ggml_backend_buffer_get_base(ap.buf) + peak_al : nullptr, scratch, ap_be);
+            scratch_fn(ap.cuda_dev, scratch > 0 ? ap.buf : nullptr, peak_al, scratch, ap_be);
         }
         {
             // the staging slots come only from lent blocks: if the pool cannot lend them, this card's splits of this graph run without prefetch (never a new buffer)
@@ -11842,15 +11846,15 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             const char * pc = moe_opt("pf-count");
             if ((!pc || pc[0] != '0') && !mc->layers.empty() && mc->layers[0].pub.up_src) {
                 typedef bool (*obs_init_t)(int, int, int);
-                obs_init_t init = (obs_init_t) llama_fork_proc("ggml_backend_fork_obs_prompt_init_fork");
                 int n_layer = 0;
                 for (const auto & l : mc->layers) { n_layer = std::max(n_layer, l.pub.il + 1); }
                 const int n_expert = (int) mc->layers[0].pub.up_src->ne[2];
-                for (size_t i = 0; init && i < ggml_backend_dev_count(); ++i) {
+                for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
                     ggml_backend_dev_t d = ggml_backend_dev_get(i);
-                    const int cd = cuda_dev_index(d);
-                    if (cd >= 0) {
-                        mc->pf_count_on = init(cd, n_layer, n_expert) || mc->pf_count_on;
+                    // the card's own backend: chosen by "has the scratch hook", CUDA's init was called with a Vulkan card's index once Vulkan had that hook too
+                    const obs_init_t init = (obs_init_t) llama_fork_proc_dev(d, "ggml_backend_fork_obs_prompt_init_fork");
+                    if (init) {
+                        mc->pf_count_on = init(llama_fork_dev_index(d), n_layer, n_expert) || mc->pf_count_on;
                     }
                 }
                 mc->pf_count_layers  = n_layer;

@@ -984,9 +984,10 @@ static int ggml_backend_cuda_driver_version_fork(void) {
     return v;
 }
 
-// set (base != NULL) or clear the scratch region of a device for the backend `owner` (the one whose graph the region is lent to; NULL: any backend);
-// returns the high-water mark since the last call and resets it
-static size_t ggml_backend_cuda_scratch_fork(int device, void * base, size_t cap, ggml_backend_t owner) {
+// set (buf != NULL: cap bytes of buf from off) or clear the scratch region of a device for the backend `owner` (the one whose graph the region is lent to;
+// NULL: any backend); returns the high-water mark since the last call and resets it. The engine names the region by buffer and offset, the hook Vulkan has too
+static size_t ggml_backend_cuda_scratch_fork(int device, ggml_backend_buffer_t buf, size_t off, size_t cap, ggml_backend_t owner) {
+    void * base = buf ? (char *) ggml_backend_buffer_get_base(buf) + off : nullptr;
     ggml_cuda_scratch_region & s = g_cuda_scratch[device];
     const size_t hwm = s.hwm;
     if (s.live.empty()) {   // never move a region that still holds live buffers

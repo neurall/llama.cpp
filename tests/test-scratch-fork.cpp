@@ -25,7 +25,7 @@
 #include <functional>
 #include <vector>
 
-using scratch_t = size_t (*)(int, void *, size_t, ggml_backend_t);   // device, region, capacity, the backend the region serves (nullptr: any)
+using scratch_t = size_t (*)(int, ggml_backend_buffer_t, size_t, size_t, ggml_backend_t);   // device, region buffer, offset in it, capacity, the backend the region serves (nullptr: any)
 using node_t    = size_t (*)(int, const ggml_tensor *);
 using nodes_t   = size_t (*)(int, const ggml_tensor * const *, int);
 static scratch_t scratch_fn = nullptr;
@@ -48,7 +48,7 @@ static size_t count_nodes_fn(void * user, struct ggml_tensor * const * nodes, in
 
 // Builds one op in a fresh context (build returns the output and sets *ids for MUL_MAT_ID), uploads the ids and runs it with the region set: asked = what it took,
 // computed = what the backend says it takes. The weights and activations stay as allocated: what the op takes depends on shapes and types only.
-static bool run_op(ggml_backend_t be, int d, void * base, size_t cap, const std::function<ggml_tensor *(ggml_context *, ggml_tensor **)> & build,
+static bool run_op(ggml_backend_t be, int d, ggml_backend_buffer_t region, size_t cap, const std::function<ggml_tensor *(ggml_context *, ggml_tensor **)> & build,
                    const std::vector<int32_t> & ids_v, size_t & asked, size_t & computed, const std::function<void()> & fill = nullptr) {
     struct ggml_init_params ip = { 16 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
     ggml_context * ctx = ggml_init(ip);
@@ -70,10 +70,10 @@ static bool run_op(ggml_backend_t be, int d, void * base, size_t cap, const std:
     }
     if (fill) { fill(); }   // tensors the build made beside ids, now that they have memory
     ggml_backend_t owner = g_owner ? g_owner : be;
-    scratch_fn(d, base, cap, owner);                // set the region, clear the mark
+    scratch_fn(d, region, 0, cap, owner);           // set the region, clear the mark
     ggml_backend_graph_compute(be, gf);
     ggml_backend_synchronize(be);
-    asked    = scratch_fn(d, base, cap, owner);     // the mark of that one op: what it took, fitting or not
+    asked    = scratch_fn(d, region, 0, cap, owner);  // the mark of that one op: what it took, fitting or not
     computed = node_fn(d, y);
     ggml_backend_buffer_free(buf);
     ggml_free(ctx);
@@ -114,7 +114,6 @@ int main(int argc, char ** argv) {
         const size_t cap = (size_t) 3 << 30;
         ggml_backend_buffer_t region = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), cap);
         if (!region) { printf("card %zu: no memory for the scratch region, skipped\n", d); ggml_backend_free(be); continue; }
-        void * base = ggml_backend_buffer_get_base(region);
         printf("Testing the scratch the matmuls take against what is computed, card %zu %s:\n", d, ggml_backend_dev_name(dev));
         int bad_card = 0;
         char what[256];
@@ -138,7 +137,7 @@ int main(int argc, char ** argv) {
                                 iv[i] = routing == 0 ? (int32_t) (i % sh.n_used) : (int32_t) ((i * 7 + i / sh.n_used) % sh.n_expert);
                             }
                             size_t asked = 0, computed = 0;
-                            if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor ** ids) {
+                            if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor ** ids) {
                                     ggml_tensor * w = ggml_new_tensor_3d(ctx, type, sh.ne00, sh.ne01, sh.n_expert);
                                     ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, sh.ne00, ne11, nt);
                                     *ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, sh.n_used, nt);
@@ -156,7 +155,7 @@ int main(int argc, char ** argv) {
                             for (size_t e = 0; e < table.size(); ++e) { table[e] = e % 5 == 4 ? -1 : (int32_t) (e * 4); }
                             for (size_t i = 0; i < iv.size(); ++i) { blocks[i] = table[iv[i]]; }
                             ggml_tensor * sel = nullptr, * tbl = nullptr;
-                            if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor ** ids) {
+                            if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor ** ids) {
                                     ggml_tensor * w = ggml_new_tensor_3d(ctx, type, sh.ne00, sh.ne01, n_block);
                                     ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, sh.ne00, ne11, nt);
                                     *ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, sh.n_used, nt);
@@ -180,7 +179,7 @@ int main(int argc, char ** argv) {
                 }
                 for (int64_t t : cols) {   // the dense dispatch on the same weight shape (one expert's matrix)
                     size_t asked = 0, computed = 0;
-                    if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+                    if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                             return ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, type, sh.ne00, sh.ne01), ggml_new_tensor_2d(ctx, GGML_TYPE_F32, sh.ne00, t));
                         }, no_ids, asked, computed)) { n_skipped++; continue; }
                     snprintf(what, sizeof(what), "MUL_MAT %-8s %5lld x %-5lld, %5lld columns", ggml_type_name(type), (long long) sh.ne00, (long long) sh.ne01, (long long) t);
@@ -193,7 +192,7 @@ int main(int argc, char ** argv) {
         if (ggml_backend_t other = ggml_backend_dev_init(dev, nullptr)) {
             size_t asked = 0, computed = 0;
             g_owner = other;
-            const bool ran = run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+            const bool ran = run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                     return ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_0, 2048, 1024), ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2048, 8));
                 }, no_ids, asked, computed);
             g_owner = nullptr;
@@ -211,13 +210,13 @@ int main(int argc, char ** argv) {
         // a weight whose f32 copy is over the conversion limit (precision f32: converted in chunks, one after another)
         for (int64_t t : cols) {
             size_t asked = 0, computed = 0;
-            if (run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+            if (run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                     return ggml_mul_mat(ctx, ggml_new_tensor_3d(ctx, GGML_TYPE_F16, 128, 512, 4), ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 128, t, 16));
                 }, no_ids, asked, computed)) {
                 snprintf(what, sizeof(what), "MUL_MAT f16 128 x 512 x 4 heads, f32 %lld columns x 16 heads (broadcast)", (long long) t);
                 check(asked, computed, true);
             } else { n_skipped++; }
-            if (run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+            if (run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                     return ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 256, 512), ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 256, t));
                 }, no_ids, asked, computed)) {
                 snprintf(what, sizeof(what), "MUL_MAT f16 256 x 512, f16 %lld columns", (long long) t);
@@ -227,7 +226,7 @@ int main(int argc, char ** argv) {
         for (ggml_type type : { GGML_TYPE_F16, GGML_TYPE_BF16 }) {
             for (int64_t t : { (int64_t) 1, (int64_t) 9, (int64_t) 64 }) {
                 size_t asked = 0, computed = 0;
-                if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+                if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                         ggml_tensor * y = ggml_mul_mat(ctx, ggml_new_tensor_2d(ctx, type, 8192, 16416), ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8192, t));
                         ggml_mul_mat_set_prec(y, GGML_PREC_F32);
                         return y;
@@ -253,7 +252,7 @@ int main(int argc, char ** argv) {
             for (int64_t n_kv : { (int64_t) 256, (int64_t) 4096, (int64_t) 16384 }) {
                 for (int64_t n_q : { (int64_t) 1, (int64_t) 2, (int64_t) 4, (int64_t) 27, (int64_t) 64, (int64_t) 512, (int64_t) 1024, (int64_t) 3389 }) {
                     size_t asked = 0, computed = 0;
-                    if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+                    if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                             ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, fs.dk, n_q, fs.n_head, 1);
                             ggml_tensor * k = ggml_new_tensor_4d(ctx, fs.kv, fs.dk, n_kv, fs.n_head_kv, 1);
                             ggml_tensor * v = ggml_new_tensor_4d(ctx, fs.kv, fs.dv, n_kv, fs.n_head_kv, 1);
@@ -276,7 +275,7 @@ int main(int argc, char ** argv) {
                 for (int64_t k : { (int64_t) 8, (int64_t) 512 }) {
                     if (k > ncols) { continue; }
                     size_t asked = 0, computed = 0;
-                    if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+                    if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                             return ggml_top_k(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, ncols, nrows), (int) k);
                         }, no_ids, asked, computed)) { n_skipped++; continue; }
                     snprintf(what, sizeof(what), "TOP_K %lld of %lld columns, %lld rows", (long long) k, (long long) ncols, (long long) nrows);
@@ -285,7 +284,7 @@ int main(int argc, char ** argv) {
                 for (ggml_sort_order order : { GGML_SORT_ORDER_ASC, GGML_SORT_ORDER_DESC }) {
                     if (ncols * nrows > ((int64_t) 1 << 26)) { continue; }   // the test's own buffers, not the op's
                     size_t asked = 0, computed = 0;
-                    if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+                    if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                             return ggml_argsort(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, ncols, nrows), order);
                         }, no_ids, asked, computed)) { n_skipped++; continue; }
                     snprintf(what, sizeof(what), "ARGSORT %s %lld columns, %lld rows", order == GGML_SORT_ORDER_ASC ? "ascending" : "descending", (long long) ncols, (long long) nrows);
@@ -299,19 +298,19 @@ int main(int argc, char ** argv) {
             for (int64_t nrows : { (int64_t) 1, (int64_t) 3 }) {
                 size_t asked = 0, computed = 0;
                 auto mat = [&](ggml_context * ctx) { return ggml_new_tensor_2d(ctx, GGML_TYPE_F32, ncols, nrows); };
-                if (run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) { return ggml_soft_max(ctx, mat(ctx)); }, no_ids, asked, computed)) {
+                if (run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) { return ggml_soft_max(ctx, mat(ctx)); }, no_ids, asked, computed)) {
                     snprintf(what, sizeof(what), "SOFT_MAX %lld columns, %lld rows", (long long) ncols, (long long) nrows);
                     check(asked, computed, true);
                 } else { n_skipped++; }
-                if (run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) { return ggml_sum(ctx, mat(ctx)); }, no_ids, asked, computed)) {
+                if (run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) { return ggml_sum(ctx, mat(ctx)); }, no_ids, asked, computed)) {
                     snprintf(what, sizeof(what), "SUM %lld x %lld", (long long) ncols, (long long) nrows);
                     check(asked, computed, true);
                 } else { n_skipped++; }
-                if (run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) { return ggml_mean(ctx, mat(ctx)); }, no_ids, asked, computed)) {
+                if (run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) { return ggml_mean(ctx, mat(ctx)); }, no_ids, asked, computed)) {
                     snprintf(what, sizeof(what), "MEAN %lld columns, %lld rows", (long long) ncols, (long long) nrows);
                     check(asked, computed, nrows > 1 || ncols <= 32768 || ncols > 65536);   // in between the path depends on the CUDA graph state: the larger
                 } else { n_skipped++; }
-                if (run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) { return ggml_cumsum(ctx, mat(ctx)); }, no_ids, asked, computed)) {
+                if (run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) { return ggml_cumsum(ctx, mat(ctx)); }, no_ids, asked, computed)) {
                     snprintf(what, sizeof(what), "CUMSUM %lld columns, %lld rows", (long long) ncols, (long long) nrows);
                     check(asked, computed, true);
                 } else { n_skipped++; }
@@ -321,7 +320,7 @@ int main(int argc, char ** argv) {
             for (int64_t k : { (int64_t) 16, (int64_t) 64 }) {
                 for (int64_t nb : { (int64_t) 1, (int64_t) 12 }) {
                     size_t asked = 0, computed = 0;
-                    if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor **) {
+                    if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor **) {
                             return ggml_solve_tri(ctx, ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n, n, nb), ggml_new_tensor_3d(ctx, GGML_TYPE_F32, k, n, nb), true, true, false);
                         }, no_ids, asked, computed)) { n_skipped++; continue; }
                     snprintf(what, sizeof(what), "SOLVE_TRI %lld x %lld, %lld columns, %lld batches", (long long) n, (long long) n, (long long) k, (long long) nb);
@@ -335,7 +334,7 @@ int main(int argc, char ** argv) {
                 size_t asked = 0, computed = 0;
                 std::vector<int32_t> seq_ids((size_t) n_seqs);
                 for (int64_t i = 0; i < n_seqs; ++i) { seq_ids[(size_t) i] = (int32_t) i; }
-                if (!run_op(be, (int) d, base, cap, [&](ggml_context * ctx, ggml_tensor ** pid) {
+                if (!run_op(be, (int) d, region, cap, [&](ggml_context * ctx, ggml_tensor ** pid) {
                         ggml_tensor * s   = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d_state, head_dim, n_head, n_seqs);
                         ggml_tensor * x   = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, n_head, n_tok, n_seqs);
                         ggml_tensor * dt  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_head, n_tok, n_seqs);
@@ -427,7 +426,7 @@ int main(int argc, char ** argv) {
             ggml_free(wctx);
             ggml_backend_free(cpu);
         }
-        scratch_fn((int) d, nullptr, 0, nullptr);   // give the region back
+        scratch_fn((int) d, nullptr, 0, 0, nullptr);   // give the region back
         ggml_backend_buffer_free(region);
         ggml_backend_free(be);
         printf("  card %zu: %s\n", d, bad_card ? "FAILED" : "OK");
@@ -440,10 +439,8 @@ int main(int argc, char ** argv) {
         ggml_backend_t bk[3] = { ggml_backend_dev_init(dv[0], nullptr), ggml_backend_dev_init(dv[1], nullptr), ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr) };
         const size_t rcap = (size_t) 64 << 20;
         ggml_backend_buffer_t rg[2];
-        void * rb[2];
         for (int c = 0; c < 2; ++c) {
             rg[c] = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dv[c]), rcap);
-            rb[c] = ggml_backend_buffer_get_base(rg[c]);
         }
         ggml_backend_sched_t sched = ggml_backend_sched_new(bk, nullptr, 3, 64, false, false);
         struct ggml_init_params wp = { 2 * ggml_tensor_overhead(), nullptr, true };
@@ -464,13 +461,13 @@ int main(int argc, char ** argv) {
             for (int c = 0; c < 2; ++c) {
                 int user = c;
                 computed[c] = ggml_backend_sched_node_max_dev(sched, dv[c], count_nodes_fn, copy_fn, &user);
-                scratch_fn(c, rb[c], rcap, bk[c]);   // set the region, clear the mark
+                scratch_fn(c, rg[c], 0, rcap, bk[c]);   // set the region, clear the mark
             }
             ggml_backend_sched_graph_compute(sched, gf);
             ggml_backend_sched_synchronize(sched);
             for (int c = 0; c < 2; ++c) {
-                took[c] = scratch_fn(c, rb[c], rcap, bk[c]);
-                scratch_fn(c, nullptr, 0, nullptr);
+                took[c] = scratch_fn(c, rg[c], 0, rcap, bk[c]);
+                scratch_fn(c, nullptr, 0, 0, nullptr);
             }
         }
         const size_t block = ggml_row_size(GGML_TYPE_F32, 256) * 4096;
