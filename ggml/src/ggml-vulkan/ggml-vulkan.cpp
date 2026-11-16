@@ -16581,7 +16581,9 @@ static void ggml_backend_vk_fork_buft_limits(ggml_backend_buffer_type_t buft, si
     }
     const vk_device & device = ((ggml_backend_vk_buffer_type_context *) buft->context)->device;
     *max_alloc = (size_t) std::min(device->max_buffer_size, device->max_memory_allocation_size);
-    *max_span  = device->shader_64b_indexing ? *max_alloc : std::min(*max_alloc, (size_t) device->properties.limits.maxStorageBufferRange);
+    // not past the storage range even with VK_EXT_shader_64bit_indexing: MUL_MAT_ID over a 5468-block class view (about 18 GB) hung the GPU with the coopmat2
+    // shader (Xid 109 CTX SWITCH TIMEOUT) and gave garbage with coopmat1 on two RTX 3090s, driver 595.104; only the scalar shader was right (vkdev rows 2026-11-16)
+    *max_span  = std::min(*max_alloc, (size_t) device->properties.limits.maxStorageBufferRange);
 }
 
 static void * ggml_backend_vk_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
