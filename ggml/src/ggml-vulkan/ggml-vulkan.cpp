@@ -15474,31 +15474,20 @@ static void ggml_backend_vk_event_record(ggml_backend_t backend, ggml_backend_ev
     ctx->compute_ctx.reset();
 }
 
-static void ggml_backend_vk_device_event_synchronize(ggml_backend_dev_t dev, ggml_backend_event_t event);
-
 static void ggml_backend_vk_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
     VK_LOG_DEBUG("ggml_backend_vk_event_wait(backend=" << backend << ", event=" << event << ")");
-    ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
+    GGML_UNUSED(backend);
     vk_event *vkev = (vk_event *)event->context;
 
-    // fork: an event of another device cannot be waited on in this device's queues (a VkEvent and a timeline semaphore belong to one VkDevice): the
-    // scheduler's tail wait between two cards recorded such a wait and hung both RTX 3090s with idle GPUs (PC1 2026-11-16). Wait for its last record on
-    // the host instead, the order a CUDA stream wait across devices gives, at the price of this thread
-    if (event->device != ggml_backend_get_device(backend)) {
-        ggml_backend_vk_device_event_synchronize(event->device, event);
-        return;
-    }
-
-    vk_context compute_ctx = ggml_vk_get_compute_ctx(ctx);
-
+    // fork: the wait runs on the host, for the event's last record (its timeline semaphore value), as CUDA orders a stream wait: none if never recorded.
+    // A vkCmdWaitEvents here is valid only for a set submitted earlier on the same queue of the same device. The scheduler's tail wait between two cards
+    // (another VkDevice) and the expert cache's link and upload workers (other contexts and threads) break that: two RTX 3090s hung with idle GPUs at the
+    // first graph that crossed cards, then in the first prompt (PC1 2026-11-16, vkdev rows). A host wait needs only work already submitted.
+    // Not event_synchronize: its event resets and command buffer release belong to the recording thread.
     if (vkev->has_event) {
-        // Wait for latest event
-        ggml_vk_wait_events(compute_ctx, { vkev->event });
-
-        if (ctx->device->async_use_transfer_queue) {
-            vk_context transfer_ctx = ggml_vk_get_transfer_ctx(ctx);
-            transfer_ctx->s->wait_semaphores.push_back(vkev->tl_semaphore);
-        }
+        auto device = ggml_vk_get_device(((ggml_backend_vk_device_context *) event->device->context)->device);
+        vk::SemaphoreWaitInfo swi{vk::SemaphoreWaitFlags{}, vkev->tl_semaphore.s, vkev->tl_semaphore.value};
+        VK_CHECK(device->device.waitSemaphores(swi, UINT64_MAX), "event_wait", device);
     }
 }
 
