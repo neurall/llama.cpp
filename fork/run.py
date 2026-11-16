@@ -2193,6 +2193,12 @@ def stock_prefix(r):
     return "" if not str(r["_b"]).startswith("stock") else ("s" + ("m" if os.environ.get("STOCK_MOE") else "") + ("r" if os.environ.get("STOCK_RES") else "") + (" " if os.environ.get("STOCK_MOE") or os.environ.get("STOCK_RES") else ""))
 
 
+def stock_slow_last(rows, size_of, ram_bytes):
+    """rows in the same order, except that the stock cells of a model that does not fit in RAM (about 80% of it and up: stock maps the file and thrashes the SSD, K3.1 at 0.5 t/s) go last, the smaller of them first; every other row keeps its place"""
+    slow = lambda r: str(r["_b"]).startswith("stock") and size_of(r) > 0.8 * ram_bytes
+    return [r for r in rows if not slow(r)] + sorted((r for r in rows if slow(r)), key=size_of)
+
+
 def stock_arm_sql():
     """SQL on the args column that picks the stock rows of the arm in use: with -sm (upstream's expert cache) only the rows that ran with --moe-cache-mib, else only the plain ones: moe to moe, plain to plain"""
     return " and coalesce(args,'') like '%moe-cache-mib%'" if os.environ.get("STOCK_MOE") else " and coalesce(args,'') not like '%moe-cache-mib%'"
@@ -8418,6 +8424,9 @@ def run_list(name, argv):
         n_in = sum(1 for r in rows if in_pool(r))
         if n_in and n_in < len(rows):
             print(col(90, f"order: {n_in} cells in the pool first ({', '.join(dict.fromkeys(first_shard(r['model']) for r in rows if in_pool(r)))}), then {len(rows) - n_in} without it"), flush=True)
+    _ram = int(next((l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")), "0")) * 1024
+    _n = [r["name"] for r in rows]; rows[:] = stock_slow_last(rows, size, _ram)   # the stock cells that thrash the SSD run last
+    if _n != [r["name"] for r in rows]: print(col(90, "order: stock cells of models above 80% of RAM last: " + ", ".join(dict.fromkeys(first_shard(r["model"]) for r in rows if str(r["_b"]).startswith("stock") and size(r) > 0.8 * _ram))), flush=True)
     if o.force_pin:   # -pin: every non-stock row not already -pin / -nm
         for r in rows:
             if not r["_b"].startswith("stock") and not {"-pin", "-nm"} & set(shlex.split(r.get("args") or "")): r["args"] = ((r.get("args") or "") + " -pin").strip()
@@ -11238,6 +11247,8 @@ def _tool_selftest():
         check(_g["ini_put_text"]("", "m", "k", "v") == "[m]\nk = v\n" and _g["ini_put_text"]("[m]\nk = 1\n", "m", "k", "2").count("k =") == 1, "ini_put_text: a new section, a replaced key")
         check(_f.ini_overlay({"a": {"path": "x", "bestpp": "old"}}, {"a": {"bestpp": "new"}}) == {"a": {"path": "x", "bestpp": "new"}}, "ini_overlay: this hardware's value wins, the rest stays")
         check(abs(_g["total_time"](3, (1, 1.0, 0.5)) - 1.25) < 1e-9, "total_time: 3 prompt tokens took 3 s (1 s a token), 1 answer token 2 s (2 s a token): 0.75 * 1 + 0.25 * 2 = 1.25")
+        _rw = [{"_b": "stock-b1", "n": "k"}, {"_b": "b2", "n": "o"}, {"_b": "stock-b1", "n": "m"}, {"_b": "b2", "n": "k2"}]; _sz = {"k": 580, "o": 10, "m": 12, "k2": 580}
+        check([r["n"] for r in _g["stock_slow_last"](_rw, lambda r: _sz[r["n"]], 256)] == ["o", "m", "k2", "k"], "stock_slow_last: only stock cells above 80% of RAM move to the end, ours and small stock keep their order")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
         check(_g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 985.0, 30.0)}) == 12000 and _g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 900.0, 30.0)}) == 8037, "best_size: within 2% the longer prompt, below that the faster one")
