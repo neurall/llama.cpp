@@ -2962,7 +2962,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _d = _next_lp(_s, True)
                 print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
-                   "note": f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
+                   "note": (f"bprompt={os.environ['PERF_PNAME']} " if os.environ.get("PERF_PNAME") else "") + f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
@@ -8371,11 +8371,11 @@ def run_list(name, argv):
             for c, t, p, bn, nt in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute(
                     "select campaign, tps, pp, bno, note from runs where cast(ok as integer)=1 and tps is not null and date(coalesce(start_ts, ts))>=date('now','localtime','-%d days') and coalesce(env,'') not like '%%warmpass%%' and hw='%s' order by ts" % (o.not_today - 1, row_hw() if os.environ.get("RUN_SIMJOE") else HW)):   # simjoe rows are stored under pc1joe...: -nrt must look there
                 if cur and not str(c).startswith("stock") and int(bn or 0) != cur: continue
-                done.setdefault(c, []).append((float(t), float(p or 0))); donepn.setdefault(c, []).append((re.search(r"prompt_n=(\d+)", nt or "") or [None, None])[1])
+                done.setdefault(c, []).append((float(t), float(p or 0))); donepn.setdefault(c, []).append((re.search(r"bprompt=(\S+)", nt or "") or [None, None])[1])
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
         def today(r):   # today's ok runs of this cell on this build; a campaign named after another label of the same build (um3d-..., latest-...) counts, the build number decides
             k = f"{r['_b']}-{r['name']}-{r['test']}"
-            want = (re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "") or [None, None])[1]   # the exact best prompt: runs of an older, rounded prompt do not count
+            want = (re.search(r"PERF_PNAME=(\S+)", r.get("extra") or "") or [None, None])[1]   # a best-prompt cell (b12k1k-glm35): only runs that fed that prompt file count, never an older rounded prompt
             def only(c, v): return [x for x, n in zip(v, donepn.get(c, [])) if not want or n == want]
             if k in done or r['_b'].startswith("stock"): return only(k, done.get(k, []))
             return next((only(c, v) for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
