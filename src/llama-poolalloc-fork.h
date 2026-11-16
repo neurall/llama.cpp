@@ -370,6 +370,10 @@ template <class P> static std::vector<poolx_region> poolx_regions(const P & ap) 
 // The gate every write into an expert block consults first: nullptr when [lo, hi) is clear, else "zone" (and the region in *rlo / *rhi). No allocation.
 template <class P> static const char * poolx_gate_kind(const P & ap, size_t lo, size_t hi, size_t * rlo, size_t * rhi) {
     if (ap.kv_h > 0 && lo < poolx_kv_end(ap) && hi > ap.kv_start) { *rlo = ap.kv_start; *rhi = poolx_kv_end(ap); return "zone"; }
+    // CUDA's room, a growth asked for included: its chunks are unmapped, and a copy there is no GPU fault but a CPU write inside libcuda (the driver takes an
+    // unknown address for host memory: segfault, glm-i and mimo-i 2026-11-16)
+    const size_t r0 = std::min(ap.room_lo, ap.room_lo_want);
+    if (ap.room_max > 0 && r0 < ap.tail_real && lo < ap.tail_real && hi > r0) { *rlo = r0; *rhi = ap.tail_real; return "room"; }
     return nullptr;
 }
 

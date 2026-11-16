@@ -47,6 +47,7 @@ struct tps  { std::vector<int32_t> owner, free; int32_t home_lo = 0, home_hi = I
 struct tpool {
     std::vector<tseg> segs; std::vector<tps> ps; std::vector<int> kvt;
     size_t tail_end = 0, floor_end = 0, kv_fixed = 0, kv_h = 0, kv_row = 0, kv_start = 0, span = 0, want_b = 0;
+    size_t room_max = 0, room_lo = 0, room_lo_want = 0, tail_real = 0;   // CUDA's room at the tail: [min(room_lo, room_lo_want), tail_real) when room_max > 0
 };
 // grids (--moe staging=0): a class's block grid runs on from its home to the pool's end; blocks past its home are -4 until the ring claims them
 static tpool make_pool(std::mt19937_64 & rng, bool with_zone_rows, bool grids = false) {
@@ -436,6 +437,9 @@ static void test_gate() {
     for (long it = 0; it < g_iters && !bad; ++it) {
         tpool p = make_pool(rng, true);
         p.kv_h = rng() % 6; p.kv_row = 1 + rng() % 20; p.kv_start = rng() % p.tail_end; p.kv_fixed = rng() % 3 ? 0 : rng() % 100;
+        // CUDA's room (bug 2026-11-16: uploads into its unmapped chunks crashed inside libcuda): sometimes none, sometimes a growth asked for (room_lo_want)
+        p.tail_real = p.tail_end; p.room_max = rng() % 2 ? p.tail_end / 4 : 0;
+        p.room_lo = p.tail_real - (p.room_max ? rng() % (p.room_max + 1) : 0); p.room_lo_want = rng() % 3 ? p.room_lo : p.tail_real - (p.room_max ? rng() % (p.room_max + 1) : 0);
         const size_t lo = rng() % p.tail_end, hi = lo + 1 + rng() % 64;
         size_t rlo = 0, rhi = 0;
         const char * k = poolx_gate_kind(p, lo, hi, &rlo, &rhi);
@@ -443,11 +447,12 @@ static void test_gate() {
         bool hit = false;
         for (size_t x = lo; x < hi && !hit; ++x) {
             if (p.kv_h > 0 && x >= p.kv_start && x < poolx_kv_end(p)) { hit = true; }
+            if (p.room_max > 0 && x >= std::min(p.room_lo, p.room_lo_want) && x < p.tail_real) { hit = true; }
         }
         if (hit != (k != nullptr)) { bad++; first = fmt("[%zu,%zu): oracle %d gate %s", lo, hi, (int) hit, k ? k : "clear"); }
         else if (k && !(lo < rhi && hi > rlo)) { bad++; first = "gate names a region the range does not touch"; }
     }
-    report("gate refuses exactly the ranges that touch the zone", bad == 0, first);
+    report("gate refuses exactly the ranges that touch the zone or CUDA's room", bad == 0, first);
 }
 
 // ---- range map: collision rule ------------------------------------------------------------------------------------------------------------------

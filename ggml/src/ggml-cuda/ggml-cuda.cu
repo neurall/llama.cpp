@@ -1267,8 +1267,29 @@ static void CUDART_CB ggml_cuda_dma_end_cb(void * p) {
     delete r;
 }
 #endif
+// fork: the expert pools whose tail chunks can be CUDA's room (unmapped). A copy into an unmapped chunk is no GPU fault: the driver takes the address for
+// host memory and writes it from the CPU, a segfault inside libcuda with no name (glm-i, mimo-i 2026-11-16). Every DMA checks here first and stops with its name.
+static std::mutex g_room_mtx;   // the list and every room_mapped change
+static std::vector<const ggml_backend_cuda_buffer_context *> g_room_bufs;
+static bool ggml_cuda_room_hit(const void * p, size_t n, size_t * at) {
+    std::lock_guard<std::mutex> lk(g_room_mtx);
+    const uintptr_t a = (uintptr_t) p;
+    for (const auto * c : g_room_bufs) {
+        const uintptr_t b = (uintptr_t) c->dev_ptr, r0 = b + (c->vmm_size - c->room_max);
+        if (a + n <= r0 || a >= b + c->vmm_size) { continue; }
+        for (size_t i = 0; i < c->room_mapped.size(); ++i) {
+            const uintptr_t c0 = r0 + i * c->vmm_gran;
+            if (!c->room_mapped[i] && a < c0 + c->vmm_gran && a + n > c0) { *at = (size_t) (a - b); return true; }
+        }
+    }
+    return false;
+}
 template <class Copy>
 static void ggml_cuda_dma(cudaStream_t stream, int device, const void * dst, size_t bytes, const char * name, Copy && copy) {
+    if (size_t at = 0; ggml_cuda_room_hit(dst, bytes, &at)) {
+        GGML_ABORT("ggml_cuda: a copy of %zu bytes (%s) into CUDA's room of the expert pool on CUDA%d, %.3f MiB into the pool: those bytes are unmapped, given to "
+                   "CUDA (whoever queued it missed the room's take)", bytes, name ? name : "?", device, at / 1048576.0);
+    }
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     if (ggml_backend_dma_hook_fork() != nullptr) {
         auto * r = new ggml_cuda_dma_rec{ device, dst, bytes, {} };
@@ -1558,6 +1579,7 @@ static CUdeviceptr ggml_cuda_room_chunk(const ggml_backend_cuda_buffer_context &
 }
 
 static void ggml_cuda_room_free(ggml_backend_cuda_buffer_context & c) {
+    { std::lock_guard<std::mutex> lk(g_room_mtx); g_room_bufs.erase(std::remove(g_room_bufs.begin(), g_room_bufs.end(), &c), g_room_bufs.end()); }
     ggml_cuda_set_device(c.device);
     (void) cudaDeviceSynchronize();
     for (size_t i = 0; i < c.room_mapped.size(); ++i) {
@@ -1614,6 +1636,7 @@ static ggml_backend_buffer_t ggml_backend_cuda_room_buffer_fork(ggml_backend_buf
     size_t r = 0;
     while (r < ctx->room_mapped.size() && !ctx->room_mapped[ctx->room_mapped.size() - 1 - r]) { ++r; }
     ctx->room = r * g;   // what ggml_backend_cuda_set_room_fork reports from now on
+    { std::lock_guard<std::mutex> lk(g_room_mtx); g_room_bufs.push_back(ctx); }
     *room_max = rmx;
     if (gran)  { *gran  = g; }
     if (vsize) { *vsize = vsz; }
@@ -1720,8 +1743,8 @@ static size_t ggml_backend_cuda_set_room_fork(ggml_backend_buffer_t buf, size_t 
             continue;
         }
         if (!synced) { CUDA_CHECK(cudaDeviceSynchronize()); synced = true; }
+        { std::lock_guard<std::mutex> lk(g_room_mtx); c->room_mapped[i] = 0; }   // the copy check sees it gone before it is
         CU_CHECK(cuMemUnmap(ggml_cuda_room_chunk(*c, i), g));
-        c->room_mapped[i] = 0;
     }
     for (size_t i = 0; i < n - k; ++i) {
         if (c->room_mapped[i]) {
@@ -1730,6 +1753,7 @@ static size_t ggml_backend_cuda_set_room_fork(ggml_backend_buffer_t buf, size_t 
         if (!ggml_cuda_room_map(c->device, ggml_cuda_room_chunk(*c, i), g)) {
             break;
         }
+        std::lock_guard<std::mutex> lk(g_room_mtx);
         c->room_mapped[i] = 1;
     }
     size_t r = 0;
