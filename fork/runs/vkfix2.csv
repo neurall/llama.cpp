@@ -1,3 +1,4 @@
 name,model,n,test,tokens,args,extra
 q36-tail-vk,qwen36,1,pf2k,256,"-dev Vulkan0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
 q36-tail-cu,qwen36,1,pf2k,256,"-dev CUDA0",
+q36-fullmask-vk,qwen36,1,pf2k,256,"-dev Vulkan0 --moe mask-tail=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
