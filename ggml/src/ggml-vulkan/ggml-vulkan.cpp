@@ -15474,10 +15474,20 @@ static void ggml_backend_vk_event_record(ggml_backend_t backend, ggml_backend_ev
     ctx->compute_ctx.reset();
 }
 
+static void ggml_backend_vk_device_event_synchronize(ggml_backend_dev_t dev, ggml_backend_event_t event);
+
 static void ggml_backend_vk_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
     VK_LOG_DEBUG("ggml_backend_vk_event_wait(backend=" << backend << ", event=" << event << ")");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
     vk_event *vkev = (vk_event *)event->context;
+
+    // fork: an event of another device cannot be waited on in this device's queues (a VkEvent and a timeline semaphore belong to one VkDevice): the
+    // scheduler's tail wait between two cards recorded such a wait and hung both RTX 3090s with idle GPUs (PC1 2026-11-16). Wait for its last record on
+    // the host instead, the order a CUDA stream wait across devices gives, at the price of this thread
+    if (event->device != ggml_backend_get_device(backend)) {
+        ggml_backend_vk_device_event_synchronize(event->device, event);
+        return;
+    }
 
     vk_context compute_ctx = ggml_vk_get_compute_ctx(ctx);
 

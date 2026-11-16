@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+vkd-one,olmoe,2,pf2k,64,"-dev Vulkan0 --moe mode=cache",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+vkd-two-nods,olmoe,2,pf2k,64,"-dev Vulkan0,Vulkan1 --moe mode=cache,dense-split=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+vkd-two,olmoe,2,pf2k,64,"-dev Vulkan0,Vulkan1 --moe mode=cache",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+vkd-ts,olmoe,2,pf2k,64,"-dev Vulkan0,Vulkan1 -ts 1,1 --moe mode=cache",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
