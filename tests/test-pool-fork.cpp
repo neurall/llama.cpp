@@ -1072,6 +1072,29 @@ static void test_regress_cuda_kernel_oom_trace() {
     report("new: one rerun, the seen shape that wanted more; new shapes never run twice", reruns == 1, fmt("%zu reruns", reruns));
     report("new: CUDA ends with the whole blocks it uses and no more (110 MiB in 112)", room == 112 * M, fmt("room %zu MiB", room / M));
 }
+static void test_regress_pool_start_pins() {
+    printf("Testing [bug: the pool fails at start, build cuda_room_tail 2026-11-16] free VRAM read before the probe, pins after it:\n");
+    const size_t M = (size_t) 1 << 20, G = (size_t) 1 << 30;
+    // glm-i on CUDA0: 19153 MiB free at the sizing; the kernel probe then ran 12.7 s while the loader pinned 13 buffers of 3.7 GiB (8 B of page tables per
+    // 4 KiB page on every card), and the pool asked for all 19153 MiB with no margin: "cudaMalloc failed: out of memory", the cache was disabled
+    const size_t free_before = 19153 * M, pt_probe = 48 * G / 4096 * 8;
+    const size_t free_after_probe = free_before - pt_probe;
+    report("old: the pool sized before the probe does not fit after it", free_before > free_after_probe, fmt("%zu > %zu MiB", free_before / M, free_after_probe / M));
+    // new: free read after the probe; the loader's pins still to come (101.7 GiB planned, 64 GiB pinned by then) are left free beside the pool
+    const size_t pin_total = (size_t) (101.7 * G), pinned = 64 * G;
+    const size_t pool = free_after_probe - poolx_pins_vram(pin_total, pinned);
+    const size_t pt_rest = (pin_total - pinned) / 4096 * 8;   // what the rest takes at 8 B per 4 KiB page, the most measured
+    report("new: the pool and the rest of the pins fit the card", pool + pt_rest <= free_after_probe,
+           fmt("pool %zu + pins %zu <= %zu MiB", pool / M, pt_rest / M, free_after_probe / M));
+    report("new: nothing left to pin keeps nothing", poolx_pins_vram(pin_total, pin_total) == 0 && poolx_pins_vram(0, 0) == 0, "");
+    // a chunk the driver could not back at creation is CUDA's from the start, as long as it stays inside the tail area
+    const size_t B = 50, vsz = 1000, tail = 900, vol = 700;
+    report("room start: nothing unmapped", poolx_room_start(vsz, 0, vol, tail, vol, B) == tail, "");
+    report("room start: only the slack past the last block", poolx_room_start(vsz, 50, vol, tail, vol, B) == tail, "");
+    report("room start: the block edge at or below the first unmapped byte", poolx_room_start(vsz, 170, vol, tail, vol, B) == 800,
+           fmt("%zu", poolx_room_start(vsz, 170, vol, tail, vol, B)));
+    report("room start: below the tail area the pool is refused", poolx_room_start(vsz, 310, vol, tail, vol, B) == SIZE_MAX, "");
+}
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -1099,6 +1122,7 @@ int main(int argc, char ** argv) {
     test_regress_stage_past_zone();
     test_regress_cuda_room();
     test_regress_cuda_kernel_oom_trace();
+    test_regress_pool_start_pins();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

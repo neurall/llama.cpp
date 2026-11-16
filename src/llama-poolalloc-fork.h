@@ -276,6 +276,20 @@ static inline size_t poolx_room_give_back(size_t room, size_t free_b, size_t kee
     const size_t give = (free_b - keep) / step * step;
     return room - std::min(room, give);
 }
+// The room a pool starts with when the driver could not back all of its chunked tail at creation (VRAM taken between the sizing and the allocation): the
+// block edge (base + k * step) at or below the first unmapped byte, tail_real when only the slack past the last block is unmapped, SIZE_MAX when it reaches
+// below the tail area (vol_lo): the stream, the lend and the KV live there, such a pool cannot be used.
+static inline size_t poolx_room_start(size_t vsz, size_t unmapped, size_t vol_lo, size_t tail_real, size_t base, size_t step) {
+    const size_t first = vsz - std::min(vsz, unmapped);   // the first unmapped byte
+    if (first >= tail_real) { return tail_real; }
+    if (first < vol_lo || step == 0 || first < base) { return SIZE_MAX; }
+    return base + (first - base) / step * step;
+}
+// The page tables the loader's pins still to come take on every card (it reads into pinned buffers while the context is made): one 8 B GPU page table entry
+// per 4 KiB page (PC1 measured 1.4-2 MiB per GiB) and one 2 MiB step of the driver's page-table allocation; 0 when nothing is left to pin.
+static inline size_t poolx_pins_vram(size_t pin_total, size_t pinned) {
+    return pin_total > pinned ? (pin_total - pinned) / 4096 * 8 + ((size_t) 2 << 20) : 0;
+}
 // An expert takes a free block for layer li: the block popped off the free stack, or -1. A block that is not free (stale entry) is dropped, never handed out.
 template <class PS> static int32_t poolx_claim_free(PS & ps, int32_t li) {
     while (!ps.free.empty()) {

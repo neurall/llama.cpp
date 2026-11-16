@@ -4814,12 +4814,15 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             // again; with the room at its most it would fail the same way
             const bool own  = inst && oom_fit < 0.0;
             const bool room = own && llama_moe_cache_room_oom_fork(oom_dev);
+            // the room at its most (user 2026-11-16: "be robust and efficient", no tail kept beyond the need): the call in smaller passes instead, whose shapes
+            // need less of CUDA's own memory, as for an allocation the pool could not make
+            const bool shrink = own && !room && ubatch.n_tokens > k_pass_granule;
             llama_pos cells = 0;
             for (uint32_t i = 0; i < ubatch.n_tokens; ++i) { cells = std::max(cells, ubatch.pos[i] + 1); }
-            bool back = inst ? (!own || room) : ubatch.n_tokens > k_pass_granule;   // the smallest pass does not fit: an error (see g_oom_tc)
+            bool back = inst ? (!own || room || shrink) : ubatch.n_tokens > k_pass_granule;   // the smallest pass does not fit: an error (see g_oom_tc)
             for (size_t k = 0; back && k < call_pos_min.size(); ++k) { back = memory->seq_rm(call_pos_min[k].first, call_pos_min[k].second, -1); }
             if (back) {
-                if (!inst) {
+                if (!inst || shrink) {
                     const double share = oom_fit > 0.0 ? std::min(0.9, std::max(0.25, oom_fit * 0.9)) : 0.5;
                     const uint64_t tc = (uint64_t) ((double) ubatch.n_tokens * (double) std::max<llama_pos>(cells, 1) * share), prev = g_oom_tc.load();
                     g_oom_tc = prev ? std::min(prev, tc) : tc;
@@ -4829,7 +4832,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 // and the prompt counters would count its tokens twice. What the other cards still run of the failed graph ends first; the retry is timed
                 // from its own start (an earlier call not synchronized yet loses its sample: it cannot be told apart from the failure).
                 call_abandon();
-                if (own) {
+                if (shrink) {
+                    LLAMA_LOG_WARN("%s: CUDA's own memory ran out on CUDA%d in a %u-token pass at %d cells with its room at the pool's tail at its most: the call is taken "
+                            "back and runs again in smaller passes (at most %llu tokens x cells a pass)\n", __func__, oom_dev, ubatch.n_tokens, (int) cells,
+                            (unsigned long long) g_oom_tc.load());
+                } else if (own) {
                     llama_moe_cache_room_apply_fork();   // every card synchronized above: the blocks leave the cache and their VRAM goes to CUDA now
                     LLAMA_LOG_WARN("%s: CUDA's own memory ran out on CUDA%d in a %u-token pass at %d cells: the call is taken back and runs again with a bigger room at the pool's tail\n",
                             __func__, oom_dev, ubatch.n_tokens, (int) cells);

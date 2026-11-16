@@ -1329,6 +1329,16 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             }
         }
 
+        // fork (user 2026-11-16: "pinning memory that will never go to vram is slow and useless"): a table read by rows (GET_ROWS: the token embeddings, Engram,
+        // PLE) never reaches a GPU, no backend offloads GET_ROWS; in plain RAM it costs no pin time and no page tables on every card. Pinned stays what is uploaded
+        if (op == GGML_OP_GET_ROWS || (flags & TENSOR_READ_LAZY)) {
+            auto * bd = ggml_backend_buft_get_device(buft);
+            auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+            if (bd && cpu_dev && buft == ggml_backend_dev_host_buffer_type(bd)) {
+                buft = ggml_backend_dev_buffer_type(cpu_dev);
+            }
+        }
+
         // avoid using a host buffer when using mmap, except for as much as the pin budget allows (fork): a model that does not fit pinned RAM is pinned as far as
         // the RAM and the huge-page pool reach, in tensor order, and the rest is mapped (--moe pin-budget=BYTES, set by common_init_from_params)
         auto * buft_dev = ggml_backend_buft_get_device(buft);

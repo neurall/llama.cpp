@@ -887,6 +887,21 @@ void llama_moe_decision_fork(const char * name, const char * value, const char *
         llama_moe_span_fork((std::string("start-up: ") + value).c_str(), t0, now, 0, "");
         return;
     }
+    if (strcmp(name, "placement") == 0 && strcmp(value, "cache") == 0) {
+        // the probe that sizes CUDA's tail area of the expert pool (ggml_backend_cuda_kernels_bytes_fork) starts now, seconds before the pool is sized and
+        // before the loader pins (under the pins it took 12.7 s at the sizing, 1.8 s alone); the sizing waits for it only if it is not done
+        static std::once_flag once;
+        std::call_once(once, [] {
+            typedef size_t (*kbytes_t)(int);
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_dev_get(i));
+                if (auto kb = reg ? (kbytes_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_fork_kernels_bytes_fork") : nullptr) {
+                    std::thread([kb] { (void) kb(0); }).detach();
+                    return;
+                }
+            }
+        });
+    }
     const std::string line = std::string(name) + " = " + value + " (" + why + ")";
     std::lock_guard<std::mutex> lk(g_tok_mu);
     const int64_t t = (int64_t) time(nullptr);
