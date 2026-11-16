@@ -10635,7 +10635,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 std::vector<int32_t> gn(pl.cls.size());
                 const bool ring = pp_no_staging() && !split;
                 for (size_t c = 0; c < pl.cls.size(); ++c) { gbase[c] = pl.cls[c].base; gn[c] = nblk[c]; }
-                const size_t vol_lo = room_max > 0 ? tail_all - area_b : tail_all;   // the tail area's first byte: a block edge of the last class
+                // the room buffer exists (room_capable: alias-all on, so the lend and the KV walk every own class): the ring, the grids and the KV stop at the tail
+                // area, decided here once for all of them (the expert split's foreign classes come after the own ones and change nothing of it)
+                const size_t vol_lo = room_max > 0 && !split ? tail_all - area_b : tail_all;   // the tail area's first byte: a block edge of the last class
                 if (ring && pl.cls.size() > 1) {
                     const size_t tail = vol_lo;   // the grids end where the tail area starts
                     for (size_t c : order) {
@@ -10771,7 +10773,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     ap.tail_end  = split ? ap.span : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
                     ap.tail_real = ap.vol_lo = ap.room_lo = ap.room_lo_want = ap.tail_end;
-                    if (room_max > 0 && !split && vol_lo < ap.tail_end && ap.segs.back().pcls == (int32_t) (pool0 + order.back())) {
+                    if (room_max > 0 && !split && vol_lo < ap.tail_end) {   // was: the last seg is the last class, false with foreign classes behind it, so the
+                                                                          // area was never set up while the ring stopped short of it (ring reserve assert)
                         ap.vol_lo    = ap.room_base = vol_lo;
                         ap.room_step = pl.cls[order.back()].B;
                         ap.tail_end  = vol_lo;
