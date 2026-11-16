@@ -4,7 +4,8 @@
 //   lend granularity    poolx_lend_round      : where a lend of n bytes really ends (whole blocks of every class it overlaps)
 //                       poolx_lend_blocks     : blocks of one class a lend takes (never more than the class has)
 //   owner ledger        poolx_lend / poolx_release / poolx_zone_take / poolx_zone_give / poolx_claim_free: the block owner table + free stack
-//                       owner: >= 0 layer, -1 free, -2 lent to a graph, -3 under the KV zone, -4 another class's bytes (outside [home_lo, home_hi))
+//                       owner: >= 0 layer, -1 free, -2 lent to a graph, -3 under the KV zone, -4 another class's bytes (outside [home_lo, home_hi)),
+//                       -5 CUDA's room (the tail area's blocks handed to CUDA's own memory, poolx_room_*)
 //   region map          poolx_regions / poolx_gate_kind : where each region lies now, and the gate every expert write passes
 //   range use counts    poolx_ranges          : who touches which bytes (DMA, graph, zone move), movers wait for users, entrants wait for movers
 // Bugs these rules came from: fork/docs/bug-log.md (the tests name the entry they guard).
@@ -225,8 +226,8 @@ template <class PS> static size_t poolx_release(PS & ps, int32_t keep, int32_t b
     return n;
 }
 // The KV zone takes `take` (ascending block numbers): experts out, free blocks off the free list, lent blocks marked (*blocked drops to the lowest: the lend of this graph starts
-// over below the KV). The owner becomes -3.
-template <class PS, class F, class G> static void poolx_zone_take(PS & ps, const std::vector<int32_t> & take, int32_t * blocked, F evict, G take_bytes) {
+// over below the KV). The owner becomes `tag` (-3 the KV zone, -5 CUDA's room).
+template <class PS, class F, class G> static void poolx_zone_take(PS & ps, const std::vector<int32_t> & take, int32_t * blocked, F evict, G take_bytes, int32_t tag = -3) {
     std::vector<char> free_mark;
     for (int32_t b : take) {
         const int32_t o = ps.owner[b];
@@ -236,17 +237,44 @@ template <class PS, class F, class G> static void poolx_zone_take(PS & ps, const
             if (free_mark.empty()) { free_mark.assign(ps.owner.size(), 0); }
             free_mark[b] = 1;
         } else if (o == -2 && blocked) { *blocked = std::min(*blocked, b); }
-        ps.owner[b] = -3;
+        ps.owner[b] = tag;
     }
     if (!free_mark.empty()) {
         ps.free.erase(std::remove_if(ps.free.begin(), ps.free.end(), [&](int32_t b) { return free_mark[b] != 0; }), ps.free.end());
     }
 }
-// Blocks the zone left go back to the free list.
-template <class PS> static size_t poolx_zone_give(PS & ps, const std::vector<int32_t> & give) {
+// Blocks the zone (or CUDA's room, tag -5) left go back to the free list.
+template <class PS> static size_t poolx_zone_give(PS & ps, const std::vector<int32_t> & give, int32_t tag = -3) {
     size_t n = 0;
-    for (int32_t b : give) { if (ps.owner[b] != -3) { continue; } n += poolx_give_back(ps, b); }   // only a block under the zone goes back: a lent or owned one is not free
+    for (int32_t b : give) { if (ps.owner[b] != tag) { continue; } n += poolx_give_back(ps, b); }   // only a block under the zone goes back: a lent or owned one is not free
     return n;
+}
+
+// ---- CUDA's room at the pool's tail ------------------------------------------------------------------------------------------------------------
+// (user 2026-11-16: "use tail", "give them to cuda as needed and reclaim when not", no gap kept free.) The tail of the pool holds cached experts only (no
+// stream, lend or KV there); CUDA's own memory (kernels loaded on first use, cuBLAS, CUDA graphs, page tables of pinned RAM) takes whole blocks from its top
+// when it runs out and gives them back as soon as its use drops. A call of a shape class not seen yet may load new kernels (mmq, mmvq and flash attention
+// variants are picked by the token count): tokens up to 8 alone, then steps of 8 up to 128, then powers of two.
+static inline int64_t poolx_room_class(int64_t n_tokens) {
+    if (n_tokens <= 8) { return n_tokens; }
+    if (n_tokens <= 128) { return (n_tokens + 7) / 8 * 8; }
+    int64_t c = 256;
+    while (c < n_tokens) { c *= 2; }
+    return c;
+}
+// the room after CUDA ran out of its own memory: one block more, twice what it had or `hint` (the most its use grew between two looks), whichever is
+// largest, in whole blocks of `step`, never past the tail area (room_max)
+static inline size_t poolx_room_grow(size_t room, size_t room_max, size_t step, size_t hint) {
+    if (step == 0) { return room; }
+    const size_t r = poolx_up(std::max({ room + step, 2 * room, hint }), step);
+    return std::min(r, room_max);
+}
+// the room after a call: whole blocks of the card's free bytes go back to the cache at once; `keep` is free VRAM that is not the room's (left outside the pool
+// for others when it was sized)
+static inline size_t poolx_room_give_back(size_t room, size_t free_b, size_t keep, size_t step) {
+    if (step == 0 || free_b <= keep) { return room; }
+    const size_t give = (free_b - keep) / step * step;
+    return room - std::min(room, give);
 }
 // An expert takes a free block for layer li: the block popped off the free stack, or -1. A block that is not free (stale entry) is dropped, never handed out.
 template <class PS> static int32_t poolx_claim_free(PS & ps, int32_t li) {

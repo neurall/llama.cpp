@@ -4121,6 +4121,8 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 static constexpr uint32_t k_pass_granule = 32;    // prompt passes are sized in steps of this many tokens: the smallest pass, the one that cannot shrink any more
 static std::atomic<uint64_t> g_oom_tc    { 0 };   // the ceiling, tokens x cells, 0 = none
 static std::atomic<int>      g_oom_retry { 0 };   // set by decode: the call was taken back, run it again
+bool llama_moe_cache_room_oom_fork(int cuda_device);   // llama-moecache-fork.cpp: CUDA's own memory ran out, its room at the pool's tail is to grow (false: at its most)
+void llama_moe_cache_room_apply_fork();                 // llama-moecache-fork.cpp: the room asked for, once no graph runs
 void llama_moe_cache_vram_oom_fork(int cuda_device, size_t bytes);   // llama-moecache-fork.cpp: the failed request counts as VRAM need outside the pool (declared here, no header edit)
 static int fork_cuda_last_oom(int * device, size_t * bytes, double * fit) {   // ggml-cuda.cu: the number of out-of-memory errors it caught, the last one's device, size and the share of the pass that fits
     static int (*fn)(int *, size_t *, double *) = (int (*)(int *, size_t *, double *)) llama_fork_proc("ggml_backend_fork_last_oom_fork");
@@ -4808,9 +4810,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
             // 0.9 of it as later temporaries may be bigger, at least a quarter; half where the share is not known); a CUDA graph could not be instantiated after part
             // of the graph ran: the same call as it was, the graph now runs without a CUDA graph
             const bool inst = oom_bytes == 0;
+            // CUDA's own memory (a kernel loaded on first use, cuBLAS, a CUDA graph; ggml_cuda_oom fit < 0): its room at the pool's tail grows and the call runs
+            // again; with the room at its most it would fail the same way
+            const bool own  = inst && oom_fit < 0.0;
+            const bool room = own && llama_moe_cache_room_oom_fork(oom_dev);
             llama_pos cells = 0;
             for (uint32_t i = 0; i < ubatch.n_tokens; ++i) { cells = std::max(cells, ubatch.pos[i] + 1); }
-            bool back = inst || ubatch.n_tokens > k_pass_granule;   // the smallest pass does not fit: an error (see g_oom_tc)
+            bool back = inst ? (!own || room) : ubatch.n_tokens > k_pass_granule;   // the smallest pass does not fit: an error (see g_oom_tc)
             for (size_t k = 0; back && k < call_pos_min.size(); ++k) { back = memory->seq_rm(call_pos_min[k].first, call_pos_min[k].second, -1); }
             if (back) {
                 if (!inst) {
@@ -4823,7 +4829,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
                 // and the prompt counters would count its tokens twice. What the other cards still run of the failed graph ends first; the retry is timed
                 // from its own start (an earlier call not synchronized yet loses its sample: it cannot be told apart from the failure).
                 call_abandon();
-                if (inst) {
+                if (own) {
+                    llama_moe_cache_room_apply_fork();   // every card synchronized above: the blocks leave the cache and their VRAM goes to CUDA now
+                    LLAMA_LOG_WARN("%s: CUDA's own memory ran out on CUDA%d in a %u-token pass at %d cells: the call is taken back and runs again with a bigger room at the pool's tail\n",
+                            __func__, oom_dev, ubatch.n_tokens, (int) cells);
+                } else if (inst) {
                     LLAMA_LOG_WARN("%s: CUDA graph out of VRAM on CUDA%d in a %u-token pass at %d cells: the call is taken back and runs again without that CUDA graph\n",
                             __func__, oom_dev, ubatch.n_tokens, (int) cells);
                 } else {

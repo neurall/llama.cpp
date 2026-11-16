@@ -139,10 +139,13 @@ static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 #define GGML_LOG_WARN_ONCE(str) \
     { static std::once_flag warn_flag; std::call_once(warn_flag, []() { GGML_LOG_WARN(str); }); }
 
+static void ggml_cuda_error_vram(int device, const char * stmt, const char * msg);   // below (ggml_cuda_oom): throws when CUDA's own memory ran out inside a graph
+
 [[noreturn]]
 void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg) {
     int id = -1; // in case cudaGetDevice fails
     (void)cudaGetDevice(&id);
+    ggml_cuda_error_vram(id, stmt, msg);
 
     GGML_LOG_ERROR(GGML_CUDA_NAME " error: %s\n", msg);
     GGML_LOG_ERROR("  current device: %d, in function %s at %s:%d\n", id, func, file, line);
@@ -338,19 +341,29 @@ static bool ggml_cuda_hip_blas_has_arch(const char * gcn_arch) {
 }
 #endif // defined(GGML_USE_HIP)
 
-static ggml_cuda_device_info ggml_cuda_init() {
-    ggml_cuda_device_info info = {};
+// fork: a throwaway probe process (GGML_FORK_CUDA_PROBE, started by ggml_backend_cuda_kernels_bytes_fork): a context on every card, the card's free bytes
+// on stdout, exit before anything else of the program runs
+static void ggml_cuda_probe_child() {
+    if (getenv("GGML_FORK_CUDA_PROBE") == nullptr) {
+        return;
+    }
+    int n = 0;
+    if (cudaGetDeviceCount(&n) != cudaSuccess) {
+        std::_Exit(1);
+    }
+    for (int d = 0; d < n; ++d) {
+        size_t f = 0, t = 0;
+        if (cudaSetDevice(d) == cudaSuccess && cudaFree(0) == cudaSuccess && cudaMemGetInfo(&f, &t) == cudaSuccess) {
+            printf("ggml-fork-cuda-probe %d %zu\n", d, f);
+        }
+    }
+    fflush(stdout);
+    std::_Exit(0);
+}
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
-    // fork: load every kernel at start. Lazy loading needs VRAM the first time a kernel runs; once the expert pool
-    // has taken the free VRAM that first use (a second request, a smaller micro-batch) dies of out of memory.
-    // An explicit CUDA_MODULE_LOADING from the user wins.
-#ifdef _WIN32
-    if (!getenv("CUDA_MODULE_LOADING")) _putenv_s("CUDA_MODULE_LOADING", "EAGER");
-#else
-    setenv("CUDA_MODULE_LOADING", "EAGER", 0);
-#endif
-#endif
+static ggml_cuda_device_info ggml_cuda_init() {
+    ggml_cuda_probe_child();
+    ggml_cuda_device_info info = {};
 
     cudaError_t err = cudaGetDeviceCount(&info.physical_device_count);
     if (err != cudaSuccess) {
@@ -572,6 +585,26 @@ static ggml_cuda_oom    g_cuda_last_oom  = { -1, 0, "", 0.0 };   // the last one
 static std::atomic<int> g_cuda_oom_count { 0 };
 static thread_local int g_cuda_chunks_run = 0;   // CUDA graph chunks of the graph being computed that were launched (they ran, or run now)
 static thread_local const ggml_tensor * g_cuda_oom_node = nullptr;   // the node being computed (or captured) now
+static thread_local int g_cuda_in_compute = 0;   // inside ggml_backend_cuda_graph_compute: a failure there is caught (ggml_cuda_oom)
+
+// fork (2026-11-16, gainers: glm-i, mimo-i, qni3-i, qni4-i): CUDA's own memory ran out inside a graph -- a kernel loaded on its first use (lazy loading:
+// cudaFuncGetAttributes, cudaFuncSetAttribute, a launch) or cuBLAS loading its kernels or workspace -- while the expert pool held the rest of the card
+// (the second request's new kernels, 1 MiB free). Thrown instead of aborting, marked fit = -1: libllama gives CUDA room from the pool
+// (llama_moe_cache_room_oom_fork) and runs the call again. Outside a graph, or any other error: ggml_cuda_error aborts as before.
+static void ggml_cuda_error_vram(int device, const char * stmt, const char * msg) {
+    if (g_cuda_in_compute <= 0 || msg == nullptr) {
+        return;
+    }
+    bool vram = strcmp(msg, "out of memory") == 0;
+    if (!vram && (strcmp(msg, "the resource allocation failed") == 0 || strcmp(msg, "the requested functionality is not supported") == 0)) {
+        size_t f = 0, t = 0;   // what cuBLAS says when it could not load or allocate on a full card; on a card with room it is a real error
+        vram = cudaMemGetInfo(&f, &t) == cudaSuccess && f < ((size_t) 64 << 20);
+    }
+    (void) cudaGetLastError();
+    if (vram) {
+        throw ggml_cuda_oom{device, 0, stmt, -1.0};
+    }
+}
 
 // buffer pool for cuda (legacy)
 struct ggml_cuda_pool_leg : public ggml_cuda_pool {
@@ -1007,10 +1040,18 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
 
 // cuda buffer
 
+struct ggml_backend_cuda_buffer_context;
+static void ggml_cuda_room_free(ggml_backend_cuda_buffer_context & c);   // below: unmaps a room buffer
+
 struct ggml_backend_cuda_buffer_context {
     int device;
     void * dev_ptr = nullptr;
     std::string name;
+    // fork: an expert pool buffer on VMM (ggml_backend_cuda_room_buffer_fork): its last room_max bytes are mapped in chunks of vmm_gran that go back to
+    // CUDA (unmapped: the room for CUDA's own memory, kernels loaded on first use, cuBLAS) and come back (mapped again); the rest is one allocation.
+    // vmm_size 0: a cudaMalloc buffer
+    size_t vmm_size = 0, vmm_gran = 0, room_max = 0, room = 0;
+    std::vector<uint8_t> room_mapped;
 
     ggml_backend_cuda_buffer_context(int device, void * dev_ptr) :
         device(device), dev_ptr(dev_ptr),
@@ -1018,6 +1059,10 @@ struct ggml_backend_cuda_buffer_context {
     }
 
     ~ggml_backend_cuda_buffer_context() {
+        if (vmm_size > 0) {
+            ggml_cuda_room_free(*this);
+            return;
+        }
         CUDA_CHECK(cudaFree(dev_ptr));
     }
 };
@@ -1435,6 +1480,236 @@ static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_bac
 
     return ggml_backend_buffer_init(buft, ggml_backend_cuda_buffer_interface, ctx, size);
 }
+
+// ---- fork: the expert pool's room for CUDA's own memory ----------------------------------------------------------------------------------------------
+// (user 2026-11-16: "alloc kernel mem from pool ... pool can expand and shrink as needed", "use tail".) The driver places what it loads on first use (kernel
+// code, cuBLAS's kernels and workspace) itself; no API puts it into our buffer. So the pool buffer is built on VMM: one allocation for the most of it and
+// the last room_max bytes in chunks of the granularity, which can be unmapped (their memory goes back to the driver, which takes what it needs) and mapped
+// again. libllama keeps the experts it gives away there out of every use and sets the room at its sync points.
+#if defined(GGML_USE_VMM) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+static bool ggml_cuda_room_map(int device, CUdeviceptr at, size_t size) {   // fresh memory at `at`, readable by every card that reaches this one (false: none left)
+    CUmemAllocationProp prop = {};
+    prop.type          = CU_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id   = ggml_cuda_get_physical_device(device);
+    CUmemGenericAllocationHandle h;
+    if (ggml_cuda_sim_full(device, size) || cuMemCreate(&h, size, &prop, 0) != CUDA_SUCCESS) {
+        return false;
+    }
+    const bool mapped = cuMemMap(at, size, 0, h, 0) == CUDA_SUCCESS;
+    (void) cuMemRelease(h);   // the mapping keeps the memory; cuMemUnmap gives it back
+    if (!mapped) {
+        return false;
+    }
+    std::vector<CUmemAccessDesc> acc;
+    const int phys = prop.location.id;
+    bool seen[GGML_CUDA_MAX_DEVICES] = {};
+    for (int id = 0; id < ggml_cuda_info().device_count; ++id) {
+        const int q = ggml_cuda_get_physical_device(id);
+        if (seen[q]) {
+            continue;
+        }
+        if (q != phys) {   // a peer reads the pool directly (split modes): VMM memory is not peer-accessible until it is granted
+            int can = 0;
+            if (cudaDeviceCanAccessPeer(&can, q, phys) != cudaSuccess || !can) {
+                (void) cudaGetLastError();
+                continue;
+            }
+        }
+        seen[q] = true;
+        CUmemAccessDesc d = {};
+        d.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        d.location.id   = q;
+        d.flags         = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+        acc.push_back(d);
+    }
+    if (cuMemSetAccess(at, size, acc.data(), acc.size()) != CUDA_SUCCESS) {
+        (void) cuMemUnmap(at, size);
+        return false;
+    }
+    return true;
+}
+
+// the chunks: [vmm_size - room_max + i * vmm_gran, + vmm_gran), i = 0 .. room_mapped.size() - 1 (the last one at the very end of the buffer)
+static CUdeviceptr ggml_cuda_room_chunk(const ggml_backend_cuda_buffer_context & c, size_t i) {
+    return (CUdeviceptr) c.dev_ptr + (c.vmm_size - c.room_max) + i * c.vmm_gran;
+}
+
+static void ggml_cuda_room_free(ggml_backend_cuda_buffer_context & c) {
+    ggml_cuda_set_device(c.device);
+    (void) cudaDeviceSynchronize();
+    for (size_t i = 0; i < c.room_mapped.size(); ++i) {
+        if (c.room_mapped[i]) { (void) cuMemUnmap(ggml_cuda_room_chunk(c, i), c.vmm_gran); }
+    }
+    if (c.vmm_size > c.room_max) { (void) cuMemUnmap((CUdeviceptr) c.dev_ptr, c.vmm_size - c.room_max); }
+    (void) cuMemAddressFree((CUdeviceptr) c.dev_ptr, c.vmm_size);
+}
+
+// a pool buffer of `size` bytes whose last *room_max bytes (rounded down to the granularity, written back; *vsize: the bytes of address space it spans,
+// the room is counted from there) can become CUDA's room; nullptr: no VMM on this card (the caller allocates a plain buffer)
+static ggml_backend_buffer_t ggml_backend_cuda_room_buffer_fork(ggml_backend_buffer_type_t buft, size_t size, size_t * room_max, size_t * gran, size_t * vsize) {
+    if (buft == nullptr || buft->iface.alloc_buffer != ggml_backend_cuda_buffer_type_alloc_buffer || room_max == nullptr) {
+        return nullptr;
+    }
+    const int device = ((ggml_backend_cuda_buffer_type_context *) buft->context)->device;
+    const size_t g = ggml_cuda_info().devices[device].vmm_granularity;
+    if (!ggml_cuda_info().devices[device].vmm || g == 0) {
+        return nullptr;
+    }
+    if (size == 0) {   // a question only: can this card's pool give CUDA its room (VMM)
+        if (gran) { *gran = g; }
+        return nullptr;
+    }
+    ggml_cuda_set_device(device);
+    const size_t vsz = (size + g - 1) / g * g;
+    const size_t rmx = std::min(vsz, *room_max / g * g);
+    CUdeviceptr va = 0;
+    if (cuMemAddressReserve(&va, vsz, 0, 0, 0) != CUDA_SUCCESS) {
+        return nullptr;
+    }
+    ggml_backend_cuda_buffer_context * ctx = new ggml_backend_cuda_buffer_context(device, (void *) va);
+    ctx->vmm_size = vsz;
+    ctx->vmm_gran = g;
+    ctx->room_max = rmx;
+    ctx->room_mapped.assign(rmx / g, 0);
+    bool ok = vsz == rmx || ggml_cuda_room_map(device, va, vsz - rmx);
+    const bool rest = ok && vsz > rmx;
+    for (size_t i = 0; ok && i < ctx->room_mapped.size(); ++i) {
+        ok = ggml_cuda_room_map(device, ggml_cuda_room_chunk(*ctx, i), g);
+        ctx->room_mapped[i] = ok;
+    }
+    if (!ok) {
+        for (size_t i = 0; i < ctx->room_mapped.size(); ++i) {
+            if (ctx->room_mapped[i]) { (void) cuMemUnmap(ggml_cuda_room_chunk(*ctx, i), g); }
+        }
+        if (rest) { (void) cuMemUnmap(va, vsz - rmx); }
+        (void) cuMemAddressFree(va, vsz);
+        ctx->vmm_size = 0;
+        ctx->dev_ptr  = nullptr;
+        delete ctx;   // vmm_size 0, dev_ptr null: cudaFree(nullptr) is a no-op
+        (void) cudaGetLastError();
+        return nullptr;
+    }
+    *room_max = rmx;
+    if (gran)  { *gran  = g; }
+    if (vsize) { *vsize = vsz; }
+    return ggml_backend_buffer_init(buft, ggml_backend_cuda_buffer_interface, ctx, size);
+}
+
+#endif
+
+#if defined(_WIN32)
+extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void * module, char * name, unsigned long size);
+#else
+#include <unistd.h>
+#endif
+// fork: CUDA's own memory if every kernel of this build were loaded on a card (user 2026-11-16: "calc max len of this volatile area at start ... alloc/free",
+// "dont store calc. new cuda will need different kind of mem"). Two throwaway processes of this program each create a context on every card and report
+// its free bytes, one loading the modules lazily (none yet) and one eagerly (all of them): the difference is what the kernels take with this CUDA, driver
+// and build. Measured at every start, never stored; the parent waits for them and allocates nothing meanwhile. 0: not measured.
+static size_t ggml_backend_cuda_kernels_bytes_fork(int device) {
+    static std::once_flag once;
+    static size_t bytes[GGML_CUDA_MAX_DEVICES] = {};
+    std::call_once(once, [] {
+        char exe[4096] = {};
+#if defined(_WIN32)
+        const bool have = GetModuleFileNameA(nullptr, exe, sizeof(exe) - 1) > 0;
+#else
+        const ssize_t k = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        const bool have = k > 0;
+        if (have) { exe[k] = 0; }
+#endif
+        auto run = [&](const char * mode, size_t * out) -> bool {
+            char cmd[4400];
+#if defined(_WIN32)
+            snprintf(cmd, sizeof(cmd), "set GGML_FORK_CUDA_PROBE=1&& set CUDA_MODULE_LOADING=%s&& \"%s\" <NUL 2>NUL", mode, exe);
+            FILE * f = _popen(cmd, "r");
+#else
+            snprintf(cmd, sizeof(cmd), "env GGML_FORK_CUDA_PROBE=1 CUDA_MODULE_LOADING=%s '%s' </dev/null 2>/dev/null", mode, exe);
+            FILE * f = popen(cmd, "r");
+#endif
+            if (!f) {
+                return false;
+            }
+            char line[256];
+            int got = 0;
+            while (fgets(line, sizeof(line), f)) {
+                int d = -1;
+                size_t v = 0;
+                if (sscanf(line, "ggml-fork-cuda-probe %d %zu", &d, &v) == 2 && d >= 0 && d < GGML_CUDA_MAX_DEVICES) { out[d] = v; got++; }
+            }
+#if defined(_WIN32)
+            _pclose(f);
+#else
+            pclose(f);
+#endif
+            return got > 0;
+        };
+        size_t lazy[GGML_CUDA_MAX_DEVICES] = {}, eager[GGML_CUDA_MAX_DEVICES] = {};
+        const auto t0 = std::chrono::steady_clock::now();
+        if (have && run("LAZY", lazy) && run("EAGER", eager)) {
+            for (int d = 0; d < GGML_CUDA_MAX_DEVICES; ++d) { bytes[d] = lazy[d] > eager[d] ? lazy[d] - eager[d] : 0; }
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        for (int d = 0; d < ggml_cuda_info().device_count; ++d) {
+            const int q = ggml_cuda_get_physical_device(d);
+            GGML_LOG_WARN("ggml_cuda: every kernel of this build loaded on CUDA%d takes %.0f MiB (two probe processes, lazy %.0f / eager %.0f MiB free, %.0f ms)\n",
+                    d, bytes[q] / 1048576.0, lazy[q] / 1048576.0, eager[q] / 1048576.0, ms);
+        }
+    });
+    if (device < 0 || device >= ggml_cuda_info().device_count) {
+        return 0;
+    }
+    return bytes[ggml_cuda_get_physical_device(device)];
+}
+
+#if defined(GGML_USE_VMM) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+// CUDA's room: the last `room` bytes of the buffer's address space unmapped (whole chunks inside them only, at most room_max). Shrinking maps chunks again
+// from the lowest one up, so a chunk the driver keeps leaves the room one piece at the end. Returns the room in effect (bytes unmapped at the end),
+// SIZE_MAX for a buffer that has none. Waits for the card before it unmaps: nothing may still use the bytes that change hands (the caller has taken them
+// out of every use).
+static size_t ggml_backend_cuda_set_room_fork(ggml_backend_buffer_t buf, size_t room) {
+    if (buf == nullptr || buf->iface.free_buffer != ggml_backend_cuda_buffer_free_buffer) {
+        return SIZE_MAX;
+    }
+    ggml_backend_cuda_buffer_context * c = (ggml_backend_cuda_buffer_context *) buf->context;
+    if (c->vmm_size == 0) {
+        return SIZE_MAX;
+    }
+    const size_t g = c->vmm_gran, n = c->room_mapped.size();
+    const size_t k = std::min(n, room / g);   // chunks [n - k, n) unmapped
+    ggml_cuda_set_device(c->device);
+    bool synced = false;
+    for (size_t i = n - k; i < n; ++i) {
+        if (!c->room_mapped[i]) {
+            continue;
+        }
+        if (!synced) { CUDA_CHECK(cudaDeviceSynchronize()); synced = true; }
+        CU_CHECK(cuMemUnmap(ggml_cuda_room_chunk(*c, i), g));
+        c->room_mapped[i] = 0;
+    }
+    for (size_t i = 0; i < n - k; ++i) {
+        if (c->room_mapped[i]) {
+            continue;
+        }
+        if (!ggml_cuda_room_map(c->device, ggml_cuda_room_chunk(*c, i), g)) {
+            break;
+        }
+        c->room_mapped[i] = 1;
+    }
+    size_t r = 0;
+    while (r < n && !c->room_mapped[n - 1 - r]) { ++r; }
+    c->room = r * g;
+    return c->room;
+}
+#else
+static void ggml_cuda_room_free(ggml_backend_cuda_buffer_context & c) { GGML_UNUSED(c); }
+static ggml_backend_buffer_t ggml_backend_cuda_room_buffer_fork(ggml_backend_buffer_type_t buft, size_t size, size_t * room_max, size_t * gran, size_t * vsize) {
+    GGML_UNUSED(buft); GGML_UNUSED(size); GGML_UNUSED(room_max); GGML_UNUSED(gran); GGML_UNUSED(vsize);
+    return nullptr;
+}
+static size_t ggml_backend_cuda_set_room_fork(ggml_backend_buffer_t buf, size_t room) { GGML_UNUSED(buf); GGML_UNUSED(room); return SIZE_MAX; }
+#endif
 
 static size_t ggml_backend_cuda_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
     return 128;
@@ -7568,7 +7843,7 @@ static void ggml_cuda_oom_reset(ggml_backend_cuda_context * cuda_ctx, const ggml
         kv.second->instances.clear();
         kv.second->warmup_complete = false;
     }
-    if (e.bytes == 0) {   // the CUDA graph of this graph could not be instantiated: this graph runs without one
+    if (e.bytes == 0 && e.fit >= 0) {   // the CUDA graph of this graph could not be instantiated: this graph runs without one
         std::lock_guard<std::mutex> lk(g_cuda_graph_oom_mtx);
         g_cuda_graph_oom_keys.insert(graph_key);
     }
@@ -7663,11 +7938,13 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     g_cuda_chunks_run = 0;
     g_cuda_oom_node   = nullptr;
+    struct in_compute_t { in_compute_t() { g_cuda_in_compute++; } ~in_compute_t() { g_cuda_in_compute--; } } in_compute;
     try {
         ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
     } catch (const ggml_cuda_oom & e) {
         ggml_cuda_oom_reset(cuda_ctx, e, use_cuda_graph && cuda_graph_update_required, graph_key);
-        if (e.bytes != 0 || g_cuda_chunks_run > 0) {
+        // CUDA's own memory (fit < 0): ops before it may have run (a recurrent state updated in place), so the caller takes the call back
+        if (e.bytes != 0 || g_cuda_chunks_run > 0 || e.fit < 0) {
             return ggml_cuda_oom_report(cuda_ctx, e);
         }
         // Only the CUDA graph did not fit and nothing of this graph has run yet (its kernels were captured, not launched): it runs here and now without
@@ -9221,6 +9498,15 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_cuda_last_oom_fork") == 0) {
         return (void *)ggml_backend_cuda_last_oom_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_room_buffer_fork") == 0) {
+        return (void *)ggml_backend_cuda_room_buffer_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_kernels_bytes_fork") == 0) {
+        return (void *)ggml_backend_cuda_kernels_bytes_fork;
+    }
+    if (strcmp(name, "ggml_backend_cuda_set_room_fork") == 0) {
+        return (void *)ggml_backend_cuda_set_room_fork;
     }
     if (strcmp(name, "ggml_backend_cuda_nvtx_push_fork") == 0) {
         return (void *)ggml_backend_cuda_nvtx_push_fork;

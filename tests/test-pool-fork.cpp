@@ -1001,6 +1001,77 @@ static void test_regress_stage_past_zone() {
     }
     report("a staging range is whole blocks of one class, off the zone, behind the lend, before the floor", bad == 0, first);
 }
+static void test_regress_cuda_room() {
+    printf("Testing [bug: second request dies of CUDA OOM, 2026-11-16] CUDA's room at the pool's tail, whole blocks, no gap:\n");
+    const size_t M = (size_t) 1 << 20, B = 8 * M;
+    // a new shape class may load new kernels: mmq/mmvq/flash attention variants are picked by the token count
+    const int64_t n[]  = { 1, 4, 8, 9, 17, 24, 25, 128, 129, 300, 4096, 4097 };
+    const int64_t cl[] = { 1, 4, 8, 16, 24, 24, 32, 128, 256, 512, 4096, 8192 };
+    bool ok = true;
+    std::string first;
+    for (size_t i = 0; i < sizeof(n) / sizeof(n[0]); ++i) {
+        const int64_t c = poolx_room_class(n[i]);
+        if (c != cl[i] && ok) { ok = false; first = fmt("%lld tokens: class %lld, want %lld", (long long) n[i], (long long) c, (long long) cl[i]); }
+    }
+    report("shape class: tokens up to 8 alone, then steps of 8 to 128, then powers of two", ok, first);
+    // glm-i call 2 (build state_split_heat): CUDA's own use grew 94 MiB with 1 MiB free; it gets whole blocks from the tail when it runs out
+    size_t r = poolx_room_grow(0, 480 * M, B, 0);
+    report("out of memory with no room: one block", r == B, fmt("room %zu MiB", r / M));
+    r = poolx_room_grow(16 * M, 480 * M, B, 0);
+    report("out of memory again: twice the room", r == 32 * M, fmt("room %zu MiB", r / M));
+    r = poolx_room_grow(0, 480 * M, B, 94 * M);
+    report("the most it grew between two looks is given at once, whole blocks", r == 96 * M, fmt("room %zu MiB", r / M));
+    r = poolx_room_grow(400 * M, 480 * M, B, 0);
+    report("never past the tail area", r == 480 * M, fmt("room %zu MiB", r / M));
+    r = poolx_room_grow(16 * M, 480 * M, 0, 0);
+    report("no block size (a plain buffer): unchanged", r == 16 * M, fmt("room %zu MiB", r / M));
+    // after a call: whole blocks of what is free go back to the cache at once (no reserve kept free); VRAM that belongs to others stays
+    r = poolx_room_give_back(96 * M, 50 * M, 0, B);
+    report("50 MiB free of a 96 MiB room: 48 MiB of blocks go back", r == 48 * M, fmt("room %zu MiB", r / M));
+    r = poolx_room_give_back(96 * M, 5 * M, 0, B);
+    report("less than a block free: nothing moves", r == 96 * M, fmt("room %zu MiB", r / M));
+    r = poolx_room_give_back(96 * M, 300 * M, 0, B);
+    report("more free than the room: all of it back", r == 0, fmt("room %zu MiB", r / M));
+    r = poolx_room_give_back(96 * M, 50 * M, 20 * M, B);
+    report("free VRAM that was left outside the pool is not the room's", r == 72 * M, fmt("room %zu MiB", r / M));
+    r = poolx_room_give_back(96 * M, 50 * M, 0, 0);
+    report("no block size: unchanged", r == 96 * M, fmt("room %zu MiB", r / M));
+}
+static void test_regress_cuda_kernel_oom_trace() {
+    printf("Testing [bug: second request dies of CUDA OOM, 2026-11-16] kernels loaded on first use, the old margin against the tail room:\n");
+    const size_t M = (size_t) 1 << 20, B = 8 * M;
+    // glm-i, build state_split_heat (bug log): the stored need was 24 MiB, so 24 + max(64, 24 / 8) = 88 MiB were kept free beside the pool (vram_margin).
+    // CUDA's own use since the pool was sized, after each call: the prompt left 1 MiB of the margin free, a 4-token call loaded new kernels (mmvq for 4
+    // columns) and died "CUDA error: out of memory"; a decode token later wants a bigger cuBLAS workspace in a shape it ran before.
+    struct call_t { int64_t n_tokens; size_t use; };
+    const call_t trace[] = { { 12438, 87 * M }, { 1, 87 * M }, { 4, 94 * M }, { 1, 110 * M }, { 12438, 110 * M } };
+    const size_t n = sizeof(trace) / sizeof(trace[0]);
+    // old: the margin is kept free and a call that needs more dies (nothing hands CUDA memory, nothing retries)
+    const size_t margin = (24 + 64) * M;
+    int old_fail = -1;
+    for (size_t i = 0; i < n && old_fail < 0; ++i) { if (trace[i].use > margin) { old_fail = (int) i; } }
+    report("old: the margin runs out at the 4-token call (call 3), as in the log", old_fail == 2, fmt("first failing call %d", old_fail + 1));
+    // new: nothing kept free; the tail area (at least the cold figure, 484 MiB: it holds cached experts, so its size costs no VRAM) gives CUDA whole blocks.
+    // A shape class not seen yet gets the whole area before it runs, what is left free goes back after the call; an OOM in a seen class grows the room and
+    // the call runs again
+    const size_t area = poolx_up(std::max<size_t>(margin, 484 * M), B);
+    size_t room = 0, reruns = 0, fails = 0;
+    std::vector<int64_t> seen;
+    for (size_t i = 0; i < n; ++i) {
+        const int64_t c = poolx_room_class(trace[i].n_tokens);
+        if (std::find(seen.begin(), seen.end(), c) == seen.end()) { room = area; seen.push_back(c); }
+        while (trace[i].use > room) {   // out of memory inside the graph: the call is taken back
+            const size_t next = poolx_room_grow(room, area, B, 0);
+            if (next <= room) { fails++; break; }
+            room = next;
+            reruns++;
+        }
+        room = poolx_room_give_back(room, room > trace[i].use ? room - trace[i].use : 0, 0, B);   // the card's free VRAM after the call is the room's unused part
+    }
+    report("new: no call fails", fails == 0, fmt("%zu failed", fails));
+    report("new: one rerun, the seen shape that wanted more; new shapes never run twice", reruns == 1, fmt("%zu reruns", reruns));
+    report("new: CUDA ends with the whole blocks it uses and no more (110 MiB in 112)", room == 112 * M, fmt("room %zu MiB", room / M));
+}
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -1026,6 +1097,8 @@ int main(int argc, char ** argv) {
     test_regress_chain_reuses_claimed_grid();
     test_regress_k_ahead_room();
     test_regress_stage_past_zone();
+    test_regress_cuda_room();
+    test_regress_cuda_kernel_oom_trace();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

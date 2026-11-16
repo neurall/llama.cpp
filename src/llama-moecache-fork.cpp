@@ -347,6 +347,7 @@ struct moe_cache {
         // Without the ring: home = all its blocks, ring_lo 0.
         int32_t               home_lo = 0, home_hi = 0;
         int32_t               ring_lo = 0;
+        int32_t               ring_hi = INT32_MAX;   // the ring's blocks end here: the tail area (CUDA's room) holds cached experts only, no upload of the stream lands there
     };
     std::vector<pool_state> pool;
     int64_t  n_expert_used = 0;   // experts per token (the compute alias sizes the CUDA scratch from it)
@@ -381,6 +382,12 @@ struct moe_cache {
         size_t                span   = 0;       // lendable bytes: up to the last class's last expert block
         size_t                want_b = 0;       // bytes the last graph needed (what alias_release keeps)
         size_t                mirror_b = 0;     // the dense split's copies at the start of the buffer (--moe mirror-pool, see llama_dsplit_mirror_place_fork)
+        // CUDA's room (user 2026-11-16: "use tail", "keep just hot moes there", "do it in moe sized chunks", no gap kept free): [vol_lo, tail_real) at the end of the
+        // buffer is the tail area, whole blocks of the last class that hold cached experts only; the ring, the grids, the lend and the KV stop in front of it
+        // (tail_end = vol_lo). CUDA's own memory (kernels loaded on first use, cuBLAS, CUDA graphs, page tables of pinned RAM) takes whole blocks from its top:
+        // [room_lo, tail_real) are owner -5 with their VMM chunks unmapped (ggml_backend_fork_set_room_fork); they come back as soon as its use drops.
+        size_t                tail_real = 0, vol_lo = 0, room_lo = 0, room_lo_want = 0, room_base = 0, room_step = 0;
+        size_t                room_vsz = 0, room_max = 0, room_unmapped = 0, room_keep = 0;   // address space, the most CUDA can get, unmapped now, free VRAM that is not the room's
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
         // KV zone (--moe kv-tail=1, fork/docs/kv-grow.md): the records of the caches on this card interleaved in one combined row per cell (kv_row bytes, record r at
         // byte `prefix` of it), [kv_start, kv_start + kv_h * kv_row) of the buffer, behind the compute lend and in front of the experts; blocks under it are owner -3
@@ -5718,7 +5725,7 @@ void llama_moe_cache_kv_tail_detach_fork() {
 // blocks it leaves go back to the free list.
 static void cls_take_bytes(moe_cache * mc, int32_t pc, int32_t b);   // below (grids): another class's block over these bytes gives them back
 static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t lo, size_t hi, bool do_take, bool do_give,
-                            size_t & n_take, size_t & n_give, size_t & n_evict) {
+                            size_t & n_take, size_t & n_give, size_t & n_evict, int32_t tag = -3) {
     std::vector<std::pair<size_t, size_t>> rng;
     if (hi > lo) { rng.push_back({ lo, hi }); }
     for (auto & sg : ap.segs) {
@@ -5729,12 +5736,12 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
             bool want = false;
             for (const auto & q : rng) { if (q.first < b1 && q.second > b0) { want = true; break; } }
             const int32_t o = ps.owner[b];
-            if (want) { if (o != -3 && do_take) { take.push_back(b); } }
-            else if (o == -3 && do_give) { give.push_back(b); }
+            if (want) { if (o != tag && do_take) { take.push_back(b); } }
+            else if (o == tag && do_give) { give.push_back(b); }
         }
         if (!give.empty()) {
             std::lock_guard<std::mutex> lk(mc->mtx);
-            n_give += poolx_zone_give(ps, give);
+            n_give += poolx_zone_give(ps, give, tag);
         }
         if (take.empty()) { continue; }
         const int32_t want_pcls = sg.pcls;
@@ -5785,7 +5792,7 @@ static void kv_blocks_apply(moe_cache * mc, moe_cache::alias_pool & ap, size_t l
             evict_slot(mc, lo, b);
             lo.n_own--;
             n_evict++;
-        }, [&](int32_t b) { cls_take_bytes(mc, sg.pcls, b); });
+        }, [&](int32_t b) { cls_take_bytes(mc, sg.pcls, b); }, tag);
         n_take += take.size();
     }
 }
@@ -7267,6 +7274,92 @@ void llama_moe_cache_alias_refused_fork(uint32_t n_tokens) {
     if (g_alias_err.empty()) { g_alias_err = "the compute graph of a " + std::to_string(n_tokens) + "-token pass did not fit the blocks the pool lent (its attention grows with the cells)"; }
 }
 
+// ---- CUDA's room at the tail of the pool (llama-poolalloc-fork.h poolx_room_*) ----------------------------------------------------------------
+static bool room_capable(ggml_backend_buffer_type_t buft, size_t free_b) {   // the card's pool can hand CUDA its room (VMM, one buffer, --moe room on)
+    static const bool on = [] { const char * e = moe_opt("room"); return !e || atoi(e) != 0; }();
+    static const bool all = [] { const char * e = moe_opt("alias-all"); return !e || atoi(e) != 0; }();
+    if (!on || !all || !alias_on() || buft == nullptr || free_b > ggml_backend_buft_get_max_size(buft)) { return false; }
+    typedef ggml_backend_buffer_t (*room_buf_t)(ggml_backend_buffer_type_t, size_t, size_t *, size_t *, size_t *);
+    auto rb = (room_buf_t) llama_fork_proc_dev(ggml_backend_buft_get_device(buft), "ggml_backend_fork_room_buffer_fork");
+    size_t rm = 0, g = 0;
+    if (rb) { (void) rb(buft, 0, &rm, &g, nullptr); }
+    return g > 0;
+}
+static size_t room_edge_down(const moe_cache::alias_pool & ap, size_t at) {   // the block edge at or below `at`, inside the tail area
+    at = std::min(std::max(at, ap.vol_lo), ap.tail_real);
+    return ap.room_step ? ap.room_base + (at - ap.room_base) / ap.room_step * ap.room_step : at;
+}
+static size_t room_now(const moe_cache::alias_pool & ap) { return ap.tail_real - std::min(ap.room_lo, ap.room_lo_want); }   // the room, a growth asked included
+static moe_cache::alias_pool * room_ap(moe_cache * mc, ggml_backend_dev_t dev) {
+    if (!mc) { return nullptr; }
+    for (auto & ap : mc->alias) { if (ap.dev == dev && ap.room_max > 0) { return &ap; } }
+    return nullptr;
+}
+static std::vector<int64_t>   g_room_seen;      // shape classes (poolx_room_class) that ran through once this session: their kernels are loaded
+static std::vector<int64_t>   g_room_pending;   // classes of this call that got the whole tail area (marked seen by the VRAM watch after the call)
+static std::atomic<uint64_t>  g_room_gen{0};    // bumped by every room_apply (a grow of the RAM pool waits for the room it asked for)
+static bool                   g_room_check = false;   // the room changed: the next VRAM watch looks, also on a decode token
+typedef size_t (*room_set_t)(ggml_backend_buffer_t, size_t);
+// with no graph and no upload using the pool (the lend's sync, or a call taken back): the blocks CUDA is to get leave the cache, then their chunks are unmapped
+static void room_apply(moe_cache * mc, ggml_backend_sched_t sched, bool synced) {
+    bool any = false;
+    for (auto & ap : mc->alias) {
+        if (ap.room_max == 0 || ap.room_lo_want >= ap.room_lo) {
+            continue;
+        }
+        auto fn = (room_set_t) llama_fork_proc_dev(ap.dev, "ggml_backend_fork_set_room_fork");
+        if (!fn) { ap.room_lo_want = ap.room_lo; continue; }
+        if (!synced && sched) { ggml_backend_sched_synchronize(sched); synced = true; }
+        const size_t was = ap.room_lo;
+        size_t nt = 0, ng = 0, ne = 0;
+        pool_move_begin(ap, ap.room_lo_want, ap.tail_real);   // no upload runs there and none starts until the blocks are CUDA's
+        kv_blocks_apply(mc, ap, ap.room_lo_want, ap.tail_real, true, false, nt, ng, ne, -5);
+        pool_move_end(ap);
+        const size_t u = fn(ap.buf, ap.room_vsz - ap.room_lo_want);
+        if (u == SIZE_MAX) { ap.room_lo_want = ap.room_lo; continue; }
+        ap.room_lo = ap.room_lo_want;
+        ap.room_unmapped = u;
+        any = true;
+        g_room_check = true;
+        LLAMA_LOG_WARN("moe-cache: CUDA's room on %s: %.0f -> %.0f MiB of the pool's tail (%zu blocks, %zu experts evicted), %.0f MiB of VRAM handed to CUDA\n",
+                ggml_backend_dev_name(ap.dev), (ap.tail_real - was) / 1048576.0, (ap.tail_real - ap.room_lo) / 1048576.0, nt, ne, u / 1048576.0);
+    }
+    if (any) {
+        flush_tables();   // the evicted experts are out of the device tables before the next graph reads them
+        g_room_gen.fetch_add(1);
+    }
+}
+// at the lend: a call of a shape class not seen yet gets the whole tail area before anything of it runs (new kernels load without failing half way, so a
+// recurrent state is never half written); the VRAM watch after the call gives back what CUDA did not take
+static void room_lend(moe_cache * mc, ggml_backend_sched_t sched, bool synced, int64_t n_tokens) {
+    bool any = false;
+    for (auto & ap : mc->alias) { any = any || ap.room_max > 0; }
+    if (!any) { return; }
+    const int64_t cls = poolx_room_class(n_tokens);
+    if (std::find(g_room_seen.begin(), g_room_seen.end(), cls) == g_room_seen.end()) {
+        for (auto & ap : mc->alias) { if (ap.room_max > 0) { ap.room_lo_want = std::min(ap.room_lo_want, room_edge_down(ap, ap.tail_real - ap.room_max)); } }
+        if (std::find(g_room_pending.begin(), g_room_pending.end(), cls) == g_room_pending.end()) { g_room_pending.push_back(cls); }
+    }
+    room_apply(mc, sched, synced);
+}
+// any time (mapping is safe): the room shrinks to room_lo_want; blocks whose bytes are all mapped again go back to the cache's free lists
+static void room_shrink(moe_cache * mc, moe_cache::alias_pool & ap) {
+    if (ap.room_max == 0 || ap.room_lo_want <= ap.room_lo) {
+        return;
+    }
+    auto fn = (room_set_t) llama_fork_proc_dev(ap.dev, "ggml_backend_fork_set_room_fork");
+    if (!fn) { return; }
+    const size_t was = ap.room_lo, u = fn(ap.buf, ap.room_vsz - ap.room_lo_want);
+    if (u == SIZE_MAX) { return; }
+    ap.room_unmapped = u;
+    const size_t lo = room_edge_down(ap, std::max(ap.room_lo_want, ap.room_vsz - u));   // a block with a byte still unmapped stays CUDA's
+    size_t nt = 0, ng = 0, ne = 0;
+    kv_blocks_apply(mc, ap, lo, ap.tail_real, false, true, nt, ng, ne, -5);
+    ap.room_lo = ap.room_lo_want = lo;
+    LLAMA_LOG_WARN("moe-cache: CUDA's room on %s: %.0f -> %.0f MiB of the pool's tail (%zu blocks back to the cache), %.0f MiB of VRAM still CUDA's\n",
+            ggml_backend_dev_name(ap.dev), (ap.tail_real - was) / 1048576.0, (ap.tail_real - ap.room_lo) / 1048576.0, ng, u / 1048576.0);
+}
+
 static void cs_shadow_drop(moe_cache * mc);   // below
 static void cs_drain(moe_cache * mc);         // below: the cards' upload workers have copied every ring job
 static bool cs_worker_has(int link);
@@ -7453,7 +7546,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
                     ggml_backend_dev_name(ap.dev), n_tokens, peak / 1048576.0, scratch / 1048576.0, ap.n_stage, ap.hwm / 1048576.0, need_b / 1048576.0, ap.span / 1048576.0);
         }
         for (auto & sg : ap.segs) {
-            const int32_t need = poolx_lend_blocks(sg, need_b);   // the blocks of this class the range covers
+            const int32_t need = poolx_lend_blocks(sg, ap.room_max > 0 ? std::min(need_b, ap.vol_lo) : need_b);   // the blocks of this class the range covers (never the tail area)
             if (need <= sg.blocked) {
                 continue;
             }
@@ -7557,6 +7650,7 @@ bool llama_moe_cache_alias_fork(ggml_backend_sched_t sched, int32_t n_tokens) {
         for (const auto & f : pfills) { pool_fill(*f.ap, f.lo, f.hi, f.v); }   // --moe poison
         g_ac.sync_us += ggml_time_us() - s0; g_ac.sync_n++;
     }
+    room_lend(mc, sched, changed, n_tokens);   // CUDA's room grows here: after the sync, before this graph runs
     return false;
 }
 
@@ -9801,6 +9895,8 @@ struct vram_dev_t {
     bool    from_cold    = false;  // a warm start sized with the cold figure: its own figure is written at its first decode sample
     int64_t peak_mb      = 0;      // the largest need this session
     int     n_lows       = 0;
+    int64_t u_prev       = 0;      // CUDA's own use at the last look (bytes)
+    int64_t grow_max     = 0;      // the most it grew between two looks (bytes): a room that ran out grows at least by that
     std::string section, key;
 };
 static std::vector<vram_dev_t> g_vram;
@@ -9815,6 +9911,27 @@ static std::mutex g_vram_mtx;
 // PC1): a growth never takes a card's lowest free VRAM of this session below the safety the margin keeps over its need. Swap-out since the last resize (more than a
 // thousandth of the pool) is pressure too: what this session grew goes back first, as much as was swapped out, and nothing is added.
 static std::atomic<bool> g_rp_growing{false};   // a grow pins on its own thread: until it ends no resize starts and the teardown waits
+// the page tables of a RAM pool grow of `bytes` on every card: what the card's free VRAM lacks is asked from CUDA's room at the pool's tail (applied at the next
+// graph's lend). Returns the room generation to wait for (rp_room_wait), 0: nothing asked
+static uint64_t rp_room_ask(moe_cache * mc, size_t bytes) {
+    const double G = 1073741824.0;
+    const size_t per = std::max<size_t>(mc->rp_vram_per, ((size_t) 1 << 30) / 4096 * 8);
+    const size_t cost = (size_t) ((double) per * ((double) bytes / G));
+    bool asked = false;
+    std::lock_guard<std::mutex> lk(g_vram_mtx);
+    for (const auto & d : g_vram) {
+        moe_cache::alias_pool * rap = room_ap(mc, d.dev);
+        const size_t free_b = d.low != SIZE_MAX ? d.low : 0;
+        if (!rap || cost <= free_b) { continue; }
+        const size_t next = std::min(rap->room_max, room_now(*rap) + (cost - free_b));
+        rap->room_lo_want = std::min(rap->room_lo_want, room_edge_down(*rap, rap->tail_real - poolx_up(next, std::max<size_t>(1, rap->room_step))));
+        asked = true;
+    }
+    return asked ? g_room_gen.load() + 1 : 0;
+}
+static void rp_room_wait(uint64_t gen) {   // until a lend applied the room asked for, at most 60 s (an idle server pins anyway: a pin that fails adds less)
+    for (int i = 0; gen != 0 && g_room_gen.load() < gen && i < 6000; ++i) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+}
 static void rp_resize(moe_cache * mc) {
     // rampool=1 keeps the fill's set: a block taken away would send its misses to the mapping. A grow still pinning: the next request's end looks again
     if (mc == nullptr || !mc->rp_on || !mc->rp_evict || g_rp_growing.load()) { return; }
@@ -9850,17 +9967,22 @@ static void rp_resize(moe_cache * mc) {
         const size_t per = std::max<size_t>(mc->rp_vram_per, ((size_t) 1 << 30) / 4096 * 8);   // never below one 8 B entry per 4 KiB page
         for (const auto & d : g_vram) {
             const size_t keep = (size_t) std::max<int64_t>(64, d.peak_mb / 8) << 20;   // the safety vram_margin adds to a stored need
-            const size_t room = d.low != SIZE_MAX && d.low > keep ? d.low - keep : 0;
+            size_t room = d.low != SIZE_MAX && d.low > keep ? d.low - keep : 0;
+            if (const moe_cache::alias_pool * rap = room_ap(mc, d.dev)) {   // no margin kept free: half of what CUDA's tail area has not handed over yet
+                room = (d.low != SIZE_MAX ? d.low : 0) + (rap->room_max > room_now(*rap) ? (rap->room_max - room_now(*rap)) / 2 : 0);
+            }
             vram_cap = std::min(vram_cap, room / per * ((size_t) 1 << 30));
         }
     }
     want = std::min(want, vram_cap);
     if (want == 0) { return; }
+    const uint64_t room_gen = rp_room_ask(mc, want);
     // pinning takes ~0.3 s per GiB (PC1, rp_prepin): on a thread of its own, the next request does not wait for it. Its chunks join under the pool's lock (readers
     // outside it index a chunk vector that never moves); rp_bufs is touched by nothing else meanwhile: a shrink waits for it (above), the teardown too
     g_rp_growing.store(true);
-    std::thread([mc, want, low, gfloor, half, vram_cap, pool0 = st0.bytes, gp = &grown]() {
+    std::thread([mc, want, low, gfloor, half, vram_cap, room_gen, pool0 = st0.bytes, gp = &grown]() {
         const double G = 1073741824.0;
+        rp_room_wait(room_gen);
         const int64_t t0 = ggml_time_us();
         const size_t added = ggml_rampool_grow_fork(want, rp_grow_alloc);
         *gp += added;   // read by the next resize only once g_rp_growing is false again
@@ -9969,16 +10091,30 @@ static size_t vram_margin(ggml_backend_dev_t dev, const std::string & section, b
 void llama_moe_cache_vram_watch_fork(bool prompt) {
     static std::atomic<uint32_t> n_calls{0};
     const uint32_t k = ++n_calls;
-    if (!prompt && (k & 31) != 0) {
+    if (!prompt && (k & 31) != 0 && !g_room_check && g_room_pending.empty()) {
         return;
     }
+    for (int64_t c : g_room_pending) { g_room_seen.push_back(c); }   // the call ran through: its shape's kernels are loaded
+    g_room_pending.clear();
+    g_room_check = false;
     std::lock_guard<std::mutex> lk(g_vram_mtx);
     for (auto & d : g_vram) {
         size_t f = 0, t = 0;
         ggml_backend_dev_memory(d.dev, &f, &t);
+        moe_cache::alias_pool * rap = room_ap(g_cache, d.dev);
+        // CUDA's own use: what the card lost beyond the pool, its room counted as given (CUDA's now)
+        const int64_t outside = (int64_t) d.free_at_size - (int64_t) d.pool + (int64_t) (rap ? rap->room_unmapped : 0) - (int64_t) f;
+        d.grow_max = std::max<int64_t>(d.grow_max, outside - d.u_prev);
+        d.u_prev   = outside;
+        if (rap && !g_rp_growing.load() && rap->room_lo_want >= rap->room_lo) {   // whole free blocks of the room go back at once; a RAM pool pinning keeps its page tables' room
+            const size_t room = rap->tail_real - rap->room_lo, next = poolx_room_give_back(room, f, rap->room_keep, rap->room_step);
+            if (next < room) {
+                rap->room_lo_want = room_edge_down(*rap, rap->tail_real - next);
+                room_shrink(g_cache, *rap);
+            }
+        }
         if (f < d.low) {
             d.low = f;
-            const int64_t outside = (int64_t) d.free_at_size - (int64_t) d.pool - (int64_t) f;
             d.peak_mb = std::max<int64_t>(d.peak_mb, (outside + (1 << 20) - 1) >> 20);
             if (d.n_lows++ < 24) {
                 LLAMA_LOG_WARN("moe-cache: VRAM watch %s: call %u (%s): free %.0f MiB, outside the pool since it was sized %lld MiB\n", ggml_backend_dev_name(d.dev), k,
@@ -9988,7 +10124,7 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
         // stored once a decode token was sampled (a whole request seen), then at every new peak 16 MiB over the stored figure. A warm start sized with the
         // cold figure (no warm one yet) writes its own, smaller figure at its first decode sample.
         const bool first = d.stored_mb < 0 || d.from_cold;
-        if (!d.section.empty() && ((first && !prompt) || (!first && d.peak_mb > d.stored_mb + 16))) {
+        if (!rap && !d.section.empty() && ((first && !prompt) || (!first && d.peak_mb > d.stored_mb + 16))) {
             moe_state_set(d.section, { { d.key, std::to_string(d.peak_mb) } });
             LLAMA_LOG_WARN("moe-cache: VRAM need outside the pool on %s: %lld MiB, stored for the next start (was %lld)\n", ggml_backend_dev_name(d.dev),
                     (long long) d.peak_mb, (long long) d.stored_mb);
@@ -9996,6 +10132,36 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
             d.from_cold = false;
         }
     }
+}
+
+// fork (2026-11-16): CUDA's own memory ran out inside a graph (ggml_cuda_oom with fit < 0: a kernel loaded on first use, cuBLAS, a CUDA graph): its room at the
+// pool's tail is to grow (poolx_room_grow) before llama_context::decode runs the call again; false: the room is at its most (the call would fail the same way)
+bool llama_moe_cache_room_oom_fork(int cuda_device) {
+    moe_cache * mc = g_cache;
+    if (!mc) { return false; }
+    for (auto & ap : mc->alias) {
+        if (ap.cuda_dev != cuda_device || ap.room_max == 0) { continue; }
+        int64_t grow = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_vram_mtx);
+            for (const auto & d : g_vram) { if (d.dev == ap.dev) { grow = d.grow_max; } }
+        }
+        const size_t cur = room_now(ap);
+        const size_t next = poolx_room_grow(cur, ap.room_max, ap.room_step, (size_t) std::max<int64_t>(0, grow));
+        if (next <= cur) {
+            LLAMA_LOG_ERROR("moe-cache: CUDA's own memory ran out on %s with its room at its most (%.0f MiB of the pool's tail)\n", ggml_backend_dev_name(ap.dev), cur / 1048576.0);
+            return false;
+        }
+        ap.room_lo_want = room_edge_down(ap, ap.tail_real - next);
+        LLAMA_LOG_WARN("moe-cache: CUDA's own memory ran out on %s inside a graph: its room grows %.0f -> %.0f MiB of the pool's tail, the call runs again\n",
+                ggml_backend_dev_name(ap.dev), cur / 1048576.0, (ap.tail_real - ap.room_lo_want) / 1048576.0);
+        return true;
+    }
+    return false;
+}
+// after the failed call was taken back (every card synchronized): the room the hook above asked for, now
+void llama_moe_cache_room_apply_fork() {
+    if (g_cache) { room_apply(g_cache, nullptr, true); }
 }
 
 // fork: a CUDA out-of-memory the backend caught (llama_context::decode after ggml_cuda_oom): the watch above never sees a request that failed, so the need
@@ -10105,7 +10271,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         // ponytail: one slot count per device, uniform over that device's layers.
         rp_prepin(mc, ggml_backend_buft_get_device(groups.begin()->first), profile_path(model));
         ggml_backend_dev_t sz_dev = nullptr;   // the last sizing (slots_for): the block pool fills the rest of its last round from it
-        size_t sz_free = 0, sz_margin = 0;
+        size_t sz_free = 0, sz_margin = 0, sz_area = 0;
         int64_t sz_stored = -1;
         bool sz_from_cold = false;
         const std::string vram_section = profile_path(model);
@@ -10139,6 +10305,19 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
             int64_t stored_mb = -1;
             bool from_cold = false;
             size_t margin = vram_margin(dev, vram_section, vram_cold, &stored_mb, &from_cold);
+            // CUDA's room at the pool's tail (user 2026-11-16: "no need for 100mb reserve gap then as we have exact needs"): what vram_margin keeps free for CUDA's
+            // own memory goes into the pool as its tail area, which holds cached experts until CUDA takes whole blocks of it (room_apply). A card without VMM, a
+            // pool past one buffer or --moe room=0 keeps the margin free as before
+            size_t area = 0;
+            if (pool_on && room_capable(buft, free)) {
+                // the tail area: what every kernel of this build takes on this card with this CUDA and driver, measured now by two probe processes (never stored:
+                // a stored need was far under what a new shape took, glm-i 24 vs 94 MiB, and a new CUDA needs other memory). It holds cached experts until
+                // CUDA takes it, so its size costs no VRAM; no VRAM is kept free for CUDA beside the pool
+                typedef size_t (*kbytes_t)(int);
+                auto kb = (kbytes_t) llama_fork_proc_dev(dev, "ggml_backend_fork_kernels_bytes_fork");
+                area = kb ? kb(llama_fork_dev_index(dev)) : 0;
+                if (area > 0) { margin = 0; }
+            }
             // no pool (router prediction keeps per-layer cache tensors): the KV arena comes after the cache and keeps its own margin free behind it, on top of what
             // CUDA takes after the cache; leave it the whole context (GLM 3.5 pred-top 2026-11-12: the cache took 32.7 GiB, 297 MiB were left, "kv-arena: no room for the KV")
             if (!pool_on) {
@@ -10189,7 +10368,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     margin += (size_t) (n_src * n_embd * n_expert * ahead * (sizeof(ggml_fp16_t) + 34.0/32)) + 64u * 1024 * 1024;
                 }
             }
-            sz_dev = dev; sz_free = free; sz_margin = margin; sz_stored = stored_mb; sz_from_cold = from_cold;
+            sz_dev = dev; sz_free = free; sz_margin = margin; sz_area = area; sz_stored = stored_mb; sz_from_cold = from_cold;
             if (free <= margin + per_slot) {
                 return 0;
             }
@@ -10328,6 +10507,13 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 const bool   split = total > max_b;
                 std::vector<ggml_backend_buffer_t> cbufs(pl.cls.size(), nullptr);
                 ggml_backend_buffer_t pbuf = nullptr;
+                // the tail area (CUDA's room): the old margin's worth of whole blocks of the last class, at most half of that class (its stream needs the rest)
+                const size_t tail_all = order.empty() ? 0 : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                size_t area_b = 0, room_max = 0, room_gran = 0, room_vsz = 0;
+                if (sz_area > 0 && sz_dev == ggml_backend_buft_get_device(buft) && !order.empty() && !split) {
+                    const pool_class & lc = pl.cls[order.back()];
+                    area_b = std::min<size_t>((size_t) nblk[order.back()] / 2, (sz_area + lc.B - 1) / lc.B) * lc.B;
+                }
                 if (split) {
                     // a class past the limit is split into classes of fewer layers (each a buffer of its own) rather than cut: a layer belongs to one class
                     {
@@ -10378,7 +10564,18 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     }
                     pbuf = cbufs[order[0]];
                 } else {
-                    pbuf = ggml_backend_buft_alloc_buffer(buft, total);
+                    if (area_b > 0) {   // VMM: the last bytes in chunks the driver can be given (unmapped) and that come back (mapped again)
+                        typedef ggml_backend_buffer_t (*room_buf_t)(ggml_backend_buffer_type_t, size_t, size_t *, size_t *, size_t *);
+                        if (auto rb = (room_buf_t) llama_fork_proc_dev(ggml_backend_buft_get_device(buft), "ggml_backend_fork_room_buffer_fork")) {
+                            room_max = area_b + (total - std::min(total, tail_all)) + ((size_t) 4 << 20);
+                            pbuf = rb(buft, total, &room_max, &room_gran, &room_vsz);
+                        }
+                        if (!pbuf) {
+                            room_max = 0;
+                            LLAMA_LOG_WARN("%s: no VMM pool on %s: a plain buffer, CUDA's %.0f MiB tail area cannot be handed to it\n", __func__, ggml_backend_buft_name(buft), area_b / 1048576.0);
+                        }
+                    }
+                    if (!pbuf) { pbuf = ggml_backend_buft_alloc_buffer(buft, total); }
                     if (!pbuf) {
                         LLAMA_LOG_WARN("%s: failed to allocate the MoE cache pool (%.1f MiB) on %s - cache disabled\n", __func__, total / 1048576.0, ggml_backend_buft_name(buft));
                         return false;
@@ -10431,11 +10628,12 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 std::vector<int32_t> gn(pl.cls.size());
                 const bool ring = pp_no_staging() && !split;
                 for (size_t c = 0; c < pl.cls.size(); ++c) { gbase[c] = pl.cls[c].base; gn[c] = nblk[c]; }
+                const size_t vol_lo = room_max > 0 ? tail_all - area_b : tail_all;   // the tail area's first byte: a block edge of the last class
                 if (ring && pl.cls.size() > 1) {
-                    const size_t tail = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    const size_t tail = vol_lo;   // the grids end where the tail area starts
                     for (size_t c : order) {
                         const size_t end = pl.cls[c].base + (size_t) nblk[c] * pl.cls[c].B;
-                        gn[c] = nblk[c] + (int32_t) ((tail - end) / pl.cls[c].B);
+                        gn[c] = nblk[c] + (tail > end ? (int32_t) ((tail - end) / pl.cls[c].B) : 0);
                     }
                 }
                 std::string cls_txt;
@@ -10448,6 +10646,9 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     for (int32_t b = nblk[c] - 1; b >= 0; --b) { ps.owner[b] = -1; ps.free.push_back(b); }
                     ps.home_lo = 0;
                     ps.home_hi = nblk[c];
+                    if (vol_lo < tail_all) {   // the ring writes only in front of the tail area
+                        ps.ring_hi = vol_lo > pl.cls[c].base ? std::min<int32_t>(gn[c], (int32_t) ((vol_lo - pl.cls[c].base) / pl.cls[c].B)) : 0;
+                    }
                     mc->pool.push_back(std::move(ps));
                     cls_txt += tr_fmt("%s%d x %.2f MiB (%zu layers%s)", c ? ", " : "", nblk[c], pl.cls[c].B / 1048576.0, pl.cls[c].members.size(),
                             gn[c] > nblk[c] ? tr_fmt(", grid of %d", gn[c]).c_str() : "");
@@ -10467,7 +10668,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         if (!own) { fl.push_back(c.l); }
                     }
                     const pool_layout_t pf = pool_layout(fl);
-                    const size_t tail = pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    const size_t tail = vol_lo;   // in front of the tail area
                     for (const pool_class & fc : pf.cls) {
                         const llama_layer * fp    = fl[fc.members[0]];
                         const ggml_tensor * ft[3] = { fp->ffn_up_exps, fp->ffn_gate_exps, fp->ffn_down_exps };
@@ -10562,6 +10763,21 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         ap.segs.push_back(sg);
                     }
                     ap.tail_end  = split ? ap.span : pl.cls[order.back()].base + (size_t) nblk[order.back()] * pl.cls[order.back()].B;
+                    ap.tail_real = ap.vol_lo = ap.room_lo = ap.room_lo_want = ap.tail_end;
+                    if (room_max > 0 && !split && vol_lo < ap.tail_end && ap.segs.back().pcls == (int32_t) (pool0 + order.back())) {
+                        ap.vol_lo    = ap.room_base = vol_lo;
+                        ap.room_step = pl.cls[order.back()].B;
+                        ap.tail_end  = vol_lo;
+                        ap.span      = std::min(ap.span, vol_lo);
+                        ap.room_vsz  = room_vsz;
+                        // the most CUDA can get: the tail area's blocks inside the chunked bytes at the end of the address space
+                        ap.room_max  = std::min(ap.tail_real - vol_lo, room_max > room_vsz - ap.tail_real ? room_max - (room_vsz - ap.tail_real) : 0);
+                        ap.room_keep = sz_margin;
+                        LLAMA_LOG_WARN("moe-cache: tail area on %s: the last %.0f MiB of the pool (%zu blocks of %.2f MiB) hold cached experts only, no stream, lend or KV "
+                                "there; CUDA's own memory takes whole blocks from its top when it runs out (up to %.0f MiB) and gives them back when its use drops; "
+                                "%.0f MiB of VRAM kept free beside the pool\n", ggml_backend_buft_name(buft), (ap.tail_real - vol_lo) / 1048576.0,
+                                (size_t) ((ap.tail_real - vol_lo) / ap.room_step), ap.room_step / 1048576.0, ap.room_max / 1048576.0, sz_margin / 1048576.0);
+                    }
                     ap.floor_end = ap.tail_end;
                     const char * ring_why = "";
                     int ring_n = 0;
@@ -11924,7 +12140,7 @@ static int64_t pp_blocks(moe_cache * mc, layer_state & ls, bool landed = false) 
     int64_t n = 0;
     if (ls.pcls >= 0) {
         const auto & ps = mc->pool[ls.pcls];
-        for (int32_t b = ps.ring_lo, nb = (int32_t) ps.owner.size(); b < nb; ++b) {   // the ring reserve (staging=0) or the whole class
+        for (int32_t b = ps.ring_lo, nb = std::min<int32_t>((int32_t) ps.owner.size(), ps.ring_hi); b < nb; ++b) {   // the ring reserve (staging=0) or the whole class
             const int32_t o = ps.owner[b];
             n += o == -1 || (landed && o == -4) || (o >= 0 && (landed || !mc->layers[o].slot_in_flight[b]) && !mc->layers[o].is_stream[b])   // -4: the ring claims it (cls_claim)
                || o <= -5;   // a shadow's: given back at the next pass (cs_shadow_drop)
@@ -12413,7 +12629,7 @@ static std::string cs_why(moe_cache * mc, size_t p) {
     };
     int claim_bl[8] = {};
     std::set<int> outl;   // the layers outside the pass (or pinned) that hold blocks of the class
-    for (int32_t b = ps.ring_lo; b < (int32_t) ps.owner.size(); ++b) {
+    for (int32_t b = ps.ring_lo; b < std::min<int32_t>((int32_t) ps.owner.size(), ps.ring_hi); ++b) {
         if (ps.owner[b] != -4) { const int k = kind(ls.pcls, b); n[k]++; if (k == 4) { outl.insert(csl(mc, (size_t) cs_li_of(mc, ps.owner[b])).pub.il); } continue; }
         int worst = 7;
         cls_over(mc, ls.pcls, b, [&](int32_t qc, int32_t x) { const int k = kind(qc, x); if (k >= 1 && k <= 5) { worst = std::min(worst, k); } return true; });
@@ -12580,7 +12796,7 @@ static bool cs_plan(moe_cache * mc, size_t p, std::vector<cs_cp> & out, size_t &
     std::vector<cand> c;
     // the layer ring (staging=0): the class's blocks in the reserve behind floor_end, from the card's cursor (bytes, class-blind: the layers of every class follow
     // one another there, first in first out); without a reserve the class's own cursor over all its blocks
-    const int32_t nb = (int32_t) ps.owner.size(), r0 = ps.ring_lo, nr = nb - r0;
+    const int32_t nb = std::min<int32_t>((int32_t) ps.owner.size(), ps.ring_hi), r0 = std::min(ps.ring_lo, nb), nr = nb - r0;
     moe_cache::alias_pool * card = nullptr;
     size_t cbase = 0;
     for (auto & ap : mc->alias) { for (const auto & sg : ap.segs) { if (sg.pcls == ls.pcls) { card = &ap; cbase = sg.base; } } }
@@ -13014,7 +13230,7 @@ static void cs_begin(moe_cache * mc) {
         bool any = false;
         for (auto & ps : mc->pool) {
             if (ps.ring_lo == 0) { continue; }
-            for (int32_t b = ps.ring_lo; b < (int32_t) ps.owner.size(); ++b) {
+            for (int32_t b = ps.ring_lo; b < std::min<int32_t>((int32_t) ps.owner.size(), ps.ring_hi); ++b) {
                 const int32_t o = ps.owner[b];
                 if (o >= 0 && mc->cs_pos[o] < 0 && mc->layers[o].slot_expert[b] >= 0) { evict_slot(mc, mc->layers[o], b); any = true; n_ev++; }
             }
@@ -13053,14 +13269,14 @@ static int cs_k_ahead_max(moe_cache * mc, size_t nx) {
     const layer_state & ls = csl(mc, mc->cs_order[nx]);
     const auto & ps = mc->pool[ls.pcls];
     int32_t held = 0;
-    for (int32_t b = ps.ring_lo; b < (int32_t) ps.owner.size(); ++b) { const int32_t o = ps.owner[b]; held += o >= 0 && cs_li_of(mc, o) < 0; }
+    for (int32_t b = ps.ring_lo; b < std::min<int32_t>((int32_t) ps.owner.size(), ps.ring_hi); ++b) { const int32_t o = ps.owner[b]; held += o >= 0 && cs_li_of(mc, o) < 0; }
     int32_t emax = 0;
     for (size_t q = 0; q < mc->cs_rng.size() && q < mc->cs_order.size(); ++q) {
         const int32_t ne = (int32_t) csl(mc, mc->cs_order[q]).expert_slot.size();
         emax = std::max(emax, std::min(ne, mc->cs_rng[q].second) - std::max(0, mc->cs_rng[q].first));
     }
     if (emax <= 0) { emax = (int32_t) ls.expert_slot.size(); }
-    return poolx_k_ahead_max((int32_t) ps.owner.size() - ps.ring_lo, held, emax);
+    return poolx_k_ahead_max(std::min<int32_t>((int32_t) ps.owner.size(), ps.ring_hi) - ps.ring_lo, held, emax);
 }
 
 // the uploads that can start now (cache lock held). Each card's ring runs ahead over its own layers (one cursor over all layers held card 1's uploads back until card 0's
