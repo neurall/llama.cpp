@@ -4027,3 +4027,7 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-15 19:13:39,"rel_small_gpus -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9416
 2026-11-15 19:13:57,"rel_small_gpus -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9365
 2026-11-15 19:13:57,"rel_small_gpus -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9378
+2026-11-16 08:28:30,state_split_heat -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3697
+2026-11-16 08:28:30,state_split_heat -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.422
+2026-11-16 08:30:31,state_split_heat -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3764
+2026-11-16 08:30:31,state_split_heat -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4313
