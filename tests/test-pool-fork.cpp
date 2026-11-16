@@ -1160,6 +1160,39 @@ static void test_regress_room_graph_warmup() {
         }
     }
 }
+static void test_regress_room_give_back_chunks() {
+    printf("Testing [bug: a block given back with a chunk the driver could not back, Qwen3.8 IQ4_XS room_graphs_clear 2026-11-16] the room's give-back in whole chunks:\n");
+    // blocks of 2.24 MiB, chunks of 2 MiB; the room's first unmapped byte 1000 bytes above its first block: giving that block back needs two chunks. The log:
+    // 3 MiB free, one block went back by its byte count, the second chunk failed to map, the shrink kept max(wanted edge, first unmapped byte) and the
+    // block entered the cache half unmapped: "a copy of 921600 bytes (moe_cache_down.24) into CUDA's room"
+    const size_t M = 1048576, g = 2 * M, B = 2348810;
+    const size_t room_lo = 112 * g - 1000, first = 112 * g, tail = room_lo + 52 * B, base = room_lo;   // the room's blocks: room_lo + k * B
+    const size_t old_room = poolx_room_give_back(tail - room_lo, 3 * M, 0, B);
+    report("old rule: 3 MiB free gives a block back by its bytes (the regression)", old_room == tail - room_lo - B, fmt("room %zu -> %zu blocks", (tail - room_lo) / B, old_room / B));
+    size_t e = poolx_room_give_back_chunks(room_lo, first, tail, 3 * M, 0, B, g);
+    report("new rule: 3 MiB free (one chunk) keeps a block that needs two", e == room_lo, fmt("%zu blocks back", (e - room_lo) / B));
+    e = poolx_room_give_back_chunks(room_lo, first, tail, 4 * M, 0, B, g);
+    report("new rule: 4 MiB free (two chunks) gives it back", e == room_lo + B, fmt("%zu blocks back", (e - room_lo) / B));
+    // the shrink after a map that failed: the driver backed one chunk, the second stays unmapped below the wanted edge
+    const size_t want = room_lo + B, first_after = first + g;   // first unmapped byte after one chunk mapped: inside the block wanted back
+    const size_t old_lo = poolx_room_edge_down(std::max(want, first_after), room_lo, tail, base, B), new_lo = poolx_room_edge_down(first_after, room_lo, tail, base, B);
+    report("old shrink edge: above an unmapped byte (the regression)", old_lo > first_after, fmt("edge %zu, first unmapped %zu", old_lo, first_after));
+    report("new shrink edge: every unmapped byte stays in the room", new_lo <= first_after && new_lo == room_lo, fmt("edge %zu, first unmapped %zu", new_lo, first_after));
+    // random rooms: the edge is a block edge, its chunks fit the free whole chunks, one block more would not
+    std::mt19937 rng(7);
+    int bad = 0;
+    for (int it = 0; it < 20000; ++it) {
+        const size_t Bk = (size_t) (rng() % (8 * M)) + 4096, gk = (size_t) 1 << (20 + rng() % 3), nb = 1 + rng() % 200;
+        const size_t lo0 = (size_t) (rng() % 1000) * Bk, tl = lo0 + nb * Bk;
+        const size_t fu = std::min(tl + gk, lo0 + (size_t) (rng() % (gk + 1)));   // a first unmapped byte at or above the room's first block edge
+        const size_t fr = (size_t) (rng() % (64 * M)), kp = (size_t) (rng() % (4 * M));
+        const size_t r = poolx_room_give_back_chunks(lo0, fu, tl, fr, kp, Bk, gk);
+        const size_t can = fr > kp ? (fr - kp) / gk * gk : 0;
+        auto need = [&](size_t x) { return x > fu ? (x - fu + gk - 1) / gk * gk : 0; };
+        bad += r < lo0 || r > tl || (r - lo0) % Bk != 0 || need(r) > can || (r + Bk <= tl && need(r + Bk) <= can);
+    }
+    report("random rooms: the largest block edge whose chunks fit, never more", bad == 0, fmt("%d bad of 20000", bad));
+}
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -1190,6 +1223,7 @@ int main(int argc, char ** argv) {
     test_regress_pool_start_pins();
     test_regress_room_shadow_tags();
     test_regress_room_graph_warmup();
+    test_regress_room_give_back_chunks();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

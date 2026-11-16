@@ -387,7 +387,7 @@ struct moe_cache {
         // (tail_end = vol_lo). CUDA's own memory (kernels loaded on first use, cuBLAS, CUDA graphs, page tables of pinned RAM) takes whole blocks from its top:
         // [room_lo, tail_real) are owner POOLX_ROOM with their VMM chunks unmapped (ggml_backend_fork_set_room_fork); they come back as soon as its use drops.
         size_t                tail_real = 0, vol_lo = 0, room_lo = 0, room_lo_want = 0, room_base = 0, room_step = 0;
-        size_t                room_vsz = 0, room_max = 0, room_unmapped = 0, room_keep = 0;   // address space, the most CUDA can get, unmapped now, free VRAM that is not the room's
+        size_t                room_vsz = 0, room_max = 0, room_unmapped = 0, room_keep = 0, room_gran = 0;   // address space, the most CUDA can get, unmapped now, free VRAM that is not the room's
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
         // KV zone (--moe kv-tail=1, fork/docs/kv-grow.md): the records of the caches on this card interleaved in one combined row per cell (kv_row bytes, record r at
         // byte `prefix` of it), [kv_start, kv_start + kv_h * kv_row) of the buffer, behind the compute lend and in front of the experts; blocks under it are owner -3
@@ -7287,8 +7287,7 @@ static bool room_capable(ggml_backend_buffer_type_t buft, size_t free_b) {   // 
     return g > 0;
 }
 static size_t room_edge_down(const moe_cache::alias_pool & ap, size_t at) {   // the block edge at or below `at`, inside the tail area
-    at = std::min(std::max(at, ap.vol_lo), ap.tail_real);
-    return ap.room_step ? ap.room_base + (at - ap.room_base) / ap.room_step * ap.room_step : at;
+    return poolx_room_edge_down(at, ap.vol_lo, ap.tail_real, ap.room_base, ap.room_step);
 }
 static size_t room_now(const moe_cache::alias_pool & ap) { return ap.tail_real - std::min(ap.room_lo, ap.room_lo_want); }   // the room, a growth asked included
 static moe_cache::alias_pool * room_ap(moe_cache * mc, ggml_backend_dev_t dev) {
@@ -7318,6 +7317,7 @@ static void room_apply(moe_cache * mc, ggml_backend_sched_t sched, bool synced) 
         pool_move_end(ap);
         const size_t u = fn(ap.buf, ap.room_vsz - ap.room_lo_want);
         if (u == SIZE_MAX) { ap.room_lo_want = ap.room_lo; continue; }
+        GGML_ASSERT(ap.room_vsz - u >= ap.room_lo_want && "moe-cache: CUDA's room grew with unmapped bytes below it (they would stay in the cache)");
         ap.room_lo = ap.room_lo_want;
         ap.room_unmapped = u;
         any = true;
@@ -7353,7 +7353,9 @@ static void room_shrink(moe_cache * mc, moe_cache::alias_pool & ap) {
     const size_t was = ap.room_lo, u = fn(ap.buf, ap.room_vsz - ap.room_lo_want);
     if (u == SIZE_MAX) { return; }
     ap.room_unmapped = u;
-    const size_t lo = room_edge_down(ap, std::max(ap.room_lo_want, ap.room_vsz - u));   // a block with a byte still unmapped stays CUDA's
+    // a block with a byte still unmapped stays CUDA's: the edge at or below the first unmapped byte, below the one asked for when a chunk could not be backed
+    // (was max(asked, first unmapped): Qwen3.8 IQ4_XS room_graphs_clear 2026-11-16, a block went to the cache half unmapped, a refill copy into it aborted)
+    const size_t lo = room_edge_down(ap, ap.room_vsz - u);
     size_t nt = 0, ng = 0, ne = 0;
     kv_blocks_apply(mc, ap, lo, ap.tail_real, false, true, nt, ng, ne, POOLX_ROOM);
     ap.room_lo = ap.room_lo_want = lo;
@@ -10111,9 +10113,9 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
             typedef size_t (*pending_t)(void);
             auto pend = (pending_t) llama_fork_proc_dev(d.dev, "ggml_backend_fork_pins_pending_fork");
             const size_t keep = rap->room_keep + poolx_pins_vram(pend ? pend() : 0, 0);
-            const size_t room = rap->tail_real - rap->room_lo, next = poolx_room_give_back(room, f, keep, rap->room_step);
-            if (next < room) {
-                rap->room_lo_want = room_edge_down(*rap, rap->tail_real - next);
+            const size_t lo = poolx_room_give_back_chunks(rap->room_lo, rap->room_vsz - rap->room_unmapped, rap->tail_real, f, keep, rap->room_step, rap->room_gran);
+            if (lo > rap->room_lo) {   // whole chunks of the free bytes: a block goes back only when every chunk it touches can be backed
+                rap->room_lo_want = lo;
                 room_shrink(g_cache, *rap);
             }
         }
@@ -10784,6 +10786,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                         ap.tail_end  = vol_lo;
                         ap.span      = std::min(ap.span, vol_lo);
                         ap.room_vsz  = room_vsz;
+                        ap.room_gran = room_gran;   // the driver maps whole chunks of it (poolx_room_give_back_chunks)
                         // the most CUDA can get: the tail area's blocks inside the chunked bytes at the end of the address space
                         ap.room_max  = std::min(ap.tail_real - vol_lo, room_max > room_vsz - ap.tail_real ? room_max - (room_vsz - ap.tail_real) : 0);
                         ap.room_keep = sz_margin;

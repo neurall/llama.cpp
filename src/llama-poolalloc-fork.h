@@ -279,6 +279,27 @@ static inline size_t poolx_room_give_back(size_t room, size_t free_b, size_t kee
     const size_t give = (free_b - keep) / step * step;
     return room - std::min(room, give);
 }
+// the block edge (base + k * step) at or below `at`, inside the tail area [vol_lo, tail_real]
+static inline size_t poolx_room_edge_down(size_t at, size_t vol_lo, size_t tail_real, size_t base, size_t step) {
+    at = std::min(std::max(at, vol_lo), tail_real);
+    return step ? base + (at - base) / step * step : at;
+}
+// The room's first byte after a give-back: the blocks [room_lo, E) leave the room when every chunk they touch can be mapped again. The driver backs whole
+// chunks (the VMM granularity `gran`, 2 MiB) and a block need not end on a chunk edge (Qwen3.8 IQ4_XS: 2.24 MiB blocks): a give-back counted in bytes
+// handed back a block whose second chunk the driver could not back with 3 MiB free (build room_graphs_clear 2026-11-16: a refill copy into it, abort).
+// first_unmapped: the room's first unmapped byte, a chunk edge >= room_lo (chunk edges are first_unmapped + k * gran). Returns the largest block edge E
+// whose chunks fit in the card's free whole chunks less `keep`.
+static inline size_t poolx_room_give_back_chunks(size_t room_lo, size_t first_unmapped, size_t tail_real, size_t free_b, size_t keep, size_t step, size_t gran) {
+    if (step == 0 || gran == 0) { return room_lo; }
+    const size_t can = free_b > keep ? (free_b - keep) / gran * gran : 0;   // blocks below the first unmapped byte need none: they go back at no cost
+    size_t e = room_lo;
+    while (e + step <= tail_real) {
+        const size_t end = e + step, need = end > first_unmapped ? (end - first_unmapped + gran - 1) / gran * gran : 0;
+        if (need > can) { break; }
+        e = end;
+    }
+    return e;
+}
 // After a call: a shape class lent the whole tail area (not seen yet) counts the call and is seen after its second, when its CUDA graphs exist too (ggml
 // instantiates a graph's CUDA graph at the graph's second call). The room gives back only when no class is mid-warmup (returns true): a give-back after the
 // first call measured CUDA's use before the graphs existed (GLM 3.0, build room_tag_fix 2026-11-16: 346 -> 189 MiB after the first decode token, 1 MiB
