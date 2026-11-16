@@ -8391,6 +8391,20 @@ def run_list(name, argv):
     rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) and not (r.get("args") or "").strip() else (o.build,))]   # a cell with forced server args (dense-split=0/1) is a test of our own settings: stock has none of them, no stock partner   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
     for r in rows:   # a slow stock cell of a best-prompt cell is fed less (prompt and answer), so it takes about as long as ours; the speeds it shows stay comparable
         mt = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "")
+        if str(r["_b"]).startswith("stock") and not mt and "--clamp" not in (r.get("extra") or ""):   # another test of a model that thrashes stock: shortened by the speed dividers of ours and stock on this very test
+            _sz0 = sum(os.path.getsize(q) for q in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
+            _rm0 = int(next((l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")), "0")) * 1024
+            if _sz0 > 0.8 * _rm0:
+                ref = ours_reference(r["model"], r["test"]); sr0 = stock_rates(r["model"]) or (5.0, 0.5)
+                pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
+                out0 = int(r.get("tokens") or og0 or 1024)
+                if ref and ref.get("p") and ref.get("t"):
+                    n0 = int(min(pn0 or 10**9, max(256, (pn0 or 0) * sr0[0] / ref["p"]))) if pn0 else 0
+                    m0 = min(out0, max(32, int(out0 * sr0[1] / ref["t"])))
+                    if m0 < out0 or (pn0 and n0 < pn0):
+                        r["extra"] = " ".join(re.sub(r"--tokens \d+", "", r.get("extra") or "").split() + (["--clamp", str(n0)] if pn0 and n0 < pn0 else []) + ["--tokens", str(m0)]); r["tokens"] = str(m0)
+                        print(col(90, f"{r['name']}: stock fed {n0 or '-'} prompt / {m0} answer tokens (ours {pn0 or '-'} / {out0}): stock {sr0[0]:.1f} / {sr0[1]:.1f} t/s, ours {ref['p']:.0f} / {ref['t']:.1f} t/s"), flush=True)
+            continue
         if not (str(r["_b"]).startswith("stock") and mt): continue
         ot = our_best_times(r["model"], int(r.get("tokens") or 1024)); sr = stock_rates(r["model"]); out0 = int(r.get("tokens") or 1024)
         _sz = sum(os.path.getsize(q) for q in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0

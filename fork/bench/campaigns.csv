@@ -9533,3 +9533,4 @@ latest-k31-io-edit4c,2026-11-16 10:05:14,bench /m/k/1/Kimi-K3.1-Pro-IQ1_S-00001-
 latest-k31-o-tetrisc,2026-11-16 10:27:43,bench /m/k/1/Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf builds state_split_heat variants v test tetrisc n=2,,
 stock-b12426-official-ds-i-pf14k1k,2026-11-16 10:49:14,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds stock-b12426-official variants v test pf14k n=2,,
 stock-b12426-official-k31-i-pf13k1k,2026-11-16 10:58:03,bench /m/k/1/Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf builds stock-b12426-official variants v test pf13k n=2,,
+stock-b12426-official-k31-io-edit4c,2026-11-16 12:09:21,bench /m/k/1/Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf builds stock-b12426-official variants v test edit4c n=2,,
