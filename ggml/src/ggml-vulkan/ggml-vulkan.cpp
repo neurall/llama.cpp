@@ -845,6 +845,9 @@ void ggml_vk_destroy_pipeline(vk::Device& device, vk_pipeline& pipeline) {
 
 void ggml_pipeline_request_descriptor_sets(ggml_backend_vk_context *ctx, vk_pipeline& pipeline, uint32_t n) {
     VK_LOG_DEBUG("ggml_pipeline_request_descriptor_sets(" << pipeline->name << ", " << n << ")");
+    if (ctx->scratch_measure) {   // fork: the sizing pass compiles and allocates nothing
+        return;
+    }
     ctx->pipeline_descriptor_set_requirements += n;
     if (!pipeline->compiled) {
         ggml_vk_load_shaders(ctx->device, pipeline);
@@ -1216,6 +1219,9 @@ vk_subbuffer ggml_vk_subbuffer(const ggml_backend_vk_context* ctx, const vk_buff
 
 void ggml_vk_sync_buffers(ggml_backend_vk_context* ctx, vk_context& subctx) {
     VK_LOG_DEBUG("ggml_vk_sync_buffers()");
+    if (ctx && ctx->scratch_measure) {   // fork: the sizing pass records nothing
+        return;
+    }
 
     const bool transfer_queue = subctx->p->q->transfer_only;
 
@@ -5881,6 +5887,10 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
 vk_subbuffer ggml_vk_tensor_subbuffer(
     const ggml_backend_vk_context * ctx, const ggml_tensor * tensor, bool allow_misalign) {
 
+    if (ctx->scratch_measure) {   // fork: the sizing pass names no memory (its tensors may have none yet); an empty buffer keeps the descriptor lists valid
+        static const vk_buffer none = std::make_shared<vk_buffer_struct>();
+        return { none, 0, 0 };
+    }
     vk_buffer buffer = nullptr;
     size_t offset = 0;
     if (ctx->device->uma) {
@@ -6556,9 +6566,10 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
     const uint64_t r2 = ne12 / ne02;
     const uint64_t r3 = ne13 / ne03;
 
-    ggml_backend_vk_buffer_context * dst_buf_ctx = (ggml_backend_vk_buffer_context *)dst->buffer->context;
-    ggml_backend_vk_buffer_context * src0_buf_ctx = (ggml_backend_vk_buffer_context *)src0->buffer->context;
-    ggml_backend_vk_buffer_context * src1_buf_ctx = (ggml_backend_vk_buffer_context *)src1->buffer->context;
+    // fork: none in the sizing pass (scratch_measure), whose tensors may have no memory yet; used only after the sizes below
+    ggml_backend_vk_buffer_context * dst_buf_ctx = dst->buffer ? (ggml_backend_vk_buffer_context *)dst->buffer->context : nullptr;
+    ggml_backend_vk_buffer_context * src0_buf_ctx = src0->buffer ? (ggml_backend_vk_buffer_context *)src0->buffer->context : nullptr;
+    ggml_backend_vk_buffer_context * src1_buf_ctx = src1->buffer ? (ggml_backend_vk_buffer_context *)src1->buffer->context : nullptr;
 
     vk_buffer d_Qx = nullptr;
     size_t qx_buf_offset = 0;
@@ -6670,6 +6681,9 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
         if (split_k > 1 && ctx->prealloc_size_split_k < split_k_size) {
             ctx->prealloc_size_split_k = split_k_size;
             ggml_vk_preallocate_buffers(ctx, subctx);
+        }
+        if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+            return;
         }
 
         // Request descriptor sets
@@ -6996,6 +7010,9 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
             ggml_vk_preallocate_buffers(ctx, subctx);
         }
 
+        if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+            return;
+        }
         // Request descriptor sets
         if (qx_needs_dequant) {
             ggml_pipeline_request_descriptor_sets(ctx, to_fp16_vk_0, 1);
@@ -7601,9 +7618,10 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
 
     const uint64_t n_as = ne02;
 
-    ggml_backend_vk_buffer_context * dst_buf_ctx = (ggml_backend_vk_buffer_context *)dst->buffer->context;
-    ggml_backend_vk_buffer_context * src0_buf_ctx = (ggml_backend_vk_buffer_context *)src0->buffer->context;
-    ggml_backend_vk_buffer_context * src1_buf_ctx = (ggml_backend_vk_buffer_context *)src1->buffer->context;
+    // fork: none in the sizing pass (scratch_measure), whose tensors may have no memory yet; used only after the sizes below
+    ggml_backend_vk_buffer_context * dst_buf_ctx = dst->buffer ? (ggml_backend_vk_buffer_context *)dst->buffer->context : nullptr;
+    ggml_backend_vk_buffer_context * src0_buf_ctx = src0->buffer ? (ggml_backend_vk_buffer_context *)src0->buffer->context : nullptr;
+    ggml_backend_vk_buffer_context * src1_buf_ctx = src1->buffer ? (ggml_backend_vk_buffer_context *)src1->buffer->context : nullptr;
 
     vk_buffer d_Qx = nullptr;
     size_t qx_buf_offset = 0;
@@ -7773,6 +7791,9 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
         if (ctx->prealloc_size_split_k < expert_data_size) {
             ctx->prealloc_size_split_k = expert_data_size;
             ggml_vk_preallocate_buffers(ctx, subctx);
+        }
+        if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+            return;
         }
 
         // Request descriptor sets
@@ -8054,6 +8075,9 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
             ggml_vk_preallocate_buffers(ctx, subctx);
         }
 
+        if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+            return;
+        }
         // Request descriptor sets
         if (qx_needs_dequant) {
             ggml_pipeline_request_descriptor_sets(ctx, to_fp16_vk_0, 1);
@@ -8669,6 +8693,17 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         }
     }
 
+    // fork: the K/V dequant scratch is sized before any memory is named below, so the sizing pass (scratch_measure) can stop here
+    const uint64_t k_sz = use_dequant_kv ? (uint64_t)ggml_nelements(k) * kv_scratch_ts : 0;
+    const uint64_t v_sz = use_dequant_kv ? (uint64_t)ggml_nelements(v) * kv_scratch_ts : 0;
+    if (use_dequant_kv && ctx->prealloc_size_x < k_sz + v_sz) {
+        ctx->prealloc_size_x = k_sz + v_sz;
+        ggml_vk_preallocate_buffers(ctx, subctx);
+    }
+    if (ctx->scratch_measure) {
+        return;
+    }
+
     const uint32_t n_head_kv   = neq2;
     const uint32_t n_head_log2 = 1u << (uint32_t) floorf(log2f((float) n_head_kv));
     const float m0 = powf(2.0f, -(max_bias       ) / n_head_log2);
@@ -8689,12 +8724,6 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     }
 
     if (use_dequant_kv) {
-        const uint64_t k_sz = (uint64_t)ggml_nelements(k) * kv_scratch_ts;
-        const uint64_t v_sz = (uint64_t)ggml_nelements(v) * kv_scratch_ts;
-        if (ctx->prealloc_size_x < k_sz + v_sz) {
-            ctx->prealloc_size_x = k_sz + v_sz;
-            ggml_vk_preallocate_buffers(ctx, subctx);
-        }
         vk_subbuffer k_dst = vk_subbuffer{ ctx->prealloc_x, 0,    k_sz };
         vk_subbuffer v_dst = vk_subbuffer{ ctx->prealloc_x, k_sz, v_sz };
         const uint32_t k_nel = (uint32_t)ggml_nelements(k);
@@ -11447,6 +11476,9 @@ void ggml_vk_soft_max(ggml_backend_vk_context * ctx, vk_context& subctx, const g
             ctx->prealloc_size_y = tmp_size;
             ggml_vk_preallocate_buffers(ctx, subctx);
         }
+        if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+            return;
+        }
         if (ctx->prealloc_x_need_sync || ctx->prealloc_y_need_sync) {
             ggml_vk_sync_buffers(ctx, subctx);
         }
@@ -11639,10 +11671,16 @@ void ggml_vk_argsort(ggml_backend_vk_context * ctx, vk_context& subctx, const gg
             ctx->prealloc_size_x = x_sz;
             ggml_vk_preallocate_buffers(ctx, subctx);
         }
+        if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+            return;
+        }
         if (ctx->prealloc_x_need_sync) {
             ggml_vk_sync_buffers(ctx, subctx);
         }
         subbuf1 = { ctx->prealloc_x, 0, ctx->prealloc_x->size };
+    }
+    if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+        return;
     }
 
     std::array<uint32_t, 3> elements;
@@ -11702,6 +11740,9 @@ void ggml_vk_topk(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_
     if (k_min_pipeline >= num_topk_pipelines || ctx->device->pipeline_topk_f32[k_min_pipeline] == nullptr) {
         vk_pipeline pipeline = ctx->device->pipeline_topk_radix_f32;
         GGML_ASSERT(pipeline != nullptr);
+        if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+            return;
+        }
 
         if (ctx->prealloc_x_need_sync) {
             ggml_vk_sync_buffers(ctx, subctx);
@@ -11793,6 +11834,9 @@ void ggml_vk_topk(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_
                 ctx->prealloc_size_x = x_sz;
                 ggml_vk_preallocate_buffers(ctx, subctx);
             }
+            if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+                return;
+            }
         }
 
         vk_subbuffer src_buf;
@@ -11854,6 +11898,9 @@ void ggml_vk_topk_qsa(ggml_backend_vk_context * ctx, vk_context& subctx, const g
     if (ctx->prealloc_size_x < scratch_size) {
         ctx->prealloc_size_x = scratch_size;
         ggml_vk_preallocate_buffers(ctx, subctx);
+    }
+    if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+        return;
     }
     if (ctx->prealloc_x_need_sync) {
         ggml_vk_sync_buffers(ctx, subctx);
@@ -11921,6 +11968,9 @@ void ggml_vk_cumsum(ggml_backend_vk_context * ctx, vk_context& subctx, const ggm
         ctx->prealloc_size_split_k = temp_size;
         ggml_vk_preallocate_buffers(ctx, subctx);
     }
+    if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+        return;
+    }
 
     vk_subbuffer src_buf = ggml_vk_tensor_subbuffer(ctx, src0);
     vk_subbuffer dst_buf = ggml_vk_tensor_subbuffer(ctx, dst);
@@ -11979,6 +12029,9 @@ void ggml_vk_cross_entropy_loss(ggml_backend_vk_context * ctx, vk_context& subct
     if (ctx->prealloc_size_x < tmp_size) {
         ctx->prealloc_size_x = tmp_size;
         ggml_vk_preallocate_buffers(ctx, subctx);
+    }
+    if (ctx->scratch_measure) {   // fork: the sizing pass stops once this op's sizes are known (ggml_vk_scratch_measure)
+        return;
     }
     if (ctx->prealloc_x_need_sync) {
         ggml_vk_sync_buffers(ctx, subctx);
@@ -12434,6 +12487,9 @@ void ggml_vk_leaky_relu(ggml_backend_vk_context * ctx, vk_context& subctx, const
 }
 
 void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subctx) {
+    if (ctx->scratch_measure) {   // fork: the sizing pass only keeps the sizes its ops asked for
+        return;
+    }
 #if defined(GGML_VULKAN_RUN_TESTS)
     const std::vector<size_t> vals {
         512, 512, 128,
@@ -14582,6 +14638,60 @@ static int32_t find_first_set(uint32_t x) {
     return ret;
 }
 
+// fork: the sizing pass. What one graph (a scheduler split) asks of Vulkan's temporaries, from its nodes alone: every op that uses them runs on a context of
+// the card whose scratch_measure is set, bumps prealloc_size_* as it does when it records, and returns before it records (nothing is recorded, compiled or
+// allocated, and no tensor needs memory yet). The ops' own size code decides, so the numbers cannot drift from it. Fusion is not decided here: a fused
+// group is sized as its parts, except TOPK_QSA, whose fused form has a temporary of its own (both are counted: a little more, never less).
+struct vk_scratch_need {
+    size_t x = 0, y = 0, split_k = 0;
+};
+static vk_scratch_need ggml_vk_scratch_measure(size_t dev_idx, ggml_tensor * const * nodes, int n_nodes) {
+    static std::mutex mtx;
+    static ggml_backend_vk_context * mctx[GGML_VK_MAX_DEVICES] = {};
+    std::lock_guard<std::mutex> lock(mtx);
+    GGML_ASSERT(dev_idx < GGML_VK_MAX_DEVICES);
+    if (mctx[dev_idx] == nullptr) {   // kept for the process; it owns no Vulkan object
+        mctx[dev_idx] = new ggml_backend_vk_context();
+        mctx[dev_idx]->device = ggml_vk_get_device(dev_idx);
+        mctx[dev_idx]->name = mctx[dev_idx]->device->name + " sizing";
+        mctx[dev_idx]->scratch_measure = true;
+    }
+    ggml_backend_vk_context * ctx = mctx[dev_idx];
+    ctx->prealloc_size_x = ctx->prealloc_size_y = ctx->prealloc_size_split_k = 0;
+    ggml_cgraph g = {};
+    g.nodes   = const_cast<ggml_tensor **>(nodes);
+    g.n_nodes = n_nodes;
+    vk_context none;   // the ops return before they record into it
+    for (int i = 0; i < n_nodes; ++i) {
+        ggml_tensor * node = nodes[i];
+        if (ggml_is_empty(node) || ggml_op_is_empty(node->op) || (node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+            continue;
+        }
+        switch (node->op) {
+            case GGML_OP_MUL_MAT:            ggml_vk_mul_mat(ctx, none, &g, i);                                                                       break;
+            case GGML_OP_MUL_MAT_ID:         ggml_vk_mul_mat_id(ctx, none, &g, i);                                                                    break;
+            case GGML_OP_FLASH_ATTN_EXT:     ggml_vk_flash_attn(ctx, none, node->src[0], node->src[1], node->src[2], node->src[3], node->src[4], node); break;
+            case GGML_OP_SOFT_MAX:           ggml_vk_soft_max(ctx, none, node->src[0], node->src[1], node->src[2], node);                             break;
+            case GGML_OP_ARGSORT:            ggml_vk_argsort(ctx, none, node->src[0], node);                                                          break;
+            case GGML_OP_TOP_K:              ggml_vk_topk(ctx, none, node->src[0], node);                                                             break;
+            case GGML_OP_CUMSUM:             ggml_vk_cumsum(ctx, none, node->src[0], node);                                                           break;
+            case GGML_OP_CROSS_ENTROPY_LOSS: ggml_vk_cross_entropy_loss(ctx, none, node);                                                             break;
+            case GGML_OP_GET_ROWS:           // the first node of a TOPK_QSA group (the use counts that decide the fusion are not in a split's node list)
+                if (!ctx->device->disable_fusion && ctx->device->pipeline_topk_radix_qsa && ggml_vk_match_ops(&g, i, topk_qsa_pattern)) {
+                    ggml_vk_topk_qsa(ctx, none, &g, i);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    vk_scratch_need need;
+    need.x       = ctx->prealloc_size_x;
+    need.y       = ctx->prealloc_size_y;
+    need.split_k = ctx->prealloc_size_split_k;
+    return need;
+}
+
 static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
@@ -14603,6 +14713,15 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     ctx->prealloc_size_add_rms_partials_offset = 0;
     ctx->do_add_rms_partials = false;
     ctx->do_add_rms_partials_offset_calculation = false;
+
+    // fork: GGML_VK_SCRATCH_CHECK=1: the sizing pass of this graph against what its ops really ask for (test-backend-ops runs every op through it). The
+    // sizes start at 0 so the ops bump them to this graph's asks; the buffers keep their size (each bump still syncs: a check, not a speed path)
+    static const bool scratch_check = getenv("GGML_VK_SCRATCH_CHECK") != nullptr;
+    vk_scratch_need scratch_measured;
+    if (scratch_check) {
+        scratch_measured = ggml_vk_scratch_measure(ctx->device->idx, cgraph->nodes, cgraph->n_nodes);
+        ctx->prealloc_size_x = ctx->prealloc_size_y = ctx->prealloc_size_split_k = 0;
+    }
 
     int last_node = cgraph->n_nodes - 1;
 
@@ -15047,6 +15166,22 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     }
 
     ctx->last_total_flops = total_flops;
+
+    if (scratch_check) {
+        static std::atomic<uint64_t> n_checked { 0 }, n_short { 0 };
+        const bool short_any = ctx->prealloc_size_x > scratch_measured.x || ctx->prealloc_size_y > scratch_measured.y || ctx->prealloc_size_split_k > scratch_measured.split_k;
+        const uint64_t n = ++n_checked;
+        if (short_any) {
+            n_short++;
+        }
+        if (short_any || n <= 3 || (n & (n - 1)) == 0) {
+            const ggml_tensor * first = cgraph->n_nodes > 0 ? cgraph->nodes[0] : nullptr;
+            GGML_LOG_WARN("ggml_vulkan: scratch check %s: graph %llu (%d nodes, first %s %s) asked x %zu y %zu split_k %zu, the sizing pass gave %zu %zu %zu (%llu short so far)\n",
+                    short_any ? "SHORT" : "ok", (unsigned long long) n, cgraph->n_nodes, first ? ggml_op_desc(first) : "-", first ? first->name : "-",
+                    ctx->prealloc_size_x, ctx->prealloc_size_y, ctx->prealloc_size_split_k, scratch_measured.x, scratch_measured.y, scratch_measured.split_k,
+                    (unsigned long long) n_short.load());
+        }
+    }
 
     if (vk_perf_logger_enabled) {
         // End the command buffer and submit/wait

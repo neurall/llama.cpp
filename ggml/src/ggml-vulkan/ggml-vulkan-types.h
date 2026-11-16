@@ -1323,6 +1323,10 @@ struct ggml_backend_vk_context {
     bool fused_hc_post_gate {};
     rms_norm_mode fused_rms_norm_mode {RMS_NORM_COUNT};
 
+    // fork: a context of the sizing pass (ggml_vk_scratch_measure): its ops bump prealloc_size_* and return before they record; nothing is recorded,
+    // requested or allocated, and no tensor needs memory yet
+    bool scratch_measure {};
+
     // for GGML_VK_PERF_LOGGER
     std::unique_ptr<vk_perf_logger> perf_logger;
     vk::QueryPool query_pool;
