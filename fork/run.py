@@ -2650,45 +2650,40 @@ def timeboxed_request(path, body, pp_s, tg_s, port):
             c = http.client.HTTPConnection("127.0.0.1", port, timeout=None); box["c"] = c
             c.request("POST", path, json.dumps(b), {"Content-Type": "application/json"}); box["r"] = c.getresponse().read()
         except BaseException as e: box["e"] = e
-    def cancel(box):
+    def cancel(box):   # disconnect: the server drops the request when it next looks at the socket; nothing is waited for
         try: box["c"].sock.shutdown(2); box["c"].close()
         except Exception: pass
-        t_end = time.time() + 1500
-        while time.time() < t_end:   # the running batch finishes first: wait for the slot to go idle
-            sl = slots()
-            if sl is not None and not any(x.get("is_processing") for x in sl): return
-            time.sleep(2)
     def seen(box):
         sl = slots()
         if not sl: return None
         x = next((y for y in sl if y.get("is_processing")), sl[0])
         return int(x.get("n_prompt_tokens_processed", 0) or 0) + int(x.get("n_prompt_tokens_cache", 0) or 0), int(((x.get("next_token") or [{}])[0]).get("n_decoded", 0) or 0)
-    box = {}; threading.Thread(target=fire, args=(body, box), daemon=True).start(); t0 = time.time(); pp_samples = []; t_first = None; n_dead = None
+    box = {}; threading.Thread(target=fire, args=(body, box), daemon=True).start(); t0 = time.time(); pp_samples = []; t_first = n_first = None
     while "r" not in box and "e" not in box:
-        time.sleep(1); v = seen(box); now = time.time()
+        time.sleep(0.5); v = seen(box); now = time.time()
         if v: pp_samples.append((now, v[0]))
-        if v and v[0] >= 1 and t_first is None: t_first = now   # the timer starts at the first received prompt token
+        if v and v[0] >= 1 and t_first is None: t_first, n_first = now, v[0]   # the timer starts at the first received prompt token
         if t_first is None:
-            if now - t0 >= 8 * pp_s + 1800: break
+            if now - t0 >= 8 * pp_s + 1800: break   # no token at all: a dead server is not waited for forever
             continue
-        if now - t_first >= pp_s:   # our time has passed: stop at the next batch that finishes (a stock batch count steps), at the latest 4x our time
-            if n_dead is None: n_dead = v[0] if v else 0
-            if (v and v[0] > n_dead) or now - t_first >= 4 * pp_s: break
-    pp_rate = box_rate(pp_samples); pp_done = pp_samples[-1][1] if pp_samples else 0; pp_el = (pp_samples[-1][0] - t0) if pp_samples else 0
+        if now - t_first >= pp_s: break   # our prompt time has passed: disconnect
+    pp_done = pp_samples[-1][1] if pp_samples else 0; pp_el = (pp_samples[-1][0] - t0) if pp_samples else 0
+    pp_rate = box_rate(pp_samples)
+    if t_first and pp_rate == 0.0: pp_rate = n_first / max(t_first - t0, 1e-3); PROCSTAT["boxed_first_batch"] = 1   # no second batch finished in our time: the first batch alone, from the request start
     cancel(box)
     sb = dict(body); sb["n_predict"] = max(int(body.get("n_predict") or 0), 1024); sb["max_tokens"] = sb["n_predict"]
     if "messages" in sb: sb["messages"] = [{"role": "user", "content": str(body["messages"][-1]["content"])[:200]}]
     else: sb["prompt"] = str(body.get("prompt"))[:200]
     box2 = {}; threading.Thread(target=fire, args=(sb, box2), daemon=True).start(); t1 = time.time(); t_samples = []; tstart = None
     while "r" not in box2 and "e" not in box2:
-        time.sleep(1); v = seen(box2)
-        if v: t_samples.append((time.time(), v[1]))
-        if v and v[1] >= 1 and tstart is None: tstart = time.time()
-        if tstart and ((time.time() - tstart >= tg_s and v[1] >= 8) or time.time() - tstart >= 4 * tg_s): break
-        if not tstart and time.time() - t1 >= 4 * max(pp_s, 60) + 4 * tg_s: break
+        time.sleep(0.5); v = seen(box2); now = time.time()
+        if v: t_samples.append((now, v[1]))
+        if v and v[1] >= 1 and tstart is None: tstart = now   # the timer starts at the first received token
+        if tstart and now - tstart >= tg_s: break   # our answer time has passed: disconnect
+        if not tstart and now - t1 >= 8 * pp_s + 8 * tg_s + 1800: break
     t_rate = box_rate(t_samples); n_dec = t_samples[-1][1] if t_samples else 0
     cancel(box2)
-    PROCSTAT["boxed"] = f"pp {pp_done} tok in {pp_el:.0f} s (budget {pp_s:.0f} s), t {n_dec} tok (budget {tg_s:.0f} s)"
+    PROCSTAT["boxed"] = f"pp {pp_done} tok, {pp_s:.1f} s from the first token" + (" (first batch only)" if PROCSTAT.get("boxed_first_batch") else "") + f"; t {n_dec} tok, {tg_s:.1f} s from the first token"
     return {"timings": {"prompt_n": pp_done, "prompt_per_second": pp_rate, "prompt_ms": pp_el * 1000, "predicted_n": n_dec, "predicted_per_second": t_rate, "predicted_ms": (n_dec / t_rate * 1000) if t_rate else 0}, "content": "", "choices": [{"message": {"content": ""}, "finish_reason": "box"}]}
 
 
@@ -8468,7 +8463,7 @@ def run_list(name, argv):
             ref = ours_reference(r["model"], r["test"]); pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
             ot = ((pn0 or 64) / ref["p"], out0 / ref["t"]) if ref and ref.get("p") and ref.get("t") else None
         if not ot: continue
-        r["extra"] = (r.get("extra") or "") + f" --env PERF_BOX={max(ot[0], 30):.0f},{max(ot[1], 30):.0f}"
+        r["extra"] = (r.get("extra") or "") + f" --env PERF_BOX={ot[0]:.1f},{ot[1]:.1f}"
         print(col(90, f"{r['name']}: stock measured by the clock: prompt stopped after {ot[0]:.0f} s, answer after {ot[1]:.0f} s (ours)"), flush=True)
     if o.hog_gpu and not o.dry and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
