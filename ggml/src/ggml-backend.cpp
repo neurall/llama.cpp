@@ -3690,18 +3690,39 @@ static void ggml_sched_node_dump(ggml_backend_sched_t sched, int split_id, int j
         last_graph = graph_no;
         n_graphs++;
     }
-    std::vector<uint8_t> b(nb);
-    ggml_backend_tensor_get(t, b.data(), 0, nb);   // the node ran on its own and its card was synchronized
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s-g%ld.bin", dir, ggml_backend_name(sched->backends[split->backend_id]), graph_no);
     FILE * f = fopen(path, "ab");
     if (!f) { return; }
-    char name[64] = {0};
-    strncpy(name, t->name, sizeof(name) - 1);
-    const int32_t type = (int32_t) t->type;
-    const int64_t ne[4] = { t->ne[0], t->ne[1], t->ne[2], t->ne[3] };
-    const uint64_t n64 = nb;
-    fwrite(name, 1, sizeof(name), f); fwrite(&type, sizeof(type), 1, f); fwrite(ne, sizeof(int64_t), 4, f); fwrite(&n64, sizeof(n64), 1, f); fwrite(b.data(), 1, nb, f);
+    const auto put = [&](const char * nm, int32_t type, const int64_t * ne, const std::vector<uint8_t> & b) {
+        char name[64] = {0};
+        strncpy(name, nm, sizeof(name) - 1);
+        const uint64_t n64 = b.size();
+        fwrite(name, 1, sizeof(name), f); fwrite(&type, sizeof(type), 1, f); fwrite(ne, sizeof(int64_t), 4, f); fwrite(&n64, sizeof(n64), 1, f); fwrite(b.data(), 1, b.size(), f);
+    };
+    // the first one-token flash attention of a graph: what it read, as it lay when it ran (q, the mask, and the raw bytes from the first K/V byte to the last, pad rows
+    // included), so a wrong attention splits into wrong inputs (rows written over, pads not zero, a mask) and a wrong kernel
+    static long fa_graph = -1;
+    if (t->op == GGML_OP_FLASH_ATTN_EXT && t->src[0] && t->src[0]->ne[1] == 1 && fa_graph != graph_no && t->src[1] && t->src[2]) {
+        fa_graph = graph_no;
+        const struct ggml_tensor * q = t->src[0], * k = t->src[1], * v = t->src[2], * m = t->src[3];
+        const auto raw = [](const struct ggml_tensor * x, std::vector<uint8_t> & out) {
+            out.resize(ggml_nbytes(x));
+            ggml_tensor z = *x;   // the same bytes as one contiguous run (a strided view's extent)
+            z.view_src = x->view_src; z.ne[0] = (int64_t) out.size(); z.ne[1] = z.ne[2] = z.ne[3] = 1; z.type = GGML_TYPE_I8; z.nb[0] = 1; z.nb[1] = z.nb[2] = z.nb[3] = out.size();
+            ggml_backend_tensor_get(&z, out.data(), 0, out.size());
+        };
+        std::vector<uint8_t> rb;
+        if (ggml_is_contiguous(q)) { raw(q, rb); put("fa_q", (int32_t) q->type, q->ne, rb); }
+        if (m && ggml_is_contiguous(m)) { raw(m, rb); put("fa_mask", (int32_t) m->type, m->ne, rb); }
+        const int64_t kne[4] = { (int64_t) ggml_nbytes(k) / 2, k->nb[1], k->nb[2], (int64_t) ggml_nbytes(k) };
+        raw(k, rb); put("fa_k_extent", (int32_t) GGML_TYPE_F16, kne, rb);
+        const int64_t vne[4] = { (int64_t) ggml_nbytes(v) / 2, v->nb[1], v->nb[2], (int64_t) ggml_nbytes(v) };
+        raw(v, rb); put("fa_v_extent", (int32_t) GGML_TYPE_F16, vne, rb);
+    }
+    std::vector<uint8_t> b(nb);
+    ggml_backend_tensor_get(t, b.data(), 0, nb);   // the node ran on its own and its card was synchronized
+    put(t->name, (int32_t) t->type, t->ne, b);
     fclose(f);
 }
 
