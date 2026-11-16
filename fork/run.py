@@ -6890,6 +6890,32 @@ CELL_TEST = [""]   # the running cell's test and answer length, shown after its 
 LOAD_FILE = QDIR + "/load-s.txt"   # written by a cell when its server answers: seconds of load; peek_line shows it; run_watched removes it at each cell start
 
 
+LIVE_RATE = {}   # live speed of the cell's server: last sample, current rates and the maximum per phase (pp = prompt, t = decode)
+
+
+def live_rate_step(st, now, n_prompt, n_dec):
+    """one /slots sample (about every 3 s): tokens per second since the last sample of the same phase, and the maximum so far per phase. pp = prompt tokens while it prefills, t = tokens written once it decodes. Returns (phase, rate) or None for the first sample of a phase."""
+    phase = "t" if n_dec else "pp"; n = n_dec if n_dec else n_prompt
+    if st.get("phase") != phase or st.get("n") is None or n < st["n"] or not n:
+        st.update(phase=phase, t=now, n=n); return None
+    dt = now - st["t"]
+    if dt <= 0: return None
+    rate = (n - st["n"]) / dt
+    st.update(t=now, n=n)
+    st.setdefault("rate", {})[phase] = rate
+    if rate > st.setdefault("max", {}).get(phase, 0): st["max"][phase] = rate
+    return phase, rate
+
+
+def live_rate_text(st):
+    """`pp 812 t/s 1.2 ms/token (max 903)  ` for the phase running, the phase before it as its maximum only; '' before the first two samples"""
+    ph = st.get("phase"); r = (st.get("rate") or {}).get(ph); mx = st.get("max") or {}
+    if r is None: return ""
+    out = f"{ph} {r:.1f} t/s {1000 / r:.1f} ms/token (max {mx.get(ph, r):.1f})  " if r > 0 else f"{ph} 0 t/s (max {mx.get(ph, 0):.1f})  "
+    if ph == "t" and mx.get("pp"): out += f"pp max {mx['pp']:.1f} t/s  "
+    return out
+
+
 def peek_line(exp):
     """`now: ...` from the server's /slots (every status tick, about 3 s): prompt tokens done while it prefills, then tokens written, against the earlier runs' medians; '' when it does not answer."""
     try: ld = (lambda v: col(32, f"loaded in {v:.0f} s") + "  " if v >= 0 else "")(float(open(LOAD_FILE).read()))
@@ -6905,8 +6931,13 @@ def peek_line(exp):
         if pt: pn = pt
         if dt and dt - dd < 10**6: gen = dt
     PEEK[0] = (n_prompt, n_dec, gen, pn)
-    if not n_dec and n_prompt: return col(33, "    now: ") + ld + col(32, (f"pass {min(LIVE_PASS[0] + 1, LIVE_PASS[1])}/{LIVE_PASS[1]}  " if LIVE_PASS[1] > 1 else "") + f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok"))   # the phase colours of the bar: prompt green
-    if n_dec: return col(33, "    now: ") + ld + col(34, f"{n_dec}" + (f"/~{int(gen)} tok " + (f"~{100 * n_dec // int(gen)}%" if n_dec <= gen else "+") if gen else " tok"))   # generation blue
+    try: _lm = os.path.getmtime(LOAD_FILE)
+    except OSError: _lm = None
+    if LIVE_RATE.get("load") != _lm: LIVE_RATE.clear(); LIVE_RATE["load"] = _lm   # a new server: its own maxima
+    live_rate_step(LIVE_RATE, time.time(), n_prompt, n_dec)
+    _lr = live_rate_text(LIVE_RATE)
+    if not n_dec and n_prompt: return col(33, "    now: ") + ld + col(32, _lr + (f"pass {min(LIVE_PASS[0] + 1, LIVE_PASS[1])}/{LIVE_PASS[1]}  " if LIVE_PASS[1] > 1 else "") + f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok"))   # the phase colours of the bar: prompt green
+    if n_dec: return col(33, "    now: ") + ld + col(34, _lr + f"{n_dec}" + (f"/~{int(gen)} tok " + (f"~{100 * n_dec // int(gen)}%" if n_dec <= gen else "+") if gen else " tok"))   # generation blue
     return ""
 
 
@@ -11284,6 +11315,8 @@ def _tool_selftest():
         check(abs(_g["total_time"](3, (1, 1.0, 0.5)) - 1.25) < 1e-9, "total_time: 3 prompt tokens took 3 s (1 s a token), 1 answer token 2 s (2 s a token): 0.75 * 1 + 0.25 * 2 = 1.25")
         _rw = [{"_b": "stock-b1", "n": "k"}, {"_b": "b2", "n": "o"}, {"_b": "stock-b1", "n": "m"}, {"_b": "b2", "n": "k2"}]; _sz = {"k": 580, "o": 10, "m": 12, "k2": 580}
         check([r["n"] for r in _g["stock_slow_last"](_rw, lambda r: _sz[r["n"]], 256)] == ["o", "m", "k2", "k"], "stock_slow_last: only stock cells above 80% of RAM move to the end, ours and small stock keep their order")
+        _st = {}; _g["live_rate_step"](_st, 0.0, 0, 0); _g["live_rate_step"](_st, 3.0, 3000, 0); _g["live_rate_step"](_st, 6.0, 4500, 0); _g["live_rate_step"](_st, 9.0, 4500, 1); _g["live_rate_step"](_st, 12.0, 4500, 31)
+        check(_st["max"] == {"pp": 1000.0, "t": 10.0} and _g["live_rate_text"](_st).startswith("t 10.0 t/s 100.0 ms/token (max 10.0)") and "pp max 1000.0" in _g["live_rate_text"](_st), "live_rate_step: pp and t rates per 3 s sample, the maximum kept per phase")
         check(_g["best_prompt_label"](8900) == "b9k1k" and _g["best_prompt_label"](12438) == "b12k1k", "best_prompt_label: the label rounds, the prompt does not")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")

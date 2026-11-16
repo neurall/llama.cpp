@@ -1,3 +1,4 @@
+name,model,n,test,tokens,args,extra
 glm30-12k-auto,glm,2,pf12k1k,1024,,
 glm30-12k-split,glm,2,pf12k1k,1024,"--moe dense-split=1",
 glm30-12k-one,glm,2,pf12k1k,1024,"--moe dense-split=0",
