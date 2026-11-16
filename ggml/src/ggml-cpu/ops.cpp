@@ -9108,12 +9108,15 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
 
         const int32_t * rows = kv_rows ? (const int32_t *) ((const char *) kv_rows->data + iq3*kv_rows->nb[1]) : nullptr;
 
+        // fork: a mask with fewer columns than K's cells covers the cells from k0 on, every cell before them is visible (llama_kv_cache::kq_mask_k0)
+        const int64_t mask_k0 = (mask && !kv_rows) ? nek1 - mask->ne[0] : 0;
+
         // online softmax / attention
         // loop over n_kv and n_head_kv
         // ref: https://arxiv.org/pdf/2112.05682.pdf
 
         for (int64_t ic = ic_start; ic < ic_end; ++ic) {
-            const float mv = mp ? slope*GGML_CPU_FP16_TO_FP32(mp[ic]) : 0.0f;
+            const float mv = mp ? (ic < mask_k0 ? 0.0f : slope*GGML_CPU_FP16_TO_FP32(mp[ic - mask_k0])) : 0.0f;
             if (mv == -INFINITY) {
                 continue;
             }
@@ -9311,6 +9314,7 @@ static void ggml_compute_forward_flash_attn_ext_tiled(
     // with kv_rows the loop runs over the mask columns and reads K/V rows through kv_rows
     const ggml_tensor * kv_rows = dst->src[5];
     const int64_t n_kv_cols = kv_rows ? kv_rows->ne[0] : nek1;
+    const int64_t mask_k0   = (mask && !kv_rows) ? nek1 - mask->ne[0] : 0;   // fork: cells before k0 are visible and in no mask (llama_kv_cache::kq_mask_k0)
 
     int ir = ir0;
     while (ir < ir1) {
@@ -9391,7 +9395,7 @@ static void ggml_compute_forward_flash_attn_ext_tiled(
                 for (int tq = 0; tq < tile_rows; tq++) {
                     const ggml_fp16_t * mp_row = (const ggml_fp16_t *)((const char *) mask->data + (iq1 + tq)*mask->nb[1] + (iq2%mask->ne[2])*mask->nb[2] + (iq3%mask->ne[3])*mask->nb[3]);
                     for (int tk = 0; tk < kv_tile; tk++) {
-                        mask32[tq * KV_TILE_SZ + tk] = slope * GGML_CPU_FP16_TO_FP32(mp_row[ic + tk]);
+                        mask32[tq * KV_TILE_SZ + tk] = ic + tk < mask_k0 ? 0.0f : slope * GGML_CPU_FP16_TO_FP32(mp_row[ic + tk - mask_k0]);
                         if (mask32[tq * KV_TILE_SZ + tk] != -INFINITY) {
                             can_skip = false;
                         }

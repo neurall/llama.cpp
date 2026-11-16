@@ -9219,6 +9219,44 @@ struct test_flash_attn_ext_large_logits : public test_flash_attn_ext {
     }
 };
 
+// fork: a mask of K's cells from k0 on (kv - k0 columns), every cell before k0 visible to every row (llama_kv_cache::kq_mask_k0, KV tail with one sequence)
+struct test_flash_attn_ext_mask_tail : public test_case {
+    const int64_t hs, nh, nr2, kv, nb, k0;
+    const ggml_type type_KV;
+
+    std::string vars() override {
+        return VARS_TO_STR7(hs, nh, nr2, kv, nb, k0, type_KV);
+    }
+
+    double max_nmse_err() override {
+        return 5e-4;
+    }
+
+    test_flash_attn_ext_mask_tail(int64_t hs, int64_t nh, int64_t nr2, int64_t kv, int64_t nb, int64_t k0, ggml_type type_KV = GGML_TYPE_F16)
+        : hs(hs), nh(nh), nr2(nr2), kv(kv), nb(nb), k0(k0), type_KV(type_KV) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, hs, nb, nh*nr2, 1);
+        ggml_tensor * k = ggml_new_tensor_4d(ctx, type_KV, hs, kv, nh, 1);
+        ggml_tensor * v = ggml_new_tensor_4d(ctx, type_KV, hs, kv, nh, 1);
+        ggml_tensor * m = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kv - k0, nb, 1, 1);
+        ggml_set_name(m, "m");
+        ggml_tensor * out = ggml_flash_attn_ext(ctx, q, k, v, m, 1.0f/sqrtf(hs), 0.0f, 0.0f);
+        ggml_prec_set_acc(out, GGML_PREC_F32);
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "m") == 0) {
+                init_tensor_kq_mask(t);
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
 // GGML_OP_FLASH_ATTN_EXT with kv_rows: each q slice attends to its own list of K/V cache rows
 struct test_flash_attn_ext_kv_rows : public test_case {
     const int64_t hs;
@@ -12987,6 +13025,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_flash_attn_ext_kv_rows(256, 8, 2, 4096, 1280, nb, n_slices));
         }
     }
+
+    // fork: a mask of the cells from k0 on (KV tail); the first case is OLMoE's first answer token after a 2761-token prompt, wrong on Vulkan (#356)
+    test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128, 16, 1, 2816,   1, 2560));
+    test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128,  4, 4, 2816,   1, 2560));
+    test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128, 16, 1, 1024,  64,  768));
+    test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128,  4, 4, 1024,  64,  768, GGML_TYPE_Q8_0));
+    test_cases.emplace_back(new test_flash_attn_ext_mask_tail(128, 16, 1, 2816, 512, 2304));
+    test_cases.emplace_back(new test_flash_attn_ext_mask_tail( 64,  8, 2, 8192,   4, 7936));
 
     // sparse mask with large batch size
     test_cases.emplace_back(new test_flash_attn_ext(512, 512, 1, { 8, 1}, 4096, 64, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false,  512));
