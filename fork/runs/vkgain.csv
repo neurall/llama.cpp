@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+vk-qni3-i,qwen38,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",
+vk-qni4-i,qn_iq4xs,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",
+vk-glm-i,glm,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",
+vk-mimo-i,mimo,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",
