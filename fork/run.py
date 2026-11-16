@@ -9172,6 +9172,13 @@ def cmd_cell(a):
     # differed from the one before only by --env reused its kept server and the values never reached a server (2026-10-27, GGML_CUDA_SCRATCH_CHECK=1)
     env["PERF_CELL_ENV"] = " ".join(sorted(a.env or []))
     t_cell0 = time.time()
+    # the server logs this cell finds (inode, size): a log belongs to the cell only when a server start of the cell made it (a start renames the log to .prev,
+    # inode kept). By mtime, the last cell's server writing its stop lines after this cell began passed its log off as this cell's (r33-cu "failed" on
+    # r50-vk's INV line, 2026-11-16)
+    def _ino(p):
+        try: st = os.stat(p); return st.st_ino, st.st_size
+        except OSError: return None, 0
+    (ino0, size0), (pino0, _) = _ino(f"/tmp/perf-{a.builds}.log"), _ino(f"/tmp/perf-{a.builds}.log.prev")
     try:
         with open(out, "w") as f:
             rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).returncode
@@ -9192,7 +9199,7 @@ def cmd_cell(a):
         try: shutil.copy(f"/tmp/perf-{a.builds}.log", os.path.join(Q5, a.tag + ".server.log"))
         except OSError: pass
         try:   # the start before the last one (the cold run of a clean-state cell), when it belongs to this cell
-            if os.path.getmtime(f"/tmp/perf-{a.builds}.log.prev") >= t_cell0: shutil.copy(f"/tmp/perf-{a.builds}.log.prev", os.path.join(Q5, a.tag + ".server.prev.log"))
+            if _ino(f"/tmp/perf-{a.builds}.log.prev")[0] not in (ino0, pino0, None): shutil.copy(f"/tmp/perf-{a.builds}.log.prev", os.path.join(Q5, a.tag + ".server.prev.log"))
         except OSError: pass
     # the pool write ledgers this cell's servers wrote (one per server start): gzipped next to the server log, the replay's summary (overlaps, uploads a lend
     # or the KV zone crossed while they ran) appended to TAG.out
@@ -9211,7 +9218,9 @@ def cmd_cell(a):
     lost = [l.rstrip()[:200] for l in open(out, errors="replace") if re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d .* FAIL( |$)", l)]
     # engine checks fail the cell (ENGINE_CHECK): a graph tensor no node reads, a pass-size probe far above the first reserve (2026-11-14: a 58 GiB probe for a 7-8 GiB
     # graph capped passes at 3776 tokens, found a day late), invariants, overlaps, guard violations, a short scratch, NaN
-    gchk = engine_check_lines((os.path.join(Q5, a.tag + ".server.log"), os.path.join(Q5, a.tag + ".server.prev.log")), t_cell0)
+    kept_log = _ino(f"/tmp/perf-{a.builds}.log")[0] == ino0   # no server start in this cell: the log's first size0 bytes are earlier cells' requests
+    gchk = engine_check_lines((os.path.join(Q5, a.tag + ".server.log"), os.path.join(Q5, a.tag + ".server.prev.log")), t_cell0,
+                              {os.path.join(Q5, a.tag + ".server.log"): size0} if kept_log else None)
     if gchk:
         with open(os.path.join(Q5, a.tag + ".out"), "a") as f:
             f.write("".join(f"ENGINE CHECK FAIL {l}\n" for l in gchk[:6]))
@@ -9226,13 +9235,15 @@ def cmd_cell(a):
 # lines that fail a cell (robustness review 2026-11-14: a check that only logs caught nothing): the graph planner's unread tensors and a probe far above the first
 # reserve (tests/test-graphcheck-fork.cpp), the cache's and the split planner's invariants, the pool ledger's overlaps, the pool guard, a short CUDA scratch, NaN checks
 ENGINE_CHECK = re.compile(r"galloc: UNREAD .*largest|GRAPH JUMP|moe-cache: INV |split planner: INV |pool-ledger: OVERLAP|pool-guard: VIOLATION|SCRATCH SHORT|nan-check: graph |pool-dump: first NaN")
-def engine_check_lines(paths, t0):
-    """The lines of ENGINE_CHECK in the server logs written since t0."""
+def engine_check_lines(paths, t0, skip=None):
+    """The lines of ENGINE_CHECK in the server logs written since t0 (skip: bytes at a log's start that are not this cell's, a kept server's earlier requests)."""
     found = []
     for p in paths:
         try:
             if os.path.getmtime(p) >= t0:
-                found += [l.rstrip()[:240] for l in open(p, errors="replace") if ENGINE_CHECK.search(l)]
+                with open(p, "rb") as f:
+                    f.seek((skip or {}).get(p, 0))
+                    found += [l.rstrip()[:240] for l in f.read().decode(errors="replace").splitlines() if ENGINE_CHECK.search(l)]
         except OSError: pass
     return found
 def cmd_tokpred(a):
