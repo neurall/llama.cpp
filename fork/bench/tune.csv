@@ -2951,3 +2951,7 @@ ts,commit,line
 2026-11-16 08:57:28,aa908524bc,"moe-cache: self-tune: SWAP_LEAD ms/token 0:34.93 -2:37.76 -> 0 (best mean, 8 slices each)"
 2026-11-16 08:58:07,aa908524bc,"moe-cache: self-tune: SWAP_LEAD ms/token 0:34.93 -2:37.76 -> 0 (best mean, 8 slices each)"
 2026-11-16 08:58:07,aa908524bc,"moe-cache: self-tune: UPLOAD_WAIT ms/token 0:34.74 3:36.47 -> 3 (best mean, 8 slices each)"
+2026-11-16 09:09:30,aa908524bc,"moe-cache: self-tune: SWAP_LEAD ms/token 0:18.69 -2:34.72 -> 0 (best mean, 8 slices each)"
+2026-11-16 09:11:11,aa908524bc,"moe-cache: self-tune: SWAP_LEAD ms/token 0:18.08 -2:19.18 -> 0 (best mean, 8 slices each)"
+2026-11-16 09:14:19,aa908524bc,"moe-cache: self-tune: SWAP_LEAD ms/token 0:16.33 -2:33.48 -> 0 (best mean, 8 slices each)"
+2026-11-16 09:27:04,aa908524bc,"moe-cache: self-tune: SWAP_LEAD ms/token 0:55.95 -2:60.07 -> 0 (best mean, 8 slices each)"

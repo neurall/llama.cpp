@@ -6671,7 +6671,7 @@ def cell_status(t0, expect, label, total=None):
     if pk and pk[1] and "gen" not in PHASE: PHASE["gen"] = now   # first tick that sees tokens decoded
     ph = 34 if "gen" in PHASE else 32 if ld_end else 33
     tf = lambda x: f"{x:.0f}s" if x < 60 else f"{int(x // 60)}m{int(x % 60):02d}s"
-    pt = ([col(33, "l " + tf(ld_s))] if ld_s is not None and ld_s >= 0 else []) + ([col(32, "p " + tf(PHASE.get("gen", now) - ld_end))] if ld_end else []) + ([col(34, "g " + tf(now - PHASE["gen"]))] if "gen" in PHASE else [])
+    pt = ([col(33, "l " + tf(ld_s))] if ld_s is not None and ld_s >= 0 else []) + ([col(32, "p " + tf(PHASE.get("gen", now) - ld_end))] if ld_end else []) + ([col(96, "g " + tf(now - PHASE["gen"]))] if "gen" in PHASE else [])
     LW = max(NAMEW[0], 10)   # label column of the cell and whole-run lines
     l1 = f"{col(1, f'{label[:LW]:<{LW}}')} {bar(el, expect, True, ph)}" + ("  " + " ".join(pt) if pt else "") + ("  " + col(36, CELL_TEST[0]) if CELL_TEST[0] else "")
     ex0 = expect or 0   # the whole-run bar follows the cell's re-estimate
@@ -6936,7 +6936,7 @@ def peek_line(exp):
     live_rate_step(LIVE_RATE, time.time(), n_prompt, n_dec)
     _lr = live_rate_text(LIVE_RATE)
     if not n_dec and n_prompt: return col(33, "    now: ") + ld + col(32, _lr + (f"pass {min(LIVE_PASS[0] + 1, LIVE_PASS[1])}/{LIVE_PASS[1]}  " if LIVE_PASS[1] > 1 else "") + f"prompt {n_prompt}" + (f"/~{int(pn)} tok" + (f" ~{min(100, 100 * n_prompt // int(pn))}%" if pn and n_prompt <= pn else " +") if pn else " tok"))   # the phase colours of the bar: prompt green
-    if n_dec: return col(33, "    now: ") + ld + col(34, _lr + f"{n_dec}" + (f"/~{int(gen)} tok " + (f"~{100 * n_dec // int(gen)}%" if n_dec <= gen else "+") if gen else " tok"))   # generation blue
+    if n_dec: return col(33, "    now: ") + ld + col(96, _lr + f"{n_dec}" + (f"/~{int(gen)} tok " + (f"~{100 * n_dec // int(gen)}%" if n_dec <= gen else "+") if gen else " tok"))   # generation blue
     return ""
 
 
@@ -7226,7 +7226,7 @@ def run_tokens(rid):
     return (int(m[1]) if m else None), (int(r[1]) if r[1] else None), str(r[2] or "")
 
 
-def best_by_time(model, build, rid_now=None):
+def best_by_time(model, build, mix=None):
     """the best earlier run of ours of this model on this machine by time per token (total_time: prompt and decode token times weighted by their token counts, so any prompt length compares), any build but `build`:
     dict(bno, pn, out, pp, t, ms_pp, ms_t, tt (ms/token), pl) or None. One run per build counts as its median-by-time run"""
     import sqlite3
@@ -7240,7 +7240,7 @@ def best_by_time(model, build, rid_now=None):
     for t_, p_, b_, g_, nt, pl, bn, rid in rows:
         m = re.search(r"prompt_n=(\d+)", nt or "")
         if not (m and g_ and t_ and p_): continue
-        tt = total_time(int(m[1]), (int(g_), float(p_), float(t_)))
+        tt = total_time(mix[0], (mix[1], float(p_), float(t_))) if mix else total_time(int(m[1]), (int(g_), float(p_), float(t_)))   # mix = (prompt tokens, answer tokens) of the run being judged: every earlier run is timed at the same token mix, so a 64-token answer run and a 1024-token one compare fairly
         if best is None or tt < best["tt"] / 1000: best = dict(bno=bn, pn=int(m[1]), out=int(g_), pp=float(p_), t=float(t_), ms_pp=1000 / float(p_), ms_t=1000 / float(t_), tt=tt * 1000, pl=str(pl or ""), rid=rid)
     return best
 
@@ -7432,8 +7432,8 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
         body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), loop=loop_flag(rid_show), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
-        bb = best_by_time(r.get("model"), r.get("build")) if not r.get("ref") and not r.get("stock_row") and res else None   # this run against the best earlier run of ours, by time per token
-        pn_, og_, _pl = run_tokens(rid_show) if bb and rid_show and t and p else (None, None, "")
+        pn_, og_, _pl = run_tokens(rid_show) if rid_show and t and p and not r.get("ref") and not r.get("stock_row") else (None, None, "")
+        bb = best_by_time(r.get("model"), r.get("build"), (pn_, og_) if pn_ and og_ else None) if not r.get("ref") and not r.get("stock_row") and res else None   # this run against the best earlier run of ours, both timed at this run's token mix
         vt = (bb["tt"] / (total_time(pn_, (og_, p, t)) * 1000)) if bb and pn_ and og_ else None   # above 1: faster per token than the best so far
         body[-1].update(vt=f(vt, 2), vp=best_run_text(bb), vtv=vt, vpv=None)
         if not r.get("ref") and not r.get("stock_row") and res and not str(r.get("build") or "").startswith("stock"):   # no earlier run of ours: "first", not an empty cell that looks broken
@@ -7470,7 +7470,7 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
     if not headers: out = []   # `run status`: rows only
     if hdr_out is not None: hdr_out.extend(out); out = []   # live rows: the header goes to the caller (printed once)
     for x in allrows:
-        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;94", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("94", x["st"]), "sp": ("92", x["sp"])}
+        c = {"prompt": ("36", x["prompt"]), "out": ("36", x["out"]), "xfer": ("35", x["xfer"]), "time": ("37", x["time"]), "load": ("33", x["load"]), "t": ("1;96", x["t"]), "p": ("1;92", x["p"]), "g": ("35", x.get("g", "")), "st": ("96", x["st"]), "sp": ("92", x["sp"])}
         cell = lambda k: "  " + col(c[k][0], f"{c[k][1]:>{W[k]}}")
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
         vcell = lambda k: "  " + (col("1;91" if x[k + "v"] < 0.99 else "1;92" if x[k + "v"] > 1.01 else "37", f"{x[k]:>{W[k]}}") if x.get(k + "v") else col(90, f"{x[k]:>{W[k]}}") if x.get(k) == "first" else " " * W[k])   # against the best earlier run of ours: below 0.99 red (worse), above 1.01 green (better), "first" without one
