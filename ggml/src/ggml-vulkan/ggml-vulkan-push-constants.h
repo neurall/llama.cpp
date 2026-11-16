@@ -225,6 +225,8 @@ struct vk_op_count_experts_push_constants {
     uint32_t ne0_dst;
     uint32_t stride_dst;
     uint32_t batch_stride_dst;
+    uint32_t id_base;        // fork: the first expert of this dispatch's chunk (ids below it or past the chunk are another chunk's)
+    uint32_t zero_skipped;   // fork: zero the rows of negative ids (the first chunk only)
 };
 
 struct vk_op_glu_push_constants {

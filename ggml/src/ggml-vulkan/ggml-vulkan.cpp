@@ -7680,9 +7680,27 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
     const uint64_t row_ids_offset = 1 + 2 * max_tiles;
     const uint64_t row_map_words = row_ids_offset + max_tiles * bn;
 
-    if (ggml_nbytes(src0) > ctx->device->properties.limits.maxStorageBufferRange) {
-        pipeline = ggml_vk_get_64b_indexing_pipeline(ctx, pipeline);
+    // fork: an expert matrix past the storage range (an expert pool's class view) runs in chunks of experts whose bytes fit it, each with its own A
+    // subbuffer and the 32-bit pipeline. The 64-bit indexing variant of the coopmat shaders hung the GPU (coopmat2, Xid 109 CTX SWITCH TIMEOUT) or
+    // computed garbage (coopmat1) over a 5468-block view (about 18 GB) on RTX 3090s, driver 595.104 (2026-11-16); its scalar shader was right.
+    const uint64_t x_range_max = ctx->device->properties.limits.maxStorageBufferRange;
+    const uint64_t x_align     = ctx->device->properties.limits.minStorageBufferOffsetAlignment;
+    uint64_t x_chunk = n_as;
+    if (ggml_nbytes(src0) > x_range_max) {
+        if (!src0_uma && !qx_needs_dequant && !x_non_contig && src0->nb[2] <= x_range_max && src0->nb[2] % x_align == 0 &&
+            (vk_tensor_offset(src0) + src0->view_offs) % x_align == 0) {
+            x_chunk = x_range_max / src0->nb[2];
+        } else {
+            static bool told = false;
+            if (!told) {
+                told = true;
+                GGML_LOG_WARN("ggml_vulkan: MUL_MAT_ID over %.1f GiB without expert chunks (%s): the 64-bit indexing pipeline\n", ggml_nbytes(src0) / 1073741824.0,
+                        src0_uma ? "host memory" : qx_needs_dequant ? "dequantized A" : x_non_contig ? "non-contiguous A" : "an expert stride or offset off the alignment");
+            }
+            pipeline = ggml_vk_get_64b_indexing_pipeline(ctx, pipeline);
+        }
     }
+    const uint64_t x_chunks = CEIL_DIV(n_as, x_chunk);
     const uint64_t x_ne = ggml_nelements(src0);
     const uint64_t y_ne = (uint64_t)y_staged_row_stride * ne11 * ne12 * ne13;
     const uint64_t d_ne = ggml_nelements(dst);
@@ -7754,7 +7772,7 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
         }
 
         // Request descriptor sets
-        ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+        ggml_pipeline_request_descriptor_sets(ctx, pipeline, x_chunks);
         if (qx_needs_dequant) {
             ggml_pipeline_request_descriptor_sets(ctx, to_fp16_vk_0, 1);
         }
@@ -7764,7 +7782,7 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
         if (quantize_y) {
             ggml_pipeline_request_descriptor_sets(ctx, to_q8_1, 1);
         }
-        ggml_pipeline_request_descriptor_sets(ctx, count_experts, 1);
+        ggml_pipeline_request_descriptor_sets(ctx, count_experts, x_chunks);
     }
 
     vk_buffer d_D = dst_buf_ctx->dev_buffer;
@@ -7816,23 +7834,25 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
     if (ctx->prealloc_split_k_need_sync) {
         ggml_vk_sync_buffers(ctx, subctx);
     }
-    {
-        // this also zeroes the dst rows of the skipped slots (negative ids)
+    // the first chunk also zeroes the dst rows of the skipped slots (negative ids)
+    auto count_experts_chunk = [&](uint64_t e0, uint64_t ne_c) {
         vk_op_count_experts_push_constants pc = { (uint32_t)nei0,
                                            (uint32_t)nei1,
                                            (uint32_t)(nbi0 / ggml_type_size(ids->type)),
                                            (uint32_t)(nbi1 / ggml_type_size(ids->type)),
                                            (uint32_t)(get_misalign_bytes(ctx, ids) / ggml_type_size(ids->type)),
-                                           (uint32_t)n_as,
+                                           (uint32_t)ne_c,
                                            0, 0, bn, (uint32_t)row_ids_offset,
                                            (uint32_t)ne01,
                                            (uint32_t)(dst->nb[1] / sizeof(float)),
-                                           (uint32_t)(dst->nb[2] / sizeof(float)) };
+                                           (uint32_t)(dst->nb[2] / sizeof(float)),
+                                           (uint32_t)e0, e0 == 0 ? 1u : 0u };
         init_pushconst_fastdiv(pc);
         ggml_vk_dispatch_pipeline(ctx, subctx, count_experts,
             { d_ids, expert_count_buf, vk_subbuffer{ d_D, d_buf_offset, d_sz } }, pc,
             { 1, 1, 1 });
-    }
+    };
+    count_experts_chunk(0, std::min(x_chunk, n_as));
 
     if (x_non_contig) {
         ggml_vk_cpy_to_contiguous(ctx, subctx, to_fp16_vk_0, src0, ggml_vk_subbuffer(ctx, d_Qx, qx_buf_offset), ggml_vk_subbuffer(ctx, d_X, 0));
@@ -7900,15 +7920,26 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context& 
         stride_batch_y = src1->nb[0] / ggml_type_size(src1->type);
     }
 
-    // compute
-    ggml_vk_matmul_id(
-        ctx, subctx, pipeline,
-        { d_X, x_buf_offset, x_range }, { d_Y, y_buf_offset, y_range },
-        { d_D, d_buf_offset, d_sz }, std::move(d_ids), expert_count_buf,
-        ne01, ne21, ne10, ne10, stride_b_y, ne01,
-        stride_batch_x, stride_batch_y, ne20*ne21,
-        n_as, nei0, nei1, nbi1 / ggml_type_size(ids->type), ne11, row_ids_offset, max_tiles
-    );  // NOLINT
+    // compute (per chunk of experts when A is past the storage range: the tile buffer is shared, so each chunk's count waits for the last matmul)
+    for (uint64_t e0 = 0; e0 < n_as; e0 += x_chunk) {
+        const uint64_t ne_c = std::min(x_chunk, n_as - e0);
+        if (e0 > 0) {
+            ggml_vk_sync_buffers(ctx, subctx);
+            count_experts_chunk(e0, ne_c);
+            ggml_vk_sync_buffers(ctx, subctx);
+        }
+        const uint64_t x_off = x_buf_offset + e0 * src0->nb[2];
+        const uint64_t x_len = x_chunks == 1 ? x_range : std::min<uint64_t>(ne_c * src0->nb[2], x_range - e0 * src0->nb[2]);
+        ggml_vk_matmul_id(
+            ctx, subctx, pipeline,
+            { d_X, x_off, x_len }, { d_Y, y_buf_offset, y_range },
+            { d_D, d_buf_offset, d_sz }, vk_subbuffer(d_ids), expert_count_buf,
+            ne01, ne21, ne10, ne10, stride_b_y, ne01,
+            stride_batch_x, stride_batch_y, ne20*ne21,
+            ne_c, nei0, nei1, nbi1 / ggml_type_size(ids->type), ne11, row_ids_offset,
+            x_chunks == 1 ? max_tiles : ggml_vk_mul_mat_id_max_tiles(ne_c, nei0 * nei1, bn)
+        );  // NOLINT
+    }
 
     if (x_non_contig || qx_needs_dequant) {
         ctx->prealloc_x_need_sync = true;
@@ -16581,9 +16612,8 @@ static void ggml_backend_vk_fork_buft_limits(ggml_backend_buffer_type_t buft, si
     }
     const vk_device & device = ((ggml_backend_vk_buffer_type_context *) buft->context)->device;
     *max_alloc = (size_t) std::min(device->max_buffer_size, device->max_memory_allocation_size);
-    // not past the storage range even with VK_EXT_shader_64bit_indexing: MUL_MAT_ID over a 5468-block class view (about 18 GB) hung the GPU with the coopmat2
-    // shader (Xid 109 CTX SWITCH TIMEOUT) and gave garbage with coopmat1 on two RTX 3090s, driver 595.104; only the scalar shader was right (vkdev rows 2026-11-16)
-    *max_span  = std::min(*max_alloc, (size_t) device->properties.limits.maxStorageBufferRange);
+    // past the storage range only with 64-bit indexing; MUL_MAT_ID over such a view runs in expert chunks that fit the range (ggml_vk_mul_mat_id_q_f16)
+    *max_span  = device->shader_64b_indexing ? *max_alloc : std::min(*max_alloc, (size_t) device->properties.limits.maxStorageBufferRange);
 }
 
 static void * ggml_backend_vk_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {

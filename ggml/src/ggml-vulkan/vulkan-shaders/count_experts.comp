@@ -26,6 +26,8 @@ layout (push_constant) uniform parameter
     uint32_t ne0_dst;
     uint32_t stride_dst;
     uint32_t batch_stride_dst;
+    uint32_t id_base;        // fork: ids are counted from here (a chunk of a large expert matrix); the rest belong to other dispatches
+    uint32_t zero_skipped;   // fork: zero the rows of negative ids (the first chunk only)
 } p;
 
 #define BLOCK_SIZE 256
@@ -113,7 +115,7 @@ void main() {
         for (uint idx = tid; idx < num_elements; idx += BLOCK_SIZE) {
             const uint i01 = fastdiv(idx, p.ne00mp, p.ne00L);
             const uint i00 = idx - i01 * p.ne00;
-            const uint expert = data_a[p.a_offset + i01 * p.nb01 + i00 * p.nb00] - expert_base;
+            const uint expert = data_a[p.a_offset + i01 * p.nb01 + i00 * p.nb00] - p.id_base - expert_base;
             if (expert < n_experts) {
                 atomicAdd(vals[expert], 1);
             }
@@ -162,7 +164,7 @@ void main() {
             if (expert_base == 0 && int(id) == -1) {
                 local_skipped++;
             }
-            const uint expert = id - expert_base;
+            const uint expert = id - p.id_base - expert_base;
             if (expert < n_experts) {
                 const uint row = atomicAdd(cursors[expert], 1);
                 data_d[p.row_ids_offset + offsets[expert] + row] = (i01 << 16) | i00;
@@ -181,7 +183,7 @@ void main() {
         data_d[0] = total_tiles;
     }
 
-    if (skipped_rows != 0) {
+    if (skipped_rows != 0 && p.zero_skipped != 0) {
         zero_skipped_rows();
     }
 }
