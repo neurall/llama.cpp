@@ -1468,7 +1468,22 @@ static void ggml_backend_cuda_buffer_clear(ggml_backend_buffer_t buffer, uint8_t
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    CUDA_CHECK(cudaMemsetAsync(ctx->dev_ptr, value, buffer->size, cudaStreamPerThread));
+    if (ctx->room_mapped.empty()) {
+        CUDA_CHECK(cudaMemsetAsync(ctx->dev_ptr, value, buffer->size, cudaStreamPerThread));
+    } else {
+        // fork: a room buffer clears its mapped bytes only, the chunks CUDA holds are unmapped (Qwen3.8 IQ3_S room_tag_fix 2026-11-16: the pool took all the
+        // free VRAM, its last chunks could not be backed, the clear at its creation ran over them: cudaMemsetAsync "invalid argument" at every start)
+        std::lock_guard<std::mutex> lk(g_room_mtx);
+        const size_t r0 = ctx->vmm_size - ctx->room_max, g = ctx->vmm_gran;
+        size_t lo = 0, hi = r0;   // a run of mapped bytes: the main region, then the mapped chunks next to it
+        auto flush = [&]() { hi = std::min(hi, buffer->size); if (hi > lo) { CUDA_CHECK(cudaMemsetAsync((char *) ctx->dev_ptr + lo, value, hi - lo, cudaStreamPerThread)); } };
+        for (size_t i = 0; i < ctx->room_mapped.size(); ++i) {
+            const size_t c0 = r0 + i * g;
+            if (!ctx->room_mapped[i]) { continue; }
+            if (c0 == hi) { hi = c0 + g; } else { flush(); lo = c0; hi = c0 + g; }
+        }
+        flush();
+    }
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
@@ -7872,6 +7887,7 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
 // graphs whose CUDA graph could not be instantiated for lack of VRAM: run without one from then on (keyed like the CUDA graphs, by the graph's first node)
 static std::mutex                      g_cuda_graph_oom_mtx;
 static std::unordered_set<const void *> g_cuda_graph_oom_keys;
+static std::unordered_map<const void *, int> g_cuda_graph_oom_tries;   // failed instantiations of a graph before any of it ran (ggml_cuda_oom_reset)
 static bool ggml_cuda_graph_oom_disabled(const void * key) {
     std::lock_guard<std::mutex> lk(g_cuda_graph_oom_mtx);
     return g_cuda_graph_oom_keys.count(key) != 0;
@@ -7906,8 +7922,13 @@ static void ggml_cuda_oom_reset(ggml_backend_cuda_context * cuda_ctx, const ggml
             ggml_cuda_lock_cv.notify_all();
         }
     }
+    // only this graph's CUDA graph could not be instantiated, before any of it ran: CUDA's room at the pool's tail grows for it (llama_context::decode) and it
+    // is captured again at its next call; the other graphs keep theirs (dropping them freed nothing the room does not give, and each failed in turn one call
+    // later: GLM 3.0 room_tag_fix 2026-11-16, all 42 decode graphs of the two cards)
+    const bool inst_only = e.bytes == 0 && e.fit >= 0 && g_cuda_chunks_run == 0;
     // the executables of every cached CUDA graph hold device memory: dropped, each graph warms up and is captured again when it is next used
     for (auto & kv : cuda_ctx->cuda_graphs) {
+        if (inst_only && kv.first != graph_key) { continue; }   // its own go (a failed re-instantiation leaves a null entry), warmed up again
         for (cudaGraphExec_t inst : kv.second->instances) {
             if (inst != nullptr) { (void) cudaGraphExecDestroy(inst); }
         }
@@ -7916,7 +7937,8 @@ static void ggml_cuda_oom_reset(ggml_backend_cuda_context * cuda_ctx, const ggml
     }
     if (e.bytes == 0 && e.fit >= 0) {   // the CUDA graph of this graph could not be instantiated: this graph runs without one
         std::lock_guard<std::mutex> lk(g_cuda_graph_oom_mtx);
-        g_cuda_graph_oom_keys.insert(graph_key);
+        // from then on: after a part of the graph ran (the caller runs it again, it must not fail the same way) or at its third failure (the room at its most)
+        if (!inst_only || ++g_cuda_graph_oom_tries[graph_key] >= 3) { g_cuda_graph_oom_keys.insert(graph_key); }
     }
 #else
     GGML_UNUSED(e);
@@ -8021,7 +8043,8 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
         // Only the CUDA graph did not fit and nothing of this graph has run yet (its kernels were captured, not launched): it runs here and now without
         // one, since a direct evaluation needs no executable, and the caller never sees the error (the MiMo case above: a 128-token startup call). A
         // chunk that already ran cannot be run twice (models with a recurrent state update it in place): then the caller takes its call back instead.
-        GGML_LOG_WARN("%s: CUDA graph instantiation ran out of VRAM on device %d: this graph runs without a CUDA graph from now on\n", __func__, cuda_ctx->device);
+        GGML_LOG_WARN("%s: CUDA graph instantiation ran out of VRAM on device %d: %s\n", __func__, cuda_ctx->device, ggml_cuda_graph_oom_disabled(graph_key) ?
+                "this graph runs without a CUDA graph from now on (third failure)" : "this call runs without it, CUDA's room grows and it is captured again at its next call");
         g_cuda_last_oom = e;   // counted all the same: libllama stores the VRAM need for the next start (llama_moe_cache_vram_oom_fork)
         g_cuda_oom_count.fetch_add(1);
         try {

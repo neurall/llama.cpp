@@ -279,6 +279,19 @@ static inline size_t poolx_room_give_back(size_t room, size_t free_b, size_t kee
     const size_t give = (free_b - keep) / step * step;
     return room - std::min(room, give);
 }
+// After a call: a shape class lent the whole tail area (not seen yet) counts the call and is seen after its second, when its CUDA graphs exist too (ggml
+// instantiates a graph's CUDA graph at the graph's second call). The room gives back only when no class is mid-warmup (returns true): a give-back after the
+// first call measured CUDA's use before the graphs existed (GLM 3.0, build room_tag_fix 2026-11-16: 346 -> 189 MiB after the first decode token, 1 MiB
+// free, all 42 decode graphs of the two cards ran out of VRAM at the second token and ran without CUDA graphs from then on).
+struct poolx_room_lent { int64_t cls; int calls; };
+static inline bool poolx_room_after_call(std::vector<poolx_room_lent> & pending, std::vector<int64_t> & seen) {
+    size_t k = 0;
+    for (poolx_room_lent p : pending) {
+        if (++p.calls >= 2) { seen.push_back(p.cls); } else { pending[k++] = p; }
+    }
+    pending.resize(k);
+    return pending.empty();
+}
 // The room a pool starts with when the driver could not back all of its chunked tail at creation (VRAM taken between the sizing and the allocation): the
 // block edge (base + k * step) at or below the first unmapped byte, tail_real when only the slack past the last block is unmapped, SIZE_MAX when it reaches
 // below the tail area (vol_lo): the stream, the lend and the KV live there, such a pool cannot be used.

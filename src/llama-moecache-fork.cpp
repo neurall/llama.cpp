@@ -7297,7 +7297,7 @@ static moe_cache::alias_pool * room_ap(moe_cache * mc, ggml_backend_dev_t dev) {
     return nullptr;
 }
 static std::vector<int64_t>   g_room_seen;      // shape classes (poolx_room_class) that ran through once this session: their kernels are loaded
-static std::vector<int64_t>   g_room_pending;   // classes of this call that got the whole tail area (marked seen by the VRAM watch after the call)
+static std::vector<poolx_room_lent> g_room_pending;   // classes lent the whole tail area, seen after their second call (poolx_room_after_call)
 static std::atomic<uint64_t>  g_room_gen{0};    // bumped by every room_apply (a grow of the RAM pool waits for the room it asked for)
 static bool                   g_room_check = false;   // the room changed: the next VRAM watch looks, also on a decode token
 typedef size_t (*room_set_t)(ggml_backend_buffer_t, size_t);
@@ -7331,7 +7331,7 @@ static void room_apply(moe_cache * mc, ggml_backend_sched_t sched, bool synced) 
     }
 }
 // at the lend: a call of a shape class not seen yet gets the whole tail area before anything of it runs (new kernels load without failing half way, so a
-// recurrent state is never half written); the VRAM watch after the call gives back what CUDA did not take
+// recurrent state is never half written); the VRAM watch gives back what CUDA did not take once the class's CUDA graphs exist (poolx_room_after_call)
 static void room_lend(moe_cache * mc, ggml_backend_sched_t sched, bool synced, int64_t n_tokens) {
     bool any = false;
     for (auto & ap : mc->alias) { any = any || ap.room_max > 0; }
@@ -7339,7 +7339,7 @@ static void room_lend(moe_cache * mc, ggml_backend_sched_t sched, bool synced, i
     const int64_t cls = poolx_room_class(n_tokens);
     if (std::find(g_room_seen.begin(), g_room_seen.end(), cls) == g_room_seen.end()) {
         for (auto & ap : mc->alias) { if (ap.room_max > 0) { ap.room_lo_want = std::min(ap.room_lo_want, room_edge_down(ap, ap.tail_real - ap.room_max)); } }
-        if (std::find(g_room_pending.begin(), g_room_pending.end(), cls) == g_room_pending.end()) { g_room_pending.push_back(cls); }
+        if (std::none_of(g_room_pending.begin(), g_room_pending.end(), [&](const poolx_room_lent & p) { return p.cls == cls; })) { g_room_pending.push_back({ cls, 0 }); }
     }
     room_apply(mc, sched, synced);
 }
@@ -10095,8 +10095,7 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
     if (!prompt && (k & 31) != 0 && !g_room_check && g_room_pending.empty()) {
         return;
     }
-    for (int64_t c : g_room_pending) { g_room_seen.push_back(c); }   // the call ran through: its shape's kernels are loaded
-    g_room_pending.clear();
+    const bool settled = poolx_room_after_call(g_room_pending, g_room_seen);   // no class mid-warmup: its kernels and CUDA graphs exist
     g_room_check = false;
     std::lock_guard<std::mutex> lk(g_vram_mtx);
     for (auto & d : g_vram) {
@@ -10107,7 +10106,7 @@ void llama_moe_cache_vram_watch_fork(bool prompt) {
         const int64_t outside = (int64_t) d.free_at_size - (int64_t) d.pool + (int64_t) (rap ? rap->room_unmapped : 0) - (int64_t) f;
         d.grow_max = std::max<int64_t>(d.grow_max, outside - d.u_prev);
         d.u_prev   = outside;
-        if (rap && !g_rp_growing.load() && rap->room_lo_want >= rap->room_lo) {   // whole free blocks of the room go back at once; a RAM pool pinning keeps its page tables' room
+        if (rap && settled && !g_rp_growing.load() && rap->room_lo_want >= rap->room_lo) {   // whole free blocks of the room go back at once; a RAM pool pinning keeps its page tables' room
             // pins the loader has not made yet keep their page tables' share (the warmup can run before the last reads end)
             typedef size_t (*pending_t)(void);
             auto pend = (pending_t) llama_fork_proc_dev(d.dev, "ggml_backend_fork_pins_pending_fork");
@@ -10158,7 +10157,7 @@ bool llama_moe_cache_room_oom_fork(int cuda_device) {
             return false;
         }
         ap.room_lo_want = room_edge_down(ap, ap.tail_real - next);
-        LLAMA_LOG_WARN("moe-cache: CUDA's own memory ran out on %s inside a graph: its room grows %.0f -> %.0f MiB of the pool's tail, the call runs again\n",
+        LLAMA_LOG_WARN("moe-cache: CUDA's own memory ran out on %s: its room grows %.0f -> %.0f MiB of the pool's tail before the next graph runs\n",
                 ggml_backend_dev_name(ap.dev), cur / 1048576.0, (ap.tail_real - ap.room_lo_want) / 1048576.0);
         return true;
     }

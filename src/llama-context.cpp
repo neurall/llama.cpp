@@ -4804,6 +4804,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         if (oom_new) {
             oom_seen = oom_n;
             if (oom_dev >= 0) { llama_moe_cache_vram_oom_fork(oom_dev, oom_bytes); }
+            // a CUDA graph that could not be instantiated and ran without one (the call went through): CUDA's room grows before the next graph runs (its
+            // lend) and the graph is captured again then (ggml: off for good after its third failure)
+            if (res && oom_dev >= 0 && oom_bytes == 0) { (void) llama_moe_cache_room_oom_fork(oom_dev); }
         }
         if (!res && status == GGML_STATUS_ALLOC_FAILED && memory && oom_new) {   // a CUDA out-of-memory (not a graph the scheduler could not place)
             // the pool could not grow (oom_bytes > 0): the same call in passes of the share of the tokens x cells that fits (the pool's bytes and the card's free ones, at most

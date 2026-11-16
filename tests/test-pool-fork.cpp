@@ -1126,6 +1126,40 @@ static void test_regress_room_shadow_tags() {
            fmt("owners %d %d, free %zu", ps[0].owner[7], ps[0].owner[8], ps[0].free.size()));
     report("take-back: CUDA's room is left as it is, never evicted", ps[0].owner[9] == POOLX_ROOM && evicted == 1, fmt("owner %d, %d evicted", ps[0].owner[9], evicted));
 }
+static void test_regress_room_graph_warmup() {
+    printf("Testing [bug: decode CUDA graphs out of VRAM after the room's give-back, GLM 3.0 room_tag_fix 2026-11-16] a new shape keeps the room through its second call:\n");
+    // CUDA's use by call (MiB): page tables of the pinned RAM, a shape's kernels at its first call, its CUDA graphs at its second (ggml instantiates a graph's
+    // CUDA graph at the graph's second call, its warmup). A shape not seen yet gets the whole tail area (room_max) before it runs; after a call the room gives
+    // back its free whole blocks. The log: room 346 -> 189 after the first decode token, 1 MiB free, the 42 decode graphs failed at the second.
+    const int64_t step = 8, room_max = 344, tables = 180;
+    struct shape { int64_t cls, kern, graphs; };
+    const std::vector<shape> calls = { { 16384, 8, 0 }, { 4, 0, 0 }, { 1, 2, 40 }, { 1, 2, 40 }, { 1, 2, 40 }, { 1, 2, 40 }, { 1, 2, 40 } };
+    for (int pol = 0; pol < 2; ++pol) {   // 0: the old rule (seen after one call, a give-back after every call), 1: poolx_room_after_call
+        std::vector<int64_t> seen; std::vector<poolx_room_lent> pend; std::map<int64_t, int> ran;
+        int64_t room = 184, oom_at = -1, use = tables;
+        for (size_t i = 0; i < calls.size(); ++i) {
+            const shape & s = calls[i];
+            if (std::find(seen.begin(), seen.end(), s.cls) == seen.end()) {
+                room = room_max;
+                bool in = false; for (auto & p : pend) { in = in || p.cls == s.cls; }
+                if (!in) { pend.push_back({ s.cls, 0 }); }
+            }
+            const int n = ++ran[s.cls];
+            use += (n == 1 ? s.kern : 0) + (n == 2 ? s.graphs : 0);
+            if (use > room && oom_at < 0) { oom_at = (int64_t) i; }
+            bool give;
+            if (pol == 0) { for (auto & p : pend) { seen.push_back(p.cls); } pend.clear(); give = true; }
+            else          { give = poolx_room_after_call(pend, seen); }
+            if (give) { room = (int64_t) poolx_room_give_back((size_t) room, (size_t) std::max<int64_t>(0, room - use), 0, (size_t) step); }
+        }
+        if (pol == 0) { report("old rule: the second decode token runs out (the regression)", oom_at == 3, fmt("first out-of-memory at call %lld", (long long) oom_at)); }
+        else {
+            report("new rule: no call runs out", oom_at < 0, fmt("first out-of-memory at call %lld", (long long) oom_at));
+            report("new rule: the room ends at CUDA's use in whole blocks, nothing kept beyond", room >= use && room - use < step && pend.empty(),
+                   fmt("room %lld MiB for a use of %lld", (long long) room, (long long) use));
+        }
+    }
+}
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -1155,6 +1189,7 @@ int main(int argc, char ** argv) {
     test_regress_cuda_kernel_oom_trace();
     test_regress_pool_start_pins();
     test_regress_room_shadow_tags();
+    test_regress_room_graph_warmup();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;
