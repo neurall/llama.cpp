@@ -8324,6 +8324,8 @@ def run_list(name, argv):
     ap.add_argument("-nm", "--no-mount", dest="no_pool", nargs="?", const="0", default=None, metavar="GB", help="no mount: leave the huge-page pool as it is, at the start and at the end. With GB (-nm 101) our cells also load mmap and pin at most that many GiB of the model (tensor order), the rest is mapped")
     ap.add_argument("-sa", "--stock-args", metavar="ARGS", help="server arguments for the stock cells only (-s, -sc, -nrt stock gap), both stock arms: -sa '-fitt 20000' leaves 20000 MiB free on every card, a restricted-VRAM stock (the rows keep them in their args column)")
     ap.add_argument("-rh", "--real-hold", action="store_true", help="-sim holds the VRAM for real (vramhog.py) for every cell, ours and stock alike, instead of our server faking the free memory: all arms of a comparison see the same cards")
+    ap.add_argument("-so", "--stock-opt", action="store_true", help="stock optimized: stock cells get -c = prompt + answer rounded up to 1024 (what a user would set), rows <stock build>-so-<cell>")
+    ap.add_argument("-som", "--stock-opt-moe", nargs="?", const="16000,0.95", metavar="MIB[,SHARE]", help="stock optimized + upstream's expert cache (default 16000,0.95): -so and -sm together, rows <stock build>-moe-so-<cell>")
     ap.add_argument("-sm", "--stock-moe", metavar="MIB[,SHARE]", help="stock cells (-s, -sc, and the stock cells -nrt adds) use upstream's expert cache: --cpu-moe --moe-cache-mib MIB --moe-cache-cpu-share SHARE (default 0.5); their rows are named <stock build>-moe-<cell> so they never mix with plain stock rows")
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
@@ -8438,6 +8440,7 @@ def run_list(name, argv):
         rows.sort(key=lambda r: -gk[(r["name"], r["test"])])
     sb = stock_latest(o.dry) if o.stock_first and not o.stock else None
     if o.stock_args or o.hog_gpu: os.environ["STOCK_RES"] = "1"   # restricted stock: its rows and labels are their own
+    if o.stock_opt_moe: o.stock_opt = True; o.stock_moe = o.stock_moe or o.stock_opt_moe
     if o.stock_moe: os.environ["STOCK_MOE"] = o.stock_moe   # the cell processes read it (run_one)
     if o.not_today and not o.stock and not sb and not o.no_stock_gap and not name.endswith("onepass"): sb = stock_latest(o.dry)   # (not for the one-pass lists: they measure our best prompt size, stock cells there cost hours and compare nothing)   # -nrt also runs the stock cell of a row that has no stock run of its answer length yet (gap filling)
     def stock_missing(r):
@@ -8621,8 +8624,13 @@ def run_list(name, argv):
                         except SystemExit as e: print(f"pool: unmount failed: {e}", flush=True)
                 else: run_list_pool(size(r))
             if r["model"] != shown and not o.dry: shown = r["model"]; live_clear(); print(col("1;94", first_shard(shown)), flush=True)   # after the pool line: which model the next cells run
-            tag = f"{r['_b']}{'-moe' if o.stock_moe else ''}{'-res' if (o.stock_args or o.hog_gpu) else ''}-{r['name']}" if str(r["_b"]).startswith("stock") and (o.stock_moe or o.stock_args or o.hog_gpu) else f"{r['_b']}-{r['name']}"
-            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], ((" " + r["args"]) if r.get("args") else "") + (((" " + o.stock_args) if o.stock_args else "") + (stock_moe_args(o.stock_moe) if o.stock_moe else "") if str(r["_b"]).startswith("stock") else "")] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else []) + (["--ledger"] if o.ledger else [])
+            _isst = str(r["_b"]).startswith("stock")
+            _soc = ""
+            if _isst and o.stock_opt:   # the context a user would set for this prompt and answer
+                _m = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or ""); _pt = int(_m.group(1)) if _m else int(TEST_IN.get(r["test"]) or 0)
+                _soc = f" -c {-(-(_pt + int(r.get('tokens') or 0)) // 1024) * 1024}"
+            tag = f"{r['_b']}{'-moe' if o.stock_moe else ''}{'-so' if o.stock_opt else ''}{'-res' if (o.stock_args or o.hog_gpu) else ''}-{r['name']}" if _isst and (o.stock_moe or o.stock_opt or o.stock_args or o.hog_gpu) else f"{r['_b']}-{r['name']}"
+            cmd = [sys.executable, os.path.abspath(__file__), "cell", tag, r["model"], r["_b"], r["n"] or "1", r["test"], ((" " + r["args"]) if r.get("args") else "") + (((" " + o.stock_args) if o.stock_args else "") + (stock_moe_args(o.stock_moe) if o.stock_moe else "") + _soc if _isst else "")] + (["--warm"] if o.warm else []) + ([] if o.kill else ["--keep-server"]) + (["--clean-state"] if o.clean_state else []) + (["--ledger"] if o.ledger else [])
             cmd += (["--tokens", r["tokens"]] if r.get("tokens") else []) + shlex.split(r.get("extra") or "")
             if o.dry: print(f"[{name}] {tag}: {re.sub(r' pf(?=\d+k)', ' ', shlex.join(cmd[3:]))}", flush=True)
             ex = cell_expect(r["model"], r["test"], r["n"], r["_b"], o.warm)

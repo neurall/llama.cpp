@@ -9541,3 +9541,4 @@ latest-qni4-i-pf12k1k,2026-11-16 12:34:46,bench /m/q/4/Qwen3.8-Flash-Next-UD-IQ4
 latest-qni3-i-pf12k1k,2026-11-16 12:36:55,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds state_split_heat variants v test pf12k n=2,,
 latest-ds-i-pf14k1k,2026-11-16 12:40:48,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds state_split_heat variants v test pf14k n=2,,
 latest-ds-i-sp-pf14k1k,2026-11-16 12:43:43,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds state_split_heat variants v test pf14k n=2,,
+stock-b12426-official-ds-i-pf14k1k,2026-11-16 12:47:10,bench /m/ds/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf builds stock-b12426-official variants v test pf14k n=2,,
