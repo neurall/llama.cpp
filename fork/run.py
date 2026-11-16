@@ -8402,7 +8402,7 @@ def run_list(name, argv):
                 pn0, og0, _x = run_tokens(ref["id"]) if ref and ref.get("id") else (None, None, "")
                 out0 = int(r.get("tokens") or og0 or 1024)
                 if ref and ref.get("p") and ref.get("t"):
-                    n0 = int(min(pn0 or 10**9, max(256, (pn0 or 0) * sr0[0] / ref["p"]))) if pn0 else 0
+                    n0 = int(min(pn0 or 10**9, -(-max(256, (pn0 or 0) * sr0[0] / ref["p"]) // 512) * 512)) if pn0 else 0
                     m0 = min(out0, max(32, int(out0 * sr0[1] / ref["t"])))
                     if m0 < out0 or (pn0 and n0 < pn0):
                         r["extra"] = " ".join(re.sub(r"--tokens \d+", "", r.get("extra") or "").split() + (["--clamp", str(n0)] if pn0 and n0 < pn0 else []) + ["--tokens", str(m0)]); r["tokens"] = str(m0)
@@ -8787,6 +8787,7 @@ def stock_scaled_request(ptok, out, our_pp_s, our_tg_s, stock_pp_tps, stock_tg_t
     """(prompt tokens, answer tokens) a slow stock cell is fed so each phase takes about as long as ours did: what stock reads in our prompt time, what it writes in our answer time, never more than the full request, never under the floors (the rates stay comparable, the hours go). Unknown rates or times: the full request."""
     if not (our_pp_s and our_tg_s and stock_pp_tps and stock_tg_tps): return ptok, out
     n = min(ptok, max(min_p, int(our_pp_s * stock_pp_tps))); m = min(out, max(min_o, int(our_tg_s * stock_tg_tps)))
+    n = min(ptok, -(-n // 512) * 512)   # whole 512-token batches: an SSD-bound stock reads the model once per batch, so a part-filled last batch would make its prompt rate look lower than a long prompt's
     return n, m
 
 
@@ -11453,7 +11454,7 @@ def _tool_selftest():
         check([r["n"] for r in _g["stock_slow_last"](_rw, lambda r: _sz[r["n"]], 256)] == ["o", "m", "k2", "k"], "stock_slow_last: only stock cells above 80% of RAM move to the end, ours and small stock keep their order")
         _st = {}; _g["live_rate_step"](_st, 0.0, 0, 0); _g["live_rate_step"](_st, 3.0, 3000, 0); _g["live_rate_step"](_st, 6.0, 4500, 0); _g["live_rate_step"](_st, 9.0, 4500, 1); _g["live_rate_step"](_st, 12.0, 4500, 31)
         check(_st["max"] == {"pp": 1000.0, "t": 10.0} and _g["live_rate_text"](_st).startswith("t 10.0 t/s 100.0 ms/token (max 10.0)") and "pp max 1000.0" in _g["live_rate_text"](_st), "live_rate_step: pp and t rates per 3 s sample, the maximum kept per phase")
-        check(_g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 0.5, 0.5) == (512, 32) and _g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 300.0, 40.0) == (12000, 1000) and _g["stock_scaled_request"](12562, 1024, 0, 25.0, 1.0, 1.0) == (12562, 1024), "stock_scaled_request: each phase takes as long as ours, floors 512/32, unknown rates = the full request")
+        check(_g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 0.5, 0.5) == (512, 32) and _g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 300.0, 40.0) == (12288, 1000) and _g["stock_scaled_request"](12562, 1024, 0, 25.0, 1.0, 1.0) == (12562, 1024), "stock_scaled_request: each phase takes as long as ours, floors 512/32, unknown rates = the full request")
         check(_g["best_prompt_cell_label"]({"extra": "--env PERF_PTOK=12438", "tokens": "1024"}) == "b12k/1k 12438" and _g["best_prompt_cell_label"]({"extra": ""}) == "", "best_prompt_cell_label: name and exact tokens in the prompt column")
         _fk = {"/apply-template": lambda b: {"prompt": "<s>" + b["messages"][-1]["content"] + "<a>"}, "/tokenize": lambda b: {"tokens": list(range(len(b["content"]) // 3 + len(b["content"]) // 17))}}
         _cut = _g["best_prompt_chat"](lambda path, body: _fk[path](body), "word " * 400, 120, "")
