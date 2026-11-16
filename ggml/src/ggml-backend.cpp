@@ -75,6 +75,24 @@ static std::atomic<uint64_t> g_vram_out_n{0}, g_vram_out_b{0};
 extern "C" GGML_API void ggml_backend_vram_guard_fork(int mode) { g_vram_guard.store(mode); }
 extern "C" GGML_API void ggml_backend_vram_guard_stats_fork(uint64_t * n, uint64_t * bytes) { *n = g_vram_out_n.load(); *bytes = g_vram_out_b.load(); }
 
+static void vram_guard_report(int mode, const char * what, size_t size) {
+    const uint64_t n = ++g_vram_out_n;
+    g_vram_out_b += size;
+    if (n <= 64 || (n & (n - 1)) == 0 || mode >= 2) {   // a buffer allocated per call would flood the log: the first 64, then powers of two
+        GGML_LOG_ERROR("%s: VRAM outside the block pool: %s %.2f MiB (allocation %llu, %.1f MiB so far; the pool owns this card: move it into the pool)\n", __func__,
+                what, size / 1048576.0, (unsigned long long) n, g_vram_out_b.load() / 1048576.0);
+    }
+    if (mode >= 2) {
+        GGML_ABORT("VRAM outside the block pool (--moe vram-guard=2)");
+    }
+    if (n <= 16) {   // who allocated, in microseconds: ggml_print_backtrace attaches gdb, 0.35 s a call (6 s added to a K3 start, 2026-11-14)
+#if defined(__linux__) && defined(__GLIBC__)
+        void * tr[12];
+        backtrace_symbols_fd(tr, backtrace(tr, 12), 2);
+#endif
+    }
+}
+
 static void vram_guard_check(ggml_backend_buffer_type_t buft, size_t size) {
     const int mode = g_vram_guard.load(std::memory_order_relaxed);
     if (mode <= 0 || ggml_backend_buft_is_host(buft)) {
@@ -85,20 +103,14 @@ static void vram_guard_check(ggml_backend_buffer_type_t buft, size_t size) {
     if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
         return;
     }
-    const uint64_t n = ++g_vram_out_n;
-    g_vram_out_b += size;
-    if (n <= 64 || (n & (n - 1)) == 0 || mode >= 2) {   // a buffer allocated per call would flood the log: the first 64, then powers of two
-        GGML_LOG_ERROR("%s: VRAM outside the block pool: %s %.2f MiB (allocation %llu, %.1f MiB so far; the pool owns this card: move it into the pool)\n", __func__,
-                ggml_backend_buft_name(buft), size / 1048576.0, (unsigned long long) n, g_vram_out_b.load() / 1048576.0);
-    }
-    if (mode >= 2) {
-        GGML_ABORT("VRAM outside the block pool (--moe vram-guard=2)");
-    }
-    if (n <= 16) {   // who allocated, in microseconds: ggml_print_backtrace attaches gdb, 0.35 s a call (6 s added to a K3 start, 2026-11-14)
-#if defined(__linux__) && defined(__GLIBC__)
-        void * tr[12];
-        backtrace_symbols_fd(tr, backtrace(tr, 12), 2);
-#endif
+    vram_guard_report(mode, ggml_backend_buft_name(buft), size);
+}
+
+// a backend's own device memory that no buffer type allocates (Vulkan's temporaries, ggml_vk_preallocate_buffers): before 2026-11-16 the guard never saw them
+extern "C" GGML_API void ggml_backend_vram_guard_note_fork(const char * what, size_t size) {
+    const int mode = g_vram_guard.load(std::memory_order_relaxed);
+    if (mode > 0 && size > 0) {
+        vram_guard_report(mode, what, size);
     }
 }
 

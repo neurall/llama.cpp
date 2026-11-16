@@ -257,6 +257,9 @@ void ggml_vk_print_device_lost_info(const vk_device& device) {
 }
 void * const vk_ptr_base = (void *)(uintptr_t) 0x1000;  // NOLINT
 
+// fork: the VRAM guard (ggml-backend.cpp, no header edit) for device memory this backend allocates itself, not through a buffer type
+extern "C" void ggml_backend_vram_guard_note_fork(const char * what, size_t size);
+
 uint64_t vk_tensor_offset(const ggml_tensor * tensor) {
     if (tensor->view_src) {
         return (uint8_t *) tensor->view_src->data - (uint8_t *) vk_ptr_base;
@@ -1050,6 +1053,7 @@ static void ggml_vk_keepalive_init(vk_device & device, uint32_t family, uint32_t
         ka.dpool = device->device.createDescriptorPool({ {}, 1, 1, &ps });
         ka.set = device->device.allocateDescriptorSets({ ka.dpool, 1, &ka.dsl })[0];
         ka.buf = ggml_vk_create_buffer_device(device, 256);
+        ggml_backend_vram_guard_note_fork((device->name + " keepalive").c_str(), 256);
         const vk::DescriptorBufferInfo bi{ ka.buf->buffer, 0, 256 };
         device->device.updateDescriptorSets({ vk::WriteDescriptorSet{ ka.set, 0, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &bi } }, {});
         ka.pool = device->device.createCommandPool({ vk::CommandPoolCreateFlags{}, family });
@@ -12537,6 +12541,7 @@ void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subct
             ggml_vk_destroy_buffer(ctx->prealloc_x);
         }
         ctx->prealloc_x = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_x);
+        ggml_backend_vram_guard_note_fork((ctx->name + " prealloc_x").c_str(), ctx->prealloc_size_x);
     }
     if (ctx->prealloc_y == nullptr || (ctx->prealloc_size_y > 0 && ctx->prealloc_y->size < ctx->prealloc_size_y)) {
         VK_LOG_MEMORY("ggml_vk_preallocate_buffers(y_size: " << ctx->prealloc_size_y << ")");
@@ -12545,6 +12550,7 @@ void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subct
             ggml_vk_destroy_buffer(ctx->prealloc_y);
         }
         ctx->prealloc_y = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_y);
+        ggml_backend_vram_guard_note_fork((ctx->name + " prealloc_y").c_str(), ctx->prealloc_size_y);
         ctx->prealloc_y_last_pipeline_used = nullptr;
         ctx->prealloc_y_last_tensor_used = nullptr;
         ctx->prealloc_y_last_k_padded = false;
@@ -12556,6 +12562,7 @@ void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subct
             ggml_vk_destroy_buffer(ctx->prealloc_split_k);
         }
         ctx->prealloc_split_k = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_split_k);
+        ggml_backend_vram_guard_note_fork((ctx->name + " prealloc_split_k").c_str(), ctx->prealloc_size_split_k);
     }
     if (ctx->prealloc_add_rms_partials == nullptr || (ctx->prealloc_size_add_rms_partials > 0 && ctx->prealloc_add_rms_partials->size < ctx->prealloc_size_add_rms_partials)) {
         VK_LOG_MEMORY("ggml_vk_preallocate_buffers(add_partials_size: " << ctx->prealloc_add_rms_partials << ")");
@@ -12564,6 +12571,7 @@ void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subct
             ggml_vk_destroy_buffer(ctx->prealloc_add_rms_partials);
         }
         ctx->prealloc_add_rms_partials = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_add_rms_partials);
+        ggml_backend_vram_guard_note_fork((ctx->name + " prealloc_add_rms_partials").c_str(), ctx->prealloc_size_add_rms_partials);
     }
 }
 
