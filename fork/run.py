@@ -2963,6 +2963,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _on = [_next_lp(_l + (_i + 1) * 50, True)[0] for _i in range(20)]   # the moved cells stay in use: the real next token, 50 tokens apart
                 _d = _next_lp(_s, True)
                 print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
+            _want = os.environ.get("PERF_PTOK")
+            if _want and int(t["prompt_n"]) != int(_want):   # a best-prompt cell must feed exactly its stored length: a different one measures another prompt (a pass more or less)
+                raise SystemExit(f"PROMPT LENGTH MISMATCH: the cell asked for {_want} prompt tokens, the server counted {t['prompt_n']}: stop, fix the feed, run again")
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
                    "note": (f"bp2={os.environ.get('PERF_PNAME') or os.environ.get('PERF_PMARK')} " if os.environ.get("PERF_PNAME") or os.environ.get("PERF_PMARK") else "") + f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
