@@ -3715,9 +3715,9 @@ static void ggml_sched_node_dump(ggml_backend_sched_t sched, int split_id, int j
         std::vector<uint8_t> rb;
         if (ggml_is_contiguous(q)) { raw(q, rb); put("fa_q", (int32_t) q->type, q->ne, rb); }
         if (m && ggml_is_contiguous(m)) { raw(m, rb); put("fa_mask", (int32_t) m->type, m->ne, rb); }
-        const int64_t kne[4] = { (int64_t) ggml_nbytes(k) / 2, k->nb[1], k->nb[2], (int64_t) ggml_nbytes(k) };
+        const int64_t kne[4] = { (int64_t) ggml_nbytes(k) / 2, (int64_t) k->nb[1], (int64_t) k->nb[2], (int64_t) ggml_nbytes(k) };
         raw(k, rb); put("fa_k_extent", (int32_t) GGML_TYPE_F16, kne, rb);
-        const int64_t vne[4] = { (int64_t) ggml_nbytes(v) / 2, v->nb[1], v->nb[2], (int64_t) ggml_nbytes(v) };
+        const int64_t vne[4] = { (int64_t) ggml_nbytes(v) / 2, (int64_t) v->nb[1], (int64_t) v->nb[2], (int64_t) ggml_nbytes(v) };
         raw(v, rb); put("fa_v_extent", (int32_t) GGML_TYPE_F16, vne, rb);
     }
     std::vector<uint8_t> b(nb);

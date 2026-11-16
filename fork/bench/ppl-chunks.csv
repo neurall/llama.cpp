@@ -4035,3 +4035,45 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-16 08:32:58,state_split_heat -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5743
 2026-11-16 08:34:28,state_split_heat -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4468
 2026-11-16 08:34:28,state_split_heat -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.57
+2026-11-16 13:00:19,eager_kernels -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.361
+2026-11-16 13:00:19,eager_kernels -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4184
+2026-11-16 17:33:40,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3701
+2026-11-16 17:33:40,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4233
+2026-11-16 17:35:36,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3727
+2026-11-16 17:35:36,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4256
+2026-11-16 17:38:10,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4631
+2026-11-16 17:38:10,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5809
+2026-11-16 17:39:35,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4538
+2026-11-16 17:39:35,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5705
+2026-11-16 17:41:36,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.128
+2026-11-16 17:41:36,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1195
+2026-11-16 17:42:36,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1274
+2026-11-16 17:42:36,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1227
+2026-11-16 17:44:13,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1353
+2026-11-16 17:44:13,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1181
+2026-11-16 17:45:08,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1274
+2026-11-16 17:45:08,vk_generic_pool -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.114
+2026-11-16 17:46:33,vk_generic_pool -np 1 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-16 17:46:33,vk_generic_pool -np 1 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-16 17:47:31,vk_generic_pool -np 1 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-16 17:47:31,vk_generic_pool -np 1 -t 6 -tb 8,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-16 17:48:59,vk_generic_pool -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6691
+2026-11-16 17:48:59,vk_generic_pool -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5254
+2026-11-16 17:49:29,vk_generic_pool -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6671
+2026-11-16 17:49:29,vk_generic_pool -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5238
+2026-11-16 17:50:29,"vk_generic_pool -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9403
+2026-11-16 17:50:29,"vk_generic_pool -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9421
+2026-11-16 17:50:47,"vk_generic_pool -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9418
+2026-11-16 17:50:47,"vk_generic_pool -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9414
+2026-11-16 20:40:09,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3728
+2026-11-16 20:40:09,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4211
+2026-11-16 20:42:04,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3621
+2026-11-16 20:42:04,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4162
+2026-11-16 20:44:39,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4502
+2026-11-16 20:44:39,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5647
+2026-11-16 20:46:04,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.456
+2026-11-16 20:46:04,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5692
+2026-11-16 20:48:05,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1328
+2026-11-16 20:48:05,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1233
+2026-11-16 20:49:06,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1274
+2026-11-16 20:49:06,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1255
