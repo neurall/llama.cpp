@@ -5,6 +5,7 @@
 #include "build-info.h"
 #include "common.h"
 #include "../src/llama-backend-fork.h"
+#include "../src/llama-devpick-fork.h"
 #include "cpu-topo-fork.h"
 
 #include "../src/llama-ext.h"
@@ -2283,13 +2284,22 @@ static void common_moe_cache_auto_impl(common_params & params) {
         // shortcut: the KV tail and the compute alias live in the CUDA backend's hooks (scratch, graph hook, slices); on another backend (Vulkan, HIP) they
         // abort at the context, so they are off there until ported. Decided from the backend of the GPUs in use: the devices given with -dev, else all.
         bool cuda_gpu = false, other_gpu = false;   // every GPU in use must have the scratch hook (llama-backend-fork.h): a mixed set keeps them off too
+        std::vector<ggml_backend_dev_t> gpus;
+        std::vector<std::string>        ids;        // without -dev: the discrete cards' PCI ids, to skip a card's twin on a second backend (llama_dev_twins)
         for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
             if (!ggml_backend_dev_is_gpu(dev)) { continue; }
             if (!params.devices.empty() && std::find(params.devices.begin(), params.devices.end(), dev) == params.devices.end()) { continue; }
             // an integrated GPU next to a discrete one holds no layers and no pool (llama-model.cpp): it does not decide the pool's features
             if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU && ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) { continue; }
-            (llama_fork_proc_dev(dev, "ggml_backend_fork_scratch_fork") ? cuda_gpu : other_gpu) = true;
+            ggml_backend_dev_props p;
+            ggml_backend_dev_get_props(dev, &p);
+            gpus.push_back(dev);
+            ids.push_back(params.devices.empty() && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU && p.device_id ? p.device_id : "");
+        }
+        const std::vector<bool> twin = llama_dev_twins(ids);
+        for (size_t i = 0; i < gpus.size(); ++i) {
+            if (!twin[i]) { (llama_fork_proc_dev(gpus[i], "ggml_backend_fork_scratch_fork") ? cuda_gpu : other_gpu) = true; }
         }
         if (!cuda_gpu || other_gpu) {
             if (params.moe_opts.find("kv-tail") == std::string::npos) { llama_moe_set_opt("kv-tail", "0"); }
