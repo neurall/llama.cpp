@@ -3,3 +3,7 @@ vk-qni3-i,qwen38,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/
 vk-qni4-i,qn_iq4xs,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
 vk-glm-i,glm,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
 vk-mimo-i,mimo,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+cu-qni3-i,qwen38,2,pfbest1k,1024,,
+cu-qni4-i,qn_iq4xs,2,pfbest1k,1024,,
+cu-glm-i,glm,2,pfbest1k,1024,,
+cu-mimo-i,mimo,2,pfbest1k,1024,,

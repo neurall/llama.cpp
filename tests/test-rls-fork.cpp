@@ -141,6 +141,11 @@ int main() {
         r.m1 = 2442.0 / 1514.0 * s; r.nm1 = 1; r.m2 = 2442.0 / 1253.0 * s; r.nm2 = 1;
         check("qni3 2442, one sample of each at this size: the models decide (the split)", dsf_pick({ r }, qn).choice == 1, 0.0);
     }
+    {   // INV phi at a call's end (GLM, two Vulkan cards, 2026-11-16): 9472 tokens in 6 passes (trial passes of 1664, then 1536), features for 1536
+        check("INV phi: the prompt's passes taught the arm, its end's average is no sample", !rls_report_phi_off(1536.0, 9472.0 / 6.0, 4, true), 9472.0 / 6.0);
+        check("INV phi: no pass taught it, the end would teach 43 tokens off its features", rls_report_phi_off(1536.0, 9472.0 / 6.0, 0, true), 9472.0 / 6.0);
+        check("INV phi: passes of the planned size", !rls_report_phi_off(1536.0, 3072.0 / 2.0, 0, true), 1536.0);
+    }
     printf("%s\n", n_failed ? "FAILED" : "all passed");
     return n_failed ? 1 : 0;
 }

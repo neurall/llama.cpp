@@ -16925,7 +16925,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 // INV sure (I9): a path with two samples or fewer must not claim to know its time within ~20%
                 if (rp.n <= 2 && rp.nis <= 0.1 && g_pp_var[path] < 0.05 * mu * mu) { pp_inv("sure", format("%s after %d samples: %.0f +- %.0f ms", pp_path_name(path).c_str(), rp.n, mu / 1e3, sd / 1e3)); }
                 // INV phi (I6): the sample's pass size is the one the features were built for
-                if (std::fabs(g_pp_phi[path][1] - (double) n_tokens / P) > 32.0) { pp_inv("phi", format("%s: features for %.0f tokens, the pass had %.0f", pp_path_name(path).c_str(), g_pp_phi[path][1], (double) n_tokens / P)); }
+                if (rls_report_phi_off(g_pp_phi[path][1], (double) n_tokens / P, learned, streamed)) { pp_inv("phi",format("%s: features for %.0f tokens, the pass had %.0f", pp_path_name(path).c_str(), g_pp_phi[path][1], (double) n_tokens / P)); }
                 const bool best = lo >= 0.0 && mu <= lo;
                 const double regret = best ? 0.0 : std::max(0.0, took - lo);
                 if (g_pp_pick == path) { llama_dsplit_plan_book_fork(regret * P, took <= lo + sd); }

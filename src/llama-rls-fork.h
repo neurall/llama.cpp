@@ -363,5 +363,12 @@ static inline dsf_pick_out dsf_pick(const std::vector<dsf_arm_pass> & passes, co
     return o;
 }
 
+// INV phi (I6): a call's end teaches its arm only when none of its passes did (llama_moe_cache_pp_pass_learn_fork) and it streamed, and only then must its
+// average pass be the size its features were built for. A prompt of calls decided at different sizes averages between them (GLM on two Vulkan cards,
+// 2026-11-16: trial passes of 1664 tokens, then 1536; 9472 tokens in 6 passes is 1579 a pass, the passes had taught the arm, the check failed the row)
+static inline bool rls_report_phi_off(double planned, double n1, int learned, bool streamed) {
+    return learned == 0 && streamed && std::fabs(planned - n1) > 32.0;
+}
+
 // the normal CDF, for the logged p_split only (never a decision input)
 static inline double rls_phi_cdf(double z) { return 0.5 * std::erfc(-z / std::sqrt(2.0)); }
