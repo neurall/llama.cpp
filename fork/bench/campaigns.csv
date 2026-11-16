@@ -9500,3 +9500,7 @@ stock-b12426-official-moe-res-olmoe-i-pf2k1k,2026-11-16 00:57:54,bench /m/o/4/OL
 stock-b12426-official-moe-res-q36-i-pf14k1k,2026-11-16 01:00:05,bench /m/q/36/Qwen3.6-35B-A3B-GSQ-hybrid.gguf builds stock-b12426-official variants v test pf14k n=2,,
 stock-b12426-official-moe-res-olmoe-i-pf2k1k,2026-11-16 01:02:37,bench /m/o/4/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf builds stock-b12426-official variants v test pf2k n=2,,
 stock-b12426-official-k31-i-pf13k1k,2026-11-16 01:04:36,bench /m/k/1/Kimi-K3.1-Pro-IQ1_S-00001-of-00031.gguf builds stock-b12426-official variants v test pf13k n=2,,
+latest-glm35-io-edit4c,2026-11-16 01:22:03,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds state_split_heat variants v test edit4c n=2,,
+latest-glm35-o-tetrisc,2026-11-16 01:24:36,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds state_split_heat variants v test tetrisc n=2,,
+latest-glm-i-pf12k1k,2026-11-16 08:21:28,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds state_split_heat variants v test pf12k n=2,,
+latest-glm-io-edit4c,2026-11-16 08:24:29,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds state_split_heat variants v test edit4c n=2,,

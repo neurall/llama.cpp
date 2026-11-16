@@ -2905,10 +2905,11 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 args += ["-np", "1"]    # stock's auto slots (4) split -c: 16384 / 4 = 4096 per slot, the same HTTP 400 ("exceeds the available context size (4096 tokens)", 2026-10-19)
             _pf_big = test == "pf128k" or (_pfn and int(_pfn.group(1)) > 12)   # pf40k, pf64k ...: the first N thousand tokens of the 128k source
             _pf_text = open(config.prompt_path("src128k" if _pf_big else "src12k")).read()
-            if _pfn and int(_pfn.group(1)) in PF_FILES:   # a frozen file (prompts/src_Nk.cpp, the cut below written out): the one-pass prompts of `run.py onepass`
+            if _pfn and int(_pfn.group(1)) in PF_FILES and not os.environ.get("PERF_PTOK"):   # a frozen file (prompts/src_Nk.cpp, the cut below written out): the one-pass prompts of `run.py onepass`
                 _pf_text = open(config.prompt_path(f"src{_pfn.group(1)}k")).read()
             elif _pfn and int(_pfn.group(1)) not in (12, 128):   # the 12k file is 12294 tokens (GLM tokenizer, 4.4 characters each): cut in proportion
-                _need = int(54092 * int(_pfn.group(1)) * 1000 / 12294); _pf_text = (_pf_text * (_need // max(len(_pf_text), 1) + 1))[:_need]   # beyond the source (256k contexts): the source again, the speeds do not depend on the text
+                _nom = ptok_nominal(int(os.environ["PERF_PTOK"]), model_tok_ratio(MODEL)) if os.environ.get("PERF_PTOK") else int(_pfn.group(1)) * 1000   # PERF_PTOK: the exact best prompt in this model's tokens (the label pfNk is rounded)
+                _need = pf_cut_chars(_nom); _pf_text = (_pf_text * (_need // max(len(_pf_text), 1) + 1))[:_need]   # beyond the source (256k contexts): the source again, the speeds do not depend on the text
             if OVR.get("snippet"): _pf_text = open(OVR["snippet"]).read()   # [alias] snippet = another source file for the same prefill test (pf12k4kb: a different 12k cut)
             _pf_text = OVR.get("prefix", "") + _pf_text
             _canary = int(OVR.get("canary") or 0)
@@ -8268,6 +8269,8 @@ def run_list(name, argv):
     for r in rows:
         if not _sel(r): continue
         was = r["test"]; r["test"] = best_test(r["model"], r["test"], remote=o.machine.split("-")[0] != "pc1")
+        if re.fullmatch(r"pfbest\d*k?", was or "") and o.machine.split("-")[0] == "pc1" and best_prompt_tokens(r["model"]) and "PERF_PTOK" not in (r.get("extra") or ""):
+            r["extra"] = ((r.get("extra") or "") + f" --env PERF_PTOK={best_prompt_tokens(r['model'])}").strip()   # pf9k1k is only the label: the prompt is the stored best, 8900 tokens, not 9000
         if r["test"] != was and was != r["test"] and (r["model"], r["test"]) not in _picked and not o.status:
             _picked.add((r["model"], r["test"]))   # pfbest1k: the model's best one-pass prompt (models.ini best_prompt), stock cells run the same
     if o.test: rows = [r for r in rows if r["test"] in {x if x.startswith("pf") or x in {r2["test"] for r2 in rows} else "pf" + x for x in o.test.split(",")}]   # best1k = pfbest1k (plain names, no pf prefix)
@@ -8673,6 +8676,38 @@ def best_prompt_k(model_path):
     mx = {int(g): int(x) for g, x in mx}.get(int(hw_key()[:-1]))
     if mx: return max(1, mx // 1000)   # no best yet: the biggest pass that fits (maxpp)
     sys.exit(f"{model_alias(model_path)}: no best prompt and no pass ceiling stored for {hw_key()} of VRAM; ask the engine once: python3 fork/run.py calib --ceil -m {model_alias(model_path)}")   # no guessed size
+
+
+def pf_cut_chars(nominal_tokens):
+    """characters of the frozen 12k source (12294 GLM tokens = 54092 characters) that make about nominal_tokens GLM-tokenizer tokens: the cut of a pf<N>k prompt, and of an exact one"""
+    return int(54092 * nominal_tokens / 12294)
+
+
+def ptok_nominal(ptok, ratio):
+    """the nominal (GLM-token) size that gives ptok tokens of a model whose tokenizer makes `ratio` model tokens per nominal token (what its earlier pf<N>k rows measured): the exact best prompt, whatever the label rounds to"""
+    return ptok / ratio if ratio and ratio > 0 else float(ptok)
+
+
+def model_tok_ratio(model_path):
+    """median over this model's stored pf<N>k cells of (prompt tokens the server counted) / (N thousand nominal): how many of its tokens one nominal token makes; 1.0 when it has no row yet"""
+    import sqlite3
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        v = []
+        for test, note in c.execute("select test, note from runs where model=? and test like 'pf%k%' and cast(ok as integer)=1 and note like '%prompt_n=%' order by ts desc limit 40", (os.path.basename(model_path),)):
+            m, n = re.match(r"pf(\d+)k", test or ""), re.search(r"prompt_n=(\d+)", note or "")
+            if m and n and int(m[1]) not in (128,): v.append(int(n[1]) / (int(m[1]) * 1000))
+        return statistics.median(v) if v else 1.0
+    except Exception: return 1.0
+
+
+def best_prompt_tokens(model_path):
+    """the model's best prompt in tokens exactly as stored (bestpp, else the pass ceiling maxpp) for the VRAM in use; None when neither is stored. The label of the test rounds it to thousands (pf9k1k), the prompt of the cell does not"""
+    sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {}); g = int(hw_key()[:-1])
+    t = bestpp_entries(sec.get("bestpp", "")).get(g)
+    if t: return t[0]
+    mx = {int(a): int(b) for a, b in re.findall(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", sec.get("maxpp", ""))}.get(g)
+    return mx or None
 
 
 def best_test(model_path, test, remote=False):
@@ -11249,6 +11284,7 @@ def _tool_selftest():
         check(abs(_g["total_time"](3, (1, 1.0, 0.5)) - 1.25) < 1e-9, "total_time: 3 prompt tokens took 3 s (1 s a token), 1 answer token 2 s (2 s a token): 0.75 * 1 + 0.25 * 2 = 1.25")
         _rw = [{"_b": "stock-b1", "n": "k"}, {"_b": "b2", "n": "o"}, {"_b": "stock-b1", "n": "m"}, {"_b": "b2", "n": "k2"}]; _sz = {"k": 580, "o": 10, "m": 12, "k2": 580}
         check([r["n"] for r in _g["stock_slow_last"](_rw, lambda r: _sz[r["n"]], 256)] == ["o", "m", "k2", "k"], "stock_slow_last: only stock cells above 80% of RAM move to the end, ours and small stock keep their order")
+        check(_g["pf_cut_chars"](12294) == 54092 and abs(_g["ptok_nominal"](8900, 1.0365) - 8587.0) < 1.0 and _g["ptok_nominal"](8900, 0) == 8900.0, "pf_cut_chars / ptok_nominal: the exact best prompt (8900 tokens) is cut to 8587 nominal tokens for a tokenizer that makes 1.0365 of its tokens per nominal one")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
         check(_g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 985.0, 30.0)}) == 12000 and _g["best_size"]({8037: (64, 1000.0, 30.0), 12000: (64, 900.0, 30.0)}) == 8037, "best_size: within 2% the longer prompt, below that the faster one")
