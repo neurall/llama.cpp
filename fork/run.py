@@ -2672,8 +2672,9 @@ def timeboxed_request(path, body, pp_s, tg_s, port):
     if t_first and pp_rate == 0.0: pp_rate = n_first / max(t_first - t0, 1e-3); PROCSTAT["boxed_first_batch"] = 1   # no second batch finished in our time: the first batch alone, from the request start
     cancel(box)
     sb = dict(body); sb["n_predict"] = max(int(body.get("n_predict") or 0), 1024); sb["max_tokens"] = sb["n_predict"]
-    if "messages" in sb: sb["messages"] = [{"role": "user", "content": str(body["messages"][-1]["content"])[:200]}]
-    else: sb["prompt"] = str(body.get("prompt"))[:200]
+    short = "Write a long Tetris game in Python."   # a few tokens that make a long answer: the answer phase is timed, not the prompt
+    if "messages" in sb: sb["messages"] = [{"role": "user", "content": short}]
+    else: sb["prompt"] = short
     box2 = {}; threading.Thread(target=fire, args=(sb, box2), daemon=True).start(); t1 = time.time(); t_samples = []; tstart = None
     while "r" not in box2 and "e" not in box2:
         time.sleep(0.5); v = seen(box2); now = time.time()
