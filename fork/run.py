@@ -2631,16 +2631,11 @@ def pcie_sampler():
     return stop
 
 
-def box_pp_rate(samples, t0):
-    """prompt t/s of a request stopped by the clock: tokens done at the last sample over the time since the request started (samples = [(time, prompt tokens done)])"""
-    if not samples: return 0.0
-    t, n = samples[-1]
-    return n / max(t - t0, 1e-3)
-
-
-def box_t_rate(samples):
-    """decode t/s of a request stopped by the clock: tokens written between the first sample with a token and the last one (samples = [(time, tokens written)]), 0 with fewer than two such samples"""
-    v = [(t, n) for t, n in samples if n >= 1]
+def box_rate(samples):
+    """tokens per second of a request stopped by the clock, timed from its first received token: (tokens at the last change - tokens at the first) / (time of the last change - time of the first); samples = [(time, tokens so far)], 0 when fewer than two different counts were seen"""
+    v = []
+    for t, n in samples:
+        if n >= 1 and (not v or n != v[-1][1]): v.append((t, n))
     return (v[-1][1] - v[0][1]) / max(v[-1][0] - v[0][0], 1e-3) if len(v) >= 2 else 0.0
 
 
@@ -2668,13 +2663,18 @@ def timeboxed_request(path, body, pp_s, tg_s, port):
         if not sl: return None
         x = next((y for y in sl if y.get("is_processing")), sl[0])
         return int(x.get("n_prompt_tokens_processed", 0) or 0) + int(x.get("n_prompt_tokens_cache", 0) or 0), int(((x.get("next_token") or [{}])[0]).get("n_decoded", 0) or 0)
-    box = {}; threading.Thread(target=fire, args=(body, box), daemon=True).start(); t0 = time.time(); pp_samples = []
+    box = {}; threading.Thread(target=fire, args=(body, box), daemon=True).start(); t0 = time.time(); pp_samples = []; t_first = None; n_dead = None
     while "r" not in box and "e" not in box:
-        time.sleep(1); v = seen(box)
-        if v: pp_samples.append((time.time(), v[0]))
-        el = time.time() - t0
-        if (el >= pp_s and v and v[0] >= 1024) or el >= 4 * pp_s: break
-    pp_rate = box_pp_rate(pp_samples, t0); pp_done = pp_samples[-1][1] if pp_samples else 0; pp_el = (pp_samples[-1][0] - t0) if pp_samples else 0
+        time.sleep(1); v = seen(box); now = time.time()
+        if v: pp_samples.append((now, v[0]))
+        if v and v[0] >= 1 and t_first is None: t_first = now   # the timer starts at the first received prompt token
+        if t_first is None:
+            if now - t0 >= 8 * pp_s + 1800: break
+            continue
+        if now - t_first >= pp_s:   # our time has passed: stop at the next batch that finishes (a stock batch count steps), at the latest 4x our time
+            if n_dead is None: n_dead = v[0] if v else 0
+            if (v and v[0] > n_dead) or now - t_first >= 4 * pp_s: break
+    pp_rate = box_rate(pp_samples); pp_done = pp_samples[-1][1] if pp_samples else 0; pp_el = (pp_samples[-1][0] - t0) if pp_samples else 0
     cancel(box)
     sb = dict(body); sb["n_predict"] = max(int(body.get("n_predict") or 0), 1024); sb["max_tokens"] = sb["n_predict"]
     if "messages" in sb: sb["messages"] = [{"role": "user", "content": str(body["messages"][-1]["content"])[:200]}]
@@ -2686,7 +2686,7 @@ def timeboxed_request(path, body, pp_s, tg_s, port):
         if v and v[1] >= 1 and tstart is None: tstart = time.time()
         if tstart and ((time.time() - tstart >= tg_s and v[1] >= 8) or time.time() - tstart >= 4 * tg_s): break
         if not tstart and time.time() - t1 >= 4 * max(pp_s, 60) + 4 * tg_s: break
-    t_rate = box_t_rate(t_samples); n_dec = t_samples[-1][1] if t_samples else 0
+    t_rate = box_rate(t_samples); n_dec = t_samples[-1][1] if t_samples else 0
     cancel(box2)
     PROCSTAT["boxed"] = f"pp {pp_done} tok in {pp_el:.0f} s (budget {pp_s:.0f} s), t {n_dec} tok (budget {tg_s:.0f} s)"
     return {"timings": {"prompt_n": pp_done, "prompt_per_second": pp_rate, "prompt_ms": pp_el * 1000, "predicted_n": n_dec, "predicted_per_second": t_rate, "predicted_ms": (n_dec / t_rate * 1000) if t_rate else 0}, "content": "", "choices": [{"message": {"content": ""}, "finish_reason": "box"}]}
@@ -11509,7 +11509,7 @@ def _tool_selftest():
         _fk = {"/apply-template": lambda b: {"prompt": "<s>" + b["messages"][-1]["content"] + "<a>"}, "/tokenize": lambda b: {"tokens": list(range(len(b["content"]) // 3 + len(b["content"]) // 17))}}
         _cut = _g["best_prompt_chat"](lambda path, body: _fk[path](body), "word " * 400, 120, "")
         check(len(_fk["/tokenize"]({"content": _fk["/apply-template"]({"messages": [{"content": _cut}]})["prompt"]})["tokens"]) == 120, "best_prompt_chat: the user text is cut so the chat prompt is exactly N tokens")
-        check(_g["box_pp_rate"]([(10, 0), (110, 512), (310, 1024)], 0) == 1024 / 310 and _g["box_t_rate"]([(0, 0), (5, 1), (15, 11), (25, 21)]) == 1.0 and _g["box_t_rate"]([(0, 0), (5, 1)]) == 0.0, "box_pp_rate / box_t_rate: rates of requests stopped by the clock")
+        check(_g["box_rate"]([(10, 0), (110, 512), (210, 512), (310, 1024)]) == 512 / 200 and _g["box_rate"]([(0, 0), (5, 1), (15, 11), (25, 21)]) == 1.0 and _g["box_rate"]([(0, 0), (5, 1)]) == 0.0, "box_rate: rate from the first received token to the last change")
         check(_g["best_prompt_label"](8900) == "b9k1k" and _g["best_prompt_label"](12438) == "b12k1k", "best_prompt_label: the label rounds, the prompt does not")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
