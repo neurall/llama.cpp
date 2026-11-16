@@ -7215,6 +7215,42 @@ def pass_best_at(model, build, pos):
     return best
 
 
+def run_tokens(rid):
+    """(prompt tokens, answer tokens, power limits) of one runs.db row, (None, None, "") when it has none"""
+    import sqlite3
+    try:
+        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select note, n_gen, pl from runs where rowid=?", (rid,)).fetchone()
+    except sqlite3.Error: return None, None, ""
+    if not r: return None, None, ""
+    m = re.search(r"prompt_n=(\d+)", r[0] or "")
+    return (int(m[1]) if m else None), (int(r[1]) if r[1] else None), str(r[2] or "")
+
+
+def best_by_time(model, build, rid_now=None):
+    """the best earlier run of ours of this model on this machine by time per token (total_time: prompt and decode token times weighted by their token counts, so any prompt length compares), any build but `build`:
+    dict(bno, pn, out, pp, t, ms_pp, ms_t, tt (ms/token), pl) or None. One run per build counts as its median-by-time run"""
+    import sqlite3
+    if not model or not build: return None
+    try:
+        c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
+        rows = c.execute("select tps, pp, build, n_gen, note, pl, bno, rowid from runs where model=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null and pp is not null and note like '%prompt_n=%'" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
+                         " and not (coalesce(out_chars,'') != '' and coalesce(n_gen,0) > 0 and cast(out_chars as integer) * 2 < n_gen)", (os.path.basename(model), str(build))).fetchall()
+    except sqlite3.Error: return None
+    best = None
+    for t_, p_, b_, g_, nt, pl, bn, rid in rows:
+        m = re.search(r"prompt_n=(\d+)", nt or "")
+        if not (m and g_ and t_ and p_): continue
+        tt = total_time(int(m[1]), (int(g_), float(p_), float(t_)))
+        if best is None or tt < best["tt"] / 1000: best = dict(bno=bn, pn=int(m[1]), out=int(g_), pp=float(p_), t=float(t_), ms_pp=1000 / float(p_), ms_t=1000 / float(t_), tt=tt * 1000, pl=str(pl or ""), rid=rid)
+    return best
+
+
+def best_run_text(b):
+    """`b15600 12k/1k pp 1030 (0.97 ms) t 24.1 (41.5 ms) 0.98 ms/tok 220/280W` of a best_by_time result"""
+    if not b: return ""
+    return f"b{int(b['bno']) if b['bno'] else '?'} {round(b['pn'] / 1000)}k/{out_k(b['out'])} pp {b['pp']:.0f} ({b['ms_pp']:.2f} ms) t {b['t']:.1f} ({b['ms_t']:.1f} ms) {b['tt']:.2f} ms/tok" + (f" {b['pl']}W" if b['pl'] else "")
+
+
 def best_prev(model, test, build, asked=0):
     """the best earlier run of ours of this model and test (about the same answer length, this machine, any build of ours except `build`): (best t/s, best pp, build of the best pp) or None.
     Shown as the "vs best" columns of the results, so a run reads as better or worse than the best so far without looking anything up (user 2026-10-24)"""
@@ -7396,12 +7432,12 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         gt = t / st["t"] if st and t else None; gp = p / st["p"] if st and p and st["p"] else None
         body.append(dict(name=r["name"], xfer=r.get("xfer") or "", id=str(rid_show or ""), sid=str(st.get("sid") or "") if st else "", prompt=r.get("prompt") or "", out=out_len(rid_show, st.get("sid") if st else (r.get("rid") if r.get("stock_row") else None)), time=f"{int(el // 60)}:{int(el % 60):02d}" + (f" {min(99, int(100 * el / r['exp']))}%" if el is not None and r.get("exp") else "") if el is not None else f"~{int(r['est'] // 60)}:{int(r['est'] % 60):02d}" if r.get("est") else "", load=r["lt"].replace("l ", ""), fail=bool(r["rc"]), loop=loop_flag(rid_show), t=f(t, 2), p=f(p, 1), g=gpus_used(rid_show),
                          st=f(st["t"], 2) if st else "", sp=f(st["p"], 1) if st and st["p"] else "", gt=f(gt, 2), gp=f(gp, 2), gtv=gt, gpv=gp, ppl=(ppl_pair(r.get("model"), st.get("ob")) if st and st.get("ob") else ""), nost=(not st and not r["stock_row"])))
-        bb = best_prev(r.get("model"), r.get("test"), r.get("build"), r.get("asked") or 0) if not r.get("ref") and not r.get("stock_row") and res else None   # this run over the best earlier run of ours
-        vt = t / bb[0] if bb and t and bb[0] else None; vp = p / bb[1] if bb and p and bb[1] else None
-        body[-1].update(vt=f(vt, 2), vp=f(vp, 2), vtv=vt, vpv=vp)
+        bb = best_by_time(r.get("model"), r.get("build")) if not r.get("ref") and not r.get("stock_row") and res else None   # this run against the best earlier run of ours, by time per token
+        pn_, og_, _pl = run_tokens(rid_show) if bb and rid_show and t and p else (None, None, "")
+        vt = (bb["tt"] / (total_time(pn_, (og_, p, t)) * 1000)) if bb and pn_ and og_ else None   # above 1: faster per token than the best so far
+        body[-1].update(vt=f(vt, 2), vp=best_run_text(bb), vtv=vt, vpv=None)
         if not r.get("ref") and not r.get("stock_row") and res and not str(r.get("build") or "").startswith("stock"):   # no earlier run of ours: "first", not an empty cell that looks broken
-            if vt is None and t: body[-1].update(vt="first")
-            if vp is None and p: body[-1].update(vp="first")
+            if bb is None and t: body[-1].update(vt="first")
         body[-1]["section"] = r.get("section")   # `run status`: done / running / queued
         body[-1]["bt"] = (f"b{st['ob']} {st['od'][5:]} vs b{st['sb']} {st['sd'][5:]}" if st["ob"] else f"stock b{st['sb']} {st['sd'][5:]}") if st else ""; body[-1]["bts"] = (f"b{st['ob']} vs b{st['sb']}" if st["ob"] else f"stock b{st['sb']}") if st else ""
         gs = [g for g in (gt, gp) if g]; body[-1]["gm"] = math.prod(gs) ** (1 / len(gs)) if gs else 0   # overall gain: geometric mean of decode and prompt gain
@@ -7413,10 +7449,10 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
     for x in allrows: x.setdefault("xfer", ""); x.setdefault("vt", ""); x.setdefault("vp", ""); x.setdefault("vtv", None); x.setdefault("vpv", None)
     show_x = any(x["xfer"] not in ("", "f32", "f16") for x in body)   # the hand-off column only when a cell of ours ran with other than the f32 default
     wd = lambda k, h: max([len(h)] + [len(x.get(k, "")) for x in allrows])
-    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "par gpus"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("vt", "vs best t/s"), ("vp", "vs best pp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
+    W = {k: wd(k, h) for k, h in (("name", ""), ("prompt", "prompt"), ("out", "out"), ("xfer", "xfer"), ("time", "time"), ("load", "load"), ("t", "t/s"), ("p", "pp"), ("g", "par gpus"), ("st", "stock t/s"), ("sp", "stock pp"), ("gt", "x t/s"), ("gp", "x pp"), ("vt", "vs best"), ("vp", "best runp"), ("ppl", "ppl us/stock"), ("bt", "builds"), ("id", "id"), ("sid", "stock id"))}
     if live:   # one finished cell as it happens: fixed minimum widths so the rows of successive cells line up
         W["name"] = NAMEW[0] - 1   # the longest name of the list, whatever this cell is called
-        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("g", 4), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("vt", 11), ("vp", 10), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
+        for k, mw in (("prompt", 7), ("out", 7), ("xfer", 4), ("time", 5), ("load", 6), ("t", 7), ("p", 8), ("g", 4), ("st", 9), ("sp", 8), ("gt", 7), ("gp", 7), ("vt", 7), ("vp", 60), ("ppl", 13), ("bt", 16), ("id", 5), ("sid", 8)): W[k] = max(W[k], mw)
         for x in allrows: x["bt"] = x.get("bts", x["bt"])   # short builds, so every row decides the same columns
         W["bt"] = max([16, len("builds")] + [len(x["bt"]) for x in allrows])
     def width(keys): return sum(W[k] + 2 for k in keys)
@@ -7426,9 +7462,9 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         for x in allrows: x["bt"] = x["bts"]
         W["bt"] = max([len("builds")] + [len(x["bt"]) for x in allrows] + ([16] if live else []))
     wrap = False   # never a row in two lines (user 2026-10-24: the stock part on a second line under the name was unreadable); columns are dropped above instead
-    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "par gpus", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "vt": "vs best t/s", "vp": "vs best pp", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
+    H = {"prompt": "prompt", "out": "out", "xfer": "xfer", "time": "time", "load": "load", "t": "t/s", "p": "pp", "g": "par gpus", "st": "stock t/s", "sp": "stock pp", "gt": "x t/s", "gp": "x pp", "vt": "vs best", "vp": "best run", "ppl": "ppl us/stock", "bt": "builds", "id": "id", "sid": "stock id"}
     HC = {"prompt": 36, "out": 36, "xfer": 35, "t": 96, "g": 35, "st": 96, "gt": 96, "p": 93, "sp": 93, "gp": 93, "vt": 96, "vp": 93, "ppl": 36, "time": 37, "load": 33, "bt": 90, "id": 37, "sid": 36}
-    hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k == "bt" else f"{H[k]:>{W[k]}}") for k in keys)
+    hl = lambda keys: "".join("  " + col(HC[k], f"{H[k]:<{W[k]}}" if k in ("bt", "vp") else f"{H[k]:>{W[k]}}") for k in keys)
     out = [" " * W["name"] + hl(ours[1:]) + ("" if wrap else hl(stk))]
     if wrap: out.append(" " * W["name"] + hl(stk))
     if not headers: out = []   # `run status`: rows only
@@ -7439,10 +7475,11 @@ def final_table(recs, live=False, hdr_out=None, headers=True):
         gcell = lambda k, v: "  " + (col("1;91" if v < 1 else "37" if v < 2 else "1;97" if v < 10 else "1;93" if v < 40 else "1;92", f"{x[k]:>{W[k]}}") if v is not None else " " * W[k])   # below 1 red, 1-2 plain, 2x bold white, 10x yellow, 40x green
         vcell = lambda k: "  " + (col("1;91" if x[k + "v"] < 0.99 else "1;92" if x[k + "v"] > 1.01 else "37", f"{x[k]:>{W[k]}}") if x.get(k + "v") else col(90, f"{x[k]:>{W[k]}}") if x.get(k) == "first" else " " * W[k])   # against the best earlier run of ours: below 0.99 red (worse), above 1.01 green (better), "first" without one
         ln = col(37 if x.get("is_old") else {"done": "1;92", "running": "1;97", "queued": "90"}.get(x.get("section"), 1), f"{x['name']:<{W['name']}}") + "".join(cell(k) for k in ours[1:]) + (col(31, " FAIL") if x["fail"] else "") + (col(33, " LOOP") if x.get("loop") else "")   # name colour = state (`run status`): green done, white running, grey next
-        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + vcell("vt") + vcell("vp") + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
+        bcell = lambda: "  " + col(90, f"{x.get('vp', ''):<{W['vp']}}")   # the best run: build, prompt, pp and t with ms per token, power limits
+        tail = cell("st") + cell("sp") + gcell("gt", x["gtv"]) + gcell("gp", x["gpv"]) + vcell("vt") + bcell() + "  " + col(36, f"{x.get('ppl', ''):>{W['ppl']}}") + "  " + col(37 if x.get("is_old") else 36, f"{x['bt']:<{W['bt']}}") + "".join("  " + col(37 if k == "id" else 36, f"{x[k]:>{W[k]}}") for k in ("id", "sid"))
         if not x["st"] and not x.get("is_old"):   # no stock row to compare with: the stock cells stay empty, "vs best" (against our own earlier builds) is still shown
-            tail = " " * sum(W[k] + 2 for k in ("st", "sp", "gt", "gp")) + vcell("vt") + vcell("vp")
-            if not (x.get("vtv") or x.get("vpv") or "first" in (x.get("vt"), x.get("vp"))): tail = ""
+            tail = " " * sum(W[k] + 2 for k in ("st", "sp", "gt", "gp")) + vcell("vt") + bcell()
+            if not (x.get("vtv") or x.get("vp") or "first" == x.get("vt")): tail = ""
         if wrap and tail.strip(): out += [ln, col(37, f"{x['name']:<{W['name']}}") + tail]
         else: out.append(ln + tail)
     if not live and headers:   # the models of the table stay on screen with their results (the model line of the run scrolled away)
