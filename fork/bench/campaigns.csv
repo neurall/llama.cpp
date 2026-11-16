@@ -9506,3 +9506,5 @@ latest-glm-i-pf12k1k,2026-11-16 08:21:28,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0
 latest-glm-io-edit4c,2026-11-16 08:24:29,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds state_split_heat variants v test edit4c n=2,,
 state_split_heat-rg-glm-ppl,2026-11-16 08:28:25,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds state_split_heat variants v test ppl n=2,,
 state_split_heat-rg-mimo-ppl,2026-11-16 08:32:53,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds state_split_heat variants v test ppl n=2,,
+latest-glm35-i-pf12k1k,2026-11-16 08:42:42,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds state_split_heat variants v test pf12k n=2,,
+latest-glm35-io-edit4c,2026-11-16 08:45:53,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf builds state_split_heat variants v test edit4c n=2,,

@@ -2962,7 +2962,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _d = _next_lp(_s, True)
                 print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
             row = {"tps": t["predicted_per_second"], "pp_tps": t["prompt_per_second"], "n_gen": t["predicted_n"], "bestpp": bestpp_run(t),
-                   "note": (f"bprompt={os.environ['PERF_PNAME']} " if os.environ.get("PERF_PNAME") else "") + f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
+                   "note": (f"bprompt={os.environ.get('PERF_PNAME') or os.environ.get('PERF_PMARK')} " if os.environ.get("PERF_PNAME") or os.environ.get("PERF_PMARK") else "") + f"prompt_n={t['prompt_n']} prompt_s={t['prompt_ms']/1e3:.1f} {row_layout(logf)}".rstrip() + (f" first_pp={PROCSTAT['rep_first_pp']:.1f}" if PROCSTAT.get("rep_first_pp") else "") + (f" clamped={PROCSTAT['clamped']}" if PROCSTAT.get("clamped") else "")}
             # the answer text into runs.db outputs (every prompt test, 2026-10-18: before that only the md5 of fix12k was kept, so no long-context answer was ever checked);
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
@@ -8350,6 +8350,20 @@ def run_list(name, argv):
             return not c.execute(q, a).fetchone()
         except sqlite3.Error: return False
     rows = [dict(r, _b=b) for r in rows for b in ((sb, o.build) if sb and (o.stock_first or stock_missing(r)) and not (r.get("args") or "").strip() else (o.build,))]   # a cell with forced server args (dense-split=0/1) is a test of our own settings: stock has none of them, no stock partner   # -sc: the stock cell, then ours; -nrt: the stock cell only where its comparison is missing
+    for r in rows:   # a slow stock cell of a best-prompt cell is fed less (prompt and answer), so it takes about as long as ours; the speeds it shows stay comparable
+        mt = re.search(r"PERF_PTOK=(\d+)", r.get("extra") or "")
+        if not (str(r["_b"]).startswith("stock") and mt): continue
+        ot = our_best_times(r["model"], int(r.get("tokens") or 1024)); sr = stock_rates(r["model"]); out0 = int(r.get("tokens") or 1024)
+        _sz = sum(os.path.getsize(q) for q in glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", r["model"]))) if os.path.exists(r["model"]) else 0
+        _rm = int(next((l.split()[1] for l in open("/proc/meminfo") if l.startswith("MemTotal")), "0")) * 1024
+        if not sr and _sz > 0.8 * _rm: sr = (5.0, 0.5)   # no stock run stored and the model is bigger than the RAM can map: stock thrashes the SSD (0.5 t/s measured on Kimi K3.1), the first row corrects it
+        if not (ot and sr): continue
+        n, m = stock_scaled_request(int(mt[1]), out0, ot[0], ot[1], *sr)
+        if (n, m) == (int(mt[1]), out0): continue
+        _dp, _dt = int(mt[1]) / n, out0 / m   # the dividers: how many times shorter the stock prompt and answer are than ours
+        ex = re.sub(r"--env PERF_PNAME=\S+", "", r["extra"]); ex = re.sub(r"PERF_PTOK=\d+", f"PERF_PTOK={n} --env PERF_PMARK=b{n}-o{m}", ex); ex = re.sub(r"--tokens \d+", f"--tokens {m}", ex)
+        r["extra"] = " ".join(ex.split()); r["tokens"] = str(m)
+        print(col(90, f"{r['name']}: stock fed {n} prompt / {m} answer tokens (ours {mt[1]} / {out0}, dividers pp /{_dp:.1f} t /{_dt:.1f}): stock reads {sr[0]:.1f} and writes {sr[1]:.1f} t/s, about our {ot[0]:.0f} s + {ot[1]:.0f} s"), flush=True)
     if o.hog_gpu and not o.dry and rows and (o.real_hold or all(str(r["_b"]).startswith("stock") for r in rows)):   # -sim on a list of stock cells: stock cannot fake free memory (no --moe sim-vram), so the VRAM is really held, on every card, until the list ends
         v = str(o.hog_gpu).lower().rstrip("ib").rstrip("b"); free_mib = int(float(v[:-1]) if v.endswith("m") else float(v[:-1] if v.endswith("g") else v) * (1 if v.endswith("m") else 1024))
         import atexit   # (run_list imports it further down for simjoe: without this line the name is a local there and unbound here)
@@ -8375,7 +8389,7 @@ def run_list(name, argv):
         except sqlite3.Error as e: print(f"-nrt: runs.db: {e}", flush=True)
         def today(r):   # today's ok runs of this cell on this build; a campaign named after another label of the same build (um3d-..., latest-...) counts, the build number decides
             k = f"{r['_b']}-{r['name']}-{r['test']}"
-            want = (re.search(r"PERF_PNAME=(\S+)", r.get("extra") or "") or [None, None])[1]   # a best-prompt cell (b12k1k-glm35): only runs that fed that prompt file count, never an older rounded prompt
+            want = (re.search(r"PERF_P(?:NAME|MARK)=(\S+)", r.get("extra") or "") or [None, None])[1]   # a best-prompt cell (b12k1k-glm35): only runs that fed that prompt file count, never an older rounded prompt
             def only(c, v): return [x for x, n in zip(v, donepn.get(c, [])) if not want or n == want]
             if k in done or r['_b'].startswith("stock"): return only(k, done.get(k, []))
             return next((only(c, v) for c, v in done.items() if c.endswith(f"-{r['name']}-{r['test']}") and not c.startswith("stock")), [])
@@ -8711,6 +8725,29 @@ def best_prompt_k(model_path):
     mx = {int(g): int(x) for g, x in mx}.get(int(hw_key()[:-1]))
     if mx: return max(1, mx // 1000)   # no best yet: the biggest pass that fits (maxpp)
     sys.exit(f"{model_alias(model_path)}: no best prompt and no pass ceiling stored for {hw_key()} of VRAM; ask the engine once: python3 fork/run.py calib --ceil -m {model_alias(model_path)}")   # no guessed size
+
+
+def stock_scaled_request(ptok, out, our_pp_s, our_tg_s, stock_pp_tps, stock_tg_tps, min_p=512, min_o=32):
+    """(prompt tokens, answer tokens) a slow stock cell is fed so each phase takes about as long as ours did: what stock reads in our prompt time, what it writes in our answer time, never more than the full request, never under the floors (the rates stay comparable, the hours go). Unknown rates or times: the full request."""
+    if not (our_pp_s and our_tg_s and stock_pp_tps and stock_tg_tps): return ptok, out
+    n = min(ptok, max(min_p, int(our_pp_s * stock_pp_tps))); m = min(out, max(min_o, int(our_tg_s * stock_tg_tps)))
+    return n, m
+
+
+def stock_rates(model):
+    """(prompt t/s, decode t/s) of the newest official stock run of this model with both numbers in runs.db, else None"""
+    import sqlite3
+    try:
+        r = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select pp, tps from runs where model=? and build like 'stock%' and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (os.path.basename(model),)).fetchone()
+        return (float(r[0]), float(r[1])) if r else None
+    except sqlite3.Error: return None
+
+
+def our_best_times(model_path, out):
+    """(prompt s, answer s for `out` tokens) of this model's stored best prompt on this hardware, from bestpp; None when nothing is stored"""
+    sec = (fcfg.models_ini() or {}).get(model_alias(model_path) or "", {})
+    t = bestpp_entries(sec.get("bestpp", "")).get(int(hw_key()[:-1]))
+    return (t[4], t[5] * out / t[1]) if t and t[1] and t[4] and t[5] else None
 
 
 def best_prompt_label(ptok, out_tokens=1024):
@@ -11320,6 +11357,7 @@ def _tool_selftest():
         check([r["n"] for r in _g["stock_slow_last"](_rw, lambda r: _sz[r["n"]], 256)] == ["o", "m", "k2", "k"], "stock_slow_last: only stock cells above 80% of RAM move to the end, ours and small stock keep their order")
         _st = {}; _g["live_rate_step"](_st, 0.0, 0, 0); _g["live_rate_step"](_st, 3.0, 3000, 0); _g["live_rate_step"](_st, 6.0, 4500, 0); _g["live_rate_step"](_st, 9.0, 4500, 1); _g["live_rate_step"](_st, 12.0, 4500, 31)
         check(_st["max"] == {"pp": 1000.0, "t": 10.0} and _g["live_rate_text"](_st).startswith("t 10.0 t/s 100.0 ms/token (max 10.0)") and "pp max 1000.0" in _g["live_rate_text"](_st), "live_rate_step: pp and t rates per 3 s sample, the maximum kept per phase")
+        check(_g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 0.5, 0.5) == (512, 32) and _g["stock_scaled_request"](12562, 1024, 40.0, 25.0, 300.0, 40.0) == (12000, 1000) and _g["stock_scaled_request"](12562, 1024, 0, 25.0, 1.0, 1.0) == (12562, 1024), "stock_scaled_request: each phase takes as long as ours, floors 512/32, unknown rates = the full request")
         check(_g["best_prompt_label"](8900) == "b9k1k" and _g["best_prompt_label"](12438) == "b12k1k", "best_prompt_label: the label rounds, the prompt does not")
         _sm = {8037: (64, 1422.0, 34.4), 11015: (64, 1383.0, 26.8), 9937: (64, 1461.0, 32.9), 4000: (64, 1300.0, 36.0)}
         check(_g["best_size"](_sm) == 9937, "best_size: rated on the same reference request, decode noise (26.8 vs 34.4 t/s) is 0.8% of it; 11k no longer loses to 8k on 7 s against 9 s")
