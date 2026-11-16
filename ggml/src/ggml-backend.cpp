@@ -3671,6 +3671,40 @@ static void ggml_sched_trace_note(ggml_backend_sched_t sched, int split_id, int 
 // GGML_SCHED_NAN_CHECK=2 (debug, very slow): every node of a big graph is run on its own and its output is read back before any later node can reuse memory.
 // The first float output that holds a NaN is reported (an infinity is a legitimate value: masked scores) with the state of each of its inputs at that moment: bad values in a float input, the
 // smallest and largest value of an integer input (an expert id outside the tensor reads memory that is not an expert). One report per process.
+// GGML_SCHED_DUMP=DIR (with GGML_SCHED_NAN_CHECK=2): the output of every node run on its own, up to 1 MiB, of the first GGML_SCHED_DUMP_GRAPHS (default 6) graphs
+// that have such nodes, appended to DIR/<backend>-g<graph>.bin (per node: name[64], type int32, ne int64[4], bytes uint64, data). One prompt on two backends then
+// compares node by node (fork/node_dump_cmp.py): the first node that differs names the kernel or the input that went wrong (2026-11-16: the KV tail's decode on
+// Vulkan went wrong from layer 1 on while its stored rows matched CUDA's).
+static void ggml_sched_node_dump(ggml_backend_sched_t sched, int split_id, int j, long graph_no) {
+    static const char * dir = getenv("GGML_SCHED_DUMP");
+    if (!dir) { return; }
+    static const long max_graphs = getenv("GGML_SCHED_DUMP_GRAPHS") ? atol(getenv("GGML_SCHED_DUMP_GRAPHS")) : 6;
+    static long last_graph = -1, n_graphs = 0;
+    struct ggml_backend_sched_split * split = &sched->splits[split_id];
+    const struct ggml_tensor * t = split->graph.nodes[j];
+    if ((t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_F16) || t->buffer == NULL || t->data == NULL || !ggml_is_contiguous(t) || ggml_is_view_op(t->op)) { return; }
+    const size_t nb = ggml_nbytes(t);
+    if (nb == 0 || nb > ((size_t) 1 << 20)) { return; }
+    if (graph_no != last_graph) {
+        if (n_graphs >= max_graphs) { return; }
+        last_graph = graph_no;
+        n_graphs++;
+    }
+    std::vector<uint8_t> b(nb);
+    ggml_backend_tensor_get(t, b.data(), 0, nb);   // the node ran on its own and its card was synchronized
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s-g%ld.bin", dir, ggml_backend_name(sched->backends[split->backend_id]), graph_no);
+    FILE * f = fopen(path, "ab");
+    if (!f) { return; }
+    char name[64] = {0};
+    strncpy(name, t->name, sizeof(name) - 1);
+    const int32_t type = (int32_t) t->type;
+    const int64_t ne[4] = { t->ne[0], t->ne[1], t->ne[2], t->ne[3] };
+    const uint64_t n64 = nb;
+    fwrite(name, 1, sizeof(name), f); fwrite(&type, sizeof(type), 1, f); fwrite(ne, sizeof(int64_t), 4, f); fwrite(&n64, sizeof(n64), 1, f); fwrite(b.data(), 1, nb, f);
+    fclose(f);
+}
+
 static bool ggml_backend_sched_nan_check_node(ggml_backend_sched_t sched, int split_id, int j, long graph_no) {
     static bool reported = false;
     if (reported) { return true; }
@@ -4881,6 +4915,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     ec = ggml_backend_graph_compute_async(split_backend, &gv);
                     ggml_backend_synchronize(split_backend);   // a fault of this node is reported here, while it is the node noted (the NaN check below stops draining after its first report)
                     ggml_backend_sched_nan_check_node(sched, split_id, nj, nan_graph2);
+                    ggml_sched_node_dump(sched, split_id, nj, nan_graph2);
                 }
             } else {
                 NVTX_PUSH("LAUNCH graph_compute_async"); ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();

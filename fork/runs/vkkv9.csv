@@ -1,0 +1,3 @@
+name,model,n,test,tokens,args,extra
+nd-vk,olmoe,1,pf2k,8,"-dev Vulkan0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json --env GGML_SCHED_NAN_CHECK=2 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1 --env GGML_SCHED_DUMP_GRAPHS=4 --env GGML_SCHED_DUMP=/p/bw/data/kvdump/nd-vk
+nd-cu,olmoe,1,pf2k,8,"-dev CUDA0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=0",--env GGML_SCHED_NAN_CHECK=2 --env GGML_SCHED_NAN_CHECK_MIN_SPLITS=1 --env GGML_SCHED_DUMP_GRAPHS=4 --env GGML_SCHED_DUMP=/p/bw/data/kvdump/nd-cu
