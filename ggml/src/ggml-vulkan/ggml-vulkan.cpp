@@ -845,7 +845,10 @@ void ggml_vk_destroy_pipeline(vk::Device& device, vk_pipeline& pipeline) {
 
 void ggml_pipeline_request_descriptor_sets(ggml_backend_vk_context *ctx, vk_pipeline& pipeline, uint32_t n) {
     VK_LOG_DEBUG("ggml_pipeline_request_descriptor_sets(" << pipeline->name << ", " << n << ")");
-    if (ctx->scratch_measure) {   // fork: the sizing pass compiles and allocates nothing
+    if (ctx->scratch_measure) {   // fork: the sizing pass allocates no descriptor set; it compiles the pipeline, whose workgroup sizes some ops' sizes read
+        if (!pipeline->compiled) {   // (flash attention: Br and the split are checked against wg_denoms, which a pipeline made on demand only has once compiled)
+            ggml_vk_load_shaders(ctx->device, pipeline);
+        }
         return;
     }
     ctx->pipeline_descriptor_set_requirements += n;
