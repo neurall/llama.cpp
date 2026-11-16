@@ -1160,6 +1160,25 @@ static void test_regress_room_graph_warmup() {
         }
     }
 }
+static void test_regress_pool_buffer_limits() {
+    printf("Testing [bug: Vulkan pool cut to 1 GiB buffers, the ring off, PC1 RTX 3090 2026-11-16] the pool's buffers from the backend's real limits:\n");
+    // ggml_backend_buft_get_max_size on Vulkan is its 1 GiB suballocation block (what the graph allocator should ask for), not the device's limit: the pool split
+    // every class into buffers under 1 GiB and ran without the ring. The 3090 takes 1 TiB in one buffer and its shaders index with 64 bits.
+    const size_t G = (size_t) 1 << 30, T = (size_t) 1 << 40, total = 40 * G, longest = 20 * G;
+    const poolx_buf_plan old = poolx_buffer_plan(total, longest, G, G);
+    report("old limit (get_max_size 1 GiB): per-class buffers, no ring (the regression)", old.split && !old.ring_ok && old.class_cap == G, "");
+    const poolx_buf_plan vk = poolx_buffer_plan(total, longest, T, T);
+    report("3090 limits (1 TiB, 64-bit indexing): one buffer, ring on, as on CUDA", !vk.split && vk.ring_ok, "");
+    const poolx_buf_plan v4 = poolx_buffer_plan(total, longest, T, 4 * G);
+    report("no 64-bit indexing, a 20 GiB class: per-class buffers of at most 4 GiB", v4.split && !v4.ring_ok && v4.class_cap == 4 * G, "");
+    const poolx_buf_plan v4s = poolx_buffer_plan(10 * G, 3 * G, T, 4 * G);
+    report("no 64-bit indexing, classes under 4 GiB: one buffer, no ring (its grids would span the pool)", !v4s.split && !v4s.ring_ok, "");
+    const poolx_buf_plan v4t = poolx_buffer_plan(3 * G, 2 * G, T, 4 * G);
+    report("no 64-bit indexing, the whole pool under 4 GiB: one buffer and the ring", !v4t.split && v4t.ring_ok, "");
+    const poolx_buf_plan cu = poolx_buffer_plan(total, longest, SIZE_MAX, SIZE_MAX);
+    report("CUDA (no limit): one buffer, ring on", !cu.split && cu.ring_ok, "");
+}
+
 static void test_regress_room_give_back_chunks() {
     printf("Testing [bug: a block given back with a chunk the driver could not back, Qwen3.8 IQ4_XS room_graphs_clear 2026-11-16] the room's give-back in whole chunks:\n");
     // blocks of 2.24 MiB, chunks of 2 MiB; the room's first unmapped byte 1000 bytes above its first block: giving that block back needs two chunks. The log:
@@ -1224,6 +1243,7 @@ int main(int argc, char ** argv) {
     test_regress_room_shadow_tags();
     test_regress_room_graph_warmup();
     test_regress_room_give_back_chunks();
+    test_regress_pool_buffer_limits();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

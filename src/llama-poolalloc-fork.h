@@ -284,6 +284,19 @@ static inline size_t poolx_room_edge_down(size_t at, size_t vol_lo, size_t tail_
     at = std::min(std::max(at, vol_lo), tail_real);
     return step ? base + (at - base) / step * step : at;
 }
+// The pool's buffers on one buffer type. get_max_size is the largest buffer the graph allocator should ask for; on Vulkan that is its 1 GiB suballocation
+// block, not the device's limit. A backend may report its real limits (hook ggml_backend_fork_buft_limits_fork, llama-backend-fork.h): max_alloc, one
+// allocation; max_span, the bytes one tensor view may cover (Vulkan shaders without 64-bit indexing reach 4 GiB). One buffer when the pool is one allocation
+// and every class run fits a view, else one buffer per class of at most class_cap. The ring's grids (staging=0) run from a class to the pool's tail, so the
+// ring needs the whole pool inside one view.
+struct poolx_buf_plan { bool split; bool ring_ok; size_t class_cap; };
+static inline poolx_buf_plan poolx_buffer_plan(size_t total, size_t longest_run, size_t max_alloc, size_t max_span) {
+    poolx_buf_plan p;
+    p.split     = total > max_alloc || longest_run > max_span;
+    p.ring_ok   = !p.split && total <= max_span;
+    p.class_cap = std::min(max_alloc, max_span);
+    return p;
+}
 // The room's first byte after a give-back: the blocks [room_lo, E) leave the room when every chunk they touch can be mapped again. The driver backs whole
 // chunks (the VMM granularity `gran`, 2 MiB) and a block need not end on a chunk edge (Qwen3.8 IQ4_XS: 2.24 MiB blocks): a give-back counted in bytes
 // handed back a block whose second chunk the driver could not back with 3 MiB free (build room_graphs_clear 2026-11-16: a refill copy into it, abort).

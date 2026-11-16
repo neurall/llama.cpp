@@ -10513,11 +10513,21 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     total         += (size_t) nblk[c] * pl.cls[c].B;
                 }
                 total += 4096;   // MMQ reads whole 512-wide tiles: the end of the last tensor may be read past
-                // One buffer when the backend takes it (CUDA: no limit). A backend with a buffer limit (Vulkan: 1 GiB blocks, 2 GiB on the Radeon 780M) gets one
-                // buffer per size class, each class cut to the limit: a class's blocks must stay one strided run (the kernels index them from one pointer).
+                // One buffer when the backend takes it (CUDA: no limit). A backend with a buffer limit gets one buffer per size class, each class cut to the
+                // limit: a class's blocks must stay one strided run (the kernels index them from one pointer). The limits come from the backend's hook when it has
+                // one (poolx_buffer_plan): Vulkan's get_max_size is its 1 GiB suballocation block, not the device's (an RTX 3090 takes 1 TiB in one buffer and
+                // its shaders index with 64 bits), and that block cut GLM's pool into buffers under 1 GiB with the ring off (PC1 2026-11-16)
                 // shortcut: the compute alias and the KV tail assume one buffer; they are off on those backends (common_moe_cache_auto_impl), lift when ported
-                const size_t max_b = ggml_backend_buft_get_max_size(buft);
-                const bool   split = total > max_b;
+                size_t max_alloc = ggml_backend_buft_get_max_size(buft), max_span = max_alloc;
+                {
+                    typedef void (*limits_t)(ggml_backend_buffer_type_t, size_t *, size_t *);
+                    if (auto lim = (limits_t) llama_fork_proc_dev(ggml_backend_buft_get_device(buft), "ggml_backend_fork_buft_limits_fork")) { lim(buft, &max_alloc, &max_span); }
+                }
+                size_t longest_run = 0;
+                for (size_t c : order) { longest_run = std::max(longest_run, (size_t) nblk[c] * pl.cls[c].B + 4096); }
+                const poolx_buf_plan bplan = poolx_buffer_plan(total, longest_run, max_alloc, max_span);
+                const size_t max_b = bplan.class_cap;
+                const bool   split = bplan.split;
                 std::vector<ggml_backend_buffer_t> cbufs(pl.cls.size(), nullptr);
                 ggml_backend_buffer_t pbuf = nullptr;
                 // the tail area (CUDA's room): the old margin's worth of whole blocks of the last class, at most half of that class (its stream needs the rest)
@@ -10639,7 +10649,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 // The lend and the KV zone walk the homes only (segs): they never meet a grid block, and the reserve behind floor_end is never theirs.
                 std::vector<size_t>  gbase(pl.cls.size());
                 std::vector<int32_t> gn(pl.cls.size());
-                const bool ring = pp_no_staging() && !split;
+                const bool ring = pp_no_staging() && bplan.ring_ok;
                 for (size_t c = 0; c < pl.cls.size(); ++c) { gbase[c] = pl.cls[c].base; gn[c] = nblk[c]; }
                 // the room buffer exists (room_capable: alias-all on, so the lend and the KV walk every own class): the ring, the grids and the KV stop at the tail
                 // area, decided here once for all of them (the expert split's foreign classes come after the own ones and change nothing of it)
@@ -14388,24 +14398,29 @@ static void rd_shape_bench(const char * path, unsigned long long dev, const std:
 // "measure gpus latency and speed and compare to ram and if not bigger disable moe cache")
 static double g_ram_read_gbs = 0.0;
 static std::vector<std::pair<ggml_backend_dev_t, double>> g_vram_gbs;
+// The copy runs as a graph (ggml CPY) on a backend of the card's own, so its shader cores read and write, as the experts' kernels do. A buffer-to-buffer copy
+// (ggml_backend_tensor_copy) was timed before: Vulkan runs that on its DMA transfer queue, 82 GB/s on an RTX 3090 that CUDA reads at 836, so the card counted
+// as one sharing system RAM and the expert cache stayed off (PC1 2026-11-16). The first run builds the copy kernel and is not counted.
 static double vram_copy_gbs(ggml_backend_dev_t d) {
-    const size_t n = 256u << 20;
-    ggml_backend_buffer_t b = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(d), 2 * n);
-    if (!b) { return 0.0; }
-    char * base = (char *) ggml_backend_buffer_get_base(b);
-    ggml_tensor x = {}, y = {};
-    for (ggml_tensor * t : { &x, &y }) {
-        t->type = GGML_TYPE_I8; t->buffer = b;
-        t->ne[0] = (int64_t) n; t->ne[1] = t->ne[2] = t->ne[3] = 1; t->nb[0] = 1; t->nb[1] = t->nb[2] = t->nb[3] = n;
-    }
-    x.data = base; y.data = base + n;
+    const int64_t row = 16384, rows = (256ll << 20) / (row * (int64_t) sizeof(float));   // 256 MiB of F32
+    ggml_init_params ip = { 4 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) { return 0.0; }
+    ggml_tensor * x  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, row, rows);
+    ggml_tensor * y  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, row, rows);
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf, ggml_cpy(ctx, x, y));
+    ggml_backend_t        be = ggml_backend_dev_init(d, nullptr);
+    ggml_backend_buffer_t b  = be ? ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_dev_buffer_type(d)) : nullptr;
     double best = 0.0;
-    for (int r = 0; r < 4; ++r) {   // the first copy warms up; contention only lowers a reading
+    for (int r = 0; b && r < 5; ++r) {   // contention only lowers a reading: the fastest counts
         const int64_t t0 = ggml_time_us();
-        ggml_backend_tensor_copy(&x, &y);
-        best = std::max(best, 2.0 * (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3);
+        if (ggml_backend_graph_compute(be, gf) != GGML_STATUS_SUCCESS) { best = 0.0; break; }
+        if (r > 0) { best = std::max(best, 2.0 * (double) ggml_nbytes(x) / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3); }
     }
-    ggml_backend_buffer_free(b);
+    if (b)  { ggml_backend_buffer_free(b); }
+    if (be) { ggml_backend_free(be); }
+    ggml_free(ctx);
     return best;
 }
 LLAMA_API double llama_moe_ram_read_gbs_fork(void) { return g_ram_read_gbs; }
@@ -14502,7 +14517,8 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
             moe_state_get(sec, key, old);
             if (!moe_opt("simlink")) { moe_state_set(sec, {{ key, format("%.3f", g) }}); }   // a simulated link is not the machine's
             LLAMA_LOG_WARN("moe-cache: machine: PCIe upload to %s %.2f GB/s (stored before: %s)\n", ggml_backend_dev_name(d), g, old.empty() ? "none" : old.c_str());
-            const std::string kv = format("vram_gbs.%zu.%s", i, ggml_backend_dev_name(d));   // the memory speed of a card does not change: measured once, then stored
+            // the memory speed of a card does not change: measured once, then stored (vram_rd_gbs: read by the shader cores; vram_gbs held the copy-queue time)
+            const std::string kv = format("vram_rd_gbs.%zu.%s", i, ggml_backend_dev_name(d));
             double vg = moe_state_get(sec, kv, old) ? atof(old.c_str()) : 0.0;
             const bool stored = vg > 0.0;
             if (!stored) { vg = vram_copy_gbs(d); if (vg > 0.0) { moe_state_set(sec, {{ kv, format("%.3f", vg) }}); } }

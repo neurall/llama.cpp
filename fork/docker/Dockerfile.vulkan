@@ -5,4 +5,12 @@ FROM llama-rel-el8
 ARG VULKAN_SDK_VERSION=1.4.363.0
 RUN cd /opt && wget -q https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz \
  && tar xf vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz && rm vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz && ln -s /opt/${VULKAN_SDK_VERSION}/x86_64 /opt/vulkan
+# The SDK's glslc needs glibc 2.34 (EL8 has 2.28): build the same shaderc release from source here and put it over the SDK's binary.
+# Shaders compiled at build time are SPIR-V, so the glibc of the compiler never reaches users.
+ARG SHADERC_TAG=v2026.4
+RUN source /opt/rh/gcc-toolset-15/enable && cd /tmp && git clone -q --depth 1 -b ${SHADERC_TAG} https://github.com/google/shaderc && cd shaderc && ./utils/git-sync-deps \
+ && cmake -S . -B b -DCMAKE_BUILD_TYPE=Release -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON -DSHADERC_SKIP_COPYRIGHT_CHECK=ON -DSPIRV_SKIP_TESTS=ON \
+    -DCMAKE_EXE_LINKER_FLAGS='-static-libstdc++ -static-libgcc' && cmake --build b -j 16 --target glslc_exe \
+ && install -m 755 b/glslc/glslc /opt/${VULKAN_SDK_VERSION}/x86_64/bin/glslc && cd / && rm -rf /tmp/shaderc && /opt/vulkan/bin/glslc --version \
+ && ln -s VulkanLoader/lib/libvulkan.so VulkanLoader/lib/libvulkan.so.1 /opt/vulkan/lib/   # FindVulkan looks in $VULKAN_SDK/lib, this SDK keeps the loader one level down
 ENV VULKAN_SDK=/opt/vulkan PATH=/opt/vulkan/bin:$PATH LD_LIBRARY_PATH=/opt/vulkan/lib:$LD_LIBRARY_PATH CMAKE_PREFIX_PATH=/opt/vulkan

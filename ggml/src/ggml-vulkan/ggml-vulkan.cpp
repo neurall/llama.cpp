@@ -16537,8 +16537,23 @@ static ggml_backend_dev_t ggml_backend_vk_reg_get_device(ggml_backend_reg_t reg,
     return devices[device];
 }
 
+// fork: the expert pool's limits on a Vulkan device buffer type (hook ggml_backend_fork_buft_limits_fork, src/llama-backend-fork.h). get_max_size reports the
+// 1 GiB suballocation block the graph allocator should use, not the device's limit; the pool takes one allocation as large as the device allows, and a view
+// may span past maxStorageBufferRange only where the shaders index with 64 bits (VK_EXT_shader_64bit_indexing)
+static void ggml_backend_vk_fork_buft_limits(ggml_backend_buffer_type_t buft, size_t * max_alloc, size_t * max_span) {
+    if (buft->iface.get_name != ggml_backend_vk_buffer_type_name) {
+        return;
+    }
+    const vk_device & device = ((ggml_backend_vk_buffer_type_context *) buft->context)->device;
+    *max_alloc = (size_t) std::min(device->max_buffer_size, device->max_memory_allocation_size);
+    *max_span  = device->shader_64b_indexing ? *max_alloc : std::min(*max_alloc, (size_t) device->properties.limits.maxStorageBufferRange);
+}
+
 static void * ggml_backend_vk_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     UNUSED(reg);
+    if (strcmp(name, "ggml_backend_fork_buft_limits_fork") == 0) {
+        return (void *) ggml_backend_vk_fork_buft_limits;
+    }
 #if !defined(_WIN32)
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *) ggml_backend_vk_comm_init;
