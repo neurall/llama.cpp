@@ -931,7 +931,7 @@ static void test_regress_chain_reuses_claimed_grid() {
         int32_t worst = INT32_MAX; bool bad_kind = false;
         for (int32_t layer = 0; layer < 30; ++layer) {
             std::vector<int32_t> c;
-            const auto take = [&](int32_t b, int32_t o) { bad_kind |= o == -2 || o == -3 || o <= -5; c.push_back(b); };
+            const auto take = [&](int32_t b, int32_t o) { bad_kind |= o == -2 || o == -3 || o == POOLX_ROOM || o <= POOLX_SHADOW0; c.push_back(b); };
             if (old_scan) { for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) { const int32_t o = ps.owner[b]; if ((b < home_hi && o >= -1) || o == -4) { take(b, o); } } }
             else          { poolx_chain_scan(ps, true, take); }
             worst = std::min(worst, (int32_t) c.size());
@@ -1107,6 +1107,25 @@ static void test_regress_pool_start_pins() {
            fmt("%zu", poolx_room_start(vsz, 170, vol, tail, vol, B)));
     report("room start: below the tail area the pool is refused", poolx_room_start(vsz, 310, vol, tail, vol, B) == SIZE_MAX, "");
 }
+static void test_regress_room_shadow_tags() {
+    printf("Testing [bug: CUDA's room blocks swept back as free by the stream shadows' reset, glm-i 2026-11-16] owner tags of the room and the shadows:\n");
+    // the room took owner -5, which was also the first stream shadow's (cs_owner: -5 - k): cs_shadow_drop reset every owner <= -5 to free at the next pass, so
+    // unmapped room blocks went back to the cache, the refill and the prompt chain wrote there (segfault in libcuda, guard: "moe_cache_up.9 into CUDA's room")
+    report("the room's tag is no shadow's", POOLX_ROOM > POOLX_SHADOW0 && POOLX_ROOM < -4, fmt("room %d, first shadow %d", POOLX_ROOM, POOLX_SHADOW0));
+    // the bytes of a grid block taken back from the classes under it: a free block and an expert become -4, CUDA's room is left as a lend or the KV zone is
+    std::vector<tseg> segs(2);
+    segs[0].pcls = 0; segs[0].base = 0; segs[0].B = 10; segs[0].n = 10;
+    segs[1].pcls = 1; segs[1].base = 0; segs[1].B = 25; segs[1].n = 4;
+    std::vector<tps> ps(2);
+    ps[0].owner.assign(10, -1); ps[0].free = { 7 };
+    ps[0].owner[8] = 2; ps[0].owner[9] = POOLX_ROOM;
+    ps[1].owner.assign(4, -4);
+    int evicted = 0;
+    poolx_take_bytes(segs, ps, 1, 3, [&](int32_t, int32_t) { evicted++; });
+    report("take-back: free and expert blocks become another class's bytes", ps[0].owner[7] == -4 && ps[0].owner[8] == -4 && ps[0].free.empty(),
+           fmt("owners %d %d, free %zu", ps[0].owner[7], ps[0].owner[8], ps[0].free.size()));
+    report("take-back: CUDA's room is left as it is, never evicted", ps[0].owner[9] == POOLX_ROOM && evicted == 1, fmt("owner %d, %d evicted", ps[0].owner[9], evicted));
+}
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -1135,6 +1154,7 @@ int main(int argc, char ** argv) {
     test_regress_cuda_room();
     test_regress_cuda_kernel_oom_trace();
     test_regress_pool_start_pins();
+    test_regress_room_shadow_tags();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

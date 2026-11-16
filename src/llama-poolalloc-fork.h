@@ -5,7 +5,7 @@
 //                       poolx_lend_blocks     : blocks of one class a lend takes (never more than the class has)
 //   owner ledger        poolx_lend / poolx_release / poolx_zone_take / poolx_zone_give / poolx_claim_free: the block owner table + free stack
 //                       owner: >= 0 layer, -1 free, -2 lent to a graph, -3 under the KV zone, -4 another class's bytes (outside [home_lo, home_hi)),
-//                       -5 CUDA's room (the tail area's blocks handed to CUDA's own memory, poolx_room_*)
+//                       POOLX_ROOM (-5) CUDA's room (the tail area's blocks handed to CUDA's own memory, poolx_room_*), <= POOLX_SHADOW0 (-6) a stream shadow's
 //   region map          poolx_regions / poolx_gate_kind : where each region lies now, and the gate every expert write passes
 //   range use counts    poolx_ranges          : who touches which bytes (DMA, graph, zone move), movers wait for users, entrants wait for movers
 // Bugs these rules came from: fork/docs/bug-log.md (the tests name the entry they guard).
@@ -22,6 +22,9 @@
 #include <vector>
 
 static inline size_t poolx_up(size_t x, size_t a) { return (x + a - 1) / a * a; }
+// Owner tags below -4 (bug 2026-11-16: the room took -5, the first stream shadow's tag too, and the shadows' reset swept unmapped room blocks back to free):
+static constexpr int32_t POOLX_ROOM    = -5;   // CUDA's room: a tail-area block whose memory CUDA holds (unmapped), never a cache, ring, lend or KV block
+static constexpr int32_t POOLX_SHADOW0 = -6;   // the first stream shadow's tag; shadow k owns its blocks as POOLX_SHADOW0 - k
 
 // ---- block sizing ----------------------------------------------------------------------------------------------------------------------------
 // One slice (up, gate or down) of an expert: its bytes (nb2), the type's block bytes (ts) and values per block (blck), values per row (ne0).
@@ -330,9 +333,9 @@ template <class SEGS, class PSV, class F> static void poolx_take_bytes(const SEG
     poolx_over(segs, [&](int32_t q) { return (int32_t) ps[q].owner.size(); }, pc, b, [&](int32_t q, int32_t x) {
         auto & qs = ps[q];
         const int32_t o = qs.owner[x];
-        if (o == -4 || o == -2 || o == -3) { return true; }
+        if (o == -4 || o == -2 || o == -3 || o == POOLX_ROOM) { return true; }   // CUDA's room: no claim reaches it (they stop at the tail area)
         if (o == -1) { auto it = std::find(qs.free.begin(), qs.free.end(), x); if (it != qs.free.end()) { qs.free.erase(it); } }
-        else { evict(q, x); }   // an expert (o >= 0) or a one-pass shadow's (o <= -5)
+        else { evict(q, x); }   // an expert (o >= 0) or a one-pass shadow's (o <= POOLX_SHADOW0)
         qs.owner[x] = -4;
         return true;
     });
@@ -487,7 +490,7 @@ static poolx_pick poolx_pick_slot(const PS & ps, int32_t n_active, Busy busy, Ex
 // fn(b, o) for every block that is free (-1), holds a layer's expert (>= 0) or, with grid (staging=0), is another class's bytes the chain may claim (-4). Every block
 // of the class, not only the first n_active: a grid block a layer of this pass claimed sits past the home and stays this class's until cls_home, so the layers after
 // it must see it as theirs to evict (a K3 4-token call after a 16k prompt: CUDA1's layers each claimed fresh grid blocks and the 26th found 38 for 50 misses, abort,
-// 2026-11-14). Lent (-2), under the KV rows (-3) and a stream shadow's (<= -5) are never passed.
+// 2026-11-14). Lent (-2), under the KV rows (-3), CUDA's room (POOLX_ROOM) and a stream shadow's (<= POOLX_SHADOW0) are never passed.
 template <class PS, class Fn>
 static void poolx_chain_scan(const PS & ps, bool grid, Fn fn) {
     for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {

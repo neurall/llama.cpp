@@ -385,7 +385,7 @@ struct moe_cache {
         // CUDA's room (user 2026-11-16: "use tail", "keep just hot moes there", "do it in moe sized chunks", no gap kept free): [vol_lo, tail_real) at the end of the
         // buffer is the tail area, whole blocks of the last class that hold cached experts only; the ring, the grids, the lend and the KV stop in front of it
         // (tail_end = vol_lo). CUDA's own memory (kernels loaded on first use, cuBLAS, CUDA graphs, page tables of pinned RAM) takes whole blocks from its top:
-        // [room_lo, tail_real) are owner -5 with their VMM chunks unmapped (ggml_backend_fork_set_room_fork); they come back as soon as its use drops.
+        // [room_lo, tail_real) are owner POOLX_ROOM with their VMM chunks unmapped (ggml_backend_fork_set_room_fork); they come back as soon as its use drops.
         size_t                tail_real = 0, vol_lo = 0, room_lo = 0, room_lo_want = 0, room_base = 0, room_step = 0;
         size_t                room_vsz = 0, room_max = 0, room_unmapped = 0, room_keep = 0;   // address space, the most CUDA can get, unmapped now, free VRAM that is not the room's
         size_t                base_off = 0;     // where the graph being built starts: mirror_b when it splits (the copies before it), else 0
@@ -550,7 +550,7 @@ struct moe_cache {
     int32_t *                cs_snap     = nullptr;
     size_t                   cs_snap_n   = 0;
     // --moe staging=0, expert split (llama_moe_cache_cs_shadow_fork): per (layer, card that is not its home) a shadow layer for the experts that card computes of it:
-    // blocks of a class of the layer's shape in that card's pool (owner -5 - index), its own table on that card, the views of a layer of that class there. Its blocks
+    // blocks of a class of the layer's shape in that card's pool (owner POOLX_SHADOW0 - index), its own table on that card, the views of a layer of that class there. Its blocks
     // and entries live one pass (cs_shadow_drop). cs_order entries from layers.size() on are shadows; cs_rng: the expert ids [lo, hi) each entry computes in the pass
     std::deque<layer_state>  shadows;
     std::map<std::pair<size_t, int>, size_t> shadow_of;   // (layer, link) -> index into shadows, SIZE_MAX: that card has no class of the layer's shape
@@ -770,8 +770,8 @@ struct moe_cache {
 
 // cstream entries: index li < layers.size() is a layer, the rest are shadows (moe_cache::shadows); a block's owner code for an entry and back (-1: not an entry's)
 static layer_state & csl(moe_cache * mc, size_t li) { return li < mc->layers.size() ? mc->layers[li] : mc->shadows[li - mc->layers.size()]; }
-static int32_t cs_owner(const moe_cache * mc, size_t li) { return li < mc->layers.size() ? (int32_t) li : -5 - (int32_t) (li - mc->layers.size()); }
-static int64_t cs_li_of(const moe_cache * mc, int32_t o) { return o >= 0 ? (int64_t) o : o <= -5 ? (int64_t) mc->layers.size() + (-5 - o) : -1; }
+static int32_t cs_owner(const moe_cache * mc, size_t li) { return li < mc->layers.size() ? (int32_t) li : POOLX_SHADOW0 - (int32_t) (li - mc->layers.size()); }
+static int64_t cs_li_of(const moe_cache * mc, int32_t o) { return o >= 0 ? (int64_t) o : o <= POOLX_SHADOW0 ? (int64_t) mc->layers.size() + (POOLX_SHADOW0 - o) : -1; }
 
 // Where a tensor's raw GGUF bytes live (recorded by the model loader).
 bool file_location(const llama_model & model, const ggml_tensor * t, int * fd, size_t * off) {
@@ -2382,6 +2382,7 @@ void pool_take(moe_cache * mc, size_t li, int32_t b) {   // li: a layer, or a cs
     auto & ps = mc->pool[ls.pcls];
     const int32_t o = ps.owner[b];
     GGML_ASSERT(o != -3 && "kv-tail: an expert is assigned to a block under the KV rows");
+    GGML_ASSERT(o != POOLX_ROOM && "moe-cache: an expert is assigned to a block of CUDA's room (its memory is unmapped, CUDA's)");
     if (o == cs_owner(mc, li)) {
         return;
     }
@@ -7313,7 +7314,7 @@ static void room_apply(moe_cache * mc, ggml_backend_sched_t sched, bool synced) 
         const size_t was = ap.room_lo;
         size_t nt = 0, ng = 0, ne = 0;
         pool_move_begin(ap, ap.room_lo_want, ap.tail_real);   // no upload runs there and none starts until the blocks are CUDA's
-        kv_blocks_apply(mc, ap, ap.room_lo_want, ap.tail_real, true, false, nt, ng, ne, -5);
+        kv_blocks_apply(mc, ap, ap.room_lo_want, ap.tail_real, true, false, nt, ng, ne, POOLX_ROOM);
         pool_move_end(ap);
         const size_t u = fn(ap.buf, ap.room_vsz - ap.room_lo_want);
         if (u == SIZE_MAX) { ap.room_lo_want = ap.room_lo; continue; }
@@ -7354,7 +7355,7 @@ static void room_shrink(moe_cache * mc, moe_cache::alias_pool & ap) {
     ap.room_unmapped = u;
     const size_t lo = room_edge_down(ap, std::max(ap.room_lo_want, ap.room_vsz - u));   // a block with a byte still unmapped stays CUDA's
     size_t nt = 0, ng = 0, ne = 0;
-    kv_blocks_apply(mc, ap, lo, ap.tail_real, false, true, nt, ng, ne, -5);
+    kv_blocks_apply(mc, ap, lo, ap.tail_real, false, true, nt, ng, ne, POOLX_ROOM);
     ap.room_lo = ap.room_lo_want = lo;
     LLAMA_LOG_WARN("moe-cache: CUDA's room on %s: %.0f -> %.0f MiB of the pool's tail (%zu blocks back to the cache), %.0f MiB of VRAM still CUDA's\n",
             ggml_backend_dev_name(ap.dev), (ap.tail_real - was) / 1048576.0, (ap.tail_real - ap.room_lo) / 1048576.0, ng, u / 1048576.0);
@@ -10812,8 +10813,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                             }
                             if (lo < ap.tail_real) {
                                 auto & ps = mc->pool[pool0 + order.back()];
-                                for (size_t b = (lo - lc.base) / lc.B; b < (size_t) nblk[order.back()]; ++b) { ps.owner[b] = -5; }
-                                ps.free.erase(std::remove_if(ps.free.begin(), ps.free.end(), [&](int32_t b) { return ps.owner[b] == -5; }), ps.free.end());
+                                for (size_t b = (lo - lc.base) / lc.B; b < (size_t) nblk[order.back()]; ++b) { ps.owner[b] = POOLX_ROOM; }
+                                ps.free.erase(std::remove_if(ps.free.begin(), ps.free.end(), [&](int32_t b) { return ps.owner[b] == POOLX_ROOM; }), ps.free.end());
                                 ap.room_lo = ap.room_lo_want = lo;
                                 ap.room_unmapped = u;
                                 ap.room_max = std::max(ap.room_max, ap.tail_real - lo);
@@ -12189,7 +12190,7 @@ static int64_t pp_blocks(moe_cache * mc, layer_state & ls, bool landed = false) 
         for (int32_t b = ps.ring_lo, nb = std::min<int32_t>((int32_t) ps.owner.size(), ps.ring_hi); b < nb; ++b) {   // the ring reserve (staging=0) or the whole class
             const int32_t o = ps.owner[b];
             n += o == -1 || (landed && o == -4) || (o >= 0 && (landed || !mc->layers[o].slot_in_flight[b]) && !mc->layers[o].is_stream[b])   // -4: the ring claims it (cls_claim)
-               || o <= -5;   // a shadow's: given back at the next pass (cs_shadow_drop)
+               || o <= POOLX_SHADOW0;   // a shadow's: given back at the next pass (cs_shadow_drop)
         }
         return n;
     }
@@ -12629,7 +12630,7 @@ static void cs_shadow_drop(moe_cache * mc) {
     if (mc->shadows.empty()) { return; }
     for (auto & ps : mc->pool) {
         for (int32_t b = 0; b < (int32_t) ps.owner.size(); ++b) {
-            if (ps.owner[b] > -5) { continue; }
+            if (ps.owner[b] > POOLX_SHADOW0) { continue; }   // shadows only: CUDA's room (POOLX_ROOM) stays
             const bool home = b >= ps.home_lo && b < ps.home_hi;
             ps.owner[b] = home ? -1 : -4;
             if (home) { ps.free.push_back(b); }
