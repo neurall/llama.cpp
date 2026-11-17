@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -292,4 +293,12 @@ static inline std::vector<double> llama_dsplit_f_fresh_fork(size_t n_dev, const 
         f[n_dev - 1] = 1.0 - sum;
     }
     return f;
+}
+
+// One card's part of the planner's hardware key (llama-dsplit-fork.cpp dsplit_hw_key): backend, vendor + device id (the name where there is no sysfs), slot,
+// link "generation x width" (4x16 = PCIe 4.0 x16; with_gen false for the run-time check: an idle link drops its generation). The backend is part of it: CUDA
+// and Vulkan drive one card at their own speeds, and under one key a Vulkan run read the split time CUDA measured (MiMo 11k, 2026-11-17: 7.7 s planned,
+// 15.5 s run, one Vulkan card 11.0 s).
+inline std::string dsplit_card_key(const std::string & backend, const std::string & id, const std::string & slot, int gen, const std::string & wid, bool with_gen) {
+    return backend + ":" + id + "@" + slot + "/" + (!with_gen ? std::string() : gen ? std::to_string(gen) : std::string("?")) + "x" + (wid.empty() ? std::string("?") : wid) + ";";
 }

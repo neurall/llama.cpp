@@ -434,6 +434,18 @@ static void test_xstage_no_free_in_pass() {
     report("a card's synchronize frees the retired blocks", d != std::string::npos && src.substr(c, d - c).find("ggml_cuda_xstage_reap(") != std::string::npos);
 }
 
+// one card under two backends: the stored pass times are per card key, and with one key a Vulkan run read the split time CUDA measured on the same cards
+// (MiMo 11k, 2026-11-17: split 7.7 s planned, 15.5 s on Vulkan, where one Vulkan card ran the pass in 11.0 s)
+static void test_card_key_backend() {
+    const std::string cu = dsplit_card_key("CUDA", "10de2204", "41:00.0", 4, "16", true);
+    const std::string vk = dsplit_card_key("Vulkan", "10de2204", "41:00.0", 4, "16", true);
+    report("one card has a key per backend", cu != vk, cu + " / " + vk);
+    report("a card's key is the same at every start", cu == dsplit_card_key("CUDA", "10de2204", "41:00.0", 4, "16", true));
+    report("the run-time check leaves out the link generation (an idle link drops it)",
+           dsplit_card_key("CUDA", "10de2204", "41:00.0", 4, "16", false) == dsplit_card_key("CUDA", "10de2204", "41:00.0", 1, "16", false));
+    report("two slots are two keys", cu != dsplit_card_key("CUDA", "10de2204", "61:00.0", 4, "16", true));
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -448,6 +460,7 @@ int main(int argc, char ** argv) {
     test_turns();
     test_cs_bytes_counted();
     test_xstage_no_free_in_pass();
+    test_card_key_backend();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

@@ -10108,7 +10108,8 @@ void llama_moe_cache_context_live_fork(const void * ctx, const llama_model * mod
 // The card's PCI address is part of the key: two cards of one model (PC1's two RTX 3090) had the same key, so the second card's figure overwrote the
 // first's (35 over 290 MiB, 2026-10-28) and the next start left cuda0x4 a 99 MiB margin where the DSpark draft's setup needs 260 MiB: cudaMalloc failed at load.
 static std::string vram_key(ggml_backend_dev_t dev, bool cold) {
-    std::string gpu = std::string(ggml_backend_dev_description(dev)) + "." + dev_pci_id(dev, 0);
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);   // the backend too: CUDA and Vulkan on one card need their own VRAM beside the pool
+    std::string gpu = std::string(reg ? ggml_backend_reg_name(reg) : "?") + "." + ggml_backend_dev_description(dev) + "." + dev_pci_id(dev, 0);
     for (char & c : gpu) { if (!isalnum((unsigned char) c)) { c = '_'; } }
     const char * b = moe_opt("build-id");
     const std::string with = g_vram_others ? ".with" + std::to_string(g_vram_others >> 20) : "";   // a plain run keeps the key it always had

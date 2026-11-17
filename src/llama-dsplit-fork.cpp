@@ -681,10 +681,9 @@ static std::string dsplit_hw_key(const llama_model & model, bool log = true, boo
         }
         const double gt = atof(spd.c_str());   // "16.0 GT/s PCIe"
         const int gen = gt >= 31.0 ? 5 : gt >= 15.0 ? 4 : gt >= 7.0 ? 3 : gt >= 4.0 ? 2 : gt > 0.0 ? 1 : 0;
-        std::string one = ven.empty() ? std::string(p.name ? p.name : "?") : ven + dev;   // no sysfs (Windows): the name stands in
-        one += "@" + (bus.size() > 5 ? bus.substr(5) : bus);   // 0000:0b:00.0 -> 0b:00.0
-        one += "/" + (!with_gen ? std::string("") : gen ? std::to_string(gen) : std::string("?")) + "x" + (wid.empty() ? std::string("?") : wid);   // with_gen=false (the run-time check): a link drops its generation when idle
-        desc += one + ";";
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(d.dev);
+        desc += dsplit_card_key(reg ? ggml_backend_reg_name(reg) : "?", ven.empty() ? std::string(p.name ? p.name : "?") : ven + dev,   // no sysfs (Windows): the name stands in
+                                bus.size() > 5 ? bus.substr(5) : bus, gen, wid, with_gen);   // 0000:0b:00.0 -> 0b:00.0
     }
     uint64_t h = 1469598103934665603ull; for (char ch : desc) { h = (h ^ (uint8_t) ch) * 1099511628211ull; }
     char k[24]; snprintf(k, sizeof k, "%08x", (unsigned) (h ^ (h >> 32)));
