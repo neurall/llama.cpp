@@ -300,6 +300,14 @@ struct dsf_pick_out {
     double stake = 1.0, am[2] = {}, av[2] = {};                         // one card, the split plus the fill, over the passes left
     double mu1_0 = 0.0, v1_0 = 0.0, mu2_0 = 0.0, v2_0 = 0.0, u0 = 0.0;  // the first pass's, priced (the log's)
 };
+// The split prior's compute ratio (split / one card) from the plan's bench: at most 1 (rule 41b: trusted for the ratio, never for the size; -1: no plan).
+// Where the hand-offs block (the start's copy probe, dsplit_xcopy_probe) the plan prices their bytes but not the drains around them, so it claims no gain: 1.
+// GLM 12k on two Vulkan cards (2026-11-17): the plan said 0.77, the split measured 28.4 s, and the mirror held the never-run one card at 28.4 / 0.77 = 37 s;
+// one card runs 26.5 s
+static inline double dsf_prior_ratio(double c_split, double c_one, bool blocks) {
+    if (!(c_split > 0.0 && c_one > 0.0)) { return -1.0; }
+    return blocks ? 1.0 : std::min(1.0, c_split / c_one);
+}
 static inline int dsf_size_class(int64_t n_tokens) { return (int) std::floor(4.0 * std::log2((double) std::max<int64_t>(1, n_tokens))); }   // a quarter octave
 static inline dsf_pick_out dsf_pick(const std::vector<dsf_arm_pass> & passes, const dsf_call & c) {
     dsf_pick_out o;

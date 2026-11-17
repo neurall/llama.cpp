@@ -2923,7 +2923,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
         if (g_rls_split.k == 0 || g_rls_one.k == 0) {
             c_prior = plan.valid && plan.t_raw_ms > 0.0 ? plan.t_raw_ms * 1e3 / (double) n_tokens : 0.0;
             c_one   = c_one_bench;
-            if (c_prior > 0.0 && c_one > 0.0) { ratio_bench = std::min(1.0, c_prior / c_one); }
+            if (c_prior > 0.0 && c_one > 0.0) { ratio_bench = dsf_prior_ratio(c_prior, c_one, g_xb_a > 0.0 || g_xb_b > 0.0); }
         }
     }
     std::lock_guard<llama_checked_mutex> dl(g_dsf_mu);

@@ -153,6 +153,17 @@ int main() {
         dsf_arm_pass r = pass(2442, 0.4, 1.62, 0.10, true, 4, 1.15, 0.20);
         r.m1 = 2442.0 / 1514.0 * s; r.nm1 = 1; r.m2 = 2442.0 / 1253.0 * s; r.nm2 = 1;
         check("qni3 2442, one sample of each at this size: the models decide (the split)", dsf_pick({ r }, qn).choice == 1, 0.0);
+        // GLM 12k on two Vulkan cards, request 2 (handoff_serial_cal_vk, 2026-11-17): the split measured once (28.38 +- 2.41 s, fill 1.94 +- 0.80 owed), one card
+        // never ran; the plan's ratio 0.77 (the blocking hand-offs' bytes priced, the drains around them not) put the mirror at 28.38 / 0.77 = 37 s, above the
+        // split: the split on every request (31.4 s with the fill; one card runs 26.5)
+        dsf_rls once; once.n = 1; once.s2 = 0.01;
+        dsf_call vg; vg.ratio = 0.77; vg.split_prior = false; vg.split = &once; vg.f_mu = 1.94 * s; vg.f_v = 0.80 * 0.80 * s * s; vg.seen_before = 1;
+        const dsf_arm_pass gp = pass(12434, 3.95, 11.68, 4.20, false, 0, 28.38, 2.41);
+        check("GLM 12k Vulkan as logged (ratio 0.77): the split", dsf_pick({ gp }, vg).choice == 1, dsf_pick({ gp }, vg).mu1_0 / s);
+        vg.ratio = dsf_prior_ratio(0.77, 1.0, true);
+        check("hand-offs that block: the prior ratio is 1", vg.ratio == 1.0, vg.ratio);
+        check("GLM 12k Vulkan, ratio 1: one card runs", dsf_pick({ gp }, vg).choice == 0, dsf_pick({ gp }, vg).mu1_0 / s);
+        check("hand-offs in stream order: the bench's ratio, at most 1", dsf_prior_ratio(0.77, 1.0, false) == 0.77 && dsf_prior_ratio(1.31, 1.0, false) == 1.0, 0.0);
     }
     {   // INV phi at a call's end (GLM, two Vulkan cards, 2026-11-16): 9472 tokens in 6 passes (trial passes of 1664, then 1536), features for 1536
         check("INV phi: the prompt's passes taught the arm, its end's average is no sample", !rls_report_phi_off(1536.0, 9472.0 / 6.0, 4, true), 9472.0 / 6.0);
