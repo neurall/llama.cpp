@@ -19,6 +19,7 @@
 #include "ggml-alloc.h"
 #include "gguf.h"
 
+#include <filesystem>
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
@@ -466,6 +467,25 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         if (params.vocab_only) {
             LLAMA_LOG_INFO("%s: vocab only - skipping tensors\n", __func__);
             return {0, model_ptr.release()};
+        }
+
+        // fork: backends that prepare themselves per model while its tensors load (Vulkan compiles the pipelines earlier starts of this model used) learn
+        // which model: its file name and size
+        if (!fname.empty()) {
+            std::string key = std::filesystem::path(fname).filename().string();
+            for (char & c : key) {
+                if (!isalnum((unsigned char) c) && c != '-' && c != '.' && c != '_') {
+                    c = '_';
+                }
+            }
+            std::error_code ec;
+            const uintmax_t sz = std::filesystem::file_size(fname, ec);
+            key += "-" + std::to_string(ec ? 0 : sz);
+            for (size_t i = 0; i < ggml_backend_reg_count(); ++i) {
+                if (auto prep = (void (*)(const char *)) ggml_backend_reg_get_proc_address(ggml_backend_reg_get(i), "ggml_backend_fork_prepare_fork")) {
+                    prep(key.c_str());
+                }
+            }
         }
 
         model->ml_keep = ml_sp;

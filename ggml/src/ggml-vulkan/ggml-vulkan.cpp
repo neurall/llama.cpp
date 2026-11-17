@@ -1804,12 +1804,20 @@ static bool ggml_vk_amd_large_tile_supported(const vk_device& device) {
     return major > 2 || (major == 2 && build >= 416);
 }
 
-// fork: every card compiles all its pipelines at its creation, in the background, while the model loads (ggml_vk_get_device starts it); a context waits
-// for it right after it made its backends (ggml_backend_fork_ready_fork), before the KV and the pool read the free VRAM and before any request
-// (user 2026-11-17: "dont start serving untill all compiled"). At exit the workers stop after the pipeline in hand.
+// fork: every card compiles, in the background while the model loads, the pipelines earlier starts of this model used on it (user 2026-11-17: "compile only
+// the used vulkan pipelines, not all": VRAM holds each compiled pipeline's code). It starts once both the card (ggml_vk_get_device) and the model
+// (ggml_backend_fork_prepare_fork, from the engine before the tensors load) are known; a context waits for it right after it made its backends
+// (ggml_backend_fork_ready_fork), before the KV and the pool read the free VRAM and before any request ("dont start serving untill all compiled"). A
+// pipeline compiled at its first use is added to the model's list for the next start. At exit the workers stop after the pipeline in hand.
 static std::mutex          g_vk_precompile_mtx;
 static std::thread         g_vk_precompile[GGML_VK_MAX_DEVICES];
+static vk_device           g_vk_precompile_dev[GGML_VK_MAX_DEVICES];   // the cards made so far (set under g_vk_precompile_mtx)
+static bool                g_vk_precompile_started[GGML_VK_MAX_DEVICES] = {};
 static std::atomic<bool>   g_vk_precompile_stop { false };
+static std::string         g_vk_model_key;                             // set once, then g_vk_model_key_set: read without a lock
+static std::atomic<bool>   g_vk_model_key_set { false };
+static std::mutex          g_vk_used_mtx;
+static std::unordered_set<uint64_t> g_vk_used[GGML_VK_MAX_DEVICES];  // this model's pipelines on the card: listed by earlier starts and compiled now
 
 static void ggml_vk_precompile_wait(size_t idx) {
     std::lock_guard<std::mutex> lock(g_vk_precompile_mtx);   // held while joining: a second caller returns only when the compile is done
@@ -1902,22 +1910,78 @@ static std::string ggml_vk_fa_key_line(const vk_fa_pipeline_state & s) {
     return b;
 }
 
+// a pipeline's identity across starts: its name, the 64-bit indexing twin flag, workgroup and specialization constants (FNV-1a)
+static uint64_t ggml_vk_pipeline_id(const std::string & name, bool idx64, const std::array<uint32_t, 3> & wg, const std::vector<uint32_t> & sc) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const void * p, size_t n) {
+        for (size_t i = 0; i < n; ++i) {
+            h = (h ^ ((const uint8_t *) p)[i]) * 1099511628211ull;
+        }
+    };
+    const uint8_t b64 = idx64;
+    mix(name.data(), name.size());
+    mix(&b64, 1);
+    mix(wg.data(), sizeof(wg));
+    mix(sc.data(), sc.size() * sizeof(uint32_t));
+    return h;
+}
+
+static bool ggml_vk_pipeline_is_64b(const vk_pipeline & p) {
+#if defined(VK_EXT_shader_64bit_indexing)
+    return p->is_64b_indexing;
+#else
+    GGML_UNUSED(p);
+    return false;
+#endif
+}
+
+// the model's start list on this card: "pl ID NAME" (a pipeline compiled at its first use) and "fa1 ..." (a flash attention key met); empty before the model
+static std::string ggml_vk_start_path(const vk_device & device) {
+    if (!g_vk_model_key_set.load(std::memory_order_acquire)) {
+        return "";
+    }
+    const std::string base = ggml_vk_cache_path(device, "start");
+    return base.empty() ? "" : base + "-d" + std::to_string(device->idx) + "-" + g_vk_model_key + ".txt";
+}
+
 // a key met for the first time (its pipeline compiles at first use); the device's compile_mutex is held
 static void ggml_vk_fa_key_note(const vk_device & device, const vk_fa_pipeline_state & s) {
-    const std::string path = ggml_vk_cache_path(device, "fa-keys");
-    if (FILE * f = path.empty() ? nullptr : fopen((path + ".txt").c_str(), "a")) {
+    const std::string path = ggml_vk_start_path(device);
+    if (FILE * f = path.empty() ? nullptr : fopen(path.c_str(), "a")) {
         fputs(ggml_vk_fa_key_line(s).c_str(), f);
         fclose(f);
     }
 }
 
-// the keys earlier starts met go into the map before the start-up compile's walk, which then compiles their pipelines with the others
-static size_t ggml_vk_fa_keys_load(vk_device & device) {
-    const std::string path = ggml_vk_cache_path(device, "fa-keys");
-    std::ifstream f(path.empty() ? std::string() : path + ".txt");
+// a pipeline compiled at its first use, noted once in the model's start list: the next start compiles it before any request
+static void ggml_vk_pipeline_note_used(const vk_device & device, const CompileTask & t) {
+    const std::string path = ggml_vk_start_path(device);
+    if (path.empty()) {
+        return;
+    }
+    const uint64_t id = ggml_vk_pipeline_id(t.pipeline->name, ggml_vk_pipeline_is_64b(t.pipeline), t.wg_denoms, t.specialization_constants);
+    std::lock_guard<std::mutex> lock(g_vk_used_mtx);
+    if (!g_vk_used[device->idx].insert(id).second) {
+        return;
+    }
+    if (FILE * f = fopen(path.c_str(), "a")) {
+        fprintf(f, "pl %016llx %s\n", (unsigned long long) id, t.pipeline->name.c_str());
+        fclose(f);
+    }
+}
+
+// the list of earlier starts: its flash attention keys go into the map (the walk makes their pipelines), its pipeline ids are what the start-up pass compiles
+static size_t ggml_vk_start_list_load(vk_device & device, std::unordered_set<uint64_t> & want) {
+    const std::string path = ggml_vk_start_path(device);
+    std::ifstream f(path);
     std::lock_guard<std::mutex> guard(device->compile_mutex);
     size_t n = 0;
     for (std::string line; std::getline(f, line);) {
+        unsigned long long id = 0;
+        if (sscanf(line.c_str(), "pl %llx", &id) == 1) {
+            want.insert((uint64_t) id);
+            continue;
+        }
         vk_fa_pipeline_state s {};
         int shmem = 0, path_i = 0, aligned = 0, f32acc = 0, kt = 0, vt = 0;
         if (sscanf(line.c_str(), "fa1 %u %u %u %u %u %u %d %d %u %u %d %d %u %u %d %d", &s.HSK, &s.HSV, &s.Br, &s.Bc, &s.D_split, &s.row_split, &shmem, &path_i,
@@ -1940,6 +2004,40 @@ static size_t ggml_vk_fa_keys_load(vk_device & device) {
     return n;
 }
 
+static void ggml_vk_precompile_join_all();
+
+// the card's start-up pass, once the card and the model are both known (g_vk_precompile_mtx held); nothing without a model (a tool, a bench)
+static void ggml_vk_precompile_start_locked(size_t idx) {
+    vk_device device = idx < GGML_VK_MAX_DEVICES ? g_vk_precompile_dev[idx] : nullptr;
+    if (!device || !g_vk_model_key_set.load(std::memory_order_acquire) || g_vk_precompile_started[idx]) {
+        return;
+    }
+    g_vk_precompile_started[idx] = true;
+    static const bool exit_hook = std::atexit(ggml_vk_precompile_join_all) == 0;
+    (void) exit_hook;
+    g_vk_precompile[idx] = std::thread([device]() mutable {
+        const auto t0 = std::chrono::steady_clock::now();
+        std::unordered_set<uint64_t> want;
+        const size_t n_fa = ggml_vk_start_list_load(device, want);
+        {
+            std::lock_guard<std::mutex> lock(g_vk_used_mtx);
+            g_vk_used[device->idx].insert(want.begin(), want.end());
+        }
+        if (!want.empty()) {
+            ggml_vk_load_shaders(device, nullptr, &want);
+            ggml_vk_pipeline_cache_save(device);
+        }
+        size_t n = 0;
+        {
+            std::lock_guard<std::mutex> guard(device->compile_mutex);
+            n = device->all_pipelines.size();
+        }
+        GGML_LOG_WARN("ggml_vulkan: %s: %zu pipelines this model used at earlier starts (%zu flash attention keys) compiled in %.0f ms, in the background beside "
+                      "the model's load; %zu compiled on the card\n", device->name.c_str(), want.size(), n_fa,
+                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), n);
+    });
+}
+
 static void ggml_vk_precompile_join_all() {   // atexit, before the instance's static destructor
     g_vk_precompile_stop = true;
     std::lock_guard<std::mutex> lock(g_vk_precompile_mtx);
@@ -1955,7 +2053,7 @@ static void ggml_vk_precompile_join_all() {   // atexit, before the instance's s
     }
 }
 
-void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile_all) {
+void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, const std::unordered_set<uint64_t> * only) {
     VK_LOG_DEBUG("ggml_vk_load_shaders(" << device->name << ")");
 
     // some shaders have a minimum subgroup size
@@ -2015,7 +2113,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile
     vk_pipeline wait_pipeline;
     CompileTask claimed_task {};
     bool has_claimed_task = false;
-    std::vector<CompileTask> claimed_all;   // fork: compile_all claims every pipeline not compiled or claimed yet
+    std::vector<CompileTask> claimed_all;   // fork: the start-up pass claims the listed pipelines not compiled or claimed yet
 
     // The rest of the walk reads and writes shared device state, so hold the
     // lock until we're done deciding what to compile.
@@ -2273,8 +2371,9 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile
 #endif
             }
 
-            if (compile_all) {   // fork: the pass at the device's creation compiles them all (the 64-bit indexing twins too)
-                if (!pipeline->compiled && !pipeline->compile_pending) {
+            if (only) {   // fork: the start-up pass compiles the pipelines earlier starts of this model used (ggml_vk_precompile_start_locked)
+                if (!pipeline->compiled && !pipeline->compile_pending &&
+                    only->count(ggml_vk_pipeline_id(pipeline->name, ggml_vk_pipeline_is_64b(pipeline), wg_denoms, specialization_constants))) {
                     pipeline->compile_pending = true;
                     pipeline->compile_queued = true;
                     claimed_all.push_back({ pipeline, spv_size, spv_data, entrypoint, parameter_count, wg_denoms, specialization_constants,
@@ -4290,7 +4389,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile
     // Drop compile_mutex so other threads can walk while we compile.
     compile_lock.unlock();
 
-    // fork: compile_all compiles every claimed pipeline on all hardware threads (pipeline creation is free-threaded for distinct pipelines). A pipeline that
+    // fork: the start-up pass compiles every claimed pipeline on all hardware threads (pipeline creation is free-threaded for distinct pipelines). A pipeline that
     // fails here is left for its first use, which compiles it again and fails loudly only if something needs it.
     if (!claimed_all.empty()) {
         std::atomic<size_t> next { 0 };
@@ -4338,9 +4437,10 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile
                                      task.entrypoint, task.parameter_count, task.wg_denoms,
                                      task.specialization_constants, task.disable_robustness,
                                      task.require_full_subgroups, task.required_subgroup_size);
-        // fork: every pipeline compiles at the device's creation; one made later (keyed by a graph's shapes: flash attention, conv) says so with its cost
+        // fork: one the model's start list did not have (the model's first start, a new shape) says so with its cost, and is listed for the next start
         GGML_LOG_WARN("ggml_vulkan: %s: pipeline %s compiled at its first use in %.1f ms\n", device->name.c_str(), task.pipeline->name.c_str(),
                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        ggml_vk_pipeline_note_used(device, task);
     }
 
     // Another thread may be compiling the pipeline we need; block on it here.
@@ -5338,24 +5438,10 @@ vk_device ggml_vk_get_device(size_t idx) {
 
         // publish the device only when it is fully built
         vk_instance.devices[idx] = device;
-        {   // fork: every pipeline compiles now, in the background while the model loads, not at its first use inside a request (ggml_vk_precompile_wait)
+        {   // fork: the card's start-up pass (the pipelines this model used at earlier starts) begins now if the model is known, else when it is
             std::lock_guard<std::mutex> lock(g_vk_precompile_mtx);
-            static const bool exit_hook = std::atexit(ggml_vk_precompile_join_all) == 0;
-            (void) exit_hook;
-            g_vk_precompile[idx] = std::thread([device]() mutable {
-                const auto t0 = std::chrono::steady_clock::now();
-                const size_t n_fa = ggml_vk_fa_keys_load(device);
-                ggml_vk_load_shaders(device, nullptr, true);
-                ggml_vk_pipeline_cache_save(device);
-                size_t n = 0;
-                {
-                    std::lock_guard<std::mutex> guard(device->compile_mutex);
-                    n = device->all_pipelines.size();
-                }
-                GGML_LOG_WARN("ggml_vulkan: %s: %zu pipelines compiled at the start in %.0f ms (in the background, beside the model's load; %zu flash "
-                              "attention keys of earlier starts)\n", device->name.c_str(), n,
-                              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), n_fa);
-            });
+            g_vk_precompile_dev[idx] = device;
+            ggml_vk_precompile_start_locked(idx);
         }
         ggml_vk_host_import_existing(device);   // fork: host memory allocated before this card is imported now, not at its first upload
 
@@ -17455,9 +17541,26 @@ static void ggml_backend_vk_fork_ready(ggml_backend_dev_t dev) {
     ggml_vk_precompile_wait(((ggml_backend_vk_device_context *) dev->context)->device);
 }
 
+// fork: the engine names the model right before its tensors load ("ggml_backend_fork_prepare_fork"): each card's start-up pass begins with that model's list
+// shortcut: the first model of the process names the list (a draft model's pipelines are listed with it); per model if two differ in one process
+static void ggml_backend_vk_fork_prepare(const char * key) {
+    std::lock_guard<std::mutex> lock(g_vk_precompile_mtx);
+    if (g_vk_model_key_set.load(std::memory_order_acquire) || key == nullptr || *key == '\0') {
+        return;
+    }
+    g_vk_model_key = key;
+    g_vk_model_key_set.store(true, std::memory_order_release);
+    for (size_t i = 0; i < GGML_VK_MAX_DEVICES; ++i) {
+        ggml_vk_precompile_start_locked(i);
+    }
+}
+
 static void * ggml_backend_vk_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     if (strcmp(name, "ggml_backend_fork_ready_fork") == 0) {
         return (void *) ggml_backend_vk_fork_ready;
+    }
+    if (strcmp(name, "ggml_backend_fork_prepare_fork") == 0) {
+        return (void *) ggml_backend_vk_fork_prepare;
     }
     UNUSED(reg);
     if (strcmp(name, "ggml_backend_fork_buft_limits_fork") == 0) {
