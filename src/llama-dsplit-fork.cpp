@@ -1145,6 +1145,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     in.c_base = c_base; in.att_tok = att_tok; in.rel = rel; in.B = B; in.x = x;
     in.b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0); in.b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
     in.xb_a = g_xb_a; in.xb_b = g_xb_b;
+    in.c0 = std::max(0.0, cells - (double) T);   // the cells before the pass: each range's attention by its tokens' position (dsxn_att_pos)
     in.held.assign(n, std::vector<double>(L, 0.0));
     for (int i = 0; i < n; ++i) { for (int il = 0; il < L; ++il) { in.held[i][il] = llama_moe_cache_resident_frac_fork(il, cards[i]); } }
     if (g_layer_order.empty()) {   // the layer tuner's order (split-balance=0), fixed at the first plan: the first helper's own layers first
@@ -2997,6 +2998,7 @@ static int dsf_plan(const llama_model & model, int64_t n_tokens, std::string & w
     int seen_before = 0;
     if (pos0 != seen_pos0) { seen_pos0 = pos0; seen_before = seen[size_class]++; } else { seen_before = seen[size_class] - 1; }
     dsf_call call;
+    call.blocks = g_xb_a > 0.0 || g_xb_b > 0.0;
     call.c_one_bench = c_one_bench; call.ratio = ratio; call.split_prior = split_prior; call.split = &g_rls_split; call.f_mu = f_mu; call.f_v = f_v; call.seen_before = seen_before;
     const dsf_pick_out pk = dsf_pick(passes, call);
     const int choice = pk.choice, np = pk.np;

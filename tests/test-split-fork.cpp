@@ -4,6 +4,7 @@
 //
 // build: cmake --build <dir> --target test-split-fork;  run: ctest -R test-split-fork   or   test-split-fork [iterations] [seed]
 #include "../src/llama-splitplan-fork.h"
+#include "../src/llama-rls-fork.h"
 
 #include <cmath>
 #include <cstdarg>
@@ -316,6 +317,40 @@ static void test_nc_plan() {
         c.xb_a = 0.0; c.xb_b = 0.0;
         report("no blocking measured: the plan of a pair in stream order", dsxn_plan(c).t_split == oa.t_split && dsxn_plan(c).s == oa.s);
     }
+    {   // a blocking hand-off drains the expert card, and with it the expert uploads queued for the layers ahead (they share its backend,
+        // llama_moe_cache_link_backends_fork): the uploads stop running ahead of the compute and add to the layer. Two Vulkan cards, 2026-11-17, split minus
+        // one card against the stream's upload: MiMo 11k 4.2 / 4.0 s, GLM 12k 4-5 / 4.0, qni4 2.3 / 1.7, qni3 2.2 / 1.3 (the copies' bytes alone left GLM at 0.77)
+        auto a = model_n(12434, 2, 48);
+        for (auto & h : a.held) { for (auto & v : h) { v = 0.5; } }   // half of every layer's experts held: 400 MB a layer to upload
+        auto b = a;
+        b.xb_b = 1.0 / 40e3;   // copies that block but cost little (40 GB/s)
+        const auto oa = dsxn_plan(a), ob = dsxn_plan(b);
+        double U = 0.0;
+        for (int il = 0; il < a.L; ++il) { U += a.E[il] * (1.0 - a.held[a.x][il]) / (a.B[a.x] * 1e3); }
+        report("blocking hand-offs: the split pays its expert uploads on top", ob.t_split >= oa.t_split + 0.9 * U, fmt("%.0f vs %.0f + %.0f", ob.t_split, oa.t_split, U));
+        report("blocking hand-offs and uploads: one card is faster", ob.t_split > ob.t_one && oa.t_split < oa.t_one, fmt("%.0f / %.0f / %.0f", oa.t_split, ob.t_split, ob.t_one));
+        auto c = b;
+        for (auto & h : c.held) { for (auto & v : h) { v = 1.0; } }   // every expert held: nothing to upload
+        const auto oc = dsxn_plan(c);
+        report("blocking hand-offs, nothing to upload: the split still pays", oc.t_split < oc.t_one, fmt("%.0f vs %.0f", oc.t_split, oc.t_one));
+    }
+    {   // causal attention: a token attends to the cells before it, so a pass's later tokens cost more. The ranges go in card order with the expert card last
+        // (llama-dsplit-fork.cpp g_card_order), its range is the costliest; priced at the pass's average the shares were even and the split looked faster
+        // (GLM 12k on two Vulkan cards, 2026-11-17: attention 74% of the compute, the plan said split 0.98 x one card, measured 1.19)
+        auto a = model_n(8000, 2);
+        a.c_base = 1.0 * a.L; a.att_tok = 400.0;   // attention-bound: 400 us a token at the pass's middle against 40 of matmuls
+        for (auto & h : a.held) { for (auto & v : h) { v = 1.0; } }   // nothing to upload: the compute decides
+        auto b = a;
+        b.c0 = 0.0;   // a fresh prompt: the first token sees no cells, the last 8000
+        const auto oa = dsxn_plan(a), ob = dsxn_plan(b);
+        report("attention by position: the last range (the expert card) takes fewer tokens", ob.s[1] < oa.s[1] - 0.05, fmt("%.3f vs %.3f", ob.s[1], oa.s[1]));
+        report("attention by position: the split costs more than at the pass's average", ob.t_split > oa.t_split, fmt("%.0f vs %.0f", ob.t_split, oa.t_split));
+        report("attention by position: one card's time is the same", ob.t_one == oa.t_one);
+        auto c = b;
+        c.c0 = 1e9;   // a pass at the end of a long context: every token sees about the same cells
+        const auto oc = dsxn_plan(c);
+        report("attention by position, long context: the shares of the average", std::fabs(oc.s[1] - oa.s[1]) < 1e-3, fmt("%.4f vs %.4f", oc.s[1], oa.s[1]));
+    }
 }
 
 // The expert shares of a pass-size bucket with nothing stored yet (2026-11-14, qni4-i -19%): the four readers of the per-bucket shares each had their own
@@ -460,6 +495,62 @@ static void test_card_key_backend() {
     report("two slots are two keys", cu != dsplit_card_key("CUDA", "10de2204", "61:00.0", 4, "16", true));
 }
 
+// One GPU or two on a server's first prompt (nothing ran on these cards): the pick as the engine forms it (llama-dsplit-fork.cpp dsf_plan): the plan (dsxn_plan)
+// prices the split against one card, dsf_prior_ratio turns that into the split prior's ratio, and dsf_pick decides over the one card's prior and the upload.
+// User 2026-11-17: "there will be no second chance on same prompt. the first planner choice must be best one". The cases are the first requests of the vkgain
+// cells on PC1 (2 x 3090), CUDA and Vulkan: compute per token (weights over the matmul rate, attention), the pass's upload (the plan line's "split prior = max(upload
+// X s", llama_moe_cache_pass_upload_ms_fork: the expert card's missing experts), the expert card's link, the hand-off
+// probe, the one-card prior and the fill as the server logs printed them; layers, width and full-attention layers from the GGUFs, xf (the experts' share of
+// a layer's matmuls) estimated from the GGUF shapes. Truth is the arm that ran faster: on Vulkan one card for all four (request 2 one card against request 1
+// split, handoff_ratio1_vk: GLM 427 / 390 t/s, MiMo 944 / 703, qni4 1464 / 1177, qni3 1520 / 1226); on CUDA the split (MiMo 1267-1462 t/s against one card 801,
+// qni3 2253-2616 against at most 1673; GLM and qni4 ran the split on every build, one card unmeasured at these sizes since 11-14)
+struct first_case { const char * name; bool vk; int64_t T; int L, dense_first, n_full, n_embd; double xf, W_mb, R, att_us, U_ms, B, xb_gbs, one_s, one_sd, fill_s; int truth; };
+
+static dsf_pick_out first_pick(const first_case & k, double * ratio, dsxn_out * plan) {
+    dsxn_in in;
+    in.T = k.T; in.L = k.L; in.x = 1;
+    const int n_moe = k.L - k.dense_first;
+    const double up_l = k.U_ms * 1e3 / n_moe;   // us a layer: the pass's upload over the expert layers, nothing held (the upload counts only what is missing)
+    in.w.assign(k.L, 1.0); in.w_sum = k.L; in.xf.assign(k.L, k.xf); in.E.assign(k.L, up_l * k.B * 1e3); in.kv_b.assign(k.L, 0.0);   // a fresh prompt: no cells to read
+    in.att_w.assign(k.L, 0.0); in.lcard.assign(k.L, 1); in.lB.assign(k.L, k.B);
+    for (int il = 0; il < k.dense_first; ++il) { in.E[il] = 0.0; in.xf[il] = 0.0; }
+    for (int j = 0; j < k.n_full; ++j) { in.att_w[k.L - 1 - j * k.L / k.n_full] = 1.0 / k.n_full; }   // spread over the stack, the last layer one of them
+    in.c_base = k.W_mb / k.R * 1e3; in.att_tok = k.att_us;
+    in.b_in = in.b_out = 2.0 * k.n_embd;   // the default hand-off: f16 both ways (llama_dsplit_hop_mode_range_fork)
+    in.rel.assign(2, 1.0); in.B.assign(2, k.B);
+    in.held.assign(2, std::vector<double>(k.L, 0.0));
+    in.xb_a = 0.0; in.xb_b = k.vk ? 1.0 / (k.xb_gbs * 1e3) : 0.0;   // the probe: Vulkan blocks at its copy rate, CUDA copies in stream order
+    in.c0 = 0.0;   // a fresh prompt ("pass of N tokens at 0k cells")
+    *plan = dsxn_plan(in);
+    *ratio = dsf_prior_ratio(plan->t_split, plan->t_one, in.xb_a > 0.0 || in.xb_b > 0.0);
+    dsf_arm_pass p; p.T = (double) k.T; p.U = k.U_ms * 1e3; p.mu1 = k.one_s * 1e6; p.v1 = k.one_sd * k.one_sd * 1e12; p.kn1 = false; p.n1 = 0;
+    dsf_call c; c.ratio = *ratio; c.blocks = in.xb_a > 0.0 || in.xb_b > 0.0; c.split_prior = true; c.c_one_bench = plan->t_one / (double) k.T; c.f_mu = k.fill_s * 1e6; c.f_v = k.fill_s * k.fill_s * 1e12; c.seen_before = 0;
+    return dsf_pick({ p }, c);
+}
+
+static void test_first_pick() {
+    printf("one GPU or two on the first prompt, CUDA and Vulkan (PC1 2 x 3090, 2026-11-17):\n");
+    const first_case K[] = {
+        //  name          vk     T     L  df full embd   xf     W MB      R GB*t/s  att us  U ms  B GB/s  probe  one s  sd    fill  truth
+        { "Vulkan GLM 12k",  true,  12434, 45, 3, 11, 4096, 0.64, 11911, 53114.3, 638.5, 3950, 13.9, 4.21, 11.68, 4.20, 0.22, 0 },
+        { "Vulkan MiMo 11k", true,  11011, 48, 1,  9, 4096, 0.73,  8585, 40805.4, 123.1, 4000, 13.9, 5.52,  4.44, 1.60, 0.12, 0 },
+        { "Vulkan qni4 14k", true,  13782, 48, 0, 12, 2560, 0.66,  5310, 37121.0,  32.8, 1690,  9.2, 5.73,  2.67, 0.96, 0.10, 0 },
+        { "Vulkan qni3 14k", true,  13782, 48, 0, 12, 2560, 0.66,  4624, 51293.4,  32.0, 1270,  9.7, 5.16,  2.07, 0.75, 0.09, 0 },
+        { "CUDA GLM 12k",    false, 12434, 45, 3, 11, 4096, 0.64, 11911, 51130.6, 163.6, 3300, 25.2, 0.0,   5.39, 1.94, 0.18, 1 },
+        { "CUDA MiMo 11k",   false, 11011, 48, 1,  9, 4096, 0.73,  8585, 50055.6, 158.1, 3360, 25.3, 0.0,   4.00, 1.44, 0.10, 1 },
+        { "CUDA qni4 14k",   false, 13782, 48, 0, 12, 2560, 0.66,  5310, 50184.0,  39.1, 1410, 21.8, 0.0,   2.27, 0.82, 0.08, 1 },
+        { "CUDA qni3 14k",   false, 13782, 48, 0, 12, 2560, 0.66,  4624, 58996.8,  39.1, 1050, 21.0, 0.0,   1.93, 0.69, 0.07, 1 },
+    };
+    for (const first_case & k : K) {
+        double ratio = 0.0; dsxn_out plan;
+        const dsf_pick_out o = first_pick(k, &ratio, &plan);
+        const std::string what = std::string(k.name) + (k.truth ? ": the split" : ": one card");
+        report(what.c_str(), o.choice == k.truth && !(k.truth == 0 && o.trial),
+               fmt("plan one %.2f s, split %.2f s, ratio %.2f; picked %s%s (one %.2f, split+fill %.2f s)", plan.t_one / 1e6, plan.t_split / 1e6, ratio,
+                   o.choice ? "the split" : "one card", o.trial ? " as a trial" : "", o.am[0] / 1e6, o.am[1] / 1e6));
+    }
+}
+
 int main(int argc, char ** argv) {
     if (argc > 1) { g_iters = atol(argv[1]); }
     if (argc > 2) { g_seed  = (unsigned long) atol(argv[2]); }
@@ -475,6 +566,7 @@ int main(int argc, char ** argv) {
     test_cs_bytes_counted();
     test_xstage_no_free_in_pass();
     test_card_key_backend();
+    test_first_pick();
     if (n_failed > 0) {
         printf("%d tests failed\n", n_failed);
         return 1;

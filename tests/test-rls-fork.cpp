@@ -160,10 +160,34 @@ int main() {
         dsf_call vg; vg.ratio = 0.77; vg.split_prior = false; vg.split = &once; vg.f_mu = 1.94 * s; vg.f_v = 0.80 * 0.80 * s * s; vg.seen_before = 1;
         const dsf_arm_pass gp = pass(12434, 3.95, 11.68, 4.20, false, 0, 28.38, 2.41);
         check("GLM 12k Vulkan as logged (ratio 0.77): the split", dsf_pick({ gp }, vg).choice == 1, dsf_pick({ gp }, vg).mu1_0 / s);
-        vg.ratio = dsf_prior_ratio(0.77, 1.0, true);
-        check("hand-offs that block: the prior ratio is 1", vg.ratio == 1.0, vg.ratio);
-        check("GLM 12k Vulkan, ratio 1: one card runs", dsf_pick({ gp }, vg).choice == 0, dsf_pick({ gp }, vg).mu1_0 / s);
+        // the plan's ratio where the hand-offs block (their bytes and the expert uploads they hold back, dsxn_layer_us): 1.4 stands for what it gives here
+        vg.ratio = dsf_prior_ratio(1.4, 1.0, true);
+        check("hand-offs that block: the plan's ratio, above 1 too", vg.ratio == 1.4 && dsf_prior_ratio(0.77, 1.0, true) == 0.77, vg.ratio);
+        check("GLM 12k Vulkan request 2, the blocking ratio: one card runs", dsf_pick({ gp }, vg).choice == 0, dsf_pick({ gp }, vg).mu1_0 / s);
         check("hand-offs in stream order: the bench's ratio, at most 1", dsf_prior_ratio(0.77, 1.0, false) == 0.77 && dsf_prior_ratio(1.31, 1.0, false) == 1.0, 0.0);
+        // request 1 (user 2026-11-17: "there will be no second chance on same prompt. the first planner choice must be best one"): neither ran, one card
+        // 11.68 +- 4.20 s, upload 3.95 s; at the bytes-only 0.77 the split's prior won and took 31.6 s (one card 26.5); at a blocking ratio of 1 it was a trial
+        dsf_call g1; g1.f_mu = 0.18 * s; g1.f_v = 0.18 * 0.18 * s * s;
+        const dsf_arm_pass g1p = pass(12434, 3.95, 11.68, 4.20, false, 0);
+        g1.ratio = 0.77;
+        check("GLM 12k Vulkan request 1 at 0.77: the split (the miss)", dsf_pick({ g1p }, g1).choice == 1, dsf_pick({ g1p }, g1).am[1] / s);
+        g1.ratio = 1.0;
+        check("GLM 12k Vulkan request 1 at 1: the split as a trial (the miss)", dsf_pick({ g1p }, g1).choice == 1 && dsf_pick({ g1p }, g1).trial, dsf_pick({ g1p }, g1).am[1] / s);
+        g1.ratio = dsf_prior_ratio(1.4, 1.0, true);
+        const dsf_pick_out g1o = dsf_pick({ g1p }, g1);
+        check("GLM 12k Vulkan request 1, the blocking ratio: one card, no trial", g1o.choice == 0 && !g1o.trial, g1o.am[1] / s);
+        // the plan with each range's attention by position (dsxn_att_pos) said 1.05 there: a pair whose hand-offs block keeps a ratio above 1 as a measured cost,
+        // so the split is not tried against it (the trial ran 31.6 s against one card's 26.5); a pair in stream order at its cap of 1 still is
+        g1.ratio = 1.05; g1.blocks = true;
+        const dsf_pick_out g1b = dsf_pick({ g1p }, g1);
+        check("GLM 12k Vulkan request 1 at 1.05, hand-offs block: one card, no trial", g1b.choice == 0 && !g1b.trial, g1b.am[1] / s);
+        g1.ratio = 1.0; g1.blocks = false;
+        check("the same at 1 in stream order: the split as a trial", dsf_pick({ g1p }, g1).trial, dsf_pick({ g1p }, g1).am[1] / s);
+        // MiMo 11k on two CUDA cards, request 1: upload 3.36 s, one card 4.00 +- 1.44, fill 0.10; at ratio 0.84 the split is bound by its upload and its mean
+        // (3.46 with the fill) is the lower: the upload rule forbids a trial of the split, not the split where it is ahead (it refused it at 0.84, took it at 0.87)
+        dsf_call m1; m1.ratio = 0.84; m1.f_mu = 0.10 * s; m1.f_v = 0.10 * 0.10 * s * s;
+        const dsf_pick_out m1o = dsf_pick({ pass(11011, 3.36, 4.00, 1.44, false, 0) }, m1);
+        check("MiMo 11k CUDA request 1, bound by the upload, the lower mean: the split", m1o.choice == 1 && m1o.upload_bound && !m1o.trial, m1o.am[1] / s);
     }
     {   // INV phi at a call's end (GLM, two Vulkan cards, 2026-11-16): 9472 tokens in 6 passes (trial passes of 1664, then 1536), features for 1536
         check("INV phi: the prompt's passes taught the arm, its end's average is no sample", !rls_report_phi_off(1536.0, 9472.0 / 6.0, 4, true), 9472.0 / 6.0);

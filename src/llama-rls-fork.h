@@ -293,6 +293,7 @@ struct dsf_call {
     const dsf_rls * split = nullptr;      // the split's model (known here: rls_known)
     double f_mu = 0.0, f_v = 0.0;         // the fill owed (us, us^2); 0: the copies are in place
     int seen_before = 0;                  // calls of one pass in this size class (dsf_size_class) decided before in this process
+    bool blocks = false;                  // the hand-offs block the host (the start's copy probe): the ratio is a measured cost, above 1 too (dsf_prior_ratio)
 };
 struct dsf_pick_out {
     int choice = 0, np = 0;               // 0 one card, 1 the split; the passes priced
@@ -301,12 +302,12 @@ struct dsf_pick_out {
     double mu1_0 = 0.0, v1_0 = 0.0, mu2_0 = 0.0, v2_0 = 0.0, u0 = 0.0;  // the first pass's, priced (the log's)
 };
 // The split prior's compute ratio (split / one card) from the plan's bench: at most 1 (rule 41b: trusted for the ratio, never for the size; -1: no plan).
-// Where the hand-offs block (the start's copy probe, dsplit_xcopy_probe) the plan prices their bytes but not the drains around them, so it claims no gain: 1.
-// GLM 12k on two Vulkan cards (2026-11-17): the plan said 0.77, the split measured 28.4 s, and the mirror held the never-run one card at 28.4 / 0.77 = 37 s;
-// one card runs 26.5 s
+// Where the hand-offs block (the start's copy probe, dsplit_xcopy_probe) the plan prices what they cost, their bytes and the expert uploads they hold back
+// (dsxn_layer_us), and a ratio above 1 is a measured cost, not a model error: it stands (user 2026-11-17: "there will be no second chance on same prompt. the
+// first planner choice must be best one"; GLM 12k on two Vulkan cards: capped at 1 the split was tried on request 1, 31.6 s against one card's 26.5)
 static inline double dsf_prior_ratio(double c_split, double c_one, bool blocks) {
     if (!(c_split > 0.0 && c_one > 0.0)) { return -1.0; }
-    return blocks ? 1.0 : std::min(1.0, c_split / c_one);
+    return blocks ? c_split / c_one : std::min(1.0, c_split / c_one);
 }
 static inline int dsf_size_class(int64_t n_tokens) { return (int) std::floor(4.0 * std::log2((double) std::max<int64_t>(1, n_tokens))); }   // a quarter octave
 static inline dsf_pick_out dsf_pick(const std::vector<dsf_arm_pass> & passes, const dsf_call & c) {
@@ -357,7 +358,12 @@ static inline dsf_pick_out dsf_pick(const std::vector<dsf_arm_pass> & passes, co
     // And no trial where even a perfect split saves less than the fill it owes: it can only shorten the compute above the upload (GLM 3.0, 100-token prompt: one card 3.99 s,
     // upload 3.76 s, fill 0.74 s; the trial ran the split with the fill, 5.8 s against about 4)
     o.upload_bound = c.split_prior && (o.mu1_0 * c.ratio <= o.u0 || (o.mu1_0 - o.u0) * (double) std::max(1, o.np) <= c.f_mu);
-    const bool aok[2] = { true, !o.upload_bound }, akn[2] = { o.known1, o.known2 };
+    // A pair whose hand-offs block keeps its plan's ratio above 1 as a measured cost (dsf_prior_ratio), so a split priced no faster than one card is not tried
+    // against it (user 2026-11-17: "there will be no second chance on same prompt. the first planner choice must be best one"; GLM 12k on two Vulkan cards,
+    // plan 1.05: the trial ran the split 31.6 s against one card's 26.5). Both rules forbid a trial of the split, not the split where its mean is the lower:
+    // MiMo 11k on two CUDA cards (upload 3.36 s, one card 4.00, the split 3.46 with its fill) was refused at ratio 0.84 and taken at 0.87.
+    const bool no_gain = c.split_prior && c.blocks && c.ratio >= 1.0;
+    const bool aok[2] = { true, !((o.upload_bound || no_gain) && o.am[1] >= o.am[0]) }, akn[2] = { o.known1, o.known2 };
     // the trial's stake: the passes left in this call. The count of passes of this size seen so far grew with every pass and forced a trial of the
     // never-known one-card arm once per request (GLM 3.5 64k, 2026-11-08: a 25.9 s one-card pass at 36k cells against 11.9 s split, 10% of the prompt);
     // what a trial learns pays over the passes still to come here, and the next request starts from the stored posterior (R4) anyway.

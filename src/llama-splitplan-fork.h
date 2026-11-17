@@ -221,16 +221,32 @@ struct dsxn_in {
     // a hand-off that blocks the host: us per crossing and per byte (the start's copy probe; 0, 0: the pair copies in stream order). ggml's fallback copy drains
     // both cards first, so nothing overlaps it (Vulkan copies async only within one device: MiMo 11k on two cards, split 13.5-16.5 s against one card 11.0)
     double xb_a = 0.0, xb_b = 0.0;
+    // cells before the pass (< 0: every token priced at the pass's average): a token attends to the cells before it, so a range's attention is priced at its
+    // middle token's cells (dsxn_att_pos)
+    double c0 = -1.0;
 };
 struct dsxn_out { double t_one = 0.0, t_split = -1.0; std::vector<double> s; };
 
-// a_i and k_i of every card over the whole pass (see dsb_card)
-static inline std::vector<dsb_card> dsxn_cards(const dsxn_in & in) {
+// Each card's attention per token against the pass's average. The ranges go in card order, the expert card last (llama-dsplit-fork.cpp g_card_order), and a
+// token attends to the cells before it: the range [A, A + s) is priced at its middle token's cells, c0 + T (A + s / 2), the pass's average at c0 + T / 2
+// (att_tok is the attention that grows with the cells). GLM 12k on two Vulkan cards, 2026-11-17: the expert card's last 55% of the tokens hold 80% of the
+// attention, priced at 55% the split looked 0.98 x one card, it measured 1.19.
+static inline std::vector<double> dsxn_att_pos(const dsxn_in & in, const std::vector<double> & s) {
+    std::vector<double> f(in.rel.size(), 1.0);
+    if (!(in.c0 >= 0.0) || s.size() != f.size() || in.T <= 0) { return f; }
+    const double T = (double) in.T;
+    double A = 0.0;
+    for (size_t i = 0; i < f.size(); ++i) { f[i] = (in.c0 + T * (A + 0.5 * s[i])) / (in.c0 + 0.5 * T); A += s[i]; }
+    return f;
+}
+
+// a_i and k_i of every card over the whole pass (see dsb_card); f: each card's attention against the pass's average (dsxn_att_pos)
+static inline std::vector<dsb_card> dsxn_cards(const dsxn_in & in, const std::vector<double> & f) {
     const int n = (int) in.rel.size();
     std::vector<dsb_card> c(n);
     for (int i = 0; i < n; ++i) {
         for (int il = 0; il < in.L; ++il) {
-            const double D = in.c_base * in.w[il] / in.w_sum * (1.0 - in.xf[il]) + in.att_tok * in.att_w[il];   // us per token of the layer's dense part
+            const double D = in.c_base * in.w[il] / in.w_sum * (1.0 - in.xf[il]) + in.att_tok * in.att_w[il] * f[i];   // us per token of the layer's dense part
             c[i].a += D / std::max(1e-9, in.rel[i]);
             const bool blk = in.xb_a > 0.0 || in.xb_b > 0.0;   // blocking hand-offs: per byte at the probed rate (dsxn_layer_us adds the crossings serial)
             if (in.E[il] > 0.0 && i != in.x) { c[i].a += (in.b_in + in.b_out) * (blk ? in.xb_b : 1.0 / (std::min(in.B[i], in.B[in.x]) * 1e3)); }
@@ -240,16 +256,16 @@ static inline std::vector<dsb_card> dsxn_cards(const dsxn_in & in) {
     return c;
 }
 
-static inline double dsxn_layer_us(const dsxn_in & in, int il, const std::vector<double> & s) {
+static inline double dsxn_layer_us(const dsxn_in & in, int il, const std::vector<double> & s, const std::vector<double> & f) {
     const double T  = (double) in.T;
     const double cb = in.c_base * T * in.w[il] / in.w_sum;
-    const double D  = cb * (1.0 - in.xf[il]) + in.att_tok * in.att_w[il] * T, X = cb * in.xf[il];
+    const double Dm = cb * (1.0 - in.xf[il]), Da = in.att_tok * in.att_w[il] * T, X = cb * in.xf[il];   // the dense part: matmuls, attention (by position, f)
     const bool   moe = in.E[il] > 0.0, blk = in.xb_a > 0.0 || in.xb_b > 0.0;
     double front = 0.0;   // when the expert card holds every range's hidden state (a layer without experts: when the last card is done)
     double serial = 0.0;  // blocking crossings (xb_a, xb_b): both cards drained, nothing overlaps them
     for (int i = 0; i < (int) s.size(); ++i) {
         if (s[i] <= 0.0) { continue; }
-        double t = s[i] * D / std::max(1e-9, in.rel[i]);
+        double t = s[i] * (Dm + Da * f[i]) / std::max(1e-9, in.rel[i]);
         if (in.kv_b[il] > 0.0 && in.lcard[il] != i) {
             if (blk) { serial += in.xb_a + in.kv_b[il] * in.xb_b; } else { t += in.kv_b[il] / (std::min(in.B[i], in.lB[il]) * 1e3); }
         }
@@ -261,7 +277,9 @@ static inline double dsxn_layer_us(const dsxn_in & in, int il, const std::vector
     }
     if (!moe) { return front + serial; }
     const double up = in.E[il] * (1.0 - in.held[in.x][il]) / (in.B[in.x] * 1e3);
-    return std::max(front + X, up) + serial;
+    // a blocking crossing drains the expert card, the uploads queued for the layers ahead with it (they share its backend): they stop running ahead and add
+    // (two Vulkan cards, 2026-11-17: split minus one card 4.2 s on MiMo 11k against its 4.0 s upload, GLM 12k 4-5 / 4.0, qni4 2.3 / 1.7, qni3 2.2 / 1.3)
+    return blk ? front + X + up + serial : std::max(front + X, up);
 }
 
 // one card (everything on the expert card) and the split with the shares that make the cards take equally long
@@ -272,9 +290,17 @@ static inline dsxn_out dsxn_plan(const dsxn_in & in) {
         const double up = in.E[il] * (1.0 - in.held[in.x][il]) / (in.B[in.x] * 1e3);
         o.t_one += std::max(cl, up);
     }
-    o.s = dsb_target(dsxn_cards(in), (double) in.T, in.min_share, in.x);
+    o.s = dsb_target(dsxn_cards(in, std::vector<double>(in.rel.size(), 1.0)), (double) in.T, in.min_share, in.x);
+    // the shares move the ranges and the ranges each card's attention: settle them together (half steps, a few rounds)
+    for (int it = 0; it < 32 && in.c0 >= 0.0; ++it) {
+        const std::vector<double> s1 = dsb_target(dsxn_cards(in, dsxn_att_pos(in, o.s)), (double) in.T, in.min_share, in.x);
+        double d = 0.0;
+        for (size_t i = 0; i < s1.size() && i < o.s.size(); ++i) { d = std::max(d, std::fabs(s1[i] - o.s[i])); o.s[i] = 0.5 * (o.s[i] + s1[i]); }
+        if (d < 1e-4) { break; }
+    }
+    const std::vector<double> f = dsxn_att_pos(in, o.s);
     o.t_split = 0.0;
-    for (int il = 0; il < in.L; ++il) { o.t_split += dsxn_layer_us(in, il, o.s); }
+    for (int il = 0; il < in.L; ++il) { o.t_split += dsxn_layer_us(in, il, o.s, f); }
     return o;
 }
 
