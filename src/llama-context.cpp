@@ -6168,10 +6168,11 @@ private:
 };
 
 // fork: the file writer and reader collect the tensor parts as llama_io_write_host / read_host do and move them with ggml_backend_tensor_get_n / set_n, at the
-// latest every 64 MiB and at n_bytes(), which every state function returns last (before its caller reads file.tell()). One ggml_backend_tensor_get / set per
+// latest every 4 MiB and at n_bytes(), which every state function returns last (before its caller reads file.tell()). One ggml_backend_tensor_get / set per
 // part made the token-major KV's state (one part per cell, layer and K/V) a blocking transfer per cell: a 4096-cell OLMoE state took 2.0 s to save on CUDA and
-// 3.9 s on Vulkan where the same state in memory took 0.23 and 0.14 s (2026-11-17, tests/test-state-file-fork.cpp).
-static constexpr size_t llama_io_file_batch = (size_t) 64 << 20;
+// 3.9 s on Vulkan where the same state in memory took 0.23 and 0.14 s (2026-11-17, tests/test-state-file-fork.cpp). 4 MiB stays in the CPU's cache: batches
+// of 64 MiB sent every byte through RAM once more, and Vulkan's load (host-visible memory, a set is a memcpy) took 250 ms where one set per part took 158.
+static constexpr size_t llama_io_file_batch = (size_t) 4 << 20;
 
 class llama_io_write_file : public llama_io_write_i {
 public:
