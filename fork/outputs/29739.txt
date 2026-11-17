@@ -1,0 +1,6 @@
+run 29739 | vk_temps_in_pool2_vk | pf2k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 274.63 t/s | prompt 12382.4 t/s | 64 tokens | args: -np 1 -dev CUDA0 --moe mode=cache,kv-tail=1,kv-token-major=1,alias=1 | power 200+200 W | 2026-11-17 01:25:06
+
+}},
+    {"string", {"\"(\" space ( value (\",\" space value)* )? space \")\"", {"value"}}},
+    {"value", {"\"(\" space ( value (\",\" space value)* )? space \")\"", {"value"}}},
+    {"space",

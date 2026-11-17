@@ -1,0 +1,24 @@
+run 30046 | vk_sizing_pass_vk | pf2k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 118.77 t/s | prompt 3311.0 t/s | 256 tokens | args: -np 1 -dev Vulkan0 | power 200+200 W | 2026-11-17 03:04:39
+
+},
+    {"null", {"\"null\"", {}},
+    {"string", {"\"\"\" (\"\\\\\" | \"\\\"\" | \"\\n\" | \"\\t\" | \"\\r\" | \"\\b\" | \"\\f\" | \"\\u\" hex4 | [\\x20-\\x7e])* \"\"\"", {}},
+    {"hex4", {"[0-9a-fA-F]{4}", {}},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULES_TO_GRAMMAR = {
+    {"boolean", "boolean"},
+    {"decimal-part", "decimal_part"},
+    {"integral-part", "integral_part"},
+    {"number", "number"},
+    {"integer", "integer"},
+    {"value", "value"},
+    {"object", "object"},
+    {"array", "array"},
+    {"null", "null"},
+    {"string", "string"},
+    {"hex4", "hex4"},
+};
+
+static std::unordered_map<std::string, std::string> PRIMITIVE_RULES_TO_GRAMMAR_WITH_UNDERSCORE = {
+    {"boolean", "boolean"},
