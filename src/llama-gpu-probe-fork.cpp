@@ -103,16 +103,34 @@ double median(std::vector<double> v) {
     return v[v.size() / 2];
 }
 
+// `copies` uploads of n bytes the way the expert stream makes them: asynchronous from pinned memory, then one wait. A synchronous ggml_backend_tensor_set is
+// another path on some backends: Vulkan writes host-visible VRAM (resizable BAR) with the CPU, 15 GB/s on PCIe 4.0 x16 where the DMA does 26.7 (2x RTX 3090,
+// 2026-11-17), and every upload rate the planner calculated with came from it. be == nullptr: synchronous copies.
+void upload(ggml_backend_t be, ggml_tensor * t, const void * src, size_t n, int copies = 1) {
+    for (int k = 0; k < copies; ++k) {
+        if (be) { ggml_backend_tensor_set_async(be, t, src, 0, n); } else { ggml_backend_tensor_set(t, src, 0, n); }
+    }
+    if (be) { ggml_backend_synchronize(be); }
+}
+
+// a backend of the device that holds t, for upload() (nullptr when the buffer names no device)
+ggml_backend_t backend_of(const ggml_tensor * t) {
+    ggml_backend_dev_t d = t->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer)) : nullptr;
+    return d ? ggml_backend_dev_init(d, nullptr) : nullptr;
+}
+
 // bytes per microsecond = MB/s; / 1e3 = GB/s. The first copy warms the path up and is not counted.
 double bulk_gbs(ggml_tensor * t, const void * src, int reps) {
+    ggml_backend_t be = backend_of(t);
     double best = 0.0;
     const size_t n = ggml_nbytes(t);
     for (int i = 0; i <= reps; ++i) {
         const int64_t t0 = ggml_time_us();
-        ggml_backend_tensor_set(t, src, 0, n);
+        upload(be, t, src, n);
         const double gbs = (double) n / 1e3 / (double) std::max<int64_t>(1, ggml_time_us() - t0);
         if (i > 0) { best = std::max(best, gbs); }
     }
+    if (be) { ggml_backend_free(be); }
     return best;
 }
 
@@ -199,6 +217,20 @@ double graph_compute(ggml_backend_dev_t dev, double * res_us = nullptr, double *
 
 }  // namespace
 
+double llama_link_gbs_fork(ggml_backend_dev_t dev) {
+    static std::mutex mu;
+    static std::map<ggml_backend_dev_t, double> done;
+    std::lock_guard<std::mutex> lk(mu);
+    if (auto it = done.find(dev); it != done.end()) { return it->second; }
+    constexpr size_t n = 64u << 20;
+    host_buf h(dev, n);
+    dev_ctx c(0);
+    ggml_tensor * t = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I8, (int64_t) n);
+    const double gbs = c.alloc(dev) ? bulk_gbs(t, h.ptr, 4) : 0.0;
+    done[dev] = gbs;
+    return gbs;
+}
+
 // the state-file section of a card: its PCI id and model name make it unique ("gpu 0000:07:00.0 NVIDIA GeForce RTX 3090"); another card in the slot, or the card
 // in another slot, is another section
 static std::string probe_section(ggml_backend_dev_t dev) {
@@ -260,14 +292,16 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
                 dev_ctx c(0);
                 ggml_tensor * big = ggml_new_tensor_1d(c.ctx, GGML_TYPE_I8, (int64_t) PROBE_BYTES);
                 const bool ok = c.alloc(gpus[i]);
-                if (ok) { ggml_backend_tensor_set(big, h.ptr, 0, PROBE_BYTES); }   // warm-up
+                ggml_backend_t be = ok ? backend_of(big) : nullptr;
+                if (ok) { upload(be, big, h.ptr, PROBE_BYTES); }   // warm-up
                 ready.fetch_add(1);   // (also when the allocation failed, so the barrier cannot hang)
                 if (!ok) { return; }
                 while (!go.load()) { std::this_thread::yield(); }
                 const int reps = 4;
                 const int64_t t0 = ggml_time_us();
-                for (int r = 0; r < reps; ++r) { ggml_backend_tensor_set(big, h.ptr, 0, PROBE_BYTES); }
+                upload(be, big, h.ptr, PROBE_BYTES, reps);
                 rate[i] = (double) PROBE_BYTES * reps / 1e3 / (double) std::max<int64_t>(1, ggml_time_us() - t0);
+                if (be) { ggml_backend_free(be); }
             });
         }
         while (ready.load() < want) { std::this_thread::yield(); }

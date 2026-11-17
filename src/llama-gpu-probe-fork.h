@@ -32,6 +32,10 @@ std::vector<llama_gpu_probe_fork_result> llama_gpu_probe_fork(const std::vector<
 // The subset table of the last llama_gpu_probe_fork() call (see its `conc` argument).
 const std::vector<std::vector<double>> & llama_gpu_probe_conc_fork();
 
+// Host -> device upload rate of one card in GB/s, timed the way the expert stream uploads: async from the card's pinned host buffer type, then one wait.
+// Measured once per process and device (64 MiB, the fastest of four copies after a warm-up); the moe cache's link rates and the prompt offload card's pick
+// read it.
+double llama_link_gbs_fork(ggml_backend_dev_t dev);
 // Results of an earlier llama_gpu_probe_fork() for this device, or nullptr.
 const llama_gpu_probe_fork_result * llama_gpu_probe_find_fork(ggml_backend_dev_t dev);
 

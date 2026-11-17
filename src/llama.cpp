@@ -321,30 +321,10 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
             local.push_back(i);
         }
         if (local.size() > 1) {
-            constexpr size_t n_bytes = 64u << 20;
-            std::vector<uint8_t> host(n_bytes, 1);
-            auto h2d_gbs = [&](ggml_backend_dev_t dev) -> double {
-                ggml_init_params ip = { ggml_tensor_overhead(), nullptr, true };
-                ggml_context * ctx = ggml_init(ip);
-                ggml_tensor * t = ggml_new_tensor_1d(ctx, GGML_TYPE_I8, n_bytes);
-                ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, ggml_backend_dev_buffer_type(dev));
-                double best = 0.0;
-                if (buf) {
-                    for (int i = 0; i < 3; ++i) { // first copy warms up
-                        const int64_t t0 = ggml_time_us();
-                        ggml_backend_tensor_set(t, host.data(), 0, n_bytes);
-                        const double gbs = n_bytes / 1e3 / std::max<int64_t>(1, ggml_time_us() - t0);
-                        best = i ? std::max(best, gbs) : 0.0;
-                    }
-                    ggml_backend_buffer_free(buf);
-                }
-                ggml_free(ctx);
-                return best;
-            };
             std::vector<double> link(local.size(), 0.0);
             for (size_t k = 0; k < local.size(); ++k) {
                 ggml_backend_dev_t dev = model->devices[local[k]].dev;
-                link[k] = h2d_gbs(dev);
+                link[k] = llama_link_gbs_fork(dev);   // the expert stream's path, measured once per process (the moe cache's link rates read the same)
                 LLAMA_LOG_INFO("%s: %s host->device upload %.1f GB/s\n", __func__, ggml_backend_dev_name(dev), link[k]);
             }
 

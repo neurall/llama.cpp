@@ -14370,27 +14370,10 @@ static double early_link_gbs(ggml_backend_dev_t d) {
             return e.second;
         }
     }
-    const size_t n = 64u << 20;
-    ggml_backend_buffer_type_t hb = ggml_backend_dev_host_buffer_type(d);
-    ggml_backend_buffer_t hbuf = hb ? ggml_backend_buft_alloc_buffer(hb, n) : nullptr;
-    ggml_backend_buffer_t dbuf = ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(d), n);
-    double gbs = 0;
-    if (hbuf && dbuf) {
-        ggml_tensor t = {};
-        t.type = GGML_TYPE_I8; t.buffer = dbuf; t.data = ggml_backend_buffer_get_base(dbuf);
-        t.ne[0] = (int64_t) n; t.ne[1] = t.ne[2] = t.ne[3] = 1; t.nb[0] = 1; t.nb[1] = t.nb[2] = t.nb[3] = n;
-        const void * src = ggml_backend_buffer_get_base(hbuf);
-        ggml_backend_tensor_set(&t, src, 0, n); // warm-up
-        // each copy timed alone, the fastest kept (user 2026-11-03: "upload moes sized data to gpu 3 times and pick and keep in mem fastest"): contention and clock dips only lower a reading, and the one
-        // value serves the placement, the prefill split and every rate the planner calculates with
-        for (int r = 0; r < 4; ++r) {
-            const int64_t t0 = ggml_time_us();
-            ggml_backend_tensor_set(&t, src, 0, n);
-            gbs = std::max(gbs, (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t0) / 1e3);
-        }
-    }
-    if (hbuf) { ggml_backend_buffer_free(hbuf); }
-    if (dbuf) { ggml_backend_buffer_free(dbuf); }
+    // the fastest of four 64 MiB copies (user 2026-11-03: "upload moes sized data to gpu 3 times and pick and keep in mem fastest"): contention and clock dips
+    // only lower a reading, and the one value serves the placement, the prefill split and every rate the planner calculates with; timed on the expert
+    // stream's path (llama_link_gbs_fork: async from pinned memory, one wait)
+    const double gbs = llama_link_gbs_fork(d);
     g_early_gbs.push_back({ d, gbs });
     return gbs;
 }
