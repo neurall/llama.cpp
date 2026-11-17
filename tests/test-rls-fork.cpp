@@ -94,6 +94,19 @@ int main() {
         rls_prior_cal(m2, v2, s2, 2, 0.0);
         check("no calibration yet: the priors stay", m2[0] == 10.0 && m2[1] == 20.0, m2[0]);
     }
+    {   // GLM 12k on one Vulkan card, request 2 (2026-11-17): layer parallel ran on its prior, built from the guessed compute (12 ms a token: 152.3 s), took 28.6 s
+        // (x0.19); the pass measured the compute (2.30 ms a token) and the stream, never run, was built again from it: 32.5 s, then x0.19 on top: 6.1 s. It won
+        // and took 29.3 s. An old miss prices only the arms still built from the compute that prior had
+        double mu[3] = { 28.56, 32.51, 160.0 }, var[3] = { 1.56 * 1.56, 28.9 * 28.9, 150.0 * 150.0 };
+        const int nsamp[3] = { 1, 0, 0 };
+        const double built[3] = { 12000.0, 2296.7, 12000.0 };   // us a token each arm's prior was built from (the last one never built again)
+        rls_prior_cal(mu, var, nsamp, 3, 28557.0 / 152300.0, built, 12000.0);
+        check("an arm built again from the measured compute keeps its prior", mu[1] == 32.51, mu[1]);
+        check("an arm still on the old guess gets the miss", std::fabs(mu[2] - 160.0 * 28557.0 / 152300.0) < 1e-9, mu[2]);
+        const bool ok[3] = { true, true, true }, known[3] = { false, false, false };
+        bool trial = false;
+        check("the path that ran stays the pick", rls_voi_pick(mu, var, ok, 3, 3.0, &trial, known) == 0, mu[1]);
+    }
     // one card against the split (dsf_pick, the split planner's pick): cases from logged calls (stats.db 2026-11-05..15), the engine's own PLN inputs, seconds.
     // Of 116 real one-vs-two losses with logged inputs: 63 lost trials (exploration), 33 estimates on the wrong side (GLM 3.0 cold one card ~ its upload alone:
     // 4.0 s against 5.5 measured at 2268 tokens), 2 coin flips (K3 995 cold, priors 0.1% apart); none a rule picking against estimates that were right.

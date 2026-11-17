@@ -243,9 +243,12 @@ static inline bool rls_known(const dsf_rls & r, double mu, double var) { return 
 // priors share their inputs (SSD rate, resident bytes, link rates), so one measured miss is every prior's (user 2026-11-15: "planner shall calculate it").
 // K3 1k prompt: the stream's k x1 arm estimated 45.9 s on its prior and took 70.4 s; only its own model learned it, the untried arms kept the same 35%-low
 // prior (71.6 s against its 95.2 s at the next call) and layer parallel won the next call: 77.4 s.
-static inline void rls_prior_cal(double * mu, double * var, const int * n_samples, int n, double cal) {
+// built (optional): the compute per token each arm's prior was built from, cal_built the one the prior that missed had. An arm built again since from a measured
+// compute is not priced by the old miss: that miss was the guess's, the measurement replaced it (GLM 12k on one Vulkan card, 2026-11-17: layer parallel's prior
+// at a guessed 12 ms a token missed x0.19, the stream rebuilt at the measured 2.3 ms got x0.19 on top: planned 6.1 s, took 29.3, request 2 left the faster path)
+static inline void rls_prior_cal(double * mu, double * var, const int * n_samples, int n, double cal, const double * built = nullptr, double cal_built = 0.0) {
     if (!(cal > 0.0)) { return; }
-    for (int i = 0; i < n; ++i) { if (n_samples[i] == 0) { mu[i] *= cal; var[i] *= cal * cal; } }
+    for (int i = 0; i < n; ++i) { if (n_samples[i] == 0 && (!built || built[i] == cal_built)) { mu[i] *= cal; var[i] *= cal * cal; } }
 }
 
 // The pick. Among the arms known here: the lowest mean (a learned estimate is never overruled: no tie margin, no veto). Any other arm (a prior, or a

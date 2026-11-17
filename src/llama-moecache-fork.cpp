@@ -16339,11 +16339,12 @@ static double pp_wait_us(double n) {
 }
 // what a prior missed by at a size (took / its estimate) and the factor a call's decision put on each never-run arm (0: it had samples): rls_prior_cal
 static double g_pp_cal[32] = {}, g_pp_cal_on[PP_PATHS] = {};
-static double pp_cal_at(double n) {   // this size's, else a neighbour's (x2 either way); 0 = none yet
+static double g_pp_cal_c[32] = {};   // the compute per token the prior that missed was built from (g_pp_rls_c): the miss prices only arms built from the same
+static double pp_cal_at(double n, double * built) {   // this size's, else a neighbour's (x2 either way); 0 = none yet
     const int b = pp_bucket(n);
     for (int d = 0; d < 2; ++d) {
-        if (b - d >= 0 && g_pp_cal[b - d] > 0.0) { return g_pp_cal[b - d]; }
-        if (b + d < 32 && g_pp_cal[b + d] > 0.0) { return g_pp_cal[b + d]; }
+        if (b - d >= 0 && g_pp_cal[b - d] > 0.0) { *built = g_pp_cal_c[b - d]; return g_pp_cal[b - d]; }
+        if (b + d < 32 && g_pp_cal[b + d] > 0.0) { *built = g_pp_cal_c[b + d]; return g_pp_cal[b + d]; }
     }
     return 0.0;
 }
@@ -17002,6 +17003,7 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
                 if (g_pp_cal_on[path] > 0.0 && mu > 0.0 && streamed) {   // it ran on its prior: the prior's miss prices the never-run arms of this size (rls_prior_cal)
                     const double est = mu / g_pp_cal_on[path];
                     g_pp_cal[pp_bucket(n1)] = took / est;
+                    g_pp_cal_c[pp_bucket(n1)] = g_pp_rls_c[path];
                     LLAMA_LOG_WARN("moe-cache: planner: %s ran on its prior (%.0f tokens a pass): %.0f ms estimated, took %.0f: the arms that never ran at this size x%.2f\n",
                             pp_path_name(path).c_str(), n1, est / 1e3, took / 1e3, took / est);
                 }
@@ -17431,9 +17433,10 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
     {   // the never-run arms priced by what a prior missed by at this size (rls_prior_cal; user 2026-11-15: "planner shall calculate it")
         int ns[PP_PATHS];
         for (int p = 0; p < PP_PATHS; ++p) { ns[p] = g_pp_phi[p][1] > 0.0 ? pp_rls(p).n : 1; }
-        const double cal = pp_cal_at(n);
-        rls_prior_cal(g_pp_pmu, g_pp_var, ns, PP_PATHS, cal);
-        for (int p = 0; p < PP_PATHS; ++p) { g_pp_cal_on[p] = ns[p] == 0 ? (cal > 0.0 ? cal : 1.0) : 0.0; }
+        double cal_c = 0.0;
+        const double cal = pp_cal_at(n, &cal_c);
+        rls_prior_cal(g_pp_pmu, g_pp_var, ns, PP_PATHS, cal, g_pp_rls_c, cal_c);
+        for (int p = 0; p < PP_PATHS; ++p) { g_pp_cal_on[p] = ns[p] == 0 ? (cal > 0.0 && g_pp_rls_c[p] == cal_c ? cal : 1.0) : 0.0; }
     }
     {
         bool ok[PP_PATHS];
