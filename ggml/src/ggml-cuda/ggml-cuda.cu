@@ -5674,6 +5674,47 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
     return res;
 }
 
+// fork: a CUDA graph that does not instantiate names the kernel that broke it. The capture records a launch without checking it against its kernel: a block
+// of more threads than the kernel's registers allow fails only here (cudaErrorLaunchOutOfResources), while a shared-memory size over the kernel's limit fails
+// at the launch (cudaErrorInvalidValue) and local memory a full card cannot give fails here as cudaErrorMemoryAllocation (micro test 2026-11-17, RTX 3090)
+static void ggml_cuda_graph_report_bad_kernels(cudaGraph_t g, cudaError_t err) {
+    GGML_LOG_ERROR("%s: the CUDA graph did not instantiate: %s\n", __func__, cudaGetErrorString(err));
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 12030
+    size_t n = 0;
+    int bad = 0;
+    std::vector<cudaGraphNode_t> nodes;
+    if (cudaGraphGetNodes(g, nullptr, &n) == cudaSuccess && n > 0) {
+        nodes.resize(n);
+        if (cudaGraphGetNodes(g, nodes.data(), &n) != cudaSuccess) {
+            nodes.clear();
+        }
+    }
+    for (cudaGraphNode_t nd : nodes) {
+        cudaGraphNodeType t;
+        cudaKernelNodeParams p = {};
+        cudaFuncAttributes fa = {};
+        if (cudaGraphNodeGetType(nd, &t) != cudaSuccess || t != cudaGraphNodeTypeKernel || cudaGraphKernelNodeGetParams(nd, &p) != cudaSuccess ||
+                cudaFuncGetAttributes(&fa, p.func) != cudaSuccess) {
+            continue;
+        }
+        const int threads = (int) (p.blockDim.x * p.blockDim.y * p.blockDim.z);
+        if (threads <= fa.maxThreadsPerBlock && p.sharedMemBytes <= (unsigned) fa.maxDynamicSharedSizeBytes) {
+            continue;
+        }
+        const char * name = "?";
+        (void) cudaFuncGetName(&name, p.func);
+        GGML_LOG_ERROR("%s: kernel %s: block %ux%ux%u = %d threads (it allows %d at %d registers a thread), dynamic shared memory %u B (it allows %d), grid %ux%ux%u\n",
+            __func__, name, p.blockDim.x, p.blockDim.y, p.blockDim.z, threads, fa.maxThreadsPerBlock, fa.numRegs, p.sharedMemBytes,
+            fa.maxDynamicSharedSizeBytes, p.gridDim.x, p.gridDim.y, p.gridDim.z);
+        bad++;
+    }
+    GGML_LOG_ERROR("%s: %d of %zu nodes over their kernel's limits\n", __func__, bad, n);
+    (void) cudaGetLastError();
+#else
+    GGML_UNUSED(g);
+#endif
+}
+
 static void ggml_cuda_graph_update_executable(cudaGraphExec_t & instance, cudaGraph_t cuda_graph) {
 #if CUDART_VERSION >= 12000
     cudaGraphExecUpdateResultInfo result_info;
@@ -5701,6 +5742,7 @@ static void ggml_cuda_graph_update_executable(cudaGraphExec_t & instance, cudaGr
             int dev = 0; (void) cudaGetDevice(&dev);
             throw ggml_cuda_oom{dev, 0, "CUDA graph instantiation"};
         }
+        if (ie != cudaSuccess) { ggml_cuda_graph_report_bad_kernels(cuda_graph, ie); }
         CUDA_CHECK(ie);
     } else {
         GGML_ASSERT(stat == cudaSuccess);
@@ -5733,6 +5775,7 @@ static void ggml_cuda_graph_launch_chunk(ggml_backend_cuda_context * cuda_ctx, g
                 graph->instances.pop_back();
                 throw ggml_cuda_oom{cuda_ctx->device, 0, "CUDA graph instantiation"};
             }
+            if (ie != cudaSuccess) { ggml_cuda_graph_report_bad_kernels(cuda_graph, ie); }
             CUDA_CHECK(ie);
         }
     } catch (const ggml_cuda_oom &) {
