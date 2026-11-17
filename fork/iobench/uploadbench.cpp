@@ -86,7 +86,13 @@ int main(int argc, char ** argv) {
         if (r == reg_name.size()) { reg_name.push_back(rn); by_reg.emplace_back(); }
         by_reg[r].emplace_back();
         by_reg[r].back().dev = d;
+        size_t f0 = 0, f1 = 0, tot = 0;   // the backend's start: device creation (Vulkan: every pipeline compiles there) and the VRAM it takes
+        ggml_backend_dev_memory(d, &f0, &tot);
+        const double t0 = now_s();
         by_reg[r].back().be = ggml_backend_dev_init(d, nullptr);
+        const double t1 = now_s();
+        ggml_backend_dev_memory(d, &f1, &tot);
+        printf("%-10s backend start %.0f ms, free VRAM %.0f -> %.0f MiB\n", ggml_backend_dev_name(d), (t1 - t0) * 1e3, f0 / 1048576.0, f1 / 1048576.0);
     }
     for (auto & cards : by_reg) {
         for (auto & c : cards) {

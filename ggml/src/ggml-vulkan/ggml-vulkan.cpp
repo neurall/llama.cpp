@@ -1,5 +1,7 @@
 #include "ggml-vulkan-common.h"
 
+#include <atomic>
+
 static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device) {
     vk::PhysicalDeviceProperties props = device.getProperties();
 
@@ -1797,7 +1799,7 @@ static bool ggml_vk_amd_large_tile_supported(const vk_device& device) {
     return major > 2 || (major == 2 && build >= 416);
 }
 
-void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile_all) {
     VK_LOG_DEBUG("ggml_vk_load_shaders(" << device->name << ")");
 
     // some shaders have a minimum subgroup size
@@ -1857,6 +1859,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     vk_pipeline wait_pipeline;
     CompileTask claimed_task {};
     bool has_claimed_task = false;
+    std::vector<CompileTask> claimed_all;   // fork: compile_all claims every pipeline not compiled or claimed yet
 
     // The rest of the walk reads and writes shared device state, so hold the
     // lock until we're done deciding what to compile.
@@ -2112,6 +2115,15 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
 #if defined(VK_EXT_shader_64bit_indexing)
                 pipeline->is_64b_indexing = (i == 1);
 #endif
+            }
+
+            if (compile_all) {   // fork: the pass at the device's creation compiles them all (the 64-bit indexing twins too)
+                if (!pipeline->compiled && !pipeline->compile_pending) {
+                    pipeline->compile_pending = true;
+                    claimed_all.push_back({ pipeline, spv_size, spv_data, entrypoint, parameter_count, wg_denoms, specialization_constants,
+                                            disable_robustness, require_full_subgroups, required_subgroup_size });
+                }
+                continue;
             }
 
             // We only care about the pipeline this call asked for; the rest
@@ -4120,14 +4132,46 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     // Drop compile_mutex so other threads can walk while we compile.
     compile_lock.unlock();
 
+    // fork: compile_all compiles every claimed pipeline on all hardware threads (pipeline creation is free-threaded for distinct pipelines). A pipeline that
+    // fails here is left for its first use, which compiles it again and fails loudly only if something needs it.
+    if (!claimed_all.empty()) {
+        std::atomic<size_t> next { 0 };
+        auto work = [&]() {
+            for (size_t i = next++; i < claimed_all.size(); i = next++) {
+                CompileTask & t = claimed_all[i];
+                try {
+                    ggml_vk_create_pipeline_func(device, t.pipeline, t.spv_size, t.spv_data, t.entrypoint, t.parameter_count, t.wg_denoms,
+                                                 t.specialization_constants, t.disable_robustness, t.require_full_subgroups, t.required_subgroup_size);
+                } catch (const vk::SystemError & e) {
+                    GGML_LOG_WARN("ggml_vulkan: %s: pipeline %s did not compile at the start (%s), left for its first use\n", device->name.c_str(),
+                                  t.pipeline->name.c_str(), e.what());
+                    std::lock_guard<std::mutex> guard(device->compile_mutex);
+                    t.pipeline->compile_pending = false;
+                }
+            }
+        };
+        std::vector<std::thread> threads;
+        for (size_t k = 1; k < std::max(1u, std::thread::hardware_concurrency()) && k < claimed_all.size(); ++k) {
+            threads.emplace_back(work);
+        }
+        work();
+        for (auto & th : threads) {
+            th.join();
+        }
+    }
+
     // Compile what we claimed; create_pipeline_func reacquires compile_mutex
     // at the end to flip compile_pending/compiled and notify waiters.
     if (has_claimed_task) {
         auto & task = claimed_task;
+        const auto t0 = std::chrono::steady_clock::now();
         ggml_vk_create_pipeline_func(device, task.pipeline, task.spv_size, task.spv_data,
                                      task.entrypoint, task.parameter_count, task.wg_denoms,
                                      task.specialization_constants, task.disable_robustness,
                                      task.require_full_subgroups, task.required_subgroup_size);
+        // fork: every pipeline compiles at the device's creation; one made later (keyed by a graph's shapes: flash attention, conv) says so with its cost
+        GGML_LOG_WARN("ggml_vulkan: %s: pipeline %s compiled at its first use in %.1f ms\n", device->name.c_str(), task.pipeline->name.c_str(),
+                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
 
     // Another thread may be compiling the pipeline we need; block on it here.
@@ -5119,6 +5163,18 @@ vk_device ggml_vk_get_device(size_t idx) {
             device->mmvq_mode = -1;
         } else if (getenv("GGML_VK_FORCE_MMVQ")) {
             device->mmvq_mode = 1;
+        }
+
+        {   // fork: every pipeline compiles now, at the start, not at its first use inside a request (user 2026-11-17); after every field above is set
+            const auto t0 = std::chrono::steady_clock::now();
+            ggml_vk_load_shaders(device, nullptr, true);
+            size_t n = 0;
+            {
+                std::lock_guard<std::mutex> guard(device->compile_mutex);
+                n = device->all_pipelines.size();
+            }
+            GGML_LOG_WARN("ggml_vulkan: %s: %zu pipelines compiled at the start in %.0f ms\n", device->name.c_str(), n,
+                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         }
 
         // publish the device only when it is fully built
