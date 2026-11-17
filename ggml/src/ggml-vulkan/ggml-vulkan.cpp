@@ -260,6 +260,35 @@ void * const vk_ptr_base = (void *)(uintptr_t) 0x1000;  // NOLINT
 // fork: the VRAM guard (ggml-backend.cpp, no header edit) for device memory this backend allocates itself, not through a buffer type
 extern "C" void ggml_backend_vram_guard_note_fork(const char * what, size_t size);
 
+// fork: the scratch region of a card: cap bytes of a buffer the engine owns, from off. The expert pool lends it per graph behind the graph's tensors
+// (llama_moe_cache_alias_fork), as CUDA's (ggml_backend_cuda_scratch_fork); the temporaries of the context it is lent to (owner) are views into it
+// (ggml_vk_scratch_bind). The buffer is held weakly, so a region never keeps VRAM alive. Cleared (active false) it keeps what it was, so the same region lent
+// again (every decode step) finds its views. hwm: the most a graph of the owner asked for since the last call, fitting or not (the engine compares it with what it
+// lent: SCRATCH SHORT).
+struct vk_scratch_region {
+    std::weak_ptr<vk_buffer_struct> mem;
+    size_t off = 0, cap = 0, hwm = 0;
+    const void * owner = nullptr;
+    bool active = false;
+};
+static std::mutex g_vk_scratch_mtx;
+static vk_scratch_region g_vk_scratch[GGML_VK_MAX_DEVICES];
+static constexpr size_t vk_add_rms_partials_size = 1024;   // the add+rms partials: fixed, for deterministic results (ggml_vk_init)
+
+// [partials][x][y][split_k] in the region, each part on a step a view's offset may take
+static size_t ggml_vk_scratch_step(const vk_device & device) {
+    return std::max<size_t>(256, device->properties.limits.minStorageBufferOffsetAlignment);
+}
+static size_t ggml_vk_scratch_total(const vk_device & device, const vk_scratch_need & n) {
+    const size_t a = ggml_vk_scratch_step(device);
+    return GGML_PAD(vk_add_rms_partials_size, a) + GGML_PAD(n.x, a) + GGML_PAD(n.y, a) + GGML_PAD(n.split_k, a);
+}
+static void ggml_vk_scratch_note(const vk_device & device, size_t asked) {
+    std::lock_guard<std::mutex> lock(g_vk_scratch_mtx);
+    vk_scratch_region & r = g_vk_scratch[device->idx];
+    r.hwm = std::max(r.hwm, asked);
+}
+
 uint64_t vk_tensor_offset(const ggml_tensor * tensor) {
     if (tensor->view_src) {
         return (uint8_t *) tensor->view_src->data - (uint8_t *) vk_ptr_base;
@@ -5645,7 +5674,7 @@ void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
     ctx->prealloc_size_y = 0;
     ctx->prealloc_size_split_k = 0;
     // Fixed size of 1KB, for deterministic behavior
-    ctx->prealloc_size_add_rms_partials = 1024;
+    ctx->prealloc_size_add_rms_partials = vk_add_rms_partials_size;
 
     ctx->fence = ctx->device->device.createFence({});
     ctx->almost_ready_fence = ctx->device->device.createFence({});
@@ -12493,6 +12522,13 @@ void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subct
     if (ctx->scratch_measure) {   // fork: the sizing pass only keeps the sizes its ops asked for
         return;
     }
+    if (ctx->scratch_views_on) {   // fork: the temporaries are views into the lent region: an op asking for more takes its own buffer below; the mark says how much
+        vk_scratch_need asked;
+        asked.x       = ctx->prealloc_size_x;
+        asked.y       = ctx->prealloc_size_y;
+        asked.split_k = ctx->prealloc_size_split_k;
+        ggml_vk_scratch_note(ctx->device, ggml_vk_scratch_total(ctx->device, asked));
+    }
 #if defined(GGML_VULKAN_RUN_TESTS)
     const std::vector<size_t> vals {
         512, 512, 128,
@@ -13296,6 +13332,8 @@ void ggml_vk_graph_cleanup(ggml_backend_vk_context * ctx) {
     ctx->gc.contexts.clear();
     ctx->pipeline_descriptor_set_requirements = 0;
     ctx->descriptor_set_idx = 0;
+
+    ctx->scratch_retired.clear();   // fork: after the fence: no graph uses the replaced temporaries any more
 }
 
 void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
@@ -13306,6 +13344,14 @@ void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
     ggml_vk_synchronize(ctx);
 
     ggml_vk_graph_cleanup(ctx);
+
+    {   // fork: a region lent to this context serves nothing once it is gone (a context made later at the same address must not take it)
+        std::lock_guard<std::mutex> lock(g_vk_scratch_mtx);
+        vk_scratch_region & r = g_vk_scratch[ctx->device->idx];
+        if (r.owner == ctx) {
+            r = vk_scratch_region();
+        }
+    }
 
     ggml_vk_destroy_buffer(ctx->prealloc_x);
     ggml_vk_destroy_buffer(ctx->prealloc_y);
@@ -14646,9 +14692,6 @@ static int32_t find_first_set(uint32_t x) {
 // the card whose scratch_measure is set, bumps prealloc_size_* as it does when it records, and returns before it records (nothing is recorded, compiled or
 // allocated, and no tensor needs memory yet). The ops' own size code decides, so the numbers cannot drift from it. Fusion is not decided here: a fused
 // group is sized as its parts, except TOPK_QSA, whose fused form has a temporary of its own (both are counted: a little more, never less).
-struct vk_scratch_need {
-    size_t x = 0, y = 0, split_k = 0;
-};
 static vk_scratch_need ggml_vk_scratch_measure(size_t dev_idx, ggml_tensor * const * nodes, int n_nodes) {
     static std::mutex mtx;
     static ggml_backend_vk_context * mctx[GGML_VK_MAX_DEVICES] = {};
@@ -14696,6 +14739,169 @@ static vk_scratch_need ggml_vk_scratch_measure(size_t dev_idx, ggml_tensor * con
     return need;
 }
 
+// fork: a buffer over [off, off + size) of mem's memory. It owns no memory (device_memory stays null, so its destructor frees none); nullptr when the offset is
+// not one a buffer may be bound at
+static vk_buffer ggml_vk_scratch_view(vk_device & device, const vk_buffer & mem, size_t off, size_t size) {
+    vk::BufferUsageFlags usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst;
+    if (device->buffer_device_address) {
+        usage |= vk::BufferUsageFlagBits::eShaderDeviceAddress;
+    }
+    vk::Buffer b = device->device.createBuffer({ vk::BufferCreateFlags(), size, usage, vk::SharingMode::eExclusive, 0, nullptr });
+    const vk::MemoryRequirements req = device->device.getBufferMemoryRequirements(b);
+    if (off % req.alignment != 0 || off + size > mem->size) {
+        device->device.destroyBuffer(b);
+        return nullptr;
+    }
+    device->device.bindBufferMemory(b, mem->device_memory, off);   // the lent buffer is bound at the start of its memory (ggml_vk_create_buffer)
+    vk_buffer v = std::make_shared<vk_buffer_struct>();
+    v->buffer = b;
+    v->memory_property_flags = mem->memory_property_flags;
+    v->ptr = mem->ptr ? (uint8_t *) mem->ptr + off : nullptr;
+    v->device = device;
+    v->size = size;
+    if (device->buffer_device_address) {
+        v->bda_addr = device->device.getBufferAddress({ b });
+    }
+    return v;
+}
+
+// a temporary's buffer is replaced: the old one may still be read or written by a graph submitted before, so it is kept until the fence (ggml_vk_graph_cleanup)
+static void ggml_vk_scratch_replace(ggml_backend_vk_context * ctx, vk_buffer & slot, vk_buffer with) {
+    if (slot && slot != with) {
+        ctx->scratch_retired.push_back(slot);
+    }
+    slot = std::move(with);
+}
+
+// the context's own temporaries again (made on demand by ggml_vk_preallocate_buffers, which the VRAM guard names)
+static void ggml_vk_scratch_own(ggml_backend_vk_context * ctx) {
+    ggml_vk_scratch_replace(ctx, ctx->prealloc_x, nullptr);
+    ggml_vk_scratch_replace(ctx, ctx->prealloc_y, nullptr);
+    ggml_vk_scratch_replace(ctx, ctx->prealloc_split_k, nullptr);
+    ggml_vk_scratch_replace(ctx, ctx->prealloc_add_rms_partials, nullptr);
+    ctx->prealloc_size_x = ctx->prealloc_size_y = ctx->prealloc_size_split_k = 0;
+    ctx->scratch_views_on = false;
+}
+
+// fork: at the start of a graph: its temporaries become views into the region lent to this context, laid out for this graph's own nodes
+// ([partials][x][y][split_k], the sizing pass once per split: by its uid). No region lent to this context, or one smaller than the graph needs: the context's own
+// buffers (the high-water mark tells the engine what the graph asked for). A region the previous graph used held other parts at the same bytes: the first write
+// of a temporary in this graph waits for every earlier use (the need_sync flags).
+static void ggml_vk_scratch_bind(ggml_backend_vk_context * ctx, const ggml_cgraph * cgraph) {
+    vk_buffer mem;
+    size_t off = 0, cap = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_vk_scratch_mtx);
+        const vk_scratch_region & r = g_vk_scratch[ctx->device->idx];
+        if (r.active && (r.owner == nullptr || r.owner == ctx)) {
+            mem = r.mem.lock();
+            off = r.off;
+            cap = r.cap;
+        }
+    }
+    if (!mem) {
+        if (ctx->scratch_views_on) {
+            ggml_vk_scratch_own(ctx);
+        }
+        return;
+    }
+    vk_scratch_need need;
+    const auto it = cgraph->uid ? ctx->scratch_need_by_uid.find(cgraph->uid) : ctx->scratch_need_by_uid.end();
+    if (it != ctx->scratch_need_by_uid.end()) {
+        need = it->second;
+    } else {
+        need = ggml_vk_scratch_measure(ctx->device->idx, cgraph->nodes, cgraph->n_nodes);
+        if (cgraph->uid) {
+            if (ctx->scratch_need_by_uid.size() >= 4096) {   // uids only grow: the old ones never come back
+                ctx->scratch_need_by_uid.clear();
+            }
+            ctx->scratch_need_by_uid[cgraph->uid] = need;
+        }
+    }
+    const size_t total = ggml_vk_scratch_total(ctx->device, need);
+    ggml_vk_scratch_note(ctx->device, total);
+    if (total > cap) {
+        if (ctx->scratch_views_on) {
+            ggml_vk_scratch_own(ctx);
+        }
+        return;
+    }
+    if (ctx->scratch_views_mem.lock() != mem || ctx->scratch_views.size() >= 64) {   // views into another buffer, or many kept (prompt passes of many sizes)
+        for (auto & v : ctx->scratch_views) {
+            ctx->scratch_retired.push_back(v.second);
+        }
+        ctx->scratch_views.clear();
+        ctx->scratch_views_mem = mem;
+    }
+    static const vk_buffer none = std::make_shared<vk_buffer_struct>();   // a part this graph does not use: an empty buffer, as before any op asked for it
+    const size_t a = ggml_vk_scratch_step(ctx->device);
+    size_t at = off;
+    bool ok = true;
+    auto view = [&](size_t size) -> vk_buffer {
+        const size_t o = at;
+        at += GGML_PAD(size, a);
+        if (size == 0) {
+            return none;
+        }
+        vk_buffer & v = ctx->scratch_views[{ o, size }];
+        if (!v) {
+            v = ggml_vk_scratch_view(ctx->device, mem, o, size);
+            if (!v) {
+                ok = false;
+                ctx->scratch_views.erase({ o, size });
+                static int said = 0;
+                if (said++ < 4) {
+                    GGML_LOG_ERROR("ggml_vulkan: %s: the scratch region at %zu cannot hold a buffer at %zu (+%zu): the temporaries stay in the context's own memory\n",
+                            ctx->name.c_str(), off, o, size);
+                }
+                return none;
+            }
+        }
+        return v;
+    };
+    vk_buffer p = view(vk_add_rms_partials_size), x = view(need.x), y = view(need.y), k = view(need.split_k);
+    if (!ok) {
+        if (ctx->scratch_views_on) {
+            ggml_vk_scratch_own(ctx);
+        }
+        return;
+    }
+    ggml_vk_scratch_replace(ctx, ctx->prealloc_add_rms_partials, p);
+    ggml_vk_scratch_replace(ctx, ctx->prealloc_x, x);
+    ggml_vk_scratch_replace(ctx, ctx->prealloc_y, y);
+    ggml_vk_scratch_replace(ctx, ctx->prealloc_split_k, k);
+    ctx->prealloc_size_x       = need.x;
+    ctx->prealloc_size_y       = need.y;
+    ctx->prealloc_size_split_k = need.split_k;
+    ctx->prealloc_x_need_sync = ctx->prealloc_y_need_sync = ctx->prealloc_split_k_need_sync = true;
+    ctx->scratch_views_on = true;
+}
+
+// fork: set (buf != NULL, cap > 0: cap bytes of buf from off) or clear the scratch region of a card for the backend `owner` (NULL: any); returns the high-water
+// mark since the last call and resets it (the same contract as ggml_backend_cuda_scratch_fork, under the neutral name ggml_backend_fork_scratch_fork)
+static size_t ggml_backend_vk_scratch_fork(int device, ggml_backend_buffer_t buf, size_t off, size_t cap, ggml_backend_t owner) {
+    GGML_ASSERT(device >= 0 && device < GGML_VK_MAX_DEVICES);
+    std::lock_guard<std::mutex> lock(g_vk_scratch_mtx);
+    vk_scratch_region & r = g_vk_scratch[device];
+    const size_t hwm = r.hwm;
+    r.hwm = 0;
+    if (buf == nullptr || cap == 0 || !ggml_backend_buffer_is_vk(buf)) {   // (a host buffer cannot hold device temporaries: no region)
+        r.active = false;
+        return hwm;
+    }
+    r.mem    = ((ggml_backend_vk_buffer_context *) buf->context)->dev_buffer;
+    r.off    = off;
+    r.cap    = cap;
+    r.owner  = owner ? owner->context : nullptr;
+    r.active = true;
+    return hwm;
+}
+
+// fork: the scratch a split's nodes take on card `device`, laid out as ggml_vk_scratch_bind lays it out (the engine lends the most any split of the card takes)
+static size_t ggml_backend_vk_nodes_scratch_fork(int device, const ggml_tensor * const * nodes, int n) {
+    return ggml_vk_scratch_total(ggml_vk_get_device(device), ggml_vk_scratch_measure(device, const_cast<ggml_tensor * const *>(nodes), n));
+}
+
 static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     VK_LOG_DEBUG("ggml_backend_vk_graph_compute(" << cgraph->n_nodes << " nodes)");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
@@ -14717,6 +14923,8 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     ctx->prealloc_size_add_rms_partials_offset = 0;
     ctx->do_add_rms_partials = false;
     ctx->do_add_rms_partials_offset_calculation = false;
+
+    ggml_vk_scratch_bind(ctx, cgraph);   // fork: the temporaries in the region the engine lent this context, if it lent one
 
     // fork: GGML_VK_SCRATCH_CHECK=1: the sizing pass of this graph against what its ops really ask for (test-backend-ops runs every op through it). The
     // sizes start at 0 so the ops bump them to this graph's asks; the buffers keep their size (each bump still syncs: a check, not a speed path)
@@ -16786,6 +16994,12 @@ static void * ggml_backend_vk_reg_get_proc_address(ggml_backend_reg_t reg, const
     UNUSED(reg);
     if (strcmp(name, "ggml_backend_fork_buft_limits_fork") == 0) {
         return (void *) ggml_backend_vk_fork_buft_limits;
+    }
+    if (strcmp(name, "ggml_backend_fork_scratch_fork") == 0) {         // fork: the temporaries in a region the expert pool lends (ggml_vk_scratch_bind)
+        return (void *) ggml_backend_vk_scratch_fork;
+    }
+    if (strcmp(name, "ggml_backend_fork_nodes_scratch_fork") == 0) {   // fork: what a split's nodes take of that region (the sizing pass)
+        return (void *) ggml_backend_vk_nodes_scratch_fork;
     }
 #if !defined(_WIN32)
     if (strcmp(name, "ggml_backend_comm_init") == 0) {

@@ -1257,6 +1257,11 @@ class vk_perf_logger {
     uint32_t print_count {};
 };
 
+// fork: what a graph's ops ask of the temporaries, in bytes (ggml_vk_scratch_measure)
+struct vk_scratch_need {
+    size_t x = 0, y = 0, split_k = 0;
+};
+
 struct ggml_backend_vk_context {
     std::string name;
 
@@ -1326,6 +1331,14 @@ struct ggml_backend_vk_context {
     // fork: a context of the sizing pass (ggml_vk_scratch_measure): its ops bump prealloc_size_* and return before they record; nothing is recorded,
     // requested or allocated, and no tensor needs memory yet
     bool scratch_measure {};
+    // fork: the temporaries (prealloc_x, _y, _split_k, _add_rms_partials) as views into the region the engine lends this context (ggml_backend_vk_scratch_fork,
+    // ggml_vk_scratch_bind): the views made in the lent buffer by (offset, size), buffers replaced while a submitted graph may still use them (freed after the
+    // fence, ggml_vk_graph_cleanup), and each split's sizes by its uid (the sizing pass runs once per split, not per token)
+    bool scratch_views_on {};
+    std::weak_ptr<vk_buffer_struct> scratch_views_mem;
+    std::map<std::pair<size_t, size_t>, vk_buffer> scratch_views;
+    std::vector<vk_buffer> scratch_retired;
+    std::unordered_map<uint64_t, vk_scratch_need> scratch_need_by_uid;
 
     // for GGML_VK_PERF_LOGGER
     std::unique_ptr<vk_perf_logger> perf_logger;
