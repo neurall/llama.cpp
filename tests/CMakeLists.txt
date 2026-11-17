@@ -211,6 +211,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-vk-fa-span-fork.cpp)
     # a pinned Vulkan host buffer still allocated at exit (the engine keeps some for the process's life) must not crash the process (skipped without a card)
     llama_build_and_test(test-vk-host-exit-fork.cpp)
+    # one Vulkan buffer holds what the driver takes in one allocation (not ggml-vulkan's 1 GiB suballocation block): a 1.5 GiB graph in one buffer
+    llama_build_and_test(test-vk-max-size-fork.cpp)
     llama_build_and_test(test-unicode.cpp  LABEL behavior  LINK llama)
     llama_build_and_test(test-sampling.cpp  LABEL behavior  LINK llama)
     llama_build_and_test(test-reasoning-budget.cpp  LABEL behavior)

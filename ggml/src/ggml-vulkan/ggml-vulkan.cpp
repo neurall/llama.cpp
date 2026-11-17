@@ -4392,8 +4392,9 @@ vk_device ggml_vk_get_device(size_t idx) {
         if (GGML_VK_SUBALLOCATION_BLOCK_SIZE != nullptr) {
             device->suballocation_block_size = std::stoull(GGML_VK_SUBALLOCATION_BLOCK_SIZE);
         } else {
-            // Limit batching of allocations to 1GB by default to avoid fragmentation issues
-            device->suballocation_block_size = 1024*1024*1024;
+            // fork: the device's largest buffer, not upstream's 1 GiB: this block is the buffer types' limit (get_max_size), and at 1 GiB ggml-alloc cut graphs and
+            // weights into 1 GiB buffers while the RTX 3090's driver takes 1 TiB in one (a 1.6 GiB graph in one lent pool region was refused, 2026-11-17)
+            device->suballocation_block_size = device->max_buffer_size;
         }
         device->suballocation_block_size = std::min(device->suballocation_block_size, device->max_memory_allocation_size);
 
