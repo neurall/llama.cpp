@@ -407,6 +407,43 @@ static void test_not_enough_chunks() {
     GGML_ASSERT(backend.context->allocated_total() > max_chunks * max_size);
 }
 
+// fork: a graph placed in an external buffer (ggml_gallocr_set_external_buffer, the expert pool's lent region) is one chunk: it fits when the buffer holds
+// it, whatever the buffer type's own max size (Vulkan's get_max_size is its 1 GiB suballocation block: a 1.6 GiB graph at OLMoE's 32k cells was cut in two
+// chunks and refused, 2026-11-17). Cleared, the allocator owns its buffers again and the type's own limit applies.
+static void test_external_buffer_one_chunk() {
+    dummy_backend backend      = dummy_backend_init(16);   // the type's own limit: 16 bytes a chunk
+    auto [ctx, graph, ctx_ptr] = make_context();
+
+    ggml_tensor * x[3];
+    x[0] = make_input_with_size(ctx, 16);
+    x[1] = make_input_with_size(ctx, 16);
+    x[2] = ggml_add(ctx, x[0], x[1]);   // 48 bytes in all: three chunks of 16 on the type's limit
+    assign_names(ctx);
+    ggml_set_output(x[2]);
+    ggml_build_forward_expand(graph, x[2]);
+
+    ggml_backend_buffer_t ext    = ggml_backend_buft_alloc_buffer(&backend.buffer_type, 256);   // the lent region
+    ggml_gallocr_ptr      galloc = ggml_gallocr_ptr(ggml_gallocr_new(&backend.buffer_type));
+    ggml_gallocr_set_external_buffer(galloc.get(), 0, ext, 0, 256);
+    GGML_ASSERT(ggml_gallocr_alloc_graph(galloc.get(), graph));
+    check_all_allocated(graph);
+    check_no_overlap(graph);
+    for (int i = 0; i < 3; ++i) {
+        GGML_ASSERT((uint8_t *) x[i]->data >= alloc_base && (uint8_t *) x[i]->data + ggml_nbytes(x[i]) <= alloc_base + 256);
+    }
+    GGML_ASSERT(backend.context->buffers.size() == 1);   // nothing allocated besides the external buffer
+
+    ggml_gallocr_set_external_buffer(galloc.get(), 0, nullptr, 0, 0);
+    for (int i = 0; i < 3; ++i) {
+        x[i]->buffer = nullptr;
+        x[i]->data   = nullptr;
+    }
+    GGML_ASSERT(ggml_gallocr_alloc_graph(galloc.get(), graph));
+    check_all_allocated(graph);
+    check_max_size(ctx);   // the allocator's own chunks keep the type's 16 bytes
+    ggml_backend_buffer_free(ext);
+}
+
 // Fill up leftover unallocated space of a chunk after allocating a large tensor that
 // requires a new chunk.
 static void test_fill_leftover_space() {
@@ -1111,6 +1148,7 @@ int main() {
     run("test_max_size_tensor_too_large", test_max_size_tensor_too_large);
     run("test_tensor_larger_than_max_size", test_tensor_larger_than_max_size);
     run("test_not_enough_chunks", test_not_enough_chunks);
+    run("test_external_buffer_one_chunk", test_external_buffer_one_chunk);
     run("test_fill_leftover_space", test_fill_leftover_space);
     run("test_view_inplace", test_view_inplace);
     run("test_reuse_and_free", test_reuse_and_free);

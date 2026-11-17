@@ -631,6 +631,11 @@ void ggml_gallocr_set_external_buffer(ggml_gallocr_t galloc, int buffer_id, ggml
     galloc->ext_buf[buffer_id] = buffer ? (twin ? &galloc->ext_twin[buffer_id] : buffer) : NULL;
     galloc->ext_off[buffer_id] = offset;
     galloc->ext_cap[buffer_id] = buffer ? capacity : 0;
+    // The external buffer is one chunk: the graph is planned as one up to its capacity. The buffer type's own limit (Vulkan: its 1 GiB suballocation block)
+    // cut a 1.6 GiB graph in two chunks, refused at reserve (OLMoE at 32k cells, 2026-11-17); cleared, the type's own limit applies again.
+    // shortcut: a tallocr shared by two buffer ids of one type gets the larger limit for both; split them if a type ever mixes external and own buffers
+    const size_t own = MIN(ggml_backend_buft_get_max_size(galloc->bufts[buffer_id]), SIZE_MAX/2);
+    galloc->buf_tallocs[buffer_id]->max_chunk_size = buffer ? MAX(own, capacity) : own;
 }
 
 ggml_gallocr_t ggml_gallocr_new(ggml_backend_buffer_type_t buft) {
