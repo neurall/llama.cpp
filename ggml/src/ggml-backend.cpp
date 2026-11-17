@@ -746,6 +746,9 @@ void ggml_backend_tensor_set_n(struct ggml_tensor * const * tensors, const void 
     }
 
     if (same_buft && buf->iface.set_tensor_n != NULL) {
+        for (size_t i = 0; i < n_tensors; i++) {   // fork: the pool guard sees these writes as it sees tensor_set's (the state file's load came through tensor_set)
+            ggml_backend_fork_pool_access(tensors[i], (const char *) tensors[i]->data + offsets[i], sizes[i], "tensor_set_n");
+        }
         buf->iface.set_tensor_n(buf, tensors, data_ptrs.data(), offsets, sizes, n_tensors);
         return;
     }

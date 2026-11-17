@@ -6167,29 +6167,55 @@ private:
     std::vector<read_info> rinfos;
 };
 
+// fork: the file writer and reader collect the tensor parts as llama_io_write_host / read_host do and move them with ggml_backend_tensor_get_n / set_n, at the
+// latest every 64 MiB and at n_bytes(), which every state function returns last (before its caller reads file.tell()). One ggml_backend_tensor_get / set per
+// part made the token-major KV's state (one part per cell, layer and K/V) a blocking transfer per cell: a 4096-cell OLMoE state took 2.0 s to save on CUDA and
+// 3.9 s on Vulkan where the same state in memory took 0.23 and 0.14 s (2026-11-17, tests/test-state-file-fork.cpp).
+static constexpr size_t llama_io_file_batch = (size_t) 64 << 20;
+
 class llama_io_write_file : public llama_io_write_i {
 public:
     llama_io_write_file(llama_file * f) : file(f) {}
 
     void write(const void * src, size_t size) override {
-        file->write_raw(src, size);
+        buf.insert(buf.end(), (const uint8_t *) src, (const uint8_t *) src + size);
         size_written += size;
+        if (buf.size() >= llama_io_file_batch) { flush(); }
     }
 
     void write_tensor(ggml_tensor * tensor, size_t offset, size_t size) override {
-        temp_buffer.resize(size);
-        ggml_backend_tensor_get(tensor, temp_buffer.data(), offset, size);
-        write(temp_buffer.data(), temp_buffer.size());
+        tensors.push_back(tensor);
+        offsets.push_back(offset);
+        sizes.push_back(size);
+        data_offsets.push_back(buf.size());
+        buf.resize(buf.size() + size);
+        size_written += size;
+        if (buf.size() >= llama_io_file_batch) { flush(); }
     }
 
     size_t n_bytes() override {
+        flush();
         return size_written;
     }
 
 private:
+    void flush() {
+        if (!tensors.empty()) {
+            ggml_backend_tensor_get_n(tensors.data(), buf.data(), offsets.data(), sizes.data(), data_offsets.data(), tensors.size());
+        }
+        file->write_raw(buf.data(), buf.size());
+        buf.clear();
+        tensors.clear();
+        offsets.clear();
+        sizes.clear();
+        data_offsets.clear();
+    }
+
     llama_file * file;
     size_t size_written = 0;
-    std::vector<uint8_t> temp_buffer;
+    std::vector<uint8_t> buf;   // the bytes since the last flush, the tensor parts' places held until get_n fills them
+    std::vector<const ggml_tensor *> tensors;
+    std::vector<size_t> offsets, sizes, data_offsets;
 };
 
 class llama_io_read_file : public llama_io_read_i {
@@ -6202,19 +6228,42 @@ public:
     }
 
     void read_tensor(ggml_tensor * tensor, size_t offset, size_t size) override {
-        temp_buffer.resize(size);
-        read(temp_buffer.data(), size);
-        ggml_backend_tensor_set(tensor, temp_buffer.data(), offset, size);
+        const size_t at = buf.size();
+        buf.resize(at + size);
+        read(buf.data() + at, size);
+        tensors.push_back(tensor);
+        offsets.push_back(offset);
+        sizes.push_back(size);
+        data_offsets.push_back(at);
+        if (buf.size() >= llama_io_file_batch) { flush(); }
+    }
+
+    void discard() override {   // a failed load: the parts not yet set are dropped, as llama_io_read_host drops its own
+        buf.clear();
+        tensors.clear();
+        offsets.clear();
+        sizes.clear();
+        data_offsets.clear();
     }
 
     size_t n_bytes() override {
+        flush();
         return size_read;
     }
 
 private:
+    void flush() {
+        if (!tensors.empty()) {
+            ggml_backend_tensor_set_n(tensors.data(), buf.data(), offsets.data(), sizes.data(), data_offsets.data(), tensors.size());
+        }
+        discard();
+    }
+
     llama_file * file;
     size_t size_read = 0;
-    std::vector<uint8_t> temp_buffer;
+    std::vector<uint8_t> buf;   // the tensor parts read since the last flush
+    std::vector<ggml_tensor *> tensors;
+    std::vector<size_t> offsets, sizes, data_offsets;
 };
 
 class llama_io_write_device : public llama_io_write_i {
