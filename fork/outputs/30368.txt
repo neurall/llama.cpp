@@ -1,0 +1,56 @@
+run 30368 | rel_rowcopy_runs | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 25.01 t/s | prompt 647.3 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 15:46:02
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check for edge cases.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - For separator case: when `min_items == 0`, it wraps the result in `(...)?`. But there's a potential issue: if `min_items == 0` and `max_items == 1` with a separator, the recursive call would be `build_repetition("(" + sep + " " + item + ")", 0, 0)` which returns `""`, so the result would be `item_rule + ""` = `item_rule`, then wrapped as `(item_rule)?`. This seems correct for 0-1 items with separator.
+   - Wait, actually for `min_items == 0, max_items == 1` with separator: the early return `item_rule + "?"` happens before the separator check. So it returns `item_rule + "?"` which is correct for 0-1 items regardless of separator.
+
+2. **`build_min_max_int` function:**
+   - This is a complex recursive function for generating integer range rules.
+   - The `uniform_range` lambda is complex and handles digit-by-digit range matching.
+   - Potential issue: `std::stoll` could throw if the substring is not a valid number. But since it's derived from `std::to_string(min_value)`, it should be valid.
+   - The `decimals_left` parameter limits recursion depth - good.
+   - The `top_level` parameter controls whether leading zeros are allowed - good.
+
+3. **`_add_rule` method:**
+   - The deduplication logic: if the rule already exists with the same content, it returns the existing name. Otherwise, it appends a number.
+   - The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the rule matches. This seems correct.
+
+4. **`_visit_pattern` method:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good rollback mechanism.
+   - However, `_rules` is a `std::map<std::string, std::string>`, and copying it for every pattern could be expensive for large schemas. Could use a more efficient approach.
+
+5. **`_pattern_to_rule` method:**
+   - Complex regex-to-grammar conversion.
+   - The `transform` lambda is recursive and handles various regex constructs.
+   - `paren_depth` tracking for balanced parentheses - good.
+   - `MAX_PATTERN_DEPTH` limit prevents stack overflow - good.
+   - The character class parsing handles escapes - good.
+   - The curly bracket parsing handles `{n,m}` syntax - good.
+   - Potential issue: `std::stoi` could throw `std::out_of_range` for very large numbers, but it's caught by `std::logic_error` catch block. Wait, `std::out_of_range` derives from `std::logic_error`, so it would be caught. Good.
+
+6. **`_not_strings` method:**
+   - Uses a trie to generate a rule that matches strings not in a given set.
+   - The `rejects` string accumulates characters for the negated character class.
+   - Potential issue: if characters in `rejects` need escaping (like `"` or `\`), they're not escaped. The `rejects` is used in `[^"...]` context. If a character is `"`, it would break the rule. But since these are property names from JSON, they could contain quotes.
+   - Actually, looking more carefully: `rejects += c` where `c` is a UTF-8 character. If `c` is `"`, then `[^""]` would be malformed. This is a potential bug.
+
+7. **`_resolve_ref` method:**
+   - Handles `$ref` resolution with cycle detection using `_refs_being_resolved`.
+   - Good use of cycle detection.
+
+8. **`_build_object_rule` method:**
+   - Complex logic for building object rules with required and optional properties.
+   - The `get_recursive_refs` lambda generates alternatives for optional properties.
+   - The `additional_properties` handling adds a wildcard key rule.
+   - Potential issue:

@@ -1,0 +1,4 @@
+run 30377 | rel_cuda_runs2d | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.24 t/s | prompt 919.9 t/s | 16 tokens | args: -np 1 | power 280+280 W | 2026-11-17 16:16:10
+
+<think>Let me analyze this code review request. The user has provided two source files:
+

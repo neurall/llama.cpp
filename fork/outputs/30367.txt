@@ -1,0 +1,76 @@
+run 30367 | rel_rowcopy_runs | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.2 t/s | prompt 716.3 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 15:44:18
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases but there's a subtle issue: when `separator_rule` is non-empty and `min_items == 0`, the recursive call passes `min_items - 1` which would be `-1` (since `min_items == 0`). Wait, let me re-read: `min_items == 0 ? 0 : min_items - 1` - OK, it handles that case.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - The separator case: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...)`. This builds `item (sep item)*` style. Looks correct.
+
+2. **`build_min_max_int` function:**
+   - This is a complex recursive function for generating integer range rules.
+   - The `uniform_range` lambda is quite complex and hard to follow. It could benefit from more comments.
+   - The `decimals_left` parameter is used to limit digit depth - good for preventing infinite recursion.
+   - When `has_min && has_max` and both negative: negates both and recurses - correct.
+   - When `has_min && has_max` and min negative: handles negative part then continues with positive part - correct.
+   - The `has_min` only case: handles various sub-cases for min values.
+   - The `has_max` only case: handles various sub-cases for max values.
+   - Throws if neither is set - good.
+
+3. **`_add_rule` method:**
+   - Deduplicates rules by checking if the rule already exists with the same content.
+   - Appends numeric suffixes for conflicts - reasonable approach.
+   - The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the rule matches. This is correct for deduplication.
+
+4. **`_visit_pattern` method:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and restores on failure - good error recovery.
+   - However, `_refs_being_resolved` is not snapshotted/restored - potential issue if pattern conversion modifies refs.
+
+5. **`_pattern_to_rule` method:**
+   - Complex regex-to-grammar conversion.
+   - The `transform` lambda is a large function that handles various regex constructs.
+   - `paren_depth` tracking for balanced parentheses - good.
+   - `MAX_PATTERN_DEPTH` check prevents deep nesting - good.
+   - The character class parsing handles escapes - good.
+   - The curly bracket parsing handles `{n,m}` syntax - good.
+   - The literal parsing handles various escape sequences - good.
+
+6. **`_not_strings` method:**
+   - Uses a trie to efficiently generate a rule that matches strings not in a given set.
+   - The `rejects` string accumulates characters for the negated character class.
+   - Potential issue: if `rejects` contains characters that need escaping in a character class (like `]`, `-`, `\`), they're not escaped. This could produce invalid grammar rules.
+
+7. **`_resolve_ref` method:**
+   - Handles `$ref` resolution with cycle detection via `_refs_being_resolved`.
+   - Good error handling for unresolved refs.
+
+8. **`_build_object_rule` method:**
+   - Complex logic for building object rules with required and optional properties.
+   - The `get_recursive_refs` lambda generates alternatives for optional properties.
+   - The `additional_properties` handling adds a wildcard key rule.
+   - The `_not_strings` call for additional properties key rule - potential escaping issue as noted above.
+
+9. **`_add_primitive` method:**
+   - Recursively adds primitive rules and their dependencies.
+   - Good error handling for unknown dependencies.
+
+10. **`visit` method:**
+    - Main dispatch for different schema kinds.
+    - Handles reserved names by appending `-`.
+    - Good coverage of all schema kinds.
+
+11. **`check_errors` method:**
+    - Throws on errors, prints warnings to stderr - reasonable.
+
+12. **`format_grammar` method:**
+    - Simple formatting of all rules - good.
+
+13. **`json_schema_to_grammar` functions:**
+    - Good error handling

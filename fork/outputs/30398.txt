@@ -1,0 +1,22 @@
+run 30398 | rel_kernel_load_room | pf14k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 55.64 t/s | prompt 2588.2 t/s | 1024 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-17 17:20:11
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided a large C++ source file, likely llama.cpp common/json-schema-to-grammar.cpp plus beginning of common/arg.cpp? Actually file content includes json-schema-to-grammar.cpp then // file: common/arg.cpp and partial arg.cpp. Need review. Need produce thorough code review. Need analyze code for bugs, style, correctness, security, performance, maintainability. Need likely focus on json-schema-to-grammar.cpp mostly, maybe arg.cpp partial. Need mention issues. Need maybe not run code. Need be careful.
+
+Need inspect code deeply.
+
+File: common/json-schema-to-grammar.cpp. It converts JSON schema to GBNF grammar. Includes regex, etc.
+
+Potential issues:
+- Global static std::regex objects: INVALID_RULE_CHARS_RE, GRAMMAR_LITERAL_ESCAPE_RE, GRAMMAR_RANGE_LITERAL_ESCAPE_RE. Static initialization order? They are used in functions after init. OK. But std::regex construction can throw? static init maybe terminate. Could be performance? OK.
+- PRIMITIVE_RULES and STRING_FORMAT_RULES static unordered_map with initializer. OK.
+- is_reserved_name uses static unordered_set initialized from maps. OK.
+- build_repetition: if max_items == 0 returns empty string. But if min_items >0 and max_items==0 invalid? It returns empty, maybe should error. If min_items > max_items? Not validated. For separator_rule non-empty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); If max_items == 0 handled earlier. If min_items=0 max_items=1? earlier returns item_rule? Wait if separator_rule non-empty and min_items=0 max_items=1: has_max true, min_items==0 max_items==1 returns item_rule + "?" before separator branch. That's okay? For array with maxItems=1 and separator, grammar item_rule? But array rule wraps with brackets and separator? In visit array: build_repetition(item_rule_name, min_items, max_items, "\",\" space"). If max_items=1, returns item_rule + "?". Then array rule: "[" space item_rule? space "]" -> matches empty or one item, no separator. OK.
+- If min_items=0 max_items=0 returns empty, array rule becomes "[" space  space "]"? Actually build_repetition returns "", then rule = "\"[\" space " + "" + " space \"]\"" -> two spaces? Grammar maybe matches empty array? It has space space? GBNF concatenation spaces are separators? In GBNF, spaces separate elements, so two spaces maybe okay? But empty sequence? It might be okay but weird. If max_items=0 and min_items=0 should match empty array. But build_repetition returns empty, then array rule has space space. Could be okay but maybe should return "" and array rule handle. If min_items>0 max_items=0 invalid schema should error.
+- build_repetition with separator and min_items=0 max_items>1: result = item + " " + repetition(sep item, 0, max-1); if min=0 wrap optional. For max=2: item (sep item){0,1}? optional -> (item (sep item){0,1})? matches one or two? But if min=0, optional around whole, matches empty, one, two. OK. For min=1 max=2: item (sep item){0,1}. OK. For min=2 max=2: item (sep item){1,1}. OK.
+- But if separator_rule non-empty and max_items == std::numeric_limits<int>::max(), has_max false, max_items - 1? In code: has_max ? max_items - 1 : max_items. If has_max false, passes max_items (INT_MAX). build_repetition inner: has_max = max_items != INT_MAX? false. OK. If has_max true and max_items=0 handled. If max_items=1 handled earlier. If max_items=2, max_items-1=1. OK.
+- Potential integer overflow? max_items int, min_items int. If max_items=INT_MAX and has_max false no subtract. If has_max true max_items could be INT_MAX? no. If min_items=0 min_items-1? guarded. OK.
+
+build_min_max_int:
+- Recursive function to generate grammar for integer range. Complex. Potential bugs:
+  - decimals_left default 16. Used to limit recursion? For unbounded min/max, uses decimals_left to limit digits. Could generate grammar that only matches up to 16 digits? For integer primitive integral-part [0-9]{

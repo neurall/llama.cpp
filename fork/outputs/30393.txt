@@ -1,0 +1,53 @@
+run 30393 | rel_kernel_load_room | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 36.55 t/s | prompt 1277.6 t/s | 1024 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-17 17:14:53
+
+<think>The user wants me to do a code review of two source files. Let me analyze them carefully.
+
+Let me go through both files systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **Complexity**: This file is quite complex with regex-to-grammar conversion logic, integer range building, and schema visiting.
+
+2. **Static functions**: Several static functions are defined at file scope.
+
+Let me go through specific issues:
+
+### build_repetition function
+- The function handles various repetition cases. Looks reasonable.
+- When `separator_rule` is non-empty and `min_items == 0`, it wraps in `(...)?` - correct.
+- When `max_items == 0`, returns empty string - correct.
+- The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` - this is correct because the first item is already emitted.
+
+### build_min_max_int function
+- This is a complex function for building integer range rules.
+- The `uniform_range` lambda is recursive (via `std::function`), which is fine but could be confusing.
+- The `decimals_left` parameter is used to limit digit depth - good for preventing infinite recursion.
+- The `top_level` parameter controls whether leading zeros are allowed - good.
+- Potential issue: When `min_value < 0 && max_value < 0`, it negates both and recurses. But what if `min_value == INT64_MIN`? `-min_value` would overflow. Let me check... Actually, if both are negative, `-max_value` and `-min_value` are computed. If `min_value == INT64_MIN`, then `-min_value` overflows. This is a potential bug.
+
+Wait, let me re-read: `build_min_max_int(-max_value, -min_value, out, decimals_left, true)`. If `min_value` is `INT64_MIN`, then `-min_value` is undefined behavior (signed integer overflow). This is a real bug.
+
+- Similarly, when `min_value < 0` (but `max_value >= 0`): `build_min_max_int(0, -min_value, out, decimals_left, true)`. If `min_value == INT64_MIN`, same overflow issue.
+
+- When `has_min` and `min_value < 0`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false)`. Again, `-min_value` could overflow if `min_value == INT64_MIN`.
+
+Actually wait, if `min_value == INT64_MIN`, then `has_min` is true (since `min_value != INT64_MIN` is false... wait no). Let me re-check: `has_min = min_value != std::numeric_limits<int64_t>::min()`. So if `min_value == INT64_MIN`, `has_min` is false. So the overflow case is handled by the `has_min` check. Good.
+
+But wait, in the `has_min && has_max` case with `min_value < 0 && max_value < 0`: `build_min_max_int(-max_value, -min_value, ...)`. Since `has_min` is true, `min_value != INT64_MIN`, so `-min_value` is safe. And `has_max` is true, `max_value != INT64_MAX`, so `-max_value` is safe. Good.
+
+In the `has_min && has_max` case with `min_value < 0` (and `max_value >= 0`): `build_min_max_int(0, -min_value, ...)`. Since `has_min`, `min_value != INT64_MIN`, so `-min_value` is safe. Good.
+
+In the `has_min` only case with `min_value < 0`: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Since `has_min`, `min_value != INT64_MIN`, so `-min_value` is safe. Good.
+
+In the `has_max` only case with `max_value < 0`: `build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), ...)`. Since `has_max`, `max_value != INT64_MAX`, so `-max_value` is safe. Good.
+
+OK so the overflow issue is actually handled correctly by the `has_min`/`has_max` checks. Good.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- These are static unordered_maps. They're initialized at file scope, which is fine for C++.
+- The `is_reserved_name` function uses a static local set initialized from these maps - good pattern.
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - replaces invalid chars with `-`.

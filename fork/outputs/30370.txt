@@ -1,0 +1,4 @@
+run 30370 | rel_kv_batched | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 19.58 t/s | prompt 1026.8 t/s | 16 tokens | args: -np 1 | power 280+280 W | 2026-11-17 16:09:18
+
+<think>Let me analyze this code review request. The user has provided two source files:
+

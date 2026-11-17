@@ -1,0 +1,4 @@
+run 30400 | rel_kernel_load_room | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 21.28 t/s | prompt 1000.0 t/s | 16 tokens | args: -np 1 | power 280+280 W | 2026-11-17 17:22:58
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
