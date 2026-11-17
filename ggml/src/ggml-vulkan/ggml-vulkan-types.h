@@ -1401,6 +1401,12 @@ struct vk_instance_t {
 
     bool multi_device = false;
     bool allreduce_disabled = false;
+
+    // fork: pinned buffers still registered when this static object goes (the engine keeps some for the life of the process, as CUDA's pinned memory
+    // is left to the end of the process) are not freed here: the driver's own exit handler has unloaded the library their free calls into by then
+    // (NVIDIA 595: libnvidia-eglcore), and every Vulkan process that streamed a prompt died with SIGSEGV on exit (2026-11-17, test-vk-host-exit-fork).
+    // shortcut: a backend unloaded mid-process (ggml_backend_unload) leaks the pinned buffers its caller did not free; free them before unloading
+    ~vk_instance_t() { (void) new std::vector<vk_host_allocation>(std::move(host_allocations)); }
 };
 
 typedef void (*ggml_vk_func_t)(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);

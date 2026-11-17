@@ -8703,6 +8703,11 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
             fa_chunks.push_back(ch);
         }
         split_k = std::max(2u, CEIL_DIV(split_k, (uint32_t) fa_chunks.size()));
+        static std::atomic<bool> told { false };   // once per process: a run's log says whether this path ran
+        if (!told.exchange(true)) {
+            GGML_LOG_WARN("ggml_vulkan: flash attention over K/V views of %.2f / %.2f GiB (one binding holds %.2f GiB): %zu chunks of up to %u of %u cells, split_k %u (shown once)\n",
+                ggml_nbytes(k) / 1073741824.0, ggml_nbytes(v) / 1073741824.0, limit / 1073741824.0, fa_chunks.size(), chunk, KV, split_k);
+        }
         if (ctx->prealloc_size_y < mask_bytes) {
             ctx->prealloc_size_y = mask_bytes;
             ggml_vk_preallocate_buffers(ctx, subctx);
