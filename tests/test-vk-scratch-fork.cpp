@@ -133,12 +133,20 @@ int main(int argc, char ** argv) {
                                        ggml_new_tensor_4d(c, GGML_TYPE_Q8_0, 128, 4096, 8, 1), nullptr, 0.0884f, 0.0f, 0.0f); } },
         { "soft_max 65536 wide", 0, [](ggml_context * c) {
             return ggml_soft_max(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 65536, 8)); } },
+        { "soft_max 4096 wide (no temporaries)", 0, [](ggml_context * c) {
+            return ggml_soft_max(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 4096, 8)); } },
         { "argsort 8192 wide", 0, [](ggml_context * c) {
             return ggml_argsort(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 8192, 16), GGML_SORT_ORDER_DESC); } },
+        { "argsort 128 wide", 0, [](ggml_context * c) {
+            return ggml_argsort(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 128, 16), GGML_SORT_ORDER_DESC); } },
         { "top_k 8 of 32768", 0, [](ggml_context * c) {
             return ggml_top_k(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 32768, 4), 8); } },
+        { "top_k 4 of 64", 0, [](ggml_context * c) {
+            return ggml_top_k(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 64, 32), 4); } },
         { "cumsum 65536 wide", 0, [](ggml_context * c) {
             return ggml_cumsum(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 65536, 4)); } },
+        { "cumsum 256 wide", 0, [](ggml_context * c) {
+            return ggml_cumsum(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 256, 4)); } },
         { "cross_entropy_loss 32000 x 8", 0, [](ggml_context * c) {
             return ggml_cross_entropy_loss(c, ggml_new_tensor_2d(c, GGML_TYPE_F32, 32000, 8), ggml_new_tensor_2d(c, GGML_TYPE_F32, 32000, 8)); } },
     };
@@ -204,12 +212,20 @@ int main(int argc, char ** argv) {
             }
             ggml_cgraph * gf = ggml_new_graph(ctx);
             ggml_build_forward_expand(gf, y);
-            ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
-            fill_inputs(ctx, tc.n_expert, rng);
             std::vector<ggml_tensor *> nodes(ggml_graph_n_nodes(gf));
             for (int i = 0; i < (int) nodes.size(); ++i) { nodes[i] = ggml_graph_node(gf, i); }
+            // the engine sizes graphs before they have memory too (sched_reserve, the fit): the sizing pass must not need it (2026-11-17: soft_max's small path
+            // asserted dst->buffer in ggml_vk_op_f32 at the first reserve) and must give what it gives once the graph has memory
+            const size_t unalloc = nodes_fn((int) d, nodes.data(), (int) nodes.size());
+            ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+            fill_inputs(ctx, tc.n_expert, rng);
             const size_t computed = nodes_fn((int) d, nodes.data(), (int) nodes.size());
             if (computed > none_total) { with_temps++; }
+            n_run++;
+            if (unalloc != computed) {
+                n_failed++;
+                printf("  FAILED %s: sized %zu bytes before the graph had memory, %zu after\n", tc.name, unalloc, computed);
+            }
 
             scratch_fn((int) d, nullptr, 0, 0, nullptr);   // no region: the backend's own buffers
             const std::vector<uint8_t> ref  = compute(be, gf, y);
