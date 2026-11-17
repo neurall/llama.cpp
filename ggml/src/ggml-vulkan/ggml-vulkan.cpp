@@ -13485,7 +13485,8 @@ bool ggml_backend_vk_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_
 void ggml_backend_vk_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     ggml_backend_vk_buffer_context * ctx = (ggml_backend_vk_buffer_context *)buffer->context;
 
-    ggml_vk_buffer_memset(ctx->dev_buffer, 0, value, buffer->size);
+    // fork: every byte takes the value (the fill writes 32-bit words: 0xA5 alone left A5 00 00 00), as memset_tensor does it
+    ggml_vk_buffer_memset(ctx->dev_buffer, 0, (uint32_t) value * 0x01010101, buffer->size);
 }
 
 const char * ggml_backend_vk_buffer_type_name(ggml_backend_buffer_type_t buft) {
