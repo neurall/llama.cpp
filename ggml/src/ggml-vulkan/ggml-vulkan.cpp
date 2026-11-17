@@ -1834,7 +1834,7 @@ static void ggml_vk_precompile_wait(size_t idx) {
 // themselves (a VkPipelineCache's data: the driver's result, loaded back so the start-up compile only looks it up) and the flash attention keys seen
 // (made per graph shape at first use, compiled with the others at the next start). User 2026-11-17: "can compiled shaders be stored cached and loaded
 // on next start? incl fa ones?"
-static std::string ggml_vk_cache_path(const vk_device & device, const char * what) {
+static std::string ggml_vk_cache_path(const vk_device & device, const char * what, bool per_driver = true) {
 #ifdef _WIN32
     const char * base = getenv("LOCALAPPDATA");
     const std::string dir = base ? std::string(base) + "\\llama.cpp" : "";
@@ -1849,8 +1849,8 @@ static std::string ggml_vk_cache_path(const vk_device & device, const char * wha
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     char name[96];
-    snprintf(name, sizeof(name), "/vk-%s-%04x-%04x-%08x", what, device->properties.vendorID, device->properties.deviceID, device->properties.driverVersion);
-    return dir + name;
+    snprintf(name, sizeof(name), "/vk-%s-%04x-%04x", what, device->properties.vendorID, device->properties.deviceID);
+    return dir + name + (per_driver ? "-" + std::to_string(device->properties.driverVersion) : std::string());
 }
 
 // before any pipeline of the card compiles; data another GPU, driver or cache version wrote is dropped before the driver reads it
@@ -1940,7 +1940,8 @@ static std::string ggml_vk_start_path(const vk_device & device) {
     if (!g_vk_model_key_set.load(std::memory_order_acquire)) {
         return "";
     }
-    const std::string base = ggml_vk_cache_path(device, "start");
+    // which pipelines a model uses does not change with the driver: after a driver update (its own shader cache cold) the list still compiles them ahead
+    const std::string base = ggml_vk_cache_path(device, "start", false);
     return base.empty() ? "" : base + "-d" + std::to_string(device->idx) + "-" + g_vk_model_key + ".txt";
 }
 
