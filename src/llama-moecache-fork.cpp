@@ -16900,6 +16900,9 @@ static int pp_cur_path() {
     return path;
 }
 static int g_pp_pass_learned = 0;   // passes of this call that taught their path (the call's end then adds no second sample)
+// split passes of this call, counted as they end: by the call's end the decode's first graph has moved the split flag, and the call taught its one-card
+// arm the split's time (MiMo 11k on two Vulkan cards, 2026-11-17: one card 4.40 s on its prior, 14.49 after one split pass of 13.48 s, never tried; it runs 11.0)
+static int g_pp_pass_split = 0;
 // Every prompt pass teaches its path at once (llama_moe_prompt_progress_fork), not only the call's end: the split planner re-plans every pass against the
 // one-card arm, and a stale one-card mean held for a whole call (GLM 3.0 64k, 2026-11-08: a stored stream posterior of one sample said 4 s for a 10144-token
 // pass, one-card passes took 15 s, the 56k call ran one card from the first pass to the last at 491-581 tokens/s while the split does 750-800).
@@ -16907,7 +16910,8 @@ void llama_moe_cache_pp_pass_learn_fork(uint32_t n, double us) {
     std::lock_guard<llama_checked_mutex> lk(g_pp_mu);
     if (!g_cache || us <= 0.0 || n < 64) { return; }
     const int path = pp_cur_path();
-    if (path == PP_DENSE || g_pp_phi[path][1] <= 0.0) { return; }
+    if (path == PP_DENSE) { g_pp_pass_split++; return; }
+    if (g_pp_phi[path][1] <= 0.0) { return; }
     const double planned = g_pp_phi[path][1];
     if ((double) n < 0.8 * planned || (double) n > 1.25 * planned) { return; }   // a pass of another size than the features were built for (the call's tail)
     dsf_rls & rp = pp_rls(path);
@@ -16965,10 +16969,11 @@ void llama_moe_cache_prefill_report_fork(uint32_t n_tokens, int64_t us) {
     const double chain_up = g_pp_up_us.exchange(0.0);
     // a call of P passes: one pass of its size. A call whose passes were not counted here (the chains, a fixed -ub): the passes of the size its decision was made for.
     // Without it such a call read as one pass (OLMoE 2761 tokens on the prompt chain: "predicted 197 ms per pass, took 1105"), so neither its time per size nor the router's wait was ever learned
-    const int path = pp_cur_path();
+    const int path = g_pp_pass_split > 0 ? PP_DENSE : pp_cur_path();
+    g_pp_pass_split = 0;
     const double phi_n = path >= 0 && path < PP_PATHS ? g_pp_phi[path][1] : 0.0;
     const double P = n_tokens == g_pp_n && g_pp_P > 0 ? (double) g_pp_P : phi_n >= 1.0 && (double) n_tokens > phi_n ? std::ceil((double) n_tokens / phi_n) : 1.0;
-    if (mc && us > 0 && n_tokens > 0 && llama_dsplit_cur_fork() != 1 && !g_pp_dec_built) {
+    if (mc && us > 0 && n_tokens > 0 && path != PP_DENSE && !g_pp_dec_built) {
         pp_pass_add((uint32_t) std::lround((double) n_tokens / P), (g_pp_built ? std::max(0.0, (double) us - chain_up) : (double) us) / P, g_pp_built);
     }
     if (mc && us > 0 && n_tokens > 1) {
@@ -17271,7 +17276,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
             }
             const double S  = (double) (l.pub.up_src->nb[2] + l.pub.gate_src->nb[2] + l.pub.down_src->nb[2]);
             A += (double) mc->n_expert_used * S;
-            const double rl = mc->gbs_link[l.link] * 1e3;
+            const double rl = mc->gbs_link[l.link] * 1e3, rb = link_max_gbs(mc, l.link) * 1e3;   // per expert (the misses), in bulk (layer parallel)
             // how often each expert is picked: the state's lifetime counts plus the RAM pool's heat file. A fresh state has no counts, every expert then looked equally likely
             // and a 117-token DeepSeek pass was priced as touching 97% of each layer, the SSD-only cold ones among them (decode chain 6.95 s planned, 2.1 s taken; 65 of 256
             // experts missed in layer 0), while the pool had been filled by that very heat (2026-11-10)
@@ -17282,7 +17287,7 @@ void llama_moe_cache_pp_decide_fork(uint32_t n_tokens, uint32_t ub_max) {
                 const bool on_card = l.expert_slot[e] >= 0;
                 const double Sm = pp_mapped_expert_bytes(l, pinned_buft, (int64_t) e);   // what the SSD delivers of it: nothing where it is pinned or in the RAM pool
                 // its share of one token's picks: k (count + 1) / (all counts + experts), so a model nobody ran yet counts as uniform
-                pp_sums_add(sums, n, S, Sm, on_card, l.link == 0, (double) mc->n_expert_used * (picks_of(e) + 1.0) / all, r0, rl, rc, (size_t) l.link);
+                pp_sums_add(sums, n, S, Sm, on_card, l.link == 0, (double) mc->n_expert_used * (picks_of(e) + 1.0) / all, r0, rl, rb, rc, (size_t) l.link);
             }
         }
     }
