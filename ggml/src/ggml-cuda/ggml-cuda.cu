@@ -5689,24 +5689,45 @@ static void ggml_cuda_graph_report_bad_kernels(cudaGraph_t g, cudaError_t err) {
             nodes.clear();
         }
     }
+    // the node CUDA blames: the same graph instantiated once more, asking for it
+    cudaGraphInstantiateParams ip = {};
+    cudaGraphExec_t x = nullptr;
+    const cudaError_t again = cudaGraphInstantiateWithParams(&x, g, &ip);
+    if (x != nullptr) {
+        (void) cudaGraphExecDestroy(x);
+    }
+    const ggml_tensor * last = g_cuda_oom_node;
+    GGML_LOG_ERROR("%s: instantiated again: %s, result %d, blamed node %p; %zu nodes, the last ggml node captured %s '%s'\n", __func__, cudaGetErrorString(again),
+        (int) ip.result_out, (void *) ip.errNode_out, n, last ? ggml_op_desc(last) : "-", last ? last->name : "-");
     for (cudaGraphNode_t nd : nodes) {
-        cudaGraphNodeType t;
+        cudaGraphNodeType t = cudaGraphNodeTypeEmpty;
+        (void) cudaGraphNodeGetType(nd, &t);
+        const char * mark = nd == ip.errNode_out ? " <- BLAMED" : "";
         cudaKernelNodeParams p = {};
         cudaFuncAttributes fa = {};
-        if (cudaGraphNodeGetType(nd, &t) != cudaSuccess || t != cudaGraphNodeTypeKernel || cudaGraphKernelNodeGetParams(nd, &p) != cudaSuccess ||
-                cudaFuncGetAttributes(&fa, p.func) != cudaSuccess) {
+        if (t != cudaGraphNodeTypeKernel || cudaGraphKernelNodeGetParams(nd, &p) != cudaSuccess || cudaFuncGetAttributes(&fa, p.func) != cudaSuccess) {
+            cudaMemcpy3DParms mp = {};
+            if (t == cudaGraphNodeTypeMemcpy && cudaGraphMemcpyNodeGetParams(nd, &mp) == cudaSuccess) {
+                GGML_LOG_ERROR("%s:   node %p memcpy kind %d, %zu x %zu x %zu B, %p -> %p%s\n", __func__, (void *) nd, (int) mp.kind, mp.extent.width,
+                    mp.extent.height, mp.extent.depth, mp.srcPtr.ptr, mp.dstPtr.ptr, mark);
+            } else if (n <= 64 || *mark) {
+                GGML_LOG_ERROR("%s:   node %p type %d%s\n", __func__, (void *) nd, (int) t, mark);
+            }
+            (void) cudaGetLastError();
             continue;
         }
         const int threads = (int) (p.blockDim.x * p.blockDim.y * p.blockDim.z);
-        if (threads <= fa.maxThreadsPerBlock && p.sharedMemBytes <= (unsigned) fa.maxDynamicSharedSizeBytes) {
+        const bool over = threads > fa.maxThreadsPerBlock || p.sharedMemBytes > (unsigned) fa.maxDynamicSharedSizeBytes;
+        bad += over;
+        if (!over && n > 64 && !*mark) {
             continue;
         }
         const char * name = "?";
         (void) cudaFuncGetName(&name, p.func);
-        GGML_LOG_ERROR("%s: kernel %s: block %ux%ux%u = %d threads (it allows %d at %d registers a thread), dynamic shared memory %u B (it allows %d), grid %ux%ux%u\n",
-            __func__, name, p.blockDim.x, p.blockDim.y, p.blockDim.z, threads, fa.maxThreadsPerBlock, fa.numRegs, p.sharedMemBytes,
-            fa.maxDynamicSharedSizeBytes, p.gridDim.x, p.gridDim.y, p.gridDim.z);
-        bad++;
+        GGML_LOG_ERROR("%s:   node %p kernel %s: grid %ux%ux%u, block %ux%ux%u = %d threads (it allows %d at %d registers), shared memory %u B dynamic "
+            "(it allows %d) + %zu static, local %zu B a thread%s%s\n", __func__, (void *) nd, name, p.gridDim.x, p.gridDim.y, p.gridDim.z,
+            p.blockDim.x, p.blockDim.y, p.blockDim.z, threads, fa.maxThreadsPerBlock, fa.numRegs, p.sharedMemBytes, fa.maxDynamicSharedSizeBytes,
+            fa.sharedSizeBytes, fa.localSizeBytes, over ? " OVER" : "", mark);
     }
     GGML_LOG_ERROR("%s: %d of %zu nodes over their kernel's limits\n", __func__, bad, n);
     (void) cudaGetLastError();
