@@ -5498,6 +5498,56 @@ static ggml_cuda_graph_scratch_fork ggml_cuda_scratch_now_fork(const ggml_backen
     return { s.base, s.cap };
 }
 
+// fork: GGML_CUDA_GRAPH_UID_CHECK=1. A graph whose uid matches its CUDA graph's is replayed without a look at its nodes (the fast path below). This check
+// compares them anyway, as the slow path would, and names the nodes that changed under the same uid: the replay runs them with what the capture saw.
+// =2: such a graph is captured again (the slow path), to see whether that cures what a run shows. Returns whether any node changed.
+static bool ggml_cuda_graph_uid_check_fork(int device, const ggml_cuda_graph * graph, const ggml_cgraph * cgraph) {
+    static std::atomic<int> said{0};
+    if ((int) graph->node_props.size() != cgraph->n_nodes) {
+        if (said.fetch_add(1) < 64) {
+            GGML_LOG_WARN("%s: CUDA%d graph uid %llu replayed with %d nodes, captured with %zu\n", __func__, device, (unsigned long long) cgraph->uid,
+                    cgraph->n_nodes, graph->node_props.size());
+        }
+        return true;
+    }
+    int n_changed = 0;
+    char first[256] = "";
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        const ggml_tensor * n = cgraph->nodes[i];
+        const ggml_cuda_graph::node_properties & p = graph->node_props[i];
+        char what[200] = "";
+        if (p.node.data != n->data) {
+            snprintf(what, sizeof(what), "its data %p -> %p", p.node.data, n->data);
+        } else if (p.node.op != n->op || memcmp(p.node.ne, n->ne, sizeof(n->ne)) != 0 || memcmp(p.node.nb, n->nb, sizeof(n->nb)) != 0) {
+            snprintf(what, sizeof(what), "its op or shape");
+        } else if (memcmp(p.node.op_params, n->op_params, sizeof(n->op_params)) != 0) {
+            snprintf(what, sizeof(what), "its op params");
+        } else {
+            for (int j = 0; j < GGML_MAX_SRC && !what[0]; ++j) {
+                const ggml_tensor * s  = n->src[j];
+                const void *        sd = s ? s->data : nullptr;
+                if (p.node_src_data_ptrs[j] != sd) {
+                    snprintf(what, sizeof(what), "src %d (%s) data %p -> %p", j, s ? s->name : "-", p.node_src_data_ptrs[j], sd);
+                } else if (s && (memcmp(p.node_src_ne[j], s->ne, sizeof(s->ne)) != 0 || memcmp(p.node_src_nb[j], s->nb, sizeof(s->nb)) != 0)) {
+                    snprintf(what, sizeof(what), "src %d (%s) shape", j, s->name);
+                }
+            }
+        }
+        if (!what[0] && memcmp(&p.node, n, sizeof(ggml_tensor)) != 0) {
+            snprintf(what, sizeof(what), "another field (flags %d -> %d, extra %p -> %p, view_offs %zu -> %zu)", p.node.flags, n->flags, p.node.extra, n->extra,
+                    p.node.view_offs, n->view_offs);
+        }
+        if (what[0]) {
+            if (n_changed++ == 0) { snprintf(first, sizeof(first), "node %d %s (%s): %s", i, n->name, ggml_op_desc(n), what); }
+        }
+    }
+    if (n_changed > 0 && said.fetch_add(1) < 64) {
+        GGML_LOG_WARN("%s: CUDA%d graph uid %llu replayed with %d of %d nodes changed since its capture, first %s\n", __func__, device,
+                (unsigned long long) cgraph->uid, n_changed, cgraph->n_nodes, first);
+    }
+    return n_changed > 0;
+}
+
 static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph) {
     bool res = false;
 
@@ -5517,8 +5567,10 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
         was = now;   // a moved region makes this call return true: the capture that follows takes the region as it is now
     }
 
+    static const int uid_check = getenv("GGML_CUDA_GRAPH_UID_CHECK") ? atoi(getenv("GGML_CUDA_GRAPH_UID_CHECK")) : 0;   // fork: ggml_cuda_graph_uid_check_fork
     if (cgraph->uid != 0 &&
-        cgraph->uid == graph->uid && !scratch_moved) {
+        cgraph->uid == graph->uid && !scratch_moved &&
+        !(uid_check > 0 && ggml_cuda_graph_uid_check_fork(cuda_ctx->device, graph, cgraph) && uid_check >= 2)) {
         if (g_cuda_graph_hook_fork) {
             const ggml_cuda_graph_scratch_fork now = ggml_cuda_scratch_now_fork(cuda_ctx);
             g_cuda_graph_hook_fork(cuda_ctx->device, graph, "cuda-replay", now.base, now.cap);
