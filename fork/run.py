@@ -3024,6 +3024,19 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _on = [_next_lp(_l + (_i + 1) * 50, True)[0] for _i in range(20)]   # the moved cells stay in use: the real next token, 50 tokens apart
                 _d = _next_lp(_s, True)
                 print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
+            if os.environ.get("RUN_CACHE_SWITCH"):   # the server's RAM prompt cache (--cache-ram, on by default) on a switch of prompts: A (the slot holds it: reused, the base),
+                # B (A's halves swapped: the same length, no common prefix) saves A's state into the cache, A again saves B's and loads A's back. A request's wall time
+                # beyond its prompt pass and its token is the cache's own work: the state's copies between the cards and RAM (ggml_backend_tensor_get_n / set_n)
+                _h = len(_pf_text) // 2
+                _sw = []
+                for _tag, _txt in (("A", _pf_text), ("B", _pf_text[_h:] + _pf_text[:_h]), ("A again", _pf_text)):
+                    _t0 = time.time()
+                    _r = post("/v1/chat/completions", {"messages": [{"role": "user", "content": _txt}], "max_tokens": 1, **GREEDY, "cache_prompt": True, "reasoning_format": "none"})
+                    _w = (time.time() - _t0) * 1000
+                    _tm = _r.get("timings", {})
+                    _sw.append(f"{_tag}: wall {_w:.0f} ms, prompt {_tm.get('prompt_n')} tokens in {_tm.get('prompt_ms', 0):.0f} ms, "
+                               f"beyond {_w - _tm.get('prompt_ms', 0) - _tm.get('predicted_ms', 0):.0f} ms")
+                print("DBG CACHE SWITCH: " + "; ".join(_sw), flush=True)
             _want = os.environ.get("PERF_PTOK")
             if _want and not os.environ.get("PERF_BOX") and int(t["prompt_n"]) != int(_want):   # a best-prompt cell must feed exactly its stored length: a different one measures another prompt (a pass more or less)
                 raise SystemExit(f"PROMPT LENGTH MISMATCH: the cell asked for {_want} prompt tokens, the server counted {t['prompt_n']}: stop, fix the feed, run again")
