@@ -9652,9 +9652,11 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_cuda_kernels_bytes_fork") == 0) {
         return (void *)ggml_backend_cuda_kernels_bytes_fork;
     }
+#if defined(__linux__) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)   // its definition's guard: the deferred pins exist on Linux CUDA only (the caller reads none)
     if (strcmp(name, "ggml_backend_cuda_pins_pending_fork") == 0) {
         return (void *)ggml_backend_cuda_pins_pending_fork;
     }
+#endif
     if (strcmp(name, "ggml_backend_cuda_set_room_fork") == 0) {
         return (void *)ggml_backend_cuda_set_room_fork;
     }
