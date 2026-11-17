@@ -10446,6 +10446,39 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         };
 
         auto alloc_group = [&](ggml_backend_buffer_type_t buft, const std::vector<cand> & cands, bool tables_only) -> bool {
+            // the device tables first, in a buffer of their own, before slots_for reads the free VRAM: the pool then sizes what is left. Allocated after the
+            // pool, a cold start with the room's tail area (margin 0) left them 0 MiB: 36 KiB refused, "cache disabled" with the pool and the KV tail already
+            // bound, and the first graph faulted (illegal memory access, then the same at every restart: OLMoE at 3 GiB on a new build, 2026-11-17)
+            std::vector<ggml_tensor *> dtbl(cands.size(), nullptr);
+            ggml_tensor * stbl = nullptr;
+            if (!tables_only) {
+                ggml_context * tctx = ggml_init({ ggml_tensor_overhead() * (cands.size() + 2), nullptr, true });
+                if (!tctx) {
+                    return false;
+                }
+                mc->ctxs.push_back(tctx);
+                for (size_t i = 0; i < cands.size(); ++i) {
+                    dtbl[i] = ggml_new_tensor_2d(tctx, GGML_TYPE_I32, 1, cands[i].l->ffn_up_exps->ne[2]);
+                    ggml_format_name(dtbl[i], "moe_cache_tbl.%d", cands[i].il);
+                }
+                // the stream shadows' device tables (llama_moe_cache_cs_shadow_fork): any layer x every chunk a call may cut it into, carved here before the
+                // VRAM guard arms, not one device buffer per shadow after it (K3 16k prompt: 736 buffers, 2.5 MiB outside the pool, 2026-11-14)
+                if (pool_on) {
+                    int64_t n_all = 0, E = 0;
+                    for (const auto & g2 : groups) { n_all += (int64_t) g2.second.size(); for (const auto & c : g2.second) { E = std::max<int64_t>(E, c.l->ffn_up_exps->ne[2]); } }
+                    stbl = ggml_new_tensor_1d(tctx, GGML_TYPE_I32, n_all * cs_chunks_max() * GGML_PAD(E, 64));
+                    ggml_format_name(stbl, "moe_cache_stbl");
+                }
+                ggml_backend_buffer_t tbuf = ggml_backend_alloc_ctx_tensors_from_buft(tctx, buft);
+                if (!tbuf) {
+                    LLAMA_LOG_WARN("%s: failed to allocate the MoE cache tables on %s - cache disabled\n", __func__, ggml_backend_buft_name(buft));
+                    return false;
+                }
+                ggml_backend_buffer_clear(tbuf, 0);
+                // the scheduler places ops by the residency of weight buffers only; without this the cache chain follows its neighbours onto the CPU
+                ggml_backend_buffer_set_usage(tbuf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+                mc->bufs.push_back(tbuf);
+            }
             const int32_t slots = tables_only ? 0 : slots_for(buft, cands);
             if (!tables_only && slots <= 0) {
                 LLAMA_LOG_WARN("%s: no room for MoE cache slots on %s\n", __func__, ggml_backend_buft_name(buft));
@@ -10501,11 +10534,10 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     ls->pub.up_c   = ggml_new_tensor_3d(ctx, u->type, u->ne[0], u->ne[1], slots + 1);
                     ls->pub.gate_c = ggml_new_tensor_3d(ctx, g->type, g->ne[0], g->ne[1], slots + 1);
                     ls->pub.down_c = ggml_new_tensor_3d(ctx, d->type, d->ne[0], d->ne[1], slots + 1);
-                    ls->pub.dev_table = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, u->ne[2]);
+                    ls->pub.dev_table = dtbl[(size_t) (&c - cands.data())];
                     ggml_format_name(ls->pub.up_c,      "moe_cache_up.%d",   c.il);
                     ggml_format_name(ls->pub.gate_c,    "moe_cache_gate.%d", c.il);
                     ggml_format_name(ls->pub.down_c,    "moe_cache_down.%d", c.il);
-                    ggml_format_name(ls->pub.dev_table, "moe_cache_tbl.%d",  c.il);
                 }
             }
 
@@ -10939,31 +10971,24 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 }
                 for (auto * b : ubufs) { mc->bufs.push_back(b); }
             }
-            // the stream shadows' device tables (llama_moe_cache_cs_shadow_fork): any layer x every chunk a call may cut it into, carved here before the VRAM guard arms,
-            // not one device buffer per shadow after it (K3 16k prompt: 736 buffers, 2.5 MiB outside the pool, 2026-11-14)
-            ggml_tensor * stbl = nullptr;
-            if (pool_on && !tables_only) {
-                int64_t n_all = 0, E = 0;
-                for (const auto & g2 : groups) { n_all += (int64_t) g2.second.size(); for (const auto & c : g2.second) { E = std::max<int64_t>(E, c.l->ffn_up_exps->ne[2]); } }
-                stbl = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_all * cs_chunks_max() * GGML_PAD(E, 64));
-                ggml_format_name(stbl, "moe_cache_stbl");
-            }
-            ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
-            if (!buf) {
-                LLAMA_LOG_WARN("%s: failed to allocate MoE cache buffer on %s - cache disabled\n",
-                        __func__, ggml_backend_buft_name(buft));
-                return false;
-            }
-            ggml_backend_buffer_clear(buf, 0);
-            if (!tables_only) {
-                // the scheduler places ops by the residency of weight buffers only;
-                // without this the cache chain follows its neighbours onto the CPU
-                ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            if (tables_only || !pool_on) {   // with the pool, the cache tensors are views of it set by hand and the tables have their buffer: nothing left here
+                ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
+                if (!buf) {
+                    LLAMA_LOG_WARN("%s: failed to allocate MoE cache buffer on %s - cache disabled\n",
+                            __func__, ggml_backend_buft_name(buft));
+                    return false;
+                }
+                ggml_backend_buffer_clear(buf, 0);
+                if (!tables_only) {
+                    // the scheduler places ops by the residency of weight buffers only;
+                    // without this the cache chain follows its neighbours onto the CPU
+                    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+                }
+                mc->bufs.push_back(buf);
             }
             for (int k = 0; stbl && k < mc->n_links; ++k) {
                 if (mc->link_dev[k] == ggml_backend_buft_get_device(buft)) { mc->stbl[k] = stbl; mc->stbl_used[k] = 0; }
             }
-            mc->bufs.push_back(buf);
             return true;
         };
 
