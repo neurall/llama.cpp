@@ -90,6 +90,8 @@ int main(int argc, char ** argv) {
         ggml_backend_dev_memory(d, &f0, &tot);
         const double t0 = now_s();
         by_reg[r].back().be = ggml_backend_dev_init(d, nullptr);
+        ggml_backend_reg_t rg = ggml_backend_dev_backend_reg(d);   // as a context does: a backend's start-up work (Vulkan's shader compile) ends here
+        if (auto ready = (void (*)(ggml_backend_dev_t)) ggml_backend_reg_get_proc_address(rg, "ggml_backend_fork_ready_fork")) { ready(d); }
         const double t1 = now_s();
         ggml_backend_dev_memory(d, &f1, &tot);
         printf("%-10s backend start %.0f ms, free VRAM %.0f -> %.0f MiB\n", ggml_backend_dev_name(d), (t1 - t0) * 1e3, f0 / 1048576.0, f1 / 1048576.0);

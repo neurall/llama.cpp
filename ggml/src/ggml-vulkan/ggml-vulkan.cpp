@@ -1,6 +1,9 @@
 #include "ggml-vulkan-common.h"
 
 #include <atomic>
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
 
 static vk_device_architecture get_device_architecture(const vk::PhysicalDevice& device) {
     vk::PhysicalDeviceProperties props = device.getProperties();
@@ -1799,6 +1802,34 @@ static bool ggml_vk_amd_large_tile_supported(const vk_device& device) {
     return major > 2 || (major == 2 && build >= 416);
 }
 
+// fork: every card compiles all its pipelines at its creation, in the background, while the model loads (ggml_vk_get_device starts it); a context waits
+// for it right after it made its backends (ggml_backend_fork_ready_fork), before the KV and the pool read the free VRAM and before any request
+// (user 2026-11-17: "dont start serving untill all compiled"). At exit the workers stop after the pipeline in hand.
+static std::mutex          g_vk_precompile_mtx;
+static std::thread         g_vk_precompile[GGML_VK_MAX_DEVICES];
+static std::atomic<bool>   g_vk_precompile_stop { false };
+
+static void ggml_vk_precompile_wait(size_t idx) {
+    std::lock_guard<std::mutex> lock(g_vk_precompile_mtx);   // held while joining: a second caller returns only when the compile is done
+    if (idx < GGML_VK_MAX_DEVICES && g_vk_precompile[idx].joinable()) {
+        const auto t0 = std::chrono::steady_clock::now();
+        g_vk_precompile[idx].join();
+        GGML_LOG_WARN("ggml_vulkan: %s: the context waited %.0f ms for the start-up shader compile\n",
+                      vk_instance.devices[idx] ? vk_instance.devices[idx]->name.c_str() : "?",
+                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
+}
+
+static void ggml_vk_precompile_join_all() {   // atexit, before the instance's static destructor
+    g_vk_precompile_stop = true;
+    std::lock_guard<std::mutex> lock(g_vk_precompile_mtx);
+    for (auto & th : g_vk_precompile) {
+        if (th.joinable()) {
+            th.join();
+        }
+    }
+}
+
 void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile_all) {
     VK_LOG_DEBUG("ggml_vk_load_shaders(" << device->name << ")");
 
@@ -2120,6 +2151,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile
             if (compile_all) {   // fork: the pass at the device's creation compiles them all (the 64-bit indexing twins too)
                 if (!pipeline->compiled && !pipeline->compile_pending) {
                     pipeline->compile_pending = true;
+                    pipeline->compile_queued = true;
                     claimed_all.push_back({ pipeline, spv_size, spv_data, entrypoint, parameter_count, wg_denoms, specialization_constants,
                                             disable_robustness, require_full_subgroups, required_subgroup_size });
                 }
@@ -2139,7 +2171,8 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile
 
             wait_pipeline = pipeline;
 
-            if (!pipeline->compile_pending) {
+            if (!pipeline->compile_pending || pipeline->compile_queued) {   // fork: queued by the start-up compile, not reached yet: compiled here
+                pipeline->compile_queued = false;
                 pipeline->compile_pending = true;
                 claimed_task.pipeline = pipeline;
                 claimed_task.spv_size = spv_size;
@@ -4137,8 +4170,19 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, bool compile
     if (!claimed_all.empty()) {
         std::atomic<size_t> next { 0 };
         auto work = [&]() {
-            for (size_t i = next++; i < claimed_all.size(); i = next++) {
+#if defined(__linux__)
+            setpriority(PRIO_PROCESS, 0, 10);   // a thread's own nice value on Linux: the model's load keeps its CPU
+#endif
+            // shortcut: other systems compile at normal priority (windows.h in this file clashes with its macros); add a helper if their loads slow down
+            for (size_t i = next++; i < claimed_all.size() && !g_vk_precompile_stop; i = next++) {
                 CompileTask & t = claimed_all[i];
+                {
+                    std::lock_guard<std::mutex> guard(device->compile_mutex);
+                    if (!t.pipeline->compile_queued) {   // a graph needed it first and compiled it
+                        continue;
+                    }
+                    t.pipeline->compile_queued = false;
+                }
                 try {
                     ggml_vk_create_pipeline_func(device, t.pipeline, t.spv_size, t.spv_data, t.entrypoint, t.parameter_count, t.wg_denoms,
                                                  t.specialization_constants, t.disable_robustness, t.require_full_subgroups, t.required_subgroup_size);
@@ -5165,20 +5209,24 @@ vk_device ggml_vk_get_device(size_t idx) {
             device->mmvq_mode = 1;
         }
 
-        {   // fork: every pipeline compiles now, at the start, not at its first use inside a request (user 2026-11-17); after every field above is set
-            const auto t0 = std::chrono::steady_clock::now();
-            ggml_vk_load_shaders(device, nullptr, true);
-            size_t n = 0;
-            {
-                std::lock_guard<std::mutex> guard(device->compile_mutex);
-                n = device->all_pipelines.size();
-            }
-            GGML_LOG_WARN("ggml_vulkan: %s: %zu pipelines compiled at the start in %.0f ms\n", device->name.c_str(), n,
-                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-        }
-
         // publish the device only when it is fully built
         vk_instance.devices[idx] = device;
+        {   // fork: every pipeline compiles now, in the background while the model loads, not at its first use inside a request (ggml_vk_precompile_wait)
+            std::lock_guard<std::mutex> lock(g_vk_precompile_mtx);
+            static const bool exit_hook = std::atexit(ggml_vk_precompile_join_all) == 0;
+            (void) exit_hook;
+            g_vk_precompile[idx] = std::thread([device]() mutable {
+                const auto t0 = std::chrono::steady_clock::now();
+                ggml_vk_load_shaders(device, nullptr, true);
+                size_t n = 0;
+                {
+                    std::lock_guard<std::mutex> guard(device->compile_mutex);
+                    n = device->all_pipelines.size();
+                }
+                GGML_LOG_WARN("ggml_vulkan: %s: %zu pipelines compiled at the start in %.0f ms (in the background, beside the model's load)\n",
+                              device->name.c_str(), n, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            });
+        }
         ggml_vk_host_import_existing(device);   // fork: host memory allocated before this card is imported now, not at its first upload
 
         return device;
@@ -17271,7 +17319,15 @@ static void ggml_backend_vk_fork_buft_limits(ggml_backend_buffer_type_t buft, si
     *max_span  = device->shader_64b_indexing ? *max_alloc : std::min(*max_alloc, (size_t) device->properties.limits.maxStorageBufferRange);
 }
 
+// fork: the context calls this right after it made its backends (llama_context, "ggml_backend_fork_ready_fork"): the card's start-up shader compile ends here
+static void ggml_backend_vk_fork_ready(ggml_backend_dev_t dev) {
+    ggml_vk_precompile_wait(((ggml_backend_vk_device_context *) dev->context)->device);
+}
+
 static void * ggml_backend_vk_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    if (strcmp(name, "ggml_backend_fork_ready_fork") == 0) {
+        return (void *) ggml_backend_vk_fork_ready;
+    }
     UNUSED(reg);
     if (strcmp(name, "ggml_backend_fork_buft_limits_fork") == 0) {
         return (void *) ggml_backend_vk_fork_buft_limits;

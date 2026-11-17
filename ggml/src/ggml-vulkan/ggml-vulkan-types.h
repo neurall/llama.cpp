@@ -239,6 +239,7 @@ struct vk_pipeline_struct {
     // true while a compile is in flight, used to dedupe concurrent claims.
     // Protected by device->compile_mutex.
     bool compile_pending {};
+    bool compile_queued {};   // fork: claimed by the start-up compile, not started yet: a graph that needs it first takes it
     // set to true when the shader has been compiled
     std::atomic<bool> compiled {};
     // number of registers used, extracted from pipeline executable properties

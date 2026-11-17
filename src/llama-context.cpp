@@ -742,6 +742,11 @@ llama_context::llama_context(
                 if (ggml_backend_set_n_threads_fn) {
                     set_n_threads_fns.emplace_back(backend.get(), ggml_backend_set_n_threads_fn);
                 }
+                // fork: a backend that prepares itself while the model loads (Vulkan compiles every shader) is done here, before the KV and the pool read
+                // the free VRAM and before any request
+                if (auto ready = (void (*)(ggml_backend_dev_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_fork_ready_fork")) {
+                    ready(dev);
+                }
             }
         }
 
