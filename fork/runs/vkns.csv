@@ -8,3 +8,5 @@ ns-cu-rs,olmoe,2,pf1k,64,"-dev CUDA0 --moe sim-vram=3072,sim-ram=4900,verify=2,p
 ns-cu-led,olmoe,2,pf1k,64,"-dev CUDA0 --moe sim-vram=3072,sim-ram=4900,verify=2,poison=3,race-stress=3,ledger=1",--env PERF_LEDGER=1 --env GGML_CUDA_SCRATCH_DEBUG=1
 ns-cu-uc1,olmoe,2,pf1k,64,"-dev CUDA0 --moe sim-vram=3072,sim-ram=4900,verify=2,poison=3,race-stress=3",--env GGML_CUDA_GRAPH_UID_CHECK=1
 ns-cu-uc2,olmoe,2,pf1k,64,"-dev CUDA0 --moe sim-vram=3072,sim-ram=4900,verify=2,poison=3,race-stress=3",--env GGML_CUDA_GRAPH_UID_CHECK=2
+ns-cu-gs,olmoe,2,pf1k,64,"-dev CUDA0 --moe sim-vram=3072,sim-ram=4900,verify=2,poison=3,race-stress=3,gpu-shape=1",
+ns-cu-gs0,olmoe,2,pf1k,64,"-dev CUDA0 --moe sim-vram=3072,sim-ram=4900,verify=2,poison=3,gpu-shape=1",
