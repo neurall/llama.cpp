@@ -9899,3 +9899,4 @@ rel_vk_rowcopy-rg-qwen38-iq3-ppl,2026-11-17 15:12:00,bench /m/q/1/Qwen3.8-Flash-
 rel_vk_rowcopy-rg-q27-iq4nl-ppl,2026-11-17 15:14:34,bench /m/q/4/Qwen3.8-27B-IQ4_NL.gguf builds rel_vk_rowcopy variants v test ppl n=2,,
 rel_rowcopy_runs-rg-glm-ppl,2026-11-17 15:19:42,bench /m/gl/3/GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf builds rel_rowcopy_runs variants v test ppl n=2,,
 rel_rowcopy_runs-rg-mimo-ppl,2026-11-17 15:24:18,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds rel_rowcopy_runs variants v test ppl n=2,,
+rel_rowcopy_runs-vk-mimo-i-pf11k1k,2026-11-17 15:44:12,bench /m/m/3/MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf builds rel_rowcopy_runs variants v test pf11k n=2,,
