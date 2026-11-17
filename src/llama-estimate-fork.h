@@ -21,11 +21,13 @@ struct pp_sums {
     explicit pp_sums(size_t n_predictions = 0, size_t n_cards = 0) : Uk(n_predictions, 0.0), Mk(n_predictions, 0.0), Ul(n_cards, 0.0), Ml(n_cards, 0.0), Lb(n_cards, 0.0) {}
 };
 // One expert: S its bytes, Sm the part only the SSD has, on_card whether its layer's card holds it, fastest whether that card has the fastest link, p1 its share of one token's
-// picks; r0, rl, rc the fastest link's, its layer's link's and the CPU's rate in bytes per us (0: not known, the term is left out); card its layer's card (index of its link)
-static inline void pp_sums_add(pp_sums & s, double n, double S, double Sm, bool on_card, bool fastest, double p1, double r0, double rl, double rc, size_t card) {
+// picks; r0, rl, rc the fastest link's, its layer's link's and the CPU's rate in bytes per us (0: not known, the term is left out); card its layer's card (index of its link).
+// rl prices the misses (one expert at a time), rb the layer's link in bulk (layer parallel streams a card's layers like the stream: its probed rate; the per-expert
+// average of decode's uploads is 2 against 22 GB/s on Vulkan, and layer parallel was priced at 39.6 s for an 11.07 s pass)
+static inline void pp_sums_add(pp_sums & s, double n, double S, double Sm, bool on_card, bool fastest, double p1, double r0, double rl, double rb, double rc, size_t card) {
     if (card < s.Lb.size()) {
         s.Lb[card] += S;
-        if (!on_card && rl > 0.0) { s.Ul[card] += S / rl; s.Ml[card] += Sm; }
+        if (!on_card && rb > 0.0) { s.Ul[card] += S / rb; s.Ml[card] += Sm; }
     }
     if (r0 > 0.0 && !(on_card && fastest)) {   // the fastest link's card holds it: copied there, else it streams
         s.U += S / r0; s.M += Sm;
@@ -181,7 +183,7 @@ static inline pp_metrics pp_metrics_for(const pp_machine & hw, const pp_model & 
         const double rl = card < hw.link_gbs.size() ? hw.link_gbs[card] * 1e3 : r0;
         for (int e = 0; e < md.experts; ++e) {
             const bool on_card = e < n_on_card, in_ram = !on_card && e < n_on_card + n_in_ram;
-            pp_sums_add(s, n, md.expert_bytes, on_card || in_ram ? 0.0 : md.expert_bytes, on_card, card == 0, (double) md.used * w[e] / w_all, r0, rl, rc, card);
+            pp_sums_add(s, n, md.expert_bytes, on_card || in_ram ? 0.0 : md.expert_bytes, on_card, card == 0, (double) md.used * w[e] / w_all, r0, rl, rl, rc, card);
         }
     }
     double ssd_bytes = 0.0;

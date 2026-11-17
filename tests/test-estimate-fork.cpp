@@ -25,6 +25,13 @@ int main() {
     const double Uk[2] = { 800.0, 1600.0 }, Mk[2] = { 4e6, 1e6 };
     m.Uk = Uk; m.Mk = Mk;
 
+    {   // layer parallel streams its card's layers in bulk: the link's probed rate, not the per-expert average of decode's uploads (Vulkan 2026-11-17: 2 against
+        // 22 GB/s, layer parallel priced at 39.6 s for an 11.07 s pass, and its x0.28 miss made the never-run plain stream look like 4.2 s: it took 14.5)
+        pp_sums s(0, 2);
+        pp_sums_add(s, 100.0, 22e3, 0.0, false, false, 0.5, 22e3, 2e3, 22e3, 1e3, 1);   // 22 kB: bulk 22e3 bytes/us, one expert at a time 2e3
+        near("layer parallel upload at the link's bulk rate", s.Ul[1], 1.0);
+        near("a miss at the per-expert rate", s.miss.empty() ? -1.0 : s.miss[0].us, 11.0);
+    }
     near("ssd", pp_ssd_us(m, 2e6), 1000.0);
     near("miss on gpu: the link is slower", estimate_moe_miss_ongpu_time(m), 500.0);
     near("miss on cpu", estimate_moe_miss_oncpu_time(m), 1500.0);
