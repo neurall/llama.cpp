@@ -250,10 +250,7 @@ void main() {
                     if (kv_active && (HSK == HSK_pad || d < HSK / 4)) {
 #if !defined(BFLOAT16)
                         if (USE_DECODE_K) {
-                            uint coord = kcol * k_stride * BLOCK_SIZE_K + 4 * d;
-                            uint ib = coord / BLOCK_SIZE_K;
-                            uint iqs = (coord % BLOCK_SIZE_K);
-                            K_Tf = dequantize4(ib, iqs, k_offset, BINDING_IDX_K);
+                            K_Tf = dequantize4(fa_kv_block(kcol, k_stride, 4 * d, BLOCK_SIZE_K), (4 * d) % BLOCK_SIZE_K, k_offset, BINDING_IDX_K);
                         } else
 #endif
                         {
@@ -295,10 +292,8 @@ void main() {
                         if (kv_active && (HSK == HSK_pad || d * 16 + col_vec * 4 < HSK)) {
 #if !defined(BFLOAT16)
                             if (USE_DECODE_K) {
-                                uint coord = kcol * k_stride * BLOCK_SIZE_K + d * 16 + col_vec * 4;
-                                uint ib = coord / BLOCK_SIZE_K;
-                                uint iqs = (coord % BLOCK_SIZE_K);
-                                K_Tf = dequantize4(ib, iqs, k_offset, BINDING_IDX_K);
+                                const uint e = d * 16 + col_vec * 4;
+                                K_Tf = dequantize4(fa_kv_block(kcol, k_stride, e, BLOCK_SIZE_K), e % BLOCK_SIZE_K, k_offset, BINDING_IDX_K);
                             } else
 #endif
                             {
@@ -424,10 +419,7 @@ void main() {
                     if (kv_active && (HSV == HSV_pad || d < HSV / 4)) {
 #if !defined(BFLOAT16)
                         if (USE_DECODE_V) {
-                            uint coord = v_row * v_stride * BLOCK_SIZE_V + 4 * d;
-                            uint ib = coord / BLOCK_SIZE_V;
-                            uint iqs = (coord % BLOCK_SIZE_V);
-                            V_Tf = dequantize4(ib, iqs, v_offset, BINDING_IDX_V);
+                            V_Tf = dequantize4(fa_kv_block(v_row, v_stride, 4 * d, BLOCK_SIZE_V), (4 * d) % BLOCK_SIZE_V, v_offset, BINDING_IDX_V);
                         } else
 #endif
                         {
@@ -472,9 +464,8 @@ void main() {
                     bool kv_active = fa_kv_index(j * Bc + row, v_row);
                     const uint v_col = hsv_tile * MatBc * row_split + col * 4;
 
-                    const uint coord = v_row * v_stride * BLOCK_SIZE_V + v_col;
-                    const uint ib = coord / BLOCK_SIZE_V;
-                    const uint iqs = coord % BLOCK_SIZE_V;
+                    const uint ib = fa_kv_block(v_row, v_stride, v_col, BLOCK_SIZE_V);
+                    const uint iqs = v_col % BLOCK_SIZE_V;
 
                     if (USE_SPARSE ? (kv_active && v_col < HSV) : (!KV_bounds_check || (v_row < KV && v_col < HSV))) {
 #if !defined(BFLOAT16)

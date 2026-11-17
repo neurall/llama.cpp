@@ -1489,7 +1489,8 @@ vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_t hsk, 
 }
 
 vk_fa_pipeline_state get_fa_pipeline_state(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool aligned, bool f32acc,
-                                                  bool use_mask, bool use_mask_opt, bool use_logit_softcap, bool use_sparse, ggml_type k_type, ggml_type v_type) {
+                                                  bool use_mask, bool use_mask_opt, bool use_logit_softcap, bool use_sparse, ggml_type k_type, ggml_type v_type,
+                                                  bool use_idx64) {
     const bool old_amd_windows = device->vendor_id == VK_VENDOR_ID_AMD && device->driver_id == vk::DriverId::eAmdProprietary &&
                                  (device->architecture == AMD_GCN || device->architecture == AMD_RDNA1 || device->architecture == AMD_RDNA2);
 
@@ -1497,7 +1498,8 @@ vk_fa_pipeline_state get_fa_pipeline_state(const vk_device& device, const vk_fa_
                      (use_mask          ? 2 : 0) |
                      (use_logit_softcap ? 4 : 0) |
                      (old_amd_windows   ? 8 : 0) |
-                     (use_sparse        ? 16 : 0);
+                     (use_sparse        ? 16 : 0) |
+                     (use_idx64         ? 32 : 0);   // fork: K/V index math in 64 bits (flash_attn_base.glsl FA_IDX64), only on a 64-bit indexing pipeline
 
     const uint32_t subgroup_size = params.disable_subgroups ? 0 : params.subgroup_size;
 
@@ -2164,39 +2166,39 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
 
         const bool bf16_kv = fa.first.k_type == GGML_TYPE_BF16;
         const bool use_mmq = ggml_vk_fa_scalar_uses_mmq(device, fa.first.k_type, fa.first.v_type);
+        const bool idx64 = (fa.first.flags & 32) != 0;   // fork: the FA_IDX64 build (K/V indices in 64 bits) for a call past one binding's range
+#define FA_SPV(s) do { spv_data = idx64 ? s##_idx64_data : s##_data; spv_size = idx64 ? s##_idx64_len : s##_len; } while (0)
         const void * spv_data = nullptr;
         size_t spv_size = 0;
         const char *name = nullptr;
         if (bf16_kv) {
-            spv_data = flash_attn_f32_f16_fp32_data;
-            spv_size = flash_attn_f32_f16_fp32_len;
+            FA_SPV(flash_attn_f32_f16_fp32);
             name = aligned ? "flash_attn_f32_bf16_aligned" : "flash_attn_f32_bf16";
         } else if (use_mmq) {
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
             if (device->fp16) {
-                if (f32acc) { spv_data = flash_attn_f32_f16_int8_data;        spv_size = flash_attn_f32_f16_int8_len; }
-                else        { spv_data = flash_attn_f32_f16_f16acc_int8_data; spv_size = flash_attn_f32_f16_f16acc_int8_len; }
+                if (f32acc) { FA_SPV(flash_attn_f32_f16_int8); }
+                else        { FA_SPV(flash_attn_f32_f16_f16acc_int8); }
             } else {
-                spv_data = flash_attn_f32_f16_fp32_int8_data;
-                spv_size = flash_attn_f32_f16_fp32_int8_len;
+                FA_SPV(flash_attn_f32_f16_fp32_int8);
             }
 #endif
             name = aligned ? "flash_attn_f32_f16_aligned" : "flash_attn_f32_f16";
         } else {
             if (device->fp16) {
                 if (device->dot2_f16) {
-                    if (f32acc) { spv_data = flash_attn_f32_f16_dot2_data;        spv_size = flash_attn_f32_f16_dot2_len; }
-                    else        { spv_data = flash_attn_f32_f16_dot2_f16acc_data; spv_size = flash_attn_f32_f16_dot2_f16acc_len; }
+                    if (f32acc) { FA_SPV(flash_attn_f32_f16_dot2); }
+                    else        { FA_SPV(flash_attn_f32_f16_dot2_f16acc); }
                 } else {
-                    if (f32acc) { spv_data = flash_attn_f32_f16_data;        spv_size = flash_attn_f32_f16_len; }
-                    else        { spv_data = flash_attn_f32_f16_f16acc_data; spv_size = flash_attn_f32_f16_f16acc_len; }
+                    if (f32acc) { FA_SPV(flash_attn_f32_f16); }
+                    else        { FA_SPV(flash_attn_f32_f16_f16acc); }
                 }
             } else {
-                spv_data = flash_attn_f32_f16_fp32_data;
-                spv_size = flash_attn_f32_f16_fp32_len;
+                FA_SPV(flash_attn_f32_f16_fp32);
             }
             name = aligned ? "flash_attn_f32_f16_aligned" : "flash_attn_f32_f16";
         }
+#undef FA_SPV
         ggml_vk_create_pipeline(device, fa.second, name, spv_size, spv_data, "main", 8,
                                 sizeof(vk_flash_attn_push_constants), {Br, 1, 1},
                                 get_fa_spec_constants(fa.first), aligned ? Bc : 1, true,
@@ -8504,9 +8506,13 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
 
     // fork: K and V of the token-major KV record (a cell's record holds every layer's K and V; kv-tail forces the layout) span the cells times the record,
     // past one binding's range at long contexts (GLM, about 188 KB a cell at f16: 4 GiB at 23k cells), and the shaders multiply cell by stride in 32 bits.
-    // Such a call runs in chunks of cells (fa_chunks below). CUDA indexes with 64 bits and needs none.
-    const bool fa_chunked = ggml_nbytes(k) > ctx->device->properties.limits.maxStorageBufferRange ||
-                            ggml_nbytes(v) > ctx->device->properties.limits.maxStorageBufferRange;
+    // With VK_EXT_shader_64bit_indexing such a call binds the whole views to the 64-bit indexing twin of its pipeline, whose K/V index math runs in 64
+    // bits (fa_idx64); without it, the call runs in chunks of cells (fa_chunks below). CUDA indexes with 64 bits and needs neither.
+    const bool fa_past_range = ggml_nbytes(k) > ctx->device->properties.limits.maxStorageBufferRange ||
+                               ggml_nbytes(v) > ctx->device->properties.limits.maxStorageBufferRange;
+    // shortcut: the coopmat1 path keeps the chunks (its coopMatLoad takes 32-bit offsets); give it an FA_IDX64 build that stages K/V through shared memory
+    const bool fa_idx64   = fa_past_range && ctx->device->shader_64b_indexing && ctx->device->shader_int64 && tuning_params.path != FA_COOPMAT1;
+    const bool fa_chunked = fa_past_range && !fa_idx64;
 
     // Sparse mask hint (op_params[4]): compact the <= n_kv_max finite positions and gather only those.
     const int32_t n_kv_max = mask ? ggml_get_op_params_i32(dst, 4) : 0;
@@ -8520,7 +8526,8 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         return (t->type != GGML_TYPE_F16 && t->type != GGML_TYPE_BF16) ||
                (t->nb[1] | t->nb[2] | t->nb[3]) % (4 * sizeof(ggml_fp16_t)) == 0;
     };
-    const bool use_sparse = !fa_chunked && !disable_sparse && n_kv_max > 0 && mask &&
+    // shortcut: past one binding's range the sparse gather, the mask opt and the Xe shaders stay off (their index math is 32-bit); port them when needed
+    const bool use_sparse = !fa_past_range && !disable_sparse && n_kv_max > 0 && mask &&
                             max_bias == 0.0f && logit_softcap == 0.0f &&
                             (tuning_params.path != FA_COOPMAT2 || (sparse_gather_aligned(k) && sparse_gather_aligned(v))) &&
                             nem0 == KV &&
@@ -8560,10 +8567,11 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     }
 
     // Only use mask opt when the mask is fairly large. This hasn't been tuned extensively.
-    bool use_mask_opt = mask && !use_sparse && !fa_chunked && nem1 >= 32 && nem0 * nem1 > 32768 && nem0 >= tuning_params.block_cols * 16
+    bool use_mask_opt = mask && !use_sparse && !fa_past_range && nem1 >= 32 && nem0 * nem1 > 32768 && nem0 >= tuning_params.block_cols * 16
                         && (ctx->device->architecture != vk_device_architecture::AMD_GCN || HSK > 256 || HSV > 256);
     vk_fa_pipeline_state fa_pipeline_state = get_fa_pipeline_state(ctx->device, tuning_params, HSK, HSV, aligned, f32acc,
-                                                                   mask != nullptr, use_mask_opt, logit_softcap != 0, use_sparse, k_type_eff, v_type_eff);
+                                                                   mask != nullptr, use_mask_opt, logit_softcap != 0, use_sparse, k_type_eff, v_type_eff,
+                                                                   fa_idx64);
 
     vk_pipeline pipeline = nullptr;
 
@@ -8592,6 +8600,20 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     }
 
     assert(pipeline);
+    if (fa_idx64) {   // fork: its 64-bit indexing twin; a pass over the shaders makes both (compiling neither), the request below compiles the twin alone
+        if (!pipeline->initialized) {
+            ggml_vk_load_shaders(ctx->device);
+        }
+        pipeline = ggml_vk_get_64b_indexing_pipeline(ctx, pipeline);
+#if defined(VK_EXT_shader_64bit_indexing)
+        GGML_ASSERT(pipeline->is_64b_indexing);
+#endif
+        static std::atomic<bool> told { false };   // once per process: a run's log says whether this path ran
+        if (!told.exchange(true)) {
+            GGML_LOG_WARN("ggml_vulkan: flash attention over K/V views of %.2f / %.2f GiB: one call on the 64-bit indexing pipeline (shown once)\n",
+                ggml_nbytes(k) / 1073741824.0, ggml_nbytes(v) / 1073741824.0);
+        }
+    }
     // Compile early to initialize wg_denoms.
     ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
 
@@ -8637,7 +8659,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         // of "align", so recompute split_k based on that.
         split_kv = ROUNDUP_POW2(std::max(1u, KV / split_k), alignment);
         split_k = CEIL_DIV(KV, split_kv);
-        xe_fa_opt = !fa_chunked && xe_fa_supported_platform && xe_fa_supported_usage && xe_fa_supported_dtype;
+        xe_fa_opt = !fa_past_range && xe_fa_supported_platform && xe_fa_supported_usage && xe_fa_supported_dtype;
         if (xe_fa_opt) {
             const uint32_t split_p_size = 32;
             const size_t max_dim = (nek1 + split_p_size - 1) / split_p_size;
@@ -16335,7 +16357,8 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
     // non-compute ops are never executed here; their size is bounded by the buffer allocation limit
     const bool non_compute = ggml_op_is_empty(op->op);
     for (int i = 0; i < GGML_MAX_SRC; i++) {
-        // fork: flash attention binds K and V in chunks of cells that fit a binding (ggml_vk_flash_attn, fa_chunked): only the buffer limit counts for them
+        // fork: flash attention binds K and V whole on the 64-bit indexing pipeline or in chunks of cells that fit a binding (ggml_vk_flash_attn): only the
+        // buffer limit counts for them
         const bool fa_kv = op->op == GGML_OP_FLASH_ATTN_EXT && (i == 1 || i == 2);
         if (op->src[i] && !non_compute &&
             !(fa_kv ? ggml_nbytes(op->src[i]) <= device->max_buffer_size : tensor_size_supported(ggml_nbytes(op->src[i])))) {

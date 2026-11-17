@@ -741,18 +741,24 @@ void process_shaders() {
 #endif
             }
 
-            string_to_spv("flash_attn_f32_f16", "flash_attn.comp",
-                merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}}), fp16, false, false, f16acc);
+            // fork: each scalar build also as FA_IDX64 (suffix _idx64): K/V indices in 64 bits, for the 64-bit indexing pipelines of calls past 4 GiB
+            for (const bool idx64 : {false, true}) {
+                const std::map<std::string, std::string> fa_dict = idx64 ? merge_maps(fa_base_dict, {{"FA_IDX64", "1"}}) : fa_base_dict;
+                const std::string sfx = idx64 ? "_idx64" : "";
 
-            if (fp16) {
-                string_to_spv("flash_attn_f32_f16_dot2", "flash_attn.comp",
-                    merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"DOT2_F16", "1"}}), fp16, false, false, f16acc);
-            }
+                string_to_spv("flash_attn_f32_f16", "flash_attn.comp",
+                    merge_maps(fa_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}}), fp16, false, false, f16acc, sfx);
+
+                if (fp16) {
+                    string_to_spv("flash_attn_f32_f16_dot2", "flash_attn.comp",
+                        merge_maps(fa_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"DOT2_F16", "1"}}), fp16, false, false, f16acc, sfx);
+                }
 
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
-            string_to_spv("flash_attn_f32_f16", "flash_attn.comp",
-                merge_maps(fa_base_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"MMQ", "1"}, {"FA_MMQ_MIXED", "1"}}), fp16, false, false, f16acc, "_int8");
+                string_to_spv("flash_attn_f32_f16", "flash_attn.comp",
+                    merge_maps(fa_dict, {{"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"MMQ", "1"}, {"FA_MMQ_MIXED", "1"}}), fp16, false, false, f16acc, "_int8" + sfx);
 #endif
+            }
         }
     }
 

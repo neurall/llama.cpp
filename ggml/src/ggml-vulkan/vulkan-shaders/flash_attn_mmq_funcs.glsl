@@ -2,7 +2,7 @@
 // reads from the matching aliased K binding declared in flash_attn_dequant.glsl.
 // Spec-constant specialization folds the unused paths.
 
-int32_t get_k_qs(uint ib, uint iqs, uint a_offset) {
+int32_t get_k_qs(FA_IDX ib, uint iqs, FA_IDX a_offset) {
     switch (FaTypeK) {
         case GGML_TYPE_Q4_0: {
             uint vui = pack32(u16vec2(k_packed_q4_0.data[a_offset + ib].qs[(iqs & 0xF) / 2 + 0],
@@ -45,7 +45,7 @@ int32_t get_k_qs(uint ib, uint iqs, uint a_offset) {
 
 // Per-block scale/min, packed as (d, m). Single-scale types (Q4_0, Q5_0, Q8_0)
 // return (d, 0) so call sites always see the same shape.
-FLOAT_TYPEV2 get_k_scale(uint ib, uint a_offset) {
+FLOAT_TYPEV2 get_k_scale(FA_IDX ib, FA_IDX a_offset) {
     switch (FaTypeK) {
         case GGML_TYPE_Q4_0: return FLOAT_TYPEV2(FLOAT_TYPE(k_packed_q4_0.data[a_offset + ib].d), 0.0);
         case GGML_TYPE_Q4_1: return FLOAT_TYPEV2(k_packed_q4_1_p32.data[a_offset + ib].dm);
@@ -56,7 +56,7 @@ FLOAT_TYPEV2 get_k_scale(uint ib, uint a_offset) {
     }
 }
 
-void k_block_to_shmem(const uint buf_ib, const uint global_ib, const uint iqs, const uint a_offset) {
+void k_block_to_shmem(const uint buf_ib, const FA_IDX global_ib, const uint iqs, const FA_IDX a_offset) {
     // kblocksh[].qs is int32_t for the unified MMQ struct; uint sources need
     // explicit casts. The bit pattern is what we care about here -- the actual
     // signed/unsigned interpretation happens downstream in the dot product.
@@ -118,7 +118,7 @@ struct fa_k_qs_block8 {
     int32_t qs[8];
 };
 
-fa_k_qs_block8 get_k_qs_block8(uint ib, uint a_offset) {
+fa_k_qs_block8 get_k_qs_block8(FA_IDX ib, FA_IDX a_offset) {
     fa_k_qs_block8 r;
     uint qh = 0;
     if (FaTypeK == GGML_TYPE_Q5_0) {

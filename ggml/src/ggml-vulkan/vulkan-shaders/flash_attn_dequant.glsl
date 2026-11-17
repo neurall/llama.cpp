@@ -12,6 +12,10 @@
 // illegal to return from / pass to functions. Macros expand inline where the
 // float16 stays in storage and is converted to FLOAT_TYPE at use.
 
+#ifndef FA_IDX
+#define FA_IDX uint   // fork: flash_attn_base.glsl defines it for the FA shaders (64 bits in their FA_IDX64 build); other includers index with 32 bits
+#endif
+
 // F32 is fed as a vec4 "block" (4 floats), matching what dequant_funcs_cm2.glsl
 // does for F32 in the cm2 shader. FaBlockBytesK/V == 16 for F32.
 layout (binding = 1) readonly buffer K_PACKED_F32  { vec4 data[]; }                k_packed_f32;
@@ -118,7 +122,7 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 dat
 #define FA_DEQUANT4_BF16(BUF) \
     return FLOAT_TYPEV4(bf16_to_fp32(uvec4(BUF.data[(a_offset + ib) / 4])));
 
-FLOAT_TYPEV4 dequantize4(uint ib, uint iqs, uint a_offset, uint binding_idx) {
+FLOAT_TYPEV4 dequantize4(FA_IDX ib, uint iqs, FA_IDX a_offset, uint binding_idx) {
     if (binding_idx == BINDING_IDX_K) {
         switch (FaTypeK) {
             case GGML_TYPE_F32:  FA_DEQUANT4_F32 (k_packed_f32)

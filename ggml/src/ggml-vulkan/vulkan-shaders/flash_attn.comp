@@ -5,6 +5,11 @@
 
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
 
+#ifdef FA_IDX64
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_64bit_indexing : require
+#endif
+
 #ifdef FLOAT16
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_subgroup_extended_types_float16 : require
@@ -179,8 +184,8 @@ void main() {
     uint32_t mo_offset = mo_stride * i;
 
     // FaBlockBytesK/V == 2 for f16, 16 for f32, ggml block byte size for quants.
-    uint32_t k_offset = (ik2*p.nb12 + ik3*p.nb13) / FaBlockBytesK;
-    uint32_t v_offset = (iv2*p.nb22 + iv3*p.nb23) / FaBlockBytesV;
+    const FA_IDX k_offset = FA_IDX((ik2*p.nb12 + ik3*p.nb13) / FaBlockBytesK);
+    const FA_IDX v_offset = FA_IDX((iv2*p.nb22 + iv3*p.nb23) / FaBlockBytesV);
     uint32_t m_offset = gqa_iq1*mask_cols;
     if (p.nem2 != 1 || p.nem3 != 1) {
         m_offset += ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * p.nem1 * mask_cols;
@@ -263,12 +268,9 @@ void main() {
                     uint32_t kcol;
                     if (fa_kv_index(j * Bc + c, kcol)) {
                         if (USE_DECODE_K) {
-                            uint coord = kcol * k_stride * BLOCK_SIZE_K + 4 * d;
-                            uint ib = coord / BLOCK_SIZE_K;
-                            uint iqs = (coord % BLOCK_SIZE_K);
-                            K_Tf = dequantize4(ib, iqs, k_offset, BINDING_IDX_K);
+                            K_Tf = dequantize4(fa_kv_block(kcol, k_stride, 4 * d, BLOCK_SIZE_K), (4 * d) % BLOCK_SIZE_K, k_offset, BINDING_IDX_K);
                         } else {
-                            K_Tf = FLOAT_TYPEV4(data_kv4[k_offset / 4 + kcol * k_stride / 4 + d]);
+                            K_Tf = FLOAT_TYPEV4(data_kv4[k_offset / 4 + FA_IDX(kcol) * k_stride / 4 + d]);
                         }
                     }
 
@@ -287,7 +289,7 @@ void main() {
                     const uint buf_ib = c * qf_stride + block;
                     uint32_t kcol;
                     if (fa_kv_index(j * Bc + c, kcol)) {
-                        const uint global_ib = kcol * k_stride + block;
+                        const FA_IDX global_ib = FA_IDX(kcol) * k_stride + block;
                         k_block_to_shmem(buf_ib, global_ib, iqs, k_offset);
                     } else {
                         k_block_to_shmem_zero(buf_ib, iqs);
@@ -319,12 +321,10 @@ void main() {
                     if (SHMEM_STAGING != 0) {
                         K_Tf = kvsh[(c * cols_per_iter + col_tid) * kvsh_stride + (d * D_split + d_tid)];
                     } else if (USE_DECODE_K) {
-                        uint coord = kcol * k_stride * BLOCK_SIZE_K + 4 * (d * D_split + d_tid);
-                        uint ib = coord / BLOCK_SIZE_K;
-                        uint iqs = (coord % BLOCK_SIZE_K);
-                        K_Tf = dequantize4(ib, iqs, k_offset, BINDING_IDX_K);
+                        const uint e = 4 * (d * D_split + d_tid);
+                        K_Tf = dequantize4(fa_kv_block(kcol, k_stride, e, BLOCK_SIZE_K), e % BLOCK_SIZE_K, k_offset, BINDING_IDX_K);
                     } else {
-                        K_Tf = FLOAT_TYPEV4(data_kv4[k_offset / 4 + kcol * k_stride / 4 + d * D_split + d_tid]);
+                        K_Tf = FLOAT_TYPEV4(data_kv4[k_offset / 4 + FA_IDX(kcol) * k_stride / 4 + d * D_split + d_tid]);
                     }
                     [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
                         Sf[r][c] = dot_product(Q_cache[r], K_Tf, Sf[r][c]);
@@ -344,12 +344,10 @@ void main() {
                     if (SHMEM_STAGING != 0) {
                         K_Tf = kvsh[(c * cols_per_iter + col_tid) * kvsh_stride + (d * D_split + d_tid)];
                     } else if (USE_DECODE_K) {
-                        uint coord = kcol * k_stride * BLOCK_SIZE_K + 4 * (d * D_split + d_tid);
-                        uint ib = coord / BLOCK_SIZE_K;
-                        uint iqs = (coord % BLOCK_SIZE_K);
-                        K_Tf = dequantize4(ib, iqs, k_offset, BINDING_IDX_K);
+                        const uint e = 4 * (d * D_split + d_tid);
+                        K_Tf = dequantize4(fa_kv_block(kcol, k_stride, e, BLOCK_SIZE_K), e % BLOCK_SIZE_K, k_offset, BINDING_IDX_K);
                     } else {
-                        K_Tf = FLOAT_TYPEV4(data_kv4[k_offset / 4 + kcol * k_stride / 4 + d * D_split + d_tid]);
+                        K_Tf = FLOAT_TYPEV4(data_kv4[k_offset / 4 + FA_IDX(kcol) * k_stride / 4 + d * D_split + d_tid]);
                     }
                     [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
                         Sf[r][c] = dot_product(Qf[tile_row(r) * qf_stride + d * D_split + d_tid], K_Tf, Sf[r][c]);
@@ -402,9 +400,9 @@ void main() {
                         }
                     }
                 } else {
-                    const uint coord = kcol * k_stride * BLOCK_SIZE_K + 4 * (d_tid * (HSK_per_thread / 4) + d_block);
-                    const uint ib = coord / BLOCK_SIZE_K;
-                    const uint iqs = (coord % BLOCK_SIZE_K);
+                    const uint e = 4 * (d_tid * (HSK_per_thread / 4) + d_block);
+                    const FA_IDX ib = fa_kv_block(kcol, k_stride, e, BLOCK_SIZE_K);
+                    const uint iqs = e % BLOCK_SIZE_K;
 
                     k_dm = ACC_TYPEV2(get_k_scale(ib, k_offset));
 
@@ -501,12 +499,9 @@ void main() {
                     uint32_t vcol;
                     if (fa_kv_index(j * Bc + c, vcol)) {
                         if (USE_DECODE_V) {
-                            uint coord = vcol * v_stride * BLOCK_SIZE_V + 4 * d;
-                            uint ib = coord / BLOCK_SIZE_V;
-                            uint iqs = (coord % BLOCK_SIZE_V);
-                            V_Tf = dequantize4(ib, iqs, v_offset, BINDING_IDX_V);
+                            V_Tf = dequantize4(fa_kv_block(vcol, v_stride, 4 * d, BLOCK_SIZE_V), (4 * d) % BLOCK_SIZE_V, v_offset, BINDING_IDX_V);
                         } else {
-                            V_Tf = FLOAT_TYPEV4(data_vv4[v_offset / 4 + vcol * v_stride / 4 + d]);
+                            V_Tf = FLOAT_TYPEV4(data_vv4[v_offset / 4 + FA_IDX(vcol) * v_stride / 4 + d]);
                         }
                     }
 
@@ -534,12 +529,10 @@ void main() {
                 if (SHMEM_STAGING != 0) {
                     Vf = kvsh[(c * cols_per_iter + col_tid) * kvsh_stride + (d * D_split + d_tid)];
                 } else if (USE_DECODE_V) {
-                    uint coord = vcol * v_stride * BLOCK_SIZE_V + 4 * (d * D_split + d_tid);
-                    uint ib = coord / BLOCK_SIZE_V;
-                    uint iqs = (coord % BLOCK_SIZE_V);
-                    Vf = dequantize4(ib, iqs, v_offset, BINDING_IDX_V);
+                    const uint e = 4 * (d * D_split + d_tid);
+                    Vf = dequantize4(fa_kv_block(vcol, v_stride, e, BLOCK_SIZE_V), e % BLOCK_SIZE_V, v_offset, BINDING_IDX_V);
                 } else {
-                    Vf = FLOAT_TYPEV4(data_vv4[v_offset / 4 + vcol * v_stride / 4 + d * D_split + d_tid]);
+                    Vf = FLOAT_TYPEV4(data_vv4[v_offset / 4 + FA_IDX(vcol) * v_stride / 4 + d * D_split + d_tid]);
                 }
                 [[unroll]] for (uint32_t r = 0; r < rows_per_thread; ++r) {
                     Of[r][d] += FLOAT_TYPEV4(Pf[r] * Vf);

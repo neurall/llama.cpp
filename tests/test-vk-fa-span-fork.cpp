@@ -1,14 +1,18 @@
 // Vulkan flash attention over a layer's K and V inside the token-major KV record (one record per cell holds every layer's K and V, kv-tail forces this
 // layout): the views' byte span is the cells times the record, past maxStorageBufferRange (4 GiB) at long contexts (GLM, about 188 KB a cell at f16: 23k
-// cells). CUDA indexes with 64-bit strides; Vulkan bound the whole span to a 32-bit pipeline and its shaders multiply cell by stride in 32 bits. Now such a
-// call runs in chunks of cells (ggml_vk_flash_attn, fa_chunks).
+// cells). CUDA indexes with 64-bit strides; Vulkan bound the whole span to a 32-bit pipeline and its shaders multiply cell by stride in 32 bits. Such a call
+// now runs whole on the 64-bit indexing twin of its pipeline where the device has VK_EXT_shader_64bit_indexing (the scalar shader's FA_IDX64 build: its
+// K/V indices are 64-bit), else, and on the coopmat1 path, in chunks of cells (ggml_vk_flash_attn, fa_chunks). Quantized K/V take block indices from the
+// cell and its stride without an element index, which passed 2^32 at q4_0 views of 2.25 GiB, inside one binding.
 //
 // Each case: a record buffer of the given size on the first Vulkan card, K and V of 8192 cells at its start (filler between them), flash attention with 8
-// query heads on 4 KV heads, D 128; the CPU backend computes the same on compact K/V. Cases cover f16 and q8_0, 1 token (decode, grouped heads), 4 tokens
-// (grouped heads), 16 tokens (rows of their own), and the tail mask (k0: the mask covers the cells from 4096 on, every cell before is visible; a tenth of
-// the masked cells are -inf). Error as in test-backend-ops (normalized mean squared error, bound 5e-4).
+// (grouped) or 4 query heads on 4 KV heads, D 128; the CPU backend computes the same on compact K/V. Cases cover f16, q8_0 and q4_0, 1 token (decode), 4
+// tokens, 16 tokens, and the tail mask (k0: the mask covers the cells from 4096 on, every cell before is visible; a tenth of the masked cells are -inf).
+// Error as in test-backend-ops (normalized mean squared error, bound 5e-4). On an NVIDIA card one token on 4 heads runs the scalar shader and the rest
+// coopmat2; GGML_VK_DISABLE_COOPMAT2=1 runs coopmat1 instead, with GGML_VK_DISABLE_COOPMAT=1 too everything runs scalar.
 //
-// build: cmake --build <dir> --target test-vk-fa-span-fork;  run: test-vk-fa-span-fork (about 10 GiB of VRAM, skipped without a Vulkan card)
+// build: cmake --build <dir> --target test-vk-fa-span-fork;  run: test-vk-fa-span-fork (up to 20 GiB of VRAM: bigger cases are skipped where no buffer
+// of their size; skipped without a Vulkan card)
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -22,16 +26,16 @@
 
 static int n_run = 0, n_failed = 0;
 
-static void check(ggml_backend_t vk, ggml_backend_t cpu, ggml_type type, double span_gib, int64_t N, int64_t k0) {
-    const int64_t D = 128, H = 4, HQ = 8, n_kv = 8192;
+static void check(ggml_backend_t vk, ggml_backend_t cpu, ggml_type type, double span_gib, int64_t N, int64_t k0, int64_t HQ) {
+    const int64_t D = 128, H = 4, n_kv = 8192;
     const size_t  headb = ggml_row_size(type, D);                                       // one head's K (or V) row of a cell
     const size_t  rowb  = (size_t) H * headb;                                           // one cell's K (or V) of this layer, all heads
     size_t unit = 256;   // a record is whole blocks of the type (its rows are) and a multiple of 256 bytes
     while (unit % ggml_type_size(type) != 0) { unit += 256; }
     const size_t  rec   = (size_t) (span_gib * (1ull << 30)) / n_kv / unit * unit;   // record bytes a cell
     char name[160];
-    snprintf(name, sizeof(name), "%s, span %.1f GiB, %2lld token%s, mask from cell %lld", ggml_type_name(type), (double) rec * n_kv / (1ull << 30),
-             (long long) N, N > 1 ? "s" : " ", (long long) k0);
+    snprintf(name, sizeof(name), "%s, span %.1f GiB, %2lld token%s, %lld/%lld heads, mask from cell %lld", ggml_type_name(type), (double) rec * n_kv / (1ull << 30),
+             (long long) N, N > 1 ? "s" : " ", (long long) HQ, (long long) H, (long long) k0);
     n_run++;
 
     std::mt19937 rng(11);
@@ -133,15 +137,21 @@ int main() {
     ggml_backend_t vk  = ggml_backend_dev_init(dev, nullptr);
     ggml_backend_t cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
     printf("%s:\n", ggml_backend_dev_name(dev));
-    struct { ggml_type type; double span; int64_t N, k0; } cases[] = {
-        { GGML_TYPE_F16,  2.0,  1,    0 }, { GGML_TYPE_F16,  2.0, 16, 4096 },                                     // under 4 GiB: one binding, as before
-        { GGML_TYPE_F16,  5.0,  1,    0 }, { GGML_TYPE_F16,  5.0,  4, 4096 }, { GGML_TYPE_F16, 5.0, 16, 0 },     // two chunks (6400 + 1792 cells)
-        { GGML_TYPE_F16,  5.0, 16, 4096 },
-        { GGML_TYPE_F16,  9.0,  1, 4096 }, { GGML_TYPE_F16,  9.0, 16, 4096 }, { GGML_TYPE_F16, 9.0, 16, 0 },     // three (3584 + 3584 + 1024), the first unmasked
-        { GGML_TYPE_Q8_0, 5.0,  1,    0 }, { GGML_TYPE_Q8_0, 5.0, 16, 4096 },
+    struct { ggml_type type; double span; int64_t N, k0, HQ; } cases[] = {
+        { GGML_TYPE_F16,  2.0,  1,    0, 8 }, { GGML_TYPE_F16,  2.0, 16, 4096, 8 },                                         // under 4 GiB: one binding
+        { GGML_TYPE_F16,  5.0,  1,    0, 8 }, { GGML_TYPE_F16,  5.0,  4, 4096, 8 }, { GGML_TYPE_F16, 5.0, 16, 0, 8 },       // past one binding's range
+        { GGML_TYPE_F16,  5.0, 16, 4096, 8 },
+        { GGML_TYPE_F16,  9.0,  1, 4096, 8 }, { GGML_TYPE_F16,  9.0, 16, 4096, 8 }, { GGML_TYPE_F16, 9.0, 16, 0, 8 },       // cell times stride past 2^32
+        { GGML_TYPE_F16,  9.0,  1, 4096, 4 },                                                                               // no grouped heads: scalar
+        { GGML_TYPE_Q8_0, 5.0,  1,    0, 8 }, { GGML_TYPE_Q8_0, 5.0, 16, 4096, 8 }, { GGML_TYPE_Q8_0, 5.0, 1, 0, 4 },
+        // q4_0 under 4 GiB: one 32-bit binding whose element index passed 2^32 (32 elements a block of 18 bytes)
+        { GGML_TYPE_Q4_0, 3.0,  1,    0, 4 }, { GGML_TYPE_Q4_0, 3.0, 16, 4096, 8 },
+        // past 2^32 elements in a cell times its stride by far (f16: 2.6 M elements a cell; q8_0: 18 G elements over the view); skipped where no buffer
+        { GGML_TYPE_F16, 20.0,  1, 4096, 8 }, { GGML_TYPE_F16, 20.0, 16, 4096, 8 }, { GGML_TYPE_F16, 20.0, 1, 4096, 4 },
+        { GGML_TYPE_Q8_0, 18.0, 1,    0, 8 }, { GGML_TYPE_Q8_0, 18.0, 16, 4096, 8 }, { GGML_TYPE_Q8_0, 18.0, 1, 0, 4 },
     };
     for (const auto & c : cases) {
-        check(vk, cpu, c.type, c.span, c.N, c.k0);
+        check(vk, cpu, c.type, c.span, c.N, c.k0, c.HQ);
     }
     ggml_backend_free(vk);
     ggml_backend_free(cpu);

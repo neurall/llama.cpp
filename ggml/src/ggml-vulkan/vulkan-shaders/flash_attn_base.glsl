@@ -33,6 +33,14 @@ const uint32_t HSV_pad = (HSV + 15) & ~15;
 
 const bool KV_bounds_check = Clamp != 0;
 
+// fork: the type of K/V element and block indices. The FA_IDX64 build of the scalar shader runs on a pipeline of 64-bit indexing, for K/V views past one
+// binding's 4 GiB (the token-major KV record at long contexts): a cell times the cell stride passes 2^32 there. Every other build keeps 32 bits.
+#ifdef FA_IDX64
+#define FA_IDX uint64_t
+#else
+#define FA_IDX uint
+#endif
+
 layout (push_constant) uniform parameter {
     uint32_t N;
     uint32_t KV;
@@ -243,6 +251,12 @@ bool fa_kv_index(uint lin, out uint kv_col) {
     }
     kv_col = lin;
     return !KV_bounds_check || lin < KV;
+}
+
+// fork: the block holding element e (< a row's width) of cell col's row, from the cell and the stride in blocks: never an element index of the whole
+// view, which passed 2^32 at q4_0 views of 2.25 GiB inside one binding (32 elements a block of 18 bytes). The element's place in it is e % block.
+FA_IDX fa_kv_block(const uint col, const uint stride, const uint e, const uint block) {
+    return FA_IDX(col) * stride + e / block;
 }
 
 // Bias applied to softmax to stay in fp16 range.
