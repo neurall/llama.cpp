@@ -1339,6 +1339,12 @@ struct ggml_backend_vk_context {
     std::map<std::pair<size_t, size_t>, vk_buffer> scratch_views;
     std::vector<vk_buffer> scratch_retired;
     std::unordered_map<uint64_t, vk_scratch_need> scratch_need_by_uid;
+    // the parts' sizes in the region as lent now (the most any graph asked for while they fit together: the layout stays put from graph to graph, as the
+    // context's own buffers do), and the layout bound now (its offset and views: a graph with the same skips every lookup)
+    vk_scratch_need scratch_lay;
+    size_t scratch_lay_off = 0, scratch_lay_cap = 0;
+    vk_scratch_need scratch_cur;
+    size_t scratch_cur_off = 0;
 
     // for GGML_VK_PERF_LOGGER
     std::unique_ptr<vk_perf_logger> perf_logger;

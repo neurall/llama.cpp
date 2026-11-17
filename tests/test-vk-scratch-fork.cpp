@@ -190,6 +190,11 @@ int main(int argc, char ** argv) {
         }
         std::mt19937 rng(42);
         int with_temps = 0;
+        struct kept_graph {
+            ggml_context * ctx; ggml_cgraph * gf; ggml_tensor * y; ggml_backend_buffer_t buf;
+            std::vector<uint8_t> ref; bool exact; size_t computed; const char * name;
+        };
+        std::vector<kept_graph> kept;   // the graphs that take temporaries, run together under one lend at the end (4.)
         size_t none_total = 0;   // what an op without temporaries is computed to take (the add+rms partials only)
         {
             ggml_init_params ip = { 4 * ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
@@ -239,11 +244,12 @@ int main(int argc, char ** argv) {
             char what[160];
             auto fail = [&](const char * why) { n_failed++; printf("  FAILED %s: %s\n", what, why); };
 
-            // 1. lent to this context: the temporaries live in [off, off + computed), nothing else is touched and no device memory is made
+            // 1. lent to this context, exactly what was computed (as the pool lends a graph): the temporaries live in [off, off + computed), nothing else is
+            //    touched and no device memory is made
             snprintf(what, sizeof(what), "%s, region lent", tc.name);
             n_run++;
             ggml_backend_buffer_clear(pool, pat);
-            scratch_fn((int) d, pool, off, cap, be);
+            scratch_fn((int) d, pool, off, computed, be);
             uint64_t g0 = 0, g1 = 0, gb = 0;
             ggml_backend_vram_guard_fork(1);
             ggml_backend_vram_guard_stats_fork(&g0, &gb);
@@ -283,6 +289,8 @@ int main(int argc, char ** argv) {
                 if (!same(out3))          { fail("the output differs"); }
                 if (outside3 > 0)         { char m[160]; snprintf(m, sizeof(m), "%zu bytes of the lent buffer changed (first at %zu)", outside3, first); fail(m); }
                 if (asked3 != computed)   { char m[160]; snprintf(m, sizeof(m), "the mark is %zu, the op asked for %zu", asked3, computed); fail(m); }
+                kept.push_back({ ctx, gf, y, buf, ref, exact, computed, tc.name });   // for 4. below
+                continue;
             }
             ggml_backend_buffer_free(buf);
             ggml_free(ctx);
@@ -291,6 +299,44 @@ int main(int argc, char ** argv) {
             n_failed++;
             printf("  FAILED: only %d of the ops took temporaries on this card: the test exercises nothing\n", with_temps);
         }
+        // 4. all those graphs under one lend, as large as the most any of them takes (a decode step runs ~2 graphs per layer under one lend, each with its own
+        //    sizes; the parts' layout stays put from graph to graph while they fit together): each keeps its result, no byte outside the lend changes, the mark
+        //    is the most any asked for, no device memory is made
+        if (!kept.empty()) {
+            size_t most = 0;
+            for (const auto & k : kept) { most = std::max(most, k.computed); }
+            n_run++;
+            ggml_backend_buffer_clear(pool, pat);
+            scratch_fn((int) d, pool, off, most, be);
+            uint64_t g0 = 0, g1 = 0, gb = 0;
+            ggml_backend_vram_guard_fork(1);
+            ggml_backend_vram_guard_stats_fork(&g0, &gb);
+            int bad = 0;
+            for (int round = 0; round < 2; ++round) {
+                for (const auto & k : kept) {
+                    const std::vector<uint8_t> out = compute(be, k.gf, k.y);
+                    const bool ok = out.size() == k.ref.size() && (k.exact ? out == k.ref : (k.y->type != GGML_TYPE_F32 || nmse(k.ref, out) < 1e-10));
+                    if (!ok) { bad++; printf("  FAILED %s, one of %zu graphs under one lend: the output differs (round %d)\n", k.name, kept.size(), round + 1); }
+                }
+            }
+            ggml_backend_vram_guard_stats_fork(&g1, &gb);
+            ggml_backend_vram_guard_fork(0);
+            const size_t asked = scratch_fn((int) d, nullptr, 0, 0, nullptr);
+            size_t first = 0;
+            const size_t outside = spilled(most, first);
+            if (bad > 0 || outside > 0 || asked != most || g1 != g0) {
+                n_failed++;
+                printf("  FAILED %zu graphs under one lend of %zu bytes: %d outputs differ, %zu bytes outside the lend changed (first at %zu), mark %zu, %llu device buffers made\n",
+                        kept.size(), most, bad, outside, first, asked, (unsigned long long) (g1 - g0));
+            } else {
+                printf("  %zu graphs under one lend of %zu bytes, twice over: every result the same, nothing outside the lend touched\n", kept.size(), most);
+            }
+        }
+        for (const auto & k : kept) {
+            ggml_backend_buffer_free(k.buf);
+            ggml_free(k.ctx);
+        }
+        kept.clear();
         scratch_fn((int) d, nullptr, 0, 0, nullptr);
         ggml_free(pctx);
         ggml_backend_buffer_free(pool);

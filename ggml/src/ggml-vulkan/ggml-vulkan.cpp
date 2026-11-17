@@ -273,6 +273,7 @@ struct vk_scratch_region {
 };
 static std::mutex g_vk_scratch_mtx;
 static vk_scratch_region g_vk_scratch[GGML_VK_MAX_DEVICES];
+static std::atomic<bool> g_vk_scratch_lent[GGML_VK_MAX_DEVICES];   // a region is lent on the card: a graph without one takes no lock
 static constexpr size_t vk_add_rms_partials_size = 1024;   // the add+rms partials: fixed, for deterministic results (ggml_vk_init)
 
 // [partials][x][y][split_k] in the region, each part on a step a view's offset may take
@@ -12525,7 +12526,7 @@ void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subct
     if (ctx->scratch_measure) {   // fork: the sizing pass only keeps the sizes its ops asked for
         return;
     }
-    if (ctx->scratch_views_on) {   // fork: the temporaries are views into the lent region: an op asking for more takes its own buffer below; the mark says how much
+    if (ctx->scratch_views_on && subctx) {   // fork: the temporaries are views into the lent region: an op asking for more takes its own buffer below; the mark says how much
         vk_scratch_need asked;
         asked.x       = ctx->prealloc_size_x;
         asked.y       = ctx->prealloc_size_y;
@@ -13353,6 +13354,7 @@ void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
         vk_scratch_region & r = g_vk_scratch[ctx->device->idx];
         if (r.owner == ctx) {
             r = vk_scratch_region();
+            g_vk_scratch_lent[ctx->device->idx].store(false, std::memory_order_release);
         }
     }
 
@@ -14793,7 +14795,7 @@ static void ggml_vk_scratch_own(ggml_backend_vk_context * ctx) {
 static void ggml_vk_scratch_bind(ggml_backend_vk_context * ctx, const ggml_cgraph * cgraph) {
     vk_buffer mem;
     size_t off = 0, cap = 0;
-    {
+    if (g_vk_scratch_lent[ctx->device->idx].load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(g_vk_scratch_mtx);
         const vk_scratch_region & r = g_vk_scratch[ctx->device->idx];
         if (r.active && (r.owner == nullptr || r.owner == ctx)) {
@@ -14835,7 +14837,31 @@ static void ggml_vk_scratch_bind(ggml_backend_vk_context * ctx, const ggml_cgrap
         }
         ctx->scratch_views.clear();
         ctx->scratch_views_mem = mem;
+        ctx->scratch_cur_off = SIZE_MAX;   // the bound views were of the old buffer: never "the layout bound for the last graph"
+        ctx->scratch_lay = vk_scratch_need();
+        ctx->scratch_lay_cap = 0;
     }
+    // each part as large as the most any graph asked for since the region was lent as it is now, while they fit together: the layout then stays put from
+    // graph to graph (a decode step runs ~2 graphs per layer, each with its own sizes, and a part that moves makes the next write wait for all earlier work)
+    if (off != ctx->scratch_lay_off || cap != ctx->scratch_lay_cap) {
+        ctx->scratch_lay = vk_scratch_need();
+        ctx->scratch_lay_off = off;
+        ctx->scratch_lay_cap = cap;
+    }
+    vk_scratch_need lay;
+    lay.x       = std::max(ctx->scratch_lay.x,       need.x);
+    lay.y       = std::max(ctx->scratch_lay.y,       need.y);
+    lay.split_k = std::max(ctx->scratch_lay.split_k, need.split_k);
+    if (ggml_vk_scratch_total(ctx->device, lay) > cap) {
+        lay = need;   // the parts' largest do not fit together: this graph's own sizes
+    } else {
+        ctx->scratch_lay = lay;
+    }
+    if (ctx->scratch_views_on && off == ctx->scratch_cur_off && lay.x == ctx->scratch_cur.x && lay.y == ctx->scratch_cur.y && lay.split_k == ctx->scratch_cur.split_k &&
+            ctx->prealloc_size_x == lay.x && ctx->prealloc_size_y == lay.y && ctx->prealloc_size_split_k == lay.split_k) {
+        return;   // the layout bound for the last graph, untouched since (no op took its own buffer): nothing to do
+    }
+    need = lay;
     static const vk_buffer none = std::make_shared<vk_buffer_struct>();   // a part this graph does not use: an empty buffer, as before any op asked for it
     const size_t a = ggml_vk_scratch_step(ctx->device);
     size_t at = off;
@@ -14883,6 +14909,8 @@ static void ggml_vk_scratch_bind(ggml_backend_vk_context * ctx, const ggml_cgrap
         ctx->prealloc_x_need_sync = ctx->prealloc_y_need_sync = ctx->prealloc_split_k_need_sync = true;
     }
     ctx->scratch_views_on = true;
+    ctx->scratch_cur      = need;
+    ctx->scratch_cur_off  = off;
 }
 
 // fork: set (buf != NULL, cap > 0: cap bytes of buf from off) or clear the scratch region of a card for the backend `owner` (NULL: any); returns the high-water
@@ -14895,6 +14923,7 @@ static size_t ggml_backend_vk_scratch_fork(int device, ggml_backend_buffer_t buf
     r.hwm = 0;
     if (buf == nullptr || cap == 0 || !ggml_backend_buffer_is_vk(buf)) {   // (a host buffer cannot hold device temporaries: no region)
         r.active = false;
+        g_vk_scratch_lent[device].store(false, std::memory_order_release);
         return hwm;
     }
     r.mem    = ((ggml_backend_vk_buffer_context *) buf->context)->dev_buffer;
@@ -14902,6 +14931,7 @@ static size_t ggml_backend_vk_scratch_fork(int device, ggml_backend_buffer_t buf
     r.cap    = cap;
     r.owner  = owner ? owner->context : nullptr;
     r.active = true;
+    g_vk_scratch_lent[device].store(true, std::memory_order_release);
     return hwm;
 }
 
