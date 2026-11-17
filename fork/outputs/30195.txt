@@ -1,0 +1,11 @@
+run 30195 | tables_before_pool_t_vk | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 387.99 t/s | prompt 12686.8 t/s | 64 tokens | args: -np 1 -dev CUDA0 | power 200+200 W | 2026-11-17 04:55:21
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, sub_nines);
+                    }
+                    out << ")";
+                
