@@ -1662,7 +1662,9 @@ static ggml_backend_buffer_t ggml_backend_cuda_room_buffer_fork(ggml_backend_buf
 #endif
 
 #if defined(_WIN32)
+#if !defined(_WINDOWS_)   // the HIP build has <windows.h> already (its rocBLAS lookup above), whose declaration this one conflicts with
 extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void * module, char * name, unsigned long size);
+#endif
 #else
 #include <unistd.h>
 #endif
