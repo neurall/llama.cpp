@@ -1,0 +1,11 @@
+run 30230 | vk_graph_one_chunk_vk | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 392.91 t/s | prompt 7400.6 t/s | 64 tokens | args: -np 1 -dev CUDA0 | power 200+200 W | 2026-11-17 06:30:22
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, sub_nines);
+                    }
+                    out << ")";
+                

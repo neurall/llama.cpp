@@ -1,0 +1,4 @@
+run 30214 | vk_gappy_rows_vk | pf36k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 265.68 t/s | prompt 11279.9 t/s | 32 tokens | args: -np 1 -dev Vulkan0 | power 200+200 W | 2026-11-17 06:14:08
+
+ than swap (may reduce performance if not using mlock)\n"
+        "- mmap-lock: mmap and mlock (default: mmap

@@ -4077,3 +4077,19 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-16 20:48:05,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1233
 2026-11-16 20:49:06,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1274
 2026-11-16 20:49:06,inv_phi_teach_end -np 1 --cpu-moe -t 6 -tb 8,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1255
+2026-11-17 06:20:12,vk_fa_chunks_vk -np 1 -dev CUDA0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppll,1,710.5384
+2026-11-17 06:20:34,vk_fa_chunks_vk -np 1 -dev CUDA0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppll,1,710.5384
+2026-11-17 06:32:23,vk_graph_one_chunk_vk -np 1 -dev CUDA0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppll,1,710.5384
+2026-11-17 06:32:46,vk_graph_one_chunk_vk -np 1 -dev CUDA0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppll,1,710.5384
+2026-11-17 06:33:37,vk_graph_one_chunk_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppll,1,711.6642
+2026-11-17 06:34:02,vk_graph_one_chunk_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppll,1,711.6642
+2026-11-17 06:35:26,vk_graph_one_chunk_oldfa_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppll,1,711.6642
+2026-11-17 06:35:52,vk_graph_one_chunk_oldfa_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppll,1,711.6642
+2026-11-17 06:41:09,vk_graph_one_chunk_oldfa_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,742.2079
+2026-11-17 06:49:16,vk_graph_one_chunk_oldfa_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,742.0412
+2026-11-17 06:58:38,vk_graph_one_chunk_vk -np 1 -dev CUDA0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,742.9839
+2026-11-17 07:05:56,vk_graph_one_chunk_vk -np 1 -dev CUDA0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,742.9839
+2026-11-17 07:11:49,vk_graph_one_chunk_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,742.0491
+2026-11-17 07:18:32,vk_graph_one_chunk_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,742.0491
+2026-11-17 07:26:16,vk_graph_one_chunk_oldfa_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,742.0491
+2026-11-17 07:33:00,vk_graph_one_chunk_oldfa_vk -np 1 -dev Vulkan0,OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,742.0491

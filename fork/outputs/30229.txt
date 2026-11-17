@@ -1,0 +1,11 @@
+run 30229 | vk_graph_one_chunk_vk | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 171.87 t/s | prompt 487.1 t/s | 64 tokens | args: -np 1 -dev Vulkan0 --moe sim-vram=3072,sim-ram=4900,verify=2,poison=3 | power 200+200 W | 2026-11-17 06:29:48
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, sub_nines);
+                    }
+                    out << ")";
+                

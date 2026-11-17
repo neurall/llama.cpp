@@ -5,3 +5,5 @@ fa48-cu,olmoe,1,pf36k,32,"-dev CUDA0 -c 53248",
 fa48-vk,olmoe,1,pf36k,32,"-dev Vulkan0 -c 53248",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
 ppl48-cu,olmoe,1,ppll,0,"-dev CUDA0",--env PERF_PPL_CTX=49152 --env PERF_PPL_CHUNKS=1
 ppl48-vk,olmoe,1,ppll,0,"-dev Vulkan0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json --env PERF_PPL_CTX=49152 --env PERF_PPL_CHUNKS=1
+ppl48d-cu,olmoe,1,ppl,0,"-dev CUDA0",--env PERF_PPL_FILE=src_128k.cpp --env PERF_PPL_CTX=49152 --env PERF_PPL_CHUNKS=1
+ppl48d-vk,olmoe,1,ppl,0,"-dev Vulkan0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json --env PERF_PPL_FILE=src_128k.cpp --env PERF_PPL_CTX=49152 --env PERF_PPL_CHUNKS=1

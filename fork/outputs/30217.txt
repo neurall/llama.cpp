@@ -1,0 +1,4 @@
+run 30217 | vk_fa_chunks_vk | pf36k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 320.76 t/s | prompt 13039.0 t/s | 32 tokens | args: -np 1 -dev CUDA0 -c 53248 | power 200+200 W | 2026-11-17 06:16:19
+
+ than swap (may reduce pageouts if not using mlock)\n"
+        "- mmap-lock: mmap and mlock (default)\n
