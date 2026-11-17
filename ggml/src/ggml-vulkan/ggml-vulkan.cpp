@@ -8501,6 +8501,12 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         scale /= logit_softcap;
     }
 
+    // fork: K and V of the token-major KV record (a cell's record holds every layer's K and V; kv-tail forces the layout) span the cells times the record,
+    // past one binding's range at long contexts (GLM, about 188 KB a cell at f16: 4 GiB at 23k cells), and the shaders multiply cell by stride in 32 bits.
+    // Such a call runs in chunks of cells (fa_chunks below). CUDA indexes with 64 bits and needs none.
+    const bool fa_chunked = ggml_nbytes(k) > ctx->device->properties.limits.maxStorageBufferRange ||
+                            ggml_nbytes(v) > ctx->device->properties.limits.maxStorageBufferRange;
+
     // Sparse mask hint (op_params[4]): compact the <= n_kv_max finite positions and gather only those.
     const int32_t n_kv_max = mask ? ggml_get_op_params_i32(dst, 4) : 0;
     static const bool disable_sparse = getenv("GGML_VK_FA_SPARSE_DISABLE") != nullptr;
@@ -8513,7 +8519,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         return (t->type != GGML_TYPE_F16 && t->type != GGML_TYPE_BF16) ||
                (t->nb[1] | t->nb[2] | t->nb[3]) % (4 * sizeof(ggml_fp16_t)) == 0;
     };
-    const bool use_sparse = !disable_sparse && n_kv_max > 0 && mask &&
+    const bool use_sparse = !fa_chunked && !disable_sparse && n_kv_max > 0 && mask &&
                             max_bias == 0.0f && logit_softcap == 0.0f &&
                             (tuning_params.path != FA_COOPMAT2 || (sparse_gather_aligned(k) && sparse_gather_aligned(v))) &&
                             nem0 == KV &&
@@ -8553,7 +8559,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
     }
 
     // Only use mask opt when the mask is fairly large. This hasn't been tuned extensively.
-    bool use_mask_opt = mask && !use_sparse && nem1 >= 32 && nem0 * nem1 > 32768 && nem0 >= tuning_params.block_cols * 16
+    bool use_mask_opt = mask && !use_sparse && !fa_chunked && nem1 >= 32 && nem0 * nem1 > 32768 && nem0 >= tuning_params.block_cols * 16
                         && (ctx->device->architecture != vk_device_architecture::AMD_GCN || HSK > 256 || HSV > 256);
     vk_fa_pipeline_state fa_pipeline_state = get_fa_pipeline_state(ctx->device, tuning_params, HSK, HSV, aligned, f32acc,
                                                                    mask != nullptr, use_mask_opt, logit_softcap != 0, use_sparse, k_type_eff, v_type_eff);
@@ -8630,7 +8636,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         // of "align", so recompute split_k based on that.
         split_kv = ROUNDUP_POW2(std::max(1u, KV / split_k), alignment);
         split_k = CEIL_DIV(KV, split_kv);
-        xe_fa_opt = xe_fa_supported_platform && xe_fa_supported_usage && xe_fa_supported_dtype;
+        xe_fa_opt = !fa_chunked && xe_fa_supported_platform && xe_fa_supported_usage && xe_fa_supported_dtype;
         if (xe_fa_opt) {
             const uint32_t split_p_size = 32;
             const size_t max_dim = (nek1 + split_p_size - 1) / split_p_size;
@@ -8669,11 +8675,47 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
         use_mask_opt = false;
     }
 
+    // fork: the chunks of a call past one binding's range (fa_chunked). Each binds its own cells of K and V and a compact copy of its mask columns (the
+    // shaders take the mask's row length from KV and k0), runs as a split_k call of at least 2 splits into its own region of the split_k buffer, and one
+    // reduce combines every region. A chunk is a multiple of 256 cells (the mask's k0 unit), of the shader's alignment and of the binding offset alignment.
+    struct vk_fa_chunk { uint32_t kv0, kv, mk0, cols; uint64_t moff; };
+    std::vector<vk_fa_chunk> fa_chunks;
+    const uint64_t bind_align = ctx->device->properties.limits.minStorageBufferOffsetAlignment;
+    if (fa_chunked) {
+        const uint64_t limit = ctx->device->properties.limits.maxStorageBufferRange;
+        auto cells_aligned = [&](uint64_t stride) { uint32_t m = 1; while ((m * stride) % bind_align != 0) { m *= 2; } return m; };
+        auto cells_fit = [&](const ggml_tensor * t) {   // the most cells whose view fits one binding
+            const uint64_t one = ggml_nbytes(t) - (uint64_t) (t->ne[1] - 1) * t->nb[1];
+            return one > limit ? (uint64_t) 0 : (limit - one) / t->nb[1] + 1;
+        };
+        const uint32_t step  = std::max({ 256u, alignment, cells_aligned(nbk1), cells_aligned(nbv1), cells_aligned(sizeof(ggml_fp16_t)) });
+        const uint32_t chunk = (uint32_t) std::min<uint64_t>(std::min(cells_fit(k), cells_fit(v)) / step * step, KV);
+        GGML_ASSERT(chunk > 0 && "flash attention: one chunk of K or V cells passes a binding's range");
+        uint64_t mask_bytes = 0;
+        for (uint32_t kv0 = 0; kv0 < KV; kv0 += chunk) {
+            vk_fa_chunk ch;
+            ch.kv0  = kv0;
+            ch.kv   = std::min(chunk, KV - kv0);
+            ch.mk0  = mask ? std::min(ch.kv, mask_k0 > kv0 ? mask_k0 - kv0 : 0u) : 0;   // its cells before k0, visible to every row
+            ch.cols = mask ? ch.kv - ch.mk0 : 0;
+            ch.moff = mask_bytes;
+            mask_bytes += ROUNDUP_POW2((uint64_t) ch.cols * nem1 * nem2 * nem3 * sizeof(ggml_fp16_t), bind_align);
+            fa_chunks.push_back(ch);
+        }
+        split_k = std::max(2u, CEIL_DIV(split_k, (uint32_t) fa_chunks.size()));
+        if (ctx->prealloc_size_y < mask_bytes) {
+            ctx->prealloc_size_y = mask_bytes;
+            ggml_vk_preallocate_buffers(ctx, subctx);
+        }
+    }
+
     // Reserve space for split_k temporaries. For each split x batch, we need to store the O matrix (D x ne1)
     // and the per-row m and L values (ne1 rows). We store all the matrices first, followed by the rows.
     // For matrices, the order is (inner to outer) [HSV, ne1, k, ne2, ne3].
     // For L/M, the order is (inner to outer) [ne1, k, ne2, ne3].
-    const uint64_t split_k_size = split_k > 1 ? (HSV * ne1 * sizeof(float) + ne1 * sizeof(float) * 2) * split_k * ne2 * ne3 : 0;
+    const uint64_t split_k_region = split_k > 1 ? (HSV * ne1 * sizeof(float) + ne1 * sizeof(float) * 2) * split_k * ne2 * ne3 : 0;
+    const uint64_t split_k_region_b = fa_chunks.empty() ? split_k_region : ROUNDUP_POW2(split_k_region, bind_align);   // fork: one region a chunk
+    const uint64_t split_k_size = split_k_region_b * std::max<uint64_t>(1, fa_chunks.size());
     if (split_k_size > ctx->device->properties.limits.maxStorageBufferRange) {
         GGML_ABORT("Requested preallocation size is too large");
     }
@@ -8922,6 +8964,63 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
             pc_ph2, { (uint32_t)ph2_wg, (uint32_t)nev2, (uint32_t)neq3 });
 
         ctx->prealloc_x_need_sync = true;
+    } else if (!fa_chunks.empty()) {
+        // fork: chunked (fa_chunked): the chunks' mask columns as compact copies, one split_k call a chunk into its own region, one reduce over all regions
+        const uint32_t n_chunks = (uint32_t) fa_chunks.size();
+        ggml_pipeline_request_descriptor_sets(ctx, pipeline, n_chunks - 1);   // a set a chunk; the first was asked above
+        ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_flash_attn_split_k_reduce, 1);
+        if (ctx->prealloc_split_k_need_sync || ctx->prealloc_y_need_sync) {
+            ggml_vk_sync_buffers(ctx, subctx);
+        }
+        if (mask) {
+            std::vector<vk::BufferCopy> rows;
+            for (const vk_fa_chunk & ch : fa_chunks) {
+                const uint64_t col0 = (uint64_t) ch.kv0 + ch.mk0 - mask_k0;   // the mask column of the chunk's first masked cell
+                for (uint32_t i3 = 0; i3 < nem3 && ch.cols > 0; ++i3) {
+                    for (uint32_t i2 = 0; i2 < nem2; ++i2) {
+                        for (uint32_t r = 0; r < nem1; ++r) {
+                            rows.push_back({ mask_buf.offset + i3 * mask->nb[3] + i2 * mask->nb[2] + r * mask->nb[1] + col0 * sizeof(ggml_fp16_t),
+                                             ch.moff + (((uint64_t) i3 * nem2 + i2) * nem1 + r) * ch.cols * sizeof(ggml_fp16_t),
+                                             (uint64_t) ch.cols * sizeof(ggml_fp16_t) });
+                        }
+                    }
+                }
+            }
+            if (!rows.empty()) {
+                subctx->s->buffer->buf.copyBuffer(mask_buf.buffer->buffer, ctx->prealloc_y->buffer, rows);
+                ggml_vk_sync_buffers(ctx, subctx);
+            }
+            ctx->prealloc_y_last_pipeline_used = nullptr;
+            ctx->prealloc_y_last_tensor_used = nullptr;
+        }
+        uint32_t dispatch_x;   // as the split path below: x counts the splits too
+        if (gqa_ratio > 1) {
+            dispatch_x = split_k * workgroups_x * pipeline->wg_denoms[0];
+        } else {
+            dispatch_x = Tr * split_k * pipeline->wg_denoms[0];
+        }
+        for (uint32_t c = 0; c < n_chunks; ++c) {
+            const vk_fa_chunk & ch = fa_chunks[c];
+            vk_flash_attn_push_constants cpc = pc;
+            cpc.KV               = ch.kv;
+            cpc.split_kv         = ROUNDUP_POW2(std::max(1u, CEIL_DIV(ch.kv, split_k)), alignment);
+            cpc.mask_n_head_log2 = ((ch.mk0 / 256) << 16) | (mask_n_head_log2 & 0xFFFF);
+            const vk_subbuffer ck = { k_buf.buffer, k_buf.offset + (uint64_t) ch.kv0 * nbk1, ggml_nbytes(k) - (uint64_t) (KV - ch.kv) * nbk1 };
+            const vk_subbuffer cv = { v_buf.buffer, v_buf.offset + (uint64_t) ch.kv0 * nbv1, ggml_nbytes(v) - (uint64_t) (KV - ch.kv) * nbv1 };
+            const vk_subbuffer cm = ch.cols > 0 ? vk_subbuffer{ ctx->prealloc_y, ch.moff, (uint64_t) ch.cols * nem1 * nem2 * nem3 * sizeof(ggml_fp16_t) }
+                                                : q_buf;   // no columns: the shader reads no mask
+            const vk_subbuffer cs = { ctx->prealloc_split_k, c * split_k_region_b, split_k_region_b };
+            ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { q_buf, ck, cv, cm, sinks_buf, cs, mask_opt_buf, sparse_buf }, cpc,
+                                      { dispatch_x, workgroups_y, workgroups_z });
+        }
+        ggml_vk_sync_buffers(ctx, subctx);
+        const vk_op_flash_attn_split_k_reduce_push_constants pc2 = { HSV, (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3, split_k, (sinks != nullptr),
+                                                                     n_chunks, (uint32_t) (split_k_region_b / sizeof(float)) };
+        ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_flash_attn_split_k_reduce,
+                                    { vk_subbuffer{ ctx->prealloc_split_k, 0, split_k_size }, sinks_buf, dst_buf },
+                                    pc2, { (uint32_t)ne1, HSV, (uint32_t)(ne2 * ne3) });
+        ctx->prealloc_split_k_need_sync = true;
+        ctx->prealloc_y_need_sync = true;
     } else if (split_k > 1) {
         ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_flash_attn_split_k_reduce, 1);
 
@@ -8945,7 +9044,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
                                     pc, { dispatch_x, workgroups_y, workgroups_z });
 
         ggml_vk_sync_buffers(ctx, subctx);
-        const vk_op_flash_attn_split_k_reduce_push_constants pc2 = { HSV, (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3, split_k, (sinks != nullptr) };
+        const vk_op_flash_attn_split_k_reduce_push_constants pc2 = { HSV, (uint32_t)ne1, (uint32_t)ne2, (uint32_t)ne3, split_k, (sinks != nullptr), 1, 0 };
         ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_flash_attn_split_k_reduce,
                                     {split_k_buf, sinks_buf, dst_buf},
                                     pc2, { (uint32_t)ne1, HSV, (uint32_t)(ne2 * ne3) });
@@ -16230,7 +16329,10 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
     // non-compute ops are never executed here; their size is bounded by the buffer allocation limit
     const bool non_compute = ggml_op_is_empty(op->op);
     for (int i = 0; i < GGML_MAX_SRC; i++) {
-        if (op->src[i] && !non_compute && !tensor_size_supported(ggml_nbytes(op->src[i]))) {
+        // fork: flash attention binds K and V in chunks of cells that fit a binding (ggml_vk_flash_attn, fa_chunked): only the buffer limit counts for them
+        const bool fa_kv = op->op == GGML_OP_FLASH_ATTN_EXT && (i == 1 || i == 2);
+        if (op->src[i] && !non_compute &&
+            !(fa_kv ? ggml_nbytes(op->src[i]) <= device->max_buffer_size : tensor_size_supported(ggml_nbytes(op->src[i])))) {
             return false;
         }
     }

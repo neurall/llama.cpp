@@ -17,7 +17,17 @@ layout (push_constant) uniform parameter {
     uint ne3;
     uint k_num;
     uint sinks;
+    uint n_regions;   // fork: chunked flash attention (ggml_vk_flash_attn, fa_chunks): k_num splits in each of n_regions regions
+    uint region;      // floats from one region to the next
 } p;
+
+// split k of all k_num * n_regions: region k / k_num, split k % k_num in it (one region, offset 0: the layout of a single split_k call)
+uint lm_base(uint k, uint i2, uint i3) {   // its l; its m follows ne1 floats on
+    return (k / p.k_num) * p.region + p.D * p.ne1 * p.ne2 * p.ne3 * p.k_num + p.ne1 * 2 * (k % p.k_num + p.k_num * (i2 + p.ne2 * i3));
+}
+uint o_base(uint k, uint i2, uint i3) {
+    return (k / p.k_num) * p.region + p.D * p.ne1 * (k % p.k_num + p.k_num * (i2 + p.ne2 * i3));
+}
 
 shared float tmpsh[BLOCK_SIZE];
 
@@ -29,16 +39,12 @@ void main() {
     const uint i3 = gl_WorkGroupID.z / p.ne2;
 
     uint D = p.D;
-    uint k_num = p.k_num;
-
-    uint l_offset = D * p.ne1 * p.ne2 * p.ne3 * k_num + p.ne1 * 2 * (0/*split_k_index*/ + p.k_num * (i2 + p.ne2 * i3)) + n;
-    uint m_offset = D * p.ne1 * p.ne2 * p.ne3 * k_num + p.ne1 * 2 * (0/*split_k_index*/ + p.k_num * (i2 + p.ne2 * i3)) + p.ne1 + n;
-    uint lm_stride = p.ne1 * 2;
+    uint k_num = p.k_num * p.n_regions;
 
     // Compute the max m value for the row
     float m_max = -1.0/0.0;
     for (uint k = 0; k + tid < k_num; k += BLOCK_SIZE) {
-        float m = data_a[m_offset + (k + tid) * lm_stride];
+        float m = data_a[lm_base(k + tid, i2, i3) + p.ne1 + n];
         m_max = max(m_max, m);
     }
 
@@ -59,8 +65,8 @@ void main() {
     // Compute L based on m_max
     float L = 0;
     for (uint k = 0; k + tid < k_num; k += BLOCK_SIZE) {
-        float l = data_a[l_offset + (k + tid) * lm_stride];
-        float m = data_a[m_offset + (k + tid) * lm_stride];
+        float l = data_a[lm_base(k + tid, i2, i3) + n];
+        float m = data_a[lm_base(k + tid, i2, i3) + p.ne1 + n];
         L += exp(m - m_max) * l;
     }
 
@@ -100,8 +106,8 @@ void main() {
     if (d < D) {
         float O = 0.0;
         [[unroll]] for (uint k = 0; k < k_num; ++k) {
-            uint o_offset = D * p.ne1 * (k + p.k_num * (i2 + p.ne2 * i3)) + D * n + d;
-            float m = data_a[m_offset + k * lm_stride];
+            uint o_offset = o_base(k, i2, i3) + D * n + d;
+            float m = data_a[lm_base(k, i2, i3) + p.ne1 + n];
             O += exp(m - m_max) * data_a[o_offset];
         }
         if (p.sinks != 0) {

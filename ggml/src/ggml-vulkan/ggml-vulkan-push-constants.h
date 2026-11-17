@@ -873,6 +873,8 @@ struct vk_op_flash_attn_split_k_reduce_push_constants {
     uint32_t ne3;
     uint32_t k_num;
     uint32_t sinks;
+    uint32_t n_regions;   // fork: chunked flash attention (ggml_vk_flash_attn, fa_chunks): k_num splits in each of n_regions regions
+    uint32_t region;      // floats from one region to the next
 };
 
 struct vk_op_flash_attn_mask_opt_push_constants {
