@@ -964,16 +964,30 @@ ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend) {
 
 // backend copy
 
-// rows of a gappy view into a compact tensor of the same shape: one transfer per row run of the source (fork; the layout of the token-major KV cache)
+// rows of a gappy view into a compact tensor of the same shape (fork; the layout of the token-major KV cache). The source's leading dims without a gap make one run,
+// the largest dim above them one 2D read (one submission on Vulkan, cudaMemcpy2D on CUDA), the dims left a loop; then one write of the whole destination. The
+// scheduler makes this copy where the backends cannot copy between themselves (Vulkan to another card): one transfer per row, a fence wait each, took MiMo V2.6's
+// K and V of an 11k prompt ~16 s per layer on two Vulkan cards (2026-11-17, tests/test-vk-gappy-copy-fork.cpp).
 static bool ggml_backend_tensor_copy_rows(const struct ggml_tensor * src, struct ggml_tensor * dst) {
     if (src->type != dst->type || !ggml_are_same_shape(src, dst) || src->nb[0] != dst->nb[0] || !ggml_is_contiguous(dst)) { return false; }
-    const size_t row = ggml_row_size(src->type, src->ne[0]);   // bytes of a row (whole blocks for a quantized type)
-    char * tmp = (char *) malloc(row);
-    for (int64_t i3 = 0; i3 < src->ne[3]; i3++) { for (int64_t i2 = 0; i2 < src->ne[2]; i2++) { for (int64_t i1 = 0; i1 < src->ne[1]; i1++) {
+    size_t run = ggml_row_size(src->type, src->ne[0]);   // bytes of a row (whole blocks for a quantized type), then of the leading dims without a gap
+    int g = 1;
+    for (; g < GGML_MAX_DIMS && (src->ne[g] == 1 || src->nb[g] == run); ++g) { run *= src->ne[g]; }
+    int c = g;   // the 2D read's dim (none when the source has no gap)
+    for (int d = g + 1; d < GGML_MAX_DIMS; ++d) { if (src->ne[d] > src->ne[c]) { c = d; } }
+    int64_t nl[GGML_MAX_DIMS] = { 1, 1, 1, 1 };   // the loop's dims
+    for (int d = g; d < GGML_MAX_DIMS; ++d) { nl[d] = d == c ? 1 : src->ne[d]; }
+    char * tmp = (char *) malloc(ggml_nbytes(dst));
+    GGML_ASSERT(tmp != NULL);
+    for (int64_t i3 = 0; i3 < nl[3]; i3++) { for (int64_t i2 = 0; i2 < nl[2]; i2++) { for (int64_t i1 = 0; i1 < nl[1]; i1++) {
         const size_t so = i3*src->nb[3] + i2*src->nb[2] + i1*src->nb[1], dof = i3*dst->nb[3] + i2*dst->nb[2] + i1*dst->nb[1];
-        ggml_backend_tensor_get(src, tmp, so, row);
-        ggml_backend_tensor_set(dst, tmp, dof, row);
+        if (c < GGML_MAX_DIMS) {
+            ggml_backend_tensor_get_2d(src, tmp + dof, so, run, src->ne[c], src->nb[c], dst->nb[c]);
+        } else {
+            ggml_backend_tensor_get(src, tmp + dof, so, run);
+        }
     } } }
+    ggml_backend_tensor_set(dst, tmp, 0, ggml_nbytes(dst));
     free(tmp);
     return true;
 }
