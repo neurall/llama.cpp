@@ -23,10 +23,11 @@ if(DEFINED ENV{HF_WEBUI_VERSION})
     message(DEPRECATION "HF_WEBUI_VERSION env var is deprecated, use HF_UI_VERSION instead")
 elseif(DEFINED ENV{HF_UI_VERSION})
     set(HF_UI_VERSION "$ENV{HF_UI_VERSION}")
-elseif(DEFINED LLAMA_BUILD_NUMBER)
-    set(HF_UI_VERSION "b${LLAMA_BUILD_NUMBER}")
 else()
-    set(HF_UI_VERSION "")
+    # fork: the fork's build number counts its own commits and is never a version in the bucket, so every build took "latest", whose bundle of 2026-11-17
+    # dropped workbox[hash].js and failed scripts/ui-assets.cmake's check. Pinned to b12468, the bundle release b15763 shipped (same asset files);
+    # move the pin with the next upstream catch-up.
+    set(HF_UI_VERSION "b12468")
 endif()
 
 if(NOT "${HF_UI_VERSION}" STREQUAL "" AND NOT HF_UI_VERSION MATCHES "^[A-Za-z0-9._-]+$")
