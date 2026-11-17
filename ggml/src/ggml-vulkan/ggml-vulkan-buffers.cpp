@@ -296,8 +296,29 @@ void * ggml_vk_host_malloc(size_t size) {
         vk_host_allocation entry;
         entry.base = ptr;
         entry.size = alloc_size;
+        // fork: every card that has its device imports the memory here, at the allocation (the RAM pool's chunks at load), not at its first upload:
+        // imported lazily (ggml_vk_host_get) the first copy from each chunk waited about 45 ms per GiB per card inside a prompt pass (2 x 3090,
+        // fork/iobench/uploadbench: 4.8 GB/s for the first 256 MiB of a 1 GiB buffer, 26.6 GB/s warm; CUDA 25.7 at the first use). A card made
+        // later imports at its first use as before; nothing else knows the pointer yet, so the imports run outside the lock.
+        uint32_t failed = 0;
+        {
+            std::shared_lock<std::shared_mutex> guard(vk_instance.host_allocations_mutex);
+            failed = vk_instance.host_import_failed;
+        }
+        for (size_t d = 0; d < GGML_VK_MAX_DEVICES && d < vk_instance.device_host_buffer_import.size(); ++d) {
+            vk_device & dev = vk_instance.devices[d];
+            if (!dev || dev->idx != d || !vk_instance.device_host_buffer_import[d] || (failed & (1u << d)) || !dev->external_memory_host) {
+                continue;
+            }
+            entry.views[d] = ggml_vk_buffer_from_host_ptr(dev, ptr, alloc_size);
+            if (entry.views[d] == nullptr) {
+                failed |= 1u << d;
+                GGML_LOG_WARN("ggml_vulkan: %s: host memory import failed, using staging\n", dev->name.c_str());
+            }
+        }
 
         std::unique_lock<std::shared_mutex> guard(vk_instance.host_allocations_mutex);
+        vk_instance.host_import_failed |= failed;
         vk_instance.host_allocations.push_back(std::move(entry));
         return ptr;
     }
