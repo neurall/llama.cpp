@@ -2047,11 +2047,9 @@ static void ggml_vk_precompile_join_all() {   // atexit, before the instance's s
             th.join();
         }
     }
-    for (auto & dev : vk_instance.devices) {   // the pipelines compiled at first use (new flash attention keys) are in the next start's cache
-        if (dev) {
-            ggml_vk_pipeline_cache_save(dev);
-        }
-    }
+    // no driver call here: on Windows a DLL's atexit handlers run while it unloads, after the driver's own unload (the Radeon 780M faulted at every
+    // exit, 0xC0000005, b15806); the pipelines compiled at first use reach the next start's cache when a backend on the card is freed
+    // (ggml_backend_vk_free)
 }
 
 void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested, const std::unordered_set<uint64_t> * only) {
@@ -14195,6 +14193,7 @@ void ggml_backend_vk_free(ggml_backend_t backend) {
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
     VK_LOG_DEBUG("ggml_backend_vk_free(" << ctx->name << ")");
 
+    ggml_vk_pipeline_cache_save(ctx->device);   // fork: the pipelines compiled at first use (new flash attention keys) are in the next start's cache
     ggml_vk_cleanup(ctx);
 
     delete ctx;

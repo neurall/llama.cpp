@@ -811,7 +811,7 @@ struct vk_device_struct {
     bool mul_mat_id_s_int[GGML_TYPE_COUNT];
 
     vk::DescriptorSetLayout dsl;
-    vk::PipelineCache pipeline_cache;   // fork: the last start's compiled pipelines (ggml_vk_pipeline_cache_load), saved after the start-up compile and at exit
+    vk::PipelineCache pipeline_cache;   // fork: the last start's compiled pipelines (ggml_vk_pipeline_cache_load), saved after the start-up compile and when a backend on the card is freed
 
     std::map<vk_matmul_pipeline_key, std::vector<vk_matmul_pipeline_pair>> pipeline_matmul;
     matmul_tile_selector_t matmul_tile_selector;
