@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+vkprof-qni3,qwen38,1,pf1k,256,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json --env GGML_VK_PERF_LOGGER=1 --env GGML_VK_PERF_LOGGER_FREQUENCY=64 --env GGML_SCHED_DEBUG=1

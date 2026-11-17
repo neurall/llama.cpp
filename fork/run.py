@@ -5499,10 +5499,11 @@ def regress_list_verdict(rows, label, ref, src, tol):
     """verdict of the regress list for build `label` against the best build `ref`: per ppl cell (same model and args) the median tps of each build;
     the worst ratio decides. Prints the table, promotes a build that is above 1/tol in every cell with ranges not overlapping. Returns the exit code."""
     cells = {}
+    names = {label, os.path.basename(str(src).rstrip("/"))}   # the run log names a build by its directory (rel_x), the label is branch-commit: both are this build
     for x in rows:
-        if x.get("test") == "ppl" and x.get("ok") != "0" and num(x, "tps") is not None and x.get("build") in (label, ref):
+        if x.get("test") == "ppl" and x.get("ok") != "0" and num(x, "tps") is not None and (x.get("build") in names or x.get("build") == ref):
             cells.setdefault((x["model"], x["args"]), {}).setdefault(x["build"], []).append(num(x, "tps"))
-    mine = {k: v[label] for k, v in cells.items() if label in v}
+    mine = {k: sum((v[n] for n in names if n in v), []) for k, v in cells.items() if names & v.keys()}
     if not mine:
         print("regress: FAILED, this build has no valid ppl row in run-history.csv"); return 2
     worst, allhi, n = None, True, 0
@@ -6770,10 +6771,10 @@ def cell_results(path, since):
     out = []
     try:
         for l in open(path, errors="replace"):
-            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +(\S+) +\{.*?\} +([\d.]+) t/s(?:.*?pp ([\d.]+) t/s)?", l)
+            m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \S+ +(\S+) +\{.*?\} +([\d.]+) t/s(?:.*?pp ([\d.]+) t/s)?(?:.*?PPL ([\d.]+))?", l)
             if not m or time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) < since - 2: continue
             if m.group(4) is None and m.group(2) != "ppl": continue   # every test but ppl (one token per call: no prompt phase) reports a prompt rate; a line without it is no result
-            out.append((float(m.group(3)), float(m.group(4)) if m.group(4) else None))   # ppl: no prompt rate (None: the view prints none)
+            out.append((float(m.group(3)), float(m.group(4)) if m.group(4) else None, float(m.group(5)) if m.group(5) else None))   # ppl: no prompt rate, its PPL third
     except OSError: pass
     return out
 
@@ -7047,7 +7048,10 @@ def trace_lines(width=40):
 
 
 def result_lines(res):
-    return "\n".join(f"    run {i}: " + speed_txt(t, p, width=7) + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "") for i, (t, p) in enumerate(res, 1))   # prompt in/out of the cell after each run
+    # a perplexity cell has no prompt or decode phase (user 2026-11-17: "why i see just decode?"): its PPL and the rate of the evaluation pass
+    ppl_txt = lambda r: col(96, "PPL") + " " + col("1;94", f"{r[2]:.4f}") + "  " + col(96, "eval") + " " + col("1;94", f"{r[0]:7.2f}") + " " + col(96, "t/s")
+    return "\n".join(f"    run {i}: " + (ppl_txt(r) if len(r) > 2 and r[2] is not None else speed_txt(r[0], r[1], width=7)) + (col(36, "  " + CELL_PROMPT[0]) if CELL_PROMPT[0] else "")
+                     for i, r in enumerate(res, 1))   # prompt in/out of the cell after each run
 
 
 PRELUDE = [0, 0]   # lines of a remote list's start (old servers stopped, disk check) and of its transfer bars still on screen: erased when the transfers are done
