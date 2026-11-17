@@ -1,0 +1,61 @@
+run 30418 | vk_split_learn_lp_bulk_vk | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 30.62 t/s | prompt 658.8 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 -lm pin | power 280+280 W | 2026-11-17 18:09:37
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check for edge cases.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - For separator case: when `min_items == 0`, it wraps the result in `(...)?`. But there's a potential issue: if `min_items == 0` and `max_items == 1` with a separator, the recursive call would be `build_repetition("(" + sep + " " + item + ")", 0, 0)` which returns `""`, so the result would be `item_rule + ""` = `item_rule`, then wrapped as `(item_rule)?`. That seems correct.
+   - Wait, actually when `min_items == 0 && max_items == 1` with separator, the early return `item_rule + "?"` happens before the separator check. So the separator is ignored for 0-1 items. That's correct since with 0 or 1 items, no separator is needed.
+
+2. **`build_min_max_int` function:**
+   - This is a complex recursive function for generating integer ranges.
+   - The `uniform_range` lambda is recursive (via `std::function`), which is fine.
+   - Potential issue: `std::stoll` could throw if the substring is not a valid number. But since `min_s` comes from `std::to_string(min_value)`, the substring should be valid.
+   - The `decimals_left` parameter controls recursion depth, defaulting to 16. This prevents infinite recursion.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+
+3. **`_add_rule` method:**
+   - The deduplication logic: if the rule already exists with the same content, it returns the existing name. Otherwise, it appends a number.
+   - The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds the first index where either the name doesn't exist or the content matches. This seems correct.
+
+4. **`_visit_pattern` method:**
+   - Takes a snapshot of `_rules` before attempting to convert the pattern, and restores on failure. This is a good pattern for rollback.
+   - However, `_refs_being_resolved` is not snapshotted/restored. If a pattern conversion triggers ref resolution that fails, the refs being resolved set could be left in an inconsistent state. Though looking at the code, `_visit_pattern` only calls `_pattern_to_rule` which doesn't resolve refs, so this might not be an issue in practice.
+
+5. **`_pattern_to_rule` method:**
+   - Complex regex-to-grammar conversion.
+   - The `transform` lambda is recursive via `std::function`.
+   - The `paren_depth` tracking is done correctly.
+   - The character class parsing handles escapes.
+   - The curly bracket parsing handles min/max repetitions.
+   - The literal parsing handles various escape sequences.
+
+6. **`_not_strings` method:**
+   - Uses a trie to generate a rule that matches strings not in a given set.
+   - The `rejects` string accumulates characters for the negated character class.
+   - Potential issue: if a character in the trie is a special regex character (like `]`, `-`, `^`), it could break the character class. The `rejects` string is placed inside `[^"...]` - if it contains `]` or `-`, this could be problematic.
+
+7. **`_resolve_ref` method:**
+   - Handles `$ref` resolution with cycle detection via `_refs_being_resolved`.
+   - The `static const std::regex nonalphanumeric_regex` is fine.
+
+8. **`_build_object_rule` method:**
+   - Complex logic for building object rules with required and optional properties.
+   - The `get_recursive_refs` lambda generates alternatives for optional properties.
+   - The `additional_properties` handling adds a wildcard key rule.
+
+9. **`_add_primitive` method:**
+   - Recursively adds primitive rules and their dependencies.
+   - The dependency lookup checks both `PRIMITIVE_RULES` and `STRING_FORMAT_RULES`.
+
+10. **`visit` method:**
+    - The main dispatch method for different schema kinds.
+    - The `is_reserved_name` check appends `-

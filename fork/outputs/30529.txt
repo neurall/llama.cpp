@@ -1,0 +1,22 @@
+run 30529 | rel_vk_exit_nodriver | pf14k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 26.2 t/s | prompt 1619.3 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 22:57:16
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided two files? Actually content includes // file: common/json-schema-to-grammar.cpp then // file: common/arg.cpp but arg.cpp truncated. Need review likely both? They say following source file singular but includes two file headers. Need provide code review. Need analyze code, identify issues, suggestions. Need likely focus on C++ code quality, correctness, security, maintainability. Need maybe mention incomplete second file. Need be thorough.
+
+Need inspect code. Let's parse.
+
+First file json-schema-to-grammar.cpp. It converts JSON schema to GBNF grammar. Need review.
+
+Potential issues:
+- Global mutable static regexes and maps? OK but thread safety? std::regex not thread-safe? Actually std::regex objects are immutable after construction, but regex_search with static regex? The regex object itself may be thread-safe? C++ standard says const operations on std::regex are thread-safe? I think yes? But static initialization thread-safe. However static std::regex construction may be expensive.
+- `static std::unordered_map<std::string, BuiltinRule> PRIMITIVE_RULES` mutable global, not const. Could be const.
+- `static std::unordered_map<char, std::string> GRAMMAR_LITERAL_ESCAPES` mutable.
+- `static std::unordered_set<char> NON_LITERAL_SET` etc.
+- `replacePattern`: uses `searchStart + match.position()`? `match.position()` returns difference_type? For std::smatch, position() returns difference_type. Adding to iterator OK? But `searchStart + match.position()` maybe if position is ptrdiff_t. OK. But `match.suffix().first` is iterator. Good.
+- `format_literal`: uses `GRAMMAR_LITERAL_ESCAPES.at(c)` for chars matched by regex `[\r\n\"\\\\]`. OK.
+- `gbnf_escape_length`: handles escapes. But in pattern parser, for char class, uses gbnf_escape_length to copy escapes. But gbnf_escape_length only recognizes certain escapes; for regex char class, `\d`, `\w`, `\s`, `\b`, `\p{...}` unsupported. OK. But for `\x` with invalid hex returns 0. Good.
+- `build_repetition`: if max_items == 0 returns empty string. But if min_items >0 and max_items==0? invalid schema? Could produce empty. If min_items > max_items? Not validated. Could produce weird. If min_items negative? Not validated. If max_items < min_items? Could produce `{min,max}` invalid. Need validate.
+- `build_repetition` with separator: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); If max_items == 0 handled. If max_items == 1 and min_items == 0? returns item_rule? Let's test: min=0 max=1 separator nonempty: has_max true, max_items !=0, min=0 max=1 but first if min=0 max=1 returns item_rule + "?" before separator branch. OK. If min=1 max=1: result item_rule + " " + build_repetition(...,0,0). build_repetition max=0 returns "" => "item " trailing space? Actually result = item_rule + " " + "" => trailing space. Then min_items !=0. Could be invalid grammar with trailing space? In GBNF maybe trailing space ignored? But could be issue. For min=1 max=1 with separator, should just item_rule. For min=0 max=1 returns item_rule? yes. For min=1 max=2: result item + " " + build_repetition(sep item,0,1) => item (sep item)? OK. For min=0 max=2: result item + " " + build_repetition(sep item,0,1) then wrap ? => (item (sep item)?)? Actually result = "(" + result + ")?" => (item (sep item)?)? This matches empty or item optionally followed by sep item. OK. But for min=1 max=1 trailing space.
+- `build_repetition` if min_items == 0 && max_items == 1 returns item_rule + "?" even with separator. For array with separator, if max_items=1, no separator needed. OK.
+- `build_min_max_int`: complex. Potential bugs:
+  - `decimals_left` default 16. Recursion may use `std::stoll(min_s.substr(1))` could overflow? min_s length <= 19? int64 max 19 digits. substr(1) could

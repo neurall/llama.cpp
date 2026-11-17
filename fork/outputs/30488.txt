@@ -1,0 +1,49 @@
+run 30488 | first_pick_vk_import | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 38.25 t/s | prompt 1466.2 t/s | 1024 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-17 21:11:43
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check for edge cases.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - For separator case: when `min_items == 0`, it wraps the result in `(...)?`. But there's a potential issue: if `min_items == 0` and `max_items == 0`, the first check catches it. If `min_items == 0` and `max_items == 1`, the second check catches it. So the separator path with `min_items == 0` would have `max_items >= 2`.
+   - Wait, actually if `min_items == 0 && max_items == 1`, it returns early with `item_rule + "?"`. So the separator path with `min_items == 0` would have `max_items >= 2`. That seems fine.
+   - The separator case builds: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. This is correct for building `item (sep item)*` patterns.
+
+2. **`build_min_max_int` function:**
+   - This is a complex function for generating integer range rules.
+   - The `uniform_range` lambda is recursive (via `std::function`), which is fine.
+   - There's a potential issue with `to_reached` variable - it's declared inside the `if (sub_len > 0)` block but used in the `if (!to_reached)` check. Let me trace through:
+     - `to_reached` is initialized to `false`
+     - In the `else` branch (when `from_sub != sub_zeros`), if `to_sub == sub_nines`, `to_reached` is set to `true`
+     - Then `if (!to_reached)` adds the `to[i]` digit range
+     - This seems correct - if the `to` suffix is all nines, we don't need the separate `to[i]` case.
+   - The `decimals_left` parameter is used to limit recursion depth. The default is 16.
+   - There's a potential issue: `less_decimals = std::max(decimals_left - 1, 1)` - this ensures at least 1 decimal left, preventing infinite recursion.
+
+3. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+   - However, `_refs_being_resolved` is not snapshotted - if a ref resolution happens during pattern conversion and fails, the ref set might be left in an inconsistent state. Actually, looking at the code, `_visit_pattern` only calls `_pattern_to_rule`, which doesn't resolve refs, so this should be fine.
+
+4. **`_pattern_to_rule` function:**
+   - Complex regex-to-grammar conversion.
+   - The `transform` lambda is recursive via `std::function`.
+   - The `paren_depth` tracking looks correct.
+   - The character class parsing handles escapes.
+   - The curly bracket parsing handles `{n}`, `{n,}`, `{n,m}`.
+   - The literal parsing handles various escape sequences.
+   - One issue: in the curly bracket parsing, `std::stoi` can throw `std::out_of_range` which is a subclass of `std::runtime_error`, not `std::logic_error`. The catch block only catches `std::logic_error`. So if a number is too large, it would throw an uncaught exception.
+
+5. **`_not_strings` function:**
+   - Builds a rule that matches strings that are none of the provided strings.
+   - Uses a trie for efficiency.
+   - The `rejects` string accumulates characters for the negated character class. If a character is a special regex character (like `]`, `-`, `^`), it might need escaping in the character class. Looking at the code, `rejects` is built from UTF-8 characters from the trie, and these are placed inside `[...]`. Characters like `]`, `-`, `^` could cause issues in the character class.
+
+6. **`_resolve_ref` function:**
+   - Handles `$ref` resolution with cycle detection

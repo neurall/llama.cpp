@@ -1,0 +1,46 @@
+run 30445 | handoff_serial_cal | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 26.27 t/s | prompt 934.3 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-17 19:10:15
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be truncated at the end)
+
+Let me do a thorough code review of both files.
+
+**File 1: json-schema-to-grammar.cpp**
+
+Let me look through this carefully:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Potential issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0). Returning "" silently ignores the contradiction. Actually in JSON schema, `minItems > maxItems` is invalid, so maybe it's fine, but the code doesn't validate.
+- `min_items == 1 && max_items == 1` case: falls through to the general case `item_rule + "{1,1}"` — wait, let's check: `min_items == 0 && max_items == 1` returns `item_rule + "?"`. What about `min_items == 1 && max_items == 1`? It goes to the general branch: `item_rule + "{" + "1" + "," + "1" + "}"` = `item_rule + "{1,1}"`. That's valid but could be simplified to just `item_rule`. Minor optimization.
+- Negative min_items? If `min_items` is negative... `arr.min_items` could be negative? In KIND_ARRAY, `arr.min_items` is used directly. If min_items is negative, `build_repetition` with negative min_items would produce `{ -1, ...}` which is invalid grammar. Hmm, but presumably schema validation ensures min_items >= 0. Actually wait, in the array case: `arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items` handles negative max_items, but min_items is passed directly. If min_items is negative (e.g., -1 as "unset"), then `build_repetition(item_rule_name, -1, max_items, ...)` would produce `{ -1, }` which is invalid. Let me check: `has_max = max_items != INT_MAX`. If min_items = -1 and max_items = INT_MAX: separator empty, min_items != 1, min_items != 0, so falls to `item_rule + "{" + std::to_string(-1) + "," + "" + "}"` = `item_rule + "{-1,}"`. That's broken grammar. But maybe the schema parsing guarantees min_items >= 0. Worth flagging as a defensive check.
+
+Actually wait, looking at the array case:
+```cpp
+if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+    return _visit_primitive(rule_name, "array");
+}
+```
+So `arr.max_items < 0` means unset. And min_items presumably defaults to 0. OK.
+
+2. `build_min_max_int`:
+- Uses `std::function` with recursive lambda — fine but has overhead; could be a static function.
+- `decimals_left = 16` default. The recursion decrements decimals_left. Potential issue: `more_digits(0, decimals_left - 1)` when `decimals_left` could become small... `less_decimals = std::max(decimals_left - 1, 1)`.
+- In the `has_min && has_max` branch with both negative: `build_min_max_int(-max_value, -min_value, ...)` — negating INT64_MIN would overflow! If `min_value == INT64_MIN` and `max_value < 0`... wait, `has_min` is true only if min_value != INT64_MIN. So in the `has_min && has_max` branch, min_value != INT64_MIN, so `-min_value` is safe. And max_value != INT64_MAX so `-max_value` is safe. OK good.
+- In `has_min` only branch: `min_value < 0`: `build_min_max_int(INT64_MIN, -min_value, ...)`. `-min_value` where min_value != INT64_MIN (since has_min), so safe. Good.
+- In `has_max` only branch: `max_value >= 0`: calls `build_min_max_int(

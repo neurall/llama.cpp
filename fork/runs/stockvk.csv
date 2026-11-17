@@ -1,0 +1,5 @@
+name,model,n,test,tokens,args,extra
+sv-qni3-i,qwen38,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+sv-qni4-i,qn_iq4xs,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+sv-glm-i,glm,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+sv-mimo-i,mimo,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json

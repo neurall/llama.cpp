@@ -1,0 +1,39 @@
+run 30410 | vk_own_planner_key_vk | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 23.16 t/s | prompt 625.0 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 17:46:44
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check for edge cases.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - For separator case: when `min_items == 0`, it wraps the result in `(...)?`. But there's a potential issue: if `min_items == 0` and `max_items == 1` with a separator, the recursive call would be `build_repetition("(" + sep + " " + item + ")", 0, 0)` which returns `""`, so the result would be `item_rule + ""` = `item_rule`, then wrapped as `(item_rule)?`. That seems correct for 0-1 items with separator.
+   - Wait, actually for `min_items == 0, max_items == 1` with separator: the recursive call is `build_repetition("(" + sep + " " + item + ")", 0, 0)` which returns `""`. So result = `item_rule + " " + ""` = `item_rule + " "`. Then wrapped as `(item_rule + " ")?`. Hmm, that trailing space might be an issue but it's in a grammar context so probably fine.
+
+2. **`build_min_max_int` function:**
+   - This is a complex recursive function for generating integer ranges.
+   - The `uniform_range` lambda is recursive (via `std::function`), which is fine.
+   - Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is empty or invalid, but since `min_s` comes from `std::to_string(min_value)` and `min_value > 9`, `min_s` has at least 2 characters, so `min_s.substr(1)` is non-empty.
+   - The `decimals_left` parameter is used to limit digit depth, defaulting to 16. This prevents infinite recursion.
+   - `less_decimals = std::max(decimals_left - 1, 1)` - ensures at least 1.
+
+3. **`_add_rule` method:**
+   - The deduplication logic: if the rule already exists with the same content, it returns the existing name. Otherwise, it appends a number to make it unique. This seems correct.
+   - However, there's a subtle issue: the loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - if a rule with the same name exists but different content, it continues searching. If it finds a name that doesn't exist OR has the same content, it stops. This is correct.
+
+4. **`_visit_pattern` method:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and restores on failure. This is a good rollback mechanism.
+   - However, `_refs_being_resolved` is not snapshotted/restored. If a pattern conversion fails after inserting into `_refs_being_resolved`, the set could be left in an inconsistent state. Though looking at the code, `_visit_pattern` calls `_pattern_to_rule` which doesn't seem to use `_refs_being_resolved`, so this might not be an issue in practice.
+
+5. **`_pattern_to_rule` method:**
+   - Complex regex-to-grammar conversion.
+   - The `transform` lambda is recursive via `std::function`.
+   - `paren_depth` tracking for balanced parentheses.
+   - Character class parsing: handles escapes, but the loop `while (i < length && sub_pattern[i] != ']')` doesn't handle `]` as the first character in a class (which is valid in regex as `[]abc]`). This could be a bug.
+   - Actually wait, looking more carefully: the initial `i++` after `[` means the first character after `[` is checked. If it's `]`, the loop exits immediately, and then `square_brackets += ']'` adds the closing bracket. So `[]` would be parsed as `[]` which is an empty character class - probably not intended but might not cause issues.
+   - The `{` parsing: `string_split` on the content. If the content is empty (e.g., `{}`), `nums` would have one empty element, and `std::stoi("")` would throw `std::invalid_argument`

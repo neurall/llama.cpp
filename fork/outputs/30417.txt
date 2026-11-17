@@ -1,0 +1,48 @@
+run 30417 | vk_split_learn_lp_bulk_vk | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.95 t/s | prompt 707.8 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 -lm pin | power 280+280 W | 2026-11-17 18:07:55
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1)` 
+  - Then wraps in `(...)?`
+  - This seems correct for 0 items (the whole thing is optional).
+
+- When `max_items == 0`, returns empty string. But what if `min_items > 0` and `max_items == 0`? That's an invalid input (min > max), but it silently returns empty. Should probably throw or handle this edge case.
+
+### build_min_max_int function
+- Complex recursive function. Let me check for potential issues:
+  - `decimals_left` parameter is used to limit digit depth. The default is 16.
+  - `less_decimals = std::max(decimals_left - 1, 1)` - ensures at least 1.
+  - When `min_value < 0 && max_value < 0`, it negates both and recurses. But `std::numeric_limits<int64_t>::min()` negation would overflow. Let me check: if `min_value == INT64_MIN`, then `-min_value` would overflow. But this case is handled by `has_min` check - `has_min` is false when `min_value == INT64_MIN`. So when both are negative, `has_min` must be true, meaning `min_value > INT64_MIN`. And `max_value < 0` means `max_value <= -1`, so `-max_value >= 1`. And `-min_value` where `min_value > INT64_MIN` is safe. OK.
+
+- In the `has_min && has_max` case with `min_value < 0`:
+  - `build_min_max_int(0, -min_value, ...)` - this is safe since `min_value > INT64_MIN`.
+  - Then `min_value = 0` and continues with positive range.
+
+- In the `has_min` only case with `min_value < 0`:
+  - `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` - this passes INT64_MIN as min, which means `has_min` will be false in the recursive call. So it will go to the `has_max` only path. That seems intentional.
+
+- In the `has_max` only case with `max_value >= 0`:
+  - If `top_level`, adds negative numbers first, then calls `build_min_max_int(0, max_value, ...)`.
+  - But wait, `build_min_max_int(0, max_value, ...)` with `has_min=true` (since 0 != INT64_MIN) and `has_max=true`. So it goes to the `has_min && has_max` path. That's correct.
+
+- In the `has_max` only case with `max_value < 0`:
+  - `build_min_max_int(-max_value, INT64_MAX, ...)` - this means only positive numbers up to `-max_value`, then negated. But what about 0? If `max_value < 0`, then 0 is not in range. And negative numbers from `max_value` to `-1` are handled by the negation. Seems correct.
+
+- Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is too large, but since `min_s` comes from `std::to_string(min_value)` and we're taking substr(1), the remaining value fits in int64_t.
+
+### _add_rule function
+- The deduplication logic: if a rule with the same name exists but different content, it appends a number. The loop finds the first available slot. This seems correct but could be slow with many rules (O(n) per insertion).
+
+### _visit_pattern function
+- Takes a snapshot of `_rules` before attempting pattern conversion, and restores on failure. This is a good pattern for rollback.
+- However, `_rules` is a `std::map`, so the snapshot is O(n log n) copy. For large schemas, this could be expensive.
+
+### _pattern_to_rule function
+- Complex regex-to-grammar conversion.
+- `paren_depth` tracking: incremented on `

@@ -1,0 +1,27 @@
+run 30452 | handoff_serial_cal | pf14k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 58.49 t/s | prompt 2616.4 t/s | 1024 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-17 19:18:32
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided two files? Actually content includes // file: common/json-schema-to-grammar.cpp then later // file: common/arg.cpp. They say source file singular but pasted two files concatenated. Need review. Need likely provide detailed code review: correctness, style, potential bugs, security, maintainability. Need analyze code. Need maybe mention it's llama.cpp common code? Need identify issues.
+
+Need produce final answer in English. Need thorough. Let's analyze code deeply.
+
+First file json-schema-to-grammar.cpp.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json.
+
+build_repetition:
+- max_items int, min_items int. has_max = max_items != INT_MAX.
+- if max_items == 0 return ""; if min_items ==0 && max_items==1 return item_rule + "?".
+- if separator empty: if min=1 && !has_max return +; if min=0 && !has_max return *; return {min,max?}.
+Potential issue: if min_items > max_items? Not validated. Could produce invalid grammar. If max_items < min_items, e.g. min=2 max=1 returns {2,1} invalid. Also if max_items negative? Caller maps negative to INT_MAX for arrays, but build_repetition may be called with max_items negative? In string length max_len = max_length <0 ? INT_MAX : max_length. min_length maybe > max_length? no validation. Could produce invalid.
+- separator case: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?".
+Potential issue: if max_items == 0 handled earlier. If max_items == 1 and min_items ==0? handled earlier returns item_rule? Actually if min=0 max=1 returns item_rule + "?" before separator. If min=1 max=1? separator case: result = item + " " + build_repetition(...,0,0). build_repetition with min=0 max=0 returns ""? max_items==0 returns "". Then result = item + " " + "" -> trailing space. Grammar maybe okay? But could be invalid? For exactly one item with separator, should just item. For min=1 max=1, result item + " " + empty. Might be okay but ugly. If min=0 max=1 handled. If min=0 max=2: result = item + " " + build_repetition(sep item,0,1) -> item (sep item)? then wrap? min=0 -> (item (sep item)?)? Actually result = item + " " + (sep item)? then wrap (result)? => (item (sep item)?)? This matches empty? Let's test: min=0 max=2 with separator: result = item + " " + build_repetition((sep item),0,1) = item + " " + ((sep item))?; then if min=0 result = "(" + result + ")?". This matches empty or item or item sep item. Good. But if min=1 max=1: result = item + " " + build_repetition((sep item),0,0) = item + " " + "" (because max=0 returns empty). Then min not 0, result item + " ". Could be okay but trailing space. Better special-case max_items==1 return item_rule.
+- If min_items=0 max_items=0 returns empty. If min_items=0 max_items=1 returns item? before separator. Good.
+- If min_items > max_items? invalid.
+- If max_items == INT_MAX and min_items? has_max false. For separator: max_items -1? has_max ? max_items -1 : max_items. If has_max false, passes max_items (INT_MAX). build_repetition recursive with max_items INT_MAX. OK. But if has_max true and max_items=0 handled. If max_items=1 and min_items=1? passes max_items-1=0. OK. If max_items=INT_MAX? has_max false passes INT_MAX. OK.
+- Potential integer overflow if max_items = INT_MIN? not likely.
+
+build_min_max_int:
+- Generates GBNF for integer range. Uses int64_t min/max. decimals_left default 16 top_level true.
+- digit_range lambda: if from==to out << from else from-to. But if from > to? Could produce invalid range e.g. [9-8]. Need check.
+- more_digits: out << "[0

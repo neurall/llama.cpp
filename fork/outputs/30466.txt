@@ -1,0 +1,84 @@
+run 30466 | handoff_ratio1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 25.27 t/s | prompt 23.8 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-17 19:48:56
+
+The user wants the smallest HTML Tetris game. This is a classic code-golf style challenge — "smallest tetris" is a famous demo scene / JS golfing genre. There are famous tiny Tetris implementations (like the 140-byte-ish ones, or the well-known "tiny tetris in 459 bytes" by Roman / tinytetris).
+
+The user says "generate smallest html tetris game." So they want a compact, single-file HTML Tetris. I should aim for a genuinely tiny, golfed implementation while still being a playable Tetris. I should keep it as one self-contained HTML file, no external dependencies.
+
+Let me think about how small I can make a playable Tetris. The famous tinytetris (C version) is ~459 bytes. For JS in HTML, there are known golfed versions around 300-500 bytes of JS plus minimal HTML wrapper.
+
+Let me design my own golfed Tetris. Requirements for "real" Tetris:
+- 10×20 grid
+- 7 tetromino shapes with rotation
+- Gravity (falling)
+- Movement left/right, rotate, soft drop (and maybe hard drop)
+- Line clearing with scoring
+- Game over
+
+Let me write a compact implementation.
+
+Approach: use a canvas or use DOM? Canvas is usually smaller. Actually, using text/characters in a `<pre>` can be very small too. But canvas rendering with fillRect is compact.
+
+Let me think about the classic golfed approach:
+
+Represent the board as an array of 20 strings or a single array of 200 cells. Represent pieces as bitmasks.
+
+A very compact representation: each tetromino rotation encoded as a 4x4 or 16-bit mask. There are 7 pieces × 4 rotations = 28 masks, but we can compute rotations algorithmically.
+
+Compact rotation trick: store each piece as a 4x4 binary matrix and rotate via transpose+reverse. Or store pieces as arrays of coordinates.
+
+Known tiny tetris JS approach (from code golf SE "Tetris in 140+ bytes"?). Let me just write my own.
+
+Plan:
+
+```js
+D=document
+C=D.getElementById('c').getContext('2d') // canvas
+```
+
+Board: `B=[]` array of 20 rows, each row an array of 10 (0 or color index / 1).
+
+Pieces: define as arrays of rotation states? Or compute rotation.
+
+Compact piece definition: each piece as list of [x,y] offsets in one rotation; rotate by (x,y) -> (y, 3-x) or similar within a 4-box... but that doesn't work perfectly for all pieces with simple rotation around a point. Actually rotating offsets (x,y) -> (y, x) etc. works if we pick the right pivot. A common trick: store each piece as 4 coordinates, rotate with (x,y)->(y,-x) then normalize. That's more code.
+
+Alternative: store all rotations as bitmasks in a compact string. E.g., each rotation state is a 16-bit number; 28 states = 28 numbers. Encode as base36 or as a string.
+
+Actually a neat trick used in tiny tetris: pieces defined as strings like "0110,0110..." Hmm.
+
+Let me consider the well-known approach from the "smallest tetris" JS golf:
+
+One famous one (by @aemkei or similar) uses:
+
+```js
+p=[..."IJOLOSTZ"]...
+```
+
+Let me just craft something myself, aiming for maybe ~600-800 bytes total HTML which is quite small and fully playable, with score, next piece maybe not, game over, restart.
+
+Actually, let me aim for genuinely minimal but playable:
+
+Features:
+- Canvas 10×20 cells
+- Arrow keys: left/right move, up rotate, down soft drop
+- Space hard drop (optional, adds bytes)
+- Line clear + score
+- Game over detection + restart on key
+
+Let me write it:
+
+```html
+<body onload="setInterval(f,100)"><canvas id=c></canvas><script>
+...
+</script>
+```
+
+Hmm, let me write the JS carefully.
+
+Data:
+
+Board: `B=Array(20).fill(0).map(_=>Array(10).fill(0))` — long. Compact: `B=[...Array(20)].map(_=>Array(10).fill(0))`.
+
+Or use a flat array of 200 zeros: `B=Array(200).fill(0)`. Row y, col x => index y*10+x. Collision check easier with flat array.
+
+Piece shapes: 7 pieces. Use bitmask per rotation. Let me encode each rotation as a 16-bit integer where bit i (0..15) represents cell (i%4, i/4
+---

@@ -1,0 +1,39 @@
+run 30432 | vk_split_learn_lp_bulk_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 12.15 t/s | prompt 415.9 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 --moe dense-split=0 | power 280+280 W | 2026-11-17 18:40:21
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends with `static bool spec_types_is_default(const common_params & params)` which is an incomplete function declaration. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+}
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0). The function returns "" silently, which would produce a grammar that matches nothing... Actually returning "" means the rule content is empty string. Hmm, in GBNF an empty rule might be invalid or match empty. Actually if min_items > 0 and max_items == 0, the schema is unsatisfiable. Returning "" silently produces a grammar that accepts empty string, which is wrong (should be an error or at least a warning). Actually wait - returning "" as the rule content... `_add_rule(rule_name, "")` would create a rule with empty content. In GBNF, `rule ::= ` with empty content might be a parse error. This is a potential bug worth flagging.
+
+- `min_items` could be negative? For arrays, `arr.min_items` - is it validated? If min_items is negative, e.g., -1, then `item_rule + "{" + std::to_string(-1) + ...` would produce `{-1,...}` which is invalid grammar. Let me check: in KIND_ARRAY, `arr.min_items` is used directly. If the schema has negative min_items... probably the schema parser guarantees non-negative. But worth noting defensive check.
+
+- In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If `max_items == 1` and `min_items == 1` with separator: has_max true, so recursion with max_items = 0, min_items = 0 → returns "" (since max_items == 0). So result = item_rule + " " + "" = item_rule + " ". Hmm, that leaves a trailing space in the rule. E.g., array with min_items=1, max_items=1: rule = "\"[\" space " + item_rule + " " + " space \"]\"". That gives `item_rule  space` with double space? Actually the string would be `item_rule + " "` then in the caller: `"\"[\" space " + build_repetition(...) + " space \"]\""` → `"\"[\" space item_rule  space \"]\""` - there's a double space. Is double space valid in GBNF? In llama.cpp's GBNF parser, whitespace between tokens is generally allowed... Actually in GBNF grammar text, spaces are typically ignored between symbols. Hmm, but wait - the SPACE_RULE is `" "` literal. Actually in this grammar format, spaces in the rule text are just separators between symbols; the actual "space" matching is done via the `space` rule. So a double space in rule text is harmless (just formatting). But it's sloppy. Actually wait, let me re-check: `build_repetition` with separator and min=1, max=1: result = item_rule + " " + build_repetition("(sep item)", 0, 0). The inner call: max_items == 0 → return "". So result = item_rule + " ". Then since min_items == 0? No, min_items == 1, so no "?" wrapping. Final: `item_rule ` with trailing space. Then caller adds " space \"]\"". So we get `item_rule  space \"]\"` — double space between item_rule and space. In GBNF, consecutive whitespace in the grammar text... The llama.cpp GBNF parser treats whitespace as token separators, so `item_rule  space` parses as two symbols: item_rule and space. So it's fine semantically, just ugly output. Minor.
+
+Actually

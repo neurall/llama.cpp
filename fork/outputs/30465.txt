@@ -1,0 +1,77 @@
+run 30465 | handoff_ratio1 | tetrisc | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 23.93 t/s | prompt 34.8 t/s | 1005 tokens | args: -np 1 | power 280+280 W | 2026-11-17 19:47:22
+
+The user wants the smallest HTML Tetris game. This is a code golf / minimalism challenge. The user explicitly asks for "smallest" — so this is a case where the user's explicit request is for minimal code size. My usual taste for elaborate visual design should yield to the user's explicit request: they want the smallest possible Tetris. This is a well-known code golf genre. I should write a genuinely tiny but fully functional Tetris in a single HTML file.
+
+Let me think about what "smallest" means: fewest bytes while still being a playable Tetris — falling tetrominoes, rotation, movement, line clearing, scoring, game over. I should aim for a genuinely compact implementation, maybe under 1KB or close to it.
+
+Let me design a minimal Tetris:
+
+Core approach:
+- Canvas for rendering (fast, minimal code).
+- Board as a 2D array or a single array with width indexing.
+- Pieces defined compactly. A classic trick: encode all rotations of pieces via bit manipulation, or use a compact piece definition.
+
+A very compact known approach: represent each tetromino as a 4x4 (or 2x2) matrix and rotate by transposing+reversing. Or use the "binary encoding" trick where each piece is a number and rotations are computed.
+
+Let me write it:
+
+```html
+<body onload="setInterval(f,100)"><canvas id=c></canvas><script>
+...
+</script>
+```
+
+Actually let me carefully craft a minimal but complete Tetris. Key features:
+1. 10x20 board.
+2. 7 tetrominoes with rotation.
+3. Left/right/down movement, rotation (up key or Z).
+4. Line clear + score.
+5. Game over detection.
+6. Gravity interval.
+
+Compact piece encoding trick: Use a string where each piece's cells are encoded. A popular minimal approach:
+
+Pieces as arrays of coordinates in a 4x4 grid, rotate via (x,y) -> (3-y, x) or (y, 2-x) etc. Actually rotating coordinates within a bounding box: for a 4-wide box, rotation: newX = 3 - y, newY = x. But pieces like I and O need consistent boxes.
+
+Simplest robust approach: define each piece as a 2D matrix (array of arrays), rotate with matrix transpose + row reverse: `m[0].map((_,i)=>m.map(r=>r[i]).reverse())`. That's compact.
+
+Compact piece data: encode each piece as a binary string or number. E.g., each piece is 16 bits (4x4). 7 pieces × 16 bits. Could encode as a single number or string.
+
+A known ultra-compact encoding: 
+```js
+P=[[1,1,1,1],[[1,1],[1,1]],...]
+```
+Hmm.
+
+Let me try: pieces as arrays of [x,y] pairs? That's verbose.
+
+Matrix approach with binary rows: each piece as array of numbers where binary representation gives rows. E.g.:
+
+- I: [[15],[0,0,0,0]]... hmm variable sizes complicate rotation.
+
+Better: all pieces in 4x4 grids? Then I piece: rows [15,0,0,0] → rotating gives vertical I in column... rotate of [[15],[0],[0],[0]] as 4x4: row0=1111, rotate → column 0 filled? Transpose+reverse: new[i][j] = old[3-j][i]. new row i = old column i reversed. Old column 0 = [1,0,0,0] reversed = [0,0,0,1] → new row 0 = 0001. Hmm that puts I at right edge. Works but rotation looks odd (piece jumps). Acceptable for minimal.
+
+Actually a cleaner classic: use 3x3 grids for all except I (4x4) and O (2x2 embedded). Many minimal tetris implementations use this:
+
+```js
+var P=[
+ [[0,1,0],[1,1,1],[0,0,0]], // T
+ [[1,1],[1,1]], // O
+ ...
+];
+```
+
+Rotation function: `r=m=>m[0].map((_,i)=>m.map(v=>v[i]).reverse())`.
+
+For O (2x2), rotation is identity — fine.
+
+Collision/cell check: piece cell at (x,y) relative; board cell = board[y+p.y+y2][p.x+x2].
+
+Let me write compact code:
+
+```html
+<canvas id=c width=120 height=240></canvas><script>
+B=[],S=0
+for(y=0;y<20;y++)B[y]=Array(10).fill(0)
+
+---

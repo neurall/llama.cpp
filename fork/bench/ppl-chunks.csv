@@ -4178,3 +4178,53 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-17 15:19:47,rel_rowcopy_runs -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4224
 2026-11-17 15:21:44,rel_rowcopy_runs -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3688
 2026-11-17 15:21:44,rel_rowcopy_runs -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.415
+2026-11-17 22:11:05,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3805
+2026-11-17 22:11:05,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4301
+2026-11-17 22:13:07,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3599
+2026-11-17 22:13:07,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4178
+2026-11-17 22:15:37,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4504
+2026-11-17 22:15:37,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5674
+2026-11-17 22:17:07,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4585
+2026-11-17 22:17:07,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5778
+2026-11-17 22:19:09,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1251
+2026-11-17 22:19:09,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1199
+2026-11-17 22:20:13,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1292
+2026-11-17 22:20:13,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1208
+2026-11-17 22:21:46,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1292
+2026-11-17 22:21:46,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1151
+2026-11-17 22:22:44,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1266
+2026-11-17 22:22:44,rel_vk_topk_mask -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1138
+2026-11-17 22:24:12,rel_vk_topk_mask -np 1 -t 6 -tb 8 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-17 22:24:12,rel_vk_topk_mask -np 1 -t 6 -tb 8 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-17 22:25:09,rel_vk_topk_mask -np 1 -t 6 -tb 8 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-17 22:25:09,rel_vk_topk_mask -np 1 -t 6 -tb 8 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-17 22:26:38,rel_vk_topk_mask -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6679
+2026-11-17 22:26:38,rel_vk_topk_mask -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5246
+2026-11-17 22:29:42,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3834
+2026-11-17 22:29:42,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4249
+2026-11-17 22:31:43,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3772
+2026-11-17 22:31:43,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.426
+2026-11-17 22:34:13,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4506
+2026-11-17 22:34:13,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5722
+2026-11-17 22:35:43,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4526
+2026-11-17 22:35:43,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5698
+2026-11-17 22:37:43,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1291
+2026-11-17 22:37:43,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.121
+2026-11-17 22:38:45,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1343
+2026-11-17 22:38:45,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1255
+2026-11-17 22:40:18,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.13
+2026-11-17 22:40:18,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1155
+2026-11-17 22:41:14,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1266
+2026-11-17 22:41:14,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1138
+2026-11-17 22:42:41,rel_vk_exit_nodriver -np 1 -t 6 -tb 8 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-17 22:42:41,rel_vk_exit_nodriver -np 1 -t 6 -tb 8 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-17 22:43:39,rel_vk_exit_nodriver -np 1 -t 6 -tb 8 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-17 22:43:39,rel_vk_exit_nodriver -np 1 -t 6 -tb 8 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-17 22:45:08,rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6699
+2026-11-17 22:45:08,rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5264
+2026-11-17 22:45:39,rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6671
+2026-11-17 22:45:39,rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 90 -t 6 -tb 8 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5252
+2026-11-17 22:46:40,"rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9385
+2026-11-17 22:46:40,"rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9403
+2026-11-17 22:46:57,"rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9387
+2026-11-17 22:46:57,"rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9397

@@ -1,0 +1,20 @@
+run 30436 | vk_split_learn_lp_bulk_vk | pf14k | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 28.74 t/s | prompt 1333.2 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 -lm pin --moe dense-split=0 | power 280+280 W | 2026-11-17 18:47:27
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided two files? Actually content includes // file: common/json-schema-to-grammar.cpp then // file: common/arg.cpp. They say source file singular but pasted two files concatenated. Need review. Need likely provide detailed code review: correctness, style, potential bugs, security, maintainability. Need analyze code. Need maybe mention it's llama.cpp common code? Need identify issues.
+
+Need think thoroughly. We need produce final answer with code review. Need inspect code for bugs, design, performance, safety.
+
+Let's parse first file: json-schema-to-grammar.cpp. It converts JSON schema to GBNF grammar. Includes regex, etc.
+
+Potential issues:
+- build_repetition: if max_items == 0 returns empty string. But if min_items >0 and max_items==0 invalid? It returns empty silently. Could be invalid schema. Also if min_items > max_items? Not validated. For separator_rule non-empty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); If max_items == 0 handled earlier. If min_items=0 max_items=1? earlier returns item_rule? Wait if separator_rule non-empty and min_items=0 max_items=1: earlier if min_items==0 && max_items==1 returns item_rule + "?" before separator branch. That's okay? For array with separator, max 1 item no separator. If min_items=1 max_items=1: separator branch: result = item_rule + " " + build_repetition(..., 0, 0). build_repetition with min=0 max=0 returns ""? max_items==0 returns "" (but min=0 max=0). result = item_rule + " " + "" -> trailing space. Then min_items !=0. So rule has trailing space before space ]? In array: "\"[\" space " + build_repetition(...) + " space \"]\"". If build_repetition returns "item " then okay? Actually result = item_rule + " " + "" = "item ". Then array: "[ space item  space ]" double space? GBNF maybe okay? But could be malformed? Need check. For min=1 max=1 with separator, expected item. build_repetition returns item_rule + " " + empty. That leaves trailing space. In GBNF, spaces are separators, so okay but maybe ugly. But if item_rule is a rule name, "item " then " space ]" -> "item space ]" okay. But if max_items=1 min_items=0 earlier returns item_rule + "?" no separator. Good.
+- build_repetition with min_items=0 max_items=0 returns empty. For array min=0 max=0, array rule becomes "[ space  space ]" maybe okay? But if required? Could be okay.
+- build_repetition with separator and max_items=1 min_items=0 returns item_rule? earlier returns item_rule + "?"? Actually if min=0 max=1 returns item_rule + "?" before separator. Good.
+- build_repetition with min_items=0 max_items=0 and separator? returns empty.
+- build_repetition with min_items > max_items? e.g. min=2 max=1: has_max true, max_items !=0, min=2 max=1. separator empty: returns item{2,1} invalid. Could validate.
+- build_repetition with negative? min_items maybe int, max_items int. If max_items <0? In array max_items <0 converted to INT_MAX. But function could receive negative? Not likely.
+
+build_min_max_int:
+- Recursive function with decimals_left default 16. It builds regex-like GBNF for integer range. Potential issues:
+  - std::stoll(min_s.substr(1)) can throw if substr empty? In branch min_value >9, len >=2, substr(1) non-empty. okay. But if min_s.substr(1) length > 19? min_value int64 max 9223372036854775807 length 19, substr(1) length 18, okay. But if min_value = LLONG_MIN? has_min false? min_value != min? If min_value == LLONG_MIN has_min false. If min_value = LLONG_MIN+1? min_value <0 branch: build_min_max_int(LLONG_MIN, -min_value) but -min_value overflows if min_value == LLONG_MIN? But has_min true only if min_value != LLONG_MIN. If min_value = LLONG_MIN+1, -min_value = 9

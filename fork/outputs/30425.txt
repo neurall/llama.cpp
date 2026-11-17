@@ -1,0 +1,48 @@
+run 30425 | vk_split_learn_lp_bulk | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 35.99 t/s | prompt 1262.1 t/s | 1024 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-17 18:20:47
+
+<think>The user wants me to do a code review of two source files. Let me analyze them carefully.
+
+Let me go through both files systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **Complexity**: This file is quite complex with nested lambdas, recursive functions, and intricate logic for converting JSON schemas to GBNF grammars.
+
+2. **`build_repetition` function**:
+   - The `separator_rule` parameter has a default value of `""`, which is fine.
+   - When `max_items == 0`, it returns `""` - this means an empty array/string is allowed. But wait, for arrays, this would mean no items at all, which seems correct.
+   - The separator case: when `min_items == 0`, it wraps the result in `(...)?`. But there's a subtle issue - if `min_items == 0` and there's a separator, the first item is optional, and then subsequent items are separated. This seems correct.
+   - When `has_max` is false and `max_items` is passed to the recursive call, it passes `max_items` which is `std::numeric_limits<int>::max()`. In the recursive call, `has_max` will be false, so it will handle it correctly.
+
+3. **`build_min_max_int` function**:
+   - This is a complex function that builds regex patterns for integer ranges.
+   - The `uniform_range` lambda is recursive (via `std::function`), which is necessary for the digit-by-digit approach.
+   - The `decimals_left` parameter limits recursion depth to prevent stack overflow.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+   - There's a potential issue: when `min_value < 0 && max_value < 0`, it negates both and recurses. But what if `min_value == INT64_MIN`? Then `-min_value` would overflow. Let me check... Actually, looking at the code, when `min_value < 0 && max_value < 0`, it does `build_min_max_int(-max_value, -min_value, ...)`. If `min_value` is `INT64_MIN`, then `-min_value` would be `INT64_MIN` again (undefined behavior for signed overflow). This is a potential bug.
+   - Wait, actually `min_value < 0 && max_value < 0` means both are negative. `-max_value` would be positive (since max_value is negative), and `-min_value` would be positive (since min_value is negative). But if `min_value == INT64_MIN`, then `-min_value` overflows. This is indeed a bug.
+
+4. **`_add_rule` method**:
+   - The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. This seems reasonable.
+   - However, the loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this could be inefficient if there are many rules with the same base name.
+
+5. **`_visit_pattern` method**:
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for transactional behavior.
+   - However, `_rules` is a `std::map`, so copying it is O(n) each time. For large schemas, this could be expensive.
+
+6. **`_pattern_to_rule` method**:
+   - This is a complex recursive descent parser for regex patterns.
+   - The `transform` lambda is recursive and handles various regex constructs.
+   - The `paren_depth` tracking is correct for detecting unbalanced parentheses.
+   - The character class parsing handles escapes correctly.
+   - The curly bracket parsing handles `{n}`, `{n,m}`, `{n,}` correctly.
+   - The literal parsing has some subtle logic for when to break out of the literal accumulation loop.
+
+7. **`_not_strings` method**:
+   - Builds a trie-based rule to match strings that are not in a given set.
+   - The `rejects` string accumulates characters that should be rejected. But there's a potential issue: if a character in the trie is a special regex character (like `]`, `-`, `^`), it could break the character class. The code doesn't escape these characters.
+   - Wait, looking more carefully: `rejects += c` where `c` is a UTF-8 encoded character. Then it's used in `[^" << rejects << "]`. If `c` contains `]`, `-`, or `^`, this would break the character class. This is a bug.
+
+8. **`_resolve_ref` method**

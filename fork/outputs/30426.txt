@@ -1,0 +1,51 @@
+run 30426 | vk_split_learn_lp_bulk | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.0 t/s | prompt 1465.7 t/s | 1024 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-17 18:22:06
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases. Let me check for edge cases.
+   - When `max_items == 0`, returns empty string - correct.
+   - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+   - For separator case: when `min_items == 0`, it wraps the result in `(...)?`. But there's a potential issue: if `min_items == 0` and `max_items == 0`, the first check catches it. If `min_items == 0` and `max_items == 1`, the second check catches it. So the separator path with `min_items == 0` would have `max_items >= 2` or `max_items == INT_MAX`.
+   - Wait, actually if `min_items == 0 && max_items == 1`, it returns early with `item_rule + "?"`. So the separator path with `min_items == 0` would have `max_items >= 2` or unlimited.
+   - The separator case: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. This looks correct for building `item (sep item)*` patterns.
+   - When `min_items == 0`, the result is wrapped in `(...)?`. But if `max_items == 0`, it returns early. So this is fine.
+
+2. **`build_min_max_int` function:**
+   - This is a complex function for generating integer ranges. Let me check for issues.
+   - The `uniform_range` lambda is recursive (via `std::function`), which is fine.
+   - The `digit_range` lambda writes character ranges.
+   - The `more_digits` lambda writes digit repetition.
+   - When both min and max are set and both negative: it negates and swaps - correct.
+   - When min is negative and max is positive: handles negative part then continues with non-negative - correct.
+   - The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - this ensures at least 1 decimal left.
+   - When `has_min` and `min_value < 0`: it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` - this seems correct for handling negative numbers.
+   - When `has_min` and `min_value == 0`: handles top_level vs not - seems correct.
+   - When `has_min` and `min_value <= 9`: handles single digit - seems correct.
+   - When `has_min` and `min_value > 9`: recursive call with `std::stoll(min_s.substr(1))` - potential issue if `min_s.substr(1)` is empty? No, since `min_value > 9`, `min_s` has at least 2 characters.
+   - When `has_max` and `max_value >= 0`: handles positive max - seems correct.
+   - When `has_max` and `max_value < 0`: handles negative max - seems correct.
+   - The throw at the end: "At least one of min_value or max_value must be set" - this is correct as a safety check.
+
+3. **`_add_rule` method:**
+   - Escapes rule names and handles duplicates by appending numbers.
+   - The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Seems correct.
+
+4. **`_visit_pattern` method:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion.
+   - On `unsupported_pattern`, reverts rules and adds a warning.
+   - On `invalid_pattern`, reverts rules and adds an error.
+   - The snapshot is a full copy of `_rules` map - this could be expensive for large schemas but is correct.
+
+5. **`_pattern_to_rule` method:**
+   - Complex regex-to-grammar conversion.
+   - Checks for `^` and `$` anchors.
+   - Handles various regex constructs.
+   - The `transform` lambda is recursive and handles groups, character classes, quantifiers, etc.
+   - Potential issue: the `sub_rule_ids` map uses the rule

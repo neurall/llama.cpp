@@ -1,0 +1,41 @@
+run 30493 | vk_upload_order_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 15.23 t/s | prompt 435.0 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 21:43:20
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params)` which suggests the file was cut off. I should note this in my review.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully:
+
+### `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0). The function silently returns "" which would produce an unsatisfiable grammar... Actually wait, returning "" means the grammar matches empty string, but min_items > 0 means it should never match. Actually returning "" makes the grammar match empty, which is wrong if min_items > 0. Hmm, but actually if max_items == 0 and min_items > 0, the schema is unsatisfiable anyway. Returning "" would allow empty which technically violates min_items. This is an edge case. Actually, wait - let me think. If min_items = 2 and max_items = 0, the correct grammar would be something that never matches. Returning "" matches empty string, which is incorrect but arguably the schema itself is contradictory. Minor issue.
+
+- `min_items` could be negative? In the array case, `arr.min_items` is used directly. If min_items is negative... Let me check: `build_repetition(item_rule_name, arr.min_items, max_items, ...)`. If min_items is negative, e.g., -1, then `min_items == 0` is false, `min_items == 1` false, so it goes to `item_rule + "{" + std::to_string(-1) + ...` producing `{-1,}` which is invalid grammar. Hmm, but would min_items ever be negative? The schema parsing probably ensures non-negative. Not sure.
+
+- In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If max_items == 1 and min_items == 1 with separator: result = item_rule + " " + build_repetition(..., 0, 0) → inner returns "" (since max_items == 0). So result = item_rule. Good. If max_items == 1 and min_items == 0: result = item_rule + " " + build_repetition(..., 0, 0) = item_rule, then wrapped in "(...)?" → "(item_rule)?". Good.
+
+Wait, there's a subtle issue: when `max_items == 1` and separator is non-empty and min_items == 1: `build_repetition(sep_item, 0, 0)` returns "". So result = item_rule + " " + "" = item_rule + " ". Hmm, trailing space! Let me check: `auto result = item_rule + " " + build_repetition(...)`. If build_repetition returns "", result = item_rule + " " — with a trailing space. Then since min_items != 0, no wrapping. So the rule would be `item_rule ` with trailing space. In GBNF, trailing space might be harmless? Actually in llama.cpp grammar format, spaces in rules... The grammar parser treats whitespace as insignificant except within quotes? Actually in GBNF, whitespace between symbols is generally ignored (the parser skips whitespace). Hmm, actually I recall llama.cpp's grammar parser does skip whitespace outside of literals. So trailing space is harmless. But wait — actually there's a subtlety: the SPACE_RULE is a rule named "space", and literal spaces in the grammar text are just ignored by the parser. So trailing space is fine.
+
+Hmm wait, actually let me double-check the case min_items == 1, max_items == 1, separator non-empty: result = item + " " + "" = "item ". That's fine.
+
+What about min_items == 0, max_items == 1, separator: result = item + " " + build_repetition(sep_item, 0, 
