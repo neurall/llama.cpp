@@ -7683,7 +7683,7 @@ def run_watched(cmd, env, expect, label, every=3, total=None, log=None, results=
     try:
         if peek and not rc: store_cell_time(str(cmd[5]), peek[0], ALIASES.get(peek[1], peek[1]), row_hw(), t0, el, *CELL_PG)
     except Exception as e: print(f"time not stored: {e}", flush=True)
-    CELL_LINES.append(col(1, f"{label[:NAMEW[0]]:<{NAMEW[0]}}") + f" {int(el // 60):>3}:{int(el % 60):02d} " + col(37, "cell") + (col(37, ",") + " " + col(33, lt) if lt else "") + "  " + (col(31, "FAILED ") if rc or not res else "") + "  ".join(speed_txt(t, p) for t, p in res) + gain )   # decode blue, prompt green, load yellow: the colors of the status bar
+    CELL_LINES.append(col(1, f"{label[:NAMEW[0]]:<{NAMEW[0]}}") + f" {int(el // 60):>3}:{int(el % 60):02d} " + col(37, "cell") + (col(37, ",") + " " + col(33, lt) if lt else "") + "  " + (col(31, "FAILED ") if rc or not res else "") + "  ".join(speed_txt(t, p) for t, p, *_ in res) + gain )   # decode blue, prompt green, load yellow: the colors of the status bar
     try:   # the end-of-cell engine state, if the cell saved one: one more status build with it (the live ticks of a short cell miss the engine)
         _ff = os.path.join(QDIR, "final-stats.json")
         if os.path.exists(_ff) and os.path.getmtime(_ff) >= t0:
@@ -8528,7 +8528,7 @@ def run_list(name, argv):
                 _b = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select bno, start_ts from runs where rowid=?", (_rid,)).fetchone()
                 if _b and _b[0]: STOCK_REC[0]["ob"] = int(_b[0]); STOCK_REC[0]["od"] = str(_b[1])[:10]
             CELL_REC.append(dict(skipped=True, tag=f"{r['_b']}-{r['name']}", asked=int(r["tokens"]) if r.get("tokens") else 0, ref=ours_reference(r["model"], r["test"]) if r["_b"].startswith("stock") else None, sbno=own_build_no(r["_b"]), xfer="" if r["_b"].startswith("stock") else xfer_of(own_build_no(r["_b"]), r.get("args") or ""), sdate=time.strftime("%F", time.localtime(os.path.getmtime(os.path.join(DEVBUILDS, r["_b"], "llama-server")))) if os.path.exists(os.path.join(DEVBUILDS, r["_b"], "llama-server")) else "", rid=_rid, build=r["_b"], prompt=best_prompt_cell_label(r) or prompt_txt(r["test"], r.get("tokens")), model=r["model"], test=r["test"], name=stock_prefix(r) + r["name"], el=_el, lt=_lt, rc=0, res=res, st=STOCK_REC[0], stock_row=r["_b"].startswith("stock")))
-            CELL_LINES.append(col(1, f"{stock_prefix(r) + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
+            CELL_LINES.append(col(1, f"{stock_prefix(r) + r['name']:<{NAMEW[0]}}") + "  " + "  ".join(speed_txt(t, p) for t, p, *_ in res) + gain + (f"  [{col(36, CELL_TEST[0])}]" if CELL_TEST[0] else ""))
         if len(keep) < len(rows): print(f"-nrt: {len(rows) - len(keep)} cells already run in the last {o.not_today} day(s) skipped (they are in the table at the end)", flush=True)
         rows = keep
     if o.status:   # one table in the -nrt columns: the cells done today, the one running now, the cells queued next (the rest of the list, then the queue daemon's waiting tasks); nothing else happens
