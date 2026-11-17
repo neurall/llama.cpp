@@ -1,6 +1,8 @@
 #include "ggml-vulkan-common.h"
 
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 #if defined(__linux__)
 #include <sys/resource.h>
 #endif
@@ -808,7 +810,7 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
 #endif
 
     try {
-        pipeline->pipeline = device->device.createComputePipeline(VK_NULL_HANDLE, compute_pipeline_create_info).value;
+        pipeline->pipeline = device->device.createComputePipeline(device->pipeline_cache, compute_pipeline_create_info).value;   // fork: null when it has none
     } catch (const vk::SystemError& e) {
         std::cerr << "ggml_vulkan: compute pipeline creation failed for " << pipeline->name << ": " << e.what() << std::endl;
         throw;
@@ -1820,12 +1822,135 @@ static void ggml_vk_precompile_wait(size_t idx) {
     }
 }
 
+// fork: what a start compiled is kept for the next one, in the engine's cache directory (as the expert profiles), per GPU model and driver: the pipelines
+// themselves (a VkPipelineCache's data: the driver's result, loaded back so the start-up compile only looks it up) and the flash attention keys seen
+// (made per graph shape at first use, compiled with the others at the next start). User 2026-11-17: "can compiled shaders be stored cached and loaded
+// on next start? incl fa ones?"
+static std::string ggml_vk_cache_path(const vk_device & device, const char * what) {
+#ifdef _WIN32
+    const char * base = getenv("LOCALAPPDATA");
+    const std::string dir = base ? std::string(base) + "\\llama.cpp" : "";
+#else
+    const char * xdg  = getenv("XDG_CACHE_HOME");
+    const char * home = getenv("HOME");
+    const std::string dir = xdg ? std::string(xdg) + "/llama.cpp" : home ? std::string(home) + "/.cache/llama.cpp" : "";
+#endif
+    if (dir.empty()) {
+        return "";
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    char name[96];
+    snprintf(name, sizeof(name), "/vk-%s-%04x-%04x-%08x", what, device->properties.vendorID, device->properties.deviceID, device->properties.driverVersion);
+    return dir + name;
+}
+
+// before any pipeline of the card compiles; data another GPU, driver or cache version wrote is dropped before the driver reads it
+static void ggml_vk_pipeline_cache_load(vk_device & device) {
+    const std::string path = ggml_vk_cache_path(device, "pipelines");
+    std::vector<char> data;
+    if (!path.empty()) {
+        std::ifstream f(path + ".bin", std::ios::binary);
+        data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    uint32_t h[4] = {};   // VkPipelineCacheHeaderVersionOne: header size, version, vendor, device, then the cache UUID
+    if (data.size() >= sizeof(h) + VK_UUID_SIZE) {
+        memcpy(h, data.data(), sizeof(h));
+    }
+    const bool fits = h[0] >= sizeof(h) + VK_UUID_SIZE && h[1] == (uint32_t) VK_PIPELINE_CACHE_HEADER_VERSION_ONE && h[2] == device->properties.vendorID &&
+                      h[3] == device->properties.deviceID && memcmp(data.data() + sizeof(h), device->properties.pipelineCacheUUID.data(), VK_UUID_SIZE) == 0;
+    if (!fits) {
+        data.clear();
+    }
+    try {
+        device->pipeline_cache = device->device.createPipelineCache({ {}, data.size(), data.empty() ? nullptr : data.data() });
+    } catch (const vk::SystemError & e) {
+        GGML_LOG_WARN("ggml_vulkan: %s: no pipeline cache (%s): pipelines compile without one\n", device->name.c_str(), e.what());
+        return;
+    }
+    GGML_LOG_WARN("ggml_vulkan: %s: pipeline cache %s (%.1f MiB from the last start)\n", device->name.c_str(), path.c_str(), data.size() / 1048576.0);
+}
+
+static void ggml_vk_pipeline_cache_save(vk_device & device) {
+    const std::string path = device->pipeline_cache ? ggml_vk_cache_path(device, "pipelines") : "";
+    if (path.empty()) {
+        return;
+    }
+    std::vector<uint8_t> data;
+    try {
+        data = device->device.getPipelineCacheData(device->pipeline_cache);
+    } catch (const vk::SystemError &) {
+        return;
+    }
+    // a file of its own, then renamed over the old one: two cards (or two servers) of one GPU model save the same name
+    const std::string tmp = path + ".tmp" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        f.write((const char *) data.data(), (std::streamsize) data.size());
+        if (!f) {
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path + ".bin", ec);
+}
+
+static std::string ggml_vk_fa_key_line(const vk_fa_pipeline_state & s) {
+    char b[256];
+    snprintf(b, sizeof(b), "fa1 %u %u %u %u %u %u %d %d %u %u %d %d %u %u %d %d\n", s.HSK, s.HSV, s.Br, s.Bc, s.D_split, s.row_split, (int) s.shmem_staging,
+             (int) s.path, s.workgroup_size, s.subgroup_size, (int) s.aligned, (int) s.f32acc, s.flags, s.limit_occupancy_shmem, (int) s.k_type, (int) s.v_type);
+    return b;
+}
+
+// a key met for the first time (its pipeline compiles at first use); the device's compile_mutex is held
+static void ggml_vk_fa_key_note(const vk_device & device, const vk_fa_pipeline_state & s) {
+    const std::string path = ggml_vk_cache_path(device, "fa-keys");
+    if (FILE * f = path.empty() ? nullptr : fopen((path + ".txt").c_str(), "a")) {
+        fputs(ggml_vk_fa_key_line(s).c_str(), f);
+        fclose(f);
+    }
+}
+
+// the keys earlier starts met go into the map before the start-up compile's walk, which then compiles their pipelines with the others
+static size_t ggml_vk_fa_keys_load(vk_device & device) {
+    const std::string path = ggml_vk_cache_path(device, "fa-keys");
+    std::ifstream f(path.empty() ? std::string() : path + ".txt");
+    std::lock_guard<std::mutex> guard(device->compile_mutex);
+    size_t n = 0;
+    for (std::string line; std::getline(f, line);) {
+        vk_fa_pipeline_state s {};
+        int shmem = 0, path_i = 0, aligned = 0, f32acc = 0, kt = 0, vt = 0;
+        if (sscanf(line.c_str(), "fa1 %u %u %u %u %u %u %d %d %u %u %d %d %u %u %d %d", &s.HSK, &s.HSV, &s.Br, &s.Bc, &s.D_split, &s.row_split, &shmem, &path_i,
+                   &s.workgroup_size, &s.subgroup_size, &aligned, &f32acc, &s.flags, &s.limit_occupancy_shmem, &kt, &vt) != 16 ||
+            path_i < FA_SCALAR || path_i > FA_COOPMAT2 || kt < 0 || kt >= GGML_TYPE_COUNT || vt < 0 || vt >= GGML_TYPE_COUNT) {
+            continue;
+        }
+        s.shmem_staging = shmem != 0;
+        s.path          = (FaCodePath) path_i;
+        s.aligned       = aligned != 0;
+        s.f32acc        = f32acc != 0;
+        s.k_type        = (ggml_type) kt;
+        s.v_type        = (ggml_type) vt;
+        auto & pl = device->pipeline_flash_attn_f32_f16[s];
+        if (!pl) {
+            pl = std::make_shared<vk_pipeline_struct>();
+            ++n;
+        }
+    }
+    return n;
+}
+
 static void ggml_vk_precompile_join_all() {   // atexit, before the instance's static destructor
     g_vk_precompile_stop = true;
     std::lock_guard<std::mutex> lock(g_vk_precompile_mtx);
     for (auto & th : g_vk_precompile) {
         if (th.joinable()) {
             th.join();
+        }
+    }
+    for (auto & dev : vk_instance.devices) {   // the pipelines compiled at first use (new flash attention keys) are in the next start's cache
+        if (dev) {
+            ggml_vk_pipeline_cache_save(dev);
         }
     }
 }
@@ -5209,6 +5334,8 @@ vk_device ggml_vk_get_device(size_t idx) {
             device->mmvq_mode = 1;
         }
 
+        ggml_vk_pipeline_cache_load(device);
+
         // publish the device only when it is fully built
         vk_instance.devices[idx] = device;
         {   // fork: every pipeline compiles now, in the background while the model loads, not at its first use inside a request (ggml_vk_precompile_wait)
@@ -5217,14 +5344,17 @@ vk_device ggml_vk_get_device(size_t idx) {
             (void) exit_hook;
             g_vk_precompile[idx] = std::thread([device]() mutable {
                 const auto t0 = std::chrono::steady_clock::now();
+                const size_t n_fa = ggml_vk_fa_keys_load(device);
                 ggml_vk_load_shaders(device, nullptr, true);
+                ggml_vk_pipeline_cache_save(device);
                 size_t n = 0;
                 {
                     std::lock_guard<std::mutex> guard(device->compile_mutex);
                     n = device->all_pipelines.size();
                 }
-                GGML_LOG_WARN("ggml_vulkan: %s: %zu pipelines compiled at the start in %.0f ms (in the background, beside the model's load)\n",
-                              device->name.c_str(), n, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                GGML_LOG_WARN("ggml_vulkan: %s: %zu pipelines compiled at the start in %.0f ms (in the background, beside the model's load; %zu flash "
+                              "attention keys of earlier starts)\n", device->name.c_str(), n,
+                              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), n_fa);
             });
         }
         ggml_vk_host_import_existing(device);   // fork: host memory allocated before this card is imported now, not at its first upload
@@ -8701,6 +8831,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
             pipeline = it->second;
         } else {
             pipelines[fa_pipeline_state] = pipeline = std::make_shared<vk_pipeline_struct>();
+            ggml_vk_fa_key_note(ctx->device, fa_pipeline_state);   // fork: compiled with the others at the next start
         }
     }
 
@@ -17625,6 +17756,9 @@ vk_device_struct::~vk_device_struct() {
     all_pipelines.clear();
 
     device.destroyDescriptorSetLayout(dsl);
+    if (pipeline_cache) {
+        device.destroyPipelineCache(pipeline_cache);
+    }
 
     device.destroy();
 }
