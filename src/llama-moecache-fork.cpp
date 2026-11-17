@@ -14394,8 +14394,6 @@ static double early_link_gbs(ggml_backend_dev_t d) {
     g_early_gbs.push_back({ d, gbs });
     return gbs;
 }
-// the probe for tests/test-link-probe-fork.cpp
-LLAMA_API double llama_moe_link_gbs_fork(ggml_backend_dev_t d) { return early_link_gbs(d); }
 
 #if defined(SR_HAVE_AIO) || defined(_WIN32)
 // The async engine's best shape on the model's drive: block size, gap and reads in flight (O_DIRECT, about 0.15 s per combination), measured once per drive and kept in [machine] as
@@ -14510,6 +14508,32 @@ static double vram_copy_gbs(ggml_backend_dev_t d) {
     ggml_free(ctx);
     return best;
 }
+// RAM read: a sequential read of 1 GiB by nt threads, the fastest of three passes (ram_read_gbs.<threads>)
+static double ram_read_probe(unsigned nt) {
+    const size_t n = (size_t) 1 << 30;
+    std::vector<uint64_t> buf(n / 8, 1);   // touched here, so the passes read resident memory
+    double best = 0.0;
+    for (int pass = 0; pass < 3; ++pass) {
+        std::vector<std::thread> th;
+        std::atomic<uint64_t> sink{0};
+        const int64_t t1 = ggml_time_us();
+        for (unsigned i = 0; i < nt; ++i) {
+            th.emplace_back([&, i]() {
+                const size_t a = buf.size() / nt * i, b = i + 1 == nt ? buf.size() : buf.size() / nt * (i + 1);
+                uint64_t x = 0;
+                for (size_t k = a; k < b; ++k) { x += buf[k]; }
+                sink += x;
+            });
+        }
+        for (auto & t : th) { t.join(); }
+        best = std::max(best, (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t1) / 1e3);
+    }
+    return best;
+}
+// the probes themselves, measured now (no stored values), for tests/test-bw-probe-fork.cpp
+LLAMA_API double llama_moe_link_gbs_fork(ggml_backend_dev_t d) { return early_link_gbs(d); }
+LLAMA_API double llama_moe_vram_probe_gbs_fork(ggml_backend_dev_t d) { return vram_copy_gbs(d); }
+LLAMA_API double llama_moe_ram_probe_gbs_fork(void) { return ram_read_probe(std::max(2u, std::thread::hardware_concurrency()) / 2); }
 LLAMA_API double llama_moe_ram_read_gbs_fork(void) { return g_ram_read_gbs; }
 LLAMA_API double llama_moe_vram_gbs_fork(ggml_backend_dev_t d) {
     for (const auto & e : g_vram_gbs) { if (e.first == d) { return e.second; } }
@@ -14568,29 +14592,12 @@ LLAMA_API void llama_moe_early_bench_fork(const char * model_path) {
             g_ram_read_gbs = atof(v.c_str());
             LLAMA_LOG_WARN("moe-cache: machine: RAM read %.2f GB/s with %u threads (stored)\n", atof(v.c_str()), hw / 2);
         } else {
-            const size_t n = (size_t) 1 << 30;
-            std::vector<uint64_t> buf(n / 8, 1);   // touched here, so the passes read resident memory
             const unsigned nt = hw / 2;
-            double best = 0.0;
-            for (int pass = 0; pass < 3; ++pass) {
-                std::vector<std::thread> th;
-                std::atomic<uint64_t> sink{0};
-                const int64_t t1 = ggml_time_us();
-                for (unsigned i = 0; i < nt; ++i) {
-                    th.emplace_back([&, i]() {
-                        const size_t a = buf.size() / nt * i, b = i + 1 == nt ? buf.size() : buf.size() / nt * (i + 1);
-                        uint64_t x = 0;
-                        for (size_t k = a; k < b; ++k) { x += buf[k]; }
-                        sink += x;
-                    });
-                }
-                for (auto & t : th) { t.join(); }
-                best = std::max(best, (double) n / (double) std::max<int64_t>(1, ggml_time_us() - t1) / 1e3);
-            }
+            const double best = ram_read_probe(nt);
             moe_state_set(sec, {{ key, format("%.3f", best) }});
             g_ram_read_gbs = best;
             LLAMA_LOG_WARN("moe-cache: machine: RAM read %.2f GB/s with %u threads (measured)\n", best, nt);
-            llama_moe_span_fork("machine benchmark: RAM read (1 GiB, all threads)", s0, llama_moe_span_now_fork(), n, "RAM probe");
+            llama_moe_span_fork("machine benchmark: RAM read (1 GiB, all threads)", s0, llama_moe_span_now_fork(), (size_t) 1 << 30, "RAM probe");
         }
     }
     {   // PCIe: every card, measured now (the value is also the one the placement and the splits use, see early_link_gbs)
