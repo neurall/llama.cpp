@@ -104,6 +104,84 @@ static void check(const char * what, ggml_backend_t src_be, ggml_backend_buffer_
     ggml_free(dctx);
 }
 
+// The KV state's save and load (llama_kv_cache::state_write_data / state_read_data) in the token-major layout: one entry per cell, layer and K/V, all in one
+// ggml_backend_tensor_get_n / set_n call (the server's RAM prompt cache, --cache-ram, saves an idle slot this way when a new task comes and loads a cached
+// prompt back). Vulkan had no get/set_tensor_n, so the fallback made one blocking transfer per entry (CUDA batches them). Fails above 500 ms each way.
+static void check_state(ggml_backend_t be, ggml_type type, int64_t cells) {
+    const int64_t D = 128, H = 4;
+    const int     layers = 6;
+    const size_t  rowb = ggml_row_size(type, D), cellb = H * rowb;   // a layer's K (or V) of one cell: every head
+    const size_t  rec  = (size_t) layers * 2 * cellb;
+    char name[200];
+    snprintf(name, sizeof(name), "state save and load, %s, %lld cells x %d layers x K/V", ggml_type_name(type), (long long) cells, layers - 1);
+    n_run++;
+
+    ggml_init_params ip = { (2 + 4 * layers) * ggml_tensor_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_tensor * src = ggml_new_tensor_2d(ctx, type, D, cells * layers * 2 * H);   // the KV record, as in check()
+    ggml_tensor * dst = ggml_new_tensor_2d(ctx, type, D, cells * layers * 2 * H);   // where the state is loaded back
+    std::vector<ggml_tensor *> sv, dv;   // per layer and K/V: [D*H, cells] views, one cell a record apart
+    for (int l = 0; l < layers; ++l) {
+        for (int kv = 0; kv < 2; ++kv) {
+            sv.push_back(ggml_view_2d(ctx, src, D * H, cells, rec, (size_t) (l * 2 + kv) * cellb));
+            dv.push_back(ggml_view_2d(ctx, dst, D * H, cells, rec, (size_t) (l * 2 + kv) * cellb));
+        }
+    }
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, be);
+    if (!buf) {
+        printf("  %-60s SKIPPED (no buffer)\n", name);
+        n_run--;
+        ggml_free(ctx);
+        return;
+    }
+    std::mt19937 rng(11);
+    std::vector<uint8_t> src_bytes(ggml_nbytes(src));
+    for (auto & b : src_bytes) { b = (uint8_t) rng(); }
+    ggml_backend_tensor_set(src, src_bytes.data(), 0, src_bytes.size());
+    std::vector<uint8_t> zeros(ggml_nbytes(dst), 0);
+    ggml_backend_tensor_set(dst, zeros.data(), 0, zeros.size());
+
+    const size_t nv = sv.size() - 2;   // the last layer's K and V stay out of the state: its bytes in dst must stay 0
+    const size_t n = nv * (size_t) cells;
+    std::vector<const ggml_tensor *> gt(n);
+    std::vector<ggml_tensor *> st(n);
+    std::vector<size_t> offs(n), sizes(n, cellb), doffs(n);
+    for (size_t v = 0, i = 0; v < nv; ++v) {
+        for (int64_t c = 0; c < cells; ++c, ++i) { gt[i] = sv[v]; st[i] = dv[v]; offs[i] = (size_t) c * rec; doffs[i] = i * cellb; }
+    }
+    std::vector<uint8_t> state(n * cellb);
+    const int64_t t0 = ggml_time_us();
+    ggml_backend_tensor_get_n(gt.data(), state.data(), offs.data(), sizes.data(), doffs.data(), n);
+    const int64_t t1 = ggml_time_us();
+    ggml_backend_tensor_set_n(st.data(), state.data(), offs.data(), sizes.data(), doffs.data(), n);
+    ggml_backend_synchronize(be);
+    const int64_t t2 = ggml_time_us();
+    const double ms_save = (t1 - t0) / 1e3, ms_load = (t2 - t1) / 1e3;
+
+    std::vector<uint8_t> back(ggml_nbytes(dst)), want(ggml_nbytes(dst), 0);
+    ggml_backend_tensor_get(dst, back.data(), 0, back.size());
+    size_t bad_save = 0, bad_load = 0;
+    for (size_t v = 0, i = 0; v < nv; ++v) {
+        for (int64_t c = 0; c < cells; ++c, ++i) {
+            const size_t at = (size_t) c * rec + v * cellb;   // the entry's bytes in the record (view v starts v * cellb into each record)
+            memcpy(want.data() + at, src_bytes.data() + at, cellb);
+            bad_save += memcmp(state.data() + doffs[i], src_bytes.data() + at, cellb) != 0;
+            bad_load += memcmp(back.data() + at, src_bytes.data() + at, cellb) != 0;
+        }
+    }
+    if (bad_save > 0 || bad_load > 0 || back != want) {
+        n_failed++;
+        printf("  %-60s FAILED: %zu of %zu entries saved wrong, %zu loaded wrong (or bytes outside them changed)\n", name, bad_save, n, bad_load);
+    } else if (ms_save > 500.0 || ms_load > 500.0) {
+        n_failed++;
+        printf("  %-60s FAILED: save %.0f ms, load %.0f ms for %zu entries (one transfer each)\n", name, ms_save, ms_load, n);
+    } else {
+        printf("  %-60s OK (save %.1f ms, load %.1f ms)\n", name, ms_save, ms_load);
+    }
+    ggml_backend_buffer_free(buf);
+    ggml_free(ctx);
+}
+
 int main() {
     ggml_backend_load_all();
     ggml_backend_reg_t reg = ggml_backend_reg_by_name("Vulkan");
@@ -135,6 +213,7 @@ int main() {
                 }
             }
         }
+        for (ggml_type type : { GGML_TYPE_F16, GGML_TYPE_Q8_0 }) { check_state(a, type, 11264); }
         ggml_backend_free(b);
     }
     for (ggml_backend_t c : cards) { ggml_backend_free(c); }

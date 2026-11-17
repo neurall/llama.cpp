@@ -535,45 +535,23 @@ static void ggml_backend_tensor_buft_groups(size_t n_tensors, cb_get_buffer && g
     }
 }
 
-static bool ggml_backend_tensor_batch_is_2d(
-        const struct ggml_tensor * const * tensors,
-        const size_t * offsets,
-        const size_t * sizes,
-        const size_t * data_offsets,
-        size_t n_tensors,
-        size_t * base_offset,
-        size_t * size,
-        size_t * stride_tensor,
-        size_t * stride_data) {
-    if (n_tensors <= 1) {
-        return false;
+// fork: how many entries from i on make one 2D transfer (same tensor and size, offsets and data offsets each a fixed stride apart), at least 1. The fallback of
+// get_n / set_n ran one transfer per entry unless the whole batch was one such run: the KV state's save in the token-major layout (one entry per cell, layer and
+// K/V) was ~1M blocking transfers for a 12k MiMo state on Vulkan, which has no get/set_tensor_n (2026-11-17, tests/test-vk-gappy-copy-fork.cpp).
+static size_t ggml_backend_tensor_run_2d(const struct ggml_tensor * const * tensors, const size_t * offsets, const size_t * sizes, const size_t * data_offsets,
+        size_t i, size_t n, size_t * stride_tensor, size_t * stride_data) {
+    *stride_tensor = *stride_data = 0;
+    if (i + 1 >= n || tensors[i + 1] != tensors[i] || sizes[i + 1] != sizes[i] || offsets[i + 1] < offsets[i] || data_offsets[i + 1] < data_offsets[i]) {
+        return 1;
     }
-
-    const struct ggml_tensor * tensor = tensors[0];
-    const size_t size0 = sizes[0];
-
-    if (size0 == 0 || offsets[1] < offsets[0] || data_offsets[1] < data_offsets[0]) {
-        return false;
+    *stride_tensor = offsets[i + 1] - offsets[i];
+    *stride_data   = data_offsets[i + 1] - data_offsets[i];
+    size_t j = i + 2;
+    while (j < n && tensors[j] == tensors[i] && sizes[j] == sizes[i] && offsets[j] == offsets[i] + (j - i) * *stride_tensor &&
+           data_offsets[j] == data_offsets[i] + (j - i) * *stride_data) {
+        j++;
     }
-
-    const size_t stride_tensor0 = offsets[1] - offsets[0];
-    const size_t stride_data0   = data_offsets[1] - data_offsets[0];
-
-    for (size_t i = 1; i < n_tensors; i++) {
-        if (tensors[i] != tensor || sizes[i] != size0) {
-            return false;
-        }
-        if (offsets[i] != offsets[0] + i*stride_tensor0 || data_offsets[i] != data_offsets[0] + i*stride_data0) {
-            return false;
-        }
-    }
-
-    *base_offset   = offsets[0];
-    *size          = size0;
-    *stride_tensor = stride_tensor0;
-    *stride_data   = stride_data0;
-
-    return true;
+    return j - i;
 }
 
 // fork: the pool guard (--moe guard, registered by llama-moecache-fork.cpp). Writes into device memory that ggml makes on its own (tensor set, memset and copy,
@@ -711,6 +689,9 @@ void ggml_backend_tensor_set_2d(struct ggml_tensor * tensor, const void * data, 
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
     GGML_ASSERT(offset + (n_copies-1)*stride_tensor + size <= ggml_nbytes(tensor) && "tensor write out of bounds");
 
+    for (size_t i = 0; i < n_copies; i++) {   // fork: the pool guard sees each row, as the loop above passes it through tensor_set
+        ggml_backend_fork_pool_access(tensor, (const char *) tensor->data + offset + i*stride_tensor, size, "tensor_set_2d");
+    }
     buf->iface.set_tensor_2d(buf, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
 }
 
@@ -797,16 +778,10 @@ void ggml_backend_tensor_set_n(struct ggml_tensor * const * tensors, const void 
         return;
     }
 
-    size_t base_offset = 0, size = 0, stride_tensor = 0, stride_data = 0;
-    if (ggml_backend_tensor_batch_is_2d(tensors, offsets, sizes, data_offsets, n_tensors,
-                &base_offset, &size, &stride_tensor, &stride_data)) {
-        ggml_backend_tensor_set_2d(tensors[0], data_ptrs[0], base_offset, size,
-                n_tensors, stride_tensor, stride_data);
-        return;
-    }
-
-    for (size_t i = 0; i < n_tensors; i++) {
-        ggml_backend_tensor_set(tensors[i], data_ptrs[i], offsets[i], sizes[i]);
+    for (size_t i = 0, k; i < n_tensors; i += k) {
+        size_t stride_tensor, stride_data;
+        k = ggml_backend_tensor_run_2d(tensors, offsets, sizes, data_offsets, i, n_tensors, &stride_tensor, &stride_data);
+        ggml_backend_tensor_set_2d(tensors[i], data_ptrs[i], offsets[i], sizes[i], k, stride_tensor, stride_data);
     }
 }
 
@@ -871,16 +846,10 @@ void ggml_backend_tensor_get_n(const struct ggml_tensor * const * tensors, void 
         return;
     }
 
-    size_t base_offset = 0, size = 0, stride_tensor = 0, stride_data = 0;
-    if (ggml_backend_tensor_batch_is_2d(tensors, offsets, sizes, data_offsets, n_tensors,
-                &base_offset, &size, &stride_tensor, &stride_data)) {
-        ggml_backend_tensor_get_2d(tensors[0], data_ptrs[0], base_offset, size,
-                n_tensors, stride_tensor, stride_data);
-        return;
-    }
-
-    for (size_t i = 0; i < n_tensors; i++) {
-        ggml_backend_tensor_get(tensors[i], data_ptrs[i], offsets[i], sizes[i]);
+    for (size_t i = 0, k; i < n_tensors; i += k) {
+        size_t stride_tensor, stride_data;
+        k = ggml_backend_tensor_run_2d(tensors, offsets, sizes, data_offsets, i, n_tensors, &stride_tensor, &stride_data);
+        ggml_backend_tensor_get_2d(tensors[i], data_ptrs[i], offsets[i], sizes[i], k, stride_tensor, stride_data);
     }
 }
 
