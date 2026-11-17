@@ -5123,6 +5123,7 @@ vk_device ggml_vk_get_device(size_t idx) {
 
         // publish the device only when it is fully built
         vk_instance.devices[idx] = device;
+        ggml_vk_host_import_existing(device);   // fork: host memory allocated before this card is imported now, not at its first upload
 
         return device;
     }

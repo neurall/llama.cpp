@@ -400,10 +400,33 @@ void ggml_vk_host_get(const vk_device& device, const void * ptr, vk_buffer& buf,
             GGML_LOG_WARN("ggml_vulkan: %s: host memory import failed, using staging\n", device->name.c_str());
             return;
         }
+        // fork: every card imports at the allocation or at its own creation (ggml_vk_host_malloc, ggml_vk_host_import_existing), before the first
+        // request; an import here is one that was missed and costs that request about 45 ms per GiB
+        GGML_LOG_WARN("ggml_vulkan: %s: %.1f MiB of host memory imported at its first upload, not at the start\n", device->name.c_str(),
+                      entry.size / 1048576.0);
     }
 
     buf = entry.views[device->idx];
     buf_offset = (const uint8_t *) ptr - (const uint8_t *) entry.base;
+}
+
+// fork: a card made after host allocations imports them all at its creation (ggml_vk_get_device), so no upload of the first request imports anything
+void ggml_vk_host_import_existing(vk_device & device) {
+    const size_t d = device->idx;
+    if (!vk_instance.multi_device || d >= vk_instance.device_host_buffer_import.size() || !vk_instance.device_host_buffer_import[d] || !device->external_memory_host) {
+        return;
+    }
+    std::unique_lock<std::shared_mutex> guard(vk_instance.host_allocations_mutex);
+    for (vk_host_allocation & entry : vk_instance.host_allocations) {
+        if (entry.views[d] != nullptr || (vk_instance.host_import_failed & (1u << d))) {
+            continue;
+        }
+        entry.views[d] = ggml_vk_buffer_from_host_ptr(device, entry.base, entry.size);
+        if (entry.views[d] == nullptr) {
+            vk_instance.host_import_failed |= 1u << d;
+            GGML_LOG_WARN("ggml_vulkan: %s: host memory import failed, using staging\n", device->name.c_str());
+        }
+    }
 }
 
 void ggml_vk_ensure_sync_staging_buffer(vk_device& device, size_t size) {
