@@ -13798,6 +13798,23 @@ static void ggml_backend_vk_get_tensor_async(ggml_backend_t backend, const ggml_
     ggml_backend_vk_get_tensor_2d_async(backend, tensor, data, offset, size, 1, size, size);
 }
 
+// fork: the rows of a gappy view (a layer's K or V inside the token-major KV record) into a compact tensor of the same shape, one copy region per row, offsets
+// from the view's first byte and the destination's (CUDA: rows_copy in ggml_backend_cuda_cpy_tensor_async, one 2D copy per plane)
+// shortcut: one region per row; a gather shader if this copy ever shows in a trace
+static std::vector<vk::BufferCopy> ggml_vk_rows_regions(const ggml_tensor * src, size_t src_off, const ggml_tensor * dst, size_t dst_off) {
+    const size_t rowb = ggml_row_size(src->type, src->ne[0]);
+    std::vector<vk::BufferCopy> rows;
+    rows.reserve(ggml_nrows(src));
+    for (int64_t i3 = 0; i3 < src->ne[3]; i3++) {
+        for (int64_t i2 = 0; i2 < src->ne[2]; i2++) {
+            for (int64_t i1 = 0; i1 < src->ne[1]; i1++) {
+                rows.push_back({ src_off + i1*src->nb[1] + i2*src->nb[2] + i3*src->nb[3], dst_off + i1*dst->nb[1] + i2*dst->nb[2] + i3*dst->nb[3], rowb });
+            }
+        }
+    }
+    return rows;
+}
+
 static bool ggml_backend_vk_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
     VK_LOG_DEBUG("ggml_backend_vk_cpy_tensor_async(" << src << " -> " << dst << ", size=" << ggml_nbytes(src) << ")");
     ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend_dst->context;
@@ -13808,6 +13825,14 @@ static bool ggml_backend_vk_cpy_tensor_async(ggml_backend_t backend_src, ggml_ba
     }
 
     if (dst->buffer->buft != ggml_backend_vk_get_default_buffer_type(backend_dst)) {
+        return false;
+    }
+
+    // fork: a gappy source view into a compact destination (the scheduler makes it compact, ggml_dup_tensor_layout): only the rows cross, as on CUDA. Any other
+    // layout change is no copy (it copied the view's whole span flat: rows in the wrong place, bytes written past the destination)
+    const bool rows_copy = !ggml_are_same_layout(src, dst) && src->type == dst->type && ggml_are_same_shape(src, dst) &&
+                           src->nb[0] == dst->nb[0] && ggml_is_contiguous(dst);
+    if (!ggml_are_same_layout(src, dst) && !rows_copy) {
         return false;
     }
 
@@ -13824,6 +13849,11 @@ static bool ggml_backend_vk_cpy_tensor_async(ggml_backend_t backend_src, ggml_ba
 
         vk_context compute_ctx = ggml_vk_get_compute_ctx(ctx);
 
+        if (rows_copy) {
+            compute_ctx->s->buffer->buf.copyBuffer(src_buf_ctx->dev_buffer->buffer, dst_buf->buffer,
+                    ggml_vk_rows_regions(src, vk_tensor_offset(src) + src->view_offs, dst, vk_tensor_offset(dst) + dst->view_offs));
+            return true;
+        }
         ggml_vk_buffer_copy_async(compute_ctx, dst_buf, vk_tensor_offset(dst) + dst->view_offs,
                                    src_buf_ctx->dev_buffer, vk_tensor_offset(src) + src->view_offs,
                                    ggml_nbytes(src));
@@ -13849,7 +13879,7 @@ static bool ggml_backend_vk_cpy_tensor_async(ggml_backend_t backend_src, ggml_ba
             (dst_buf->memory_property_flags & (vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)) ==
             (vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
 
-        if ((backend_src == backend_dst || src_backend_synchronous) && backend_idle && dst_host_coherent && ggml_nbytes(src) <= max_cpu_copy_size) {
+        if (!rows_copy && (backend_src == backend_dst || src_backend_synchronous) && backend_idle && dst_host_coherent && ggml_nbytes(src) <= max_cpu_copy_size) {
             ggml_vk_buffer_write(dst_buf, vk_tensor_offset(dst) + dst->view_offs, src->data, ggml_nbytes(src));
             return true;
         }
@@ -13861,6 +13891,11 @@ static bool ggml_backend_vk_cpy_tensor_async(ggml_backend_t backend_src, ggml_ba
             cpy_ctx = ggml_vk_get_compute_ctx(ctx);
         }
 
+        if (rows_copy) {
+            ggml_vk_sync_buffers(nullptr, cpy_ctx);
+            cpy_ctx->s->buffer->buf.copyBuffer(pinned_buf->buffer, dst_buf->buffer, ggml_vk_rows_regions(src, pinned_offset, dst, vk_tensor_offset(dst) + dst->view_offs));
+            return true;
+        }
         return ggml_vk_buffer_write_async(cpy_ctx, dst_buf,
                                           vk_tensor_offset(dst) + dst->view_offs,
                                           src->data, ggml_nbytes(src));
