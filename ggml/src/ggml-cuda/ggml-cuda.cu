@@ -608,6 +608,8 @@ static std::atomic<int> g_cuda_oom_count { 0 };
 static thread_local int g_cuda_chunks_run = 0;   // CUDA graph chunks of the graph being computed that were launched (they ran, or run now)
 static thread_local const ggml_tensor * g_cuda_oom_node = nullptr;   // the node being computed (or captured) now
 static thread_local int g_cuda_in_compute = 0;   // inside ggml_backend_cuda_graph_compute: a failure there is caught (ggml_cuda_oom)
+static std::atomic<bool> g_cuda_room_on_fork[GGML_CUDA_MAX_DEVICES] = {};      // the card's pool has a room for CUDA at its tail (ggml_backend_cuda_set_room_fork)
+static std::atomic<int>  g_cuda_load_trips_fork[GGML_CUDA_MAX_DEVICES] = {};   // guard trips in a row without room (ggml_cuda_kernel_load_guard_fork)
 
 // fork (2026-11-16, gainers: glm-i, mimo-i, qni3-i, qni4-i): CUDA's own memory ran out inside a graph -- a kernel loaded on its first use (lazy loading:
 // cudaFuncGetAttributes, cudaFuncSetAttribute, a launch) or cuBLAS loading its kernels or workspace -- while the expert pool held the rest of the card
@@ -1805,6 +1807,7 @@ static size_t ggml_backend_cuda_set_room_fork(ggml_backend_buffer_t buf, size_t 
     if (c->vmm_size == 0) {
         return SIZE_MAX;
     }
+    g_cuda_room_on_fork[c->device] = true;
     const size_t g = c->vmm_gran, n = c->room_mapped.size();
     const size_t k = std::min(n, room / g);   // chunks [n - k, n) unmapped
     ggml_cuda_set_device(c->device);
@@ -8143,6 +8146,35 @@ static int ggml_backend_cuda_last_oom_fork(int * device, size_t * bytes, double 
     return g_cuda_oom_count.load();
 }
 
+// fork (2026-11-17, pc-qni4: Qwen3.8 IQ4_XS, a 15543-token pass after one of 13782): a kernel CUDA loads on its first use (lazy loading) on a card without room
+// for its code stays broken for the rest of the process. The load fails with out of memory, and every later launch fails however much VRAM comes back: "too many
+// resources requested for launch" at the CUDA graph's instantiation, "unknown error" launched directly (micro test, RTX 3090, CUDA 13.2). The room libllama gives
+// CUDA after that out-of-memory cannot help the call. A kernel loads only in a graph that is not a replay of a CUDA graph (its first run, which runs directly,
+// or its capture), so before such a graph a card with the fork's room must have room for a kernel's code: else the out-of-memory comes now, before any of the
+// graph runs or loads, and libllama grows CUDA's room and runs the call again (fit = -1, CUDA's own memory). libllama keeps 32 MiB free after a give-back, so
+// this rarely trips. After 4 trips in a row without room (the room at its most) the graph runs as before.
+static constexpr size_t GGML_CUDA_LOAD_ROOM_FORK = (size_t) 16 << 20;
+static void ggml_cuda_kernel_load_guard_fork(int device) {
+    if (!g_cuda_room_on_fork[device].load(std::memory_order_relaxed)) {
+        return;
+    }
+    size_t f = 0, t = 0;
+    if (cudaMemGetInfo(&f, &t) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return;
+    }
+    if (f >= GGML_CUDA_LOAD_ROOM_FORK) {
+        g_cuda_load_trips_fork[device] = 0;
+        return;
+    }
+    if (g_cuda_load_trips_fork[device].fetch_add(1) >= 4) {
+        return;
+    }
+    GGML_LOG_WARN("%s: CUDA%d has %zu MiB free, under the %zu MiB a kernel loaded on its first use may need: CUDA's room grows before this graph runs\n", __func__,
+        device, f >> 20, GGML_CUDA_LOAD_ROOM_FORK >> 20);
+    throw ggml_cuda_oom{device, 0, "room for a kernel loaded on its first use", -1.0};
+}
+
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
@@ -8205,6 +8237,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     g_cuda_oom_node   = nullptr;
     struct in_compute_t { in_compute_t() { g_cuda_in_compute++; } ~in_compute_t() { g_cuda_in_compute--; } } in_compute;
     try {
+        if (!use_cuda_graph || cuda_graph_update_required) {
+            ggml_cuda_kernel_load_guard_fork(cuda_ctx->device);   // fork: a graph that may load kernels needs room for their code first
+        }
         ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
     } catch (const ggml_cuda_oom & e) {
         ggml_cuda_oom_reset(cuda_ctx, e, use_cuda_graph && cuda_graph_update_required, graph_key);
