@@ -6013,6 +6013,8 @@ void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
         ci.setPNext(&tci);
         ctx->transfer_semaphore.s = ctx->device->device.createSemaphore(ci);
         ctx->transfer_semaphore.value = 0;
+        ctx->compute_semaphore.s = ctx->device->device.createSemaphore(ci);
+        ctx->compute_semaphore.value = 0;
 
         ctx->transfer_cmd_pool.init(ctx->device, ctx->device->transfer_queue.get());
     }
@@ -6350,10 +6352,18 @@ vk_context ggml_vk_get_compute_ctx(ggml_backend_vk_context * ctx) {
     if (!ctx->compute_ctx.expired()) {
         result = ctx->compute_ctx.lock();
     } else {
+        // fork: uploads recorded before this context's commands are submitted first, so the wait below covers them (a read after a write)
+        if (ggml_vk_submit_transfer_ctx(ctx)) {
+            ctx->submit_pending = true;
+        }
         result = ggml_vk_create_context(ctx, ctx->compute_cmd_pool);
 
         ctx->compute_ctx = result;
         ggml_vk_ctx_begin(ctx->device, result);
+        for (const vk_semaphore & w : ctx->compute_waits_pending) {
+            result->s->wait_semaphores.push_back(w);
+        }
+        ctx->compute_waits_pending.clear();
     }
 
     if (ctx->device->async_use_transfer_queue && ctx->transfer_semaphore_last_submitted < ctx->transfer_semaphore.value) {
@@ -6388,6 +6398,24 @@ bool ggml_vk_submit_transfer_ctx(ggml_backend_vk_context * ctx) {
 
     for (auto& cpy : cpy_ctx->in_memcpys) {
         memcpy(cpy.dst, cpy.src, cpy.n);
+    }
+
+    // fork: stream order across the two queues. These uploads wait for every command submitted to the compute queue before them (an empty batch's
+    // signal covers all earlier work of its queue), so an upload never overwrites memory that a kernel submitted earlier still reads (the race: expert
+    // blocks overwritten under the previous pass's kernels, garbage answers); and for the previous transfer batch, so an event wait (event_wait puts
+    // it into one batch) holds for every later batch too.
+    const vk_semaphore after_compute = { ctx->compute_semaphore.s, ++ctx->compute_semaphore.value };
+    vk::TimelineSemaphoreSubmitInfo marker_tl{ 0, nullptr, 1, &after_compute.value };
+    vk::SubmitInfo marker{ 0, nullptr, nullptr, 0, nullptr, 1, &after_compute.s };
+    marker.setPNext(&marker_tl);
+    ctx->device->compute_queue->handle->submit({ marker }, {});
+    for (auto & seq : cpy_ctx->seqs) {
+        for (auto & sub : seq) {
+            sub.wait_semaphores.push_back(after_compute);
+            if (ctx->transfer_semaphore.value > 0) {
+                sub.wait_semaphores.push_back(ctx->transfer_semaphore);
+            }
+        }
     }
 
     ctx->transfer_semaphore.value++;
@@ -13848,6 +13876,7 @@ void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
     ctx->compute_cmd_pool.destroy(ctx->device->device);
     if (ctx->device->async_use_transfer_queue) {
         ctx->device->device.destroySemaphore(ctx->transfer_semaphore.s);
+        ctx->device->device.destroySemaphore(ctx->compute_semaphore.s);
 
         ctx->transfer_cmd_pool.destroy(ctx->device->device);
     }
@@ -14143,7 +14172,8 @@ static void ggml_backend_vk_set_tensor_2d_async(ggml_backend_t backend, ggml_ten
 
     vk_context cpy_ctx;
 
-    if (ctx->device->async_use_transfer_queue) {
+    // fork: while the compute context holds commands not yet submitted (a download or copy of this block), the upload joins it: their order kept
+    if (ctx->device->async_use_transfer_queue && ctx->compute_ctx.expired()) {
         cpy_ctx = ggml_vk_get_transfer_ctx(ctx);
     } else {
         cpy_ctx = ggml_vk_get_compute_ctx(ctx);
@@ -14335,7 +14365,7 @@ static bool ggml_backend_vk_cpy_tensor_async(ggml_backend_t backend_src, ggml_ba
         }
 
         vk_context cpy_ctx;
-        if (ctx->device->async_use_transfer_queue) {
+        if (ctx->device->async_use_transfer_queue && ctx->compute_ctx.expired()) {   // fork: as set_tensor_2d_async: after unsubmitted compute commands
             cpy_ctx = ggml_vk_get_transfer_ctx(ctx);
         } else {
             cpy_ctx = ggml_vk_get_compute_ctx(ctx);
@@ -14357,6 +14387,9 @@ static bool ggml_backend_vk_cpy_tensor_async(ggml_backend_t backend_src, ggml_ba
 void ggml_vk_synchronize(ggml_backend_vk_context * ctx) {
     VK_LOG_DEBUG("ggml_vk_synchronize()");
 
+    if (!ctx->compute_waits_pending.empty()) {
+        ggml_vk_get_compute_ctx(ctx);   // fork: a synchronize after an event wait waits for the event too (as a stream's)
+    }
     bool do_transfer = !ctx->compute_ctx.expired();
 
     if (ggml_vk_submit_transfer_ctx(ctx)) {
@@ -16449,8 +16482,12 @@ static void ggml_backend_vk_event_wait(ggml_backend_t backend, ggml_backend_even
         return;
     }
     // same device: this context's next submissions wait on the GPU (a timeline semaphore wait works across contexts and queues of one device)
-    vk_context compute_ctx = ggml_vk_get_compute_ctx(ctx);
-    compute_ctx->s->wait_semaphores.push_back(last);
+    if (ctx->device->async_use_transfer_queue && ctx->compute_ctx.expired()) {
+        ctx->compute_waits_pending.push_back(last);   // fork: for the next compute context; an open one would pull the uploads after this wait off the transfer queue
+    } else {
+        vk_context compute_ctx = ggml_vk_get_compute_ctx(ctx);
+        compute_ctx->s->wait_semaphores.push_back(last);
+    }
     if (ctx->device->async_use_transfer_queue) {
         vk_context transfer_ctx = ggml_vk_get_transfer_ctx(ctx);
         transfer_ctx->s->wait_semaphores.push_back(last);

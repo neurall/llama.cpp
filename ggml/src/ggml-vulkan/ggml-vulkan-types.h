@@ -1302,6 +1302,10 @@ struct ggml_backend_vk_context {
     vk_context_ref transfer_ctx;
     vk_semaphore transfer_semaphore;
     uint64_t transfer_semaphore_last_submitted {};
+    // fork: signaled by an empty batch on the compute queue right before each transfer submission, which waits for it: uploads after kernels
+    vk_semaphore compute_semaphore {};
+    // fork: event waits for the next compute context (with the transfer queue an event_wait opens none, so an upload after it can take that queue)
+    std::vector<vk_semaphore> compute_waits_pending;
 
     std::vector<vk_context_ref> tensor_ctxs;
 
