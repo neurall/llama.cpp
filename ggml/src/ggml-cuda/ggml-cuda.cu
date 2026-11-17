@@ -1346,10 +1346,59 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
+// fork: an entry batch (ggml_backend_tensor_get_n / set_n) as strided runs, one cudaMemcpy2DAsync each: entries of one size whose device and host addresses
+// are each a fixed stride apart, as the KV state in the token-major layout is (one entry per cell, layer and K/V, the rows one record apart). 131072 entries of
+// a 4096-cell OLMoE state, 512 MiB: one cudaMemcpyAsync each took 287 ms to load and the gather kernel 225 ms to save, one 2D copy a run 36 and 47 ms into
+// pageable memory (2026-11-17, tests/test-state-file-fork.cpp). false, nothing copied: runs of fewer than 8 entries on average, the callers' own paths stay.
+static bool ggml_cuda_copy_runs_2d(const ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n, bool h2d) {
+    auto dev  = [&](size_t i) { return (uintptr_t) tensors[i]->data + offsets[i]; };
+    auto host = [&](size_t i) { return (uintptr_t) data[i]; };
+    auto run  = [&](size_t i, size_t & sd, size_t & sh) -> size_t {   // entries from i in one run, sd / sh its device and host strides
+        sd = sh = 0;
+        if (i + 1 >= n || sizes[i] == 0 || sizes[i + 1] != sizes[i] || dev(i + 1) < dev(i) + sizes[i] || host(i + 1) < host(i) + sizes[i] ||
+                dev(i + 1) - dev(i) > INT_MAX || host(i + 1) - host(i) > INT_MAX) {   // pitches at least the width, within a copy's pitch limit
+            return 1;
+        }
+        sd = dev(i + 1) - dev(i);
+        sh = host(i + 1) - host(i);
+        size_t j = i + 2;
+        while (j < n && sizes[j] == sizes[i] && dev(j) == dev(i) + (j - i)*sd && host(j) == host(i) + (j - i)*sh) { j++; }
+        return j - i;
+    };
+    size_t runs = 0;
+    for (size_t i = 0, k, sd, sh; i < n; i += k) { k = run(i, sd, sh); runs++; }
+    if (runs * 8 > n) {
+        return false;
+    }
+    for (size_t i = 0, k, sd, sh; i < n; i += k) {
+        k = run(i, sd, sh);
+        if (sizes[i] == 0) {
+            continue;
+        }
+        void       * dst = (void *)       (h2d ? dev(i) : host(i));
+        const void * src = (const void *) (h2d ? host(i) : dev(i));
+        const cudaMemcpyKind kind = h2d ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToHost;
+        if (k == 1) {
+            CUDA_CHECK(cudaMemcpyAsync(dst, src, sizes[i], kind, cudaStreamPerThread));
+        } else {
+            CUDA_CHECK(cudaMemcpy2DAsync(dst, h2d ? sd : sh, src, h2d ? sh : sd, sizes[i], k, kind, cudaStreamPerThread));
+        }
+    }
+    return true;
+}
+
 static void ggml_backend_cuda_buffer_set_tensor_n(ggml_backend_buffer_t buffer, struct ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
 
     ggml_cuda_set_device(ctx->device);
+
+    if (ggml_cuda_copy_runs_2d(tensors, data, offsets, sizes, n_tensors, true)) {
+        size_t bytes = 0;
+        for (size_t i = 0; i < n_tensors; i++) { bytes += sizes[i]; }
+        g_h2d_bytes_fork[ctx->device].fetch_add(bytes, std::memory_order_relaxed);   // fork: the loader's uploads count as link traffic too
+        CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+        return;
+    }
 
     for (size_t i = 0; i < n_tensors; i++) {
         if (sizes[i] == 0) {
@@ -1372,6 +1421,10 @@ static void ggml_backend_cuda_buffer_get_tensor_n(ggml_backend_buffer_t buffer, 
 
     ggml_cuda_set_device(ctx->device);
 
+    if (ggml_cuda_copy_runs_2d(tensors, data, offsets, sizes, n_tensors, false)) {
+        CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+        return;
+    }
     if (!ggml_cuda_pinned_memory_disabled() &&
             ggml_cuda_get_tensor_n(ctx->device, tensors, data, offsets, sizes, n_tensors)) {
         return;

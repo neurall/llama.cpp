@@ -4,6 +4,7 @@
 // path batches them (ggml_backend_tensor_get_n / set_n). Needs a model, so it is built but not run by ctest:
 //   test-state-file-fork MODEL.gguf [DEVICE] [N_TOKENS]      OLMoE-1B-7B: 16 layers, 4096 tokens = 131072 entries; DEVICE e.g. CUDA0 or Vulkan0
 #include "llama.h"
+#include "ggml-alloc.h"
 #include "ggml-backend.h"
 
 #include <algorithm>
@@ -92,6 +93,7 @@ int main(int argc, char ** argv) {
     const bool set = llama_state_seq_set_data(ctx, want.data(), size, 0) == size;
     const double t_set = ms_since(t0);
     llama_state_seq_get_data(ctx, from_mem.data(), size, 0);
+    const bool same_mem_trip = from_mem == want;   // from_mem is reused below
 
     // the same bytes written and read as one block: what the file adds to the in-memory path
     t0 = std::chrono::steady_clock::now();
@@ -106,14 +108,32 @@ int main(int argc, char ** argv) {
     const double t_fread = ms_since(t0);
     remove(path);
 
+    // the device's own rate: one contiguous tensor of the state's size read and written in one piece. The state in memory is the same bytes in strided runs
+    // (one per layer and K/V); CUDA moved them one cudaMemcpyAsync per entry (set) or through its gather kernel (get) at 1.8-2.3 GB/s (2026-11-17)
+    ggml_backend_dev_t dev = devs[0] ? devs[0] : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    ggml_init_params ip = { ggml_tensor_overhead(), nullptr, true };
+    ggml_context * gctx = ggml_init(ip);
+    ggml_tensor * raw = ggml_new_tensor_1d(gctx, GGML_TYPE_I8, (int64_t) size);
+    ggml_backend_buffer_t raw_buf = ggml_backend_alloc_ctx_tensors_from_buft(gctx, ggml_backend_dev_buffer_type(dev));
+    t0 = std::chrono::steady_clock::now();
+    ggml_backend_tensor_get(raw, from_mem.data(), 0, size);
+    const double t_raw_get = ms_since(t0);
+    t0 = std::chrono::steady_clock::now();
+    ggml_backend_tensor_set(raw, want.data(), 0, size);
+    const double t_raw_set = ms_since(t0);
+    ggml_backend_buffer_free(raw_buf);
+    ggml_free(gctx);
+
     const bool same_file = n_saved > 0 && n_read == n_saved && n_out == (size_t) n_tok && toks_out == toks && from_file == want;
-    const bool same_mem  = got && set && wrote && read && from_mem == want;
+    const bool same_mem  = got && set && wrote && read && same_mem_trip;
     const double lim_save = 1.5*(t_get + t_fwrite) + 100, lim_load = 1.5*(t_fread + t_set) + 100;
-    const bool ok = same_file && same_mem && t_save <= lim_save && t_load <= lim_load;
-    printf("state of %d cells x %d layers x K/V (%.0f MiB, %s): in memory get %.1f ms, set %.1f ms, plain file write %.1f ms, read %.1f ms; "
-           "file save %.1f ms (limit %.0f), load %.1f ms (limit %.0f)%s%s\n",
-           n_tok, llama_model_n_layer(model), size / 1048576.0, dev_name ? dev_name : "default devices", t_get, t_set, t_fwrite, t_fread,
-           t_save, lim_save, t_load, lim_load, same_file ? "" : "; FILE ROUND TRIP DIFFERS", same_mem ? "" : "; MEMORY ROUND TRIP DIFFERS");
+    const double lim_get = 2*t_raw_get + 50, lim_set = 2*t_raw_set + 50;
+    const bool ok = same_file && same_mem && t_save <= lim_save && t_load <= lim_load && t_get <= lim_get && t_set <= lim_set;
+    printf("state of %d cells x %d layers x K/V (%.0f MiB, %s): one contiguous copy get %.1f ms, set %.1f ms (%s); in memory get %.1f ms (limit %.0f), "
+           "set %.1f ms (limit %.0f); plain file write %.1f ms, read %.1f ms; file save %.1f ms (limit %.0f), load %.1f ms (limit %.0f)%s%s\n",
+           n_tok, llama_model_n_layer(model), size / 1048576.0, dev_name ? dev_name : "default devices", t_raw_get, t_raw_set, ggml_backend_dev_name(dev),
+           t_get, lim_get, t_set, lim_set, t_fwrite, t_fread, t_save, lim_save, t_load, lim_load,
+           same_file ? "" : "; FILE ROUND TRIP DIFFERS", same_mem ? "" : "; MEMORY ROUND TRIP DIFFERS");
     printf("test-state-file-fork: %s\n", ok ? "OK" : "FAILED");
 
     llama_free(ctx);
