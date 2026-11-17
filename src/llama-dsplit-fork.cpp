@@ -1008,6 +1008,7 @@ static double g_hop_bytes_tok = 0.0;
 static std::vector<std::pair<ggml_backend_dev_t, double>> g_kv_layers;
 static double g_xf_avg = -1.0;   // the model's expert share of a token's compute: active expert weights over all weights a token reads (dsplit_zw), -1: not known
 static double g_w_bytes_tok = 0.0;   // the weight bytes one token reads (dense + its active experts): the compute per token from a probed matmul rate
+static double g_xb_a = 0.0, g_xb_b = 0.0;   // a hand-off that blocks the host: us per crossing and per byte (dsplit_xcopy_probe; 0, 0: in stream order)
 // Both from the model, for every split pass whatever chose it (llama_dsplit_decide_fork; the first version set them in the planner only, so a forced split
 // balanced on the dense compute alone and put 56% of GLM-5.3-Flash's tokens on the x4 card): the layers with experts and the attention layers' KV rows
 // are read once, the cells the KV holds come with every call (under g_plan_mu).
@@ -1143,6 +1144,7 @@ static void dsplit_plan_compute(const llama_model & model, int64_t T, double c_u
     in.T = T; in.L = L; in.w = w; in.xf = xf; in.E = E; in.kv_b = kv_b; in.att_w = att_w; in.w_sum = w_sum; in.lcard = lcard; in.lB = lB;
     in.c_base = c_base; in.att_tok = att_tok; in.rel = rel; in.B = B; in.x = x;
     in.b_in = (double) model.hparams.n_embd * (hop_mode != 0 ? 2.0 : 4.0); in.b_out = (double) model.hparams.n_embd * (hop_mode == 1 ? 2.0 : 4.0);
+    in.xb_a = g_xb_a; in.xb_b = g_xb_b;
     in.held.assign(n, std::vector<double>(L, 0.0));
     for (int i = 0; i < n; ++i) { for (int il = 0; il < L; ++il) { in.held[i][il] = llama_moe_cache_resident_frac_fork(il, cards[i]); } }
     if (g_layer_order.empty()) {   // the layer tuner's order (split-balance=0), fixed at the first plan: the first helper's own layers first
@@ -1487,6 +1489,54 @@ static void dsplit_mm_bench(const llama_model & model, const std::vector<ggml_ba
     }
 }
 
+// The hand-off between two cards timed at the host, through the copy the scheduler makes (ggml_backend_tensor_copy_async): a pair that copies in stream order
+// returns at once (CUDA: peer copies, ggml_cuda_xstage_copy) and the plan prices the bytes at link speed, overlapped; a pair that falls back to ggml's blocking
+// copy (both cards drained, then the bytes moved; Vulkan copies async only within one device) returns when the bytes are over, and the dense split pays that at
+// every crossing with both cards idle (MiMo 11k on two Vulkan cards, 2026-11-17: split 13.5-16.5 s against one card 11.0 s, planned at 0.91 x one card).
+// us per crossing and per byte from two sizes (dsxn_in::xb_a, xb_b); 0, 0 when the call returned in under a quarter of the copy's time.
+// shortcut: the first two cards stand for every pair; per pair once 3+ cards mix backends or links.
+static void dsplit_xcopy_probe(const std::vector<ggml_backend_dev_t> & devs) {
+    static bool done = false;
+    if (done || devs.size() < 2) { return; }
+    done = true;
+    ggml_backend_t bs = ggml_backend_dev_init(devs[1], nullptr), bd = ggml_backend_dev_init(devs[0], nullptr);
+    const int64_t S[2] = { 4ll << 20, 32ll << 20 };   // bytes: 512 and 4096 tokens of 4096 f16 values
+    ggml_init_params ip = { 4 * ggml_tensor_overhead(), nullptr, true };
+    ggml_context * cs = ggml_init(ip), * cd = ggml_init(ip);
+    ggml_tensor * src[2], * dst[2];
+    for (int k = 0; k < 2; ++k) { src[k] = ggml_new_tensor_1d(cs, GGML_TYPE_I8, S[k]); dst[k] = ggml_new_tensor_1d(cd, GGML_TYPE_I8, S[k]); }
+    ggml_backend_buffer_t buf_s = bs ? ggml_backend_alloc_ctx_tensors(cs, bs) : nullptr, buf_d = bd ? ggml_backend_alloc_ctx_tensors(cd, bd) : nullptr;
+    double call[2] = { 1e30, 1e30 }, all[2] = { 1e30, 1e30 };
+    if (buf_s && buf_d) {
+        ggml_backend_buffer_clear(buf_s, 0); ggml_backend_buffer_clear(buf_d, 0);
+        for (int k = 0; k < 2; ++k) {
+            for (int r = 0; r < 6; ++r) {   // the first is the warm-up (staging buffers, kernels)
+                const int64_t t0 = ggml_time_us();
+                ggml_backend_tensor_copy_async(bs, bd, src[k], dst[k]);
+                const int64_t t1 = ggml_time_us();
+                ggml_backend_synchronize(bs); ggml_backend_synchronize(bd);
+                const int64_t t2 = ggml_time_us();
+                if (r > 0) { call[k] = std::min(call[k], (double) (t1 - t0)); all[k] = std::min(all[k], (double) (t2 - t0)); }
+            }
+        }
+        if (call[1] >= 0.25 * all[1]) {
+            g_xb_b = std::max(0.0, (call[1] - call[0]) / (double) (S[1] - S[0]));
+            g_xb_a = std::max(0.0, call[0] - g_xb_b * (double) S[0]);
+        }
+        BENCH_LOG("split planner: hand-off copy %s -> %s: the call returns in %.0f / %.0f us, done in %.0f / %.0f us (%lld / %lld MiB): %s\n",
+                ggml_backend_dev_name(devs[1]), ggml_backend_dev_name(devs[0]), call[0], call[1], all[0], all[1], (long long) (S[0] >> 20), (long long) (S[1] >> 20),
+                g_xb_a > 0.0 || g_xb_b > 0.0 ? format("it blocks the host (both cards drained): %.0f us a crossing + %.1f GB/s, priced serial in the split's plan",
+                                                      g_xb_a, g_xb_b > 0.0 ? 1e-3 / g_xb_b : 0.0).c_str() : "in stream order (the plan prices the bytes at link speed)");
+    } else {
+        BENCH_LOG("split planner: hand-off copy not measured (no buffer): priced in stream order\n");
+    }
+    if (buf_s) { ggml_backend_buffer_free(buf_s); }
+    if (buf_d) { ggml_backend_buffer_free(buf_d); }
+    ggml_free(cs); ggml_free(cd);
+    if (bs) { ggml_backend_free(bs); }
+    if (bd) { ggml_backend_free(bd); }
+}
+
 // The matmul and attention latencies are timed when the first context is created, before its KV cache and the expert pool take the VRAM. At the first prompt
 // (where they ran in pre7/pre8) the pool had left 96-358 MiB on each card: the timing's own backend, buffers and kernel scratch did not fit, and auto mode died
 // with "CUDA error: out of memory" in cuMemCreate (MiMo 60k, pre7; forced dense split never reached the planner, so it never timed and never failed).
@@ -1502,6 +1552,7 @@ void llama_dsplit_bench_fork(const llama_model & model) {
     for (const auto & d : model.devices) { if (dsplit_card(model, d.dev)) { devs.push_back(d.dev); } }
     std::lock_guard<llama_checked_mutex> lk(g_plan_mu);
     dsplit_mm_bench(model, devs);
+    dsplit_xcopy_probe(devs);
     dsplit_link_model(model, 0);   // the weight bytes a token reads, for llama_dsplit_compute_calc_us_fork before the first split plan
     // the state file's section and hardware key now, under the reads: the moe-cache's posteriors (pp.rls.*) are read through them. Set only by the first
     // split plan before, after the first prompt call had planned from the priors (fillread2 GLM 100 tokens: its plan saw decode chain n=0, the split plan the

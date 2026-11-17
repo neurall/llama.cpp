@@ -218,6 +218,9 @@ struct dsxn_in {
     std::vector<std::vector<double>> held;       // per card, per layer: the share of the layer's experts in that card's pool
     int    x = 0;                                // the expert card
     double min_share = 0.05;
+    // a hand-off that blocks the host: us per crossing and per byte (the start's copy probe; 0, 0: the pair copies in stream order). ggml's fallback copy drains
+    // both cards first, so nothing overlaps it (Vulkan copies async only within one device: MiMo 11k on two cards, split 13.5-16.5 s against one card 11.0)
+    double xb_a = 0.0, xb_b = 0.0;
 };
 struct dsxn_out { double t_one = 0.0, t_split = -1.0; std::vector<double> s; };
 
@@ -229,8 +232,9 @@ static inline std::vector<dsb_card> dsxn_cards(const dsxn_in & in) {
         for (int il = 0; il < in.L; ++il) {
             const double D = in.c_base * in.w[il] / in.w_sum * (1.0 - in.xf[il]) + in.att_tok * in.att_w[il];   // us per token of the layer's dense part
             c[i].a += D / std::max(1e-9, in.rel[i]);
-            if (in.E[il] > 0.0 && i != in.x) { c[i].a += (in.b_in + in.b_out) / (std::min(in.B[i], in.B[in.x]) * 1e3); }
-            if (in.kv_b[il] > 0.0 && in.lcard[il] != i) { c[i].k += in.kv_b[il] / (std::min(in.B[i], in.lB[il]) * 1e3); }
+            const bool blk = in.xb_a > 0.0 || in.xb_b > 0.0;   // blocking hand-offs: per byte at the probed rate (dsxn_layer_us adds the crossings serial)
+            if (in.E[il] > 0.0 && i != in.x) { c[i].a += (in.b_in + in.b_out) * (blk ? in.xb_b : 1.0 / (std::min(in.B[i], in.B[in.x]) * 1e3)); }
+            if (in.kv_b[il] > 0.0 && in.lcard[il] != i) { c[i].k += blk ? in.xb_a + in.kv_b[il] * in.xb_b : in.kv_b[il] / (std::min(in.B[i], in.lB[il]) * 1e3); }
         }
     }
     return c;
@@ -240,18 +244,24 @@ static inline double dsxn_layer_us(const dsxn_in & in, int il, const std::vector
     const double T  = (double) in.T;
     const double cb = in.c_base * T * in.w[il] / in.w_sum;
     const double D  = cb * (1.0 - in.xf[il]) + in.att_tok * in.att_w[il] * T, X = cb * in.xf[il];
-    const bool   moe = in.E[il] > 0.0;
+    const bool   moe = in.E[il] > 0.0, blk = in.xb_a > 0.0 || in.xb_b > 0.0;
     double front = 0.0;   // when the expert card holds every range's hidden state (a layer without experts: when the last card is done)
+    double serial = 0.0;  // blocking crossings (xb_a, xb_b): both cards drained, nothing overlaps them
     for (int i = 0; i < (int) s.size(); ++i) {
         if (s[i] <= 0.0) { continue; }
         double t = s[i] * D / std::max(1e-9, in.rel[i]);
-        if (in.kv_b[il] > 0.0 && in.lcard[il] != i) { t += in.kv_b[il] / (std::min(in.B[i], in.lB[il]) * 1e3); }
-        if (moe && i != in.x) { t += s[i] * T * (in.b_in + in.b_out) / (std::min(in.B[i], in.B[in.x]) * 1e3); }
+        if (in.kv_b[il] > 0.0 && in.lcard[il] != i) {
+            if (blk) { serial += in.xb_a + in.kv_b[il] * in.xb_b; } else { t += in.kv_b[il] / (std::min(in.B[i], in.lB[il]) * 1e3); }
+        }
+        if (moe && i != in.x) {   // the range's hidden state to the expert card and the experts' sum back: two crossings
+            const double by = s[i] * T * (in.b_in + in.b_out);
+            if (blk) { serial += 2.0 * in.xb_a + by * in.xb_b; } else { t += by / (std::min(in.B[i], in.B[in.x]) * 1e3); }
+        }
         front = std::max(front, t);
     }
-    if (!moe) { return front; }
+    if (!moe) { return front + serial; }
     const double up = in.E[il] * (1.0 - in.held[in.x][il]) / (in.B[in.x] * 1e3);
-    return std::max(front + X, up);
+    return std::max(front + X, up) + serial;
 }
 
 // one card (everything on the expert card) and the split with the shares that make the cards take equally long

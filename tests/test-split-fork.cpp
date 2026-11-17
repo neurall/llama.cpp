@@ -302,6 +302,20 @@ static void test_nc_plan() {
         const auto o = dsxn_plan(in);
         report("2 cards, the helper on a 4x slower link: under half of the tokens", o.s[0] < 0.5 && o.s[0] > 0.0, fmt("%.3f", o.s[0]));
     }
+    {   // hand-offs that block the host (ggml's fallback copy drains both cards, Vulkan between two devices): each crossing costs its measured time on top,
+        // nothing overlaps it. MiMo 11k on two Vulkan cards (2026-11-17): split 13.5-16.5 s against one card 11.0 s; priced in stream order the split was 0.91 x one
+        auto a = model_n(11011, 2, 48);
+        const auto oa = dsxn_plan(a);
+        auto b = a;
+        b.xb_a = 20000.0; b.xb_b = 1.0 / 4e3;   // 20 ms a crossing, 4 GB/s through the host
+        const auto ob = dsxn_plan(b);
+        report("hand-offs in stream order: the split beats one card", oa.t_split < oa.t_one, fmt("%.0f vs %.0f", oa.t_split, oa.t_one));
+        report("blocking hand-offs: the split is slower than one card", ob.t_split > ob.t_one, fmt("%.0f vs %.0f", ob.t_split, ob.t_one));
+        report("blocking hand-offs leave one card's time alone", ob.t_one == oa.t_one);
+        auto c = b;
+        c.xb_a = 0.0; c.xb_b = 0.0;
+        report("no blocking measured: the plan of a pair in stream order", dsxn_plan(c).t_split == oa.t_split && dsxn_plan(c).s == oa.s);
+    }
 }
 
 // The expert shares of a pass-size bucket with nothing stored yet (2026-11-14, qni4-i -19%): the four readers of the per-bucket shares each had their own
