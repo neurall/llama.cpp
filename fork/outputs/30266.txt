@@ -1,0 +1,4 @@
+run 30266 | vk_fa_idx64_vk | pf36k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 86.18 t/s | prompt 16055.1 t/s | 32 tokens | args: -np 1 -dev Vulkan0 | power 280+280 W | 2026-11-17 09:58:43
+
+ than swap (may reduce performance if not using mlock)\n"
+        "- mmap-lock: mmap and mlock (default: mmap

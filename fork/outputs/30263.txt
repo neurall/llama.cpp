@@ -1,0 +1,11 @@
+run 30263 | vk_no_1g_vk | pf1k | OLMoE-1B-7B-0924-Q4_K_M.gguf | decode 383.62 t/s | prompt 15543.7 t/s | 64 tokens | args: -np 1 -dev Vulkan0 | power 280+280 W | 2026-11-17 08:37:54
+
+
+                    if (to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, sub_nines);
+                    }
+                    out << ")";
+                

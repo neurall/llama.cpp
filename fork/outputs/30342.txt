@@ -1,0 +1,47 @@
+run 30342 | rel_crashfix | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 26.16 t/s | prompt 15.8 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 12:22:56
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through both files systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition already handles `min_items == 0` correctly. Let me trace through:
+  - `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", 0, max_items - 1)` when min_items == 0
+  - Then wraps in `(...)?`
+  - This seems correct for arrays with separators.
+
+### build_min_max_int function
+- Complex recursive function. Let me look for edge cases.
+- When `min_value < 0 && max_value < 0`, it negates both and recurses. But what about `min_value == INT64_MIN`? `-min_value` would overflow. Actually, `min_value < 0 && max_value < 0` - if min_value is INT64_MIN, then `-min_value` overflows. But wait, `has_min` checks `min_value != INT64_MIN`, so if min_value is INT64_MIN, `has_min` is false, and we wouldn't enter the `has_min && has_max` block. So that's fine.
+- Actually wait, if `min_value < 0 && max_value < 0`, then `-min_value` could overflow if min_value is INT64_MIN. But `has_min` would be false in that case, so we wouldn't be in the `has_min && has_max` block. OK.
+
+- In the `has_min` only case with `min_value < 0`:
+  - `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false)` - this passes INT64_MIN as min_value, so `has_min` will be false, and `has_max` will be true (since -min_value < INT64_MAX). So it goes to the `has_max` only path. That seems intentional.
+
+- The `has_max` only case with `max_value >= 0`:
+  - If `top_level`, it adds negative numbers first, then calls `build_min_max_int(0, max_value, ...)`.
+  - But wait, `build_min_max_int(0, max_value, out, decimals_left, true)` - this has both min and max set (0 and max_value), so it goes to the `has_min && has_max` path. That's correct.
+
+- The `has_max` only case with `max_value < 0`:
+  - `build_min_max_int(-max_value, INT64_MAX, out, decimals_left, false)` - this has min set and max is INT64_MAX so `has_max` is false. Goes to `has_min` only path. Correct.
+
+### _add_rule function
+- The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. This seems reasonable.
+
+### _visit_pattern / _pattern_to_rule
+- The pattern parsing is complex. Let me look for issues.
+- In the character class parsing, it doesn't handle `]` as the first character (which is valid in regex). But this might be intentional for simplicity.
+- The `sub_rule_ids` map is used for `{n,m}` repetition of non-literal items. The key is the sub-rule string, and the value is the rule ID. This could potentially cause issues if two different sub-rules happen to have the same string but should be different rules... actually no, if they have the same string, they should be the same rule.
+
+- In the literal parsing section, there's a complex condition for when to continue consuming characters as literals. Let me trace through:
+  ```
+  } else if (!is_non_literal(sub_pattern[i]) &&
+          (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+  ```
+  This means: if current char is not a special char, AND (we're at the end, OR literal is empty, OR next char is '.', OR next char is not special), then consume it.
+  
+  Wait, if `literal.empty()` is true, we consume any non-special char. But what if the next char is special? We'd consume the current char but then break on the next iteration. That seems correct - we'd flush the literal.
+
+  Actually, there's

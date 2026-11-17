@@ -1,0 +1,67 @@
+run 30291 | vk_fa_idx64 | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 35.8 t/s | prompt 1210.7 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-17 10:38:37
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **Complexity**: The file is quite large and complex, especially `build_min_max_int` and `_pattern_to_rule`. These functions could benefit from being broken into smaller, more testable pieces.
+
+2. **Error handling**: Uses exceptions for control flow (unsupported_pattern, invalid_pattern), which is reasonable but could be more consistent.
+
+3. **Memory/Performance**: 
+   - `_visit_pattern` takes a full snapshot of `_rules` (a `std::map`) on every pattern visit - this is O(n) copy each time.
+   - `replacePattern` creates a new string each time.
+
+### Specific Issues
+
+**build_repetition:**
+- The function handles separator_rule but the recursive call passes `""` as separator, which seems intentional but could be clearer.
+- When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - but what if separator_rule is provided? The separator is ignored in this case. This could be a bug if you want 0 or 1 items with a separator.
+
+**build_min_max_int:**
+- Very complex function with many branches. Hard to verify correctness.
+- The `uniform_range` lambda captures `out` by reference and uses `string_repeat` - potential for large string allocations.
+- `decimals_left` parameter is used but the name is misleading - it's about digit count, not decimals.
+- The `top_level` parameter controls whether leading zeros are allowed - this is subtle.
+- When `min_value < 0 && max_value < 0`, it negates both and recurses. But `INT64_MIN` negation would overflow. Let me check... if `min_value == INT64_MIN`, then `-min_value` would overflow. This is a potential bug.
+  - Actually, looking at the code: `if (min_value < 0 && max_value < 0)` - if `min_value == INT64_MIN`, then `-min_value` overflows. This is UB.
+  - Similarly, `if (min_value < 0)` (mixed case): `build_min_max_int(0, -min_value, ...)` - if `min_value == INT64_MIN`, `-min_value` overflows.
+
+**_add_rule:**
+- The deduplication logic with numeric suffixes could theoretically loop forever if there are many rules with the same name but different content, though in practice this is unlikely.
+
+**_pattern_to_rule:**
+- Very long function (~150 lines). Should be broken up.
+- The `sub_rule_ids` map is used for caching sub-rules but the key is the rule content, which could lead to incorrect caching if different contexts produce the same content.
+- The literal parsing logic in the `else` branch is complex and hard to follow.
+
+**_not_strings:**
+- The `rejects` string is built by concatenating UTF-8 characters directly into a character class. If any character is a special regex character (like `]`, `-`, `^`), this could produce invalid grammar.
+- The function doesn't escape characters in the `rejects` string.
+
+**_resolve_ref:**
+- Uses `static const std::regex` inside a function - this is thread-safe in C++11+ but the regex is compiled every call (actually no, it's static so it's compiled once).
+
+**_build_object_rule:**
+- Very complex function. The `get_recursive_refs` lambda is recursive and creates new vectors each call.
+- The optional properties handling with `|` alternatives could generate very large rules for schemas with many optional properties.
+
+**_visit_all_of:**
+- The `enum_values` counting logic assumes that if a value appears in all children, it's the intersection. But this doesn't handle the case where children are objects with enum constraints properly.
+- `p.second == schema.children.size()` - this counts occurrences across all children, but if a child has multiple enum values, the count could be wrong.
+
+**visit:**
+- The switch statement covers all kinds but returns `""` at the end as a fallback - this could mask bugs if new kinds are added.
+
+**check_errors:**
+- Uses `fprintf(stderr, ...)` for warnings - should use a proper logging mechanism.
+
+**format_grammar:**
+- Uses `std::map` for `_rules` which means rules are sorted alphabetically - this is fine for deterministic output.
+
+**json_schema_to_grammar:**
+- The `force_gbnf` parameter is only used in the `#ifdef LLAMA_USE_LLGUIDANCE` path - in the non-guidance path it's `(void)force

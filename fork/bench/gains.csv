@@ -461,3 +461,10 @@ vk_gappy_rows_vk-fa48-vk-pf36k,2026-11-17 06:18:23,OLMoE-1B-7B-0924-Q4_K_M.gguf,
 vk_graph_one_chunk_vk-ns-vk-pf1k,2026-11-17 06:29:53,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf1k,200+200,"-dev Vulkan0 sim-vram=3072,sim-ram=4900,verify=2,poison=3",2,462.6,"-dev Vulkan0 sim-vram=3072,sim-ram=4900,verify=2,poison=3",2,462.6,1
 vk_graph_one_chunk_vk-full-cu-pf1k,2026-11-17 06:30:37,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf1k,200+200,-dev CUDA0,2,10109.2,-dev CUDA0,2,10109.2,1
 vk_graph_one_chunk_vk-full-vk-pf1k,2026-11-17 06:31:18,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf1k,200+200,-dev Vulkan0,2,10440.1,-dev Vulkan0,2,10440.1,1
+vk_exit_pinned_vk-ns-vk-pf1k,2026-11-17 08:00:02,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf1k,280+280,"-dev Vulkan0 sim-vram=3072,sim-ram=4900,verify=2,poison=3",2,436.5,"-dev Vulkan0 sim-vram=3072,sim-ram=4900,verify=2,poison=3",2,436.5,1
+vk_exit_pinned_vk-full-cu-pf1k,2026-11-17 08:00:44,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf1k,280+280,-dev CUDA0,2,14442.8,-dev CUDA0,2,14442.8,1
+vk_exit_pinned_vk-full-vk-pf1k,2026-11-17 08:01:26,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf1k,280+280,-dev Vulkan0,2,14721.4,-dev Vulkan0,2,14721.4,1
+vk_no_1g_vk-ns-vk-pf1k,2026-11-17 08:37:15,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf1k,280+280,"-dev Vulkan0 sim-vram=3072,sim-ram=4900,verify=2,poison=3",2,433.3,"-dev Vulkan0 sim-vram=3072,sim-ram=4900,verify=2,poison=3",2,433.3,1
+vk_no_1g_vk-full-vk-pf1k,2026-11-17 08:37:56,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf1k,280+280,-dev Vulkan0,2,14803.9,-dev Vulkan0,2,14803.9,1
+vk_fa_idx64_vk-fa36-vk-pf36k,2026-11-17 09:58:51,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf36k,280+280,-dev Vulkan0,2,16400.4,-dev Vulkan0,2,16400.4,1
+vk_fa_idx64_vk-fa48-vk-pf36k,2026-11-17 09:59:35,OLMoE-1B-7B-0924-Q4_K_M.gguf,pf36k,280+280,-dev Vulkan0,2,16334,-dev Vulkan0,2,16334,1

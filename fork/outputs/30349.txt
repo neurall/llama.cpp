@@ -1,0 +1,39 @@
+run 30349 | rel_crashfix | edit4c | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf | decode 57.73 t/s | prompt 1848.4 t/s | 552 tokens | args: -np 1 | power 280+280 W | 2026-11-17 13:17:04
+
+We need answer user's request. User provided C++ file content truncated? They ask: "// file: common/json-schema-to-grammar.cpp ... Add a function that counts the lines of this file and prints the count." Need likely provide code snippet to add to file. Need maybe include function that counts lines of this file and prints count. Need consider C++ source file. Could add function using __FILE__? But __FILE__ path at compile time, not necessarily current file? Could count lines of this file by opening __FILE__? In C++ __FILE__ is compile-time path. Could implement function count_lines_of_this_file() that opens __FILE__, counts newlines, prints. Need maybe robust: if file not found, use current file? Could use std::ifstream. Need maybe add at end. Need maybe include <fstream>, <iostream>. Existing includes don't include fstream/iostream. Need add includes. Could provide function:
+
+static int count_lines_of_this_file() {
+    std::ifstream in(__FILE__);
+    if (!in) return -1;
+    int count = 0;
+    std::string line;
+    while (std::getline(in, line)) ++count;
+    return count;
+}
+
+void print_line_count() {
+    int n = count_lines_of_this_file();
+    if (n >= 0) std::cout << "Line count: " << n << '\n'; else std::cerr << ...;
+}
+
+But if file doesn't end with newline, getline counts last line. If empty file returns 0. Need maybe count lines of this file at runtime. Could also use __LINE__? No.
+
+Need maybe answer with exact patch. Since user says Add a function that counts the lines of this file and prints the count. Could provide code to insert. Need maybe mention if you want it to run automatically, call it from main or add static initializer? But likely just function. Need maybe include <fstream> and <iostream>. Could also use std::count(std::istreambuf_iterator<char>(in), {}, '\n') + (last char not newline?) But getline simpler.
+
+Need ensure no conflict with existing code. Could add near top after includes:
+
+#include <fstream>
+#include <iostream>
+
+...
+
+static void print_this_file_line_count() {
+    std::ifstream file(__FILE__);
+    if (!file) {
+        std::cerr << "Could not open source file: " << __FILE__ << '\n';
+        return;
+    }
+    std::size_t line_count = 0;
+    std::string line;
+    while (
+---

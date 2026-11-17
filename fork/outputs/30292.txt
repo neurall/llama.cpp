@@ -1,0 +1,68 @@
+run 30292 | vk_fa_idx64 | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.77 t/s | prompt 1387.8 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-17 10:39:45
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, and potential improvements.
+
+Let me go through both files systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and no max, handles `+` and `*` cases - correct
+  - When separator is present, builds `item (separator item)*` pattern - looks correct
+  - The recursive call for separator case: `min_items == 0 ? 0 : min_items - 1` and `has_max ? max_items - 1 : max_items` - this seems correct for the separator pattern
+
+### build_min_max_int function
+- Complex function for generating integer ranges
+- The `uniform_range` lambda is recursive (via `std::function`) - potential for deep recursion but bounded by digit length
+- The `decimals_left` parameter defaults to 16 - this limits recursion depth
+- The `top_level` parameter controls whether leading zeros are allowed
+- Edge cases with negative numbers are handled
+- The `less_decimals` calculation: `std::max(decimals_left - 1, 1)` - ensures at least 1
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization of unordered_maps - these are file-scope statics
+- The `is_reserved_name` function uses a static local set initialized from these maps - but the initialization order between file-scope statics and function-local statics could be an issue if `is_reserved_name` is called before the maps are initialized. Actually, since `is_reserved_name` is a function, the static local is initialized on first call, and by that time the file-scope statics should be initialized (they're initialized before `main` or before any function that uses them is called, assuming no static initialization order fiasco). Actually, file-scope statics are initialized before `main`, and function-local statics are initialized on first call. So if `is_reserved_name` is called during static initialization of something else... but it's not, so this should be fine.
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - replaces invalid chars with `-`
+- `GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]")` - matches chars needing escaping in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]")` - matches chars needing escaping in ranges
+- Note: `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` is defined but never used - dead code
+
+### replacePattern function
+- Uses `std::regex_search` in a loop - correct pattern for global replacement
+- The `searchStart + match.position()` calculation - this is correct since `match.position()` is relative to `searchStart`
+
+### gbnf_escape_length function
+- Handles various escape sequences
+- The comment says "keep in sync with parse_char() in src/llama-grammar.cpp" - good practice
+- Returns 0 for unsupported escapes - callers handle this
+
+### common_chat_schema_converter class
+
+#### _add_rule
+- Escapes rule names and handles collisions by appending numbers
+- The collision detection loop: `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. This is correct.
+
+#### _generate_union_rule
+- Generates alternatives with numbered suffixes
+- The naming: `name + (name.empty() ? "alternative-" : "-") + std::to_string(i)` - handles empty name case
+
+#### _visit_pattern
+- Takes a snapshot of `_rules` before attempting pattern conversion
+- On failure, reverts `_rules` to the snapshot
+- This is a good rollback mechanism
+- However, `_refs_being_resolved` is not rolled back - potential issue if a ref was being resolved when the pattern failed
+
+#### _pattern_to_rule
+- Complex regex-to-grammar conversion
+- The `transform` lambda is recursive (via `std::function`)
+- Handles various regex constructs: `.`, `()`, `[]`, `|`, `*`, `+`, `?`, `{}`, literals, escapes
+- The `paren_depth` tracking is correct
+- The `MAX_PATTERN_DEPTH` check prevents excessive nesting
+
+Issues I see:
+1. In the `{}` handling, `std::stoi` can

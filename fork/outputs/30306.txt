@@ -1,0 +1,46 @@
+run 30306 | vk_fa_idx64 | edit4c | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 32.42 t/s | prompt 624.4 t/s | 680 tokens | args: -np 1 | power 280+280 W | 2026-11-17 10:54:11
+
+We need answer user asks: "Delete the code in this file that is never used." They provided file content. Need identify unused code and provide modified file? Need infer task likely from code review: remove unused functions/variables/includes? Need analyze C++ file. Need produce cleaned version? Need be careful. We need inspect code. It's common/json-schema-to-grammar.cpp. They ask delete code never used. Need identify unused code in this file. We need maybe output file with unused code removed. Need analyze thoroughly.
+
+We have snippet ends mid-function `static size_t gbnf_escape_length(const std::string & pattern, size_t pos) {` incomplete. Maybe file truncated? Need not include? The user asks delete code in this file that is never used. We need determine unused code within provided snippet. Could be from llama.cpp? Let's recall actual file. It likely has many functions. The snippet includes only beginning. Need identify unused code. Maybe there are unused functions: `gbnf_escape_length`? It is defined but maybe used later? The snippet ends at start, so unknown. Need not assume. We need answer based on provided code. But maybe they expect remove unused includes, variables, functions. Need inspect.
+
+Let's parse provided code. It includes:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- regexes INVALID_RULE_CHARS_RE, GRAMMAR_LITERAL_ESCAPE_RE, GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_escape_length (incomplete)
+
+Need know which are used in rest of file not shown. The snippet is only part. The question says "// file: common/json-schema-to-grammar.cpp" and includes code. It may be entire file? It ends mid-function, likely truncated by prompt? Maybe they want delete code never used in this file. We need identify from this snippet only. But many functions likely used later in file. We need know actual llama.cpp file. Let's recall.
+
+This is from llama.cpp common/json-schema-to-grammar.cpp. It has functions:
+- build_repetition
+- build_min_max_int
+- SPACE_RULE
+- BuiltinRule
+- PRIMITIVE_RULES
+- STRING_FORMAT_RULES
+- is_reserved_name
+- INVALID_RULE_CHARS_RE
+- GRAMMAR_LITERAL_ESCAPE_RE
+- GRAMMAR_RANGE_LITERAL_ESCAPE_RE
+- GRAMMAR_LITERAL_ESCAPES
+- MAX_PATTERN_DEPTH
+- NON_LITERAL_SET
+- ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS
+- replacePattern
+- format_literal
+- gbnf_format_literal
+- gbnf_
+---

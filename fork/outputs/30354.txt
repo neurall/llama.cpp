@@ -1,0 +1,62 @@
+run 30354 | rel_crashfix | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 21.91 t/s | prompt 16.0 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 14:14:18
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, performance concerns, and potential improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition starts from 0, which means the separator repetition could match zero times. This seems correct for optional items.
+- When `max_items == 0`, returns empty string - correct.
+- When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+- The separator case: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` - this builds `item (sep item)*` style. Looks correct.
+
+### build_min_max_int function
+- Complex recursive function for generating integer ranges.
+- `decimals_left` parameter controls digit depth - default 16.
+- The `uniform_range` lambda handles generating ranges between two strings of digits.
+- Potential issue: when `from[i] == to[i] - 1` in the `from_sub == sub_zeros` branch, `digit_range(from[i], to[i] - 1)` would produce a single character range, which is fine.
+- The `to_reached` flag logic seems correct for handling edge cases.
+- In the `has_min && has_max` case with `min_value < 0 && max_value < 0`, it negates both and recurses - correct.
+- When `min_value < 0` (mixed sign), it handles negative part then sets `min_value = 0` for positive part - correct.
+- The `has_min` only case: handles various ranges of min_value.
+- The `has_max` only case: handles various ranges of max_value.
+- Potential issue: `std::stoll(min_s.substr(1))` could throw if the substring is empty, but since `min_value > 9` and `min_s` has at least 2 characters, this should be fine.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static unordered_maps - these are initialized at namespace scope. Since they're `static`, they have internal linkage. However, they're not `const`, so they could be modified. Should probably be `const`.
+- The `is_reserved_name` function uses a static local set initialized from these maps - this is fine but the maps themselves should be const.
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE`, `GRAMMAR_LITERAL_ESCAPE_RE`, `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - these are static regex objects. `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` is defined but never used - dead code.
+- `NON_LITERAL_SET` and `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS` - static unordered_sets, not const.
+
+### replacePattern function
+- Uses `std::regex_search` in a loop - this is correct for replacing all matches.
+- The `searchStart + match.position()` calculation is correct since `match.position()` is relative to `searchStart`.
+
+### format_literal function
+- Escapes special characters and wraps in quotes - correct.
+
+### gbnf_escape_length function
+- Handles various escape sequences - looks correct.
+- The comment says "keep in sync with parse_char() in src/llama-grammar.cpp" - good practice.
+
+### common_chat_schema_converter class
+
+#### _add_rule
+- Escapes rule names and handles collisions by appending numbers.
+- The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Looks correct.
+
+#### _generate_union_rule
+- Generates alternatives with numbered suffixes - correct.
+
+#### _visit_pattern
+- Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+- However, `_rules` is a `std::map<std::string, std::string>` - copying it for every pattern could be expensive if there are many rules.
+
+#### _pattern_to_rule
+- Complex regex-to-grammar conversion.
+- The `transform` lambda is recursive (via `std::function`), handling groups, character classes, quantifiers, etc.
+- Potential issue: the `paren_depth` check happens after `transform()` returns, but `transform()` itself checks `paren_depth > MAX_PATTERN_DEPTH` when entering a group. The final check `if (paren

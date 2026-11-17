@@ -1,0 +1,48 @@
+run 30341 | rel_crashfix | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 24.17 t/s | prompt 16.0 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 280+280 W | 2026-11-17 12:09:56
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully.
+
+Let me go through both files systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### General Observations
+
+1. **`build_repetition` function:**
+   - The function handles various repetition cases but there's a subtle issue: when `separator_rule` is non-empty and `min_items == 0`, the recursive call passes `min_items - 1` which would be `-1` (since `min_items == 0 ? 0 : min_items - 1` handles this correctly). Wait, actually it does handle it: `min_items == 0 ? 0 : min_items - 1`. So that's fine.
+   - When `has_max` is false and separator is present, `max_items - 1` would be `INT_MAX - 1` which is fine since `has_max` is false so it passes `max_items` unchanged. Wait, let me re-read: `has_max ? max_items - 1 : max_items`. So when `has_max` is false, it passes `max_items` (which is `INT_MAX`). That's correct.
+   - When `has_max` is true and `max_items` is 1, then `max_items - 1 = 0`, and the recursive call would return `""`. So for `min_items=1, max_items=1` with separator, it would return `item_rule + " " + ""` = `item_rule + " "`. That seems correct for a single item with separator (no separator needed).
+   - Actually wait, for `min_items=0, max_items=1` with separator: the early return `item_rule + "?"` happens before the separator check. So that's fine.
+
+2. **`build_min_max_int` function:**
+   - This is a complex recursive function for generating integer range rules.
+   - The `uniform_range` lambda captures `out` by reference, which is fine.
+   - There's a potential issue with `decimals_left` parameter - it's used to limit digit depth but the logic seems reasonable.
+   - The `top_level` parameter controls whether leading zeros are allowed.
+   - When `min_value < 0 && max_value < 0`, it negates both and recurses. But what about `min_value == INT64_MIN`? `-min_value` would overflow. Let me check... Actually, `min_value < 0 && max_value < 0` means both are negative, so `-min_value` would be positive. But if `min_value == INT64_MIN`, then `-min_value` overflows. This is a potential bug.
+   - Similarly, when `min_value < 0` (but `max_value >= 0`), it calls `build_min_max_int(0, -min_value, ...)`. If `min_value == INT64_MIN`, `-min_value` overflows.
+   - When `has_min` and `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. Again, `-min_value` could overflow if `min_value == INT64_MIN`.
+
+3. **`_add_rule` function:**
+   - The deduplication logic looks correct - it tries to find an existing rule with the same content, or creates a numbered variant.
+
+4. **`_visit_pattern` function:**
+   - Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for transactional behavior.
+   - However, `_refs_being_resolved` is not snapshotted, which could lead to issues if a pattern conversion triggers ref resolution that fails.
+
+5. **`_pattern_to_rule` function:**
+   - Complex regex-to-grammar conversion.
+   - The `transform` lambda is recursive and handles various regex constructs.
+   - The `paren_depth` tracking is done correctly.
+   - The character class parsing looks correct.
+   - The curly bracket parsing handles `{n}`, `{n,m}`, `{n,}` correctly.
+   - The literal accumulation logic is a bit complex but seems correct.
+
+6. **`_not_strings` function:**
+   - Generates a rule that matches strings that are NOT in a given set.
+   - Uses a trie for efficient matching.
+   - The `rejects` string accumulates characters for the negated character class.
+   - Potential issue: if a character in `rejects` needs escaping (like `"` or `\`), it's not escaped. The `rejects` is placed inside `[^\"]` which could be problematic if the character is `"` or `\`.
+
+7. **`_resolve_ref` function:**
+   - Handles `$
