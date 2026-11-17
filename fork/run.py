@@ -5709,7 +5709,7 @@ def cmd_publish(a):
     subprocess.run(gh + ["release", "create", tag, "--title", f"b{b} {a.name}", "--notes-file", a.notes, "--latest"] + [os.path.join(REL_OUT, f) for f in arch], check=True)
     # every published release is the default (user 2026-11-08: "make it default too. change publish code to do so always"): GitHub latest (above) and the
     # repository's default branch is `release` (pushed by the caller when the tree is another branch: it must hold the tagged commit)
-    subprocess.run(gh + ["repo", "edit", "--default-branch", "release"], check=True)
+    subprocess.run(["gh", "repo", "edit", "neurall/llama.cpp", "--default-branch", "release"], check=True)   # `repo edit` takes the repository as its argument, not -R (gh 2.45)
     print(f"published {tag}: {', '.join(arch)}; latest, default branch release", flush=True)
 
 
