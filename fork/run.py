@@ -8813,6 +8813,7 @@ def learn_bestpp(model, test, tag):
         x = c.execute("select pp, tps, note, pf_passes, n_gen from runs where campaign like ? and cast(ok as integer)=1 and pp is not null and tps is not null order by ts desc limit 1", (f"{tag}-%",)).fetchone()
         pn = re.search(r"prompt_n=(\d+)", (x[2] if x else "") or "")
         if not x or not pn: return   # any pass count counts: one pass is not always the best
+        if int(x[4] or 1024) < 256: return   # a short answer has no decode speed to compare: the 16-token pcache cells replaced the 1k records of their sizes (2026-11-17)
         new = (int(pn.group(1)), int(x[4] or 1024), float(x[0]), float(x[1])); hw = int(hw_key()[:-1]); key = (sec, hw)   # prompt tokens, answer tokens of this run, prompt t/s, decode t/s
         pp_s, tg_s = new[0] / new[2], new[1] / new[3]; total = pp_s + tg_s   # seconds of the request: the prompt, then the answer the run gave at the decode speed that followed (the server's own timings: no load time)
         if key not in BESTPP_MEM:   # every one-pass prompt seen so far for this model and VRAM: {prompt tokens: (answer tokens, prompt t/s, decode t/s)}, starting with the models.ini entry
