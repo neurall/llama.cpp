@@ -14869,6 +14869,9 @@ static void ggml_vk_scratch_bind(ggml_backend_vk_context * ctx, const ggml_cgrap
         }
         return;
     }
+    // the same layout as this context's last graph: each part sits where it sat, and its own need_sync flag (kept from that graph) covers it, as with the
+    // context's own buffers. Another layout: the bytes held other parts, so the first write of any part waits for every earlier use
+    const bool moved = !ctx->scratch_views_on || ctx->prealloc_add_rms_partials != p || ctx->prealloc_x != x || ctx->prealloc_y != y || ctx->prealloc_split_k != k;
     ggml_vk_scratch_replace(ctx, ctx->prealloc_add_rms_partials, p);
     ggml_vk_scratch_replace(ctx, ctx->prealloc_x, x);
     ggml_vk_scratch_replace(ctx, ctx->prealloc_y, y);
@@ -14876,7 +14879,9 @@ static void ggml_vk_scratch_bind(ggml_backend_vk_context * ctx, const ggml_cgrap
     ctx->prealloc_size_x       = need.x;
     ctx->prealloc_size_y       = need.y;
     ctx->prealloc_size_split_k = need.split_k;
-    ctx->prealloc_x_need_sync = ctx->prealloc_y_need_sync = ctx->prealloc_split_k_need_sync = true;
+    if (moved) {
+        ctx->prealloc_x_need_sync = ctx->prealloc_y_need_sync = ctx->prealloc_split_k_need_sync = true;
+    }
     ctx->scratch_views_on = true;
 }
 
