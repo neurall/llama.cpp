@@ -14394,6 +14394,8 @@ static double early_link_gbs(ggml_backend_dev_t d) {
     g_early_gbs.push_back({ d, gbs });
     return gbs;
 }
+// the probe for tests/test-link-probe-fork.cpp
+LLAMA_API double llama_moe_link_gbs_fork(ggml_backend_dev_t d) { return early_link_gbs(d); }
 
 #if defined(SR_HAVE_AIO) || defined(_WIN32)
 // The async engine's best shape on the model's drive: block size, gap and reads in flight (O_DIRECT, about 0.15 s per combination), measured once per drive and kept in [machine] as
