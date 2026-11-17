@@ -21,18 +21,6 @@ llama-server -m MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf
 
 Each row: the official upstream binary (stock, its own defaults, `-np 1`) against this fork, same machine, same request, same day. **12k/1k** = 12.4k-13.8k-token code-review prompt, 1024 tokens out; **3k/1k** = about 3k-token source file plus an edit instruction, answer up to 1024 tokens; **short/1k** = one-line prompt, 1024 tokens out (too short to time the prompt). Decode = generated tokens/s, prompt = prompt tokens/s. Every answer is stored in [fork/outputs](fork/outputs) (`<id>.txt` ours, `<id>s.txt` stock).
 
-### Current machine (from 2026-11-12)
-
-Lenovo P620: Threadripper PRO 3975WX (32 cores), 256 GB DDR4-3200 in 8 channels, 2x RTX 3090 on PCIe 4.0 x16, power-limited to 280 W each. Against the previous machine this has 4x the memory bandwidth and the full PCIe link on the second card.
-
-| model | test | stock decode (t/s) | ours decode (t/s) | stock prompt (t/s) | ours prompt (t/s) | decode gain | prompt gain | stock build | ours build | answers (ours, stock) |
-|---|---|---|---|---|---|---|---|---|---|---|
-| MiMo-V2.6-Flash 3-bit | 12k/1k | 30.01 | **36.65** | 115.6 | **1458.0** | 1.22x | **12.6x** | b12317 | b15065 | [26477](fork/outputs/26477.txt), [26475s](fork/outputs/26475s.txt) |
-| MiMo-V2.6-Flash 3-bit | 3k/1k | - | 37.96 | - | 660.7 | - | - | - | b15065 | [26479](fork/outputs/26479.txt) |
-| MiMo-V2.6-Flash 3-bit | short/1k | - | 41.19 | - | - | - | - | - | b15065 | [26481](fork/outputs/26481.txt) |
-
-Measured 2026-11-12, two runs per cell, the faster one shown; `-` = not measured on this machine yet (the other models follow). Stock gained the most from this machine: it computes the experts on the CPU, so the 8-channel memory made it 2.1x faster in decode and 2.3x in prompt processing than on the previous machine (MiMo 12k/1k: 13.99 to 30.01 t/s, 49.4 to 115.6 prompt t/s); ours gained 1.38x and 1.42x (26.6 to 36.65 t/s, 1025 to 1458 prompt t/s).
-
 One run of ours (the best valid run among our builds; the build column names it) against the official stock run of the same cell closest to stock's median (the stock column names its version; stock binaries are pulled, never built). Every number is from those two runs, whose answers are in the output column (ours on top, stock below, so you can open both). Sorted by the bigger gain; rows where neither gain reaches +10% are left out (models that fit in VRAM and the dense 27B models run at stock speed). Upper number stock, lower ours. **12k/1k** = 12.4k-13.8k-token code-review prompt, 1024 tokens out; **16k/1k** = the same review at 16k tokens; **3k/1k** = ~3k-token source file plus an edit instruction, answer up to 1024 tokens; **short/1k** = one-line prompt, 1024 tokens out (no prompt speed: too short to time). t/s = decode, pp = prompt processing, ppl = perplexity on b13600 (details below; - = not measured for that build). Valid = same power limits as stock (x4 card 220 W, x16 card 280 W), answer not looped, decode only from answers of 256+ tokens. 2x RTX 3090 (x16 + x4), Ryzen 7 3700X, 128 GB DDR4-3200.
 
 | model | test | t/s | pp | gain t | gain pp | ppl | build | stock | output |

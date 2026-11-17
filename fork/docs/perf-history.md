@@ -173,6 +173,18 @@ weights (the server default when the model fits in RAM) GLM-5.3-Flash is 1.21x s
 Decode speed depends on how often generated tokens reuse cached experts: ~75% of
 experts are hits on GLM chat, ~95% on Qwen.
 
+## Moved from the README on 2026-11-17 (the first rows on the current machine, measured 2026-11-12; a full gainers table for this machine follows in the README)
+
+Lenovo P620: Threadripper PRO 3975WX (32 cores), 256 GB DDR4-3200 in 8 channels, 2x RTX 3090 on PCIe 4.0 x16, power-limited to 280 W each. Against the previous machine this has 4x the memory bandwidth and the full PCIe link on the second card.
+
+| model | test | stock decode (t/s) | ours decode (t/s) | stock prompt (t/s) | ours prompt (t/s) | decode gain | prompt gain | stock build | ours build | answers (ours, stock) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| MiMo-V2.6-Flash 3-bit | 12k/1k | 30.01 | **36.65** | 115.6 | **1458.0** | 1.22x | **12.6x** | b12317 | b15065 | [26477](../outputs/26477.txt), [26475s](../outputs/26475s.txt) |
+| MiMo-V2.6-Flash 3-bit | 3k/1k | - | 37.96 | - | 660.7 | - | - | - | b15065 | [26479](../outputs/26479.txt) |
+| MiMo-V2.6-Flash 3-bit | short/1k | - | 41.19 | - | - | - | - | - | b15065 | [26481](../outputs/26481.txt) |
+
+Measured 2026-11-12, two runs per cell, the faster one shown; `-` = not measured on this machine yet (the other models follow). Stock gained the most from this machine: it computes the experts on the CPU, so the 8-channel memory made it 2.1x faster in decode and 2.3x in prompt processing than on the previous machine (MiMo 12k/1k: 13.99 to 30.01 t/s, 49.4 to 115.6 prompt t/s); ours gained 1.38x and 1.42x (26.6 to 36.65 t/s, 1025 to 1458 prompt t/s).
+
 ## Moved from the README on 2026-11-12 (measured on the previous machine: Ryzen 7 3700X, 128 GB DDR4-3200 dual channel, RTX 3090 on x16 + RTX 3090 on x4)
 
 ### Status note of 2026-10-23
