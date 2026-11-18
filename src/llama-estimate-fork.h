@@ -385,3 +385,11 @@ struct drift_watch {
         return false;
     }
 };
+
+// The self-tuner's knob order (src/llama-moecache-fork.cpp self_tune): it tries one knob at a time, so the transient knobs (36-token slices, decided in
+// 72-216 decode tokens) go before the state-carrying ones (320-token slices, 640-1920 tokens), each group in its listed order. GLM two-card Vulkan
+// 2026-11-18: with SWAP_LEAD first, UPLOAD_WAIT (gate 0 53.6-55.0 against gate 3 63.8-71.3 ms/token) was never tried in 3 of 6 cells over two 1k
+// answers, and their decode stayed at 11-14 t/s against 18 (tests/test-estimate-fork.cpp).
+template <class K> void tune_order(std::vector<K> & knobs) {
+    (void) knobs;   // TDD step: not yet
+}

@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <random>
 #include <set>
@@ -343,6 +344,18 @@ int main() {
         for (int i = 0; i < 64 * 2; ++i) { w2.feed(74.0, 520.0); }          // after it: the baseline
         for (int i = 0; i < 64 * 3; ++i) { seen2 |= w2.feed(90.0, 520.0); } // other load on the box
         check("drift watch: a slower box after the refill is still seen", seen2);
+    }
+    {   // the self-tuner's knob order (self_tune's list without the predictor): GLM two-card Vulkan 2026-11-18, SWAP_LEAD (320-token slices) first left
+        // UPLOAD_WAIT untried over both 1k answers in 3 of 6 cells; gate 3 stayed on, 11-14 t/s against 18 with gate 0
+        struct knob { const char * name; bool slow; };
+        std::vector<knob> k = { { "SWAP_LEAD", true }, { "UPLOAD_WAIT", false }, { "UPLOAD_SHARE", true }, { "WAIT_SWAPS", false } };
+        tune_order(k);
+        int ahead = 0;   // decode tokens before UPLOAD_WAIT starts: each knob ahead of it at 3 slices of each of its 2 candidates
+        size_t i = 0;
+        for (; i < k.size() && strcmp(k[i].name, "UPLOAD_WAIT") != 0; ++i) { ahead += 2 * 3 * (k[i].slow ? 320 : 36); }
+        check("self-tune: the upload gate is decided within the first 1k-token answer", i < k.size() && ahead + 2 * 3 * 36 <= 1024);
+        check("self-tune: transient knobs first, each group in its listed order", strcmp(k[0].name, "UPLOAD_WAIT") == 0 && strcmp(k[1].name, "WAIT_SWAPS") == 0 &&
+              strcmp(k[2].name, "SWAP_LEAD") == 0 && strcmp(k[3].name, "UPLOAD_SHARE") == 0);
     }
 
     // the CPUs this process may use cut the topology (common_cpu_groups_masked_fork). PC1's 3975WX: 8 L3 groups of 4 cores, CPU c and c+32 are siblings. Under taskset to the
