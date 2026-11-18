@@ -18266,8 +18266,9 @@ static void bell_serve(bell_chain & c) {
         LLAMA_LOG_ERROR("moe-cache: bell: layer %d did not publish its picks within 10 s (seq %u): the card's graph did not run\n", c.pub->il, (unsigned) bl.seen);
         for (const auto & o : g_bell_chains) {   // every bell of this graph build: which layers rang, and which card waits for rows
             const bell_layer & ol = g_bell_layers[o.pub];
-            LLAMA_LOG_ERROR("moe-cache: bell: layer %d: seq %u (served %u), flag %u, missing %d%s\n", o.pub->il, (unsigned) o.b->seq, (unsigned) ol.seen, (unsigned) o.b->flag,
-                            (int) o.b->n_miss, o.b->n_miss > 0 && o.b->flag != o.b->seq ? "  <- its card waits for rows" : "");
+            // straight to stderr: the log's own thread does not get to these lines before the abort below
+            fprintf(stderr, "moe-cache: bell: layer %d: seq %u (served %u), flag %u, missing %d%s\n", o.pub->il, (unsigned) o.b->seq, (unsigned) ol.seen, (unsigned) o.b->flag,
+                    (int) o.b->n_miss, o.b->n_miss > 0 && o.b->flag != o.b->seq ? "  <- its card waits for rows" : "");
         }
         GGML_ABORT("moe-cache: bell: a layer never rang");
     }
