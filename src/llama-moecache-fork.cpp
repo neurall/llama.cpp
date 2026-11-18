@@ -18328,9 +18328,9 @@ void * llama_moe_cache_bell_fork(const llama_moe_cache_layer_fork * pub, int64_t
     bl.tried = true;
     ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pub->dev_table->buffer));
     ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
-    auto alloc = reg ? (void * (*)(size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_bell_alloc") : nullptr;
+    auto alloc = reg ? (void * (*)(ggml_backend_dev_t, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_bell_alloc") : nullptr;
     bl.free_fn = reg ? (void (*)(void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_bell_free") : nullptr;
-    void * mem = alloc && bl.free_fn ? alloc(ggml_bell_size((int32_t) n_used, (int32_t) n_embd)) : nullptr;
+    void * mem = alloc && bl.free_fn ? alloc(dev, ggml_bell_size((int32_t) n_used, (int32_t) n_embd)) : nullptr;   // mapped for the layer's own card
     if (!mem) {
         LLAMA_LOG_WARN("moe-cache: bell: %s has no memory a card and the host share by pointer: layer %d keeps the scheduler's host steps\n", dev ? ggml_backend_dev_name(dev) : "?", pub->il);
         return nullptr;

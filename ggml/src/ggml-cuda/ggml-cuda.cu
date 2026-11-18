@@ -9798,6 +9798,11 @@ static uint64_t ggml_backend_cuda_h2d_bytes(ggml_backend_dev_t dev) {   // fork:
     return g_h2d_bytes_fork[((ggml_backend_cuda_device_context *) dev->context)->device].load(std::memory_order_relaxed);
 }
 
+// void * (*)(ggml_backend_dev_t dev, size_t size): the bell of a layer whose cache is on dev
+static void * ggml_backend_cuda_bell_alloc_fork(ggml_backend_dev_t dev, size_t size) {
+    return ggml_cuda_bell_alloc(((ggml_backend_cuda_device_context *) dev->context)->device, size);
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     // fork: the core asks for hooks by the neutral name ggml_backend_fork_<x> (src/llama-backend-fork.h); here they are the ggml_backend_cuda_<x> functions
     if (strncmp(name, "ggml_backend_fork_", 18) == 0) {
@@ -9927,8 +9932,8 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_cuda_pin_range_fork") == 0) {   // fork: the RAM pool pins its chunks after the fill (llama-moecache-fork.cpp, rp_pin_raw)
         return (void *)ggml_backend_cuda_pin_range_fork;
     }
-    if (strcmp(name, "ggml_backend_bell_alloc") == 0) {   // fork: the decode bell's memory, read and written by the cards by pointer (moe-bell.cu)
-        return (void *)ggml_cuda_bell_alloc;
+    if (strcmp(name, "ggml_backend_bell_alloc") == 0) {   // fork: the decode bell's memory, read and written by its card by pointer (moe-bell.cu)
+        return (void *)ggml_backend_cuda_bell_alloc_fork;
     }
     if (strcmp(name, "ggml_backend_bell_free") == 0) {
         return (void *)ggml_cuda_bell_free;

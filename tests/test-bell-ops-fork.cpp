@@ -25,7 +25,7 @@ static float row_value(int layer, int id, float x0) { return 1000.0f * layer + i
 static bool run(ggml_backend_dev_t dev) {
     const char * name = ggml_backend_dev_name(dev);
     ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
-    auto b_alloc = reg ? (void * (*)(size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_bell_alloc") : nullptr;
+    auto b_alloc = reg ? (void * (*)(ggml_backend_dev_t, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_bell_alloc") : nullptr;
     auto b_free  = reg ? (void (*)(void *))   ggml_backend_reg_get_proc_address(reg, "ggml_backend_bell_free")  : nullptr;
     const bool cpu = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU;
     if (!cpu && !b_alloc) { printf("%-10s no bell memory on this backend: skipped\n", name); return true; }
@@ -33,7 +33,7 @@ static bool run(ggml_backend_dev_t dev) {
     assert(be);
     std::vector<ggml_bell *> bells;
     for (int l = 0; l < N_LAYER; ++l) {
-        void * m = cpu ? calloc(1, ggml_bell_size(N_USED, N_EMBD)) : b_alloc(ggml_bell_size(N_USED, N_EMBD));
+        void * m = cpu ? calloc(1, ggml_bell_size(N_USED, N_EMBD)) : b_alloc(dev, ggml_bell_size(N_USED, N_EMBD));
         assert(m);
         bells.push_back(ggml_bell_init(m, N_USED, N_EMBD));
     }
@@ -133,7 +133,12 @@ static bool run(ggml_backend_dev_t dev) {
 int main() {
     ggml_backend_load_all();
     bool ok = true;
-    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) { ok = run(ggml_backend_dev_get(i)) && ok; }
+    // every card is brought up before any bell is made, as in the engine. Made while another card was current, a bell was out of the second card's range
+    // (Xid 13); this test missed it at first because it made that card's bells before the card had a context
+    std::vector<ggml_backend_t> up;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) { up.push_back(ggml_backend_dev_init(ggml_backend_dev_get(i), nullptr)); }
+    for (size_t i = ggml_backend_dev_count(); i-- > 0; ) { ok = run(ggml_backend_dev_get(i)) && ok; }   // and the last card first
+    for (auto * b : up) { if (b) { ggml_backend_free(b); } }
     printf(ok ? "ok\n" : "FAILED\n");
     return ok ? 0 : 1;
 }

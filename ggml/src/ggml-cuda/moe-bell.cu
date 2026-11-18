@@ -8,11 +8,14 @@
 static std::mutex g_bell_mu;
 static std::unordered_map<void *, void *> g_bells;
 
-void * ggml_cuda_bell_alloc(size_t size) {
+// The memory is mapped for the card that is current when it is allocated: a bell made with another card current gave that card's kernels an address out of
+// their range (Xid 13 on the second card, the first layer there never rang: OLMoE, build bell_token_one_graph, 2026-11-18). So the layer's own card is set first.
+void * ggml_cuda_bell_alloc(int device, size_t size) {
 #if defined(GGML_USE_MUSA)
-    GGML_UNUSED(size);
+    GGML_UNUSED(device); GGML_UNUSED(size);
     return nullptr;   // no host-mapped pinned memory there (as allreduce.cu)
 #else
+    ggml_cuda_set_device(device);
     void * host = nullptr, * dev = nullptr;
     if (cudaHostAlloc(&host, size, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess) { (void) cudaGetLastError(); return nullptr; }
     if (cudaHostGetDevicePointer(&dev, host, 0) != cudaSuccess) { (void) cudaGetLastError(); cudaFreeHost(host); return nullptr; }
