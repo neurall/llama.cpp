@@ -5327,7 +5327,7 @@ def cmd_bench(a):
                     HOT_TEST["v"] = a.test
                     if hot_settle and not build.startswith("stock"):
                         import hotglobal
-                        if hotglobal.is_settled(model, a.test):
+                        if i > a.rep_from and hotglobal.is_settled(model, a.test):   # never before the cell's first run: a cell without a result is a failed cell (vkgain, 2026-11-18: 6 cells whose map another cell had settled)
                             print(f"hot map {a.test}: settled, no more runs of this cell", flush=True); continue
                     run_cell(build, a.test, env, False, args, True, a.note, warm=warm)
                     if hot_global() and not build.startswith("stock"):
