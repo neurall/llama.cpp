@@ -14,6 +14,8 @@
 // use against its own CPU and upload byte counters before it believes the comparison (swapsim_trusted).
 #pragma once
 
+#include "../ggml/src/ggml-hist-fork.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -27,7 +29,14 @@ struct swapsim_knobs {
     int    budget  = 8;      // evictions between two tokens, all layers together
     int    jit     = 1;      // uploads inside the token: 0 none, 1 admitted like a swap, 2 any miss
     int    policy  = 0;      // the score: 0 "add" (window + lifetime share), 1 "crf" (ClassLRU, upstream #31233: a use count that halves every 128 tokens gives a
-                             // class, the score is 2^class / (age + 1); no pay-back margin)
+                             // class, the score is 2^class / (age + 1); no pay-back margin), 2 "stay" (the three last-10 rings of ggml-hist-fork.h: the reads
+                             // a stay is expected to serve, from the expert's last stays, else from its recall rate; the newcomer must expect more than the
+                             // victim, no window count and no margin), 3 "rate" (the recall ring alone: uses a token over the span of the last 10 recalls,
+                             // measured up to now, so both how often and how lately count; one recall is no rate), 4 "rate+stay" (the same score; a newcomer
+                             // whose last stays served fewer reads than an upload costs, `payback`, must beat the victim by that shortfall)
+                             // 5 "lru" (the time of the last use), 6 "slru" (upstream's cache from #30637 to #31233: a hit moves an expert to the protected half of
+                             // what its layer holds, whose oldest goes back; LRU inside each half); both as the engine's policy=lru|slru, no margin
+    double payback = 5.0;    // reads a stay must serve to pay for its upload (the upload's cost over a CPU miss's: CPU GB/s / link GB/s)
     int    spend   = 0;      // the budget between tokens: 0 by layer in turn (the engine), 1 best first: the hottest newcomers of any layer
 };
 
@@ -40,6 +49,9 @@ struct swapsim_layer {
     std::vector<float>    crf;           // policy crf: the use count, halving every 128 tokens, as of crf_t
     std::vector<uint32_t> crf_t;         // the layer's token of the last use
     uint32_t tok = 0;                    // tokens this layer saw
+    std::vector<uint8_t>  prot;          // policy slru: in the protected half
+    int n_prot = 0;
+    std::vector<hist10>   h;             // last 10 recalls, last 10 evictions, reads served in each of the last 10 stays (kept while out)
     std::deque<std::vector<int32_t>> recent;
 };
 
@@ -58,22 +70,54 @@ struct swapsim {
     std::vector<int>           margin;           // per link: the pay-back margin in uses
     size_t                     rr = 0;
     swapsim_out                out;
+    uint32_t                   clock = 0;                        // tokens seen, prompt tokens too: the rings' time
+    double                     dec_adm = 0, dec_tok = 0, n_blocks = 0;   // admissions and tokens, fading over about one pool of tokens; the pool's blocks
+
+    // tokens a resident stays: the pool's blocks over the admissions a token (as the RAM row tier's rows_turnover)
+    double turnover() const { return n_blocks / std::max(dec_tok > 0 ? dec_adm / dec_tok : 1.0, 1e-3); }
+    void admitted(swapsim_layer & l, int32_t e) { hist_admit(l.h[e]); dec_adm += 1.0; }
+    void evicted(swapsim_layer & l, int32_t e) { l.in[e] = 0; hist_evict(l.h[e], clock); out.evictions++; if (l.prot[e]) { l.prot[e] = 0; l.n_prot--; } }
+    bool by_window() const { return k.policy < 2 || k.policy >= 5; }   // a miss needs `admit` uses in the window (the history policies decide by their rings)
+    // may a newcomer scoring s take the block of a victim scoring v
+    bool beats(const swapsim_layer & l, int32_t e, double s, double v) const {
+        if (k.policy == 4) {   // an expert that did not pay for its last stays needs that much more to come back
+            const hist10 & h = l.h[e];
+            double m = k.payback;
+            if (h.n_evict > 0) { double sum = 0; for (int i = 0; i < h.n_evict; ++i) { sum += h.served[i]; } m = sum / h.n_evict; }
+            return s > v * std::max(1.0, k.payback / std::max(m, 0.5));
+        }
+        return k.policy >= 2 ? s > v : s >= v + margin_of(l);
+    }
+    void tick() {
+        if (n_blocks <= 0) {
+            for (int f : free_blocks) { n_blocks += f; }
+            for (const auto & l : L) { for (int e = 0; e < l.n; ++e) { n_blocks += l.in[e] || l.coming[e]; } }
+            n_blocks = std::max(1.0, n_blocks);
+        }
+        clock++;
+        const double d = std::exp(-1.0 / n_blocks);
+        dec_adm *= d; dec_tok = dec_tok * d + 1.0;
+    }
 
     void add_layer(int n, int cls, int link, double bytes) {
         swapsim_layer l; l.n = n; l.cls = cls; l.link = link; l.bytes = bytes;
-        l.in.assign(n, 0); l.coming.assign(n, 0); l.win.assign(n, 0); l.glob.assign(n, 0); l.crf.assign(n, 0.0f); l.crf_t.assign(n, 0);
+        l.in.assign(n, 0); l.coming.assign(n, 0); l.win.assign(n, 0); l.glob.assign(n, 0); l.crf.assign(n, 0.0f); l.crf_t.assign(n, 0); l.h.assign(n, hist10()); l.prot.assign(n, 0);
         L.push_back(std::move(l));
         if ((int) free_blocks.size() <= cls) { free_blocks.resize(cls + 1, 0); }
     }
     uint64_t gmax_all() const { uint64_t g = 1; for (const auto & l : L) { g = std::max(g, l.gmax); } return g; }
     double score(const swapsim_layer & l, int32_t e, uint64_t gmax) const {
+        if (k.policy == 2) { return hist_expect(l.h[e], clock, turnover()); }
+        if (k.policy == 5) { return (double) l.crf_t[e]; }
+        if (k.policy == 6) { return (l.prot[e] ? 1e15 : 0.0) + (double) l.crf_t[e]; }
+        if (k.policy >= 3) { return hist_rate(l.h[e], clock); }
         if (k.policy == 1) {   // as the engine's policy::crf
             const uint32_t age = l.tok - l.crf_t[e];
             return (double) (1u << std::min(7, (int) std::floor(std::log2(std::max(1.0f, l.crf[e] * std::exp2(-(float) age / 128.0f)))))) / (double) (age + 1);
         }
         return l.win[e] + k.gweight * ((double) l.glob[e] / (double) gmax);
     }
-    int margin_of(const swapsim_layer & l) const { return k.policy == 1 ? 0 : l.link < (int) margin.size() ? margin[l.link] : 0; }
+    int margin_of(const swapsim_layer & l) const { return k.policy != 0 ? 0 : l.link < (int) margin.size() ? margin[l.link] : 0; }
 
     // a token's picks of one layer enter its counts: the window, the lifetime uses, the halving count
     void note(swapsim_layer & l, const std::vector<int32_t> & cur) const {
@@ -87,17 +131,29 @@ struct swapsim {
             if (e < 0 || e >= l.n) { continue; }
             l.win[e]++; l.gmax = std::max<uint64_t>(l.gmax, ++l.glob[e]);
             l.crf[e] = l.crf[e] * std::exp2(-(float) (l.tok - l.crf_t[e]) / 128.0f) + 1.0f; l.crf_t[e] = l.tok;
+            if (k.policy == 6 && l.in[e] && !l.prot[e]) {   // a hit: to the protected half of what the layer holds, its oldest back to the other
+                l.prot[e] = 1; l.n_prot++;
+                int held = 0; for (int x = 0; x < l.n; ++x) { held += l.in[x]; }
+                if (l.n_prot > std::max(1, held / 2)) {
+                    int32_t oldest = -1;
+                    for (int32_t x = 0; x < l.n; ++x) { if (l.prot[x] && x != e && (oldest < 0 || l.crf_t[x] < l.crf_t[oldest])) { oldest = x; } }
+                    if (oldest >= 0) { l.prot[oldest] = 0; l.n_prot--; }
+                }
+            }
+            hist_recall(l.h[e], clock);
             l.recent.back().push_back(e);
         }
     }
     // a prompt token: counted, nothing swapped or priced (prompt passes have their own paths)
     void observe(const std::vector<std::vector<int32_t>> & picks) {
+        tick();
         for (size_t li = 0; li < L.size() && li < picks.size(); ++li) { note(L[li], picks[li]); }
     }
 
     // one decode token: picks[layer] = the experts its router chose
     void token(const std::vector<std::vector<int32_t>> & picks) {
         out.tokens++;
+        tick();
         for (auto & l : L) {   // what was queued between the last two tokens serves now
             for (int e = 0; e < l.n; ++e) { if (l.coming[e]) { l.coming[e] = 0; l.in[e] = 1; } }
         }
@@ -136,10 +192,10 @@ struct swapsim {
                         if (c < best) { best = c; victim = x; }
                     }
                     if (victim < 0) { break; }   // every block of the layer is in use by this token: the rest stay with the CPU
-                    if (k.jit < 2 && score(l, id, l.gmax) < best + margin_of(l)) { out.d_margin++; continue; }
-                    l.in[victim] = 0; out.evictions++;
+                    if (k.jit < 2 && !beats(l, id, score(l, id, l.gmax), best)) { out.d_margin++; continue; }
+                    evicted(l, victim);
                 }
-                l.in[id] = 1; n_up++;
+                l.in[id] = 1; admitted(l, id); n_up++;
             }
             out.jit_bytes += n_up * S; out.cpu_bytes += (m - n_up) * S;
             out.us += std::max(rl > 0 ? n_up * S / rl : 0.0, rc > 0 ? (m - n_up) * S / rc : 0.0);
@@ -165,7 +221,7 @@ struct swapsim {
             for (size_t li = 0; li < L.size(); ++li) {
                 for (int32_t id : pending[li]) {
                     if (L[li].in[id] || L[li].coming[id]) { continue; }
-                    if (L[li].win[id] < k.admit) { out.d_admit++; continue; }
+                    if (by_window() && L[li].win[id] < k.admit) { out.d_admit++; continue; }
                     cand.push_back({ score(L[li], id, ga), { li, id } });
                 }
             }
@@ -173,15 +229,15 @@ struct swapsim {
             for (const auto & c : cand) {
                 swapsim_layer & l = L[c.second.first];
                 const int32_t id = c.second.second;
-                if (free_blocks[l.cls] > 0) { free_blocks[l.cls]--; l.coming[id] = 1; out.bg_bytes += l.bytes; continue; }
+                if (free_blocks[l.cls] > 0) { free_blocks[l.cls]--; l.coming[id] = 1; admitted(l, id); out.bg_bytes += l.bytes; continue; }
                 swapsim_layer * lo; int32_t victim; double best;
                 coldest(l, lo, victim, best);
                 if (victim < 0) { continue; }
-                if (c.first < best + margin_of(l)) { out.d_margin++; continue; }
+                if (!beats(l, id, c.first, best)) { out.d_margin++; continue; }
                 if (budget <= 0) { out.d_budget++; continue; }
                 budget--;
-                lo->in[victim] = 0; out.evictions++;
-                l.coming[id] = 1; out.bg_bytes += l.bytes;
+                evicted(*lo, victim);
+                l.coming[id] = 1; admitted(l, id); out.bg_bytes += l.bytes;
             }
             return;
         }
@@ -194,15 +250,15 @@ struct swapsim {
             for (size_t i = 0; i < p.size(); ++i) {
                 const int32_t id = p[i];
                 if (l.in[id] || l.coming[id]) { continue; }
-                if (l.win[id] < k.admit) { out.d_admit++; continue; }
-                if (free_blocks[l.cls] > 0) { free_blocks[l.cls]--; l.coming[id] = 1; out.bg_bytes += l.bytes; continue; }
+                if (by_window() && l.win[id] < k.admit) { out.d_admit++; continue; }
+                if (free_blocks[l.cls] > 0) { free_blocks[l.cls]--; l.coming[id] = 1; admitted(l, id); out.bg_bytes += l.bytes; continue; }
                 swapsim_layer * lo; int32_t victim; double best;
                 coldest(l, lo, victim, best);
                 if (victim < 0) { break; }
-                if (score(l, id, ga) < best + margin_of(l)) { out.d_margin += p.size() - i; break; }   // sorted: nothing hotter follows
+                if (!beats(l, id, score(l, id, ga), best)) { out.d_margin += p.size() - i; break; }   // sorted: nothing hotter follows
                 if (budget-- <= 0) { out.d_budget += p.size() - i; break; }
-                lo->in[victim] = 0; out.evictions++;
-                l.coming[id] = 1; out.bg_bytes += l.bytes;
+                evicted(*lo, victim);
+                l.coming[id] = 1; admitted(l, id); out.bg_bytes += l.bytes;
             }
         }
     }
