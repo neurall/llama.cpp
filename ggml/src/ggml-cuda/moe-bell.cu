@@ -40,7 +40,8 @@ static ggml_bell * bell_dev(const ggml_tensor * op) {
 }
 
 bool ggml_cuda_moe_bell_supported(const ggml_tensor * op) {
-    return bell_dev(op) != nullptr && op->src[0]->ne[0] <= GGML_BELL_MAX_USED;
+    const ggml_tensor * ids = op->op == GGML_OP_MOE_BELL ? op->src[0] : op->src[1];
+    return bell_dev(op) != nullptr && ids->ne[0] <= GGML_BELL_MAX_USED;
 }
 
 // one block; as ggml_bell_publish: the picks and their blocks into the bell, the layer input when a pick has no block, then seq counts up
