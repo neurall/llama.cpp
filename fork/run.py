@@ -38,7 +38,7 @@ Tests:
 Compare decode t/s only between runs with the same output md5 (tetris/chat): the text
 decides the cache hit rate. LLAMA_MOE_CACHE_DETERMINISTIC=1 makes a build repeat itself.
 """
-import argparse, atexit, math, csv, glob, hashlib, io, json, os, random, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request
+import argparse, atexit, math, csv, glob, hashlib, io, json, os, random, re, shlex, shutil, signal, statistics, subprocess, sys, threading, time, urllib.request, urllib.error
 
 import types, collections, tempfile
 __import__("faulthandler").register(signal.SIGUSR1, all_threads=True)   # kill -USR1 PID: every thread's stack to stderr (a run hung between rows, 2026-11-10)
@@ -8972,6 +8972,8 @@ def best_prompt_chat(post, text, n, name):
         try:
             t = json.load(open(fp))["messages"][-1]["content"]
             if count(t) == n: return t
+        except urllib.error.HTTPError as e:
+            if e.code == 404: return t   # an engine without /tokenize (Strata): the stored prompt was cut by a llama.cpp server with the same tokenizer
         except (OSError, ValueError, KeyError, IndexError): pass
     while count(text) < n: text = text + text
     lo, hi = 0, len(text)
