@@ -6,6 +6,7 @@
 #   strata-0.2.15        Strata's own defaults: drafting as it picks (DFlash2 for UD-IQ4_XS, none for IQ3_S), int8 KV, expert tail skip on
 #   strata-0.2.15-plain  no drafting (MTP, DFlash2 and prompt lookup off), f16 KV; the tail skip stays at Strata's default
 #   strata-0.2.15-full   plain, and every routed expert is computed (STRATA_ROUTE_TAIL_SKIP=0, what stock and ours do)
+#   strata-0.2.15-nsys   the settings of the model's last launch (run -full first), the engine under nsys: a per-kernel trace of 5 s of decode, no result row
 # Every arm: one request at a time (--parallel 1, as every cell), 32k context (the longest cell prompt is 17.7k), no picture reader, no tuning run.
 . /p/bw/sh/env.sh
 case "$1" in
@@ -26,6 +27,22 @@ case "$arm" in
     *-full)  args+=(--kv fp16 --drafting off --mtp off --set suffix-draft=0 --set STRATA_ROUTE_TAIL_SKIP=0); export STRATA_ROUTE_TAIL_SKIP=0 ;;
 esac
 "$S" launch --stop >/dev/null 2>&1   # a server a killed run left behind
+if [[ $arm == *-nsys ]]; then
+    # the engine under nsys (engine-nsys.sh beside this file): Strata's own server, started directly on the settings of the model's last launch with the engine
+    # replaced by the wrapper. Not through `strata launch`: it checks every engine file against its manifest and puts a changed engine aside.
+    last=$(grep -l -F "$model" "$XDG_STATE_HOME"/strata/launch/*-32k.json 2>/dev/null | head -1)
+    [ -n "$last" ] || { echo "strata stand-in: no earlier launch of $model (run the -full arm once: its settings are used)" >&2; exit 2; }
+    T=$(dirname "$(dirname "$(readlink -f "$S")")"); here=$(dirname "$(readlink -f "$0")"); cfg=$(mktemp); ready=$(mktemp -u)
+    "$T/python/bin/python3.12" -c 'import json, sys; d = json.load(open(sys.argv[1])); d.update(exe=sys.argv[3], port=int(sys.argv[4]), log=sys.argv[2] + ".engine.log"); json.dump(d, open(sys.argv[2], "w"))' "$last" "$cfg" "$here/engine-nsys.sh" "$port"
+    echo "strata stand-in ($arm): server.py on the settings of $last, the engine under nsys"
+    "$T/python/bin/python3.12" "$T/serve/server.py" --engine strata --config "$cfg" --port "$port" --no-api-key --gpu "$gpus" --ready-file "$ready" &
+    srv=$!
+    tail -n +1 -F "$cfg.engine.log" 2>/dev/null & tailpid=$!
+    trap 'kill $srv $tailpid 2>/dev/null; wait $srv; exit 0' TERM INT
+    until [ -s "$ready" ]; do kill -0 $srv 2>/dev/null || { echo "strata stand-in: the server ended before it was ready"; kill $tailpid 2>/dev/null; exit 1; }; sleep 1 & wait $!; done
+    echo "main: server is listening on http://127.0.0.1:$port (strata $arm)"
+    wait $srv; kill $tailpid 2>/dev/null; exit 1
+fi
 tailpid=
 stop() { "$S" launch --stop; [ -n "$tailpid" ] && kill "$tailpid" 2>/dev/null; exit 0; }
 trap stop TERM INT

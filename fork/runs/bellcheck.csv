@@ -7,3 +7,7 @@ qni4-off,qn_iq4xs,2,pfbest1k,1024,,
 qni4-bell,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1",
 ol-bell-1card,olmoe,1,pf1k,256,"--moe sim-vram=1280,bell=1",--env CUDA_VISIBLE_DEVICES=0
 ol-bell-nograph,olmoe,1,pf1k,256,"--moe sim-vram=1280,bell=1",--env GGML_CUDA_DISABLE_GRAPHS=1
+glm3-off,glm,2,pfbest1k,1024,,
+glm3-bell,glm,2,pfbest1k,1024,"--moe bell=1",
+mimo-off,mimo,2,pfbest1k,1024,,
+mimo-bell,mimo,2,pfbest1k,1024,"--moe bell=1",

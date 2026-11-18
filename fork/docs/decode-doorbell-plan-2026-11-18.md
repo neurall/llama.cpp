@@ -62,11 +62,48 @@ The mid-layer upload of a miss (`llama_moe_cache_jit_fork`) has no place in this
 | step | what | test |
 |---|---|---|
 | D0 done | host steps with nothing to compute plan one thread (+3.3-4% decode) | `tests/test-cpuplan-fork.cpp` |
-| D1 | the handshake as a pure header (`ggml/src/ggml-bell-fork.h`): block layout, publish, serve, wait; a CPU thread plays the card | standalone test: random misses over many tokens, the host computes exactly the published misses, an all-hit layer never waits |
-| D2 | the two ops: ggml.h/ggml.c, CPU reference, CUDA kernels | `test-backend-ops` cases |
-| D3 | graph branch `--moe bell=1`, the scheduler hook, per-layer CPU graphs | OLMoE: same greedy tokens as the default path |
-| D4 | Qwen cells against b15862 and b15843, nsys: launches and idle time per token | rows in runs.db |
+| D1 done | the handshake as a pure header (`ggml/src/ggml-bell-fork.h`): block layout, publish, serve, wait; a CPU thread plays the card | standalone test: random misses over many tokens, the host computes exactly the published misses, an all-hit layer never waits |
+| D2 done | the two ops: ggml.h/ggml.c, CPU reference, CUDA kernels | `test-backend-ops` cases |
+| D3 done | graph branch `--moe bell=1`, the scheduler hook, per-layer CPU graphs | OLMoE: same greedy tokens as the default path |
+| D4 done | Qwen cells against b15862 and b15843, nsys: launches and idle time per token | rows in runs.db |
 | D5 | kernel side: fewer small kernels in the dense half, the two matrix-vector kernels (task #292) | per-kernel trace |
+
+## After D3: where a token's time goes (2026-11-18 evening)
+
+D1-D3 are in (`--moe bell=1`, build `bell_served_before_launch`). Two bugs on the way, both in the bug log: the host chains ran on scheduler memory another
+card's inputs lived in; the bells were served behind the launch, and a CUDA stream queues only 1021 calls behind a kernel that waits (`fork/bench/launchblock.cu`),
+so a graph's first, kernel-by-kernel call stood on Qwen (1500 kernels a card). The scheduler now serves a split's bells on a thread of its own from before the launch.
+
+Decode, 2 x RTX 3090, 14k prompt, 1k out, same build: Qwen3.8 IQ3_S 60.2 -> 65.5 t/s, UD-IQ4_XS 56.2 -> 60.4, GLM 5.3 3.0-bit 28.9 -> 29.1 (nothing).
+
+Qwen3.8 IQ3_S, per token, nsys with every kernel traced (it slows each engine, most where launches are many; the unprofiled token is the first row):
+
+| ms per token | ours, default path | ours, bell | Strata 0.2.15, every expert computed |
+|---|---|---|---|
+| token, no profiler | 16.6 | 15.3 | 11.2 |
+| token, under the profiler | 21.1 | 16.5 | 13.5 |
+| some card computes | 14.0 | 13.6 | 10.9 |
+| a kernel waits for the host | 0 | 0.2 | 0.3 |
+| no kernel on any card | 7.1 | 2.8 | 2.3 |
+| kernels | 2996 | 2996 | 1993 |
+| sum of the kernels' own times | 14.2 | 13.8 | 13.0 |
+| graph launches / stream waits | 99 / 115 | 15 / 18 | 2 / 2.4 |
+
+- With the low-overhead trace (graph level) the bell token is 15.15 ms: a card runs a graph 13.49 ms, none 1.66 ms (11%), of that 1.4 ms the gap between
+  tokens (sampling, graph build and allocation, the first launch) and 0.2 ms the hand-off between the cards.
+- The sync delay was about 2.6 ms of the default path's 16.6 ms on this machine, not half of it. What is left to Strata is 2.7 ms of GPU work and about 1.3 ms
+  of host work between tokens.
+- Strata's GPU work: 2000 kernels a token, fused per step (`native_gu_swiglu_kernel`, `gr_up_multi_kernel`, `gdn_*_multi_kernel`), and branches of its one graph
+  run at the same time on a card: its kernels' times add up to 13.0 ms but fill only 10.9 ms. Its matrix-vector time (9.3 ms) is no lower than ours (9.2 ms);
+  the rest of our token is 4.4 ms in about 2100 small kernels (norms, adds, activations, row gathers, copies) against its 3.6 ms that overlap. Float
+  matrix-vector products: ours 484 calls, 2.9 ms; Strata 122 calls, 0.6 ms plus its fused delta-net kernels.
+- GLM 5.3 3.0-bit with the bell (36.4 ms a token under the profiler): a card computes 22.3 ms, a kernel waits for the host 9.4 ms (34 of 42 layers wait, median
+  202 us, p90 505 us: the CPU computes about 2 experts of 8.3 MB a layer), no kernel 4.6 ms (the gap between tokens is 3.8 ms). 41 experts a token are uploaded
+  and 46 evicted (452 MB a token) while 86 a token still miss: the cache churns. One link moves an expert in 0.38 ms, the CPU delivers a layer's two in about
+  0.35 ms, so an upload for the layer that needs it now loses; uploads ahead of the layer (a predictor) are what the link's idle 30 GB/s could be used for.
+
+Next, by size of the gain on Qwen: the small kernels of the dense half fused and its independent branches on streams of their own (D5, task #292); the gap
+between tokens (graph rebuilt and reallocated every token, 15 launches where 2 would do); then uploads during a token into spare blocks (D3b) with the predictor.
 
 ## Prefill (after decode)
 
