@@ -1,0 +1,7 @@
+name,model,n,test,tokens,args,extra
+ol-off,olmoe,1,pf1k,256,"--moe sim-vram=1280",
+ol-bell,olmoe,1,pf1k,256,"--moe sim-vram=1280,bell=1",
+qni3-off,qwen38,2,pfbest1k,1024,,
+qni3-bell,qwen38,2,pfbest1k,1024,"--moe bell=1",
+qni4-off,qn_iq4xs,2,pfbest1k,1024,,
+qni4-bell,qn_iq4xs,2,pfbest1k,1024,"--moe bell=1",
