@@ -18295,8 +18295,22 @@ static void bell_serve(bell_chain & c) {
 }
 
 static void bell_launched_cb(ggml_backend_t backend, ggml_cgraph * graph, void * ud) {
-    GGML_UNUSED(backend); GGML_UNUSED(ud);
+    GGML_UNUSED(ud);
     bool any = false;
+    static int said = 0;
+    if (said < 12) {   // the first graphs: which card runs which bells, and where each bell's inputs live
+        std::string line;
+        for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
+            const ggml_tensor * t = ggml_graph_node(graph, i);
+            if (t->op != GGML_OP_MOE_BELL && t->op != GGML_OP_MOE_ROWS) { continue; }
+            auto where = [](const ggml_tensor * x) -> std::string {
+                const ggml_tensor * r = x && x->view_src ? x->view_src : x;
+                return r && r->buffer ? ggml_backend_buffer_name(r->buffer) : "?";
+            };
+            line += tr_fmt(" %s(%s:%s,%s,%s)", t->op == GGML_OP_MOE_BELL ? "bell" : "rows", t->name, where(t->src[0]).c_str(), where(t->src[1]).c_str(), where(t->src[2]).c_str());
+        }
+        if (!line.empty()) { said++; LLAMA_LOG_WARN("moe-cache: bell: graph of %d nodes on %s:%s\n", ggml_graph_n_nodes(graph), ggml_backend_name(backend), line.c_str()); }
+    }
     for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
         const ggml_tensor * t = ggml_graph_node(graph, i);
         if (t->op != GGML_OP_MOE_BELL) { continue; }
