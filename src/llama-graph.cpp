@@ -3011,6 +3011,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * mc_defer_mask = nullptr;
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
+    void *        mc_bell     = nullptr;   // --moe bell=1: this layer's bell (decode)
+    ggml_tensor * mc_bell_ids = nullptr;   // the picks as the bell op read them
     ggml_tensor *  mc_cpu_ids     = nullptr;   // --moe pp-off: the CPU's misses (the device's are -1)
     ggml_tensor *  mc_miss_ids    = nullptr;   // --moe miss-dev: the misses' ids (the rest -1), computed on the device holding up_m
     ggml_tensor *  mc_pred        = nullptr;
@@ -3105,6 +3107,14 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
         if (mc_cstream) { cpu_backend = nullptr; }   // the experts are in their blocks before the pass: no CPU split, no host sync per layer
         mc_cpu_backend = mc_mix_b ? nullptr : cpu_backend;   // the mix runs on the GPUs alone
+        // --moe bell=1 (decode): the layer meets the host through its bell, not through two host steps of the scheduler: the card looks its picks up and publishes
+        // them, takes the rows of the picks it does not hold when the host has them, and its layers stay one graph (ggml-bell-fork.h). Not for the layouts with a
+        // host step of their own (deferred experts, the predictor's copy, a pool on another card, the prompt paths).
+        static const int bell_defer = [] { const char * e = moe_opt("defer"); return e ? atoi(e) : 0; }();
+        if (n_tokens == 1 && cpu_backend && !mc_pp && !mc_ppk && !mc_mix_b && !mc_cstream && bell_defer <= 0 && !selected_experts_in &&
+                !(mcache->pred_on && (mcache->pred_all || mcache->pred_w)) && ggml_is_contiguous(mc_inp)) {
+            mc_bell = llama_moe_cache_bell_fork(mcache, n_expert_used, n_embd);
+        }
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
         if (pw && pw->buffer && mcache->pred_on && (!mc_pp || (cpu_backend && llama_moe_cache_pp_pred_want_fork(n_tokens))) && !mc_mix_b) {
             // the next layers' router logits from this layer's input (learned predictors, else the next
@@ -3141,7 +3151,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             }
         }
         ggml_tensor * sel_dev = selected_experts;
-        if (cpu_backend && !mc_mix_b) {
+        if (cpu_backend && !mc_mix_b && !mc_bell) {
             selected_experts = ggml_cont(ctx0, selected_experts);
             ggml_backend_sched_set_tensor_backend(sched, selected_experts, cpu_backend);
             if (!mc_pp) {   // the prompt chain's CPU split holds the ids alone
@@ -3287,7 +3297,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
         // slot ids from the device table, after the CPU split above so they see the JIT's table updates;
         // get_rows batches over ids->ne[1] only when the table has matching ne[2]: flatten
-        {
+        if (mc_bell) {
+            mc_bell_ids = ggml_reshape_2d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used, 1);
+            mc_slot_ids = ggml_moe_bell(ctx0, mc_bell_ids, mcache->dev_table, mc_inp, mc_bell);   // [n_expert_used, 1]: each pick's block, published to the host
+            cb(mc_slot_ids, "ffn_moe_bell", il);
+        } else {
             ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used*n_tokens);
             mc_slot_ids = ggml_get_rows(ctx0, mcache->dev_table, ids_flat); // [1, n_expert_used*n_tokens]
             // cstream: this read of the table starts the layer's split (cs_split_cb waits there for its uploads). The name is on the get_rows itself: the scheduler's split loop skips views
@@ -3358,6 +3372,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // chain is that add's first source): a layer is then one CPU split and one GPU split instead of two of each. Lost: the CPU chain no longer runs beside the
         // card's chain, a layer with misses holds the card for them. Gained: one launch and one gap with no kernel a layer (nsys, Qwen3.8 IQ3_S decode: about 96
         // gaps of 20-100 us a token, two a layer).
+        if (mc_bell) {
+            down_g = ggml_moe_rows(ctx0, down_g, mc_bell_ids, mc_slot_ids, mc_bell);   // in place on the chain's rows
+            cb(down_g, "ffn_moe_bell_rows", il);
+        }
         static const bool chain_merge = [] { const char * e = moe_opt("chain-merge"); return e && atoi(e) != 0; }();
         const bool mc_late = chain_merge && n_tokens == 1 && mc_cpu_backend && !mc_pp && !mc_ppk && !mc_ids_all && !mc_miss_ids && !mc_mix_b && !mc_cstream;
         if (!mc_mix_b && !mc_cstream && !mc_late) {   // the mix queues the home card's chain behind the id mask and hidden state the other card reads (rule 2 below)
@@ -4029,11 +4047,36 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     } else if (mc_pp) {
         experts = down_g;   // the prompt chain computed every expert of the pass
         cb(experts, "ffn_moe_cache_merged", il);
+    } else if (mc_bell) {
+        // the host chain of the picks the card does not hold: the same chain, on inputs the bell fills (the layer input, the missing picks), computed when the
+        // layer rings (llama_moe_cache_bell_chain_fork). Its table says no expert is on a card: it computes every pick it is given. The gate op is shown all picks.
+        ggml_tensor * x_h   = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd, 1, 1);
+        ggml_tensor * ids_h = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, 1);
+        ggml_tensor * all_h = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, 1);
+        ggml_set_input(x_h); ggml_set_input(ids_h); ggml_set_input(all_h);
+        ggml_format_name(x_h, "ffn_moe_bell_x-%d", il); ggml_format_name(ids_h, "ffn_moe_bell_miss-%d", il); ggml_format_name(all_h, "ffn_moe_bell_ids-%d", il);
+        ggml_tensor * chain = expert_chain(x_h, ids_h);
+        std::function<void(ggml_tensor *, int)> each = [&](ggml_tensor * t, int depth) {
+            if (!t || depth > 6) { return; }
+            if (t->op == GGML_OP_MUL_MAT_ID) {
+                t->src[3] = llama_moe_cache_bell_table_fork(mcache);
+                t->op_params[0] = mcache->n_slots;
+                if (strstr(t->src[0]->name, "gate_exps")) { t->src[5] = all_h; }
+                ggml_backend_sched_set_tensor_backend(sched, t, mc_cpu_backend);
+            }
+            for (int j = 0; j < 2; ++j) { each(t->src[j], depth + 1); }
+        };
+        each(chain, 0);
+        ggml_set_output(chain);
+        ggml_format_name(chain, "ffn_moe_bell_host-%d", il);
+        llama_moe_cache_bell_chain_fork(mcache, mc_cpu_backend, x_h, ids_h, all_h, chain);
+        experts = down_g;
+        cb(experts, "ffn_moe_cache_merged", il);
     } else {
         experts = expert_chain(cur, mc_cpu_ids ? mc_cpu_ids : selected_experts);
     }
 
-    if (mcache && !mc_pp) {
+    if (mcache && !mc_pp && !mc_bell) {
         experts->src[3] = mcache->host_table;
         experts->op_params[0] = mc_miss_ids && !mc_cpu_ids ? INT32_MIN : mcache->n_slots;
         if (mc_cpu_backend) {

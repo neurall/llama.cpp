@@ -143,6 +143,13 @@ extern "C" {
     typedef void (*ggml_backend_split_cb_t)(ggml_backend_t backend, void * user_data);
     GGML_API void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_data);
 
+    // fork: the decode bell (ggml/src/ggml-bell-fork.h). launched: called right after a non-CPU split's graph is launched, its work may still be running on the
+    // device (the bells of that graph are served here). detached: a split this returns true for is left out of the scheduler's loop, its nodes are computed by
+    // the callback's owner (the bells' host chains, run from the launched callback).
+    typedef void (*ggml_backend_split_launched_cb_t)(ggml_backend_t backend, struct ggml_cgraph * graph, void * user_data);
+    typedef bool (*ggml_backend_split_detached_cb_t)(struct ggml_cgraph * graph, void * user_data);
+    GGML_API void ggml_backend_set_split_bell_callbacks(ggml_backend_split_launched_cb_t launched, ggml_backend_split_detached_cb_t detached, void * user_data);
+
     GGML_API ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend);
 
     //

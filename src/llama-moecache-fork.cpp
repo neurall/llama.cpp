@@ -20,6 +20,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "../ggml/src/ggml-bell-fork.h"
 
 #include <algorithm>
 #include <atomic>
@@ -18021,6 +18022,8 @@ std::string llama_moe_bw_json_fork() {
     return o + b;
 }
 
+static void bell_free_all();   // --moe bell=1, below
+
 void llama_moe_cache_free_fork() {
     std::lock_guard<std::mutex> init_lock(g_init_mtx);
     moe_cache * mc = g_cache;
@@ -18047,6 +18050,7 @@ void llama_moe_cache_free_fork() {
     ggml_backend_set_moe_fill_callback(nullptr, nullptr);
     ggml_backend_set_moe_where_fn_fork(nullptr, nullptr);
     ggml_backend_set_split_callback(nullptr, nullptr);
+    bell_free_all();
     if (!mc->l3_thr.empty()) {
         {
             std::lock_guard<std::mutex> lk(mc->l3_mtx);
@@ -18201,6 +18205,191 @@ bool llama_moe_cache_graph_reusable_fork() {
 
 int32_t llama_moe_cache_cpu_sat_threads_fork() {
     return g_cache ? g_cache->cpu_sat_threads : 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// --moe bell=1: the decode bell (ggml/src/ggml-bell-fork.h, fork/docs/decode-doorbell-plan-2026-11-18.md)
+//
+// A decode layer of the cache was two graphs on the card and two host steps of the scheduler (the picks and the layer input copied to the host; the chain of the
+// experts no card holds), 104 graph launches and 122 stream waits a token on Qwen3.8 IQ3_S, 5.1 ms of 19.2 with no card computing (nsys 2026-11-18). With the
+// bell the card decides hit or miss from its own table and publishes it; a card's layers are one graph; this thread serves the graph's bells while it runs:
+// the same host chain (the graph builder's expert_chain, same observation of the picks), the same RAM pool request for the missing experts, the same tables.
+// What a bell token does not do: upload a missing expert in the middle of its layer (llama_moe_cache_jit_fork). The uploads between tokens stay.
+struct bell_layer {
+    void *         mem   = nullptr;   // the layer's ggml_bell, memory its card maps
+    bool           tried = false;
+    void         (*free_fn)(void *) = nullptr;
+    ggml_context * tctx  = nullptr;
+    ggml_tensor *  table = nullptr;   // "no expert is on a card": the host chain computes every pick it is given
+    uint32_t       seen  = 0;
+};
+struct bell_chain {
+    const llama_moe_cache_layer_fork * pub;
+    ggml_bell *    b;
+    ggml_backend_t cpu;
+    ggml_tensor *  x, * ids, * ids_all, * out;
+    ggml_cgraph *  g;
+};
+static std::unordered_map<const llama_moe_cache_layer_fork *, bell_layer> g_bell_layers;
+static std::vector<bell_chain>                g_bell_chains;   // of the graph built last, in layer order
+static std::unordered_set<const ggml_tensor *> g_bell_nodes;
+static ggml_context *                          g_bell_gctx = nullptr;
+static uint64_t g_bell_n_graphs = 0, g_bell_n_layers = 0, g_bell_n_wait = 0, g_bell_n_miss = 0;
+
+static bool bell_opt() {
+    static const bool on = [] { const char * e = moe_opt("bell"); return e && atoi(e) != 0; }();
+    return on;
+}
+
+// the missing experts into the RAM pool before the CPU kernel reads them (as llama_moe_cache_jit_fork's need_all, for the picks the card called missing)
+static void bell_need(const llama_moe_cache_layer_fork * pub, const int32_t * miss, int n_used) {
+    moe_cache * mc = g_cache;
+    if (!mc || !mc->rp_on) { return; }
+    for (const auto & l : mc->layers) {
+        if (&l.pub != pub || !l.rp_tab[0]) { continue; }
+        std::vector<int32_t> need;
+        for (int i = 0; i < n_used; ++i) {
+            if (miss[i] >= 0 && std::find(need.begin(), need.end(), miss[i]) == need.end()) { need.push_back(miss[i]); }
+        }
+        if (!need.empty()) {
+            const void * keys[3] = { pub->up_src, pub->gate_src, pub->down_src };
+            ggml_rampool_need_fork(keys, 3, need.data(), (int) need.size());
+        }
+        break;
+    }
+}
+
+static void bell_serve(bell_chain & c) {
+    bell_layer & bl = g_bell_layers[c.pub];
+    ggml_bell * b = c.b;
+    if (!ggml_bell_host_wait(b, bl.seen, 60 * 1000 * 1000)) {
+        LLAMA_LOG_ERROR("moe-cache: bell: layer %d did not publish its picks within 60 s (seq %u): the card's graph did not run\n", c.pub->il, (unsigned) bl.seen);
+        GGML_ABORT("moe-cache: bell: a layer never rang");
+    }
+    bl.seen = b->seq;
+    int32_t miss[GGML_BELL_MAX_USED];
+    const int n = ggml_bell_host_misses(b, miss);
+    memcpy(c.ids->data, miss, sizeof(int32_t) * (size_t) b->n_used);
+    memcpy(c.ids_all->data, b->ids, sizeof(int32_t) * (size_t) b->n_used);
+    if (n > 0) {
+        memcpy(c.x->data, ggml_bell_x(b), sizeof(float) * (size_t) b->n_embd);
+        bell_need(c.pub, miss, b->n_used);
+    }
+    // the host chain, as the scheduler ran it: its gate op shows the cache every pick, its products compute the missing ones (none: one thread zeroes the rows)
+    if (ggml_backend_graph_compute(c.cpu, c.g) != GGML_STATUS_SUCCESS) { GGML_ABORT("moe-cache: bell: the host chain failed"); }
+    g_bell_n_layers++;
+    if (n > 0) {
+        const size_t row = sizeof(float) * (size_t) b->n_embd;
+        for (int i = 0; i < b->n_used; ++i) {
+            if (miss[i] >= 0) { memcpy((char *) ggml_bell_rows(b) + (size_t) i * row, (const char *) c.out->data + (size_t) i * row, row); }
+        }
+        ggml_bell_host_done(b, bl.seen);
+        g_bell_n_wait++;
+        g_bell_n_miss += (uint64_t) n;
+    }
+}
+
+static void bell_launched_cb(ggml_backend_t backend, ggml_cgraph * graph, void * ud) {
+    GGML_UNUSED(backend); GGML_UNUSED(ud);
+    bool any = false;
+    for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
+        const ggml_tensor * t = ggml_graph_node(graph, i);
+        if (t->op != GGML_OP_MOE_BELL) { continue; }
+        void * b; memcpy(&b, t->op_params, sizeof(b));
+        bool found = false;
+        for (auto & c : g_bell_chains) {
+            if ((void *) c.b == b) { bell_serve(c); found = true; break; }
+        }
+        if (!found) { GGML_ABORT("moe-cache: bell: a bell in the graph has no host chain"); }
+        any = true;
+    }
+    g_bell_n_graphs += any;
+}
+
+static bool bell_detached_cb(ggml_cgraph * graph, void * ud) {
+    GGML_UNUSED(ud);
+    const int n = ggml_graph_n_nodes(graph);
+    if (n == 0 || g_bell_nodes.empty()) { return false; }
+    for (int i = 0; i < n; ++i) {
+        if (!g_bell_nodes.count(ggml_graph_node(graph, i))) { return false; }
+    }
+    return true;
+}
+
+void * llama_moe_cache_bell_fork(const llama_moe_cache_layer_fork * pub, int64_t n_used, int64_t n_embd) {
+    if (!bell_opt() || !pub || !pub->dev_table || !pub->dev_table->buffer || !pub->host_table || pub->jit_n > 0 || n_used > GGML_BELL_MAX_USED) { return nullptr; }
+    bell_layer & bl = g_bell_layers[pub];
+    if (bl.tried) { return bl.mem; }
+    bl.tried = true;
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(pub->dev_table->buffer));
+    ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+    auto alloc = reg ? (void * (*)(size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_bell_alloc") : nullptr;
+    bl.free_fn = reg ? (void (*)(void *)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_bell_free") : nullptr;
+    void * mem = alloc && bl.free_fn ? alloc(ggml_bell_size((int32_t) n_used, (int32_t) n_embd)) : nullptr;
+    if (!mem) {
+        LLAMA_LOG_WARN("moe-cache: bell: %s has no memory a card and the host share by pointer: layer %d keeps the scheduler's host steps\n", dev ? ggml_backend_dev_name(dev) : "?", pub->il);
+        return nullptr;
+    }
+    ggml_bell_init(mem, (int32_t) n_used, (int32_t) n_embd);
+    const int64_t n_expert = ggml_nelements(pub->host_table);
+    ggml_init_params ip = { ggml_tensor_overhead() + (size_t) n_expert * sizeof(int32_t) + 1024, nullptr, false };
+    bl.tctx  = ggml_init(ip);
+    bl.table = ggml_new_tensor_2d(bl.tctx, GGML_TYPE_I32, 1, n_expert);
+    for (int64_t e = 0; e < n_expert; ++e) { ((int32_t *) bl.table->data)[e] = pub->n_slots; }
+    ggml_set_name(bl.table, "moe_bell_table");
+    bl.mem = mem;
+    static bool said = false;
+    if (!said) {
+        said = true;
+        ggml_backend_set_split_bell_callbacks(bell_launched_cb, bell_detached_cb, nullptr);
+        LLAMA_LOG_WARN("moe-cache: bell on (--moe bell=1): a decode layer meets the host through %zu bytes of mapped memory, a card's layers are one graph\n",
+                       ggml_bell_size((int32_t) n_used, (int32_t) n_embd));
+    }
+    return bl.mem;
+}
+
+ggml_tensor * llama_moe_cache_bell_table_fork(const llama_moe_cache_layer_fork * pub) {
+    const auto it = g_bell_layers.find(pub);
+    return it == g_bell_layers.end() ? nullptr : it->second.table;
+}
+
+void llama_moe_cache_bell_chain_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_t cpu, ggml_tensor * x, ggml_tensor * ids, ggml_tensor * ids_all, ggml_tensor * out) {
+    const auto it = g_bell_layers.find(pub);
+    if (it == g_bell_layers.end() || !it->second.mem) { return; }
+    g_bell_chains.push_back({ pub, (ggml_bell *) it->second.mem, cpu, x, ids, ids_all, out, nullptr });
+}
+
+void llama_moe_cache_bell_begin_fork() {
+    g_bell_chains.clear();
+    g_bell_nodes.clear();
+    if (g_bell_gctx) { ggml_free(g_bell_gctx); g_bell_gctx = nullptr; }
+}
+
+void llama_moe_cache_bell_expand_fork(ggml_cgraph * gf) {
+    if (g_bell_chains.empty() || !gf) { return; }
+    ggml_init_params ip = { g_bell_chains.size() * (ggml_graph_overhead_custom(256, false) + 256) + 4096, nullptr, false };
+    g_bell_gctx = ggml_init(ip);
+    for (auto & c : g_bell_chains) {
+        ggml_build_forward_expand(gf, c.out);   // behind every other node: one split of the CPU at the graph's end, which the scheduler leaves to the bell
+        c.g = ggml_new_graph_custom(g_bell_gctx, 256, false);
+        ggml_build_forward_expand(c.g, c.out);
+        for (int i = 0; i < ggml_graph_n_nodes(c.g); ++i) { g_bell_nodes.insert(ggml_graph_node(c.g, i)); }
+    }
+}
+
+static void bell_free_all() {
+    ggml_backend_set_split_bell_callbacks(nullptr, nullptr, nullptr);
+    if (g_bell_n_graphs > 0) {
+        LLAMA_LOG_WARN("moe-cache: bell: %" PRIu64 " card graphs, %" PRIu64 " layers served, %" PRIu64 " waited for the host (%" PRIu64 " experts computed there)\n",
+                       g_bell_n_graphs, g_bell_n_layers, g_bell_n_wait, g_bell_n_miss);
+    }
+    llama_moe_cache_bell_begin_fork();
+    for (auto & kv : g_bell_layers) {
+        if (kv.second.mem && kv.second.free_fn) { kv.second.free_fn(kv.second.mem); }
+        if (kv.second.tctx) { ggml_free(kv.second.tctx); }
+    }
+    g_bell_layers.clear();
+    g_bell_n_graphs = g_bell_n_layers = g_bell_n_wait = g_bell_n_miss = 0;
 }
 
 void llama_moe_cache_graph_built_fork() {

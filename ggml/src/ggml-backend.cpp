@@ -1382,6 +1382,16 @@ void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_dat
     g_split_ud = user_data;
 }
 
+static ggml_backend_split_launched_cb_t g_split_launched_cb = NULL;
+static ggml_backend_split_detached_cb_t g_split_detached_cb = NULL;
+static void *                           g_split_bell_ud     = NULL;
+
+void ggml_backend_set_split_bell_callbacks(ggml_backend_split_launched_cb_t launched, ggml_backend_split_detached_cb_t detached, void * user_data) {
+    g_split_launched_cb = launched;
+    g_split_detached_cb = detached;
+    g_split_bell_ud     = user_data;
+}
+
 void ggml_backend_set_moe_fill_callback(ggml_backend_moe_fill_cb_t cb, void * user_data) {
     g_moe_fill_cb = cb;
     g_moe_fill_ud = user_data;
@@ -4600,6 +4610,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
         pft_cur = split_id;
+        // fork: the decode bell: the host chains of the bells are not run in graph order, their owner runs each one when its layer rings (the launched callback below)
+        if (g_split_detached_cb && !sched->callback_eval && g_split_detached_cb(&split->graph, g_split_bell_ud)) { continue; }
         char nvtx_name[200] = "";
         if (g_nvtx_on && split->graph.n_nodes > 0) { snprintf(nvtx_name, sizeof nvtx_name, "SPLIT %d %s %s %s", split_id, ggml_backend_name(split_backend), ggml_op_name(split->graph.nodes[0]->op), split->graph.nodes[0]->name); }
         nvtx_scope nvtx_split(nvtx_name);
@@ -4941,6 +4953,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
             } else {
                 NVTX_PUSH("LAUNCH graph_compute_async"); ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();
+            }
+            // fork: the decode bell: the graph is on the device, its bells are served from here while it runs
+            if (g_split_launched_cb && ec == GGML_STATUS_SUCCESS && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                g_split_launched_cb(split_backend, &split->graph, g_split_bell_ud);
             }
             if (cs_set >= 0 && cs_idx[split_id] >= 0) {
                 if (ec == GGML_STATUS_SUCCESS) {

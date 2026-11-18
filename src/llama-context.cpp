@@ -3790,7 +3790,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
             //const auto t_start_us = ggml_time_us();
 
+            llama_moe_cache_bell_begin_fork();
             gf = model.build_graph(gparams);
+            llama_moe_cache_bell_expand_fork(gf);   // --moe bell=1: the bells' host chains go behind everything else
             llama_moe_cache_graph_built_fork();
 
             //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);

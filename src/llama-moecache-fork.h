@@ -252,3 +252,15 @@ void llama_moe_cache_step_fork();
 bool llama_moe_cache_pred_train_now_fork();
 bool llama_moe_cache_graph_reusable_fork();
 void llama_moe_cache_graph_built_fork();
+
+// --moe bell=1: the decode bell (ggml/src/ggml-bell-fork.h, fork/docs/decode-doorbell-plan-2026-11-18.md). A decode token's cache layers meet the host through
+// a block of mapped memory per layer instead of two host steps of the scheduler, so a card's layers are one graph.
+// bell:   the layer's bell, nullptr when this layer keeps the scheduler's host steps (switch off, a backend without bell memory, a layer cached on another card)
+// chain:  the graph builder hands over the layer's host chain: x and ids are its inputs (the layer input and the picks the host computes, -1 for the others),
+//         ids_all every pick (what the cache observes), out the rows [n_embd, n_used, 1]
+// begin / expand: around a graph build; expand puts the chains behind everything else in the graph, where the scheduler leaves them to the bell
+void * llama_moe_cache_bell_fork(const llama_moe_cache_layer_fork * pub, int64_t n_used, int64_t n_embd);
+void   llama_moe_cache_bell_chain_fork(const llama_moe_cache_layer_fork * pub, ggml_backend_t cpu, ggml_tensor * x, ggml_tensor * ids, ggml_tensor * ids_all, ggml_tensor * out);
+ggml_tensor * llama_moe_cache_bell_table_fork(const llama_moe_cache_layer_fork * pub);   // the chain's table: no expert is on a card, so every pick it is given is computed
+void   llama_moe_cache_bell_begin_fork();
+void   llama_moe_cache_bell_expand_fork(ggml_cgraph * gf);
