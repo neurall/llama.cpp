@@ -6,9 +6,15 @@
 // Measured 2026-11-18 09:00 (4 GiB, best of 2): 8 threads packed on one chiplet 40 GB/s, 16 on two 79 (each chiplet's link to the I/O die); 8 spread over the
 // four 103 (124 with 4 streams a thread), 16 spread 120-129, 24-64 spread 124-129 whatever the load kind; 2 MiB pages and prefetch change nothing. The ceiling is the
 // DRAM at about 128 GB/s, 63% of the peak. Placement matters at low thread counts: fewer threads than cores must sit on different chiplets.
+// chan (8 cores of one chiplet, 4 GiB): every 8th chunk of 256 B .. 64 KiB read at 75-97% of the full 40.7 GB/s, never near one channel's rate: the channel
+// comes from a hash of the address bits, and the chiplet's own link (32 B a fabric clock at 1600 MHz = 51.2 peak) is what stops it, not the banks.
 //
 // build: cc -O2 -mavx2 -pthread fork/iobench/membench.c -o membench
-// usage: membench [GiB=4] [reps=3]
+// usage: membench [GiB=4] [reps=3] [all|numa|chan]
+//   numa: per NUMA node, that node's cores read a slice placed on that node, on the next node, or interleaved over all (needs a BIOS with several
+//         nodes per socket, NPS2/NPS4; one node: nothing to compare)
+//   chan: one chiplet's cores read only every 8th chunk of the buffer, chunk 256 B .. 64 KiB: a rate that drops to about one channel's shows which
+//         address bits pick the channel (with the channel hash on, no chunk size concentrates on one channel)
 #define _GNU_SOURCE
 #include <immintrin.h>
 #include <pthread.h>
@@ -19,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -27,7 +34,7 @@ static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t
 enum { K_SCALAR, K_AVX2, K_AVX2_PF, K_AVX2_4S, K_N };
 static const char * k_name[K_N] = { "scalar 8 B", "avx2 32 B", "avx2 + prefetch", "avx2, 4 streams" };
 
-typedef struct { const char * p; size_t n; int cpu, kind; double t0, t1; uint64_t sink; } job_t;
+typedef struct { const char * p; size_t n; int cpu, kind; double t0, t1; uint64_t sink; size_t chunk, stride; } job_t;
 static atomic_int g_ready, g_go;
 
 static uint64_t rd_scalar(const char * p, size_t n) {
@@ -75,6 +82,11 @@ static void * worker(void * arg) {
         case K_SCALAR:  j->sink = rd_scalar(j->p, j->n); break;
         case K_AVX2:    j->sink = rd_avx2(j->p, j->n, 0); break;
         case K_AVX2_PF: j->sink = rd_avx2(j->p, j->n, 1); break;
+        case K_N: {   // chan: `chunk` bytes every `stride`
+            uint64_t a = 0;
+            for (size_t o = 0; o + j->chunk <= j->n; o += j->stride) { a += rd_avx2(j->p + o, j->chunk, 0); }
+            j->sink = a; break;
+        }
         default:        j->sink = rd_avx2_4s(j->p, j->n); break;
     }
     j->t1 = now_s();
@@ -130,24 +142,92 @@ static void topology(void) {
     printf(" ...\n");
 }
 
+static size_t g_chunk = 0, g_stride = 0;   // chan mode
+static const char * g_slice[1024];        // numa mode: each thread's own slice (NULL: its part of buf)
 static double run(const char * buf, size_t bytes, int nt, const int * order, int kind) {
     pthread_t th[1024]; job_t j[1024];
-    const size_t per = (bytes / nt) & ~(size_t) 4095;
+    const size_t per = (bytes / nt) & ~(size_t) 65535;
     atomic_store(&g_ready, 0); atomic_store(&g_go, 0);
-    for (int i = 0; i < nt; ++i) { j[i] = (job_t) { buf + (size_t) i * per, per, order[i], kind, 0, 0, 0 }; pthread_create(&th[i], NULL, worker, &j[i]); }
+    for (int i = 0; i < nt; ++i) {
+        j[i] = (job_t) { g_slice[i] ? g_slice[i] : buf + (size_t) i * per, per, order[i], kind, 0, 0, 0, g_chunk, g_stride };
+        pthread_create(&th[i], NULL, worker, &j[i]);
+    }
     while (atomic_load(&g_ready) < nt) { }
     atomic_store(&g_go, 1);
     double t0 = 1e30, t1 = 0; uint64_t sink = 0;
     for (int i = 0; i < nt; ++i) { pthread_join(th[i], NULL); if (j[i].t0 < t0) { t0 = j[i].t0; } if (j[i].t1 > t1) { t1 = j[i].t1; } sink += j[i].sink; }
     if (sink == 42) { printf(" "); }
-    return (double) per * nt / (t1 - t0) / 1e9;
+    const double moved = kind == K_N ? (double) per * nt * g_chunk / g_stride : (double) per * nt;
+    return moved / (t1 - t0) / 1e9;
+}
+
+// numa: the nodes' CPU lists from sysfs; a slice bound to node k (mbind, MPOL_BIND = 2, MPOL_INTERLEAVE = 3)
+static int node_cpus(int k, int * out) { char p[128]; snprintf(p, sizeof p, "/sys/devices/system/node/node%d/cpulist", k); return read_list(p, out, 1024); }
+static char * alloc_on(size_t bytes, int node, int interleave, int n_nodes) {
+    char * b = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (b == MAP_FAILED) { return NULL; }
+    unsigned long mask = 0;
+    if (interleave) { for (int k = 0; k < n_nodes; ++k) { mask |= 1ul << k; } } else { mask = 1ul << node; }
+    if (syscall(SYS_mbind, b, bytes, interleave ? 3 : 2, &mask, (unsigned long) (8 * sizeof mask), 0) != 0) { perror("mbind"); }
+    for (size_t i = 0; i < bytes; i += 4096) { b[i] = (char) i; }
+    return b;
+}
+
+static int mode_numa(size_t bytes, int reps) {
+    int n_nodes = 0;
+    while (n_nodes < 64) { char p[128]; snprintf(p, sizeof p, "/sys/devices/system/node/node%d", n_nodes); if (access(p, F_OK) != 0) { break; } n_nodes++; }
+    if (n_nodes < 2) { printf("%d NUMA node: every address is interleaved over all channels, nothing is local to a chiplet. Set the BIOS to several nodes per socket (NPS4) to compare.\n", n_nodes); return 0; }
+    printf("%d NUMA nodes, %zu GiB a node, AVX2 reads, best of %d (GB/s)\n%-6s %8s %8s %12s\n", n_nodes, bytes >> 30, reps, "node", "local", "next", "interleaved");
+    char * own[64], * il = alloc_on(bytes, 0, 1, n_nodes);
+    for (int k = 0; k < n_nodes; ++k) { own[k] = alloc_on(bytes, k, 0, n_nodes); }
+    double tot[3] = { 0, 0, 0 };
+    for (int k = 0; k < n_nodes; ++k) {
+        int cpus[1024], c = node_cpus(k, cpus), first[1024], nf = 0;
+        for (int i = 0; i < c; ++i) { char p[160]; int sib[1024]; snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpus[i]); if (read_list(p, sib, 1024) > 0 && sib[0] == cpus[i]) { first[nf++] = cpus[i]; } }
+        double g[3];
+        for (int a = 0; a < 3; ++a) {
+            const char * src = a == 0 ? own[k] : a == 1 ? own[(k + 1) % n_nodes] : il;
+            const size_t per = (bytes / nf) & ~(size_t) 65535;
+            for (int i = 0; i < nf; ++i) { g_slice[i] = src + (size_t) i * per; }
+            g[a] = 0; for (int r = 0; r < reps; ++r) { const double x = run(src, bytes, nf, first, K_AVX2); if (x > g[a]) { g[a] = x; } }
+            tot[a] += g[a];
+        }
+        printf("%-6d %8.1f %8.1f %12.1f   (%d cores)\n", k, g[0], g[1], g[2], nf);
+    }
+    for (int i = 0; i < 1024; ++i) { g_slice[i] = NULL; }
+    printf("%-6s %8.1f %8.1f %12.1f   (one node at a time, summed)\n", "sum", tot[0], tot[1], tot[2]);
+    return 0;
+}
+
+// chan: the first chiplet's cores (the first two L3 groups in the packed order: one CCD of a Zen 2 part) read `chunk` bytes of every 8 x chunk
+static int mode_chan(char * buf, size_t bytes, int reps) {
+    const int nt = 8;
+    printf("chan: %d cores of one chiplet (CPUs", nt); for (int i = 0; i < nt; ++i) { printf(" %d", g_order_packed[i]); } printf("), GB/s of bytes read, best of %d\n", reps);
+    double base = 0; for (int r = 0; r < reps; ++r) { const double x = run(buf, bytes, nt, g_order_packed, K_AVX2); if (x > base) { base = x; } }
+    printf("%-10s %8.1f\n", "all", base);
+    for (size_t c = 256; c <= 65536; c *= 2) {
+        g_chunk = c; g_stride = 8 * c;
+        double g = 0; for (int r = 0; r < reps; ++r) { const double x = run(buf, bytes, nt, g_order_packed, K_N); if (x > g) { g = x; } }
+        printf("%-10zu %8.1f   (%.0f%% of all)\n", c, g, 100.0 * g / base);
+    }
+    g_chunk = g_stride = 0;
+    return 0;
 }
 
 int main(int argc, char ** argv) {
     const size_t gib = argc > 1 ? (size_t) atoi(argv[1]) : 4;
     const int reps = argc > 2 ? atoi(argv[2]) : 3;
     const size_t bytes = gib << 30;
+    const char * mode = argc > 3 ? argv[3] : "all";
     topology();
+    if (strcmp(mode, "numa") == 0) { return mode_numa(bytes, reps); }
+    if (strcmp(mode, "chan") == 0) {
+        char * buf = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (buf == MAP_FAILED) { perror("mmap"); return 1; }
+        madvise(buf, bytes, MADV_HUGEPAGE);
+        for (size_t i = 0; i < bytes; i += 4096) { buf[i] = (char) i; }
+        return mode_chan(buf, bytes, reps);
+    }
     const int counts[] = { 4, 8, 16, 24, 32, 48, 64 };
     for (int huge = 0; huge < 2; ++huge) {
         char * buf = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
