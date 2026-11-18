@@ -18279,16 +18279,16 @@ static void bell_serve(bell_chain & c) {
                 if (t->op == GGML_OP_MOE_BELL) { break; }
             }
         }
+        for (const auto & o : g_bell_chains) {   // every bell of this graph build: which layers rang, and which card waits for rows
+            const bell_layer & ol = g_bell_layers[o.pub];
+            // straight to stderr: the log's own thread does not get to these lines before the abort below
+            fprintf(stderr, "moe-cache: bell: layer %d: seq %u (served %u), flag %u, missing %d, rows step over for seq %d%s\n", o.pub->il, (unsigned) o.b->seq, (unsigned) ol.seen,
+                    (unsigned) o.b->flag, (int) o.b->n_miss, (int) o.b->rows_seq, (uint32_t) o.b->rows_seq != o.b->seq ? "  <- the card is in or before this layer's rows step" : "");
+        }
         for (size_t k = 0; k + 1 < g_bell_cards.size(); ++k) {   // the cards launched before the silent one: are they done?
             fprintf(stderr, "moe-cache: bell: waiting for %s ...\n", ggml_backend_name(g_bell_cards[k]));
             ggml_backend_synchronize(g_bell_cards[k]);
             fprintf(stderr, "moe-cache: bell: %s has finished its graph\n", ggml_backend_name(g_bell_cards[k]));
-        }
-        for (const auto & o : g_bell_chains) {   // every bell of this graph build: which layers rang, and which card waits for rows
-            const bell_layer & ol = g_bell_layers[o.pub];
-            // straight to stderr: the log's own thread does not get to these lines before the abort below
-            fprintf(stderr, "moe-cache: bell: layer %d: seq %u (served %u), flag %u, missing %d%s\n", o.pub->il, (unsigned) o.b->seq, (unsigned) ol.seen, (unsigned) o.b->flag,
-                    (int) o.b->n_miss, o.b->n_miss > 0 && o.b->flag != o.b->seq ? "  <- its card waits for rows" : "");
         }
         GGML_ABORT("moe-cache: bell: a layer never rang");
     }

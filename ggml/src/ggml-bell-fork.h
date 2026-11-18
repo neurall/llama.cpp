@@ -34,7 +34,7 @@ struct ggml_bell {
     int32_t           n_used;   // set once (ggml_bell_init)
     int32_t           n_embd;
     volatile int32_t  n_miss;   // the card: picks of this token without a block
-    int32_t           pad2;
+    volatile int32_t  rows_seq; // the card: the seq whose rows step is over (debugging: which layer a card stopped in)
     int32_t           ids[GGML_BELL_MAX_USED];     // the card: the picks
     int32_t           slots[GGML_BELL_MAX_USED];   // the card: the block of each pick, < 0 when it has none
     // float x[n_embd]            the card: the layer input, written when n_miss > 0
@@ -78,7 +78,7 @@ static inline int ggml_bell_rows_ready(const struct ggml_bell * b) { return b->n
 
 // down: [n_embd, n_used], the card's own output; the rows of the missing picks are taken from the host. Returns how many.
 static inline int ggml_bell_rows_take(struct ggml_bell * b, float * down) {
-    if (b->n_miss == 0) { return 0; }
+    if (b->n_miss == 0) { b->rows_seq = (int32_t) b->seq; return 0; }
     while (b->flag != b->seq) { GGML_BELL_PAUSE(); }
     int n = 0;
     for (int32_t i = 0; i < b->n_used; ++i) {
@@ -87,6 +87,7 @@ static inline int ggml_bell_rows_take(struct ggml_bell * b, float * down) {
             n++;
         }
     }
+    b->rows_seq = (int32_t) b->seq;
     return n;
 }
 

@@ -81,7 +81,10 @@ static __global__ void k_moe_rows(float * __restrict__ down, const int32_t * __r
                                   const int n_used, const int n_embd) {
     const int i = threadIdx.x;
     const int miss = i < n_used && ids[i] >= 0 && slots[i] < 0;
-    if (__syncthreads_count(miss) == 0) { return; }
+    if (__syncthreads_count(miss) == 0) {
+        if (i == 0) { b->rows_seq = (int32_t) b->seq; }
+        return;
+    }
     if (i == 0) {
         while (b->flag != b->seq) {
 #if defined(GGML_USE_HIP)
@@ -98,6 +101,8 @@ static __global__ void k_moe_rows(float * __restrict__ down, const int32_t * __r
             for (int j = i; j < n_embd; j += blockDim.x) { down[(size_t) e * n_embd + j] = rows[(size_t) e * n_embd + j]; }
         }
     }
+    __syncthreads();
+    if (i == 0) { b->rows_seq = (int32_t) b->seq; }
 }
 
 void ggml_cuda_op_moe_bell(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
