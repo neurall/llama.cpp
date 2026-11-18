@@ -1390,6 +1390,7 @@ RUN_COLS += ["start_ts", "end_ts", "load_s", "wall_s"]   # start_ts / end_ts: wh
 RUN_COLS += ["uniq4", "out_chars", "code", "loop"]   # text class of the generated output: share of unique word 4-grams (a repetition loop is ~0.1, real text ~0.9+), characters, 1 if it contains code; the text itself is in runs.db table outputs
 RUN_COLS += ["thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "gain_t", "gain_pp", "stock_id", "stock_bno"]   # the server's auto choices (threads for decode / batch, batch, ubatch, context) from its log; the machine line of the run; our decode / prompt speed over the newest stock row (best run of the cell against the stock row it was shown with, set when the cell ends) and that stock row's id and build number
 RUN_COLS += ["link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs"]   # measured maxima of the server's startup probes (per-card prefill link GB/s as the server printed them, CPU memory bandwidth it saturated at) and min/avg/max over the run of the CPU clock (MHz) and temperature (C), the GPU SM clock and temperature (one "min/avg/max" per card, joined by |), and the PCIe host->device rate per card (peak/mean GB/s): what to read to judge afterwards whether the automatic choices were right; local and remote runs fill the same fields
+RUN_COLS += ["thr_dec_from", "thr_walk", "tune_start", "tune_end"]   # the decode thread walk (start source; comparisons: <count>/<half><+ won, - lost, = undecided><pairs>) and the self-tuner (knobs that started at stored verdicts; this run's verdicts, ? = not sure), from the server log
 RUN_COLS += ["driver"]   # the NVIDIA kernel module loaded when the row was written (/proc/driver/nvidia/version: "580.173.02", "595.104.02 (P2P build)"): the boot swap to the P2P module can fail silently (2026-11-07, 11-08: nvidia_fs held the module), and numbers move with the driver
 RUN_COLS += ["gpu_pp", "gpu_tg"]   # the same GPU samples split at the end of the prompt (server timings prompt_ms): prefill phase and generation phase separately, per GPU "util / clock / power / share of samples at the software power cap"; the whole-run gpu_log below blends both and hides that a prefill is compute bound while the decode idles
 RUN_COLS += ["gpu_log"]   # per-GPU summary of the 5 Hz nvidia-smi samples of the run (share of busy samples, mean and 5th percentile SM clock and mean power over the busy samples (GPU utilization >= 20%), max temp, throttle reason bits, min PCIe width) and the sample file
@@ -1701,6 +1702,18 @@ def server_params(log):
     out = {}
     ms = list(re.finditer(r"threads = (\d+) decode / (\d+) batch, batch (\d+), ubatch (\d+)", log)); last = ms[-1] if ms else None
     if last: out.update(thr_dec=int(last.group(1)), thr_batch=int(last.group(2)), batch=int(last.group(3)), ubatch=int(last.group(4)))
+    # the decode thread walk (2026-11-18): the start line, then each comparison; the count the run ended on is the last comparison's winner, else the start
+    st = list(re.finditer(r"decode threads start at (\d+) of \d+ \(([^)]*)\), prompt threads (\d+)", log))
+    if st: out.update(thr_dec=int(st[-1].group(1)), thr_dec_from=st[-1].group(2)[:48], thr_batch=int(st[-1].group(3)))
+    cmp = re.findall(r"thread search: (\d+) threads [\d.]+ ms/token vs (\d+) threads [\d.]+ ms/token; .*? over (\d+) pairs -> (take the half|keep \(the half is slower\)|keep \(undecided\))", log)
+    if cmp:
+        out["thr_walk"] = " ".join(f"{b}/{c}{'+' if w.startswith('take') else '-' if 'slower' in w else '='}{n}" for b, c, n, w in cmp)
+        out["thr_dec"] = int(cmp[-1][1]) if cmp[-1][3].startswith("take") else int(cmp[-1][0])
+    # the expert cache's self-tuner: the knobs that started at stored verdicts, and this run's verdicts
+    ts = re.search(r"self-tune: (\d+) of (\d+) knobs start at their stored verdicts([^;\n]*)", log)
+    if ts: out["tune_start"] = f"{ts.group(1)}/{ts.group(2)}{ts.group(3)}"[:120]
+    tv = re.findall(r"self-tune: ([A-Z_]+) ms/token[^\n]*?-> (-?[\d.e+]+) \((clear|not sure)", log)
+    if tv: out["tune_end"] = " ".join(f"{k}={v}{'' if c == 'clear' else '?'}" for k, v, c in tv)[:200]
     c = re.search(r"n_ctx_slot = (\d+)", log)
     if c: out["ctx"] = int(c.group(1))
     lk = re.search(r"prefill links \(GB/s\): ([^>\n]*?) ->", log)

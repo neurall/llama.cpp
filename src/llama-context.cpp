@@ -2783,8 +2783,8 @@ void llama_context::set_thread_autotune(bool on) {
             cparams.n_threads = (uint32_t) thr.base;
             thread_walk_store(model, g_thr_walk);
         }
-        LLAMA_LOG_WARN("%s: decode threads start at %d of %d (%s)%s%s\n", __func__, thr.base, llama_cpu_allowed_count_fork(), from,
-                       g_thr_walk.hist.empty() ? "" : "; comparisons so far ", g_thr_walk.hist.c_str());
+        LLAMA_LOG_WARN("%s: decode threads start at %d of %d (%s), prompt threads %d%s%s\n", __func__, thr.base, llama_cpu_allowed_count_fork(), from,
+                       (int) cparams.n_threads_batch, g_thr_walk.hist.empty() ? "" : "; comparisons so far ", g_thr_walk.hist.c_str());   // run.py server_params
     }
 }
 
