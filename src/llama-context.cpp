@@ -2720,7 +2720,8 @@ static void threads_save(const llama_model & model, const char * key, int dflt, 
 }
 
 // The decode thread search's walk, stored per model under the card set's place key (threads_key: the cards and their backend), so the next server starts where this
-// one got to (user 2026-11-18): "<computed start> <count> <w|s> <server starts> <comparisons>". w: the next answer compares the count with its half, s: settled. Read only
+// one got to (user 2026-11-18): "<computed start> <count> <phase> <server starts> <comparisons>". Phase (thread_plan): w the next answer compares the count with its
+// half, q with the count between, u with 3/2 of it, a with all the threads, s settled. Read only
 // for the same computed start (a CPU mask or no GPUs change it); every 8th start walks again from the computed start, so a stored count is checked, not kept forever.
 // Comparisons, the last 8, newest last: "<count>/<half><+ the half won, - it lost, = undecided>".
 struct thread_walk { int start = 0, n = 0, starts = 0; char st = 'w'; std::string hist; };
@@ -2735,7 +2736,7 @@ static bool thread_walk_load(const llama_model & model, thread_walk & w) {
     std::string v;
     if (!moe_state_get(moe_state_section(model), threads_key(model, thread_walk_key()), v)) { return false; }
     char st = 0; int used = 0;
-    if (sscanf(v.c_str(), "%d %d %c %d %n", &w.start, &w.n, &st, &w.starts, &used) < 4 || (st != 'w' && st != 's') || w.n < 1) { return false; }
+    if (sscanf(v.c_str(), "%d %d %c %d %n", &w.start, &w.n, &st, &w.starts, &used) < 4 || !strchr("wquas", st) || w.n < 1) { return false; }
     w.st = st; w.hist = used > 0 && (size_t) used < v.size() ? v.substr((size_t) used) : std::string();
     return true;
 }
@@ -2779,7 +2780,7 @@ void llama_context::set_thread_autotune(bool on) {
             if (w.starts % 8 == 0) { w.n = thr.base0; w.st = 'w'; from = "every 8th start: a fresh walk from the computed start"; }
             else { from = w.st == 's' ? "stored, settled" : "stored, walking on"; }
             g_thr_walk = w;
-            thr.base = std::min(w.n, thr.base0);
+            thr.base = std::min(w.n, llama_cpu_allowed_count_fork());   // the walk may have gone above the computed start (thread_plan: u, a)
             cparams.n_threads = (uint32_t) thr.base;
             thread_walk_store(model, g_thr_walk);
         }
@@ -2932,6 +2933,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     // from the expert cache's byte counters (llama_moe_cache_counters_fork), since those bytes, not the thread count, make most of a token's scatter. Then the +-2 tuner
     // below stays off (settled, with the drift watch). File-local state: one decoding context per process.
     static thread_search ts;
+    static thread_plan tp;   // which count the next comparison tries: the half, the count between, a count above (src/llama-estimate-fork.h, same tests)
     static drift_watch dw;   // the settled count stays until the box changes (src/llama-estimate-fork.h, tested in tests/test-estimate-fork.cpp)
     llama_moe_cache_threads_searching_fork(ts.sampling());   // the self-tuner's slices wait while the search samples (tune_slice_counts)
     const bool fresh = g_thr_cpu_bytes < 0;   // the first token, or the first after a prompt call: its bytes are unknown, not a sample
@@ -2947,29 +2949,32 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     }
     auto testing = [&]() {
         char v[48]; snprintf(v, sizeof v, "%d vs %d (testing)", ts.b, ts.c);
-        llama_moe_decision_fork("threads_decode", v, "searching: alternating the count in use with its half, token by token");
+        llama_moe_decision_fork("threads_decode", v, "searching: alternating the count in use with another, token by token");
     };
     if (ts.st == 0) {   // the first decode token of the process, or after a drift restart: a settled stored count needs no comparison
-        if (g_thr_walk.st == 's' && g_thr_walk.n == thr.base) { ts.settle(thr.base); } else { ts.start(thr.base); if (!ts.settled()) { testing(); } }
+        tp.resume(thr.base, llama_cpu_allowed_count_fork(), g_thr_walk.st == 's' && g_thr_walk.n != thr.base ? 'h' : g_thr_walk.st == 'w' ? 'h' : g_thr_walk.st, g_thr_walk.start);
+        if (tp.settled()) { ts.settle(tp.b); } else { ts.start(tp.b, tp.cand()); if (!ts.settled()) { testing(); } }
     }
-    if (fresh) {   // an answer's first token: an open comparison samples again (at most 12 tokens an answer), a clear win walks on to the next half
-        if (ts.st == 1) { ts.resume(); } else if (ts.won) { ts.start(ts.b); if (!ts.settled()) { testing(); } }
+    if (fresh) {   // an answer's first token: an open comparison samples again (at most 12 tokens an answer); a finished one is followed by the walk's next
+        if (ts.st == 1) { ts.resume(); } else if (!tp.settled()) { ts.start(tp.b, tp.cand()); if (!ts.settled()) { testing(); } }
     }
     if (!ts.settled()) {
         if (!fresh && !refilling && ts.feed((double) dt_us, x_mib, u_mib)) {
             const bool decided = std::fabs(ts.last_d) > ts.z * ts.last_se;
-            LLAMA_LOG_WARN("%s: thread search: %d threads %.2f ms/token vs %d threads %.2f ms/token; at the same CPU and upload work the half %+.2f +- %.2f ms/token over %d pairs -> %s\n",
+            LLAMA_LOG_WARN("%s: thread search: %d threads %.2f ms/token vs %d threads %.2f ms/token; at the same CPU and upload work the latter %+.2f +- %.2f ms/token over %d pairs -> %s\n",
                     __func__, ts.last_nb, ts.last_b/1000.0, ts.last_nc, ts.last_c/1000.0, ts.last_d/1000.0, ts.last_se/1000.0, ts.last_pairs,
-                    ts.won ? "take the half" : decided ? "keep (the half is slower)" : "keep (undecided)");
+                    ts.won ? "take it" : decided ? "keep (it is slower)" : "keep (undecided)");
             thread_walk_note(g_thr_walk, ts.last_nb, ts.last_nc, ts.won ? '+' : decided ? '-' : '=');
+            tp.step(ts.won);
         }
         if (ts.settled()) {
-            llama_moe_decision_fork("threads_decode", std::to_string(ts.b).c_str(), ts.won ? "the half won: the next answer compares it with its own half" :
-                    "the half did not win: settled (from the computed start or the stored count, halving, at most 12 tokens an answer, decided at the same CPU and upload work)");
-            thr.base = ts.b;
-            g_thr_walk.n = ts.b; g_thr_walk.st = ts.won ? 'w' : 's';
+            const std::string why = tp.settled() ? "settled (from the computed start or the stored count: the half, the count between, then above; at most 12 tokens an answer, decided at the same CPU and upload work)"
+                                                 : "the next answer compares it with " + std::to_string(tp.cand());
+            llama_moe_decision_fork("threads_decode", std::to_string(tp.b).c_str(), why.c_str());
+            thr.base = tp.b;
+            g_thr_walk.n = tp.b; g_thr_walk.st = tp.settled() ? 's' : tp.ph == 'h' ? 'w' : tp.ph;
             thread_walk_store(model, g_thr_walk);
-            dw.reset();   // settled: the count stays until the box changes (below)
+            dw.reset();   // the count stays until the next comparison, or, settled, until the box changes (below)
         }
         cparams.n_threads = (uint32_t) ts.now();
         return;
