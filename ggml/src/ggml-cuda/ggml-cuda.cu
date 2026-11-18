@@ -1456,6 +1456,9 @@ static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, co
         const int src_physical = ggml_cuda_get_physical_device(src_ctx->device);
         const int dst_physical = ggml_cuda_get_physical_device(dst_ctx->device);
         if (src_physical == dst_physical) {
+            // fork: on the card that holds the bytes. Queued while the other card is current, a copy inside the expert pool (VMM memory both cards may
+            // access) ran through that card: 3.7 GB/s for 95 (the KV zone's move, 1.7 GB of MiMo's rows: 440 ms a card for 17, every build from 2026-11-16)
+            ggml_cuda_set_device(dst_ctx->device);
             CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(src), cudaMemcpyDeviceToDevice, cudaStreamPerThread));
         } else {
 #ifdef GGML_CUDA_NO_PEER_COPY
