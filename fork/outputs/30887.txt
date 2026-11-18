@@ -1,0 +1,370 @@
+run 30887 | pool_copy_own_card_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.55 t/s | prompt 1449.9 t/s | 4096 tokens | args: -np 1 | power 280+280 W | 2026-11-18 13:52:59
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each file systematically.
+
+## common/json-schema-to-grammar.cpp
+
+1. **`build_repetition` function**: Looks correct.
+
+2. **`build_min_max_int` function**: Let me check carefully...
+   - The `uniform_range` lambda looks correct.
+   - The negative number handling looks correct.
+   - The `has_min` only case looks correct.
+   - The `has_max` only case looks correct.
+
+3. **`SPACE_RULE`**: Looks correct.
+
+4. **`PRIMITIVE_RULES`**: Looks correct.
+
+5. **`STRING_FORMAT_RULES`**: Looks correct.
+
+6. **`is_reserved_name`**: Looks correct.
+
+7. **Regex patterns**: 
+   - `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - looks correct
+   - `GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]")` - looks correct
+   - `GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]")` - looks correct
+
+8. **`replacePattern`**: Looks correct.
+
+9. **`format_literal`**: Looks correct.
+
+10. **`gbnf_escape_length`**: Looks correct.
+
+11. **`common_chat_schema_converter` class**:
+    - `_add_rule`: Looks correct.
+    - `_generate_union_rule`: Looks correct.
+    - `_visit_pattern`: Looks correct.
+    - `_pattern_to_rule`: Let me check carefully...
+      - The `join_seq` lambda looks correct.
+      - The character class handling looks correct.
+      - The quantifier handling looks correct.
+      - The literal handling looks correct.
+    - `_not_strings`: Looks correct.
+    - `_resolve_ref`: Looks correct.
+    - `_build_object_rule`: Looks correct.
+    - `_add_primitive`: Looks correct.
+    - `visit`: Looks correct.
+    - `check_errors`: Looks correct.
+    - `format_grammar`: Looks correct.
+
+12. **`json_schema_to_grammar` functions**: Looks correct.
+
+13. **`build_grammar` function**: Looks correct.
+
+## common/arg.cpp
+
+1. **Includes**: Looks correct.
+
+2. **`read_file`**: Looks correct.
+
+3. **`get_common_arg_defs`**: Looks correct.
+
+4. **`common_arg` methods**: Looks correct.
+
+5. **`break_str_into_lines`**: Looks correct.
+
+6. **`common_arg::to_string`**: Looks correct.
+
+7. **`common_arg::get_args`**: Looks correct.
+
+8. **`common_arg::get_env`**: Looks correct.
+
+9. **`parse_tensor_buffer_overrides`**: Looks correct.
+
+10. **`clean_file_name`**: Looks correct.
+
+11. **`handle_model_result`**: Looks correct.
+
+12. **`kv_cache_types`**: Looks correct.
+
+13. **`kv_cache_type_from_str`**: Looks correct.
+
+14. **`get_all_kv_cache_types`**: Looks correct.
+
+15. **`parse_bool_value`**: Looks correct.
+
+16. **`arg_removed`**: Looks correct.
+
+17. **`get_default_local_path`**: Looks correct.
+
+18. **`spec_types_is_default`**: The function is cut off at the end. The file ends with `static bool spec_types_is_default(const common_params & params) {` - this is incomplete.
+
+Wait, the file ends abruptly. Let me re-read the end:
+
+```
+static bool spec_types_is_default(const common_params & params) {
+```
+
+This is the last line. The function body is missing. But the task says "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment."
+
+Hmm, but the file is cut off. The task says to return the complete fixed version. So I need to complete the function.
+
+Actually, wait. Let me re-read the task: "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment. Do not summarise, do not skip unchanged parts, do not stop early."
+
+So I need to return the entire file with bugs fixed. The file ends with an incomplete function. I need to complete it.
+
+Let me think about what `spec_types_is_default` should do. It checks if the spec types in params are the default ones. Looking at the context, it likely checks if `params.spec_types` matches some default.
+
+Actually, I think the file is intentionally cut off and I should just complete it with a reasonable implementation. Let me think about what the default spec types would be...
+
+Looking at the context, `spec_types_is_default` probably checks if the spec types are the default ones (like "greedy" or similar). Let me think about what a reasonable implementation would be.
+
+Actually, I think the function should check if `params.spec_types` is empty or matches some default. Let me look at what `common_params` might have...
+
+I think a reasonable implementation would be:
+
+```cpp
+static bool spec_types_is_default(const common_params & params) {
+    return params.spec_types.empty();
+}
+```
+
+But I'm not sure. Let me think more carefully...
+
+Actually, looking at the code more carefully, I think the function might check if the spec types are the default ones. In llama.cpp, spec types might be things like "greedy", "typical", etc.
+
+Hmm, but I don't have enough context. Let me just provide a reasonable implementation.
+
+Wait, actually, I think the file might just be cut off and the task is to fix bugs in what's provided. Let me re-read...
+
+"Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment."
+
+So I need to return the complete file. The file ends with an incomplete function. I need to complete it.
+
+Let me think about what bugs exist in the provided code...
+
+Actually, let me look more carefully at the code for bugs.
+
+In `json-schema-to-grammar.cpp`:
+
+Looking at `_pattern_to_rule`:
+- The `join_seq` function returns `std::make_pair(string_join(results, " "), false)` - this returns a `literal_or_rule` where the second element is `false` (not a literal). This seems correct since the joined result is a rule, not a literal.
+
+Wait, actually there's a subtle issue. When `join_seq` is called and there's only one item that is a literal, it still returns `false` for `is_literal`. This means the result would be treated as a rule rather than a literal. But looking at how `to_rule` works:
+```cpp
+auto to_rule = [&](const literal_or_rule & ls) {
+    auto is_literal = ls.second;
+    auto s = ls.first;
+    return is_literal ? "\"" + s + "\"" : s;
+};
+```
+
+If `is_literal` is `false`, it returns `s` as-is (a rule name). If `is_literal` is `true`, it wraps in quotes. So when `join_seq` returns `false`, the result is treated as a rule expression, which is correct because the joined result contains spaces and rule references.
+
+Hmm, but wait. If there's only one literal in the sequence, `join_seq` would return `make_pair(literal, false)`. Then `to_rule` would return the literal without quotes. That seems wrong...
+
+Actually no, let me re-read. `join_seq` builds `results` by calling `to_rule` on each item in `ret`. So if there's one literal item, `to_rule` would wrap it in quotes. Then `string_join(results, " ")` would give `"literal"`. Then `join_seq` returns `make_pair("\"literal\"", false)`. Then when this is used by `to_rule` again, since `is_literal` is `false`, it returns `"literal"` as-is (which already has quotes). So it works correctly.
+
+OK, so `join_seq` is correct.
+
+Let me look at the `transform` function more carefully...
+
+When we encounter `*`, `+`, `?`:
+```cpp
+seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
+```
+
+This converts the last item to a rule (via `to_rule`) and appends the quantifier. Since `is_literal` is set to `false`, subsequent `to_rule` calls won't add quotes. This seems correct.
+
+When we encounter `{`:
+```cpp
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+seq.back().second = false;
+```
+
+This also seems correct.
+
+Hmm, let me look at the literal handling more carefully:
+
+```cpp
+} else {
+    std::string literal;
+    auto is_non_literal = [&](char c) {
+        return NON_LITERAL_SET.find(c) != NON_LITERAL_SET.end();
+    };
+    while (i < length) {
+        if (sub_pattern[i] == '\\') {
+            ...
+        } else if (sub_pattern[i] == '"') {
+            literal += "\\\"";
+            i++;
+        } else if (!is_non_literal(sub_pattern[i]) &&
+                (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+            literal += sub_pattern[i];
+            i++;
+        } else {
+            break;
+        }
+    }
+    if (literal.empty()) {
+        throw unsupported_pattern(std::string("unsupported character: ") + c);
+    }
+    seq.emplace_back(literal, true);
+}
+```
+
+The condition for adding a character to the literal is:
+- The character is not a non-literal character (i.e., it's a regular character)
+- AND (it's the last character OR the literal is empty OR the next character is a dot OR the next character is not a non-literal character)
+
+Wait, this condition seems a bit odd. Let me think about it...
+
+The idea is: we want to accumulate consecutive regular characters into a literal. But we stop when we encounter a non-literal character (like `|`, `(`, etc.) or when the next character is a non-literal character (because we want to stop before a quantifier or other special character).
+
+Actually, I think the condition is:
+- If the current character is not special (not in NON_LITERAL_SET)
+- AND (it's the last character, OR the literal is empty, OR the next character is a dot, OR the next character is not special)
+
+Wait, why would we stop if the next character is special? Because if the next character is `*`, `+`, `?`, etc., we want to stop so that the quantifier applies to the last character only.
+
+But the condition `!is_non_literal(sub_pattern[i + 1])` means "the next character is NOT special", so we continue. If the next character IS special, we break.
+
+Hmm, but what about `sub_pattern[i + 1] == '.'`? A dot is in NON_LITERAL_SET, so `is_non_literal('.')` is true. So `sub_pattern[i + 1] == '.'` would be true, and we'd continue. But why would we want to continue when the next character is a dot?
+
+Actually wait, let me re-read: `sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1])`. This means: continue if the next character is a dot OR the next character is not special. Since a dot IS special (in NON_LITERAL_SET), the first condition would be true for a dot. So we'd continue adding the current character even when the next is a dot.
+
+But why? If the next character is a dot, we want to stop so that the dot is handled separately in the next iteration. Unless... the dot is being treated as a literal character?
+
+Hmm, actually I think there might be a bug here. Let me think about what the intended behavior is...
+
+Actually, I think the condition might be wrong. The intent seems to be: continue accumulating characters into the literal as long as the current character is a regular character and the next character doesn't need special handling. But the `sub_pattern[i + 1] == '.'` part seems suspicious.
+
+Wait, maybe the intent is: if the next character is a dot, we should stop because the dot needs to be handled as a special character (it matches any character). So the condition should be `sub_pattern[i + 1] != '.'` instead of `sub_pattern[i + 1] == '.'`.
+
+Hmm, but actually, looking at the condition more carefully:
+
+```cpp
+!is_non_literal(sub_pattern[i]) &&
+(i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))
+```
+
+If `sub_pattern[i + 1] == '.'`, then `is_non_literal('.')` is true (since '.' is in NON_LITERAL_SET), so `!is_non_literal(sub_pattern[i + 1])` is false. But `sub_pattern[i + 1] == '.'` is true, so the overall condition is true.
+
+So we'd continue adding the current character when the next is a dot. This means we'd add 'a' to the literal when the pattern is "a.b", and then in the next iteration, we'd handle the dot separately.
+
+But wait, that means the literal would be "a", and then the dot would be handled as a special character. That seems correct actually - we want to accumulate "a" into the literal, then handle "." separately.
+
+Hmm, but what if the pattern is "ab.c"? We'd add 'a' (next is 'b', not special, continue), add 'b' (next is '.', special but == '.', continue), then... wait, we'd add 'b' to the literal, making it "ab". Then in the next iteration, we'd handle '.'.
+
+Actually wait, let me trace through more carefully for "ab.c":
+- i=0, c='a': not special, next='b' not special → add 'a', i=1
+- i=1, c='b': not special, next='.' is special but == '.' → add 'b', i=2
+- i=2, c='.': is special → break
+
+So literal = "ab", and then '.' is handled in the next iteration. That seems correct.
+
+But what about "a*b"? 
+- i=0, c='a': not special, next='*' is special and != '.' → break
+
+So literal = "a", and then '*' is handled as a quantifier. That seems correct.
+
+What about "a|b"?
+- i=0, c='a': not special, next='|' is special and != '.' → break
+
+So literal = "a", and then '|' is handled as an alternation. That seems correct.
+
+OK so the condition seems correct. Let me look for other bugs...
+
+Actually, wait. Let me re-read the condition:
+
+```cpp
+} else if (!is_non_literal(sub_pattern[i]) &&
+        (i == length - 1 || literal.empty() || sub_pattern[i + 1] == '.' || !is_non_literal(sub_pattern[i + 1]))) {
+```
+
+Hmm, `literal.empty()` - this means if the literal is empty, we always add the character. This is to handle the case where we're starting a new literal. But what if the current character is special? We already checked `!is_non_literal(sub_pattern[i])`, so the current character is not special. So `literal.empty()` just means we're starting a new literal with a regular character.
+
+But wait, what if `literal.empty()` and the next character is special? We'd add the current character. Then in the next iteration, we'd break because the next character is special. So we'd have a literal of one character. That seems correct.
+
+OK, I think the literal handling is correct.
+
+Let me look at other potential bugs...
+
+In `_build_object_rule`:
+
+```cpp
+std::function<std::string(const std::vector<std::string> &, bool)> get_recursive_refs = [&](const std::vector<std::string> & ks, bool first_is_optional) {
+    std::string res;
+    if (ks.empty()) {
+        return res;
+    }
+    const std::string& k = ks[0];
+    std::string kv_rule_name = prop_kv_rule_names[k];
+    std::string comma_ref = "( \",\" space " + kv_rule_name + " )";
+    if (first_is_optional) {
+        res = comma_ref + (k == "*" ? "*" : "?");
+    } else {
+        res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+    }
+    if (ks.size() > 1) {
+        res += " " + _add_rule(
+            name + (name.empty() ? "" : "-") + k + "-rest",
+            get_recursive_refs(std::vector<std::string>(ks.begin() + 1, ks.end()), true)
+        );
+    }
+    return res;
+};
+```
+
+This looks correct to me.
+
+Let me look at the `visit` function:
+
+```cpp
+std::string visit(const common_chat_schema & schema, const std::string & name) {
+    std::string rule_name = is_reserved_name(name) ? name + "-" : name.empty() ? "root" : name;
+    std::string sub_name  = name + (name.empty() ? "" : "-");
+    ...
+}
+```
+
+This looks correct.
+
+Let me look at `_visit_all_of`:
+
+```cpp
+std::string _visit_all_of(const common_chat_schema_all_of & schema, const std::string & name, const std::string & rule_name) {
+    ...
+    for (const auto & child : schema.children) {
+        if (child->kind() == common_chat_schema::KIND_ANY_OF) {
+            for (const auto & alt : as<common_chat_schema_any_of>(*child).children) {
+                add_component(*alt, false);
+            }
+        } else {
+            add_component(*child, true);
+        }
+    }
+    ...
+}
+```
+
+This looks correct.
+
+Let me look at the `json_schema_to_grammar` function:
+
+```cpp
+std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf) {
+#ifdef LLAMA_USE_LLGUIDANCE
+    if (!force_gbnf) {
+        return "%llguidance {}\nstart: %json " + schema.dump();
+    }
+#else
+    (void)force_gbnf;
+#endif // LLAMA_USE_LLGUIDANCE
+    try {
+        return json_schema_to_grammar(common_chat_schema_from_json(schema));
+    } catch (const std::runtime_error & e) {
+        throw std::invalid_argument(std::string("JSON schema conversion failed:\n") + e.what());
+    }
+}
+```
+
+Wait, there's a potential issue here. When `LLAMA_USE_LLGUIDANCE` is defined and `force_gbnf` is true, the code falls through to the `try` block.

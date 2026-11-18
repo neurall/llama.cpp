@@ -1,0 +1,385 @@
+run 30630 | rel_vk_exit_nodriver | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 26.34 t/s | prompt 664.8 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-18 03:57:15
+
+<think>Let me analyze this task. The user wants me to return the complete fixed version of the source files, with every bug fixed and each change marked by a comment. The files are:
+
+1. `common/json-schema-to-grammar.cpp`
+2. `common/arg.cpp` (partial - it's cut off at `static bool spec_types_is_default(const common_params & params) {`)
+
+Wait, the instruction says "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment. Do not summarise, do not skip unchanged parts, do not stop early."
+
+There are two files shown. The second file (arg.cpp) is cut off mid-function. Hmm. The task says "the following source file" (singular), but two files are given. The second one is truncated. I should probably reproduce both files as given, fixing bugs where I can identify them, and for the truncated file, I can only reproduce what's given (up to the cut-off point). Actually, since the file is cut off, I cannot know the rest. I should reproduce what's provided and note that the file continues beyond what was provided... but the instruction says "do not stop early". Hmm.
+
+Let me think about what bugs exist in these files. This looks like llama.cpp code. Let me carefully analyze each file for bugs.
+
+**File 1: common/json-schema-to-grammar.cpp**
+
+Let me go through it carefully.
+
+```cpp
+#include "json-schema-to-grammar.h"
+#include "common.h"
+#include "trie.h"
+#include "unicode.h"
+
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+```
+
+Missing `<functional>` for `std::function`. The code uses `std::function` in `build_min_max_int` (`std::function<void(const std::string_view &, const std::string_view &)> uniform_range`). So `#include <functional>` is needed. That's a bug (missing include). Also `<cstdint>` for int64_t maybe. `std::string_view` needs `<string_view>`. Hmm, but `<string>` might include it indirectly; not guaranteed. Let me note missing includes: `<functional>`, `<string_view>`, `<cstdint>`.
+
+Also `fprintf` needs `<cstdio>`. The code uses `fprintf(stderr, ...)` in `check_errors`. `<cstdio>` is missing. That's a bug.
+
+Now `build_repetition`:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Compare with the actual llama.cpp implementation:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    } else if (max_items == 1 && min_items == 0) {
+        return item_rule + "?";
+    } else if (min_items == 1 && max_items == 1) {
+        return item_rule;
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        } else if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        } else {
+            return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+        }
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    } else if (min_items == 1 && max_items == 1) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm, let me recall the actual llama.cpp code. From llama.cpp `common/json-schema-to-grammar.cpp`:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    } else if (max_items == 1 && min_items == 0) {
+        return item_rule + "?";
+    } else if (min_items == 1 && max_items == 1) {
+        return item_rule;
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        } else if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        } else {
+            return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+        }
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    } else if (min_items == 1 && max_items == 1) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm, I'm not 100% sure about the exact upstream code. Let me think about what's buggy in the given version.
+
+Given version:
+- `if (min_items == 0 && max_items == 1) return item_rule + "?";` — this handles min 0 max 1. OK.
+- Missing the case `min_items == 1 && max_items == 1` → should return `item_rule` (no repetition marker). In the given version, min 1 max 1 would fall to `item_rule + "{1,1}"` which is valid but ugly; not necessarily a bug. Hmm, but actually with separator: min_items=1, max_items=1: result = item + " " + build_repetition("(sep item)", 0, 0) → build_repetition with max_items=0 returns "" → result = item + " " + "" = item + " " — trailing space! Then min_items==0? No. So result = "item " with trailing space, which is a bug. Actually wait: build_repetition("(sep item)", 0, 0): max_items == 0 → return "". So result = item_rule + " " + "" = "item_rule ". That trailing space is a grammar bug. In upstream, the `min_items == 1 && max_items == 1` case returns `item_rule` early, avoiding this. So the missing early-return for min 1 max 1 is a bug.
+
+Actually let me check upstream more carefully. I recall the upstream code:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    } else if (max_items == 1 && min_items == 0) {
+        return item_rule + "?";
+    } else if (min_items == 1 && max_items == 1) {
+        return item_rule;
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        } else if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        } else {
+            return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+        }
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    } else if (min_items == 1 && max_items == 1) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Hmm wait, actually I think upstream is:
+
+```cpp
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+```
+
+And the min_items==1 && max_items==1 case is handled by the early return `return item_rule;`. Let me check: with min=1, max=1, early return `item_rule`. Yes. So the given code is missing that early return. That's bug #1.
+
+Also in the given code, the order of checks in the non-separator branch: `if (min_items == 1 && !has_max) return item_rule + "+"; if (min_items == 0 && !has_max) return item_rule + "*";` — order doesn't matter here since conditions are disjoint. Fine.
+
+But wait — there's another subtle bug: in the given code, `if (min_items == 0 && max_items == 1) return item_rule + "?";` — upstream has `max_items == 1 && min_items == 0`. Same. OK.
+
+Hmm, but what about `min_items == 1 && max_items == 1` with separator: upstream early-returns `item_rule`. Given code produces `item_rule + " "` (trailing space). So bug.
+
+Actually wait, let me recompute: given code with separator, min=1, max=1: has_max = true. result = item + " " + build_repetition("(sep item)", min_items==0?0:1-1=0, has_max?1-1=0:max) → build_repetition("(sep item)", 0, 0) → max_items==0 → "". So result = item + " ". Then min_items==0? No. Return "item ". Trailing space bug. Yes.
+
+So fix: add early return for min_items == 1 && max_items == 1 → return item_rule.
+
+Now `build_min_max_int`:
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) {
+        out << "[";
+        if (from == to) {
+            out << from;
+        } else {
+            out << from << "-" << to;
+        }
+        out << "]";
+    };
+    auto more_digits = [&](int min_digits, int max_digits) {
+        out << "[0-9]";
+        if (min_digits == max_digits && min_digits == 1) {
+            return;
+        }
+        out << "{";
+        out << min_digits;
+        if (max_digits != min_digits) {
+            out << ",";
+            if (max_digits != std::numeric_limits<int>::max()) {
+                out << max_digits;
+            }
+        }
+        out << "}";
+    };
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range =
+        [&](const std::string_view & from, const std::string_view & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                    auto sub_zeros = string_repeat("0", sub_len);
+                    auto sub_nines = string_repeat("9", sub_len);
+
+                    auto to_reached = false;
+                    out << "(";
+                    if (from_sub == sub_zeros) {
+                        digit_range(from[i], to[i] - 1);
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    } else {
+                        out << "[" << from[i] << "] ";
+                        out << "(";
+                        uniform_range(from_sub, sub_nines);
+                        out << ")";
+                        if (from[i] < to[i] - 1) {
+                            out << " | ";
+                            if (to_sub == sub_nines) {
+                                digit_range(from[i] + 1, to[i]);
+                                to_reached = true;
+                            } else {
+                                digit_range(from[i] + 1, to[i] - 1);
+                            }
+                            out << " ";
+                            more_digits(sub_len, sub_len);
+                        }
+                    }
+                    if (!to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, to_sub);
+                    }
+                    out << ")";
+                } else {
+                    out << "[" << from[i] << "-" << to[i] << "]";
+                }
+            }
+        };
+```
+
+Let me compare with upstream llama.cpp:
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) {
+        out << "[";
+        if (from == to) {
+            out << from;
+        } else {
+            out << from << "-" << to;
+        }
+        out << "]";
+    };
+    auto more_digits = [&](int min_digits, int max_digits) {
+        out << "[0-9]";
+        if (min_digits == max_digits && min_digits == 1) {
+            return;
+        }
+        out << "{";
+        out << min_digits;
+        if (max_digits != min_digits) {
+            out << ",";
+            if (max_digits != std::numeric_limits<int>::max()) {
+                out << max_digits;
+            }
+        }
+        out << "}";
+    };
+    std::function<void(const std::string &, const std::string &)> uniform_range =
+        [&](const std::string & from, const std::string & to) {
+            size_t i = 0;
+            while (i < from.length() && i < to.length() && from[i] == to[i]) {
+                i++;
+            }
+            if (i > 0) {
+                out << "\"" << from.substr(0, i) << "\"";
+            }
+            if (i < from.length() && i < to.length()) {
+                if (i > 0) {
+                    out << " ";
+                }
+                auto sub_len = from.length() - i - 1;
+                if (sub_len > 0) {
+                    auto from_sub = from.substr(i + 1);
+                    auto to_sub = to.substr(i + 1);
+                    auto sub_zeros = std::string(sub_len, '0');
+                    auto sub_nines = std::string(sub_len, '9');
+
+                    auto to_reached = false;
+                    out << "(";
+                    if (from_sub == sub_zeros) {
+                        digit_range(from[i], to[i] - 1);
+                        out << " ";
+                        more_digits(sub_len, sub_len);
+                    } else {
+                        out << "[" << from[i] << "] ";
+                        out << "(";
+                        uniform_range(from_sub, sub_nines);
+                        out << ")";
+                        if (from[i] < to[i] - 1) {
+                            out << " | ";
+                            if (to_sub == sub_nines) {
+                                digit_range(from[i] + 1, to[i]);
+                                to_reached = true;
+                            } else {
+                                digit_range(from[i] + 1, to[i] - 1);
+                            }
+                            out << " ";
+                            more_digits(sub_len, sub_len);
+                        }
+                    }
+                    if (!to_reached) {
+                        out << " | ";
+                        digit_range(to[i], to[i]);
+                        out << " ";
+                        uniform_range(sub_zeros, to_sub);
+                    }
+                    out << ")";
+                } else {
+                    out << "[" << from[i] << "-" << to[i] << "]";
+                }
+            }
+        };
+```
+
+Hmm, wait. Let me recall the actual upstream. In llama.cpp's json-schema-to-grammar.cpp (the newer version with common_chat_schema), `build_min_max_int` looks like:
+
+Actually, I remember the older version (from json-schema-to-grammar.h/cpp with nlohmann json). Let me recall:
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](

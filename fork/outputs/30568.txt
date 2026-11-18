@@ -1,0 +1,68 @@
+run 30568 | thread_search_after_refill_vk | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 20.86 t/s | prompt 625.7 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 -lm pin | power 200+200 W | 2026-11-18 01:31:55
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through both files systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- When `separator_rule` is non-empty and `min_items == 0`, the result wraps in `(...)?` but the inner repetition starts from 0, which means the separator part could match zero times. This seems correct for optional items.
+- When `max_items == 0`, returns empty string - correct.
+- When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+- The separator case: `item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", ...)`. This builds `item (sep item)*` style. Looks correct.
+
+### build_min_max_int function
+- Complex function with many branches. Let me check edge cases:
+  - When both min and max are set and both negative: handles by negating and recursing. Looks correct.
+  - When min is negative and max is positive: handles negative part then continues with non-negative. Looks correct.
+  - The `uniform_range` lambda is complex but seems to handle digit-by-digit range matching.
+  - `decimals_left` parameter limits recursion depth - good.
+  - When only min is set (no max): various cases for min_value < 0, == 0, <= 9, > 9. Looks reasonable.
+  - When only max is set: handles max >= 0 and max < 0. Looks reasonable.
+  - Throws if neither is set - good.
+
+### _add_rule method
+- Deduplication logic: if rule already exists with same content, returns existing name. If different content, appends numeric suffix. Looks correct but could be slow with many rules.
+
+### _visit_pattern method
+- Takes a snapshot of `_rules` before attempting pattern conversion, and reverts on failure. This is a good pattern for rollback.
+- However, `_rules` is a `std::map` and the snapshot copies the entire map. For large schemas this could be expensive.
+
+### _pattern_to_rule method
+- Complex regex-to-grammar conversion.
+- `paren_depth` tracking for balanced parentheses - good.
+- `MAX_PATTERN_DEPTH` limit prevents stack overflow - good.
+- Character class parsing: handles escapes, but the `gbnf_escape_length` function needs to be kept in sync with `parse_char()` in `llama-grammar.cpp` (noted in comment).
+- The literal parsing section has complex logic for merging consecutive literals.
+
+### _not_strings method
+- Builds a trie-based rule for matching strings that are NOT in a given set.
+- The `rejects` string accumulates characters for the negated character class. If characters include special regex chars like `"`, this could be problematic. Let me check... the `rejects` is used in `[^"...]` - if a character in the string is `"`, it would break the character class. This is a potential bug.
+
+Wait, looking more carefully: `rejects += c` where `c` is a UTF-8 character. Then `out << " | [^\"" << rejects << "] "`. If `c` contains `"`, this would break the grammar. Also if `c` contains `]`, `-`, or `\`, these could be problematic in a character class.
+
+Actually, looking at the trie construction - the trie is built from property names (JSON keys), which are typically alphanumeric. But they could contain special characters. This is a potential issue.
+
+### _resolve_ref method
+- Handles `$ref` resolution with cycle detection via `_refs_being_resolved`.
+- If ref has no `#`, the entire ref is used as fragment. If it has `#`, everything after `#` is used. This seems correct for JSON Schema refs.
+
+### _build_object_rule method
+- Complex logic for building object rules with required and optional properties.
+- The `get_recursive_refs` function builds alternatives for optional properties in different orders.
+- The `*` key for additional properties is handled specially with `*` quantifier.
+
+### _add_primitive method
+- Recursively adds primitive rules and their dependencies.
+- Checks both `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` for dependencies.
+
+### visit method
+- Main dispatch based on schema kind.
+- `is_reserved_name` check appends `-` to reserved names.
+- Each case handles its specific schema type.
+
+### Potential issues:
+
+1. **`_not_strings` - special characters in character class**: The `rejects` string is placed inside `[^"...]` without escaping. Characters like `"`, `]`, `-`, `\` would break the grammar.
+

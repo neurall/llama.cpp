@@ -1,0 +1,45 @@
+run 30539 | rel_vk_exit_nodriver | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 18.19 t/s | prompt 270.5 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 00:18:13
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params)` which suggests the file was cut off. I should note this in my review.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully:
+
+### `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+}
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0). The function silently returns "" which would produce an unsatisfiable grammar... actually returning "" means the grammar matches empty string, which contradicts min_items > 0. This is a schema validation issue that's silently ignored. Actually wait - if min_items > 0 and max_items == 0, the schema itself is unsatisfiable. Returning "" makes the grammar accept empty, which is wrong (should accept nothing at all, but GBNF can't express "never match" easily). Hmm, actually returning "" means the rule matches empty string. The correct behavior would arguably be to make the whole thing fail. But this is an edge case.
+- Negative min_items isn't checked. If min_items is negative, `item_rule + "{" + std::to_string(min_items) + ...` would produce something like `{ -1, ...}` which is invalid grammar. Where does min_items come from? From `arr.min_items`. If schema has negative min_items... probably validated elsewhere. Worth noting.
+- In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If max_items == 1 and min_items == 1 with separator: recursion gives build_repetition(item, 0, 0) → returns "" (since max_items == 0). So result = item_rule + " " + "" = item_rule. OK.
+- If max_items == 1 and min_items == 0: result = item_rule + " " + build_repetition(..., 0, 0) = item_rule + " " + "" then wrapped in "(...)?" → `(item )?`. Hmm, trailing space inside parens: `(item_rule )?`. That's fine for GBNF? Trailing space in a rule... Actually in GBNF, spaces are literal? No wait — in llama.cpp GBNF, whitespace in rules is ignored except within quotes. Actually the grammar format treats spaces outside quotes as insignificant. So `(item )?` is fine.
+- Potential issue: `max_items - 1` when max_items is INT_MAX... but has_max is false in that case, so it passes max_items unchanged. OK.
+- What if min_items > 0 and max_items == 1? e.g., min=1, max=1 with separator: result = item + " " + build_repetition(sep-item, 0, 0) = item + " " + "" → "item ". Then min_items != 0 so no "?" wrap. Result: "item " — trailing space, fine.
+- What about min_items > max_items generally? e.g. min=3, max=2. `{3,2}` invalid grammar. Not checked. Schema-level issue.
+
+### `build_min_max_int`:
+This is complex recursive logic. Let me check some things:
+
+- `decimals_left = 16` default. `less_decimals = std::max(decimals_left - 1, 1)`.
+- The `uniform_range` lambda captures `out` and `more_digits` and `digit_range` by reference. It's declared as `std::function<void(...)>` — heap allocation per call, performance note.
+- In `uniform_range`, when `from_sub == sub_zeros` branch: `digit_range(from[i], to[i] - 1)`. What if `from[i] == to[i]`? Then `to[i] - 1 < from[i]`, producing an invalid range like `[5-4]`. Can that

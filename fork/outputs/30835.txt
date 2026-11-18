@@ -1,0 +1,26 @@
+run 30835 | pool_copy_own_card_vk | pf12k | Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf | decode 55.26 t/s | prompt 2332.1 t/s | 1024 tokens | args: -np 1 --moe swap-lead=-2,wait-swaps=0,upload-wait=0,idle-up=0 -lm pin | power 280+280 W | 2026-11-18 12:28:12
+
+<think>
+We need answer user's request: "Do a code review of the following source file." They provided two files concatenated? // file: common/json-schema-to-grammar.cpp then // file: common/arg.cpp but arg.cpp truncated. Need review likely focus on provided source. Need produce thorough code review. Need analyze C++ code. Need maybe mention issues: correctness, style, memory, regex, recursion, integer overflow, undefined behavior, thread safety, static initialization, error handling, performance, maintainability. Need be careful: code from llama.cpp? json-schema-to-grammar.cpp and arg.cpp. Need review both? The prompt says following source file but includes two file headers. Could review both, note second truncated. Need likely identify bugs.
+
+Let's inspect json-schema-to-grammar.cpp deeply.
+
+Includes: json-schema-to-grammar.h, common.h, trie.h, unicode.h. using json = common_json.
+
+build_repetition:
+- max_items int, min_items int. has_max = max_items != INT_MAX.
+- if max_items == 0 return ""; if min_items ==0 && max_items==1 return item_rule + "?".
+- if separator empty: if min=1 !has_max return +; if min=0 !has_max return *; return item_rule + "{min," + (has_max?max:"") + "}".
+Potential issue: if min_items > max_items? Not validated. If max_items=0 and min_items>0 returns empty invalid. If min_items negative? Could produce weird.
+- separator nonempty: result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?".
+Potential issue: if max_items=0 handled earlier. If max_items=1 and min_items=0? handled earlier returns item_rule? Actually min=0 max=1 returns item_rule + "?" before separator. Good. If min=1 max=1: has_max true, result = item_rule + " " + build_repetition(...,0,0). build_repetition with max=0 returns "" -> result = item_rule + " " (trailing space). Then min!=0. That yields invalid grammar? For min=1 max=1 with separator, should just item_rule. Let's test: build_repetition(item,1,1,sep): has_max true, max!=0, min=0? no. separator nonempty. result = item + " " + build_repetition("(sep item)", 0, 0). max_items=0 returns "". result = "item " trailing. That's likely bug. But maybe callers avoid max=1? For array with max_items=1 and min_items=1? Could happen. Need mention.
+If min=0 max=1 handled. If min=0 max=2: result = item + " " + build_repetition("(sep item)",0,1) -> item + " " + "(sep item)?" -> okay? If min=0, then wrap whole in ? -> (item (sep item)?)? which matches empty or one item? Actually for max=2 min=0 should match empty, item, item sep item. (item (sep item)?)? matches empty, item, item sep item. Good.
+If min=2 max=2: result = item + " " + build_repetition("(sep item)",1,1). build_repetition max=1 min=1 separator empty? inner separator empty: min=1 max=1 -> returns item_rule + "{1,1}"? Wait if separator empty and min=1 max=1: not special, returns item_rule + "{1,1}". So result = item + " " + "(sep item){1,1}". okay.
+But for min=1 max=1 bug.
+Also if max_items=INT_MAX and min_items=0? has_max false, result = item + " " + build_repetition(...,0,INT_MAX) -> inner min=0 max=INT_MAX returns inner + "*" -> item + " " + inner*? Actually build_repetition with min=0 max=INT_MAX returns item_rule + "*". So result = item + " " + "(sep item)*". Good. If min=1 max=INT_MAX: inner min=0 max=INT_MAX -> item + " " + inner* good.
+Potential issue: max_items - 1 overflow if max_items=INT_MIN? not likely.
+
+build_min_max_int:
+- recursive, decimals_left default 16, top_level true.
+- has_min/has_max based on int64 min/max.
+- digit_range lambda outputs [from] or [from-to]. If from

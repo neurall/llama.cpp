@@ -1,0 +1,290 @@
+run 30888 | pool_copy_own_card_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 38.59 t/s | prompt 1468.6 t/s | 4096 tokens | args: -np 1 | power 280+280 W | 2026-11-18 13:55:49
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two parts: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each part systematically.
+
+**Part 1: common/json-schema-to-grammar.cpp**
+
+1. In `build_repetition`, when `separator_rule` is not empty and `min_items == 0`, the result wraps with `(...)?`. But when `min_items > 0` and there's a separator, the initial `item_rule` is followed by `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items - 1, ...)`. This seems correct for the separator case.
+
+Wait, let me look more carefully at `build_repetition`:
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+When `min_items == 0 && max_items == 1` with a separator, it returns `item_rule + "?"` which is correct (0 or 1 items).
+
+When `min_items == 0 && max_items == 0`, it returns `""` - correct.
+
+When separator is empty and `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct.
+
+When separator is empty and `min_items == 1 && max_items == 1`, falls through to `{1,1}` - correct.
+
+When separator is empty and `min_items == 0 && max_items == 0`, returns `""` - correct.
+
+Hmm, wait. When `min_items == 0 && max_items == 1` with separator, it returns `item_rule + "?"` which is correct.
+
+When `min_items == 1 && max_items == 1` with separator, it goes to the separator branch: `item_rule + " " + build_repetition("(" + sep + " " + item + ")", 0, 0)` which returns `""`, so result is `item_rule + " "` - that's a trailing space but functionally correct.
+
+Actually wait, `build_repetition` with `max_items == 0` returns `""`, so `item_rule + " " + ""` = `item_rule + " "`. That trailing space is harmless in GBNF.
+
+Let me look at `build_min_max_int` more carefully.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+```
+
+When both min and max are set:
+- If both negative: negate both and recurse.
+- If min negative: handle negative part, then set min to 0.
+- Then generate ranges for digit counts.
+
+When only min is set:
+- If min < 0: handle negative part, then non-negative part.
+- If min == 0: handle zero and positive.
+- If min <= 9: handle single digit.
+- Otherwise: handle multi-digit.
+
+When only max is set:
+- If max >= 0: handle non-negative (and negative if top_level).
+- If max < 0: handle negative.
+
+Let me check the `has_min` case more carefully:
+
+```cpp
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    } else if (min_value == 0) {
+```
+
+Wait, when `min_value < 0` and only `has_min` (no max), it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. But `std::numeric_limits<int64_t>::min()` as `min_value` means `has_min` would be false (since `min_value == std::numeric_limits<int64_t>::min()`), and `has_max` would be true (since `-min_value != std::numeric_limits<int64_t>::max()`). So it would go to the `has_max` branch. That seems correct.
+
+But wait, there's a subtle issue. When `min_value < 0` and we're in the `has_min` branch (no max), the output is:
+```
+"-" ( <negative part> ) | [0] | [1-9] <more digits>
+```
+
+The `[0] | [1-9] <more digits>` part represents non-negative numbers >= 0. But we need non-negative numbers >= 0 (since min is negative, all non-negative numbers are valid). That seems correct.
+
+Actually wait, `more_digits(0, decimals_left - 1)` - this means 0 or more additional digits. Combined with `[1-9]`, this gives `[1-9][0-9]{0,decimals_left-1}` which is any positive number. And `[0]` is zero. So the non-negative part is correct.
+
+Hmm, but `decimals_left - 1` could be 0 if `decimals_left` is 1. Let me check `more_digits`:
+
+```cpp
+auto more_digits = [&](int min_digits, int max_digits) {
+    out << "[0-9]";
+    if (min_digits == max_digits && min_digits == 1) {
+        return;
+    }
+    out << "{";
+    out << min_digits;
+    if (max_digits != min_digits) {
+        out << ",";
+        if (max_digits != std::numeric_limits<int>::max()) {
+            out << max_digits;
+        }
+    }
+    out << "}";
+};
+```
+
+If `min_digits == 0` and `max_digits == 0`, it outputs `[0-9]{0,0}` which is equivalent to nothing. That's fine.
+
+If `min_digits == 0` and `max_digits == 1`, it outputs `[0-9]{0,1}`. Fine.
+
+OK, let me look at the `has_max` branch:
+
+```cpp
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    } else {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+        out << ")";
+    }
+    return;
+}
+```
+
+When `max_value >= 0` and `top_level`, it adds negative numbers as an option. Then calls `build_min_max_int(0, max_value, ...)` which will go to the `has_min && has_max` branch (since `0 != int64_t::min()` and `max_value != int64_t::max()`). That seems correct.
+
+When `max_value < 0`, it negates and calls `build_min_max_int(-max_value, int64_t::max(), ...)`. Since `-max_value > 0` and `int64_t::max()` is the max, `has_min` is true and `has_max` is false. So it goes to the `has_min` branch. That seems correct.
+
+Wait, but when `max_value < 0`, the output is `"-" ( <positive numbers up to -max_value> )`. This represents negative numbers from `-max_value` down to... well, it should be from `int64_t::min()` to `max_value`. But `build_min_max_int(-max_value, int64_t::max(), ...)` with `has_min` true and `has_max` false would generate numbers >= `-max_value`. So `"-" ( numbers >= -max_value )` gives numbers <= `max_value`. That's correct.
+
+Hmm, but there's a problem: when `max_value < 0`, the `top_level` parameter is `false`. In the `has_min` branch with `min_value > 0`:
+
+```cpp
+} else {
+    auto min_s = std::to_string(min_value);
+    auto len = min_s.length();
+    auto c = min_s[0];
+
+    if (c > '1') {
+        digit_range(top_level ? '1' : '0', c - 1);
+        out << " ";
+        more_digits(len, less_decimals);
+        out << " | ";
+    }
+```
+
+When `top_level` is false, `digit_range('0', c - 1)` allows leading zeros. But we're generating positive numbers (after negation), so leading zeros shouldn't be allowed... Actually wait, `top_level` is `false` here because we're inside a `"-" (...)` group. The numbers inside are positive, and they shouldn't have leading zeros. So `top_level` should be `true` for the inner call.
+
+Hmm, actually let me re-read. When `max_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+out << ")";
+```
+
+The `top_level` is `false`. This means inside the `"-" (...)`, the numbers are positive but we're not at the top level. The `top_level` flag seems to control whether leading zeros are allowed (for the `0` case) and whether negative numbers are included.
+
+Actually, looking at the `has_min` branch when `min_value == 0`:
+```cpp
+} else if (min_value == 0) {
+    if (top_level) {
+        out << "[0] | [1-9] ";
+        more_digits(0, less_decimals);
+    } else {
+        more_digits(1, decimals_left);
+    }
+}
+```
+
+When `top_level` is false, it uses `more_digits(1, decimals_left)` which is `[0-9]{1,decimals_left}`. This allows leading zeros! That seems wrong for a positive number inside `"-" (...)`.
+
+Wait, but `more_digits(1, decimals_left)` outputs `[0-9]{1,decimals_left}` which matches any digit sequence of length 1 to `decimals_left`. This would match "0", "00", "01", etc. For a positive number, leading zeros should not be allowed.
+
+Hmm, but actually, maybe the intent is that when `top_level` is false, we're inside a sub-expression where the number is part of a larger pattern, and leading zeros might be acceptable? Let me think about this differently.
+
+Actually, I think the `top_level` parameter controls whether we're at the top level of the integer expression (where we might need to handle the `0` case specially) vs. inside a sub-expression. When `top_level` is false, we're inside a recursive call where the number is a continuation of a larger number.
+
+Wait, let me trace through more carefully. When `has_min` and `min_value == 0` and `top_level == false`:
+- `more_digits(1, decimals_left)` = `[0-9]{1,decimals_left}`
+
+This would match "0", "00", "0123", etc. For a positive number, this is wrong because "00" and "0123" are not valid representations.
+
+But wait, when is `top_level` false with `min_value == 0`? Let's see:
+- From `has_min` with `min_value < 0`: calls `build_min_max_int(int64_t::min(), -min_value, out, decimals_left, false)`. Here `has_min` is false (since `min_value == int64_t::min()`), so it goes to `has_max` branch.
+- From `has_max` with `max_value < 0`: calls `build_min_max_int(-max_value, int64_t::max(), out, decimals_left, false)`. Here `has_max` is false, so it goes to `has_min` branch with `min_value = -max_value > 0`.
+
+So `top_level == false` with `min_value == 0` doesn't seem to happen in the current code paths. Let me check again...
+
+Actually, from `has_min` with `min_value < 0`:
+```cpp
+build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, false);
+```
+Here `min_value = int64_t::min()` so `has_min = false`, `max_value = -min_value > 0` so `has_max = true`. Goes to `has_max` branch with `top_level = false`.
+
+In `has_max` branch with `max_value >= 0` and `top_level = false`:
+```cpp
+if (top_level) {  // false, so skip
+    ...
+}
+build_min_max_int(0, max_value, out, decimals_left, true);  // top_level = true
+```
+
+So it calls with `top_level = true`. OK.
+
+From `has_max` with `max_value < 0`:
+```cpp
+build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, false);
+```
+Here `min_value = -max_value > 0`, `has_min = true`, `has_max = false`. Goes to `has_min` branch with `top_level = false`.
+
+In `has_min` branch with `min_value > 0` and `top_level = false`:
+```cpp
+auto min_s = std::to_string(min_value);
+auto len = min_s.length();
+auto c = min_s[0];
+
+if (c > '1') {
+    digit_range(top_level ? '1' : '0', c - 1);  // digit_range('0', c-1)
+    ...
+}
+```
+
+When `top_level` is false, `digit_range('0', c-1)` allows leading zeros. But this is inside `"-" (...)`, so the number should be positive without leading zeros. This seems like a bug!
+
+Wait, but `top_level` is false because we're inside a `"-" (...)` group. The numbers inside should be positive integers without leading zeros. So `digit_range('0', c-1)` is wrong - it should be `digit_range('1', c-1)`.
+
+Hmm, but actually, maybe `top_level` is meant to indicate whether we're at the top level of the overall expression (where negative numbers might be included) vs. inside a sub-expression. Let me re-read the code...
+
+Actually, I think I'm overcomplicating this. Let me look at what `top_level` controls:
+
+1. In `has_min` with `min_value == 0`: whether to include `[0]` as a separate option.
+2. In `has_min` with `min_value <= 9`: whether the range starts at '1' or '0'.
+3. In `has_min` with `min_value > 9`: whether the range starts at '1' or '0'.
+4. In `has_max` with `max_value >= 0`: whether to include negative numbers.
+
+So `top_level` seems to control whether we're at the top level of the integer expression. When `top_level` is false, we're inside a sub-expression (like inside `"-" (...)` or inside a recursive call for multi-digit numbers).
+
+When inside `"-" (...)`, the numbers are positive, so they shouldn't have leading zeros. But the code uses `top_level ? '1' : '0'`, which gives '0' when `top_level` is false. This seems wrong.
+
+Wait, but when is `top_level` false with `min_value > 0`? From `has_max` with `max_value < 0`:
+```cpp
+build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, false);
+```
+
+Here `min_value = -max_value > 0`, `top_level = false`. So `digit_range('0', c-1)` is used. But this is inside `"-" (...)`, so the number should be positive without leading zeros. This is a bug!
+
+Actually wait, let me re-read. The `has_max` branch with `max_value < 0`:
+```cpp
+out << "\"-\" (";
+build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+out << ")";
+```
+
+The `top_level` is `false`. Inside this call, `has_min` is true (since `-max_value > 0`), `has_max` is false. So it goes to the `has_min` branch.
+
+In the `has_min` branch with `min_value > 0` and `top_level = false`:
+```cpp
+if (c > '1') {
+    digit_range(top_level ? '1' : '0', c - 1);  // digit_range('0', c-1)
+```
+
+This allows '0' as the first digit, which would create numbers like "0123" inside `"-" (...)`. That's wrong.
+
+Hmm, but maybe the intent is that `top_level = false` means we're inside a sub-expression where the number is a continuation, and leading zeros are acceptable? Let me think about when `top_level = false` is used...
+
+Actually, I think the `top_level` parameter is used to distinguish between:
+1. Top level: the number is the entire expression, so we need to handle `0` specially and not allow leading

@@ -1,0 +1,43 @@
+run 30802 | pool_copy_own_card_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.84 t/s | prompt 989.9 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-18 11:42:20
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete/truncated.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+}
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0 items). The function silently returns "" which would produce an unsatisfiable grammar... actually returning "" means the grammar matches empty string, which contradicts min_items > 0. Actually wait - if min_items > 0 and max_items == 0, the schema is unsatisfiable. Returning "" silently accepts empty. Hmm, but actually returning "" means the repetition matches nothing, so if min_items > 0, the schema can't be satisfied anyway. The behavior of returning "" (matching empty) is arguably wrong - it should probably error. But it's an edge case. Actually, wait - returning "" as the rule content means the grammar rule is empty string which matches empty. So a schema with min_items=2, max_items=0 would generate a grammar that accepts empty arrays instead of rejecting. That's a semantic bug, though such schemas are invalid anyway.
+
+- Negative min_items: if min_items is negative (e.g., -1), then `min_items == 0` checks fail, and we'd get `{` + "-1" + ...}` which produces invalid grammar `{ -1, ...}`. Actually `std::to_string(-1)` = "-1", so the rule would be `item{-1,}` which is invalid GBNF. Should validate min_items >= 0. In the array case, `arr.min_items` comes from schema; could be negative? Let me check: `arr.min_items == 0` check happens for the primitive case. If min_items is negative and max_items < 0... `max_items = arr.max_items < 0 ? max : arr.max_items`. Then build_repetition(item_rule_name, arr.min_items, max_items, ...) with negative min_items produces `{ -1, ...}`. Hmm, but maybe schema parsing guarantees min_items >= 0. Worth flagging as defensive check.
+
+- In the separator branch: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. If max_items == 1 and min_items == 1 with separator: recursion gives build_repetition(item, 0, 0) → returns "" (since max_items == 0). So result = item_rule + " " + "" = item_rule. OK that works: exactly one item, no separator. Good.
+
+- If max_items == 1 and min_items == 0 with separator: first checks `min_items == 0 && max_items == 1` → returns item_rule + "?" — but wait, that ignores the separator! With a separator and max 1 item, there's no separator needed, so "?" is correct. OK.
+
+- Potential infinite recursion? min_items - 1 each time... no, recursion happens once (the recursive call has empty separator_rule since it's not passed... wait, the recursive call `build_repetition(...)` uses default separator_rule = "". So recursion depth is 1. Fine.
+
+- Edge: min_items > 0, has_max false, separator non-empty: result = item + " " + build_repetition(sep-item, min_items-1, max) → inner returns item{min-1,} since no max... wait inner: min_items = min-1, max_items = INT_MAX (has_max false → max_items passed as max_items which is INT_MAX). Inner: separator empty, min_items-1... if min_items == 1, inner min = 0, no max → "*". So result = item + " " + (sep item)* — correct for "at

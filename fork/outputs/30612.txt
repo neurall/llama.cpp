@@ -1,0 +1,3 @@
+run 30612 | rel_vk_exit_nodriver | pf11k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 27.46 t/s | prompt 1022.0 t/s | 16 tokens | args: -np 1 | power 200+200 W | 2026-11-18 03:16:29
+
+<think>The user wants me to do a code review of two source files: `

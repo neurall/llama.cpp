@@ -1,0 +1,53 @@
+run 30601 | upload_wait_tuned_first_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 17.14 t/s | prompt 268.8 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 02:44:28
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends with `static bool spec_types_is_default(const common_params & params)` which is an incomplete function declaration. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+}
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is a contradiction (schema requires at least min_items but at most 0). The function silently returns "" which would produce an unsatisfiable grammar... actually returning "" means the repetition matches empty string, which violates min_items. This is arguably a schema validation issue that should be flagged. Actually wait - if min_items > 0 and max_items == 0, the schema itself is unsatisfiable. Returning "" silently produces a grammar that doesn't enforce min_items. Hmm, but actually returning "" means the whole repetition is dropped, so the grammar would accept fewer than min_items. That's incorrect behavior - it should probably throw an error or produce something that can't match. Let me think... Actually in JSON schema, `min_items: 1, max_items: 0` is an impossible schema. The behavior of silently accepting anything is wrong. But this is an edge case.
+
+- `min_items == 0 && max_items == 1` returns `item_rule + "?"` - fine.
+
+- For the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)`. Wait, there's a subtle bug here: if `min_items > 0` and `max_items == std::numeric_limits<int>::max()`, then `has_max` is false, so it passes `max_items` unchanged (which is INT_MAX). That's fine. But if `min_items == 0` and `has_max`, it passes `max_items - 1`. OK.
+
+  But wait - what if `min_items > 0` and `max_items == min_items`? E.g., min=2, max=2. Then it recurses with min=1, max=1. The inner call: `min_items == 0 && max_items == 1`? No, min=1. Then separator empty? No, separator_rule is passed... wait, no! The recursive call doesn't pass the separator_rule! Let me re-read:
+
+  ```cpp
+  auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+  ```
+
+  The recursive call uses the default separator_rule = "". Hmm, is that correct? The inner repetition is over the combined rule `("(" + separator_rule + " " + item_rule + ")")`. Since the separator is already embedded in the item, the inner repetition doesn't need a separator. So yes, that's correct - the separator is baked into the repeated unit.
+
+  But wait, there's an issue: if `min_items == 1` and `max_items == 2` with separator: result = item + " " + build_repetition("(sep item)", 0, 1) = item + " " + "(sep item)?". That gives `item (sep item)?` which is correct for 1-2 items.
+
+  What about min=0, max=2? result = item + " " + build_repetition("(sep item)", 0, 1) = item + " (sep item)?", then wrapped: `(item (sep item)?)?`. Correct.
+
+  What about min=2, max=INT_MAX? result = item + " " + build_repetition("(sep item)", 1, INT_MAX) = item + " (sep item)+". Correct.
+
+  What about min=0, max=INT_MAX? result = item + " " + build_repetition

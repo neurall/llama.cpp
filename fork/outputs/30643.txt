@@ -1,0 +1,414 @@
+run 30643 | upload_wait_tuned_first_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 34.51 t/s | prompt 713.8 t/s | 4096 tokens | args: -np 1 -lm pin | power 200+200 W | 2026-11-18 04:36:04
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each file systematically.
+
+## common/json-schema-to-grammar.cpp
+
+1. **`build_repetition` function**: Looks correct - handles various repetition cases.
+
+2. **`build_min_max_int` function**: Let me check carefully...
+   - The `uniform_range` lambda looks correct.
+   - The negative number handling looks correct.
+   - The `has_min` only case looks correct.
+   - The `has_max` only case looks correct.
+
+3. **`SPACE_RULE`**: `const std::string SPACE_RULE = "| \" \" | \"\\n\"{1,2} [ \\t]{0,20}";` - This looks correct.
+
+4. **`PRIMITIVE_RULES`**: Let me check each rule...
+   - `boolean`: `("true" | "false")` - correct
+   - `decimal-part`: `[0-9]{1,16}` - correct
+   - `integral-part`: `[0] | [1-9] [0-9]{0,15}` - correct
+   - `number`: `("-"? integral-part) ("." decimal-part)? ([eE] [-+]? integral-part)?` - correct
+   - `integer`: `("-"? integral-part)` - correct
+   - `value`: `object | array | string | number | boolean | null` - correct
+   - `object`: `"{ " space ( string ":" space value ("," space string ":" space value)* )? space "}"` - correct
+   - `array`: `"[" space ( value ("," space value)* )? space "]"` - correct
+   - `uuid`: correct
+   - `char`: `[^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})` - correct
+   - `string`: `"\"" char* "\""` - correct
+   - `null`: `"null"` - correct
+
+5. **`STRING_FORMAT_RULES`**: Looks correct.
+
+6. **`is_reserved_name`**: Looks correct.
+
+7. **Regex patterns**: 
+   - `INVALID_RULE_CHARS_RE("[^a-zA-Z0-9-]+")` - correct
+   - `GRAMMAR_LITERAL_ESCAPE_RE("[\r\n\"\\\\]")` - correct
+   - `GRAMMAR_RANGE_LITERAL_ESCAPE_RE("[\r\n\"\\]\\-\\\\]")` - correct
+
+8. **`replacePattern`**: Looks correct.
+
+9. **`format_literal`**: Looks correct.
+
+10. **`gbnf_escape_length`**: Looks correct.
+
+11. **`common_chat_schema_converter` class**:
+    - `_add_rule`: Looks correct.
+    - `_generate_union_rule`: Looks correct.
+    - `_visit_pattern`: Looks correct.
+    - `_pattern_to_rule`: Let me check carefully...
+      - The `transform` lambda looks correct.
+      - The character class handling looks correct.
+      - The curly bracket handling looks correct.
+      - The literal handling looks correct.
+    - `_not_strings`: Looks correct.
+    - `_resolve_ref`: Looks correct.
+    - `_build_object_rule`: Looks correct.
+    - `_add_primitive`: Looks correct.
+    - `visit`: Looks correct.
+    - `check_errors`: Looks correct.
+    - `format_grammar`: Looks correct.
+
+12. **`json_schema_to_grammar` functions**: Looks correct.
+
+13. **`build_grammar`**: Looks correct.
+
+## common/arg.cpp
+
+1. **Includes**: Looks correct.
+
+2. **`read_file`**: Looks correct.
+
+3. **`get_common_arg_defs`**: Looks correct.
+
+4. **`common_arg` methods**: 
+   - `set_examples`: Looks correct.
+   - `set_excludes`: Looks correct.
+   - `set_env`: Looks correct.
+   - `set_sampling`: Looks correct.
+   - `set_spec`: Looks correct.
+   - `set_preset_only`: Looks correct.
+   - `in_example`: Looks correct.
+   - `is_exclude`: Looks correct.
+   - `get_value_from_env`: Looks correct.
+   - `has_value_from_env`: Looks correct.
+
+5. **`break_str_into_lines`**: Looks correct.
+
+6. **`to_string`**: Looks correct.
+
+7. **`get_args`**: Looks correct.
+
+8. **`get_env`**: Looks correct.
+
+9. **`parse_tensor_buffer_overrides`**: Looks correct.
+
+10. **`clean_file_name`**: Looks correct.
+
+11. **`handle_model_result`**: Looks correct.
+
+12. **`kv_cache_types`**: Looks correct.
+
+13. **`kv_cache_type_from_str`**: Looks correct.
+
+14. **`get_all_kv_cache_types`**: Looks correct.
+
+15. **`parse_bool_value`**: Looks correct.
+
+16. **`arg_removed`**: Looks correct.
+
+17. **`get_default_local_path`**: Looks correct.
+
+18. **`spec_types_is_default`**: The function is cut off at the end. The file ends with `static bool spec_types_is_default(const common_params & params) {` - this is incomplete.
+
+Wait, the file ends abruptly. Let me re-read the prompt... The file ends with:
+```
+static bool spec_types_is_default(const common_params & params) {
+```
+
+This is clearly incomplete - the function body is missing. But the prompt says "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment."
+
+Hmm, but the file is truncated. The prompt says "do not stop early" - so maybe I should just return what's given, with any bugs fixed?
+
+Wait, let me re-read more carefully. The prompt says "Return the complete fixed version of the following source file" - so I need to fix bugs in what's given.
+
+Let me look more carefully for bugs...
+
+Actually, let me re-examine the code more carefully.
+
+In `json-schema-to-grammar.cpp`:
+
+Looking at `build_repetition`:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+This looks correct to me.
+
+Looking at `build_min_max_int`:
+The function handles various cases. Let me check the `has_max` only case:
+```cpp
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    } else {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+        out << ")";
+    }
+    return;
+}
+```
+
+Wait, when `max_value >= 0` and `top_level` is true, it outputs negative numbers first, then the positive range. But when `max_value >= 0` and `top_level` is false, it only outputs the positive range. That seems correct - when not top_level, we don't need to handle negative numbers because the caller handles that.
+
+Actually wait, when `max_value >= 0` and `top_level` is false, it just calls `build_min_max_int(0, max_value, out, decimals_left, true)`. But `top_level` is passed as `true` to the recursive call. Hmm, that seems intentional - the recursive call for the positive part should be top_level.
+
+Actually, I think there might be an issue. When `max_value >= 0` and `top_level` is false, we're in a context where negative numbers are already handled by the caller. So we should only output the positive range. But the code passes `top_level=true` to the recursive call, which means the recursive call will also output negative numbers. That seems wrong.
+
+Wait, let me think again. When `top_level` is false, it means we're in a sub-context. The caller handles the negative part. So we should only output the positive part. But `build_min_max_int(0, max_value, out, decimals_left, true)` with `top_level=true` would output negative numbers too...
+
+Hmm, actually `build_min_max_int(0, max_value, ...)` with `min_value=0` and `max_value >= 0` - both are non-negative, so the `has_min && has_max` branch would handle it, and it wouldn't output negative numbers. So it's fine.
+
+Let me look at the `has_min` only case more carefully:
+```cpp
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, out, decimals_left, /* top_level= */ false);
+        out << ") | [0] | [1-9] ";
+        more_digits(0, decimals_left - 1);
+    } else if (min_value == 0) {
+        ...
+    } else if (min_value <= 9) {
+        ...
+    } else {
+        ...
+    }
+    return;
+}
+```
+
+When `min_value < 0`, it outputs:
+- `"-" (negative range from min to -min)` - this handles negative numbers
+- `| [0] | [1-9] digits` - this handles non-negative numbers
+
+Wait, but `[0] | [1-9] digits` would match any non-negative number, which is correct since there's no max constraint.
+
+Hmm, but `more_digits(0, decimals_left - 1)` - this means 0 or more digits. So `[1-9] [0-9]{0,decimals_left-1}` would match any positive number. And `[0]` matches zero. So the non-negative part is correct.
+
+Actually wait, `more_digits(0, decimals_left - 1)` outputs `[0-9]{0,decimals_left-1}`. So `[1-9] [0-9]{0,decimals_left-1}` matches any positive number with at most `decimals_left` digits. That seems correct.
+
+Let me look at the `has_max` only case again:
+```cpp
+if (has_max) {
+    if (max_value >= 0) {
+        if (top_level) {
+            out << "\"-\" [1-9] ";
+            more_digits(0, less_decimals);
+            out << " | ";
+        }
+        build_min_max_int(0, max_value, out, decimals_left, /* top_level= */ true);
+    } else {
+        out << "\"-\" (";
+        build_min_max_int(-max_value, std::numeric_limits<int64_t>::max(), out, decimals_left, /* top_level= */ false);
+        out << ")";
+    }
+    return;
+}
+```
+
+When `max_value >= 0` and `top_level` is true:
+- First outputs negative numbers: `"-" [1-9] [0-9]{0,less_decimals}` - this matches any negative number
+- Then outputs `build_min_max_int(0, max_value, ...)` - this matches numbers from 0 to max_value
+
+When `max_value >= 0` and `top_level` is false:
+- Only outputs `build_min_max_int(0, max_value, ...)` - this matches numbers from 0 to max_value
+
+This seems correct.
+
+When `max_value < 0`:
+- Outputs `"-" (build_min_max_int(-max_value, INT64_MAX, ...))` - this matches negative numbers from max_value to -1
+
+Wait, but what about positive numbers? When `max_value < 0`, all valid numbers are negative, so we don't need positive numbers. That's correct.
+
+Hmm, but what about `top_level`? When `max_value < 0` and `top_level` is true, we only output negative numbers. That's correct because all valid numbers are negative.
+
+OK, I think `build_min_max_int` is correct.
+
+Let me look at `_pattern_to_rule` more carefully:
+
+```cpp
+std::string _pattern_to_rule(const std::string & pattern, const std::string & name) {
+    if (pattern.length() < 2 || pattern.front() != '^' || pattern.back() != '$') {
+        throw unsupported_pattern("not anchored with '^' and '$'");
+    }
+    ...
+}
+```
+
+This checks that the pattern is anchored. Looks correct.
+
+The `transform` lambda:
+```cpp
+std::function<literal_or_rule()> transform = [&]() -> literal_or_rule {
+    std::vector<literal_or_rule> seq;
+    ...
+    while (i < length) {
+        char c = sub_pattern[i];
+        if (c == '.') {
+            seq.emplace_back(get_dot(), false);
+            i++;
+        } else if (c == '(') {
+            ...
+        } else if (c == ')') {
+            ...
+        } else if (c == '^' || c == '$') {
+            throw unsupported_pattern("anchor inside the pattern");
+        } else if (c == '[') {
+            ...
+        } else if (c == '|') {
+            seq.emplace_back("|", false);
+            i++;
+        } else if (c == '*' || c == '+' || c == '?') {
+            ...
+        } else if (c == '{') {
+            ...
+        } else {
+            ...
+        }
+    }
+    return join_seq();
+};
+```
+
+Looks correct.
+
+Let me check `_build_object_rule`:
+```cpp
+std::string _build_object_rule(
+    const std::vector<std::pair<std::string, const common_chat_schema *>> & properties,
+    const std::unordered_set<std::string> & required,
+    const std::string & name,
+    const common_chat_schema * additional_properties)
+{
+    ...
+    if (required_props.empty() && optional_props.empty()) {
+        return "\"{\" space \"}\"";
+    }
+
+    std::string rule = "\"{\" space ";
+    for (size_t i = 0; i < required_props.size(); i++) {
+        if (i > 0) {
+            rule += " \",\" space ";
+        }
+        rule += prop_kv_rule_names[required_props[i]];
+    }
+
+    if (!optional_props.empty()) {
+        rule += " (";
+        if (!required_props.empty()) {
+            rule += " \",\" space ( ";
+        }
+        ...
+    }
+
+    rule += " space \"}\"";
+
+    return rule;
+}
+```
+
+Hmm, when there are required props but no optional props:
+- `rule = "\"{\" space " + required_props...`
+- `optional_props.empty()` is true, so we skip the optional part
+- `rule += " space \"}\""`
+
+So the rule would be: `"{ " space required1 "," space required2 ... space "}"`
+
+That looks correct.
+
+When there are no required props but optional props:
+- `rule = "\"{\" space "`
+- `optional_props.empty()` is false
+- `rule += " ("` - adds opening paren
+- `required_props.empty()` is true, so we don't add `", " space ( `
+- Then we add the optional alternatives
+- `rule += " )?"` - adds closing paren and `?`
+- `rule += " space \"}\""`
+
+So: `"{ " space ( optional1 | optional2 ... )? space "}"`
+
+That looks correct.
+
+When there are both required and optional:
+- `rule = "\"{\" space " + required_props...`
+- `rule += " ("` - adds opening paren
+- `required_props.empty()` is false, so we add `", " space ( `
+- Then we add the optional alternatives
+- `rule += " )"` - closes the inner paren
+- `rule += " )?"` - closes the outer paren and `?`
+- `rule += " space \"}\""`
+
+So: `"{ " space required1 "," space required2 ... ( "," space ( optional1 | optional2 ... ) )? space "}"`
+
+That looks correct.
+
+Let me check `visit`:
+```cpp
+std::string visit(const common_chat_schema & schema, const std::string & name) {
+    std::string rule_name = is_reserved_name(name) ? name + "-" : name.empty() ? "root" : name;
+    std::string sub_name  = name + (name.empty() ? "" : "-");
+    ...
+}
+```
+
+Looks correct.
+
+Let me check `_visit_all_of`:
+```cpp
+std::string _visit_all_of(const common_chat_schema_all_of & schema, const std::string & name, const std::string & rule_name) {
+    ...
+    if (!enum_values.empty()) {
+        std::vector<std::string> enum_intersection;
+        for (const auto & p : enum_values) {
+            if (p.second == schema.children.size()) {
+                enum_intersection.push_back(p.first);
+            }
+        }
+        if (!enum_intersection.empty()) {
+            return _add_rule(rule_name, "(" + string_join(enum_intersection, " | ") + ")");
+        }
+    }
+    return _add_rule(rule_name, _build_object_rule(properties, required, name, nullptr));
+}
+```
+
+Hmm, `p.second == schema.children.size()` - this checks if an enum value appears in all children. But `enum_values` is a `std::map<std::string, size_t>` where the count is incremented for each child that has that enum value. So if a value appears in all children, its count equals the number of children. That seems correct.
+
+Wait, but `add_component` is called for each child, and for `KIND_ENUM` children, it adds all values. For `KIND_ANY_OF` children, it adds all alternatives. So the count could be higher than `schema.children.size()` if a child is `KIND_ANY_OF` with multiple enum alternatives.
+
+Actually, looking at the code

@@ -1,0 +1,36 @@
+run 30753 | tuner_slices_there_back_vk | pf12k | Qwen3.6-35B-A3B-GSQ-hybrid.gguf | decode 146.9 t/s | prompt 8576.4 t/s | 1024 tokens | args: -np 1 -lm pin | power 280+280 W | 2026-11-18 10:39:00
+
+<think>
+Here's a thinking process:
+
+1.  **Understand User Request:** The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. The code appears to be part of a C++ project (likely Llama.cpp based on the naming conventions like `common_chat_schema_converter`, `LLAMA_EXAMPLE_*`, `ggml`, etc.).
+
+2.  **Analyze `common/json-schema-to-grammar.cpp`:**
+    *   **Purpose:** Converts JSON schemas to a grammar format (likely for LLM context/grammar generation).
+    *   **Key Components:**
+        *   `build_repetition`: Handles repetition rules (min/max items, separators).
+        *   `build_min_max_int`: Generates regex-like grammar for integer ranges.
+        *   `PRIMITIVE_RULES`, `STRING_FORMAT_RULES`: Predefined grammar rules for JSON types.
+        *   `common_chat_schema_converter`: Main class handling schema traversal and rule generation.
+        *   `visit`: Dispatches based on schema kind.
+        *   `_pattern_to_rule`: Converts regex patterns to grammar rules.
+        *   `_not_strings`: Generates a trie-based rule to exclude specific strings.
+        *   `_build_object_rule`: Handles JSON object properties, required/optional, additional properties.
+        *   `json_schema_to_grammar`, `build_grammar`: Entry points.
+    *   **Potential Issues/Improvements:**
+        *   *Complexity & Readability:* The code is quite dense. `_pattern_to_rule` has a complex recursive lambda `transform` that parses regex manually. This is error-prone and hard to maintain.
+        *   *Regex Handling:* The manual regex parser handles `^`, `$`, `.`, `()`, `[]`, `|`, `*`, `+`, `?`, `{}`. It throws `unsupported_pattern` or `invalid_pattern`. It's a custom parser, which might be intentional for performance/specific grammar constraints, but it's fragile.
+        *   *Memory/Performance:* `_rules` is a `std::map<std::string, std::string>`. Using `std::unordered_map` might be faster, but map is fine for this scale. The `rules_snapshot` in `_visit_pattern` copies the map, which could be expensive if called frequently.
+        *   *Error Handling:* `_visit_pattern` catches exceptions and reverts rules, but `_errors` and `_warnings` are collected. The `check_errors()` method throws or prints warnings. This is okay, but could be more structured.
+        *   *Hardcoded Limits:* `MAX_PATTERN_DEPTH = 100`. Fine, but could be configurable.
+        *   *String Operations:* Heavy use of string concatenation in loops. Could be optimized with `std::ostringstream` or pre-reserved vectors, but it's probably fine.
+        *   *Trie for `_not_strings`:* Uses a custom `common_trie`. The logic generates a grammar that matches strings *not* in the trie. This is clever but complex. The grammar generation might produce very long strings for many strings.
+        *   *Object Rule Generation:* `_build_object_rule` generates recursive rules for optional properties. The logic for `get_recursive_refs` is complex and might generate deeply nested rules. Could be simplified or optimized.
+        *   *Namespace/Scope:* Uses `using json = common_json;` and `using namespace common_arg_utils;` (in the other file). In the first file, it's fine.
+        *   *Missing Includes/Dependencies:* Relies on `common.h`, `trie.h`, `unicode.h`, `common_chat_schema`, `common_grammar_builder`, etc. These are external. I'll note that.
+        *   *Code Style:* Uses `static` functions, lambdas, `std::function`. Generally modern C++17/20. Some uses of `std::string_view` (C++17). Good.
+        *   *Potential Bugs:*
+            *   `build_repetition`: When `min_items == 0 && max_items == 1`, returns `item_rule + "?"`. Correct.
+            *   `build_min_max_int`: Handles negative numbers, decimals, ranges. The logic is complex. `decimals_left` parameter seems unused in some branches? Actually, it's used for `more_digits`. Might be okay.
+            *   `_pattern_to_rule`: The `transform` lambda captures `i`, `length`, `paren_depth`, `seq`, etc. by reference. It's recursive. This is fine but could be a stack overflow if deeply nested (though `MAX_PATTERN_DEPTH` limits it).
+            *   `NON_LITERAL_SET` and `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`: Hard

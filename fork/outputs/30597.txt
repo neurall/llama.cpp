@@ -1,0 +1,39 @@
+run 30597 | upload_wait_tuned_first_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 16.36 t/s | prompt 272.7 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 02:32:30
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be truncated at the end)
+
+Let me do a thorough code review of both files.
+
+**File 1: json-schema-to-grammar.cpp**
+
+Let me look through this carefully:
+
+1. `build_repetition` function:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+```
+
+Potential issues:
+- If `max_items == 0` but `min_items > 0`, this returns "" which would be incorrect (can't have min_items > 0 with max 0). Actually, if max_items == 0 and min_items > 0, the schema is contradictory. Returning "" silently ignores the contradiction. Hmm, but maybe that's acceptable behavior.
+- Negative min_items? If min_items is negative... `min_items == 0 ? 0 : min_items - 1` in the separator case. If min_items is negative, this could produce weird results like `{-1,}`. Let me check: `item_rule + "{" + std::to_string(min_items) + "," + ...` - if min_items is negative, we'd get `{-1,}` which is invalid grammar. Probably should validate inputs.
+- In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` - if max_items == 1 and min_items == 1, then has_max is true, so we'd call with max_items = 0, min_items = 0. Then in the recursive call, `max_items == 0` returns "". So result = item_rule + " " + "" = item_rule + " " — trailing space! Wait, let me check: `auto result = item_rule + " " + build_repetition(...)`. If the recursive call returns "", then result = `item_rule + " "`. That leaves a trailing space in the grammar rule. Hmm, is that a bug? Let's trace: min_items=1, max_items=1, separator_rule non-empty. result = item_rule + " " + build_repetition("(sep item)", 0, 0). In the recursive call, max_items == 0 → return "". So result = "item_rule ". Then since min_items != 0, no "?" is appended. So the final rule is `item_rule ` with a trailing space. In GBNF, trailing space might be harmless or might be interpreted... Actually in llama.cpp's grammar parser, whitespace between tokens is generally ignored except within literals. A trailing space at the end of a rule definition... the rule text ends with a space character. The parser might treat trailing whitespace as ignorable. Actually, in the GBNF parser, spaces are generally skipped. So it's probably harmless but sloppy. Hmm, wait, actually let me re-check: is it `item_rule + " " + build_repetition(...)`? Yes. So if build_repetition returns "", we get "item_rule " with trailing space. This is a real edge case bug (cosmetic though).
+
+Actually wait, let me double check the case min_items=1, max_items=1 with separator. E.g., array with min_items=1, max_items=1. The call is `build_repetition(item_rule_name, 1, 1, "\",\" space")`. result = item_rule + " " + build_repetition("(\" ,\" space item)", 0, 0) = item_rule + " " + "" = "item_rule ". So the rule becomes `"[" space item_rule  space "]"` — double space. Harmless in GBNF parsing but sloppy output.
+
+Hmm, but actually is it? Let me think about whether the grammar parser treats a trailing space... In llama.cpp grammar parser, whitespace is skipped between symbols. So "item_rule  space" parses fine. OK cosmetic.
+
+2. `build_min_max_int`:
+- Uses `std::function` with recursive lambda — fine but has overhead; could be a static function.
+- `decimals_left = 16` default. Recursion decrements via `less_decimals = std::max(decimals_left - 1, 1)`. Note: `std::max(decimals_left - 1, 1)` — if decimals_left

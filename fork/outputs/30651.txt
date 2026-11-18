@@ -1,0 +1,58 @@
+run 30651 | rel_vk_exit_nodriver | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 13.05 t/s | prompt 264.4 t/s | 1024 tokens | args: -np 1 -dev Vulkan0,Vulkan1 | power 200+200 W | 2026-11-18 04:56:11
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params)` with no body. So I should focus my review on what's provided, noting the truncation.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+    ...
+}
+```
+
+Issues:
+- If `max_items == 0` but `min_items > 0`, this is contradictory (schema requires at least min_items but at most 0 items). The function silently returns "" which would produce an unsatisfiable grammar... actually returning "" means the grammar matches empty string, which contradicts min_items > 0. Hmm, actually if min_items > 0 and max_items == 0, the schema is unsatisfiable. Returning "" silently accepts empty. This might be intentional (matching the JS reference implementation behavior), but worth noting.
+- `min_items < 0` handling: negative min_items would produce `{ -1, ...}` which is invalid grammar. Callers may pass negative values? In KIND_ARRAY, `arr.min_items` is passed directly. If min_items is negative... Let me check: `build_repetition(item_rule_name, arr.min_items, max_items, ...)`. If arr.min_items is negative, we'd get `{` + "-1," etc. That would be a bug. But maybe the schema parsing guarantees min_items >= 0. Worth noting as a defensive check.
+- Also `min_items > max_items` case: produces `{5,3}` which is invalid regex/grammar. Worth noting.
+
+### `build_min_max_int`
+
+This is complex recursive code. Let me look for issues:
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+```
+
+- `decimals_left` starts at 16. `less_decimals = std::max(decimals_left - 1, 1)`. If decimals_left is 1, less_decimals = 1, so recursion could be infinite? Let's check: `build_min_max_int(std::stoll(min_s.substr(1)), std::numeric_limits<int64_t>::max(), out, less_decimals, false)` — recursion with less_decimals. If decimals_left == 1, less_decimals == 1, so recursion doesn't decrease. Hmm, but wait — in that branch, `min_s.substr(1)` reduces the number of digits by 1 each time, so the recursion terminates because the number gets smaller (fewer digits), not because decimals_left decreases. Actually let's trace: min_value = 1234567890123456789 (19 digits). min_s has 19 chars. c = '1'. digit_range('1','1'), then recurse with min_s.substr(1) = "234567890123456789" (18 digits), decimals_left = 15. Next c = '2', recurse with 17 digits, decimals_left = 14... So each recursion reduces digits by 1 and decimals_left by 1. After 16 recursions, decimals_left = 0? Wait, less_decimals = max(decimals_left - 1, 1), so decimals_left never goes below 1. But digits keep decreasing. When min_s has 1 digit left, len = 1, c = min_s[0]. Then `build_min_max_int(std::stoll(min_s.substr(1)), ...)` — substr(1) of a 1-char string is empty string! `std::stoll("")` throws `std::invalid_argument`. Hmm wait, let me re-check.
+
+Actually wait. Let me re-read:
+
+```cpp
+} else {
+    auto min_s = std::to_string(min_value);
+    auto len = min_s.length();
+    auto c = min_s[0];
+
+    if (c > '1') {
+        digit_range(top_level ? '1' : '0', c - 1);
+        out << " ";
+        more_digits

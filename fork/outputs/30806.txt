@@ -1,0 +1,54 @@
+run 30806 | pool_copy_own_card_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf | decode 28.53 t/s | prompt 987.1 t/s | 1024 tokens | args: -np 1 --moe swap-lead=0,wait-swaps=1,upload-wait=0,idle-up=0 | power 280+280 W | 2026-11-18 11:48:36
+
+<think>Let me analyze this code review request. The user has provided two source files:
+
+1. `common/json-schema-to-grammar.cpp` - A JSON schema to GBNF grammar converter
+2. `common/arg.cpp` - Argument parsing code (appears to be cut off mid-file)
+
+The second file appears to be truncated - it ends abruptly at `static bool spec_types_is_default(const common_params & params) {` with no body. So I should note that the file appears incomplete.
+
+Let me do a thorough code review of both files.
+
+## File 1: json-schema-to-grammar.cpp
+
+Let me go through this carefully.
+
+### `build_repetition` function
+
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+Issues:
+- If `min_items > 0` and `max_items == 0`, returns "" — but that's semantically wrong if min_items > 0 (a schema requiring at least 1 item with max 0 is unsatisfiable; returning empty string silently accepts nothing). Actually wait, if max_items == 0 and min_items > 0, the schema is contradictory. Returning "" means the grammar matches empty, which is wrong — it should probably be an error. But maybe this is intentional to handle `max_items: 0` arrays. Hmm, but if min_items >= 1 and max_items == 0, the correct grammar would be something that never matches. Returning "" would allow empty content. This is a potential correctness bug, though arguably an edge case of invalid schema.
+- Negative min_items: if min_items is negative (e.g., -1), `item_rule + "{" + std::to_string(-1) + ...}` would produce `{-1,...}` which is invalid GBNF. There's no validation that min_items >= 0. In the array case, `arr.min_items` comes from schema; could be negative? Let me check: in KIND_ARRAY, `arr.min_items` is used directly. If schema has negative min_items... The struct probably defaults to 0. But no clamping.
+- Also `min_items > max_items` case: e.g., min 5, max 3 → `{5,3}` invalid grammar. No validation.
+- Recursion with separator: `build_repetition("(" + separator_rule + " " + item_rule + ")", ...)` — the separator rule is inserted raw into parentheses; if separator_rule contains special chars it's fine since it's a rule reference like `"," space`. OK.
+- Note: when `min_items == 0 && max_items == 1` with a separator, the code goes to the separator branch: result = item + " " + build_repetition("(sep item)", 0, 0) → build_repetition with min 0 max 0 returns "" → result = item + " " + "" → then wrapped in "(...)?" → `item ( )?` hmm wait: `result = item_rule + " " + build_repetition(...)` where inner returns "" so result = "item " then "( " + result + " )?" → `( item  )?` — that's `item` optionally followed by empty group? Actually `( item )?` — wait let me recompute: result = item_rule + " " + "" = "item ". Then result = "(" + "item " + ")?" = "( item )?". So the grammar is `( item )?` — correct for min 0 max 1. OK fine.
+
+Wait, actually there's a subtle bug: for min_items == 0, max_items == 1 with separator: inner call build_repetition("(sep item)", 0, has_max ? max_items - 1 : ...) = build_repetition("(

@@ -1,0 +1,120 @@
+run 30650 | upload_wait_tuned_first_vk | pf12k | DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00005.gguf | decode 28.62 t/s | prompt 507.8 t/s | 4096 tokens | args: -np 1 | power 200+200 W | 2026-11-18 04:52:01
+
+<think>We need answer complete fixed version of source file. Need identify bugs and mark changes comments. Need output every line from first to last, fixed. Source includes two files concatenated? It says file common/json-schema-to-grammar.cpp then // file: common/arg.cpp. Need return complete fixed version of following source file: every line from first to last. Likely need fix bugs in entire provided source. Need inspect for bugs. Need produce full code with comments marking changes. Need not summarize. Need include all lines. Need determine intended bugs. This is likely from llama.cpp code. Need compare to actual upstream? Need identify errors in provided code. We need fix every bug. Need be careful.
+
+We have two files in one source? The prompt says "source file" but includes two file comments. Maybe they want fixed version of entire snippet. Need output all lines. Need mark each change by comment. Need not skip unchanged parts. Need include comments for changes. Need fix bugs.
+
+Let's analyze code thoroughly.
+
+First file json-schema-to-grammar.cpp. Need identify bugs.
+
+Potential issues:
+- `build_repetition` separator logic: For separator_rule non-empty, result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items); if min_items==0 result = "(" + result + ")?". Need check max_items -1 when max_items=0? Already max_items==0 returns "". If max_items=1 and min_items=0? earlier returns item_rule+"?" before separator? Actually if min_items==0 && max_items==1 returns item_rule+"?" regardless separator. For separator, if max_items=1, min_items=1? result item + " " + build_repetition(...,0,0) => item + " " + "" = item + " " trailing space? Bug? Let's test. build_repetition(item, min=1,max=1, sep=",") should item. Current: result = item_rule + " " + build_repetition("(" + sep + " " + item + ")", min_items==0?0:min_items-1=0, has_max? max_items-1=0) => build_repetition(...,0,0) returns "" (max_items==0). result = item_rule + " " -> trailing space. Then min_items !=0 no optional. So rule has trailing space. In array rule: "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\""; if min=1 max=1, result item_rule + " " then plus " space \"]\"" => item_rule + "  space" double space? Grammar spaces are literal? Actually SPACE_RULE includes optional spaces? The rule string uses `space` nonterminal, not literal. `item_rule + " " + ...` adds literal space in grammar? In GBNF, spaces in rule are literal? Wait GBNF syntax: spaces separate tokens, not literal unless quoted. In rule content, `space` is a rule name, and spaces between tokens are ignored? In GBNF, whitespace is ignored? Actually GBNF grammar: whitespace between tokens is ignored? In llama grammar, spaces in rule definitions are ignored? Let's recall: GBNF syntax: `space ::= | " " | "\n"{1,2} [ \t]{0,20}`. In rule content, spaces are separators, not literal. So trailing space harmless? But maybe not. However build_repetition with separator should avoid trailing space. Upstream code? Let's recall llama.cpp common/json-schema-to-grammar.cpp. I can reconstruct. There is function build_repetition:
+```
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+    if (max_items == 0) return "";
+    if (min_items == 0 && max_items == 1) return item_rule + "?";
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) return item_rule + "+";
+        if (min_items == 0 && !has_max) return item_rule + "*";
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) result = "(" + result + ")?";
+    return result;
+}
+```
+Maybe upstream exactly. But there is bug: if max_items == 1 and min_items == 1 with separator, result item + " " + build_repetition(...,0,0) = item + " " (trailing). But maybe grammar ignores. Not a bug? Could be.
+
+- `build_min_max_int`: Need inspect. It uses `std::function` but includes <functional>? Not included in first file. It uses std::function in build_min_max_int and replacePattern. Need include <functional>. The source includes algorithm, limits, map, regex, sstream, string, unordered_map, unordered_set, vector. Missing <functional>, <stdexcept>, <cstdint>? It uses int64_t, std::runtime_error, std::invalid_argument, fprintf. Need include <cstdint>, <stdexcept>, <cstdio>? common.h may include. But fixed version should add includes. Need mark.
+
+- `build_min_max_int` uses `std::string_view` but no include <string_view>. Need add.
+
+- `uniform_range` lambda: `auto sub_len = from.length() - i - 1;` If i < from.length() && i < to.length(), and from/to lengths? It assumes from and to same length? In build_min_max_int, uniform_range called with min_s and string_repeat("9", digits) where min_s length maybe digits? Let's check. For digits loop: min_digits to max_digits-1. min_s initially length min_digits. For digits = min_digits, string_repeat("9", digits) length digits = min_digits. Then min_s = "1" + zeros(digits) length digits+1. Next digits = min_digits+1, min_s length digits? Actually after update min_s length digits+1, and next digits = min_digits+1, so equal. Good. Final uniform_range(min_s, max_s) same length? min_s length max_digits? After loop, min_s length max_digits, max_s length max_digits. Good. In recursive calls, from/to same length? For uniform_range(from_sub, sub_nines) same length. For uniform_range(sub_zeros, to_sub) same length. So okay.
+
+But `uniform_range` logic may have bugs. Need compare upstream. Let's recall actual llama.cpp code. I can search memory. There is function `build_min_max_int` in llama.cpp. I remember code:
+```
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+
+    auto digit_range = [&](char from, char to) {
+        out << "[";
+        if (from == to) out << from;
+        else out << from << "-" << to;
+        out << "]";
+    };
+    auto more_digits = [&](int min_digits, int max_digits) {
+        out << "[0-9]";
+        if (min_digits == max_digits && min_digits == 1) return;
+        out << "{";
+        out << min_digits;
+        if (max_digits != min_digits) {
+            out << ",";
+            if (max_digits != std::numeric_limits<int>::max()) out << max_digits;
+        }
+        out << "}";
+    };
+    std::function<void(const std::string_view &, const std::string_view &)> uniform_range = ...
+```
+I recall a bug in `uniform_range`: `auto sub_len = from.length() - i - 1;` then `auto from_sub = from.substr(i + 1);` etc. It uses `to[i] - 1` when `to[i]` could be '0'? But in cases? Need check.
+
+Potential bug: In `uniform_range`, when `from_sub == sub_zeros`, it does `digit_range(from[i], to[i] - 1);` If `to[i] == from[i]`? But i is first differing char, so from[i] < to[i]. If to[i] - 1 could be less than from[i]? If to[i] = from[i]+1, then to[i]-1 = from[i], okay. If to[i] = '0'? Since from[i] < to[i], to[i] cannot be '0' if from[i] digit? Could be from[i]='0', to[i]='1'. okay. If from[i]='9', to[i]? no.
+
+But there is a bug: `digit_range(from[i], to[i] - 1);` when `to[i] - 1` is less than from[i]? no.
+
+Another bug: In `uniform_range`, if `from_sub == sub_zeros`, it outputs `digit_range(from[i], to[i] - 1); out << " "; more_digits(sub_len, sub_len);` This represents numbers with prefix from[0..i-1], digit from[i]..to[i]-1, then any sub_len digits. But if from_sub == sub_zeros, the lower bound has all zeros after i. For digit from[i] to to[i]-1, any suffix works. Good. Then if !to_reached, output `digit_range(to[i], to[i]); out << " "; uniform_range(sub_zeros, to_sub);` This represents prefix + to[i] + suffix from zeros to to_sub. Good.
+
+But if `from_sub != sub_zeros`, it outputs `[from[i]] (uniform_range(from_sub, sub_nines))` then if from[i] < to[i]-1, output `| digit_range(from[i]+1, to[i]-1) more_digits(sub_len, sub_len)`; then if !to_reached output `| digit_range(to[i], to[i]) uniform_range(sub_zeros, to_sub)`. This seems okay.
+
+Potential bug: `more_digits(0, decimals_left - 1)` when decimals_left -1 could be -? less_decimals = max(decimals_left -1,1). In has_min branch min_value<0: `more_digits(0, decimals_left - 1);` If decimals_left=1, max_digits=0. more_digits outputs `[0-9]{0,0}`? Let's see: min_digits=0, max_digits=0. It outputs `[0-9]` then if min_digits==max_digits && min_digits==1 false. out << "{"; out << 0; if max_digits != min_digits false; out << "}"; => `[0-9]{0}`. Is that valid? Maybe. But should use less_decimals? Upstream maybe uses `more_digits(0, decimals_left - 1);` for negative min. Need check.
+
+- `_visit_pattern`: `_add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));` This calls _add_primitive with name "string" and returns rule name "string", then _add_rule(name, "string"). If name is e.g. "root", creates root ::= string. But if name is "string"? is_reserved? In visit, rule_name = is_reserved_name(name) ? name + "-" : ... So if name "string", rule_name "string-". But _visit_pattern called with rule_name. It calls _add_primitive("string", ...) which adds primitive "string" (reserved). Then _add_rule(name, "string") where name is rule_name. If rule_name is "string-", okay. But if name is "root", _add_primitive("string") adds string, then _add_rule("root","string"). Good. However if name is "string-" and _add_primitive("string") returns "string", then _add_rule("string-","string"). Good. But if name is "string" (not possible due reserved). Fine.
+
+- `_pattern_to_rule`: `std::string sub_pattern = pattern.substr(1, pattern.length() - 2);` If pattern length <2 checked. Good.
+- `to_rule` lambda: `return is_literal ? "\"" + s + "\"" : s;` But literal may contain escaped characters already? In transform, literal accumulates raw characters and escapes. For literal from regex, they handle `"` by adding `\\\"`, and escapes by adding `sub_pattern.substr(i, escape_length)` which includes backslash. Then to_rule wraps in quotes. But if literal contains `\"`? It will be `"` + `\"` + `"`? Actually if literal contains `\"` (backslash quote), to_rule returns `"\"`? Let's test: literal = `\"` (two chars backslash quote). to_rule returns `"` + `\"` + `"` = `"\"`? That is a GBNF literal containing escaped quote? In GBNF, `"` starts literal, `\"` is escaped quote, then `"` ends. So `"\"` is valid? It is `"` + `\"` + `"` = `"\"` (three chars? Actually string: quote, backslash, quote, quote? Wait concatenation: `"` + `\"` + `"` = `"\"`? Let's write: first char `"`, then backslash, then `"`, then `"`? No, `\"` is two chars: backslash and quote. So result: `"` + `\` + `"` + `"` = `"\"`? That's four chars: quote, backslash, quote, quote. In GBNF, literal starts with first quote, then backslash escapes second quote, then third quote closes? Actually sequence: `"` (open), `\` (escape), `"` (escaped quote), `"` (close). So valid. Good.
+
+But in `_pattern_to_rule`, when handling `{` repetition, it does:
+```
+auto &last = seq.back();
+auto &sub = last.first;
+auto sub_is_literal = last.second;
+if (!sub_is_literal) {
+    std::string & sub_id = sub_rule_ids[sub];
+    if (sub_id.empty()) {
+        sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+    }
+    sub = sub_id;
+}
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+seq.back().second = false;
+```
+Potential bug: If sub_is_literal, `sub` is literal string (raw, not escaped). They wrap in quotes without escaping. But literal may contain characters needing escape? In transform, literal handling escapes `"` and backslashes, but other chars like `\n`? It handles escapes by adding `sub_pattern.substr(i, escape_length)` which includes backslash and hex etc. For literal characters, if raw newline? Regex pattern could contain newline? It would be literal newline, but GBNF literal needs escape. However pattern is regex string; newline in pattern? Maybe not. But `to_rule` for literal also wraps without escaping. Wait `to_rule` wraps `s` in quotes, but `s` may contain escaped sequences. For literal from transform, they already escape `"` and backslashes. But they don't escape `\r`, `\n`? If pattern contains actual newline, it would be literal newline, not escaped. But regex pattern from JSON schema likely no newline? Could be. Upstream maybe uses `format_literal`? Let's recall actual code. In llama.cpp, `_pattern_to_rule` uses `to_rule`:
+```
+auto to_rule = [&](const literal_or_rule & ls) {
+    auto is_literal = ls.second;
+    auto s = ls.first;
+    return is_literal ? "\"" + s + "\"" : s;
+};
+```
+And literal handling:
+```
+} else if (sub_pattern[i] == '"') {
+    literal += "\\\"";
+    i++;
+} else if (!is_non_literal(sub_pattern[i]) && ...) {
+    literal += sub_pattern[i];
+    i++;
+}
+```
+So actual newline would be added raw. But maybe not.
+
+- `_pattern_to_rule` handling `|`: It pushes `"|"` as a literal_or_rule with false? `seq.emplace_back("|", false);` Then join_seq joins with spaces: results include `|` as rule token. In GBNF, `|` is alternation operator. But if it's in sequence, join_seq will produce `a | b`? Let's see: seq contains literal a, then `|` false, then literal b. join_seq: ret: literal a, then flush, push `|`, then literal b. results: `"a"`, `|`, `"b"` joined by spaces => `"a" | "b"`. Good. But if `|` appears inside parentheses? transform returns join_seq for group. Good.
+
+- `_pattern_to_rule` handling `*` etc: `seq.back() = std::make_pair(to_rule(seq.back()) + c, false);` If seq.back() is literal, to_rule returns `"literal"`, then + c => `"literal"*`. Good. If seq.back() is rule, to_rule returns rule, + c => `rule*`. Good. But if seq.back() is already a repetition? e.g. `a**` invalid regex? It would append `*` to `a

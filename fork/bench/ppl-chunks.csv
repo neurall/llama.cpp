@@ -4228,3 +4228,87 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-17 22:46:40,"rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9403
 2026-11-17 22:46:57,"rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9387
 2026-11-17 22:46:57,"rel_vk_exit_nodriver -np 1 --cpu-moe --moe-expert-cache 19 -t 6 -tb 8 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9397
+2026-11-18 05:52:05,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3655
+2026-11-18 05:52:05,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4191
+2026-11-18 05:54:07,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3753
+2026-11-18 05:54:07,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4261
+2026-11-18 05:56:40,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4584
+2026-11-18 05:56:40,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5698
+2026-11-18 05:58:13,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4535
+2026-11-18 05:58:13,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5776
+2026-11-18 06:00:13,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1302
+2026-11-18 06:00:13,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.12
+2026-11-18 06:01:17,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1364
+2026-11-18 06:01:17,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.124
+2026-11-18 06:02:51,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1266
+2026-11-18 06:02:51,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1138
+2026-11-18 06:03:50,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1266
+2026-11-18 06:03:50,rel_vk_exit_nodriver -np 1 --cpu-moe -t 6 -tb 8 -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1138
+2026-11-18 07:04:52,rel_tuners_take_turns -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3668
+2026-11-18 07:04:52,rel_tuners_take_turns -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4255
+2026-11-18 07:06:53,rel_tuners_take_turns -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3733
+2026-11-18 07:06:53,rel_tuners_take_turns -np 1 --cpu-moe -t 6 -tb 8,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.425
+2026-11-18 09:15:12,thread_walk_refill -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.364
+2026-11-18 09:15:12,thread_walk_refill -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4218
+2026-11-18 09:17:52,thread_walk_refill -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3673
+2026-11-18 09:17:52,thread_walk_refill -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4211
+2026-11-18 09:20:11,thread_walk_refill -np 1 --cpu-moe -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4623
+2026-11-18 09:20:11,thread_walk_refill -np 1 --cpu-moe -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5817
+2026-11-18 09:21:36,thread_walk_refill -np 1 --cpu-moe -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4537
+2026-11-18 09:21:36,thread_walk_refill -np 1 --cpu-moe -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5776
+2026-11-18 09:23:31,thread_walk_refill -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1346
+2026-11-18 09:23:31,thread_walk_refill -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1219
+2026-11-18 09:24:34,thread_walk_refill -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1294
+2026-11-18 09:24:34,thread_walk_refill -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.124
+2026-11-18 09:26:07,thread_walk_refill -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1291
+2026-11-18 09:26:07,thread_walk_refill -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1148
+2026-11-18 09:27:04,thread_walk_refill -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1266
+2026-11-18 09:27:04,thread_walk_refill -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1136
+2026-11-18 09:28:32,thread_walk_refill -np 1 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-18 09:28:32,thread_walk_refill -np 1 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-18 09:29:29,thread_walk_refill -np 1 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-18 09:29:29,thread_walk_refill -np 1 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-18 09:30:59,thread_walk_refill -np 1 --cpu-moe --moe-expert-cache 90 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6601
+2026-11-18 09:30:59,thread_walk_refill -np 1 --cpu-moe --moe-expert-cache 90 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5233
+2026-11-18 09:31:29,thread_walk_refill -np 1 --cpu-moe --moe-expert-cache 90 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6697
+2026-11-18 09:31:29,thread_walk_refill -np 1 --cpu-moe --moe-expert-cache 90 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5249
+2026-11-18 09:32:31,"thread_walk_refill -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9406
+2026-11-18 09:32:31,"thread_walk_refill -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9416
+2026-11-18 09:32:47,"thread_walk_refill -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9404
+2026-11-18 09:32:47,"thread_walk_refill -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9408
+2026-11-18 09:33:33,stock-b12499-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-18 09:33:33,stock-b12499-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-18 09:34:33,stock-b12499-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.564
+2026-11-18 09:34:33,stock-b12499-official -np 1,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.422
+2026-11-18 10:48:35,pool_copy_own_card -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3673
+2026-11-18 10:48:35,pool_copy_own_card -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4175
+2026-11-18 10:50:23,pool_copy_own_card -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,1,1.3726
+2026-11-18 10:50:23,pool_copy_own_card -np 1 --cpu-moe,GLM-5.3-Flash-GSQ-RCO-3.0bit.gguf,ppl,2,1.4224
+2026-11-18 10:52:48,pool_copy_own_card -np 1 --cpu-moe -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4519
+2026-11-18 10:52:48,pool_copy_own_card -np 1 --cpu-moe -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5766
+2026-11-18 10:54:14,pool_copy_own_card -np 1 --cpu-moe -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,1,1.4483
+2026-11-18 10:54:14,pool_copy_own_card -np 1 --cpu-moe -lm pin,MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf,ppl,2,1.5723
+2026-11-18 10:56:15,pool_copy_own_card -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1265
+2026-11-18 10:56:15,pool_copy_own_card -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1219
+2026-11-18 10:57:18,pool_copy_own_card -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,1,1.1249
+2026-11-18 10:57:18,pool_copy_own_card -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf,ppl,2,1.1188
+2026-11-18 10:58:55,pool_copy_own_card -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1291
+2026-11-18 10:58:55,pool_copy_own_card -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1148
+2026-11-18 10:59:53,pool_copy_own_card -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,1,1.1266
+2026-11-18 10:59:53,pool_copy_own_card -np 1 --cpu-moe -lm pin,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,ppl,2,1.1136
+2026-11-18 11:01:22,pool_copy_own_card -np 1 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-18 11:01:22,pool_copy_own_card -np 1 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-18 11:02:20,pool_copy_own_card -np 1 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,1,1.5637
+2026-11-18 11:02:20,pool_copy_own_card -np 1 -lm pin,Qwen3.8-27B-IQ4_NL.gguf,ppl,2,1.423
+2026-11-18 11:03:50,pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 90 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.6666
+2026-11-18 11:03:50,pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 90 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5242
+2026-11-18 11:04:21,pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 90 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,1,1.668
+2026-11-18 11:04:21,pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 90 -lm pin,Qwen3.6-35B-A3B-GSQ-hybrid.gguf,ppl,2,1.5239
+2026-11-18 11:05:22,"pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9429
+2026-11-18 11:05:22,"pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9431
+2026-11-18 11:05:37,"pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9378
+2026-11-18 11:05:37,"pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -lm pin",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9398
+2026-11-18 14:18:32,"rel_pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -dev CUDA0,Vulkan0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9368
+2026-11-18 14:18:32,"rel_pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -dev CUDA0,Vulkan0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9389
+2026-11-18 14:18:56,"rel_pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -dev CUDA0,Vulkan0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9386
+2026-11-18 14:18:56,"rel_pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -dev CUDA0,Vulkan0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9397

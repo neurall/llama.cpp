@@ -1,0 +1,42 @@
+run 30823 | pool_copy_own_card_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.58 t/s | prompt 1427.9 t/s | 1024 tokens | args: -np 1 --moe swap-lead=0,wait-swaps=0,upload-wait=0,idle-up=0 -lm pin | power 280+280 W | 2026-11-18 12:13:45
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for issues including bugs, style, performance, security, maintainability, and correctness.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and min=1, no max: returns `item_rule + "+"` - correct
+  - When separator is empty and min=0, no max: returns `item_rule + "*"` - correct
+  - When separator is empty with min/max: returns `{min,max}` - correct
+  - With separator: builds `item (sep item){min-1,max-1}` - this looks correct for the first item plus repetitions of separator+item
+  - When min_items == 0 with separator: wraps in `()?` - correct
+
+### build_min_max_int function
+- Complex function for generating integer ranges. Let me check:
+  - `decimals_left` parameter defaults to 16 - this limits digit depth
+  - `top_level` parameter controls whether leading zeros are allowed
+  - The `uniform_range` lambda is recursive via `std::function` - potential for stack overflow with very long numbers, but bounded by `decimals_left`
+  - When both min and max are negative: negates and swaps - correct
+  - When min is negative: handles negative part then continues with non-negative - correct
+  - The digit counting logic looks correct for generating ranges
+
+- **Potential issue**: In `build_min_max_int`, when `min_value < 0 && max_value < 0`, it calls `build_min_max_int(-max_value, -min_value, ...)`. If `min_value` is `INT64_MIN`, then `-min_value` would overflow. But this case is handled by the `has_min` check since `INT64_MIN` means "no min". Wait, actually if both are negative, `has_min` and `has_max` are both true. If `min_value` is `INT64_MIN`, then `has_min` is false, so we wouldn't enter this branch. Let me re-check... Actually `has_min = min_value != std::numeric_limits<int64_t>::min()`, so if min_value is INT64_MIN, has_min is false. So the negative-negative branch only runs when both are explicitly set and both negative. In that case, `-min_value` where min_value is negative but not INT64_MIN should be safe. And `-max_value` where max_value is negative but not INT64_MAX should be safe. OK, this seems fine.
+
+- **Potential issue**: In the `has_min` branch when `min_value < 0`, it calls `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)`. This passes INT64_MIN as min_value, which means `has_min` will be false in the recursive call, so it will go to the `has_max` branch. That seems intentional.
+
+- **Potential issue**: `std::stoll(min_s.substr(1))` - if min_s is "0", substr(1) is empty, and stoll would throw. But this is in the `min_value > 9` branch (the `else` after `min_value <= 9`), so min_s would be at least "10", so substr(1) would be at least "1". OK.
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- These are static unordered_maps. The `is_reserved_name` function uses a static local set initialized from these maps. Since these are file-scope statics, initialization order could be an issue if `is_reserved_name` is called before the maps are initialized. However, since they're all in the same translation unit and the static local in `is_reserved_name` is initialized on first call, this should be fine as long as `is_reserved_name` isn't called during static initialization of the maps themselves.
+
+### _add_rule method
+- The deduplication logic: if the rule already exists with the same content, it returns the existing name. If it exists with different content, it appends a number. This could potentially create many rules if called repeatedly with different content for the same name.
+
+### _visit_pattern method
+- Takes a snapshot of `_rules` before attempting to convert the pattern, and restores on failure. This is a good rollback mechanism.
+- However, `_refs_being_resolved` is not snapsh

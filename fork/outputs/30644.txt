@@ -1,0 +1,454 @@
+run 30644 | upload_wait_tuned_first_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 33.56 t/s | prompt 858.2 t/s | 4096 tokens | args: -np 1 -lm pin | power 200+200 W | 2026-11-18 04:39:12
+
+<think>Let me analyze this source file carefully to find all bugs. The file contains two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`.
+
+Let me go through each file systematically.
+
+## common/json-schema-to-grammar.cpp
+
+1. **`build_repetition` function**: Looks correct.
+
+2. **`build_min_max_int` function**: Let me check carefully...
+   - The `uniform_range` lambda looks correct.
+   - The negative number handling looks correct.
+   - The `has_min` only case looks correct.
+   - The `has_max` only case looks correct.
+
+3. **`SPACE_RULE`**: Looks correct.
+
+4. **`PRIMITIVE_RULES`**: Looks correct.
+
+5. **`STRING_FORMAT_RULES`**: Looks correct.
+
+6. **`is_reserved_name`**: Looks correct.
+
+7. **`INVALID_RULE_CHARS_RE`**: `"[^a-zA-Z0-9-]+"` - looks correct.
+
+8. **`GRAMMAR_LITERAL_ESCAPE_RE`**: `"[\r\n\"\\\\]"` - this is a regex pattern. In C++, the string literal `"[\r\n\"\\\\]"` becomes `[\r\n"\\]` which is a regex matching `\r`, `\n`, `"`, or `\`. Looks correct.
+
+9. **`GRAMMAR_RANGE_LITERAL_ESCAPE_RE`**: `"[\r\n\"\\]\\-\\\\]"` - becomes `[\r\n"\]\-\\]` which matches `\r`, `\n`, `"`, `]`, `-`, or `\`. Looks correct.
+
+10. **`replacePattern`**: Looks correct.
+
+11. **`format_literal`**: Looks correct.
+
+12. **`gbnf_escape_length`**: Looks correct.
+
+13. **`common_chat_schema_converter` class**: Let me check the methods...
+    - `_add_rule`: Looks correct.
+    - `_generate_union_rule`: Looks correct.
+    - `_visit_pattern`: Looks correct.
+    - `_pattern_to_rule`: Let me check carefully...
+      - The `join_seq` lambda: Looks correct.
+      - The main parsing loop: Looks correct.
+      - The `{` handling: Looks correct.
+      - The literal handling: Looks correct.
+    - `_not_strings`: Looks correct.
+    - `_resolve_ref`: Looks correct.
+    - `_build_object_rule`: Looks correct.
+    - `_add_primitive`: Looks correct.
+    - `visit`: Looks correct.
+    - `check_errors`: Looks correct.
+    - `format_grammar`: Looks correct.
+
+14. **`json_schema_to_grammar` functions**: Looks correct.
+
+15. **`build_grammar`**: Looks correct.
+
+## common/arg.cpp
+
+1. **Includes**: Looks correct.
+
+2. **`read_file`**: Looks correct.
+
+3. **`get_common_arg_defs`**: Looks correct.
+
+4. **`common_arg` methods**: Let me check...
+   - `set_examples`: Looks correct.
+   - `set_excludes`: Looks correct.
+   - `set_env`: Looks correct.
+   - `set_sampling`: Looks correct.
+   - `set_spec`: Looks correct.
+   - `set_preset_only`: Looks correct.
+   - `in_example`: Looks correct.
+   - `is_exclude`: Looks correct.
+   - `get_value_from_env`: Looks correct.
+   - `has_value_from_env`: Looks correct.
+
+5. **`break_str_into_lines`**: Looks correct.
+
+6. **`to_string`**: Looks correct.
+
+7. **`get_args`**: Looks correct.
+
+8. **`get_env`**: Looks correct.
+
+9. **`parse_tensor_buffer_overrides`**: Looks correct.
+
+10. **`clean_file_name`**: Looks correct.
+
+11. **`handle_model_result`**: Looks correct.
+
+12. **`kv_cache_types`**: Looks correct.
+
+13. **`kv_cache_type_from_str`**: Looks correct.
+
+14. **`get_all_kv_cache_types`**: Looks correct.
+
+15. **`parse_bool_value`**: Looks correct.
+
+16. **`arg_removed`**: Looks correct.
+
+17. **`get_default_local_path`**: Looks correct.
+
+18. **`spec_types_is_default`**: The function is cut off at the end.
+
+Wait, the file ends abruptly with `static bool spec_types_is_default(const common_params & params) {`. This seems like the file is incomplete/truncated. But the user asked me to return the complete fixed version of the source file.
+
+Let me re-read the instructions: "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment."
+
+So I need to find bugs in the provided code. Let me look more carefully...
+
+Actually, wait. Let me re-read the code more carefully for subtle bugs.
+
+Looking at `build_repetition`:
+```cpp
+static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    auto has_max = max_items != std::numeric_limits<int>::max();
+
+    if (max_items == 0) {
+        return "";
+    }
+    if (min_items == 0 && max_items == 1) {
+        return item_rule + "?";
+    }
+
+    if (separator_rule.empty()) {
+        if (min_items == 1 && !has_max) {
+            return item_rule + "+";
+        }
+        if (min_items == 0 && !has_max) {
+            return item_rule + "*";
+        }
+        return item_rule + "{" + std::to_string(min_items) + "," + (has_max ? std::to_string(max_items) : "") + "}";
+    }
+
+    auto result = item_rule + " " + build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items);
+    if (min_items == 0) {
+        result = "(" + result + ")?";
+    }
+    return result;
+}
+```
+
+This looks correct to me.
+
+Let me look at `build_min_max_int` more carefully...
+
+Actually, I notice the `uniform_range` lambda captures `out` by reference. Let me check if there's an issue with the `sub_len` calculation:
+
+```cpp
+auto sub_len = from.length() - i - 1;
+```
+
+If `i` is the last character of `from`, then `sub_len` would be 0. That's handled by the `if (sub_len > 0)` check. Looks correct.
+
+Let me look at the `_pattern_to_rule` function more carefully...
+
+In the `{` handling:
+```cpp
+auto nums = string_split(curly_brackets.substr(1, curly_brackets.length() - 2), ",");
+```
+
+This extracts the content between `{` and `}`. Looks correct.
+
+```cpp
+if (nums.size() != 1 && nums.size() != 2) {
+    throw unsupported_pattern("wrong number of values in curly brackets");
+}
+```
+
+Looks correct.
+
+```cpp
+try {
+    if (nums.size() == 1) {
+        min_times = max_times = std::stoi(nums[0]);
+    } else {
+        if (!nums[0].empty()) {
+            min_times = std::stoi(nums[0]);
+        }
+        if (!nums[1].empty()) {
+            max_times = std::stoi(nums[1]);
+        }
+    }
+} catch (const std::logic_error &) {
+    throw unsupported_pattern("invalid number in curly brackets");
+}
+```
+
+Looks correct.
+
+```cpp
+if (seq.empty()) {
+    throw invalid_pattern("nothing to repeat");
+}
+auto &last = seq.back();
+auto &sub = last.first;
+auto sub_is_literal = last.second;
+
+if (!sub_is_literal) {
+    std::string & sub_id = sub_rule_ids[sub];
+    if (sub_id.empty()) {
+        sub_id = _add_rule(name + "-" + std::to_string(sub_rule_ids.size()), sub);
+    }
+    sub = sub_id;
+}
+seq.back().first = build_repetition(
+    sub_is_literal ? "\"" + sub + "\"" : sub,
+    min_times,
+    max_times,
+    ""
+);
+seq.back().second = false;
+```
+
+Wait, there's a potential issue here. When `sub_is_literal` is true, `sub` is the literal string. Then `build_repetition` is called with `"\"" + sub + "\""`. But `sub` might contain characters that need escaping in the grammar. However, looking at how literals are built earlier in the code, they seem to be pre-escaped. Let me check...
+
+Actually, looking at the literal handling:
+```cpp
+} else if (sub_pattern[i] == '"') {
+    literal += "\\\"";
+    i++;
+}
+```
+
+So `"` is escaped as `\"` in the literal. And other characters are added as-is. So when we do `"\"" + sub + "\""`, the literal is wrapped in quotes. This should be correct for GBNF.
+
+Hmm, but wait - what about backslashes? In the literal handling:
+```cpp
+if (sub_pattern[i] == '\\') {
+    ...
+    char next = sub_pattern[i + 1];
+    if (ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.find(next) != ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS.end()) {
+        i++;
+        literal += sub_pattern[i];
+        i++;
+    } else {
+        auto escape_length = gbnf_escape_length(sub_pattern, i);
+        if (escape_length == 0) {
+            throw unsupported_pattern("unsupported escape: " + sub_pattern.substr(i, 2));
+        }
+        literal += sub_pattern.substr(i, escape_length);
+        i += escape_length;
+    }
+}
+```
+
+So for characters in `ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS`, the backslash is removed and the character is added directly. For other escapes, the escape sequence is kept as-is.
+
+This seems correct for building a GBNF literal.
+
+Let me look at the `_build_object_rule` function more carefully...
+
+Actually, I think I need to look at this more carefully. Let me check the `get_recursive_refs` function:
+
+```cpp
+std::function<std::string(const std::vector<std::string> &, bool)> get_recursive_refs = [&](const std::vector<std::string> & ks, bool first_is_optional) {
+    std::string res;
+    if (ks.empty()) {
+        return res;
+    }
+    const std::string& k = ks[0];
+    std::string kv_rule_name = prop_kv_rule_names[k];
+    std::string comma_ref = "( \",\" space " + kv_rule_name + " )";
+    if (first_is_optional) {
+        res = comma_ref + (k == "*" ? "*" : "?");
+    } else {
+        res = kv_rule_name + (k == "*" ? " " + comma_ref + "*" : "");
+    }
+    if (ks.size() > 1) {
+        res += " " + _add_rule(
+            name + (name.empty() ? "" : "-") + k + "-rest",
+            get_recursive_refs(std::vector<std::string>(ks.begin() + 1, ks.end()), true)
+        );
+    }
+    return res;
+};
+```
+
+This looks correct to me.
+
+Let me look at the `visit` function:
+
+```cpp
+std::string visit(const common_chat_schema & schema, const std::string & name) {
+    std::string rule_name = is_reserved_name(name) ? name + "-" : name.empty() ? "root" : name;
+    std::string sub_name  = name + (name.empty() ? "" : "-");
+    ...
+}
+```
+
+Looks correct.
+
+Let me look at the `KIND_STRING` case:
+
+```cpp
+case common_chat_schema::KIND_STRING: {
+    const auto & str = as<common_chat_schema_string>(schema);
+    if (!str.pattern.empty()) {
+        return _visit_pattern(str.pattern, rule_name);
+    }
+    if (str.format == common_chat_schema::FORMAT_UUID) {
+        return _visit_primitive(rule_name, "uuid");
+    }
+    if (str.format != common_chat_schema::FORMAT_NONE) {
+        std::string prim_name = std::string(str.format == common_chat_schema::FORMAT_DATE ? "date" : str.format == common_chat_schema::FORMAT_TIME ? "time" : "date-time") + "-string";
+        return _add_rule(rule_name, _add_primitive(prim_name, STRING_FORMAT_RULES.at(prim_name)));
+    }
+    if (str.min_length > 0 || str.max_length >= 0) {
+        std::string char_rule = _add_primitive("char", PRIMITIVE_RULES.at("char"));
+        int max_len = str.max_length < 0 ? std::numeric_limits<int>::max() : str.max_length;
+        return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, str.min_length, max_len) + " \"\\\"\"");
+    }
+    return _visit_primitive(rule_name, "string");
+}
+```
+
+Looks correct.
+
+Let me look at the `KIND_INTEGER` case:
+
+```cpp
+case common_chat_schema::KIND_INTEGER: {
+    const auto & i = as<common_chat_schema_integer>(schema);
+    if (i.minimum == std::numeric_limits<int64_t>::min() && i.maximum == std::numeric_limits<int64_t>::max()) {
+        return _visit_primitive(rule_name, "integer");
+    }
+    std::stringstream out;
+    out << "(";
+    build_min_max_int(i.minimum, i.maximum, out);
+    out << ")";
+    return _add_rule(rule_name, out.str());
+}
+```
+
+Looks correct.
+
+Let me look at the `KIND_ARRAY` case:
+
+```cpp
+case common_chat_schema::KIND_ARRAY: {
+    const auto & arr = as<common_chat_schema_array>(schema);
+    if (arr.items->kind() == common_chat_schema::KIND_ANY && arr.min_items == 0 && arr.max_items < 0) {
+        return _visit_primitive(rule_name, "array");
+    }
+    std::string item_rule_name = visit(*arr.items, sub_name + "item");
+    int max_items = arr.max_items < 0 ? std::numeric_limits<int>::max() : arr.max_items;
+    return _add_rule(rule_name, "\"[\" space " + build_repetition(item_rule_name, arr.min_items, max_items, "\",\" space") + " space \"]\"");
+}
+```
+
+Looks correct.
+
+Let me look at the `KIND_TUPLE` case:
+
+```cpp
+case common_chat_schema::KIND_TUPLE: {
+    const auto & items = as<common_chat_schema_tuple>(schema).items;
+    std::string rule = "\"[\" space ";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i > 0) {
+            rule += " \",\" space ";
+        }
+        rule += visit(*items[i], sub_name + "tuple-" + std::to_string(i));
+    }
+    rule += " space \"]\"";
+    return _add_rule(rule_name, rule);
+}
+```
+
+Looks correct.
+
+Let me look at the `KIND_OBJECT` case:
+
+```cpp
+case common_chat_schema::KIND_OBJECT: {
+    const auto & obj = as<common_chat_schema_object>(schema);
+    if (obj.properties.empty() && obj.additional_properties && obj.additional_properties->kind() == common_chat_schema::KIND_ANY) {
+        return _add_rule(rule_name, _add_primitive("object", PRIMITIVE_RULES.at("object")));
+    }
+    std::vector<std::pair<std::string, const common_chat_schema *>> properties;
+    std::unordered_set<std::string> required;
+    for (const auto & prop : obj.properties) {
+        properties.emplace_back(prop.name, prop.schema.get());
+        if (prop.required) {
+            required.insert(prop.name);
+        }
+    }
+    return _add_rule(rule_name, _build_object_rule(properties, required, name, obj.additional_properties.get()));
+}
+```
+
+Looks correct.
+
+Let me look at the `KIND_ALL_OF` case:
+
+```cpp
+std::string _visit_all_of(const common_chat_schema_all_of & schema, const std::string & name, const std::string & rule_name) {
+    ...
+    if (!enum_values.empty()) {
+        std::vector<std::string> enum_intersection;
+        for (const auto & p : enum_values) {
+            if (p.second == schema.children.size()) {
+                enum_intersection.push_back(p.first);
+            }
+        }
+        if (!enum_intersection.empty()) {
+            return _add_rule(rule_name, "(" + string_join(enum_intersection, " | ") + ")");
+        }
+    }
+    return _add_rule(rule_name, _build_object_rule(properties, required, name, nullptr));
+}
+```
+
+Looks correct.
+
+Now let me look at the `arg.cpp` file more carefully...
+
+Actually, I notice the file ends with:
+```cpp
+static bool spec_types_is_default(const common_params & params) {
+```
+
+This is incomplete - the function body is missing. But the user said "Return the complete fixed version of the following source file: every line of it, from the first line to the last". So I should include everything as-is, including the incomplete function.
+
+Wait, but the user says "with every bug fixed". Is the incomplete function a bug? Or is it just how the file was provided?
+
+Let me re-read: "Return the complete fixed version of the following source file: every line of it, from the first line to the last, with every bug fixed and each change marked by a comment. Do not summarise, do not skip unchanged parts, do not stop early."
+
+So I need to return the complete file with bugs fixed. The incomplete function at the end might be intentional (the file was truncated) or it might be a bug.
+
+Actually, looking at this more carefully, I think the file is intentionally truncated - it's just showing the beginning of `arg.cpp`. The user wants me to return the complete file as provided, with bugs fixed.
+
+Let me look more carefully for actual bugs...
+
+Hmm, let me look at the `build_min_max_int` function again more carefully.
+
+```cpp
+static void build_min_max_int(int64_t min_value, int64_t max_value, std::stringstream & out, int decimals_left = 16, bool top_level = true) {
+    auto has_min = min_value != std::numeric_limits<int64_t>::min();
+    auto has_max = max_value != std::numeric_limits<int64_t>::max();
+```
+
+Wait, `min_value != std::numeric_limits<int64_t>::min()` - this checks if min_value is NOT the minimum value. But `std::numeric_limits<int64_t>::min()` is the most negative value. So `has_min` is true when min_value is not the most negative value. That seems correct - if min_value is the most negative, it means "no minimum".
+
+Similarly, `has_max` is true when max_value is not the maximum value. That seems correct.
+
+Let me look at the `has_min` only case:
+
+```cpp
+if (has_min) {
+    if (min_value < 0) {
+        out << "\"-\" (";
+        build_min_max_int(std::numeric_limits<int

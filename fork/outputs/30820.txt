@@ -1,0 +1,74 @@
+run 30820 | pool_copy_own_card_vk | pf12k | MiMo-V2.6-Flash-RL-GSQ-RCO-3bit.gguf | decode 37.11 t/s | prompt 1475.7 t/s | 1024 tokens | args: -np 1 --moe swap-lead=0,wait-swaps=1,upload-wait=0,idle-up=0 -lm pin | power 280+280 W | 2026-11-18 12:09:56
+
+<think>The user wants me to do a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp`. Let me analyze both files carefully for bugs, style issues, potential problems, and improvements.
+
+Let me go through each file systematically.
+
+## File 1: common/json-schema-to-grammar.cpp
+
+### build_repetition function
+- The function handles various repetition cases. Let me check edge cases:
+  - When `max_items == 0`, returns empty string - correct
+  - When `min_items == 0 && max_items == 1`, returns `item_rule + "?"` - correct
+  - When separator is empty and min=1, no max: returns `item_rule + "+"` - correct
+  - When separator is empty and min=0, no max: returns `item_rule + "*"` - correct
+  - When separator is empty with min/max: returns `{min,max}` - correct
+  - With separator: builds `item (sep item)*` pattern - looks correct
+  - When `min_items == 0` with separator: wraps in `()?` - correct
+
+### build_min_max_int function
+- Complex function for generating integer range rules
+- The `uniform_range` lambda is recursive (via `std::function`) - potential stack overflow for very long numbers, but bounded by number length
+- The `decimals_left` parameter is used to limit digit depth - seems like a safeguard
+- The `top_level` parameter controls whether leading zeros are allowed
+- Edge cases with negative numbers are handled
+- The function throws if neither min nor max is set - correct
+
+### PRIMITIVE_RULES and STRING_FORMAT_RULES
+- Static initialization of unordered_maps - these are file-scope statics
+- The `is_reserved_name` function uses a static local set initialized from these maps - but the initialization order between file-scope statics and function-local statics could be an issue. Actually, since `is_reserved_name` is a function, the static local is initialized on first call, which should be after file-scope statics are initialized. But wait - `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` are non-const statics (they're `static std::unordered_map`), so they're initialized at file scope. The `is_reserved_name` function's static local is initialized on first call. This should be fine as long as `is_reserved_name` isn't called during static initialization.
+
+Actually, looking more carefully: `PRIMITIVE_RULES` and `STRING_FORMAT_RULES` are declared as `static std::unordered_map` (not `const`), which means they could potentially be modified. They should probably be `const`.
+
+### Regex patterns
+- `INVALID_RULE_CHARS_RE` - replaces invalid chars with `-`
+- `GRAMMAR_LITERAL_ESCAPE_RE` - matches chars needing escaping in literals
+- `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` - defined but never used! This is dead code.
+
+### replacePattern function
+- Uses `std::regex_search` in a loop - correct pattern for global replacement
+- The `searchStart + match.position()` calculation - this should be correct since `match.position()` is relative to `searchStart`
+
+### format_literal function
+- Escapes special characters and wraps in quotes - correct
+
+### gbnf_escape_length function
+- Handles various escape sequences
+- Comment says "keep in sync with parse_char() in src/llama-grammar.cpp" - good practice
+- Returns 0 for invalid escapes - correct
+
+### common_chat_schema_converter class
+
+#### _add_rule method
+- Handles name collisions by appending numbers
+- The loop `while (_rules.find(esc_name + std::to_string(i)) != _rules.end() && _rules[esc_name + std::to_string(i)] != rule)` - this finds a slot where either the name doesn't exist or the rule matches. Looks correct.
+
+#### _generate_union_rule method
+- Generates alternatives with numbered suffixes - correct
+
+#### _visit_pattern method
+- Takes a snapshot of rules before attempting conversion
+- On failure, reverts rules and either warns or errors
+- The snapshot approach is correct for rollback
+
+#### _pattern_to_rule method
+- Complex regex-to-grammar conversion
+- Handles various regex constructs
+- The `transform` lambda is recursive (via `std::function`) - potential stack overflow for deeply nested patterns, but `MAX_PATTERN_DEPTH` limits this to 100
+- Character class handling looks correct
+- Quantifier handling (`*`, `+`, `?`, `{n,m}`) looks correct
+- Literal accumulation logic is complex but seems correct
+
+Potential issues:
+1. The literal accumulation logic in the `else` branch is quite complex and hard to follow
+2. The `sub_rule_ids` map is used for caching sub-rules but the key is the rule content, which could lead to unexpected behavior if different contexts produce the same

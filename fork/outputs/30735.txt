@@ -1,0 +1,23 @@
+run 30735 | tuner_slices_there_back_vk | pf12k | GLM-5.3-Flash-GSQ-RCO-3.5bit.gguf | decode 28.11 t/s | prompt 1029.9 t/s | 1024 tokens | args: -np 1 | power 280+280 W | 2026-11-18 10:22:47
+
+<think>Let me analyze this code carefully. The user wants a code review of two source files: `common/json-schema-to-grammar.cpp` and `common/arg.cpp` (which appears truncated).
+
+Let me go through the code systematically.
+
+## File 1: json-schema-to-grammar.cpp
+
+### Issues I can spot:
+
+1. **`build_repetition` function**:
+   - `has_max` is computed before checking `max_items == 0`, but that's fine.
+   - When `max_items == 0` returns "" — but what if `min_items > 0`? That would be an inconsistent schema (min > max), and returning "" silently accepts... Actually returning empty string means the rule matches empty, which would fail if min_items > 0. This is a potential logic issue but arguably schema is invalid anyway.
+   - In the separator case: `build_repetition("(" + separator_rule + " " + item_rule + ")", min_items == 0 ? 0 : min_items - 1, has_max ? max_items - 1 : max_items)` — if `max_items == 1` and `min_items == 0`, then... let's trace: `min_items == 0 && max_items == 1` is handled earlier (returns `item_rule + "?"`). OK.
+   - What if `min_items == 1, max_items == 1` with separator? Then inner repetition gets min=0, max=0. `max_items == 0` returns "". So result = item_rule + " " + "" = item_rule + " ". Hmm, trailing space. Actually wait — `build_repetition` with max_items=0 returns "", so result = `item_rule + " " + ""` = `item_rule + " "`. That trailing space might be harmless in GBNF (whitespace between rules is ignored?) Actually in GBNF, spaces in rule definitions are generally ignored except within quotes. So it's fine but sloppy.
+   - Potential issue: `max_items - 1` when `max_items` is `std::numeric_limits<int>::max()` — no, `has_max` guards that: `has_max ? max_items - 1 : max_items`. OK.
+
+2. **`build_min_max_int`**:
+   - Uses `std::function` for recursion — fine but has overhead; could be a lambda with auto self-reference in C++14+, but std::function is needed for recursion pre-C++23 (deducing this). Minor.
+   - `decimals_left = 16` default. The recursion decrements. `less_decimals = std::max(decimals_left - 1, 1)`.
+   - In the `has_min && has_max` branch with negative values: `build_min_max_int(-max_value, -min_value, ...)` — if `min_value == INT64_MIN` and `max_value < 0`, then `-max_value` is fine but `-min_value` overflows! Wait: `has_min = min_value != INT64_MIN`. If both has_min and has_max are true, then min_value != INT64_MIN, so `-min_value` is safe... unless min_value == INT64_MIN+... no wait, if has_min is true then min_value != INT64_MIN so negation is safe. And max_value != INT64_MAX since has_max. But `-max_value` where max_value could be INT64_MIN? No — max_value < 0 in that branch, and max_value != INT64_MAX. Could max_value == INT64_MIN? Then `-max_value` overflows (UB). Hmm: if min_value < 0 and max_value == INT64_MIN... but then has_min must be true (min <= max required, min_value < 0). Actually if max_value == INT64_MIN and min_value < 0, then min_value <= max_value means min_value == INT64_MIN too, but has_min would be false then. So the branch `min_value < 0 && max_value < 0` requires has_min && has_max, so min_value != INT64_MIN. But max_value could be INT64_MIN? If min_value != INT64_MIN and min_value <= max_value == INT64_MIN, then min_value <= INT64_MIN means min_value == INT64_MIN, contradiction. So max_value != INT64_MIN in that branch. OK, safe.
+   - `min_value < 0` (and max >= 0): `build_min_max_int(0, -min_value, ...)` — min_value != INT64_MIN here? has_min is true so min_value != INT64_MIN. Safe.
+   - In `has_min` only branch: `build_min_max_int(std::numeric_limits<int64_t>::min(), -min_value, ...)` — here min_value could be... has_min true so min_value != INT64_MIN, negation safe. But wait
