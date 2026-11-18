@@ -5551,11 +5551,14 @@ def regress_promote(name, src, med, n, camp, old, why):
         f.write(f"{time.strftime('%F %T')},{name},{med:.2f},{n},{camp},{old or ''},{why}\n")
 
 
-def regress_list_verdict(rows, label, ref, src, tol):
+def regress_list_verdict(rows, label, ref, src, tol, commit=None):
     """verdict of the regress list for build `label` against the best build `ref`: per ppl cell (same model and args) the median tps of each build;
     the worst ratio decides. Prints the table, promotes a build that is above 1/tol in every cell with ranges not overlapping. Returns the exit code."""
     cells = {}
     names = {label, os.path.basename(str(src).rstrip("/"))}   # the run log names a build by its directory (rel_x), the label is branch-commit: both are this build
+    if commit:   # `run regress -nrt` skips cells a build of the same commit ran today: those rows are this code's (one with uncommitted changes is not)
+        names |= {x.get("build") for x in rows if x.get("test") == "ppl" and x.get("commit") == commit and x.get("patch", "0") in ("", "0") and x.get("build") != ref}
+    print(f"regress: rows of {', '.join(sorted(n for n in names if n))}")
     for x in rows:
         if x.get("test") == "ppl" and x.get("ok") != "0" and num(x, "tps") is not None and (x.get("build") in names or x.get("build") == ref):
             cells.setdefault((x["model"], x["args"]), {}).setdefault(x["build"], []).append(num(x, "tps"))
@@ -5991,7 +5994,8 @@ def cmd_build(a):
             sys.exit(r.returncode)
         cur = os.path.join(BEST, "current")
         ref = os.path.basename(os.path.realpath(cur)) if os.path.exists(cur) else None
-        sys.exit(regress_list_verdict(csv_load("run-history.csv"), regress_label(dst), ref, dst, 0.97))
+        bi = dict(l.strip().split("=", 1) for l in open(os.path.join(dst, "BUILD_INFO")) if "=" in l)
+        sys.exit(regress_list_verdict(csv_load("run-history.csv"), regress_label(dst), ref, dst, 0.97, bi.get("commit") if bi.get("patch", "0") == "0" else None))
 
 
 def cmd_quick(a):
