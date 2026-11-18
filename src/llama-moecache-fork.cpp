@@ -18260,6 +18260,7 @@ static void bell_need(const llama_moe_cache_layer_fork * pub, const int32_t * mi
 }
 
 static std::vector<ggml_backend_t> g_bell_cards;        // the cards a bell graph was launched on, in launch order
+static std::vector<ggml_cgraph *>  g_bell_graphs;      // and their graphs
 static ggml_cgraph *               g_bell_cur = nullptr;   // the graph being served
 
 static void bell_serve(bell_chain & c) {
@@ -18286,6 +18287,20 @@ static void bell_serve(bell_chain & c) {
                     (unsigned) o.b->flag, (int) o.b->n_miss, (int) o.b->rows_seq, (uint32_t) o.b->rows_seq != o.b->seq ? "  <- the card is in or before this layer's rows step" : "");
         }
         for (size_t k = 0; k + 1 < g_bell_cards.size(); ++k) {   // the cards launched before the silent one: are they done?
+            {   // what that card's graph runs behind its last rows step
+                ggml_cgraph * g = g_bell_graphs[k];
+                int last = -1;
+                for (int i = 0; i < ggml_graph_n_nodes(g); ++i) { if (ggml_graph_node(g, i)->op == GGML_OP_MOE_ROWS) { last = i; } }
+                for (int i = last; i >= 0 && i < ggml_graph_n_nodes(g); ++i) {
+                    const ggml_tensor * t = ggml_graph_node(g, i);
+                    std::string line = tr_fmt("moe-cache: bell: %s node %d of %d %s %s <-", ggml_backend_name(g_bell_cards[k]), i, ggml_graph_n_nodes(g), ggml_op_name(t->op), t->name);
+                    for (int j = 0; j < GGML_MAX_SRC && t->src[j]; ++j) {
+                        const ggml_tensor * r = t->src[j]->view_src ? t->src[j]->view_src : t->src[j];
+                        line += tr_fmt(" %s@%s", t->src[j]->name, r->buffer ? ggml_backend_buffer_name(r->buffer) : "?");
+                    }
+                    fprintf(stderr, "%s\n", line.c_str());
+                }
+            }
             fprintf(stderr, "moe-cache: bell: waiting for %s ...\n", ggml_backend_name(g_bell_cards[k]));
             ggml_backend_synchronize(g_bell_cards[k]);
             fprintf(stderr, "moe-cache: bell: %s has finished its graph\n", ggml_backend_name(g_bell_cards[k]));
@@ -18338,8 +18353,8 @@ static void bell_launched_cb(ggml_backend_t backend, ggml_cgraph * graph, void *
         if (t->op != GGML_OP_MOE_BELL) { continue; }
         void * b; memcpy(&b, t->op_params, sizeof(b));
         if (!any) {
-            if (!g_bell_chains.empty() && (void *) g_bell_chains[0].b == b) { g_bell_cards.clear(); }
-            g_bell_cards.push_back(backend);
+            if (!g_bell_chains.empty() && (void *) g_bell_chains[0].b == b) { g_bell_cards.clear(); g_bell_graphs.clear(); }
+            g_bell_cards.push_back(backend); g_bell_graphs.push_back(graph);
         }
         bool found = false;
         for (auto & c : g_bell_chains) {
