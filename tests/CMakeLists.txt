@@ -196,6 +196,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-planner-replay-fork.cpp)   # the planner's replay gate (built-in GLM 12k medians; fork/planner_events.py for the logs)
     llama_build_and_test(test-estimate-fork.cpp)         # the planner's strategy estimators, each alone (src/llama-estimate-fork.h)
     llama_build_and_test(test-queue-order-fork.cpp)      # uploads keep stream order with kernels and copies, every GPU (Vulkan transfer queue forced)
+    llama_build_and_test(test-sched-mixed-fork.cpp)      # a graph split between GPUs of two backends (CUDA + Vulkan): cross-card copies, no copy events
     llama_build_and_test(test-bw-probe-fork.cpp LINK llama)   # the bandwidth probes (PCIe upload, VRAM, RAM read) against the machine's maximum on the same path
     llama_build_and_test(test-graphcheck-fork.cpp)       # graph tensors that live too long: unread at the end (ggml-alloc.c), probe far above the first reserve
     llama_build_and_test(test-lockrank-fork.cpp)         # the planner mutexes in rising rank: a relock aborts, a falling order fails the row (src/llama-lockrank-fork.h)
