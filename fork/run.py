@@ -2206,6 +2206,7 @@ ANSWER_FILE = os.environ.get("PERF_ANSWER")   # a file: post() also writes the r
 WATCH_LOG = None   # server log of the running server: post() takes its growth as progress, the server is asked (/slots) only while the log is silent (decode writes nothing per token)
 
 
+OURS_SQL = " and build not like 'stock%' and build not like 'strata%'"   # our rows: not stock, not another engine (strata-*, the 3-way gainers2 runs of 2026-11-18)
 ONE_REQ = " and coalesce(args,'') not glob '*-np [2-9]*' and coalesce(args,'') not glob '*-np [1-9][0-9]*'"   # one request at a time only: a --par row is the aggregate of N answers (2026-10-16 probe: Qwen IQ3_S 101-131 t/s), no cell's best or reference
 HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and reference rows of the machine that measured (pc2 numbers must not be divided by pc1 stock)
 # a host whose hardware changed keeps its name: rows before the change are another machine (2026-11-12 PC1: Ryzen 7 3700X with 2-channel RAM and x16 + x4 became a
@@ -6290,7 +6291,7 @@ def cell_expect_1(model, test, n, build, warm=True):
                 sc = v[0][4]
                 out.append((len(v), ((span + min(v)[2]) + one if len(v) == n else (span + min(v)[2]) * n / len(v) + one) * sc))
             return out
-        kind = (" and build like 'stock%'", ()) if str(build).startswith("stock") else (" and build not like 'stock%'", ())   # stock loads and runs quite differently from ours: a stock cell is estimated from stock cells (any stock build), ours from ours
+        kind = (" and build like 'stock%'", ()) if str(build).startswith("stock") else (" and build not like 'stock%' and build not like 'strata%'", ())   # stock loads and runs quite differently from ours: a stock cell is estimated from stock cells (any stock build), ours from ours
         w = spans((" and build=?", (build,))) or spans(kind)
         if not w and cls: cls_off[0] = True; w = spans((" and build=?", (build,))) or spans(kind)   # no history on this class yet: any machine's is better than no bar
         if not w and gq: gq = ""; w = spans((" and build=?", (build,))) or spans(kind)   # no run of that length yet: the shorter runs of the test are better than no bar (the bar passes 100% and re-estimates)
@@ -7255,7 +7256,7 @@ def older_gainers(model, test, cur_bno, st, gm, limit=2):
     if not model or not test or not st or not str(cur_bno).isdigit(): return []
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        rows = c.execute("select coalesce(nullif(\"commit\",''), build), bno, tps, pp, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and bno<? and bno>=? and coalesce(env,'') not like '%warmpass%' and n_gen between ? and ?",
+        rows = c.execute("select coalesce(nullif(\"commit\",''), build), bno, tps, pp, start_ts, rowid from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and bno<? and bno>=? and coalesce(env,'') not like '%warmpass%' and n_gen between ? and ?",
                          (os.path.basename(model), ALIASES.get(test, test), int(cur_bno), OLDER_MIN_BNO, (ALIAS_TOKENS.get(test) or 0) // 2, (ALIAS_TOKENS.get(test) or 10**9) * 2)).fetchall()
     except sqlite3.Error: return []
     by = {}
@@ -7338,7 +7339,7 @@ def pass_curves(model, build):
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         runs, last = {}, {}
-        for b, test, k, tok, us in c.execute("select build, test, k, tokens, us_tok from passes where model=? and build!=? and build not like 'stock%'" + HWF[0] + " order by rowid", key[:2]):
+        for b, test, k, tok, us in c.execute("select build, test, k, tokens, us_tok from passes where model=? and build!=? and build not like 'stock%' and build not like 'strata%'" + HWF[0] + " order by rowid", key[:2]):
             if (b, test) not in runs or k <= last[(b, test)]: runs[(b, test, len(runs))] = runs.pop((b, test), None) or []   # k restarts at 1: the next run of the cell
             runs.setdefault((b, test), []).append((tok, us)); last[(b, test)] = k
         for pts in runs.values():
@@ -7384,7 +7385,7 @@ def best_by_time(model, build, mix=None):
     if not model or not build: return None
     try:
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
-        rows = c.execute("select tps, pp, build, n_gen, note, pl, bno, rowid from runs where model=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null and pp is not null and note like '%prompt_n=%'" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
+        rows = c.execute("select tps, pp, build, n_gen, note, pl, bno, rowid from runs where model=? and build not like 'stock%' and build not like 'strata%' and build!=? and cast(ok as integer)=1 and tps is not null and pp is not null and note like '%prompt_n=%'" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
                          " and not (coalesce(out_chars,'') != '' and coalesce(n_gen,0) > 0 and cast(out_chars as integer) * 2 < n_gen)", (os.path.basename(model), str(build))).fetchall()
     except sqlite3.Error: return None
     best = None
@@ -7417,7 +7418,7 @@ def best_prev(model, test, build, asked=0):
         # for a 64-token cell); the decode speed is compared only within about the same answer length (a longer answer decodes at a longer context)
         # an answer of less than half a character per token is no text (the deep-seek release without -c answered token 0: 7 characters for 1024 tokens at 43.7 t/s,
         # and every DeepSeek cell after the fix showed 0.5x "vs best" against it, 2026-10-26); rows without a recorded answer stay in
-        rows = c.execute("select tps, pp, build, n_gen from runs where model=? and test=? and build not like 'stock%' and build!=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
+        rows = c.execute("select tps, pp, build, n_gen from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and build!=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + " and coalesce(env,'') not like '%warmpass%'"
                          " and not (coalesce(out_chars,'') != '' and coalesce(n_gen,0) > 0 and cast(out_chars as integer) * 2 < n_gen)",
                          (os.path.basename(model), ALIASES.get(test, test), str(build))).fetchall()
     except sqlite3.Error: return None
@@ -7439,7 +7440,7 @@ def ours_reference(model, test):
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); mo = os.path.basename(model); t = ALIASES.get(test, test); gen = ALIAS_TOKENS.get(test)
     w = " and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""
-    o = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + w + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
+    o = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + w + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
     if not o: return None
     v = c.execute("select tps, pp, bno, start_ts, rowid from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null and ts >= datetime(?, '-30 minutes')" + HWF[0] + "" + w + " order by ts", (mo, t, o[0], o[1])).fetchall()   # the newest session only: an older run of other settings (a longer prompt, a short answer) is not the reference
     return dict(t=max(x[0] for x in v), p=max(x[1] for x in v if x[1]) if any(x[1] for x in v) else None, id=v[-1][4], bno=int(v[-1][2]) if v[-1][2] else "?", date=str(v[-1][3] or o[1])[:10])
@@ -7449,7 +7450,7 @@ def known_gain(model, test):
     """overall gain (geometric mean of decode and prompt gain) of the newest build of ours over the newest official stock row, both from runs.db; 0 when either is missing"""
     import sqlite3
     c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); mo = os.path.basename(model); t = ALIASES.get(test, test); gen = ALIAS_TOKENS.get(test)
-    ours = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
+    ours = c.execute("select build, max(ts) from runs where model=? and test=? and build not like 'stock%' and build not like 'strata%' and cast(ok as integer)=1 and tps is not null" + HWF[0] + " group by build order by max(ts) desc limit 1", (mo, t)).fetchone()
     if not ours: return 0
     v = c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else ""), (mo, t, ours[0])).fetchall() or c.execute("select tps, pp from runs where model=? and test=? and build=? and cast(ok as integer)=1 and tps is not null" + HWF[0] + "", (mo, t, ours[0])).fetchall()
     st = c.execute("select tps, pp from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null" + stock_arm_sql() + HWF[0] + "" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " order by ts desc limit 1", (mo, t)).fetchone()
@@ -7777,7 +7778,7 @@ def resolve_build(name):
     import sqlite3
     num = int(name.lstrip("b")); st_dir = os.path.join(DEVBUILDS, f"stock-b{num}-official")
     if os.path.isdir(st_dir): return os.path.basename(st_dir)
-    for (bn,) in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select build from runs where bno=? and build not like 'stock%' order by ts desc", (num,)):
+    for (bn,) in sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")).execute("select build from runs where bno=? and build not like 'stock%' and build not like 'strata%' order by ts desc", (num,)):
         if os.path.isdir(os.path.join(DEVBUILDS, bn)): return bn
     sys.exit(f"build {name}: no build directory in {DEVBUILDS} was measured under that number (a build name works, e.g. um3d)")
 
@@ -8052,7 +8053,7 @@ def last_run_rec(r, HW):
         c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db"))
         top = None
         for use_gen, use_hw in ((True, True), (False, True), (False, False)):
-            q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build " + ("like 'stock-b%-official'" if stock else "not like 'stock%'") + " and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + (" and hw=?" if use_hw else "") + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen and use_gen else "") + " order by start_ts desc limit 1"
+            q = "select campaign, rowid, bno, start_ts from runs where model=? and test=? and build " + ("like 'stock-b%-official'" if stock else "not like 'stock%' and build not like 'strata%'") + " and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + (" and hw=?" if use_hw else "") + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen and use_gen else "") + " order by start_ts desc limit 1"
             top = c.execute(q, (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"])) + ((HW,) if use_hw else ())).fetchone()
             if top: break
         if not top: return {}

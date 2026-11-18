@@ -1,0 +1,39 @@
+#!/bin/bash
+# The Strata engine (github.com/Niko1221/Strata, 0.2.15, engine 0.1.60) behind run.py's llama-server contract, for the 3-way gainers2 cells
+# (user 2026-11-18: stock, Strata and ours side by side). run.py starts BUILD/llama-server -m MODEL --port PORT [flags]; this takes -m and --port,
+# ignores the rest, prints "listening on" once Strata serves, copies Strata's engine log to stdout (run.py's server log), and stops Strata on SIGTERM.
+# Strata is installed in /p/bw/sh (env.sh: its XDG folders), its model packs in /p/bw/sh/models. The arm is the build folder's name:
+#   strata-0.2.15        Strata's own defaults: drafting as it picks (DFlash2 for UD-IQ4_XS, none for IQ3_S), int8 KV, expert tail skip on
+#   strata-0.2.15-plain  no drafting (MTP, DFlash2 and prompt lookup off), f16 KV; the tail skip stays at Strata's default
+#   strata-0.2.15-full   plain, and every routed expert is computed (STRATA_ROUTE_TAIL_SKIP=0, what stock and ours do)
+# Every arm: one request at a time (--parallel 1, as every cell), 32k context (the longest cell prompt is 17.7k), no picture reader, no tuning run.
+. /p/bw/sh/env.sh
+case "$1" in
+    --version) echo "version: 1 (strata 0.2.15, engine 0.1.60)"; exit 0 ;;
+    --help|-h) echo "usage: llama-server -m MODEL --port PORT (Strata stand-in, other flags are ignored)"; exit 0 ;;
+esac
+model= port=8080
+while [ $# -gt 0 ]; do
+    case "$1" in -m|--model) model=$2; shift ;; --port) port=$2; shift ;; esac
+    shift
+done
+[ -n "$model" ] || { echo "strata stand-in: no -m MODEL" >&2; exit 2; }
+arm=$(basename "$(dirname "$0")")
+args=(--yes --no-tui --model-path "$model" --gpu 0,1 --context 32k --parallel 1 --vision off --tune skip --access local --port "$port" --no-api-key --data-dir /p/bw/sh/models)
+case "$arm" in
+    *-plain) args+=(--kv fp16 --drafting off --mtp off --set suffix-draft=0) ;;
+    *-full)  args+=(--kv fp16 --drafting off --mtp off --set suffix-draft=0 --set STRATA_ROUTE_TAIL_SKIP=0); export STRATA_ROUTE_TAIL_SKIP=0 ;;
+esac
+"$S" launch --stop >/dev/null 2>&1   # a server a killed run left behind
+tailpid=
+stop() { "$S" launch --stop; [ -n "$tailpid" ] && kill "$tailpid" 2>/dev/null; exit 0; }
+trap stop TERM INT
+echo "strata stand-in ($arm): $S launch ${args[*]}"
+"$S" launch "${args[@]}" || exit 1
+log=$(ls -t "$XDG_STATE_HOME"/strata/launch/*.engine.log 2>/dev/null | head -1)
+[ -n "$log" ] && { tail -n +1 -F "$log" & tailpid=$!; }
+echo "main: server is listening on http://127.0.0.1:$port (strata $arm)"
+while curl -sf -m 10 "http://127.0.0.1:$port/health" >/dev/null; do sleep 5 & wait $!; done   # the TERM trap runs between sleeps
+echo "strata stand-in: the server stopped answering /health"
+"$S" launch --stop; [ -n "$tailpid" ] && kill "$tailpid" 2>/dev/null
+exit 1
