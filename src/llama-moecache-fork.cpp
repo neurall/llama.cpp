@@ -11416,7 +11416,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
                 const bool busy_start = mc->cpu_busy;
-                const int  gate       = upload_gate_for((int) knobs().gate, j.refill);
+                static const bool refill_gated = [] { const char * v = moe_opt("refill-gate"); return v && atoi(v) != 0; }();
+                const int  gate       = upload_gate_for((int) knobs().gate, j.refill, refill_gated);
                 ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
                 const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
                 int64_t t_read = 0;
@@ -15106,7 +15107,11 @@ static void self_tune(moe_cache * mc) {
             return;
         }
     }
-    mc->lv_c = (mc->lv_c + 1) % (int) nv;
+    {
+        size_t done = 0;
+        for (const auto & v : mc->lv_samples) { done += v.size(); }
+        mc->lv_c = (int) tune_slice_value(done, (size_t) mc->lv_inc, nv);   // there and back: a trend costs every value the same (src/llama-estimate-fork.h)
+    }
     knobs().*t.f = t.vals[mc->lv_c];
     apply_predict(mc);
 }

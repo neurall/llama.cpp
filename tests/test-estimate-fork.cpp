@@ -428,8 +428,25 @@ int main() {
     {   // the refill after a prompt is a phase of its own (upload_gate_for, user 2026-11-18). The DDR gate (UPLOAD_WAIT 3, on by default) held every upload while
         // the CPU computed uncached experts, the refill's too: after 12k prompts the refill of the blocks the prompt borrowed (8-17 GB on two cards) ran at 15-30
         // GB/s of the links' 53 (MiMo and GLM CUDA logs 2026-11-17/18), and its decode tokens took 1.2-2.6x the steady ones
+        {   // the self-tuner's slice order cancels a trend: two equal values on a token time that falls 0.05% a token (36-token slices, 8 each)
+            auto trial = [](bool mirrored, size_t inc) {
+                double sum[2] = { 0, 0 }; size_t tok = 0;
+                for (size_t sl = 0; sl < 16; ++sl) {
+                    const size_t v = mirrored ? tune_slice_value(sl, inc, 2) : (inc + sl) % 2;
+                    for (int i = 0; i < 36; ++i, ++tok) { sum[v] += 30000.0 * (1.0 - 0.0005 * (double) tok); }
+                }
+                return (sum[1 - inc] - sum[inc]) / sum[inc];   // the alternative against the value in use
+            };
+            check("tuner slices: plain rotation favours the alternative on a falling token time (the measured bias)", trial(false, 1) < -0.01);
+            check("tuner slices: there and back costs both values the same", std::fabs(trial(true, 1)) < 1e-9 && std::fabs(trial(true, 0)) < 1e-9);
+            std::string o2, o3;
+            for (size_t sl = 0; sl < 8; ++sl) { o2 += (char) ('0' + tune_slice_value(sl, 1, 2)); }
+            for (size_t sl = 0; sl < 6; ++sl) { o3 += (char) ('0' + tune_slice_value(sl, 0, 3)); }
+            check("tuner slices: the value in use runs first, then there and back", o2 == "10011001" && o3 == "012210");
+        }
         check("refill phase: a refill upload waits for no gate", upload_gate_for(3, true) == 0 && upload_gate_for(2, true) == 0 && upload_gate_for(1, true) == 0);
         check("refill phase: a steady upload keeps the gate", upload_gate_for(3, false) == 3 && upload_gate_for(1, false) == 1 && upload_gate_for(0, false) == 0);
+        check("refill phase: --moe refill-gate=1 keeps the gate on refill uploads (the A/B arm)", upload_gate_for(3, true, true) == 3 && upload_gate_for(0, true, true) == 0 && upload_gate_for(3, false, true) == 3);
     }
 
     // the CPUs this process may use cut the topology (common_cpu_groups_masked_fork). PC1's 3975WX: 8 L3 groups of 4 cores, CPU c and c+32 are siblings. Under taskset to the

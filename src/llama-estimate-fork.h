@@ -401,6 +401,15 @@ template <class K> void tune_order(std::vector<K> & knobs) {
     std::stable_partition(knobs.begin(), knobs.end(), [](const K & k) { return !k.slow; });
 }
 
+// The self-tuner's slice order: a knob's values in turn from the one in use, then back (A B B A A B B A for two), so a token time that falls or rises over
+// the trial (the cache warming after a prompt, the context growing) costs every value the same. In plain rotation the value in use always ran first: in 13
+// UPLOAD_WAIT trials of 2026-11-17/18 (both backends, 36-token slices right after the prompt) the alternative had the lower mean 13 times, by 0.8-23%.
+// done: slices finished so far on this knob; inc: the value in use when its turn began.
+static inline size_t tune_slice_value(size_t done, size_t inc, size_t nv) {
+    const size_t p = done % (2 * nv);
+    return (inc + (p < nv ? p : 2 * nv - 1 - p)) % nv;
+}
+
 // The self-tuner's verdict on one knob from its slices (mean ms per token of each slice, one list per value; inc: the value in use when the knob's turn
 // began). An alternative 6% slower than the incumbent after one slice each is dropped at once (exploring costs tokens on the worse setting). From min_s
 // slices each, the incumbent keeps the knob unless an alternative beats it by more than 2 standard errors of both AND by at least 1%. The verdict is final
@@ -455,7 +464,8 @@ static inline bool tune_drift_held(bool refilling, bool cycle_open) { return ref
 // The refill after a prompt is a phase of its own (user 2026-11-18). The DDR gate (UPLOAD_WAIT: 3 the budget with its chunks, 2 or 1 the CPU phase; the upload
 // worker in src/llama-moecache-fork.cpp) holds an upload while the CPU computes uncached experts, so a swap does not slow that phase. A refill upload pays a
 // debt instead: each expert it puts back removes a CPU miss from every later token, so it goes at the link's rate, ungated; steady swaps keep the gate.
-static inline int upload_gate_for(int gate, bool refill) { return refill ? 0 : gate; }
+// refill_gated: --moe refill-gate=1 keeps the gate on refill uploads too, as before 2026-11-18 (the A/B arm: Vulkan refill gated vs ungated, user 2026-11-18)
+static inline int upload_gate_for(int gate, bool refill, bool refill_gated = false) { return refill && !refill_gated ? 0 : gate; }
 
 // The self-tuner's stored verdicts for one knob (user 2026-11-18: resume where the last server left off): its last `keep` clear verdicts, comma-separated, newest
 // last. A server starts the knob at the most frequent of them, the newest on a tie; an unsure verdict is not kept (the value in use stays).

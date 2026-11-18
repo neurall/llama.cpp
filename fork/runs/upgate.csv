@@ -1,0 +1,19 @@
+name,model,n,test,tokens,args,extra
+ug-mimo-cu-g3,mimo,2,pfbest1k,1024,"--moe upload-wait=3",
+ug-mimo-cu-g0,mimo,2,pfbest1k,1024,"--moe upload-wait=0",
+ug-mimo-cu-g3r,mimo,2,pfbest1k,1024,"--moe upload-wait=3,refill-gate=1",
+ug-glm-cu-g3,glm,2,pfbest1k,1024,"--moe upload-wait=3",
+ug-glm-cu-g0,glm,2,pfbest1k,1024,"--moe upload-wait=0",
+ug-glm-cu-g3r,glm,2,pfbest1k,1024,"--moe upload-wait=3,refill-gate=1",
+ug-qni3-cu-g3,qwen38,2,pfbest1k,1024,"--moe upload-wait=3",
+ug-qni3-cu-g0,qwen38,2,pfbest1k,1024,"--moe upload-wait=0",
+ug-qni3-cu-g3r,qwen38,2,pfbest1k,1024,"--moe upload-wait=3,refill-gate=1",
+ug-mimo-vk-g3,mimo,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=3",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ug-mimo-vk-g0,mimo,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ug-mimo-vk-g3r,mimo,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=3,refill-gate=1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ug-glm-vk-g3,glm,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=3",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ug-glm-vk-g0,glm,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ug-glm-vk-g3r,glm,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=3,refill-gate=1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ug-qni3-vk-g3,qwen38,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=3",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ug-qni3-vk-g0,qwen38,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=0",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ug-qni3-vk-g3r,qwen38,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe upload-wait=3,refill-gate=1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
