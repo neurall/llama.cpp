@@ -391,5 +391,5 @@ struct drift_watch {
 // 2026-11-18: with SWAP_LEAD first, UPLOAD_WAIT (gate 0 53.6-55.0 against gate 3 63.8-71.3 ms/token) was never tried in 3 of 6 cells over two 1k
 // answers, and their decode stayed at 11-14 t/s against 18 (tests/test-estimate-fork.cpp).
 template <class K> void tune_order(std::vector<K> & knobs) {
-    (void) knobs;   // TDD step: not yet
+    std::stable_partition(knobs.begin(), knobs.end(), [](const K & k) { return !k.slow; });
 }

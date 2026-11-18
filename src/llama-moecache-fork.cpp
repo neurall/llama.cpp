@@ -14974,6 +14974,7 @@ static void self_tune(moe_cache * mc) {
         // on the machine (slow link, RAM headroom), so it is tuned live; a state-carrying knob, hence the long slices
         add({ "SWAP_LEAD", &knobs_t::margin, { 0, -2 }, true });
         for (const auto & x : T_swap) { add(x); }
+        tune_order(t);   // the transient knobs first: UPLOAD_WAIT is decided within the first answer (src/llama-estimate-fork.h)
         return t;
     }();
     if (T.empty()) { return; } // -at off, every knob set by the user or deterministic mode: nothing to tune
