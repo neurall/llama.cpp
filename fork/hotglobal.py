@@ -8,8 +8,8 @@ Those counts differ by build and by run: a clean-state cell starts from none, ev
 prompt start with different experts cached, and a speed difference can be the map, not the code.
 
 run.py -gh (RUN_GLOBAL_HOT=1): before a server starts, the map of its (model, test) is written into the state file that start reads; after each run the
-counts the server stored are read back, and while the map is not settled it is replaced by them. Settled = the hottest experts of each layer (two cuts: 10%
-and 35% of a layer) changed by less than SETTLE between runs, twice in a row; a settled map is frozen: every later run of that prompt and model, on any
+counts the server stored are read back, and while the map is not settled it is replaced by them. Settled = the hottest experts of the map before the run (two cuts:
+10% and 35% of a layer) cover the new counts within SETTLE (0.5%) of what the new map's own hottest cover, twice in a row; a settled map is frozen: every later run of that prompt and model, on any
 build, starts from the same counts. --hot-settle repeats a cell until its map is settled. Nothing here needs engine support: the hot.<layer> lines are the
 state file's own, old builds and releases read them too.
 
@@ -18,7 +18,7 @@ the hot.<layer> lines. Delete a file to learn its map again.  Self-check: python
 import os, re, json, time, math
 
 DIR = os.environ.get("RUN_HOT_DIR", "/p/bw/data/hot-global")
-SETTLE = float(os.environ.get("RUN_HOT_SETTLE_AT", "0.01"))   # share of a layer's hottest experts that may still change
+SETTLE = float(os.environ.get("RUN_HOT_SETTLE_AT", "0.005"))   # share of the uses the last map's hottest experts may miss against the new map's own
 CUTS = (0.10, 0.35)
 
 def path(model, test):
@@ -83,16 +83,18 @@ def save(model, test, meta, hot):
     os.replace(p + ".tmp", p)
 
 def change(a, b):
-    """how much the hottest experts moved from map a to map b: over the layers the mean share of b's hottest experts that a's hottest lack, the larger of the cuts"""
+    """what starting from map a instead of map b costs: over the layers the mean share of b's uses that b's own hottest experts cover and a's hottest do not,
+    the larger of the cuts. Experts of about equal use trading places at the cut cost nothing, as in the cache; a layer a does not know costs everything"""
     worst = 0.0
     for cut in CUTS:
         tot, n = 0.0, 0
         for l, cb in b.items():
-            ca = a.get(l)
-            if not ca or len(ca) != len(cb): tot += 1.0; n += 1; continue
+            ca = a.get(l); n += 1
+            if not ca or len(ca) != len(cb) or sum(cb) == 0: tot += 1.0 if sum(cb) else 0.0; continue
             k = max(1, math.ceil(cut * len(cb)))
-            top = lambda c: set(sorted(range(len(c)), key=lambda e: (-c[e], e))[:k])
-            tot += len(top(cb) - top(ca)) / k; n += 1
+            top = lambda c: sorted(range(len(c)), key=lambda e: (-c[e], e))[:k]
+            own, old = sum(cb[e] for e in top(cb)), sum(cb[e] for e in top(ca))
+            tot += (own - old) / own if own else 0.0
         worst = max(worst, tot / max(1, n))
     return worst
 
@@ -130,8 +132,8 @@ def after_run(state_file, model, test):
     meta["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
     meta["settled"] = len(meta["changes"]) >= 3 and all(c < SETTLE for c in meta["changes"][-2:])
     save(model, test, meta, hot)
-    hist = " ".join(f"{100 * c:.1f}%" for c in meta["changes"][-4:])
-    return f"hot map {test}: run {meta['runs']}, hottest experts changed {100 * ch:.1f}% (last: {hist}){': settled, frozen from now' if meta['settled'] else ''}"
+    hist = " ".join(f"{100 * c:.2f}%" for c in meta["changes"][-4:])
+    return f"hot map {test}: run {meta['runs']}, the map before it misses {100 * ch:.2f}% of the uses its update covers (last: {hist}){': settled, frozen from now' if meta['settled'] else ''}"
 
 def _selftest():
     import tempfile, random
@@ -160,6 +162,7 @@ def _selftest():
     assert "[Model-A 99]\nhot.1 = 9 9 9 9" in txt and "[gpu 0]\nx = 1" in txt and "place.k0 = 1" in txt, "other sections and keys stay as they were"
     assert change({1: [5, 4, 3, 2, 1, 0, 0, 0, 0, 0]}, {1: [5, 4, 3, 2, 1, 0, 0, 0, 0, 0]}) == 0.0
     assert change({1: [9, 0, 0, 0, 0, 0, 0, 0, 0, 0]}, {1: [0, 9, 0, 0, 0, 0, 0, 0, 0, 0]}) == 1.0
+    assert change({1: [5, 5, 4, 0, 0, 0, 0, 0, 0, 0]}, {1: [5, 4, 5, 0, 0, 0, 0, 0, 0, 0]}) < 0.11, "equal experts trading places at the cut cost next to nothing"
     assert note(model, "t1").startswith("t1.ini runs=") and "settled" in note(model, "t1") and note(model, "none") == "none"
     print("hotglobal: all passed")
 
