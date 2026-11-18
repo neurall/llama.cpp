@@ -18259,11 +18259,31 @@ static void bell_need(const llama_moe_cache_layer_fork * pub, const int32_t * mi
     }
 }
 
+static std::vector<ggml_backend_t> g_bell_cards;        // the cards a bell graph was launched on, in launch order
+static ggml_cgraph *               g_bell_cur = nullptr;   // the graph being served
+
 static void bell_serve(bell_chain & c) {
     bell_layer & bl = g_bell_layers[c.pub];
     ggml_bell * b = c.b;
     if (!ggml_bell_host_wait(b, bl.seen, 10 * 1000 * 1000)) {
         LLAMA_LOG_ERROR("moe-cache: bell: layer %d did not publish its picks within 10 s (seq %u): the card's graph did not run\n", c.pub->il, (unsigned) bl.seen);
+        if (g_bell_cur) {   // what the silent graph runs before its first bell, and where each input lives
+            for (int i = 0; i < ggml_graph_n_nodes(g_bell_cur) && i < 40; ++i) {
+                const ggml_tensor * t = ggml_graph_node(g_bell_cur, i);
+                std::string line = tr_fmt("moe-cache: bell: node %d %s %s <-", i, ggml_op_name(t->op), t->name);
+                for (int j = 0; j < GGML_MAX_SRC && t->src[j]; ++j) {
+                    const ggml_tensor * r = t->src[j]->view_src ? t->src[j]->view_src : t->src[j];
+                    line += tr_fmt(" %s@%s", t->src[j]->name, r->buffer ? ggml_backend_buffer_name(r->buffer) : "?");
+                }
+                fprintf(stderr, "%s\n", line.c_str());
+                if (t->op == GGML_OP_MOE_BELL) { break; }
+            }
+        }
+        for (size_t k = 0; k + 1 < g_bell_cards.size(); ++k) {   // the cards launched before the silent one: are they done?
+            fprintf(stderr, "moe-cache: bell: waiting for %s ...\n", ggml_backend_name(g_bell_cards[k]));
+            ggml_backend_synchronize(g_bell_cards[k]);
+            fprintf(stderr, "moe-cache: bell: %s has finished its graph\n", ggml_backend_name(g_bell_cards[k]));
+        }
         for (const auto & o : g_bell_chains) {   // every bell of this graph build: which layers rang, and which card waits for rows
             const bell_layer & ol = g_bell_layers[o.pub];
             // straight to stderr: the log's own thread does not get to these lines before the abort below
@@ -18298,6 +18318,7 @@ static void bell_serve(bell_chain & c) {
 static void bell_launched_cb(ggml_backend_t backend, ggml_cgraph * graph, void * ud) {
     GGML_UNUSED(ud);
     bool any = false;
+    g_bell_cur = graph;
     static int said = 0;
     if (said < 12) {   // the first graphs: which card runs which bells, and where each bell's inputs live
         std::string line;
@@ -18316,6 +18337,10 @@ static void bell_launched_cb(ggml_backend_t backend, ggml_cgraph * graph, void *
         const ggml_tensor * t = ggml_graph_node(graph, i);
         if (t->op != GGML_OP_MOE_BELL) { continue; }
         void * b; memcpy(&b, t->op_params, sizeof(b));
+        if (!any) {
+            if (!g_bell_chains.empty() && (void *) g_bell_chains[0].b == b) { g_bell_cards.clear(); }
+            g_bell_cards.push_back(backend);
+        }
         bool found = false;
         for (auto & c : g_bell_chains) {
             if ((void *) c.b == b) { bell_serve(c); found = true; break; }
@@ -18324,6 +18349,7 @@ static void bell_launched_cb(ggml_backend_t backend, ggml_cgraph * graph, void *
         any = true;
     }
     g_bell_n_graphs += any;
+    g_bell_cur = nullptr;
 }
 
 static bool bell_detached_cb(ggml_cgraph * graph, void * ud) {
