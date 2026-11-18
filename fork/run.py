@@ -1370,6 +1370,7 @@ STAT_COLS = ["prompt", "n_cell", "tps_min", "tps_med", "tps_max", "pp_min", "pp_
 RUN_COLS += STAT_COLS + PRESSURE_COLS
 RUN_COLS += ["pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end"]   # predictor outcomes of the run, from cache.csv (see cache_csv_totals)
 RUN_COLS += ["up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms"]   # per GPU: mean upload time of one expert on the fast / slow link (engine log) and the effective speed MiB per expert / that time; the startup link speed of each CUDA device; admit-pred builds also: uploads, MiB and copy time per link from cache.csv
+RUN_COLS += ["hot_map"]   # run -gh: the (model, test) hot map the row's server started from (fork/hotglobal.py: file, runs that learned it, settled or learning, last change); empty = the state's own counts
 RUN_COLS += ["state_snap"]   # the learned state (moe-state.ini, the model's globalhot.ini) the row's server started from, when the row beat its cell's best: --state-from DIR repeats it
 RUN_COLS += ["repro"]   # the run.py command line that made the row (the outermost process; cells started by it inherit it): paste it to repeat the run
 RUN_COLS += ["bestpp"]   # every run, better or worse (regressions show): the run as a models.ini bestpp tuple (total VRAM GiB, prompt tokens, answer tokens, prompt t/s, decode t/s, prompt s, answer s)
@@ -2053,6 +2054,10 @@ def cur_state():
     """the learned-state file of the start: the clean-state cell's own, else under simjoe its own file in ~/.cache/llama.cpp/simjoe (the emulated box learns apart from PC1's state and reuses its own between runs), else None = the engine's default"""
     return STATE_FILE["v"] or (os.path.expanduser("~/.cache/llama.cpp/simjoe/moe-state.ini") if os.environ.get("RUN_SIMJOE") else None)
    # --clean-state: the learned-state file of the running cell (empty before its first repetition, kept for the next)
+HOT_TEST = {"v": None}   # run -gh: the test of the running cell; every server of the cell starts from the (model, test) hot map (fork/hotglobal.py)
+def hot_global():
+    """run -gh / --hot-settle (RUN_GLOBAL_HOT=1, inherited by the cells): one hot-expert map per (model, test) shared by every build (user 2026-11-18)"""
+    return os.environ.get("RUN_GLOBAL_HOT") == "1"
 STATE_SNAP = {"v": None}   # the learned state this cell's server started from: kept with a row that beats its cell's best (column state_snap)
 SNAP_DIR = os.path.join(os.path.dirname(QDIR), "state-snaps")
 RUNS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")
@@ -2153,6 +2158,9 @@ def _server_start_once(build, env, args):
         env = {**env, "LLAMA_MOE_STATE": cur_state()}   # the first releases (no --moe flag) read the environment variable
     env, args = drop_moe_flag(build, env, args)
     args = merge_moe(args)
+    if hot_global() and HOT_TEST["v"] and not build.startswith("stock"):   # before the snapshot: it keeps what this start reads
+        import hotglobal
+        _hm = hotglobal.before_start(state_paths(args)[0], MODEL, HOT_TEST["v"]); print(_hm, flush=True); runlog(_hm)
     if not build.startswith("stock"): state_snapshot(args, build)
     logf = f"/tmp/perf-{build}{LOGTAG}.log"
     if os.path.exists(logf): os.replace(logf, logf + ".prev")   # the previous start's log stays readable: in a clean-state cell the cold run is the start before the warm one
@@ -4005,8 +4013,10 @@ def store(row, build, test, rec, note, hw, vstr):
             if not d.get("pf_mode"): row["pf_mode"] = "no-decision"
     if not row.get("par_gpus"):   # every row, also when another path filled the prefill fields first (the bench's own log reading): 1,1 without a decision line
         row["par_gpus"] = par_gpus(row.get("pf_all"), row.get("pf_gpus"), " ".join(str(x) for x in (rec.get("args"), row.get("args")) if x))
-    for lg in (f"{QDIR}/{CAMPAIGN}.remote.server.log", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if CAMPAIGN else ():   # the log of the cell: copied from the remote machine, or the local one
-        if os.path.exists(lg):
+    # the log of the cell: copied from the remote machine, else the running server's own (the cell's copy in QDIR is made after its last row: until 2026-11-18 only that
+    # copy was read here, so thr_dec, batch, ubatch and the walk were empty in every local row), else the cell's copy
+    for lg in (f"{QDIR}/{CAMPAIGN}.remote.server.log", globals().get("WATCH_LOG") or "", f"{QDIR}/{CAMPAIGN.rsplit('-', 1)[0]}.server.log") if CAMPAIGN else ():
+        if lg and os.path.exists(lg):
             for k, v in server_params(open(lg, errors="replace").read()).items(): row.setdefault(k, v)
             break
     if not row.get("driver"):   # the loaded kernel module, read from /proc (no nvidia-smi: it can mismatch the module and costs NVML calls); a remote cell sets its own
@@ -4050,6 +4060,7 @@ def store(row, build, test, rec, note, hw, vstr):
         env=json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "", cmd=row.get("args"),
         pl=row.get("pl") or power_limits(hw), **{k: row.get(k) for k in ("thr_dec", "thr_batch", "batch", "ubatch", "ctx", "hwline", "driver", "link_probe", "mem_probe_gbs", "cpu_mhz", "cpu_c", "gpu_mhz", "gpu_c", "pcie_rx_gbs")}, proto="v2" if test.startswith("fix") else "v1", rep=REP, seed=SEED if test.startswith("fix") else None,
         branch=bi.get("branch", ""), patch=bi.get("patch", ""), repro=os.environ.get("RUNPY_REPRO"),
+        hot_map=__import__("hotglobal").note(MODEL, test) if hot_global() and not build.startswith("stock") else None,
         state_snap=snap_if_best(row["model"], test, rec.get("args", ""), hw, row.get("tps")) if row.get("ok", 1) else None, **{k: row.get(k) for k in tuple(PRESSURE_COLS) + tuple(DECISION_COLS) + ("pm_queue", "pm_copy", "pm_d1", "pm_d2", "pm_d3", "pm_d4p", "pred_n", "pred_mib", "swap_mib", "pred_busy_ms", "swap_busy_ms", "admit_end", "up_ms_fast", "up_ms_slow", "up_gbs_fast", "up_gbs_slow", "link_gbs_cuda0", "link_gbs_cuda1", "up_fast", "up_slow", "mib_fast", "mib_slow", "busy_fast_ms", "busy_slow_ms", "up_ms_expert", "up_gbs_eff", "pcie_h2d_gb", "pcie_h2d_peak_gbs", "pcie_h2d_avg_gbs", "pcie_d2h_gb", "ddr_util", "up_overlap_pct", "cpu_slow_pct", "lead_end0", "lead_end1", "ev_mean_hits_fast", "ev_mean_hits_slow", "ev_zero_pct_fast", "ev_zero_pct_slow", "ev_ge4_pct_fast", "ev_ge4_pct_slow", "life_fast", "life_slow", "vram_mib", "endpoint", "judge", "start_ts", "end_ts", "load_s", "wall_s", "uniq4", "out_chars", "code", "loop", "major_faults", "rss_kb", "cache_state", "gpu_log", "pw_avg", "pw_max", "pw_inst_max", "energy_wh", "cap_pct", "temp_med", "temp_max", "knobs_end", "load_mode", "uploads", "evictions", "up_mib", "pred_hit", "pred_hit_without", "pred_boost_pts", "pred_up", "pred_pub", "pred_used", "pred_late", "pred_stale", "pred_cov1", "pred_cov2", "pred_cov3")}, **platform(hw)))
     save_output_file(row["ts"], build, test, row["model"])   # fork/outputs/<run id>.txt: the answer, readable on GitHub without runs.db
     global _EMB_OFF
@@ -5273,6 +5284,8 @@ def cmd_bench(a):
     stock_variants = dict(kv.partition("=")[::2] for kv in a.stock_variant)
     global REP
     n = a.n or (3 if a.test.startswith("fix") else 2)
+    hot_settle = hot_global() and os.environ.get("RUN_HOT_SETTLE") == "1"   # run --hot-settle: a cell repeats until its hot map is settled
+    if hot_settle: n = max(n, int(os.environ.get("RUN_HOT_SETTLE_MAX", "8")))
     for model in [fcfg.model(x) for x in a.models.split(",")]:   # an alias of models.ini (q36) or a path
         MODEL = model
         if not m:
@@ -5311,7 +5324,15 @@ def cmd_bench(a):
                 if m:
                     remote_cell(a.machine, m, build, a.test, args, a.note, warm=warm, env=env)
                 else:
+                    HOT_TEST["v"] = a.test
+                    if hot_settle and not build.startswith("stock"):
+                        import hotglobal
+                        if hotglobal.is_settled(model, a.test):
+                            print(f"hot map {a.test}: settled, no more runs of this cell", flush=True); continue
                     run_cell(build, a.test, env, False, args, True, a.note, warm=warm)
+                    if hot_global() and not build.startswith("stock"):
+                        import hotglobal
+                        _hm = hotglobal.after_run(state_paths(args)[0], model, a.test); print(_hm, flush=True); runlog(_hm)
     REP = None
     for cn in ([camp + "-cold", camp + "-hot", camp + "-hot2"] if a.cold_hot else [camp]):
         try:
@@ -7359,6 +7380,9 @@ def best_by_time(model, build, mix=None):
     for t_, p_, b_, g_, nt, pl, bn, rid in rows:
         m = re.search(r"prompt_n=(\d+)", nt or "")
         if not (m and g_ and t_ and p_): continue
+        # like with like (user 2026-11-18: "compare 1k out to 1k out. you compared to 64 out", "12k/64 is noisy"): the earlier run answered about as many tokens
+        # (half to double) to a prompt about as long (3/4 to 4/3); a 64-token answer decodes at a short context and inside the refill, a 4096-token one mostly after it
+        if mix and not (mix[1] / 2 <= int(g_) <= mix[1] * 2 and mix[0] * 3 / 4 <= int(m[1]) <= mix[0] * 4 / 3): continue
         tt = total_time(mix[0], (mix[1], float(p_), float(t_))) if mix else total_time(int(m[1]), (int(g_), float(p_), float(t_)))   # mix = (prompt tokens, answer tokens) of the run being judged: every earlier run is timed at the same token mix, so a 64-token answer run and a 1024-token one compare fairly
         if best is None or tt < best["tt"] / 1000: best = dict(bno=bn, pn=int(m[1]), out=int(g_), pp=float(p_), t=float(t_), ms_pp=1000 / float(p_), ms_t=1000 / float(t_), tt=tt * 1000, pl=str(pl or ""), rid=rid)
     return best
@@ -8382,6 +8406,8 @@ def run_list(name, argv):
     ap.add_argument("-s", "--stock", action="store_true", help="run on the newest official ggml-org release binary (pulled once into devbuilds/stock-bNNNNN-official; stock-latest points to it)")
     ap.add_argument("-w", "--warm", action="store_true", help="a warm-up pass before the measured runs (same prompt again; stored with temp=warmpass, not in the statistics); default off")
     ap.add_argument("-ledger", "--ledger", action="store_true", help="the pool write ledger on in every cell (who wrote which bytes of a card's pool, when): a debug record, about 25%% slower decode; printed at the start, recorded in the row (PERF_LEDGER=1); off by default, never turned on by a build name")
+    ap.add_argument("-gh", "--global-hot", action="store_true", help="every server starts from the hot-expert map of its (model, test), the same for every build (fork/hotglobal.py): written into the state the start reads, learned from the runs until it settles, then frozen; a speed difference between builds is then the code, not the map")
+    ap.add_argument("--hot-settle", action="store_true", help="-gh, and every cell repeats until its hot map is settled (the hottest experts of each layer change by under 1%% twice in a row; at most RUN_HOT_SETTLE_MAX = 8 runs): one pass per prompt and model, before the builds are compared")
     ap.add_argument("-cs", "--clean-state", action="store_true", help="every cell starts from an EMPTY learned state of its own (bench --clean-state) on a server of its own: run 1 is the cold start of a new user, run 2 runs on the same server (warm). Two builds compared this way learn from zero on the same prompt, so they should arrive at the same speed (reg tests); the user's state file is not touched. No cell inherits another's state (an A/B of two builds read in run order once gave a 37%% gap that was only the shared state file)")
     ap.add_argument("-nk", "-x", "--kill", action="store_true", help="kill the server after every run (default: it stays up and the next run, also of the next cell, uses it when model, build and args are the same; later runs then start with what the earlier ones cached)")
     ap.add_argument("-r", "--runs", default="2", help="measured runs per cell (default 2: one run can be an outlier; 0 = the list's n)")
@@ -8427,6 +8453,8 @@ def run_list(name, argv):
         simjoe_teardown()   # limits a stopped simjoe list left behind
         simjoe_sweep()      # and any it left with no mark (a crash, a lost mark)
     if o.n_gpus is not None: os.environ["RUN_NG"] = str(o.n_gpus)
+    if o.global_hot or o.hot_settle: os.environ["RUN_GLOBAL_HOT"] = "1"   # the cells inherit it (hot_global)
+    if o.hot_settle: os.environ["RUN_HOT_SETTLE"] = "1"
     if o.n_gpus is not None and o.machine == "pc1":   # this host: the children (cells, servers) see the chosen cards only, numbered in the listed order
         _vis = pick_gpus(o.n_gpus, subprocess.run(GPU_Q_NG, shell=True, capture_output=True, text=True).stdout) if o.n_gpus > 0 else ""
         os.environ.update(CUDA_DEVICE_ORDER="PCI_BUS_ID", CUDA_VISIBLE_DEVICES=_vis, PERF_DEV=",".join(f"CUDA{i}" for i in range(len(_vis.split(",")))) if _vis else "none")
