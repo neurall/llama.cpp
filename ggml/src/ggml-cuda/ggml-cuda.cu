@@ -82,6 +82,7 @@
 #include "ggml-cuda/fill.cuh"
 #include "ggml-cuda/lightning-indexer.cuh"
 #include "ggml-cuda/top-k-mask.cuh"
+#include "ggml-cuda/moe-bell.cuh"
 #include "ggml.h"
 
 #include <algorithm>
@@ -5008,6 +5009,12 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_TOP_K_MASK:
             ggml_cuda_op_top_k_mask(ctx, dst);
             break;
+        case GGML_OP_MOE_BELL:
+            ggml_cuda_op_moe_bell(ctx, dst);
+            break;
+        case GGML_OP_MOE_ROWS:
+            ggml_cuda_op_moe_rows(ctx, dst);
+            break;
         default:
             return false;
     }
@@ -9555,6 +9562,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             return ggml_cuda_lightning_indexer_supported(dev_ctx->device, op);
         case GGML_OP_TOP_K_MASK:
             return op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_F32;
+        case GGML_OP_MOE_BELL:
+        case GGML_OP_MOE_ROWS:
+            return ggml_cuda_moe_bell_supported(op);
 
         default:
             return false;
@@ -9916,6 +9926,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
 #endif
     if (strcmp(name, "ggml_backend_cuda_pin_range_fork") == 0) {   // fork: the RAM pool pins its chunks after the fill (llama-moecache-fork.cpp, rp_pin_raw)
         return (void *)ggml_backend_cuda_pin_range_fork;
+    }
+    if (strcmp(name, "ggml_backend_bell_alloc") == 0) {   // fork: the decode bell's memory, read and written by the cards by pointer (moe-bell.cu)
+        return (void *)ggml_cuda_bell_alloc;
+    }
+    if (strcmp(name, "ggml_backend_bell_free") == 0) {
+        return (void *)ggml_cuda_bell_free;
     }
     if (strcmp(name, "ggml_backend_cuda_unpin_range_fork") == 0) {
         return (void *)ggml_backend_cuda_unpin_range_fork;

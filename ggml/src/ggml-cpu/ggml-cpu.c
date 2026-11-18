@@ -12,6 +12,7 @@
 #include "binary-ops.h"
 #include "vec.h"
 #include "ops.h"
+#include "ggml-bell-fork.h"
 #include "ggml.h"
 #include "common.h"
 #include "tiled/tiled.h"
@@ -1929,6 +1930,20 @@ static void ggml_compute_forward_mul_mat_id(
     }
 }
 
+// fork: the decode bell on the CPU backend: the card's two steps as the header gives them (the reference of the backends' kernels)
+static void ggml_compute_forward_moe_bell(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    if (params->ith != 0) { return; }
+    struct ggml_bell * b; memcpy(&b, dst->op_params, sizeof(b));
+    GGML_ASSERT(b->n_used == dst->ne[0] && b->n_embd == dst->src[2]->ne[0]);
+    ggml_bell_publish(b, (const int32_t *) dst->src[0]->data, (const int32_t *) dst->src[1]->data, (const float *) dst->src[2]->data, (int32_t *) dst->data);
+}
+
+static void ggml_compute_forward_moe_rows(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    if (params->ith != 0) { return; }
+    struct ggml_bell * b; memcpy(&b, dst->op_params, sizeof(b));
+    ggml_bell_rows_take(b, (float *) dst->data);
+}
+
 /////////////////////////////////
 
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
@@ -2303,6 +2318,14 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_top_k_mask(params, tensor);
             } break;
+        case GGML_OP_MOE_BELL:
+            {
+                ggml_compute_forward_moe_bell(params, tensor);
+            } break;
+        case GGML_OP_MOE_ROWS:
+            {
+                ggml_compute_forward_moe_rows(params, tensor);
+            } break;
         case GGML_OP_MAP_CUSTOM1:
             {
                 ggml_compute_forward_map_custom1(params, tensor);
@@ -2494,6 +2517,11 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_TOP_K_MASK:
             {
                 n_tasks = n_threads;
+            } break;
+        case GGML_OP_MOE_BELL:
+        case GGML_OP_MOE_ROWS:
+            {
+                n_tasks = 1;
             } break;
         case GGML_OP_REPEAT:
         case GGML_OP_REPEAT_BACK:

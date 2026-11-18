@@ -197,6 +197,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-estimate-fork.cpp)         # the planner's strategy estimators, each alone (src/llama-estimate-fork.h)
     llama_build_and_test(test-cpuplan-fork.cpp)          # the CPU plan of a decode layer's host steps: no thread team when nothing is computed (ggml-cpu.c)
     llama_build_and_test(test-bell-fork.cpp)             # the decode bell: card and host meet once per MoE layer without a driver call (ggml/src/ggml-bell-fork.h), no GPU
+    llama_build_and_test(test-bell-ops-fork.cpp)         # the bell's two ops on the CPU backend and every GPU found (ggml_moe_bell, ggml_moe_rows)
     llama_build_and_test(test-queue-order-fork.cpp)      # uploads keep stream order with kernels and copies, every GPU (Vulkan transfer queue forced)
     llama_build_and_test(test-sched-mixed-fork.cpp)      # a graph split between GPUs of two backends (CUDA + Vulkan): cross-card copies, no copy events
     llama_build_and_test(test-bw-probe-fork.cpp LINK llama)   # the bandwidth probes (PCIe upload, VRAM, RAM read) against the machine's maximum on the same path
