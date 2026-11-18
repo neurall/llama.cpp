@@ -3,3 +3,7 @@ pc-mimo,mimo,1,pfbest1k,16,,--env RUN_CACHE_SWITCH=1
 pc-glm,glm,1,pfbest1k,16,,--env RUN_CACHE_SWITCH=1
 pc-qni4,qn_iq4xs,1,pfbest1k,16,,--env RUN_CACHE_SWITCH=1
 pc-vk-mimo,mimo,1,pfbest1k,16,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json --env RUN_CACHE_SWITCH=1
+pc2-glm,glm,1,pfbest1k,16,,--env RUN_CACHE_SWITCH=turn2 --nothink
+pc2-glm-off,glm,1,pfbest1k,16,--cache-ram 0,--env RUN_CACHE_SWITCH=turn2 --nothink
+pc2-mimo,mimo,1,pfbest1k,16,,--env RUN_CACHE_SWITCH=turn2 --nothink
+pc2-mimo-off,mimo,1,pfbest1k,16,--cache-ram 0,--env RUN_CACHE_SWITCH=turn2 --nothink
