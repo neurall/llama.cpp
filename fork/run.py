@@ -3024,6 +3024,7 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                 _on = [_next_lp(_l + (_i + 1) * 50, True)[0] for _i in range(20)]   # the moved cells stay in use: the real next token, 50 tokens apart
                 _d = _next_lp(_s, True)
                 print(f"DBG MOVE: at {_l}: fresh {_a[:2]} moved {_c[:2]} KL {_kl(_a, _c)}; at {_s}: fresh {_b[:2]} moved {_d[:2]} KL {_kl(_b, _d)}; PPL {math.exp(-sum(_on) / len(_on)):.5f} over {_on}", flush=True)
+            _cs_note, _cs_out = "", ""   # the cache switch's line and its answers, for the row (its note and its stored answer)
             if os.environ.get("RUN_CACHE_SWITCH"):   # the server's RAM prompt cache (--cache-ram, on by default) on a switch of prompts: A (the slot holds it: reused, the base),
                 # B (A's halves swapped: the same length, no common prefix) saves A's state into the cache, A again saves B's and loads A's back. A request's wall time
                 # beyond its prompt pass and its token is the cache's own work: the state's copies between the cards and RAM (ggml_backend_tensor_get_n / set_n)
@@ -3051,10 +3052,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                     if _tag == "A":
                         _a1 = _said
                     if _tag == "turn 2":
-                        PROCSTAT["turn2_answer"] = _said[:2000]
-                        PROCSTAT["turn2_ttft_ms"] = round(_w - _tm.get("predicted_ms", 0))
+                        _cs_out = "\n--- cache switch, A (turn 1) ---\n" + _a1 + "\n--- cache switch, turn 2 ---\n" + _said
                 print("DBG CACHE SWITCH: " + "; ".join(_sw), flush=True)
-                PROCSTAT["cache_switch"] = "; ".join(_sw)
+                _cs_note = "cache switch: " + "; ".join(_sw)
             _want = os.environ.get("PERF_PTOK")
             if _want and not os.environ.get("PERF_BOX") and int(t["prompt_n"]) != int(_want):   # a best-prompt cell must feed exactly its stored length: a different one measures another prompt (a pass more or less)
                 raise SystemExit(f"PROMPT LENGTH MISMATCH: the cell asked for {_want} prompt tokens, the server counted {t['prompt_n']}: stop, fix the feed, run again")
@@ -3064,6 +3064,9 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
             # a chat answer keeps its reasoning part too (a thinking model can put everything there and leave the content empty)
             _m = ((res.get("choices") or [{}])[0].get("message") or {})
             row["output"] = res.get("content") or ((_m.get("reasoning_content") + "\n---\n" if _m.get("reasoning_content") else "") + (_m.get("content") or ""))
+            if _cs_note:   # the cache switch's steps go into the note, its answers after the measured one (the outputs table keeps them)
+                row["note"] = (str(row.get("note") or "") + " | " + _cs_note).strip(" |")
+                row["output"] += _cs_out
             if os.environ.get("RUN_DBG_TOKENS"):   # debug: the first generated tokens as the server decoded them (repr), to see what an answer that renders empty is made of
                 _lp = (((res.get("choices") or [{}])[0].get("logprobs") or {}).get("content") or [])
                 print("DBG TOKENS (first 60 of %d): %s" % (len(_lp), [(x.get("token"), x.get("id")) for x in _lp[:40]]), flush=True)
