@@ -544,7 +544,7 @@ struct server_slot {
 
         const size_t cur_size = cur_size_tgt + cur_size_dft;
 
-        SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
+        SRV_WRN(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
                 (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
 
         auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft);
@@ -2176,13 +2176,19 @@ private:
 
                 ret->prompt_save(*prompt_cache);
 
+                const int64_t t_saved = ggml_time_us();
+
                 if (!ret->prompt_load(*prompt_cache, task.tokens)) {
                     ret->prompt_clear();
                 }
 
+                const int64_t t_loaded = ggml_time_us();
+
                 prompt_cache->update();
 
-                SRV_TRC("prompt cache update took %.2f ms\n", (ggml_time_us() - t_start) / 1000.0);
+                // fork: the split at WARN (user 2026-11-18: where a GLM switch's 280-350 ms goes); the engine's "state get" / "state set" lines split save and load further
+                SRV_WRN("prompt cache update took %.2f ms: save %.2f ms, load %.2f ms (with the free of the loaded copy), update %.2f ms\n", (ggml_time_us() - t_start) / 1000.0,
+                        (t_saved - t_start) / 1000.0, (t_loaded - t_saved) / 1000.0, (ggml_time_us() - t_loaded) / 1000.0);
             }
         }
 

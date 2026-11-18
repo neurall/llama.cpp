@@ -6015,6 +6015,29 @@ llm_graph_cb llama_context::graph_get_cb() const {
 // state save/load
 //
 
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
+
+// fork: page faults of the calling thread so far (a state copy into fresh 4 KiB host pages faults on every page; THP is off on PC1), 0 where not counted
+static long state_thread_faults() {
+#if defined(__linux__)
+    rusage ru {};
+    return getrusage(RUSAGE_THREAD, &ru) == 0 ? ru.ru_minflt + ru.ru_majflt : 0;
+#else
+    return 0;
+#endif
+}
+
+// fork: one line per state copy (the server's prompt cache save and load; user 2026-11-18: "where GLM's remaining 280-350 ms goes"): the walk over the cells that
+// lists the parts, then the backend's copies, each with its page faults
+static void state_copy_log(const char * what, size_t n_parts, size_t bytes, int64_t t_create, long f_create, int64_t t0, long f0) {
+    const int64_t t1 = ggml_time_us();
+    const long    f1 = state_thread_faults();
+    LLAMA_LOG_WARN("%s: %zu parts, %.1f MiB of tensors: walk %.1f ms (%ld page faults), copies %.1f ms (%.2f GB/s, %ld page faults)\n", what, n_parts, bytes / 1048576.0,
+                   (t0 - t_create) / 1e3, f0 - f_create, (t1 - t0) / 1e3, (double) bytes / (double) std::max<int64_t>(1, t1 - t0) / 1e3, f1 - f0);
+}
+
 class llama_io_write_dummy : public llama_io_write_i {
 public:
     llama_io_write_dummy(bool skip_tensors) : skip_tensors(skip_tensors) {}
@@ -6050,6 +6073,8 @@ public:
         if (winfos.empty()) {
             return;
         }
+        const int64_t t0 = ggml_time_us();
+        const long    f0 = state_thread_faults();
 
         std::vector<ggml_tensor *> tensors;
         std::vector<size_t> offsets;
@@ -6069,6 +6094,7 @@ public:
 
         std::vector<const ggml_tensor *> const_tensors(tensors.begin(), tensors.end());
         ggml_backend_tensor_get_n(const_tensors.data(), base_ptr, offsets.data(), sizes.data(), data_offsets.data(), winfos.size());
+        state_copy_log("state get", winfos.size(), tensor_bytes, t_create, f_create, t0, f0);
     }
 
     void write(const void * src, size_t size) override {
@@ -6088,6 +6114,7 @@ public:
 
         // save the write for later during destruction
         winfos.push_back({tensor, (size_t) (ptr - base_ptr), size, offset});
+        tensor_bytes += size;
 
         ptr += size;
         size_written += size;
@@ -6103,6 +6130,9 @@ private:
     uint8_t * base_ptr;
     size_t buf_size = 0;
     size_t size_written = 0;
+    size_t        tensor_bytes = 0;
+    const int64_t t_create     = ggml_time_us();
+    const long    f_create     = state_thread_faults();
 
     struct write_info {
         ggml_tensor * tensor;
@@ -6121,6 +6151,8 @@ public:
         if (rinfos.empty()) {
             return;
         }
+        const int64_t t0 = ggml_time_us();
+        const long    f0 = state_thread_faults();
 
         std::vector<ggml_tensor *> tensors;
         std::vector<size_t> offsets;
@@ -6139,6 +6171,7 @@ public:
         }
 
         ggml_backend_tensor_set_n(tensors.data(), base_ptr, offsets.data(), sizes.data(), data_offsets.data(), rinfos.size());
+        state_copy_log("state set", rinfos.size(), tensor_bytes, t_create, f_create, t0, f0);
     }
 
     void read(void * dst, size_t size) override {
@@ -6158,6 +6191,7 @@ public:
 
         // save for later during destruction
         rinfos.push_back({tensor, (size_t) (ptr - base_ptr), size, offset});
+        tensor_bytes += size;
 
         ptr += size;
         size_read += size;
@@ -6166,6 +6200,7 @@ public:
 
     void discard() override {
         rinfos.clear();
+        tensor_bytes = 0;
     }
 
     size_t n_bytes() override {
@@ -6177,6 +6212,9 @@ private:
     const uint8_t * base_ptr;
     size_t buf_size = 0;
     size_t size_read = 0;
+    size_t        tensor_bytes = 0;
+    const int64_t t_create     = ggml_time_us();
+    const long    f_create     = state_thread_faults();
 
     struct read_info {
         ggml_tensor * tensor;
