@@ -3212,9 +3212,12 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
                 g_xcopy_dst_ordered != NULL && g_xcopy_dst_ordered(input_backend, split_backend)) {
             waited = true;
         }
+        // An event belongs to its backend: a CUDA stream cannot wait on a Vulkan event (CUDA + Vulkan split, b15807: abort "invalid device context",
+        // tests/test-sched-mixed-fork.cpp). Cards of two backends keep the drain.
         if (!waited && !drain && input_backend != split_backend && split_backend->iface.cpy_tensor_async != NULL &&
                 ggml_backend_dev_type(ggml_backend_get_device(input_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU &&
-                ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+                ggml_backend_dev_backend_reg(ggml_backend_get_device(input_backend)) == ggml_backend_dev_backend_reg(ggml_backend_get_device(split_backend))) {
             if (sched->tail_ev[split_backend_id] == NULL) {
                 ggml_backend_dev_props props;
                 ggml_backend_dev_get_props(ggml_backend_get_device(split_backend), &props);
