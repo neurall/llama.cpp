@@ -1,0 +1,2 @@
+name,model,n,test,tokens,args,extra
+qni3-nsys,qwen38,1,pfbest1k,256,,--wrap 'nsys profile --trace=cuda,osrt,nvtx --sample=cpu --cudabacktrace=none -o /p/bw/data/nsys/qni3-%p --force-overwrite=true'
