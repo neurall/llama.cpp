@@ -364,12 +364,15 @@ struct thread_search {
 // in a row. Work = CPU + upload MiB a token (the expert cache's byte counters); a window with over 25% more work than the best is no evidence either way (2026-11-15: MiMo's
 // uploads come and go in ~320-token phases at +12% token time and restarted the search from 64 threads once a cell). reset() at a new request: its context and expert mix
 // make its own baseline. shortcut: a load change between two requests is not seen; upgrade to a best per context band if that matters (tests/test-estimate-fork.cpp).
+// Tokens while the expert cache refills after a prompt (refilling: its background uploads queued or in flight) are no sample and restart the baseline: GLM two-card
+// Vulkan 2026-11-17, every slow run 2 restarted the search from 64 threads during the refill ("64 tokens at 90.58 ms/token against 73.83 settled", 11-14 t/s against 17-18).
 struct drift_watch {
     int n = 64, need = 2; double slow = 1.10, comparable = 0.25;
     int wn = 0, drift = 0; double wsum = 0.0, wwork = 0.0, best = 0.0, best_work = 0.0;
     double last_m = 0.0, last_best = 0.0;   // the window and the best when it last fired (for the log line)
     void reset() { wn = 0; drift = 0; wsum = 0.0; wwork = 0.0; best = 0.0; best_work = 0.0; }
-    bool feed(double t, double work) {   // one token's time and work; true: search again
+    bool feed(double t, double work, bool refilling = false) {   // one token's time and work; true: search again
+        if (refilling) { reset(); return false; }   // paid whatever the box: no sample, the baseline starts after the refill
         wsum += t; wwork += work;
         if (++wn < n) { return false; }
         const double m = wsum / n, w = wwork / n;

@@ -325,6 +325,24 @@ int main() {
         dw.reset(); for (int i = 0; i < 64; ++i) { dw.feed(40.0, 520.0); }   // a new request: a 128k context runs slower; its own first window is its baseline
         bool again = false; for (int i = 0; i < 256; ++i) { again |= dw.feed(40.0, 520.0); }
         check("drift watch: a new request starts its own baseline", !again);
+        // the refill a prompt leaves behind (the expert cache's background uploads) slows a request's first windows at comparable work: GLM two-card Vulkan
+        // 2026-11-17, "64 tokens at 90.58 ms/token against 73.83 settled" restarted the search from 64 threads in every slow run 2 (11-14 t/s against 17-18)
+        auto refill_run = [](bool gate) {
+            drift_watch w; int fired = -1;
+            for (int i = 0; i < 64 * 12; ++i) {
+                const bool refill = i < 64 * 6;
+                const double t = refill && i >= 64 ? 91.0 : 74.0;
+                if (w.feed(t, 520.0, gate && refill) && fired < 0) { fired = i; }
+            }
+            return fired;
+        };
+        check("drift watch: the refill's slow windows restart the search when they count (the GLM failure)", refill_run(false) >= 0);
+        check("drift watch: no restart while the expert cache refills after a prompt", refill_run(true) < 0);
+        drift_watch w2; bool seen2 = false;
+        for (int i = 0; i < 64 * 4; ++i) { w2.feed(91.0, 520.0, true); }    // the refill
+        for (int i = 0; i < 64 * 2; ++i) { w2.feed(74.0, 520.0); }          // after it: the baseline
+        for (int i = 0; i < 64 * 3; ++i) { seen2 |= w2.feed(90.0, 520.0); } // other load on the box
+        check("drift watch: a slower box after the refill is still seen", seen2);
     }
 
     // the CPUs this process may use cut the topology (common_cpu_groups_masked_fork). PC1's 3975WX: 8 L3 groups of 4 cores, CPU c and c+32 are siblings. Under taskset to the

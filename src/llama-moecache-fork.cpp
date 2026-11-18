@@ -17902,6 +17902,15 @@ void llama_moe_cache_pass_uploads_fork(int * layers, int * n_layers, double * in
     *in_ms = g_pu_in_ns.exchange(0) / 1e6; *beside_ms = g_pu_beside_ns.exchange(0) / 1e6; *wait_ms = g_pu_wait_ns.exchange(0) / 1e6;
 }
 
+// The refill a prompt left behind is still running: background uploads (reheat_free_blocks after the prompt, preheat_swap from its expert counters) queued or in
+// flight. Decode tokens pay for it whatever their thread count, so the decode thread search takes no sample from them (llama_context::thread_tune_feed).
+bool llama_moe_cache_refilling_fork() {
+    moe_cache * mc = g_cache;
+    if (!mc) { return false; }
+    std::lock_guard<std::mutex> lk(mc->wmtx);
+    return mc->in_flight_stream > 0 || std::any_of(mc->todo.begin(), mc->todo.end(), [](const upload_job & j) { return j.bg; });
+}
+
 int llama_moe_cache_counters_fork(int64_t * v, int cap) {
     moe_cache * mc = g_cache;
     if (!mc || cap < 3 + mc->n_links) { return 0; }

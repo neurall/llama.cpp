@@ -87,6 +87,7 @@ uint32_t llama_dsplit_max_pass_fork(const llama_model * model, uint32_t n_ubatch
 bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // the last refused lend: need and room (bytes)
 uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all);
 int  llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
+bool llama_moe_cache_refilling_fork();   // src/llama-moecache-fork.cpp: the refill a prompt left behind is still uploading
 int  llama_cpu_allowed_count_fork();                          // src/llama-moecache-fork.cpp: the CPUs this process may run on
 static int64_t g_thr_cpu_bytes = -1, g_thr_up_bytes = -1;   // the decode thread search's byte baseline; a prompt call resets it (thread_tune_feed_batch)
 void llama_moe_cache_split_feed_fork(int64_t dt_us);   // a decode token's time: the CPU/GPU split's A/B (llama-moecache-fork.cpp); < 0 voids its samples   // a refused pass: its path's ceiling, the retry size
@@ -2877,7 +2878,21 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         }
     }
     if (fresh && !ts.settled() && ts.st != 0) { return; }
+    // the refill a prompt leaves behind (the expert cache's background uploads) is paid whatever the thread count, and the decode threads compete with its upload
+    // workers: no search step and no drift sample until it is over (user 2026-11-18: "no thread search during refill"; GLM two-card Vulkan 2026-11-17: every slow
+    // run 2 restarted the search during the refill, 11-14 t/s against 17-18)
+    const bool refilling = llama_moe_cache_refilling_fork();
+    {
+        static int64_t held = 0, held_us = 0;
+        if (refilling) {
+            held++; held_us += dt_us;
+        } else if (held > 0) {
+            LLAMA_LOG_WARN("%s: thread search held for %" PRId64 " tokens (%.0f ms) while the expert cache refilled after the prompt\n", __func__, held, held_us / 1e3);
+            held = held_us = 0;
+        }
+    }
     if (!ts.settled()) {
+        if (refilling) { return; }
         auto testing = [&]() {
             char v[48]; snprintf(v, sizeof v, "%d vs %d (testing)", ts.b, ts.c);
             llama_moe_decision_fork("threads_decode", v, "searching: alternating the best count so far with one candidate, token by token");
@@ -2900,7 +2915,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         // search again from the default. A new request starts its own baseline (its context and expert mix are its own)
         llama_moe_cache_split_feed_fork(dt_us);   // the CPU/GPU split's A/B runs on settled thread counts only: two searches at once confound each other
         if (fresh) { dw.reset(); return; }
-        if (dw.feed((double) dt_us, x_mib + u_mib)) {
+        if (dw.feed((double) dt_us, x_mib + u_mib, refilling)) {
             LLAMA_LOG_WARN("%s: thread search again: 64 tokens at %.2f ms/token against %.2f settled, at comparable CPU and upload work\n", __func__, dw.last_m/1000.0, dw.last_best/1000.0);
             thr.base = thr.base0;
             ts = thread_search();
