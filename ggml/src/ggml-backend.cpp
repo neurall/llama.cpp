@@ -13,6 +13,7 @@
 #include "ggml-alloc.h"
 #include "ggml-rampool-fork.h"
 #include "ggml-sched-fork.h"
+#include "ggml-bell-fork.h"
 #include "ggml-impl.h"
 
 #include <assert.h>
@@ -23,6 +24,7 @@
 #include <string.h>
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include <unordered_map>
@@ -1382,14 +1384,65 @@ void ggml_backend_set_split_callback(ggml_backend_split_cb_t cb, void * user_dat
     g_split_ud = user_data;
 }
 
-static ggml_backend_split_launched_cb_t g_split_launched_cb = NULL;
-static ggml_backend_split_detached_cb_t g_split_detached_cb = NULL;
-static void *                           g_split_bell_ud     = NULL;
+// fork: the decode bell. The bells of a split are served on this thread, which gets the split before its graph is launched; the launching thread waits for it
+// behind the launch. Not by the launching thread behind the launch: a kernel that waits for the host holds its stream, a CUDA stream queues 1022 calls behind a
+// running kernel and the next call blocks until that kernel ends (fork/bench/launchblock.cu). A graph's first call is launched kernel by kernel (its CUDA graph
+// is captured from the second call on): Qwen3.8 UD-IQ4_XS, about 1500 kernels a card, stood in cuLaunchKernel behind the first rows kernel with a missing
+// pick, whose rows were to come once that launch had returned (2026-11-18; OLMoE's 500 kernels a card fitted the queue, so its rows never showed it).
+// The thread sleeps between splits: it is woken before the launch, and the first bell rings only after the launch and the layer's attention.
+static ggml_backend_split_bell_cb_t g_split_bell_cb = NULL;
+static void *                       g_split_bell_ud = NULL;
 
-void ggml_backend_set_split_bell_callbacks(ggml_backend_split_launched_cb_t launched, ggml_backend_split_detached_cb_t detached, void * user_data) {
-    g_split_launched_cb = launched;
-    g_split_detached_cb = detached;
-    g_split_bell_ud     = user_data;
+struct ggml_sched_bell_thread {
+    std::thread             thread;
+    std::mutex              mu;
+    std::condition_variable cv;
+    uint32_t                posted = 0;        // splits handed over (under mu)
+    std::atomic<uint32_t>   done{0};           // splits served
+    bool                    quit   = false;
+    ggml_backend_t          backend = nullptr; // the split handed over last
+    struct ggml_cgraph *    graph   = nullptr;
+
+    void run() {
+        for (uint32_t seen = 0; ; ) {
+            ggml_backend_t b; struct ggml_cgraph * g;
+            {
+                std::unique_lock<std::mutex> lk(mu);
+                cv.wait(lk, [&] { return posted != seen || quit; });
+                if (quit) { return; }
+                b = backend; g = graph;
+            }
+            seen++;
+            g_split_bell_cb(b, g, g_split_bell_ud);
+            done.store(seen);
+        }
+    }
+    void post(ggml_backend_t b, struct ggml_cgraph * g) {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            backend = b; graph = g; posted++;
+        }
+        cv.notify_one();
+    }
+    void wait() const { while (done.load() != posted) { GGML_BELL_PAUSE(); } }   // only the posting thread calls it: posted is its own
+};
+static ggml_sched_bell_thread * g_bell_thread = nullptr;
+
+static bool ggml_sched_split_has_bell(const struct ggml_cgraph * g) {
+    for (int i = 0; i < g->n_nodes; ++i) { if (g->nodes[i]->op == GGML_OP_MOE_BELL) { return true; } }
+    return false;
+}
+
+void ggml_backend_set_split_bell_callback(ggml_backend_split_bell_cb_t cb, void * user_data) {
+    if (!cb && g_bell_thread) {   // no split is under way here
+        { std::lock_guard<std::mutex> lk(g_bell_thread->mu); g_bell_thread->quit = true; }
+        g_bell_thread->cv.notify_one();
+        g_bell_thread->thread.join();
+        delete g_bell_thread;
+        g_bell_thread = nullptr;
+    }
+    g_split_bell_cb = cb;
+    g_split_bell_ud = user_data;
 }
 
 void ggml_backend_set_moe_fill_callback(ggml_backend_moe_fill_cb_t cb, void * user_data) {
@@ -4610,8 +4663,6 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
         pft_cur = split_id;
-        // fork: the decode bell: the host chains of the bells are not run in graph order, their owner runs each one when its layer rings (the launched callback below)
-        if (g_split_detached_cb && !sched->callback_eval && g_split_detached_cb(&split->graph, g_split_bell_ud)) { continue; }
         char nvtx_name[200] = "";
         if (g_nvtx_on && split->graph.n_nodes > 0) { snprintf(nvtx_name, sizeof nvtx_name, "SPLIT %d %s %s %s", split_id, ggml_backend_name(split_backend), ggml_op_name(split->graph.nodes[0]->op), split->graph.nodes[0]->name); }
         nvtx_scope nvtx_split(nvtx_name);
@@ -4940,6 +4991,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             // (Qwen Next's inp_mixed_embd under poison) cannot take the one report, and a pass that a NaN check of every node would take minutes for stays short
             static const char * const nan_only = getenv("GGML_SCHED_NAN_CHECK_ONLY");
             if (split_id == 0 && nan_mode == 2) { nan_graph2++; }
+            // fork: the decode bell: this split's bells are served from here on, on the bell thread (before the launch, see ggml_sched_bell_thread)
+            const bool bells = g_split_bell_cb && ggml_sched_split_has_bell(&split->graph);
+            if (bells) {
+                if (!g_bell_thread) { g_bell_thread = new ggml_sched_bell_thread; g_bell_thread->thread = std::thread([] { g_bell_thread->run(); }); }
+                g_bell_thread->post(split_backend, &split->graph);
+            }
             if (nan_mode == 2 && sched->n_splits >= ggml_sched_nan_min_splits() &&
                     (!nan_only || (split->graph.n_nodes > 0 && strstr(split->graph.nodes[0]->name, nan_only)))) {
                 ggml_sched_trace_install();
@@ -4954,10 +5011,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             } else {
                 NVTX_PUSH("LAUNCH graph_compute_async"); ec = ggml_backend_graph_compute_async(split_backend, &split->graph); NVTX_POP();
             }
-            // fork: the decode bell: the graph is on the device, its bells are served from here while it runs
-            if (g_split_launched_cb && ec == GGML_STATUS_SUCCESS && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) != GGML_BACKEND_DEVICE_TYPE_CPU) {
-                g_split_launched_cb(split_backend, &split->graph, g_split_bell_ud);
-            }
+            if (bells) { g_bell_thread->wait(); }   // every bell of the split is served: the next split may use the host again
             if (cs_set >= 0 && cs_idx[split_id] >= 0) {
                 if (ec == GGML_STATUS_SUCCESS) {
                     g_stamp_fn(split_backend, &g_card_buf[cs_set][cs_idx[split_id]].t1);
