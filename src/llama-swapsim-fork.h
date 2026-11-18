@@ -26,6 +26,9 @@ struct swapsim_knobs {
     double admit   = 2.0;    // uses in the window before a miss may take a block between tokens
     int    budget  = 8;      // evictions between two tokens, all layers together
     int    jit     = 1;      // uploads inside the token: 0 none, 1 admitted like a swap, 2 any miss
+    int    policy  = 0;      // the score: 0 "add" (window + lifetime share), 1 "crf" (ClassLRU, upstream #31233: a use count that halves every 128 tokens gives a
+                             // class, the score is 2^class / (age + 1); no pay-back margin)
+    int    spend   = 0;      // the budget between tokens: 0 by layer in turn (the engine), 1 best first: the hottest newcomers of any layer
 };
 
 struct swapsim_layer {
@@ -34,6 +37,9 @@ struct swapsim_layer {
     std::vector<uint8_t>  in, coming;    // cached; queued between tokens (serves from the next token)
     std::vector<uint32_t> win, glob;     // uses in the window, lifetime uses
     uint64_t gmax = 1;                   // the layer's busiest expert's lifetime uses
+    std::vector<float>    crf;           // policy crf: the use count, halving every 128 tokens, as of crf_t
+    std::vector<uint32_t> crf_t;         // the layer's token of the last use
+    uint32_t tok = 0;                    // tokens this layer saw
     std::deque<std::vector<int32_t>> recent;
 };
 
@@ -55,13 +61,39 @@ struct swapsim {
 
     void add_layer(int n, int cls, int link, double bytes) {
         swapsim_layer l; l.n = n; l.cls = cls; l.link = link; l.bytes = bytes;
-        l.in.assign(n, 0); l.coming.assign(n, 0); l.win.assign(n, 0); l.glob.assign(n, 0);
+        l.in.assign(n, 0); l.coming.assign(n, 0); l.win.assign(n, 0); l.glob.assign(n, 0); l.crf.assign(n, 0.0f); l.crf_t.assign(n, 0);
         L.push_back(std::move(l));
         if ((int) free_blocks.size() <= cls) { free_blocks.resize(cls + 1, 0); }
     }
     uint64_t gmax_all() const { uint64_t g = 1; for (const auto & l : L) { g = std::max(g, l.gmax); } return g; }
-    double score(const swapsim_layer & l, int32_t e, uint64_t gmax) const { return l.win[e] + k.gweight * ((double) l.glob[e] / (double) gmax); }
-    int margin_of(const swapsim_layer & l) const { return l.link < (int) margin.size() ? margin[l.link] : 0; }
+    double score(const swapsim_layer & l, int32_t e, uint64_t gmax) const {
+        if (k.policy == 1) {   // as the engine's policy::crf
+            const uint32_t age = l.tok - l.crf_t[e];
+            return (double) (1u << std::min(7, (int) std::floor(std::log2(std::max(1.0f, l.crf[e] * std::exp2(-(float) age / 128.0f)))))) / (double) (age + 1);
+        }
+        return l.win[e] + k.gweight * ((double) l.glob[e] / (double) gmax);
+    }
+    int margin_of(const swapsim_layer & l) const { return k.policy == 1 ? 0 : l.link < (int) margin.size() ? margin[l.link] : 0; }
+
+    // a token's picks of one layer enter its counts: the window, the lifetime uses, the halving count
+    void note(swapsim_layer & l, const std::vector<int32_t> & cur) const {
+        l.tok++;
+        if ((int) l.recent.size() >= k.window) {
+            for (int32_t o : l.recent.front()) { l.win[o]--; }
+            l.recent.pop_front();
+        }
+        l.recent.emplace_back();
+        for (int32_t e : cur) {
+            if (e < 0 || e >= l.n) { continue; }
+            l.win[e]++; l.gmax = std::max<uint64_t>(l.gmax, ++l.glob[e]);
+            l.crf[e] = l.crf[e] * std::exp2(-(float) (l.tok - l.crf_t[e]) / 128.0f) + 1.0f; l.crf_t[e] = l.tok;
+            l.recent.back().push_back(e);
+        }
+    }
+    // a prompt token: counted, nothing swapped or priced (prompt passes have their own paths)
+    void observe(const std::vector<std::vector<int32_t>> & picks) {
+        for (size_t li = 0; li < L.size() && li < picks.size(); ++li) { note(L[li], picks[li]); }
+    }
 
     // one decode token: picks[layer] = the experts its router chose
     void token(const std::vector<std::vector<int32_t>> & picks) {
@@ -73,16 +105,10 @@ struct swapsim {
         for (size_t li = 0; li < L.size() && li < picks.size(); ++li) {
             swapsim_layer & l = L[li];
             const std::vector<int32_t> & cur = picks[li];
-            if ((int) l.recent.size() >= k.window) {
-                for (int32_t o : l.recent.front()) { l.win[o]--; }
-                l.recent.pop_front();
-            }
-            l.recent.emplace_back();
+            note(l, cur);
             std::vector<int32_t> miss;
             for (int32_t e : cur) {
                 if (e < 0 || e >= l.n) { continue; }
-                l.win[e]++; l.gmax = std::max<uint64_t>(l.gmax, ++l.glob[e]);
-                l.recent.back().push_back(e);
                 out.picks++;
                 if (l.in[e]) { out.hits++; } else if (std::find(miss.begin(), miss.end(), e) == miss.end()) { miss.push_back(e); }
             }
@@ -123,6 +149,42 @@ struct swapsim {
         int budget = k.budget;
         if (L.empty()) { return; }
         rr = (rr + 1) % L.size();
+        auto coldest = [&](const swapsim_layer & l, swapsim_layer *& lo, int32_t & victim, double & best) {   // of the class, whichever layer holds it
+            lo = nullptr; victim = -1; best = 1e300;
+            for (auto & o : L) {
+                if (o.cls != l.cls) { continue; }
+                for (int32_t x = 0; x < o.n; ++x) {
+                    if (!o.in[x]) { continue; }
+                    const double c = score(o, x, ga);
+                    if (c < best) { best = c; victim = x; lo = &o; }
+                }
+            }
+        };
+        if (k.spend == 1) {   // best first: every layer's admitted misses in one order, the hottest takes the next eviction
+            std::vector<std::pair<double, std::pair<size_t, int32_t>>> cand;
+            for (size_t li = 0; li < L.size(); ++li) {
+                for (int32_t id : pending[li]) {
+                    if (L[li].in[id] || L[li].coming[id]) { continue; }
+                    if (L[li].win[id] < k.admit) { out.d_admit++; continue; }
+                    cand.push_back({ score(L[li], id, ga), { li, id } });
+                }
+            }
+            std::stable_sort(cand.begin(), cand.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+            for (const auto & c : cand) {
+                swapsim_layer & l = L[c.second.first];
+                const int32_t id = c.second.second;
+                if (free_blocks[l.cls] > 0) { free_blocks[l.cls]--; l.coming[id] = 1; out.bg_bytes += l.bytes; continue; }
+                swapsim_layer * lo; int32_t victim; double best;
+                coldest(l, lo, victim, best);
+                if (victim < 0) { continue; }
+                if (c.first < best + margin_of(l)) { out.d_margin++; continue; }
+                if (budget <= 0) { out.d_budget++; continue; }
+                budget--;
+                lo->in[victim] = 0; out.evictions++;
+                l.coming[id] = 1; out.bg_bytes += l.bytes;
+            }
+            return;
+        }
         for (size_t q = 0; q < L.size(); ++q) {
             const size_t li = (rr + q) % L.size();
             swapsim_layer & l = L[li];
@@ -134,15 +196,8 @@ struct swapsim {
                 if (l.in[id] || l.coming[id]) { continue; }
                 if (l.win[id] < k.admit) { out.d_admit++; continue; }
                 if (free_blocks[l.cls] > 0) { free_blocks[l.cls]--; l.coming[id] = 1; out.bg_bytes += l.bytes; continue; }
-                swapsim_layer * lo = nullptr; int32_t victim = -1; double best = 1e300;
-                for (auto & o : L) {
-                    if (o.cls != l.cls) { continue; }
-                    for (int32_t x = 0; x < o.n; ++x) {
-                        if (!o.in[x]) { continue; }
-                        const double c = score(o, x, ga);
-                        if (c < best) { best = c; victim = x; lo = &o; }
-                    }
-                }
+                swapsim_layer * lo; int32_t victim; double best;
+                coldest(l, lo, victim, best);
                 if (victim < 0) { break; }
                 if (score(l, id, ga) < best + margin_of(l)) { out.d_margin += p.size() - i; break; }   // sorted: nothing hotter follows
                 if (budget-- <= 0) { out.d_budget += p.size() - i; break; }

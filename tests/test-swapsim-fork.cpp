@@ -134,6 +134,28 @@ int main() {
         check("verdict: dear uploads take the strict margin", strict_dear >= 19);
         check("a strict margin evicts less on the same picks", swaps_fewer == 20);
     }
+    {   // policy 1 = ClassLRU (upstream #31233, the engine's policy=crf): a use count that halves every 128 tokens gives a class, the score is 2^class / (age + 1).
+        // An expert used often long ago against one used once just now: by the lifetime share the old one stays, by ClassLRU it goes. No pay-back margin there.
+        for (int policy : { 0, 1 }) {
+            swapsim s = make(1, 4, 2); s.k.jit = 0; s.k.admit = 1; s.k.window = 4; s.k.policy = policy; s.margin = { policy ? 5 : 0 };
+            for (int t = 0; t < 8; ++t)   { s.token({ { 0 } }); }
+            for (int t = 0; t < 190; ++t) { s.token({ {} }); }
+            s.token({ { 1 } });
+            s.token({ { 2 } });   // a newcomer, as hot as expert 1
+            if (policy == 0) { check("add: the lifetime share keeps the old regular, the recent one goes", s.L[0].coming[2] && s.L[0].in[0] && !s.L[0].in[1]); }
+            else             { check("crf: the old regular's class has decayed and its age is long: it goes, margin or not", s.L[0].coming[2] && !s.L[0].in[0] && s.L[0].in[1]); }
+        }
+    }
+    {   // the step's budget, by layer in turn (the engine) or best first over all layers: one eviction for two candidates, the lukewarm one's layer first in the round
+        for (int spend : { 0, 1 }) {
+            swapsim s = make(2, 4, 1); s.k.jit = 0; s.k.admit = 1; s.k.budget = 1; s.k.spend = spend;
+            s.L[0].glob[1] = 9; s.L[0].gmax = 9;   // layer 0's candidate is a lifetime regular
+            s.token({ { 1 }, { 1 } });
+            check("budget 1 of 2 candidates: one eviction", s.out.evictions == 1 && s.out.d_budget == 1);
+            if (spend == 0) { check("by layer in turn: the layer first in the round takes the budget", s.L[1].coming[1] && !s.L[0].coming[1]); }
+            else            { check("best first: the hotter candidate takes it, whichever layer", s.L[0].coming[1] && !s.L[1].coming[1]); }
+        }
+    }
     check("trusted: the replay within a quarter of the engine's counters", swapsim_trusted(100, 110, 50, 45, 1000) && !swapsim_trusted(100, 200, 50, 45, 1000) && !swapsim_trusted(100, 110, 50, 20, 1000));
     check("trusted: next to nothing on both sides agrees", swapsim_trusted(100, 110, 2, 9, 1000));
     printf(g_fail ? "swapsim: %d FAILED\n" : "swapsim: all passed\n", g_fail);
