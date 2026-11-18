@@ -124,6 +124,7 @@ static std::atomic<double> g_load_read_gbs{ 0.0 };
 // The server is warm once its first filling prompt call or its first request is over (user 2026-11-03: "ignore lower than expected vals as those are first cold outliers or start measuring after n tokens when warm"):
 // until then the CPU phases do not feed the CPU rate, the start-up probe's value stands (DeepSeek's first phases read mapped experts cold: 1.8 GB/s against 31.6 probed, then 7.9, then 19)
 static std::atomic<bool> g_warm{ false };
+static std::atomic<bool> g_threads_searching{ false };   // the decode thread search is sampling (llama_context::thread_tune_feed): tune_slice_counts
 
 void        llama_moe_stats_log_fork(const char * kind, const char * text);   // llama-moestate-fork.cpp: --moe stats
 std::string llama_moe_stats_io_fork(int who);                                 // what the disk, the memory and the CPU did since this caller's last call
@@ -15248,7 +15249,7 @@ void llama_moe_cache_step_fork() {
                     mc->ab_sum[mc->ab_state] += dt;
                     mc->ab_n[mc->ab_state]++;
                 }
-                if (knobs().self_tune != 0 && mc->lv_k >= 0 && !mc->last_prefill) {
+                if (knobs().self_tune != 0 && tune_slice_counts(mc->lv_k >= 0, mc->last_prefill, !g_threads_searching.load(std::memory_order_relaxed))) {
                     if (++mc->lv_slice_n > mc->lv_warm) { // the first tokens after a switch still run on the previous setting's slots
                         mc->lv_slice_sum += dt;
                     }
@@ -17874,6 +17875,10 @@ void llama_moe_cache_pass_uploads_fork(int * layers, int * n_layers, double * in
 
 // The refill a prompt left behind is still running: background uploads (reheat_free_blocks after the prompt, preheat_swap from its expert counters) queued or in
 // flight. Decode tokens pay for it whatever their thread count, so the decode thread search takes no sample from them (llama_context::thread_tune_feed).
+// the decode tuners take turns (src/llama-estimate-fork.h tune_slice_counts, tune_drift_held)
+void llama_moe_cache_threads_searching_fork(bool on) { g_threads_searching.store(on, std::memory_order_relaxed); }
+bool llama_moe_cache_tuning_fork() { moe_cache * mc = g_cache; return mc && knobs().self_tune != 0 && mc->lv_k >= 0; }
+
 bool llama_moe_cache_refilling_fork() {
     moe_cache * mc = g_cache;
     if (!mc) { return false; }

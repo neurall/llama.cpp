@@ -372,6 +372,30 @@ int main() {
         v = tune_decide(s, 0, 3, 8);
         check("self-tune verdict: at the slice limit an unsure alternative leaves the value in use", v.done && !v.sure && v.pick == 0);
     }
+    {   // the decode tuners take turns (tune_slice_counts, tune_drift_held). MiMo CUDA 12k/4k 2026-11-18: the self-tuner's slices ran inside the thread search,
+        // then a drift restart ran inside SWAP_LEAD's slices; SWAP_LEAD -2 (a clear 10% win on b15807) stayed 0, decode 34.5/33.6 t/s against 37.9/38.5
+        thread_search s;
+        s.start(64);
+        int counted = 0, searched = 0;
+        for (int i = 0; i < 2000 && !s.settled(); ++i) {
+            searched++;
+            if (tune_slice_counts(true, false, s.st != 1)) { counted++; }
+            const double t = 25000.0 * (1.0 + 0.15 * std::fabs(std::log2(s.now() / 32.0))) * (1.0 + 0.02 * (double) ((i * 7919) % 11 - 5) / 5.0);
+            s.feed(t, 1.0 + 0.01 * (i % 7), 1.0 + 0.01 * (i % 5));
+        }
+        check("decode tuners take turns: no self-tune slice token while the thread search samples", searched > 0 && counted == 0);
+        check("decode tuners take turns: a slice counts a decode token once the search is quiet",
+              tune_slice_counts(true, false, true) && !tune_slice_counts(true, true, true) && !tune_slice_counts(false, false, true));
+        drift_watch open, closed;
+        int fired_open = 0, fired_closed = 0;
+        for (int i = 0; i < 64 * 12; ++i) {
+            const double t = i < 64 * 4 ? 25000.0 : 28000.0;   // an arm under test, 12% slower at the same work
+            fired_open += open.feed(t, 2.0, tune_drift_held(false, true));
+            fired_closed += closed.feed(t, 2.0, tune_drift_held(false, false));
+        }
+        check("decode tuners take turns: a self-tune arm 12% slower does not restart the thread search", fired_open == 0);
+        check("decode tuners take turns: with no cycle open a box 12% slower still restarts it", fired_closed > 0);
+    }
 
     // the CPUs this process may use cut the topology (common_cpu_groups_masked_fork). PC1's 3975WX: 8 L3 groups of 4 cores, CPU c and c+32 are siblings. Under taskset to the
     // first chiplet (0-7,32-39, run.py simjoe: an 8-core desktop) 2 groups of 8 CPUs and 8 cores are left; until 2026-11-15 the probe and the default thread counts took all 64

@@ -435,3 +435,12 @@ static inline tune_verdict tune_decide(const std::vector<std::vector<double>> & 
     r.pick = b; r.sure = sure; r.done = sure || n_min >= max_s;
     return r;
 }
+
+// The two decode tuners take turns. The thread search (the decode thread count, llama_context::thread_tune_feed) and the self-tuner (the expert cache's
+// knobs, one at a time, src/llama-moecache-fork.cpp self_tune) both read token times, and each one's changes read as the other's signal: a self-tune slice
+// counts a token only while the thread search is not sampling, and the drift watch does not restart the thread search while a self-tune cycle is open (its
+// arms change token times by design). MiMo CUDA 12k/4k 2026-11-18 (b15807 37.9/38.5 t/s, upload_wait_tuned_first 34.5/33.6): UPLOAD_WAIT's 36-token slices
+// ran inside the first thread search, then a drift restart (28.2 against 25.3 ms/token) ran inside SWAP_LEAD's slices; SWAP_LEAD -2, a clear 10% win on
+// b15807, ended unsure after 8 slices each and stayed 0. The CPU/GPU split's A/B already runs on settled thread counts only (llama_moe_cache_split_feed_fork).
+static inline bool tune_slice_counts(bool cycle_open, bool prefill, bool threads_quiet) { (void) threads_quiet; return cycle_open && !prefill; }
+static inline bool tune_drift_held(bool refilling, bool cycle_open) { (void) cycle_open; return refilling; }

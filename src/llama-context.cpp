@@ -88,6 +88,8 @@ bool     llama_moe_cache_refusal_fork(size_t * need, size_t * room);        // t
 uint32_t llama_moe_cache_pp_refused_fork(uint32_t n_tokens, uint64_t cells, double share, uint32_t smaller, uint64_t * tc_all);
 int  llama_moe_cache_counters_fork(int64_t * v, int cap);   // src/llama-moecache-fork.cpp: cpu, upload, stream bytes, then every link's bytes
 bool llama_moe_cache_refilling_fork();   // src/llama-moecache-fork.cpp: the refill a prompt left behind is still uploading
+bool llama_moe_cache_tuning_fork();      // a self-tune cycle is open (the decode tuners take turns: src/llama-estimate-fork.h)
+void llama_moe_cache_threads_searching_fork(bool on);
 int  llama_cpu_allowed_count_fork();                          // src/llama-moecache-fork.cpp: the CPUs this process may run on
 static int64_t g_thr_cpu_bytes = -1, g_thr_up_bytes = -1;   // the decode thread search's byte baseline; a prompt call resets it (thread_tune_feed_batch)
 void llama_moe_cache_split_feed_fork(int64_t dt_us);   // a decode token's time: the CPU/GPU split's A/B (llama-moecache-fork.cpp); < 0 voids its samples   // a refused pass: its path's ceiling, the retry size
@@ -2866,6 +2868,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
     // below stays off (settled, with the drift watch). File-local state: one decoding context per process.
     static thread_search ts;
     static drift_watch dw;   // the settled count stays until the box changes (src/llama-estimate-fork.h, tested in tests/test-estimate-fork.cpp)
+    llama_moe_cache_threads_searching_fork(ts.st == 1);   // the self-tuner's slices wait while the search samples (tune_slice_counts)
     const bool fresh = g_thr_cpu_bytes < 0;   // the first token, or the first after a prompt call: its bytes are unknown, not a sample
     double x_mib = 0.0, u_mib = 0.0;
     {
@@ -2915,7 +2918,7 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         // search again from the default. A new request starts its own baseline (its context and expert mix are its own)
         llama_moe_cache_split_feed_fork(dt_us);   // the CPU/GPU split's A/B runs on settled thread counts only: two searches at once confound each other
         if (fresh) { dw.reset(); return; }
-        if (dw.feed((double) dt_us, x_mib + u_mib, refilling)) {
+        if (dw.feed((double) dt_us, x_mib + u_mib, tune_drift_held(refilling, llama_moe_cache_tuning_fork()))) {
             LLAMA_LOG_WARN("%s: thread search again: 64 tokens at %.2f ms/token against %.2f settled, at comparable CPU and upload work\n", __func__, dw.last_m/1000.0, dw.last_best/1000.0);
             thr.base = thr.base0;
             ts = thread_search();
