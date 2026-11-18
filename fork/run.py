@@ -3039,8 +3039,10 @@ def run_one(build, test, extra_env, plain=False, extra_args=()):
                     if _tag == "turn 2":
                         _msgs += [{"role": "assistant", "content": _a1}, {"role": "user", "content": "Which single change in this code would you make first, and why? Answer in two sentences."}]
                     _t0 = time.time()
+                    # turn2: reasoning off on these requests only (the answers are text); the measured request keeps its exact prompt length (--nothink would add
+                    # MiMo's 2 template tokens to it: PROMPT LENGTH MISMATCH 11015 / 11017, 2026-11-18)
                     _r = post("/v1/chat/completions", {"messages": _msgs, "max_tokens": 64 if _t2 and _tag != "B" else 1, **GREEDY, "cache_prompt": True, "reasoning_format": "none",
-                                                       **({"chat_template_kwargs": {"enable_thinking": False}} if OVR.get("nothink") else {})})
+                                                       **({"chat_template_kwargs": {"enable_thinking": False}} if _t2 or OVR.get("nothink") else {})})
                     _w = (time.time() - _t0) * 1000
                     _tm = _r.get("timings", {})
                     _sw.append(f"{_tag}: wall {_w:.0f} ms, prompt {_tm.get('prompt_n')} tokens in {_tm.get('prompt_ms', 0):.0f} ms, "
