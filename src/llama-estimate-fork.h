@@ -266,19 +266,16 @@ struct ab_tune {
     }
 };
 
-// ---- decode thread search (user 2026-10-26: alternate the best count so far with one lower candidate, token by token) ----
-// Starts on every hardware thread: too many threads cost little (barriers, SMT siblings), too few a lot, and on a multi-die CPU only all of them reach every die's memory
-// path. Tokens run b c b c b ...; candidates b/2 first (64 -> 32 -> 16); a lost candidate becomes the lower bound L and the next one is the midpoint of b and L (16 lost
-// -> 24, then 28, 30, 31). llama_context::thread_tune_feed drives it on decode tokens.
-// 2026-11-15: 2 pairs (3 when mixed) decided by majority settled by noise: the same sane cells landed DeepSeek on 63 threads where 30 ran 8% faster and MiMo on 16 where
-// 30-32 ran 10% faster. Most of a token's scatter is its own work: the bytes of experts it computes on the CPU and the bytes it uploads explain 84-94% of the variance of
-// 10-token windows (TOK lines of those cells; 2-6% left). So a comparison fits token time = a + arm + CPU MiB + upload MiB + trend by least squares and decides on the
-// arm's coefficient (the candidate's ms per token over b's at the same work) once it is z standard errors from 0, at least min_pairs, at most max_pairs; then by its
-// sign (a near tie costs little either way). The cost in tokens does not matter (user), the quality of the decision does.
-// 2026-11-15 (MiMo V2.6 12k/1k): fixed counts measured 24 and 31 threads at 25.6-25.8 ms a token, 16 at 26.8 (4.7% slower). 32 against 16 came out -0.38 +- 0.78 over
-// 24 pairs in one run, +1.91 +- 1.12 in the other: by the sign one run settled on 16, and the search then only went lower (16 against 8, 12, 14, 15). Now at most 64
-// pairs (the standard error x0.6), and a lower count that won is not final: the gap up to the count it beat is tried too (16 won over 32: 24 against 16 next).
-// Steps stop once both gaps beside b are within a quarter of b (16 against 15 was noise every time).
+// ---- decode thread search (user 2026-10-26: alternate the count in use with one lower candidate, token by token) ----
+// 2026-11-18 (user: "we need quick in max 12t solution", answers of 64-100 tokens): the search starts at the computed count, not on every hardware thread: with GPUs the
+// true cores (decode reads expert weights and SMT siblings add no bandwidth: on PC1's 3975WX 32 threads ran within 1% of the best on CUDA, 64 22-30% slower), CPU only
+// all threads (common_thread_start_fork), or the count an earlier server stored. Tokens run b c b c ...; the only candidate is b's half (64 -> 32 -> 16). An answer
+// samples 2 warm-up tokens and at most per_request pairs (12 tokens); an undecided comparison goes on with its samples in the next answer, up to max_pairs. A clear win
+// (the half z standard errors faster) adopts it, and the next answer compares it with its own half (won); a clear loss, or max_pairs undecided, keeps b and ends the walk.
+// The sign of an undecided comparison never picks (MiMo 2026-11-18: 64 against 32 undecided at +0.88 +- 0.51 ms over 64 pairs kept 64 by its sign, then 48 took over).
+// A comparison fits token time = a + arm + CPU MiB + upload MiB + trend by least squares and decides on the arm's coefficient (the candidate's ms per token over b's at
+// the same work): most of a token's scatter is its own work, the bytes of experts it computes on the CPU and the bytes it uploads explain 84-94% of the variance of
+// 10-token windows (2026-11-15 TOK lines; before that, 2 pairs decided by majority settled DeepSeek on 63 threads where 30 ran 8% faster).
 // Least squares of y on the columns of X (row-major, n rows, p columns), a tiny ridge on columns from 2 on (a covariate without variance gets 0). Returns false when singular;
 // beta: the coefficients, se1: the standard error of coefficient 1.
 static inline bool small_ols(const std::vector<double> & X, const std::vector<double> & y, int n, int p, std::vector<double> & beta, double & se1) {
@@ -311,21 +308,23 @@ static inline bool small_ols(const std::vector<double> & X, const std::vector<do
     return true;
 }
 struct thread_search {
-    int st = 0, b = 0, c = 0, lo = 0, hi = 0, k = 0, warm = 0;   // st 0 idle, 1 sampling, 3 settled; lo, hi: the nearest counts below and above b that ran slower; k: tokens into the sequence (odd: ran on c)
-    int min_pairs = 5, max_pairs = 64; double z = 2.5;
+    int st = 0, b = 0, c = 0, k = 0, warm = 0, left = 0;   // st 0 idle, 1 comparing, 3 settled; k: this comparison's samples (odd: the next runs on c); left: pairs this answer may still sample
+    int lead = 0;                     // the count the tokens between samples run on: the faster one by the comparison so far (no decision: the samples go on)
+    int min_pairs = 5, max_pairs = 64, per_request = 5; double z = 2.5;
+    bool won = false;                 // the last comparison adopted the half: the next answer compares it with its own half
     std::vector<double> tt, tx, tu;   // this comparison's tokens: time, CPU MiB, upload MiB
     double last_b = 0.0, last_c = 0.0, last_d = 0.0, last_se = 0.0; int last_nb = 0, last_nc = 0, last_pairs = 0;   // the last comparison, for the caller's log
-    int now() const { return st == 1 && (k % 2) == 1 ? c : b; }
+    bool sampling() const { return st == 1 && left > 0; }
+    int now() const { return st != 1 ? b : !sampling() || warm > 0 ? lead : (k % 2) == 1 ? c : b; }
     bool settled() const { return st == 3; }
-    void start(int n) { b = n; lo = 0; hi = n + 1; st = 1; warm = 2; plan(); }   // the first tokens warm the expert cache: not sampled; nothing above n can run (the pool's size)
-    // the next candidate: halve while nothing below b ran slower, then the middle of the wider gap beside b, until both gaps are within a quarter of b (neighbours that
-    // close differ by less than the noise); or settled on b. A lower count that won once is not final: the gap up to the count it beat is tried as well
-    void plan() {
-        const int glo = lo == 0 ? b : b - lo, ghi = hi - b;
-        if (std::max(glo, ghi) <= std::max(1, b / 4)) { st = 3; return; }
-        const int cn = glo >= ghi ? (lo == 0 ? b / 2 : (b + lo) / 2) : (b + hi) / 2;
-        if (cn < 1 || cn == b || cn <= lo || cn >= hi) { st = 3; return; }
-        c = cn; k = 0; tt.clear(); tx.clear(); tu.clear();
+    // compare n with its half (nothing above n can run: the pool's size); 1 has no half
+    void start(int n) { b = lead = n; c = n / 2; won = false; k = 0; tt.clear(); tx.clear(); tu.clear(); st = c >= 1 ? 1 : 3; resume(); }
+    void settle(int n) { b = lead = n; won = false; st = 3; }   // a count an earlier server settled on: no comparison
+    // an answer's first token: 2 warm-up tokens (the cache refills after the prompt), then at most per_request pairs; a pair the last answer left half done is dropped
+    void resume() {
+        if (st != 1) { return; }
+        if (k % 2 == 1) { tt.pop_back(); tx.pop_back(); tu.pop_back(); --k; }
+        warm = 2; left = per_request;
     }
     // the candidate's ms per token over b's at the same CPU and upload work (and trend), with its standard error
     void effect(double & d, double & se) const {
@@ -341,21 +340,26 @@ struct thread_search {
         d = 0.0; se = 1e30;
         if (small_ols(X, tt, n, p, beta, se)) { d = beta[1]; }
     }
-    // t: the time of the token that ran on now(); x, u: its CPU and upload MiB. True when a comparison finished (last_* set; settled() says whether that ended the search).
+    // t: the time of the token that ran on now(); x, u: its CPU and upload MiB. True when the comparison finished (last_* set, won says how)
     bool feed(double t, double x = 0.0, double u = 0.0) {
-        if (st != 1) { return false; }
+        if (!sampling()) { return false; }
         if (warm > 0) { --warm; return false; }
         tt.push_back(t); tx.push_back(x); tu.push_back(u);
-        const int n = k / 2;   // complete pairs once this b token (k even) is in
-        if (k % 2 == 1 || n < min_pairs) { ++k; return false; }
+        if (k++ % 2 == 0) { return false; }   // the pair's token on b
+        --left;
+        const int n = k / 2;
+        if (n < min_pairs) { return false; }
         double d = 0.0, se = 0.0;
         effect(d, se);
-        if (std::fabs(d) <= z * se && n < max_pairs) { ++k; return false; }
+        const bool decided = std::fabs(d) > z * se;
+        lead = d < -se ? c : b;   // one standard error: the sign alone ran the noisier half too often (no byte counters, flat tops)
+        if (!decided && n < max_pairs) { return false; }
         double mb = 0.0, mc = 0.0;
         for (size_t i = 0; i < tt.size(); ++i) { (i % 2 == 1 ? mc : mb) += tt[i]; }
-        last_b = mb / (double) (n + 1); last_c = mc / (double) n; last_d = d; last_se = se; last_nb = b; last_nc = c; last_pairs = n;
-        if (d < 0.0) { (c < b ? hi : lo) = b; b = c; } else { (c < b ? lo : hi) = c; }
-        plan();
+        last_b = mb / n; last_c = mc / n; last_d = d; last_se = se; last_nb = b; last_nc = c; last_pairs = n;
+        won = decided && d < 0.0;
+        if (won) { b = c; }
+        st = 3; left = 0;
         return true;
     }
 };

@@ -252,42 +252,55 @@ int main() {
         printf("ab_tune noise: 2000 tokens flat cost +-5%%: multiplier %.4g\n", nz.base);
     }
 
-    // the decode thread search (thread_search) on made-up tokens. A token's time: a base, its upload MiB at 0.012 ms each, its CPU work (half fixed, half by its CPU MiB) at
-    // the shape's speed for that thread count, 4% unexplained and a slow token in 30. CPU MiB scatter 35% around 180; uploads mostly about 40 MiB, one token in 7 about 400,
-    // and 6x more on the first tokens (the cache refills after the prompt): raw times scatter 10-15% as after the sane cells' long prompts (2026-11-15: DeepSeek settled on
-    // 63 threads where 30 ran 8% faster, MiMo on 16 where 30-32 ran 10% faster), and the bytes explain most of it as they did in those cells' TOK lines. The old rule (2-3
-    // pairs, majority) landed within 5% of the best count in 72-79% of seeds of plain 12% noise. 200 seeds per shape; 95% must land within 5% of the best count's time.
+    // the decode thread search (thread_search) on made-up answers of 100 tokens (user 2026-11-18: answers of 64-100 tokens, "we need quick in max 12t solution").
+    // A token's time: a base, its upload MiB at 0.012 ms each, its CPU work (half fixed, half by its CPU MiB) at the shape's speed for that thread count, 4%
+    // unexplained and a slow token in 30. CPU MiB scatter 35% around 180; uploads mostly about 40 MiB, one token in 7 about 400, and 6x more on an answer's first
+    // tokens (the cache refills after the prompt): raw times scatter 10-15% as after the sane cells' long prompts, and the bytes explain most of it as they did in
+    // those cells' TOK lines. The search starts at the computed count (GPUs: the true cores, 32 on PC1; CPU only: all 64 threads) and compares the count in use
+    // with its half; an answer samples 2 warm-up tokens and at most 5 pairs, a clear win walks on at the next answer. 200 seeds per shape, 30 answers each: 95%
+    // must land within the shape's tolerance of the best count's time, and no answer may spend more than 12 tokens searching.
     {
-        struct shape { const char * name; double base; double (*cpu)(int); bool cache; double tol; };
+        struct shape { const char * name; double base; double (*cpu)(int); bool cache; double tol; int start; };
+        double (*mem)(int) = [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); };
         const shape shapes[] = {
-            { "memory-bound, best at the 32 cores (DeepSeek, MiMo)", 28.9, [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); }, true, 1.05 },
-            { "contention, best near 16",                            20.0, [](int n) { return 80.0 / n + 0.3 * n; }, true, 1.05 },
-            { "compute-bound, SMT helps, best at 64",                20.0, [](int n) { return 400.0 / (std::min(n, 32) + 0.3 * std::max(0, n - 32)); }, true, 1.05 },
-            { "no expert cache (no byte counters), best at 32",      28.9, [](int n) { return 112.0 / std::min(n, 32) + 0.1 * std::max(0, n - 32); }, false, 1.05 },
+            { "memory-bound, best at the 32 cores (DeepSeek, MiMo), GPUs", 28.9, mem, true, 1.05, 32 },
+            { "memory-bound, CPU only (all 64 threads first)",             28.9, mem, true, 1.05, 64 },
+            { "contention, best near 16 (Vulkan), GPUs",                   20.0, [](int n) { return 80.0 / n + 0.3 * n; }, true, 1.05, 32 },
+            { "compute-bound, SMT helps, best at 64, CPU only",            20.0, [](int n) { return 400.0 / (std::min(n, 32) + 0.3 * std::max(0, n - 32)); }, true, 1.05, 64 },
+            { "no expert cache (no byte counters), best at 32, GPUs",      28.9, mem, false, 1.05, 32 },
             // MiMo V2.6 12k/1k measured at fixed counts (2026-11-15, search off, tokens 200-999 of both runs): 16 threads 26.8 ms a token, 24 25.6, 31 25.8. 16 is 4.7%
-            // slower, inside 5%, so this shape asks for 2%: the searches of that day settled on 16 in one run of two (32 against 16 undecided after 24 pairs, by the sign)
-            { "flat top at 24-31, 16 4.7% slower (MiMo measured)",   23.2, [](int n) { return 57.6 / n + 0.1 * std::max(0, n - 24); }, true, 1.02 },
+            // slower, inside 5%, so this shape asks for 2%
+            { "flat top at 24-31, 16 4.7% slower (MiMo measured), GPUs",   23.2, [](int n) { return 57.6 / n + 0.1 * std::max(0, n - 24); }, true, 1.02, 32 },
         };
         for (const shape & sh : shapes) {
             double best = 1e30; int nbest = 0;
             for (int n = 1; n <= 64; ++n) { if (sh.base + sh.cpu(n) < best) { best = sh.base + sh.cpu(n); nbest = n; } }
-            int good = 0, low = 0, high = 0; double tokens = 0.0;
+            int good = 0, low = 0, high = 0, over12 = 0; double searched = 0.0, cost = 0.0;
             for (int seed = 1; seed <= 200; ++seed) {
                 std::mt19937 rng(seed); std::normal_distribution<double> g(0.0, 1.0); std::uniform_real_distribution<double> u01(0.0, 1.0);
-                thread_search ts; ts.start(64); int i = 0;
-                for (; !ts.settled() && i < 4000; ++i) {
-                    const double x = 180.0 * std::exp(0.35 * g(rng));
-                    const double up = (u01(rng) < 1.0 / 7.0 ? 400.0 : 40.0) * std::exp(0.5 * g(rng)) * (1.0 + 5.0 * std::exp(-i / 30.0));
-                    double t = (sh.base + 0.012 * up) * (1.0 + 0.05 * std::exp(-i / 40.0)) + sh.cpu(ts.now()) * (0.5 + 0.5 * x / 180.0);
-                    t *= std::exp(0.04 * g(rng)) * (u01(rng) < 1.0 / 30.0 ? 1.25 : 1.0);
-                    if (sh.cache) { ts.feed(t, x, up); } else { ts.feed(t); }
+                thread_search ts; ts.start(sh.start);
+                for (int a = 0; a < 30; ++a) {
+                    if (ts.settled() && ts.won) { ts.start(ts.b); } else { ts.resume(); }   // the engine at an answer's first token
+                    int in_search = 0;
+                    for (int i = 0; i < 100; ++i) {
+                        in_search += ts.sampling() ? 1 : 0;
+                        const int n = ts.now();
+                        const double x = 180.0 * std::exp(0.35 * g(rng));
+                        const double up = (u01(rng) < 1.0 / 7.0 ? 400.0 : 40.0) * std::exp(0.5 * g(rng)) * (1.0 + 5.0 * std::exp(-i / 30.0));
+                        double t = (sh.base + 0.012 * up) * (1.0 + 0.05 * std::exp(-i / 40.0)) + sh.cpu(n) * (0.5 + 0.5 * x / 180.0);
+                        t *= std::exp(0.04 * g(rng)) * (u01(rng) < 1.0 / 30.0 ? 1.25 : 1.0);
+                        cost += (sh.base + sh.cpu(n)) / best;
+                        if (sh.cache) { ts.feed(t, x, up); } else { ts.feed(t); }
+                    }
+                    searched += in_search; over12 += in_search > 12 ? 1 : 0;
                 }
-                tokens += i;
                 const double r = (sh.base + sh.cpu(ts.b)) / best;
                 if (r <= sh.tol) { ++good; } else if (ts.b < nbest) { ++low; } else { ++high; }
             }
-            printf("thread search, %s: %d of 200 within %.0f%% of the best (off: %d too low, %d too high), %.0f tokens to settle\n", sh.name, good, (sh.tol - 1.0) * 100.0, low, high, tokens / 200.0);
+            printf("thread search, %s: %d of 200 within %.0f%% of the best %d (off: %d too low, %d too high); %.1f tokens searched an answer, the counts used %.2f%% over the best\n",
+                   sh.name, good, (sh.tol - 1.0) * 100.0, nbest, low, high, searched / 6000.0, (cost / 600000.0 - 1.0) * 100.0);
             check("thread search: within the shape's tolerance of the best count's time in 95% of the seeds", good >= 190);
+            check("thread search: no answer spends more than 12 tokens searching", over12 == 0);
         }
     }
 
@@ -377,9 +390,9 @@ int main() {
         thread_search s;
         s.start(64);
         int counted = 0, searched = 0;
-        for (int i = 0; i < 2000 && !s.settled(); ++i) {
+        for (int i = 0; i < 2000 && s.sampling(); ++i) {
             searched++;
-            if (tune_slice_counts(true, false, s.st != 1)) { counted++; }
+            if (tune_slice_counts(true, false, !s.sampling())) { counted++; }
             const double t = 25000.0 * (1.0 + 0.15 * std::fabs(std::log2(s.now() / 32.0))) * (1.0 + 0.02 * (double) ((i * 7919) % 11 - 5) / 5.0);
             s.feed(t, 1.0 + 0.01 * (i % 7), 1.0 + 0.01 * (i % 5));
         }
@@ -416,6 +429,14 @@ int main() {
         check("cpu mask: 8 cores left", k.size() == 8);
         check("cpu mask: the first group is 0-3 and 32-35", !d.empty() && d[0] == std::vector<int>({ 0, 1, 2, 3, 32, 33, 34, 35 }));
         check("cpu mask: no mask keeps every group", common_cpu_groups_masked_fork(l3, {}).size() == 8);
+    }
+
+    {   // the decode thread search's start (common_thread_start_fork, user 2026-11-18): with GPUs the true cores (PC1 CUDA: 32 of 64 threads within 1% of the best,
+        // 64 22-30% slower), CPU only every thread the process may use; under run.py simjoe (one chiplet: 8 cores, 16 CPUs) the same rule on the mask
+        check("thread start: GPUs start on the true cores", common_thread_start_fork(true, 32, 64) == 32);
+        check("thread start: CPU only starts on every thread", common_thread_start_fork(false, 32, 64) == 64);
+        check("thread start: a masked process counts its own cores", common_thread_start_fork(true, 8, 16) == 8 && common_thread_start_fork(false, 8, 16) == 16);
+        check("thread start: no core count found keeps every thread", common_thread_start_fork(true, 0, 64) == 64);
     }
 
     printf(g_fail ? "%d failed\n" : "estimators: all passed\n", g_fail);

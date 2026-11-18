@@ -2623,20 +2623,37 @@ static void common_refresh_ssd(const common_params & params) {
 #endif
 }
 
+// a GPU takes part: one of the -dev list, else any GPU the backends found; -ngl 0 keeps every layer on the CPU (-dev none: a list of one null device)
+static bool common_gpus_in_use_fork(const common_params & params) {
+    if (params.n_gpu_layers == 0) { return false; }
+    if (!params.devices.empty()) {
+        for (auto * d : params.devices) { if (d && ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_CPU) { return true; } }
+        return false;
+    }
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        const auto t = ggml_backend_dev_type(ggml_backend_dev_get(i));
+        if (t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU) { return true; }
+    }
+    return false;
+}
+
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
     common_refresh_ssd(params);
     common_moe_cache_auto(params);
     common_spec_auto(params);
-    // the decode thread search starts on every hardware thread, SMT siblings included, and steps down while a step is not slower
-    // (llama_context::thread_tune_feed). User 2026-10-26: on an EPYC all threads gained; too many threads costs little, too few a lot. The decode pool is
-    // created this big and the search only lowers the count inside it. Only for a count that came from the default; the batch count is not changed here.
+    // the decode pool holds every CPU this process may run on, and the thread search (llama_context::thread_tune_feed) only lowers the count inside it. It
+    // starts at the computed count (below: the true cores with GPUs, every thread CPU only) or at the count an earlier server stored. Only for a count that
+    // came from the default; the batch count is not changed here.
     if (params.cpuparams.auto_threads && common_autotune_on(params)) {
         params.cpuparams.n_threads = common_cpu_allowed_count_fork();   // every CPU this process may run on: a taskset or container mask cuts it (the physical-core default can exceed it)
         if (!params.threads_batch_set) { params.cpuparams_batch.n_threads = std::min<int32_t>(params.cpuparams_batch.n_threads, params.cpuparams.n_threads); }
     }
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
+    if (params.cpuparams.auto_threads && common_autotune_on(params)) {
+        cparams.n_threads = common_thread_start_fork(common_gpus_in_use_fork(params), common_cpu_physical_count_fork(), params.cpuparams.n_threads);
+    }
 
     common_fit_apply(params, mparams, cparams);
 

@@ -198,6 +198,11 @@ static void run_probe(common_cpu_topo_fork & t) {
     for (auto & p : t.bw) { if (p.second >= 0.95 * best) { t.plateau_threads = p.first; break; } }
 }
 
+int common_cpu_physical_count_fork() {
+    static const int n = [] { common_cpu_topo_fork r; detect(r); return r.n_physical; }();
+    return n;
+}
+
 const common_cpu_topo_fork & common_cpu_topo_get_fork() {
     static common_cpu_topo_fork t = [] { common_cpu_topo_fork r; detect(r); run_probe(r); return r; }();
     return t;
