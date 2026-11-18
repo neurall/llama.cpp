@@ -906,7 +906,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
             con.execute("ALTER TABLE runs ADD COLUMN stats_ok INTEGER")   # NULL = a new record: the cell statistics (run.py runlog-all) are stale and rebuilt on the next query (run.py runq); the rebuild sets 1
         con.execute("DROP VIEW IF EXISTS cells")
         con.execute("""CREATE VIEW cells AS SELECT stem, hw, test, build, MAX(bno) AS bno, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp,
-                   ROUND(MAX(tps), 2) AS tps_max, MIN(ts) AS first, MAX(ts) AS last FROM runs WHERE okf = 1 AND tps IS NOT NULL GROUP BY stem, hw, test, build""")
+                   ROUND(MAX(tps), 2) AS tps_max, MIN(ts) AS first, MAX(ts) AS last FROM runs WHERE okf = 1 AND tps IS NOT NULL""" + ONE_REQ + " GROUP BY stem, hw, test, build")
     def ins(cols):
         """named-column INSERT: ALTER TABLE appends new columns after stem/okf, so position is not safe"""
         return "INSERT INTO runs (" + ", ".join(q(c) for c in cols) + ", stem, okf) VALUES (" + ",".join("?" * (len(cols) + 2)) + ")"
@@ -1102,7 +1102,7 @@ consistent best = the highest value that at least two runs agree on within 5% (a
                 show(con.execute(q, ("%" + a[1] + "%",) + ((a[2],) if len(a) > 2 else ())))
             elif a[0] == "bestpl":   # bestpl MODEL TEST PL: like best, but only the rows measured at one power limit (like 280+280); the limit is the live reading at the time of the row
                 q = ("SELECT test, build, bno, hw, COUNT(*) AS n, ROUND(consistent(tps), 2) AS tps, ROUND(consistent(pp), 1) AS pp, ROUND(MAX(tps), 2) AS tps_max, substr(MIN(ts),1,10) AS first, substr(MAX(ts),1,10) AS last "
-                 "FROM runs WHERE stem LIKE ? AND test = ? AND pl = ? AND okf = 1 AND tps IS NOT NULL GROUP BY test, build, hw ORDER BY last DESC")
+                 "FROM runs WHERE stem LIKE ? AND test = ? AND pl = ? AND okf = 1 AND tps IS NOT NULL" + ONE_REQ + " GROUP BY test, build, hw ORDER BY last DESC")
                 show(con.execute(q, ("%" + a[1] + "%", a[2], a[3])))
             elif a[0] == "runs":
                 q = "SELECT substr(ts,1,16) AS ts, hw, test, build, rep, tps, pp, hit, campaign FROM runs WHERE stem LIKE ? AND okf = 1" + (" AND test = ?" if len(a) > 2 else "") + (" AND build LIKE ?" if len(a) > 3 else "") + " ORDER BY ts DESC"
@@ -2206,6 +2206,7 @@ ANSWER_FILE = os.environ.get("PERF_ANSWER")   # a file: post() also writes the r
 WATCH_LOG = None   # server log of the running server: post() takes its growth as progress, the server is asked (/slots) only while the log is silent (decode writes nothing per token)
 
 
+ONE_REQ = " and coalesce(args,'') not glob '*-np [2-9]*' and coalesce(args,'') not glob '*-np [1-9][0-9]*'"   # one request at a time only: a --par row is the aggregate of N answers (2026-10-16 probe: Qwen IQ3_S 101-131 t/s), no cell's best or reference
 HWF = [""]   # " and hw='pc2'" while a list runs: stock, earlier-build and reference rows of the machine that measured (pc2 numbers must not be divided by pc1 stock)
 # a host whose hardware changed keeps its name: rows before the change are another machine (2026-11-12 PC1: Ryzen 7 3700X with 2-channel RAM and x16 + x4 became a
 # Threadripper PRO 3975WX with 8-channel RAM and 2 x16; stock decode 13.99 -> 30.01 t/s on MiMo 12k, so an old stock row doubled our gains)
@@ -2234,11 +2235,11 @@ def stock_moe_args(spec):
 
 def hw_filter(hw):
     if hw == "pc1" and os.environ.get("RUN_SIMJOE") and os.environ.get("JOE_REF") == "joe":   # --joe-ref joe: stock and reference rows of simjoe's own machine (pc1joe..., the same link cap), measured here with -sc
-        return f" and hw='{os.environ['PERF_HW']}'"
+        return f" and hw='{os.environ['PERF_HW']}'" + ONE_REQ
     if hw == "pc1" and os.environ.get("RUN_SIMJOE"):   # simjoe rows against the old desktop's (PC1 before its change) at the same power (user 2026-11-15: "why dont we see best old runs on same prompt and pl")
         # shortcut: the power of the list's start; a list crossing 23:50 compares its night cells with day rows, split such a list in two
-        return f" and hw='pc1' and ts < '{HW_SINCE['pc1']}' and pl='{'+'.join(map(str, sorted(power_targets(joe_widths([16, 16])))))}'"
-    return f" and hw='{hw}'" + (f" and ts >= '{HW_SINCE[hw]}'" if hw in HW_SINCE else "")
+        return f" and hw='pc1' and ts < '{HW_SINCE['pc1']}' and pl='{'+'.join(map(str, sorted(power_targets(joe_widths([16, 16])))))}'" + ONE_REQ
+    return f" and hw='{hw}'" + (f" and ts >= '{HW_SINCE[hw]}'" if hw in HW_SINCE else "") + ONE_REQ
 def row_hw():
     """the machine the cell's rows are stored under: simjoe's own (pc1joe...), else the list's"""
     return os.environ["PERF_HW"] if os.environ.get("RUN_SIMJOE") and os.environ.get("PERF_HW") else (re.search(r"hw='(\w+)'", HWF[0]) or [0, 'pc1'])[1]
