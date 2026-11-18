@@ -357,6 +357,21 @@ int main() {
         check("self-tune: transient knobs first, each group in its listed order", strcmp(k[0].name, "UPLOAD_WAIT") == 0 && strcmp(k[1].name, "WAIT_SWAPS") == 0 &&
               strcmp(k[2].name, "SWAP_LEAD") == 0 && strcmp(k[3].name, "UPLOAD_SHARE") == 0);
     }
+    {   // the self-tuner's verdict on one knob (tune_decide; slices in ms per token, incumbent 0, 3 to 8 slices each)
+        std::vector<std::vector<double>> s = { { 25.0 }, { 28.0 } };
+        tune_verdict v = tune_decide(s, 0, 3, 8);
+        check("self-tune verdict: an alternative 12% slower after one slice each is dropped", v.done && v.pick == 0);
+        s = { { 28.0, 28.1, 27.9 }, { 25.0, 25.1, 24.9 } };
+        v = tune_decide(s, 0, 3, 8);
+        check("self-tune verdict: a clear 10% win is taken after 3 slices each", v.done && v.sure && v.pick == 1);
+        s = { { 28, 31, 26 }, { 27, 24, 29 } };
+        v = tune_decide(s, 0, 3, 8);
+        check("self-tune verdict: noisy slices are not final before the slice limit", !v.done);
+        s = { std::vector<double>(8), std::vector<double>(8) };
+        for (int j = 0; j < 8; ++j) { s[0][j] = j % 2 ? 31 : 26; s[1][j] = j % 2 ? 29 : 25; }
+        v = tune_decide(s, 0, 3, 8);
+        check("self-tune verdict: at the slice limit an unsure alternative leaves the value in use", v.done && !v.sure && v.pick == 0);
+    }
 
     // the CPUs this process may use cut the topology (common_cpu_groups_masked_fork). PC1's 3975WX: 8 L3 groups of 4 cores, CPU c and c+32 are siblings. Under taskset to the
     // first chiplet (0-7,32-39, run.py simjoe: an 8-core desktop) 2 groups of 8 CPUs and 8 cores are left; until 2026-11-15 the probe and the default thread counts took all 64

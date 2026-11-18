@@ -15023,47 +15023,16 @@ static void self_tune(moe_cache * mc) {
     mc->lv_samples[mc->lv_c].push_back(mc->lv_slice_sum / (double) (mc->lv_slice_n - mc->lv_warm));
     mc->lv_slice_n = 0; mc->lv_slice_sum = 0;
     const size_t nv = t.vals.size();
-    size_t n_min = SIZE_MAX;
-    for (const auto & v : mc->lv_samples) { n_min = std::min(n_min, v.size()); }
-    // a clearly worse alternative (6% slower than the incumbent after one slice each) is dropped at once: exploring costs tokens on the worse setting
-    if (n_min >= 1 && n_min < MIN_S) {
-        const auto & vi = mc->lv_samples[mc->lv_inc];
-        double mi = 0; for (double x : vi) { mi += x; } mi /= vi.size();
-        bool worse = true;
-        for (size_t c = 0; c < nv; ++c) {
-            if ((int) c == mc->lv_inc) { continue; }
-            const auto & v = mc->lv_samples[c]; double m = 0; for (double x : v) { m += x; } m /= v.size();
-            if (!(m > 1.06*mi)) { worse = false; }
-        }
-        if (worse) { n_min = MAX_S; }   // falls into the decision below with the incumbent
-    }
-    if (n_min >= MIN_S) {
-        std::vector<double> mean(nv), se(nv);
-        for (size_t c = 0; c < nv; ++c) {
-            const auto & v = mc->lv_samples[c];
-            double m = 0, q = 0;
-            for (double x : v) { m += x; }
-            m /= v.size();
-            for (double x : v) { q += (x - m)*(x - m); }
-            mean[c] = m; se[c] = v.size() > 1 ? sqrt(q / (v.size() - 1) / v.size()) : 1e300;
-        }
-        // mean: ms per token, lower is better. The incumbent keeps the knob unless an alternative is better by more than the noise (2 standard
-        // errors of both) AND by at least 1%: a tuner that is not sure leaves the value that was in use
-        const size_t inc = (size_t) mc->lv_inc;
-        size_t b = inc;
-        for (size_t c = 0; c < nv; ++c) { if (c != inc && mean[c] < mean[b]) { b = c; } }
-        bool sure = true;
-        for (size_t c = 0; c < nv; ++c) {
-            if (c != b && mean[c] - 2*se[c] <= mean[b] + 2*se[b]) { sure = false; }
-        }
-        if (b != inc && (!sure || mean[b] > 0.99*mean[inc])) { b = inc; }
-        if (sure || n_min >= MAX_S) {
+    const tune_verdict tv = tune_decide(mc->lv_samples, (size_t) mc->lv_inc, MIN_S, MAX_S);   // src/llama-estimate-fork.h, tests/test-estimate-fork.cpp
+    {
+        const size_t b = tv.pick;
+        if (tv.done) {
             knobs().*t.f = t.vals[b];
             apply_predict(mc);
             std::string res;
-            for (size_t c = 0; c < nv; ++c) { res += tr_fmt(" %g:%.2f", t.vals[c], mean[c]/1e3); }
+            for (size_t c = 0; c < nv; ++c) { res += tr_fmt(" %g:%.2f", t.vals[c], tv.mean[c]/1e3); }
             LLAMA_LOG_WARN("moe-cache: self-tune: %s ms/token%s -> %g (%s, %zu slices each)\n", t.name, res.c_str(), t.vals[b],
-                sure ? "clear" : "best mean", n_min);
+                tv.sure ? "clear" : "not sure: the value in use stays", tv.n_min);
             if (mc->lv_prev.size() != T.size()) { mc->lv_prev.assign(T.size(), -1e300); }
             mc->lv_changed |= mc->lv_prev[mc->lv_k] != t.vals[b];
             mc->lv_prev[mc->lv_k] = t.vals[b];

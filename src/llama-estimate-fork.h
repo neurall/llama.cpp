@@ -393,3 +393,45 @@ struct drift_watch {
 template <class K> void tune_order(std::vector<K> & knobs) {
     std::stable_partition(knobs.begin(), knobs.end(), [](const K & k) { return !k.slow; });
 }
+
+// The self-tuner's verdict on one knob from its slices (mean ms per token of each slice, one list per value; inc: the value in use when the knob's turn
+// began). An alternative 6% slower than the incumbent after one slice each is dropped at once (exploring costs tokens on the worse setting). From min_s
+// slices each, the incumbent keeps the knob unless an alternative beats it by more than 2 standard errors of both AND by at least 1%. The verdict is final
+// when sure or at max_s slices each; unsure, the value in use stays.
+struct tune_verdict { bool done = false, sure = false; size_t pick = 0, n_min = 0; std::vector<double> mean; };
+static inline tune_verdict tune_decide(const std::vector<std::vector<double>> & s, size_t inc, size_t min_s, size_t max_s) {
+    tune_verdict r;
+    r.pick = inc;
+    const size_t nv = s.size();
+    auto avg = [](const std::vector<double> & v) { double m = 0; for (double x : v) { m += x; } return m / (double) v.size(); };
+    size_t n_min = SIZE_MAX;
+    for (const auto & v : s) { n_min = std::min(n_min, v.size()); }
+    if (n_min >= 1 && n_min < min_s) {
+        const double mi = avg(s[inc]);
+        bool worse = true;
+        for (size_t c = 0; c < nv; ++c) {
+            if (c != inc && !(avg(s[c]) > 1.06 * mi)) { worse = false; }
+        }
+        if (worse) { n_min = max_s; }   // falls into the verdict below with the incumbent
+    }
+    r.n_min = n_min;
+    if (n_min < min_s) { return r; }
+    std::vector<double> se(nv);
+    r.mean.assign(nv, 0.0);
+    for (size_t c = 0; c < nv; ++c) {
+        const auto & v = s[c];
+        const double m = avg(v);
+        double q = 0;
+        for (double x : v) { q += (x - m) * (x - m); }
+        r.mean[c] = m; se[c] = v.size() > 1 ? std::sqrt(q / (v.size() - 1) / v.size()) : 1e300;
+    }
+    size_t b = inc;
+    for (size_t c = 0; c < nv; ++c) { if (c != inc && r.mean[c] < r.mean[b]) { b = c; } }
+    bool sure = true;
+    for (size_t c = 0; c < nv; ++c) {
+        if (c != b && r.mean[c] - 2 * se[c] <= r.mean[b] + 2 * se[b]) { sure = false; }
+    }
+    if (b != inc && (!sure || r.mean[b] > 0.99 * r.mean[inc])) { b = inc; }
+    r.pick = b; r.sure = sure; r.done = sure || n_min >= max_s;
+    return r;
+}
