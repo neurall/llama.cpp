@@ -2227,6 +2227,12 @@ def stock_arm_sql():
     return " and coalesce(args,'') like '%moe-cache-mib%'" if os.environ.get("STOCK_MOE") else " and coalesce(args,'') not like '%moe-cache-mib%'"
 
 
+def stock_cell_sql(gen):
+    """the query of `run LIST -nrt` for a stock row of a cell (model, test) on this machine's current hardware (HWF[0]: the date scope, one request at a time) whose answer length is within half and double of gen"""
+    return ("select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'"
+            + stock_arm_sql() + HWF[0] + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1")
+
+
 def stock_moe_args(spec):
     """-sm MIB[,SHARE] -> the server arguments of upstream's expert cache"""
     mib, _, share = spec.partition(",")
@@ -8532,7 +8538,7 @@ def run_list(name, argv):
         import sqlite3
         gen = int(r["tokens"]) if r.get("tokens") else None
         try:
-            q = "select 1 from runs where model=? and test=? and build like 'stock-b%-official' and cast(ok as integer)=1 and tps is not null and coalesce(env,'') not like '%warmpass%'" + stock_arm_sql() + " and hw='" + HW + "'" + (" and n_gen between %d and %d" % (gen // 2, gen * 2) if gen else "") + " limit 1"
+            q = stock_cell_sql(gen)
             c = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.db")); a = (os.path.basename(r["model"]), ALIASES.get(r["test"], r["test"]))
             for tb in ("runs", "bad_runs"):   # failed runs are moved to bad_runs (run.py bad-runs)
                 try:

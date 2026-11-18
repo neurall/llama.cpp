@@ -1,0 +1,9 @@
+name,model,n,test,tokens,args,extra
+mimo-i,mimo,2,pfbest1k,1024,,
+qni4-i,qn_iq4xs,3,pfbest1k,1024,,
+glm-i,glm,3,pfbest1k,1024,,
+qni3-i,qwen38,3,pfbest1k,1024,,
+glm35-i,glm35,2,pfbest1k,1024,,
+ds-i,ds,2,pfbest1k,1024,,
+ds-i-sp,ds,2,pfbest1k,1024,-md /m/ds/dspark/Lucebox-DSpark-draft-Q2K-Q4K.dflash.sp.gguf --spec-type draft-dspark --spec-draft-n-max 1 --moe spec-depth=1 -nm 90,
+k31-i,k31,2,pfbest1k,1024,,
