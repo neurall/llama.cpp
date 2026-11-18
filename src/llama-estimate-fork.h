@@ -444,3 +444,8 @@ static inline tune_verdict tune_decide(const std::vector<std::vector<double>> & 
 // b15807, ended unsure after 8 slices each and stayed 0. The CPU/GPU split's A/B already runs on settled thread counts only (llama_moe_cache_split_feed_fork).
 static inline bool tune_slice_counts(bool cycle_open, bool prefill, bool threads_quiet) { return cycle_open && !prefill && threads_quiet; }
 static inline bool tune_drift_held(bool refilling, bool cycle_open) { return refilling || cycle_open; }
+
+// The refill after a prompt is a phase of its own (user 2026-11-18). The DDR gate (UPLOAD_WAIT: 3 the budget with its chunks, 2 or 1 the CPU phase; the upload
+// worker in src/llama-moecache-fork.cpp) holds an upload while the CPU computes uncached experts, so a swap does not slow that phase. A refill upload pays a
+// debt instead: each expert it puts back removes a CPU miss from every later token, so it goes at the link's rate, ungated; steady swaps keep the gate.
+static inline int upload_gate_for(int gate, bool refill) { return refill ? 0 : gate; }

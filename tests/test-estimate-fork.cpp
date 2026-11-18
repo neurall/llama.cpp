@@ -397,6 +397,13 @@ int main() {
         check("decode tuners take turns: with no cycle open a box 12% slower still restarts it", fired_closed > 0);
     }
 
+    {   // the refill after a prompt is a phase of its own (upload_gate_for, user 2026-11-18). The DDR gate (UPLOAD_WAIT 3, on by default) held every upload while
+        // the CPU computed uncached experts, the refill's too: after 12k prompts the refill of the blocks the prompt borrowed (8-17 GB on two cards) ran at 15-30
+        // GB/s of the links' 53 (MiMo and GLM CUDA logs 2026-11-17/18), and its decode tokens took 1.2-2.6x the steady ones
+        check("refill phase: a refill upload waits for no gate", upload_gate_for(3, true) == 0 && upload_gate_for(2, true) == 0 && upload_gate_for(1, true) == 0);
+        check("refill phase: a steady upload keeps the gate", upload_gate_for(3, false) == 3 && upload_gate_for(1, false) == 1 && upload_gate_for(0, false) == 0);
+    }
+
     // the CPUs this process may use cut the topology (common_cpu_groups_masked_fork). PC1's 3975WX: 8 L3 groups of 4 cores, CPU c and c+32 are siblings. Under taskset to the
     // first chiplet (0-7,32-39, run.py simjoe: an 8-core desktop) 2 groups of 8 CPUs and 8 cores are left; until 2026-11-15 the probe and the default thread counts took all 64
     {

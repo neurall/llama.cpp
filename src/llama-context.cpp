@@ -2858,6 +2858,21 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         dt_us -= std::min<int64_t>(dt_us, (int64_t) (w - wait_seen));
         wait_seen = w;
     }
+    // the refill a prompt leaves behind (the expert cache's uploads into the blocks it borrowed) is a phase of its own: its tokens run slower whatever the thread
+    // count, and the decode threads compete with its upload workers, so no search step and no drift sample until it is over (user 2026-11-18: "no thread search
+    // during refill"; GLM two-card Vulkan 2026-11-17: every slow run 2 restarted the search during the refill, 11-14 t/s against 17-18). One line per refill, with
+    // or without a search, so each run shows its refill and steady token times apart
+    const bool refilling = llama_moe_cache_refilling_fork();
+    {
+        static int64_t held = 0, held_us = 0;
+        if (refilling) {
+            held++; held_us += dt_us;
+        } else if (held > 0) {
+            LLAMA_LOG_WARN("%s: refill phase: %" PRId64 " decode tokens in %.0f ms (%.1f ms/token) while the expert cache refilled the blocks the prompt borrowed\n",
+                           __func__, held, held_us / 1e3, held_us / 1e3 / held);
+            held = held_us = 0;
+        }
+    }
     if (!thr.on || cparams.n_threads < 2) {
         llama_moe_cache_split_feed_fork(dt_us);   // the CPU/GPU split's A/B: no thread search to wait for
         return;
@@ -2881,19 +2896,6 @@ void llama_context::thread_tune_feed(int64_t dt_us) {
         }
     }
     if (fresh && !ts.settled() && ts.st != 0) { return; }
-    // the refill a prompt leaves behind (the expert cache's background uploads) is paid whatever the thread count, and the decode threads compete with its upload
-    // workers: no search step and no drift sample until it is over (user 2026-11-18: "no thread search during refill"; GLM two-card Vulkan 2026-11-17: every slow
-    // run 2 restarted the search during the refill, 11-14 t/s against 17-18)
-    const bool refilling = llama_moe_cache_refilling_fork();
-    {
-        static int64_t held = 0, held_us = 0;
-        if (refilling) {
-            held++; held_us += dt_us;
-        } else if (held > 0) {
-            LLAMA_LOG_WARN("%s: thread search held for %" PRId64 " tokens (%.0f ms) while the expert cache refilled after the prompt\n", __func__, held, held_us / 1e3);
-            held = held_us = 0;
-        }
-    }
     if (!ts.settled()) {
         if (refilling) { return; }
         auto testing = [&]() {

@@ -313,6 +313,7 @@ struct upload_job {
     int64_t t_queued = 0;    // ggml_time_us() when queued (trace)
     bool    bg      = false; // refill of a free block after a prompt (reheat_free_blocks): the step does not wait for it, a worker takes it only when no other
                              // job waits on its link, and it does not count against the swap budget
+    bool    refill  = false; // any refill after a prompt (both parts of reheat_free_blocks): no DDR gate (upload_gate_for)
 };
 
 struct moe_cache {
@@ -7804,6 +7805,7 @@ static size_t reheat_free_blocks(moe_cache * mc, bool wait, bool ini_only = fals
             ls.queued[c[i].e]       = 1;
             upload_job j { c[i].li, c[i].e, slot };
             j.bg       = !(fixed_on() || (wait && c[i].part == 1));   // part 1 at normal priority (wait), the rest behind decode's own misses
+            j.refill   = true;
             j.t_queued = ggml_time_us();
             jobs.push_back(j);
             const double xb = (double) (ls.pub.up_src->nb[2] + ls.pub.gate_src->nb[2] + ls.pub.down_src->nb[2]);
@@ -11412,6 +11414,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 const int64_t t0 = ggml_time_us();
                 led_upload(mc, "up-start", j.layer_idx, j.expert, j.slot, j.bg);
                 const bool busy_start = mc->cpu_busy;
+                const int  gate       = upload_gate_for((int) knobs().gate, j.refill);
                 ggml_tensor *       dsts[3] = { ls.pub.up_c,   ls.pub.gate_c,   ls.pub.down_c   };
                 const ggml_tensor * srcs[3] = { ls.pub.up_src, ls.pub.gate_src, ls.pub.down_src };
                 int64_t t_read = 0;
@@ -11420,7 +11423,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                 for (int k = 0; k < 3; ++k) {
                     const size_t sz = srcs[k]->nb[2];
                     const int64_t link_mbs = (int64_t) ((mc->gbs_link[ls.link] > 0 ? mc->gbs_link[ls.link] : 10.0) * 1e3);
-                    if (knobs().gate >= 3 && mc->ddr_mbs + link_mbs > (int64_t) (knobs().ddr_gbs * 1e3)) {
+                    if (gate >= 3 && mc->ddr_mbs + link_mbs > (int64_t) (knobs().ddr_gbs * 1e3)) {
                         // budget gate: wait until DDR demand leaves room for this copy
                         const int64_t tw = ggml_time_us();
                         while (mc->ddr_mbs + link_mbs > (int64_t) (knobs().ddr_gbs * 1e3) && ggml_time_us() - tw < (int64_t) (knobs().gate_max_us >= 0 ? knobs().gate_max_us : mean_layer_us(mc))) {
@@ -11436,7 +11439,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     pu_note(mc, j.layer_idx, ls.link, (double) sz, false);
                     ddr_trace(mc, ggml_time_us());
                     struct ddr_release { moe_cache * mc; int64_t v; ~ddr_release() { mc->ddr_mbs -= v; ddr_trace(mc, ggml_time_us()); } } rel { mc, link_mbs };
-                    if ((knobs().gate == 2 || (knobs().gate == 1 && j.stream)) && mc->cpu_busy) {
+                    if ((gate == 2 || (gate == 1 && j.stream)) && mc->cpu_busy) {
                         // ponytail: spin-yield; a condition variable if waits get long
                         const int64_t tw = ggml_time_us();
                         while (mc->cpu_busy && ggml_time_us() - tw < (int64_t) (knobs().gate_max_us >= 0 ? knobs().gate_max_us : mean_layer_us(mc))) {
@@ -11507,7 +11510,7 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
                     } else if (ggml_backend_buffer_is_host(srcs[k]->buffer)) {
                         // chunk: set, or the bytes this link moves in a quarter of the measured mean CPU phase (the budget is
                         // re-checked ~4 times per phase)
-                        const size_t ch = knobs().gate < 3 || knobs().chunk_kb == 0 ? 0 :
+                        const size_t ch = gate < 3 || knobs().chunk_kb == 0 ? 0 :
                             knobs().chunk_kb > 0 ? (size_t) knobs().chunk_kb * 1024 :
                             (size_t) std::max(64.0*1024, (mc->gbs_link[ls.link] > 0 ? mc->gbs_link[ls.link] : 1.0) * 1e3 * mean_cpu_phase_us(mc) / 4);
                         const char * pinned = pin_slice(mc, ls, k, j.expert, sz, srcs[k]);   // --moe pinr: the pinned copy of this slice, made now if the budget allows
