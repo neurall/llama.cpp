@@ -3012,6 +3012,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * mc_slot_ids = nullptr;
     ggml_backend_t mc_cpu_backend = nullptr;
     void *        mc_bell     = nullptr;   // --moe bell=1: this layer's bell (decode)
+    ggml_backend_t mc_bell_b  = nullptr;   // the card that holds the layer's cache: the bell's two ops run there
     ggml_tensor * mc_bell_ids = nullptr;   // the picks as the bell op read them
     ggml_tensor *  mc_cpu_ids     = nullptr;   // --moe pp-off: the CPU's misses (the device's are -1)
     ggml_tensor *  mc_miss_ids    = nullptr;   // --moe miss-dev: the misses' ids (the rest -1), computed on the device holding up_m
@@ -3113,7 +3114,16 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         static const int bell_defer = [] { const char * e = moe_opt("defer"); return e ? atoi(e) : 0; }();
         if (n_tokens == 1 && cpu_backend && !mc_pp && !mc_ppk && !mc_mix_b && !mc_cstream && bell_defer <= 0 && !selected_experts_in &&
                 !(mcache->pred_on && (mcache->pred_all || mcache->pred_w)) && ggml_is_contiguous(mc_inp)) {
-            mc_bell = llama_moe_cache_bell_fork(mcache, n_expert_used, n_embd);
+            // only a layer whose router runs on the card that holds its cache: the bell is mapped for that card, and a bell op placed on the other card wrote
+            // out of its range (OLMoE, 2 cards, 2026-11-18: Xid 13 at the one layer whose dense part and cache are on different cards)
+            const ggml_backend_dev_t cache_dev  = mcache->dev_table && mcache->dev_table->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(mcache->dev_table->buffer)) : nullptr;
+            const ggml_backend_dev_t router_dev = router_w && router_w->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(router_w->buffer)) : nullptr;
+            if (cache_dev && cache_dev == router_dev) {
+                for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                    if (ggml_backend_get_device(ggml_backend_sched_get_backend(sched, i)) == cache_dev) { mc_bell_b = ggml_backend_sched_get_backend(sched, i); }
+                }
+                mc_bell = mc_bell_b ? llama_moe_cache_bell_fork(mcache, n_expert_used, n_embd) : nullptr;
+            }
         }
         ggml_tensor * pw = mcache->pred_all ? mcache->pred_all : mcache->pred_w;
         if (pw && pw->buffer && mcache->pred_on && (!mc_pp || (cpu_backend && llama_moe_cache_pp_pred_want_fork(n_tokens))) && !mc_mix_b) {
@@ -3300,6 +3310,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         if (mc_bell) {
             mc_bell_ids = ggml_reshape_2d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used, 1);
             mc_slot_ids = ggml_moe_bell(ctx0, mc_bell_ids, mcache->dev_table, mc_inp, mc_bell);   // [n_expert_used, 1]: each pick's block, published to the host
+            ggml_backend_sched_set_tensor_backend(sched, mc_slot_ids, mc_bell_b);
             cb(mc_slot_ids, "ffn_moe_bell", il);
         } else {
             ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ggml_cont(ctx0, sel_dev), n_expert_used*n_tokens);
@@ -3374,6 +3385,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // gaps of 20-100 us a token, two a layer).
         if (mc_bell) {
             down_g = ggml_moe_rows(ctx0, down_g, mc_bell_ids, mc_slot_ids, mc_bell);   // in place on the chain's rows
+            ggml_backend_sched_set_tensor_backend(sched, down_g, mc_bell_b);
             cb(down_g, "ffn_moe_bell_rows", il);
         }
         static const bool chain_merge = [] { const char * e = moe_opt("chain-merge"); return e && atoi(e) != 0; }();
