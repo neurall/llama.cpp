@@ -1140,8 +1140,9 @@ WRAP = []   # --wrap "CMD ARGS": the server is started as CMD ARGS llama-server 
 THREADS = os.environ.get("PERF_THREADS", "")                   # decode threads: unset = no -t, so the thread autotune (decode and batch) runs; set only to measure a fixed count (fork/cloud/pod.sh sets it for rented boxes)
 DEVS = os.environ.get("PERF_DEV", "CUDA0,CUDA1")                # -dev list (the GPU order is pinned)
 COMMON_ALL = (["-t", THREADS] if THREADS else []) + ["--cpu-moe", "-nr", "--moe-expert-cache", "-1", "-dev", DEVS]
-if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible GPU: no device order to pin
-    COMMON_ALL = COMMON_ALL[:-2]
+if "," not in os.environ.get("CUDA_VISIBLE_DEVICES", ","):  # one visible CUDA card (or none): no device order to pin, but -dev names it; without -dev the one binary
+    # takes the card CUDA does not see through Vulkan (the regress cells split CUDA0 + Vulkan0 on b15807 and aborted, 2026-11-18)
+    COMMON_ALL = COMMON_ALL[:-2] + (["-dev", "CUDA0"] if os.environ["CUDA_VISIBLE_DEVICES"].strip() else [])
 COMMON = COMMON_ALL
 PORT = int(os.environ.get("PERF_PORT", 8099))
 NVSMI = os.environ.get("NVIDIA_SMI", "nvidia-smi")   # a driver that does not match the system libraries (the P2P test module): the nvidia-smi of its own userspace
