@@ -19,7 +19,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$model" ] || { echo "strata stand-in: no -m MODEL" >&2; exit 2; }
 arm=$(basename "$(dirname "$0")")
-args=(--yes --no-tui --model-path "$model" --gpu 0,1 --context 32k --parallel 1 --vision off --tune skip --access local --port "$port" --no-api-key --data-dir /p/bw/sh/models)
+IFS=, read -ra vis <<< "${CUDA_VISIBLE_DEVICES:-0,1}"; gpus=$(seq -s, 0 $((${#vis[@]} - 1)))   # CUDA_VISIBLE_DEVICES=0 = one card (the engine counts the visible cards from 0)
+args=(--yes --no-tui --model-path "$model" --gpu "$gpus" --context 32k --parallel 1 --vision off --tune skip --access local --port "$port" --no-api-key --data-dir /p/bw/sh/models)
 case "$arm" in
     *-plain) args+=(--kv fp16 --drafting off --mtp off --set suffix-draft=0) ;;
     *-full)  args+=(--kv fp16 --drafting off --mtp off --set suffix-draft=0 --set STRATA_ROUTE_TAIL_SKIP=0); export STRATA_ROUTE_TAIL_SKIP=0 ;;
