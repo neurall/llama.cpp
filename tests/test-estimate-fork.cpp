@@ -410,6 +410,21 @@ int main() {
         check("decode tuners take turns: with no cycle open a box 12% slower still restarts it", fired_closed > 0);
     }
 
+    {   // the self-tuner's stored verdicts (tune_history_push, tune_history_pick; user 2026-11-18: resume where the last server left off). MiMo CUDA 12k/4k: SWAP_LEAD -2
+        // won 10% on b15807, yet every server tuned from the defaults and the b15828 candidate never reached it in 4096 tokens. A knob keeps its last 8 clear verdicts;
+        // the next server starts it at the most frequent one, the newest on a tie
+        std::string h;
+        double v = 1.0;
+        check("tune history: nothing stored, nothing picked", !tune_history_pick(h, v));
+        tune_history_push(h, 0); tune_history_push(h, -2); tune_history_push(h, -2);
+        check("tune history: the most frequent verdict", tune_history_pick(h, v) && v == -2);
+        tune_history_push(h, 0);
+        check("tune history: a tie goes to the newest", tune_history_pick(h, v) && v == 0);
+        for (int i = 0; i < 10; ++i) { tune_history_push(h, 0.25); }
+        check("tune history: the last 8 only", std::count(h.begin(), h.end(), ',') == 7 && tune_history_pick(h, v) && v == 0.25);
+        check("tune history: a damaged entry picks nothing", !tune_history_pick(std::string("x,,y"), v));
+    }
+
     {   // the refill after a prompt is a phase of its own (upload_gate_for, user 2026-11-18). The DDR gate (UPLOAD_WAIT 3, on by default) held every upload while
         // the CPU computed uncached experts, the refill's too: after 12k prompts the refill of the blocks the prompt borrowed (8-17 GB on two cards) ran at 15-30
         // GB/s of the links' 53 (MiMo and GLM CUDA logs 2026-11-17/18), and its decode tokens took 1.2-2.6x the steady ones

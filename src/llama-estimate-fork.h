@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 // ---- strategy estimators (user 2026-11-10: "all our strategy deciders implemented as properly named functions taking all key metrics and returning new estimated time per token,
@@ -453,3 +456,31 @@ static inline bool tune_drift_held(bool refilling, bool cycle_open) { return ref
 // worker in src/llama-moecache-fork.cpp) holds an upload while the CPU computes uncached experts, so a swap does not slow that phase. A refill upload pays a
 // debt instead: each expert it puts back removes a CPU miss from every later token, so it goes at the link's rate, ungated; steady swaps keep the gate.
 static inline int upload_gate_for(int gate, bool refill) { return refill ? 0 : gate; }
+
+// The self-tuner's stored verdicts for one knob (user 2026-11-18: resume where the last server left off): its last `keep` clear verdicts, comma-separated, newest
+// last. A server starts the knob at the most frequent of them, the newest on a tie; an unsure verdict is not kept (the value in use stays).
+static inline void tune_history_push(std::string & h, double v, size_t keep = 8) {
+    char b[32];
+    snprintf(b, sizeof b, "%g", v);
+    h += (h.empty() ? "" : ",") + std::string(b);
+    while ((size_t) std::count(h.begin(), h.end(), ',') >= keep) { h.erase(0, h.find(',') + 1); }
+}
+static inline bool tune_history_pick(const std::string & h, double & v) {
+    std::vector<double> xs;
+    for (size_t a = 0; a <= h.size();) {
+        size_t e = h.find(',', a);
+        if (e == std::string::npos) { e = h.size(); }
+        const std::string tok = h.substr(a, e - a);
+        char * end = nullptr;
+        const double x = strtod(tok.c_str(), &end);
+        if (tok.empty() || end != tok.c_str() + tok.size()) { return false; }   // a damaged entry: no pick
+        xs.push_back(x);
+        a = e + 1;
+    }
+    int best = -1;
+    for (size_t i = xs.size(); i-- > 0;) {   // newest first: a tie keeps the newest
+        const int n = (int) std::count(xs.begin(), xs.end(), xs[i]);
+        if (n > best) { best = n; v = xs[i]; }
+    }
+    return true;
+}

@@ -11605,7 +11605,8 @@ void llama_moe_cache_init_fork(const llama_model & model, int32_t n_slots, int32
         });
 
         mc->profile = profile_path(model);
-        // ini-fix (2026-10-22): the self-tuner's stored decisions are not read: a start whose tuner began from another build's values behaved unlike a cold one. Every start tunes from the defaults.
+        // the self-tuner's stored verdicts: tune_stored (2026-11-18: clear verdicts only, per card set, the most frequent of the last 8; from 2026-10-22 to then every
+        // start tuned from the defaults, as a start whose tuner began from another build's values behaved unlike a cold one)
         if (const char * c = moe_opt("ctl")) {
             mc->ctl = c;
         }
@@ -14951,6 +14952,24 @@ static void apply_predict(moe_cache * mc) {
     }
 }
 
+// The self-tuner's stored verdicts (user 2026-11-18: resume where the last server left off; MiMo CUDA 12k/4k: SWAP_LEAD -2 won 10% on b15807, yet every server
+// tuned from the defaults and the b15828 candidate never reached it in 4096 tokens): a knob's last clear verdicts on these cards (tune.<NAME> under the place key, in
+// the model's section), the most frequent one used (tune_history_pick, src/llama-estimate-fork.h)
+static bool tune_stored(moe_cache * mc, const char * name, double & v) {
+    std::string h;
+    return !mc->profile.empty() && moe_state_get(mc->profile, hw_key(std::string("tune.") + name), h) && tune_history_pick(h, v);
+}
+
+static void tune_store(moe_cache * mc, const char * name, double v) {
+    if (mc->profile.empty()) { return; }
+    const std::string key = hw_key(std::string("tune.") + name);
+    std::string h;
+    double x = 0.0;
+    if (moe_state_get(mc->profile, key, h) && !tune_history_pick(h, x)) { h.clear(); }   // a damaged entry starts over
+    tune_history_push(h, v);
+    moe_state_set(mc->profile, {{ key, h }});
+}
+
 static void self_tune(moe_cache * mc) {
     // slow: the knob changes what the cache holds, and its effect builds up over hundreds of tokens, so a candidate needs a long
     // slice (its first tokens run on the previous candidate's contents) instead of the 36-token slice of the transient knobs
@@ -14981,12 +15000,31 @@ static void self_tune(moe_cache * mc) {
         add({ "SWAP_LEAD", &knobs_t::margin, { 0, -2 }, true });
         for (const auto & x : T_swap) { add(x); }
         tune_order(t);   // the transient knobs first: UPLOAD_WAIT is decided within the first answer (src/llama-estimate-fork.h)
+        std::stable_partition(t.begin(), t.end(), [&](const tunable & x) { double v; return !tune_stored(mc, x.name, v); });   // knobs no server decided yet first
         return t;
     }();
     if (T.empty()) { return; } // -at off, every knob set by the user or deterministic mode: nothing to tune
     const size_t MIN_S = 3, MAX_S = 8;
     // a cycle costs ~2k tokens per state-carrying knob (half of them on the worse candidate): rest long enough to keep that under ~10%
     const uint64_t REST_MIN = 16384, REST_MAX = 131072;
+    static const bool resumed = [&] {   // the stored verdicts, once: a knob starts at its own; with every knob known the first cycle waits a rest
+        size_t known = 0;
+        std::string got;
+        for (const auto & x : T) {
+            double v = 0.0;
+            if (tune_stored(mc, x.name, v) && std::find(x.vals.begin(), x.vals.end(), v) != x.vals.end()) {
+                knobs().*x.f = v;
+                known++;
+                got += tr_fmt(" %s=%g", x.name, v);
+            }
+        }
+        apply_predict(mc);
+        if (known == T.size()) { mc->lv_rest_until = mc->n_steps + REST_MIN; }
+        LLAMA_LOG_WARN("moe-cache: self-tune: %zu of %zu knobs start at their stored verdicts%s%s\n", known, T.size(), got.c_str(),
+                       known == T.size() ? "; the first check after a rest" : known ? "; the others are tuned first" : "");
+        return true;
+    }();
+    (void) resumed;
     auto begin = [&](int k) {
         // the candidate in use runs first (the static default or the last decision, never a cold alternative); the others follow
         mc->lv_k = k; mc->lv_c = 0;
@@ -15039,6 +15077,7 @@ static void self_tune(moe_cache * mc) {
             for (size_t c = 0; c < nv; ++c) { res += tr_fmt(" %g:%.2f", t.vals[c], tv.mean[c]/1e3); }
             LLAMA_LOG_WARN("moe-cache: self-tune: %s ms/token%s -> %g (%s, %zu slices each)\n", t.name, res.c_str(), t.vals[b],
                 tv.sure ? "clear" : "not sure: the value in use stays", tv.n_min);
+            if (tv.sure) { tune_store(mc, t.name, t.vals[b]); }   // an unsure verdict keeps no evidence
             if (mc->lv_prev.size() != T.size()) { mc->lv_prev.assign(T.size(), -1e300); }
             mc->lv_changed |= mc->lv_prev[mc->lv_k] != t.vals[b];
             mc->lv_prev[mc->lv_k] = t.vals[b];
