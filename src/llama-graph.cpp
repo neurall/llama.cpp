@@ -4062,6 +4062,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     } else if (mc_bell) {
         // the host chain of the picks the card does not hold: the same chain, on inputs the bell fills (the layer input, the missing picks), computed when the
         // layer rings (llama_moe_cache_bell_chain_fork). Its table says no expert is on a card: it computes every pick it is given. The gate op is shown all picks.
+        // The chain is not expanded into this graph: the cache gives it memory of its own (llama_moe_cache_bell_expand_fork).
         ggml_tensor * x_h   = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd, 1, 1);
         ggml_tensor * ids_h = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, 1);
         ggml_tensor * all_h = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, 1);
@@ -4074,7 +4075,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 t->src[3] = llama_moe_cache_bell_table_fork(mcache);
                 t->op_params[0] = mcache->n_slots;
                 if (strstr(t->src[0]->name, "gate_exps")) { t->src[5] = all_h; }
-                ggml_backend_sched_set_tensor_backend(sched, t, mc_cpu_backend);
             }
             for (int j = 0; j < 2; ++j) { each(t->src[j], depth + 1); }
         };

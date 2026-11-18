@@ -20,6 +20,8 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
+#include "ggml-alloc.h"
 #include "../ggml/src/ggml-bell-fork.h"
 
 #include <algorithm>
@@ -18367,16 +18369,6 @@ static void bell_launched_cb(ggml_backend_t backend, ggml_cgraph * graph, void *
     g_bell_cur = nullptr;
 }
 
-static bool bell_detached_cb(ggml_cgraph * graph, void * ud) {
-    GGML_UNUSED(ud);
-    const int n = ggml_graph_n_nodes(graph);
-    if (n == 0 || g_bell_nodes.empty()) { return false; }
-    for (int i = 0; i < n; ++i) {
-        if (!g_bell_nodes.count(ggml_graph_node(graph, i))) { return false; }
-    }
-    return true;
-}
-
 void * llama_moe_cache_bell_fork(const llama_moe_cache_layer_fork * pub, int64_t n_used, int64_t n_embd) {
     if (!bell_opt() || !pub || !pub->dev_table || !pub->dev_table->buffer || !pub->host_table || pub->jit_n > 0 || n_used > GGML_BELL_MAX_USED) { return nullptr; }
     bell_layer & bl = g_bell_layers[pub];
@@ -18402,7 +18394,7 @@ void * llama_moe_cache_bell_fork(const llama_moe_cache_layer_fork * pub, int64_t
     static bool said = false;
     if (!said) {
         said = true;
-        ggml_backend_set_split_bell_callbacks(bell_launched_cb, bell_detached_cb, nullptr);
+        ggml_backend_set_split_bell_callbacks(bell_launched_cb, nullptr, nullptr);
         LLAMA_LOG_WARN("moe-cache: bell on (--moe bell=1): a decode layer meets the host through %zu bytes of mapped memory, a card's layers are one graph\n",
                        ggml_bell_size((int32_t) n_used, (int32_t) n_embd));
     }
@@ -18426,16 +18418,25 @@ void llama_moe_cache_bell_begin_fork() {
     if (g_bell_gctx) { ggml_free(g_bell_gctx); g_bell_gctx = nullptr; }
 }
 
+// The host chains get memory of their own, and are not part of the scheduler's graph. In the graph (behind every other node, left out of the scheduler's loop)
+// they were given memory the allocator had already freed in graph order, and that memory still held the inputs of the next card: a chain of card 0's layers,
+// run while card 0 computes, wrote over the KV row indices card 1 had not copied yet, and card 1's first indexed write faulted ("illegal memory access", OLMoE
+// on two cards, 2026-11-18; one card worked: every input is copied before the first chain runs).
+static ggml_gallocr_t g_bell_ga = nullptr;
+
 void llama_moe_cache_bell_expand_fork(ggml_cgraph * gf) {
-    if (g_bell_chains.empty() || !gf) { return; }
-    ggml_init_params ip = { g_bell_chains.size() * (ggml_graph_overhead_custom(256, false) + 256) + 4096, nullptr, false };
+    GGML_UNUSED(gf);
+    if (g_bell_chains.empty()) { return; }
+    ggml_init_params ip = { (g_bell_chains.size() + 1) * (ggml_graph_overhead_custom(256, false) + 256) + ggml_graph_overhead_custom(4096, false) + 4096, nullptr, false };
     g_bell_gctx = ggml_init(ip);
+    ggml_cgraph * all = ggml_new_graph_custom(g_bell_gctx, 4096, false);
     for (auto & c : g_bell_chains) {
-        ggml_build_forward_expand(gf, c.out);   // behind every other node: one split of the CPU at the graph's end, which the scheduler leaves to the bell
         c.g = ggml_new_graph_custom(g_bell_gctx, 256, false);
         ggml_build_forward_expand(c.g, c.out);
-        for (int i = 0; i < ggml_graph_n_nodes(c.g); ++i) { g_bell_nodes.insert(ggml_graph_node(c.g, i)); }
+        ggml_build_forward_expand(all, c.out);
     }
+    if (!g_bell_ga) { g_bell_ga = ggml_gallocr_new(ggml_backend_cpu_buffer_type()); }
+    if (!ggml_gallocr_alloc_graph(g_bell_ga, all)) { GGML_ABORT("moe-cache: bell: no memory for the host chains"); }
 }
 
 static void bell_free_all() {
@@ -18445,6 +18446,7 @@ static void bell_free_all() {
                        g_bell_n_graphs, g_bell_n_layers, g_bell_n_wait, g_bell_n_miss);
     }
     llama_moe_cache_bell_begin_fork();
+    if (g_bell_ga) { ggml_gallocr_free(g_bell_ga); g_bell_ga = nullptr; }
     for (auto & kv : g_bell_layers) {
         if (kv.second.mem && kv.second.free_fn) { kv.second.free_fn(kv.second.mem); }
         if (kv.second.tctx) { ggml_free(kv.second.tctx); }
