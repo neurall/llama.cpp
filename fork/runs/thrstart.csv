@@ -1,0 +1,15 @@
+name,model,n,test,tokens,args,extra
+ts-mimo-cu,mimo,2,pf12k4k,4096,,--env PERF_LEDGER=0
+ts-mimo-cu-sat,mimo,2,pf12k4k,4096,--moe thr-start=sat,--env PERF_LEDGER=0
+ts-glm-cu,glm,2,pf12k4k,4096,,--env PERF_LEDGER=0
+ts-glm-cu-sat,glm,2,pf12k4k,4096,--moe thr-start=sat,--env PERF_LEDGER=0
+ts-mimo-cu-100,mimo,2,pfbest1k,100,,
+ts-mimo-cu-100-sat,mimo,2,pfbest1k,100,--moe thr-start=sat,
+ts-qni3-cu,qwen38,2,pfbest1k,1024,,
+ts-qni3-cu-sat,qwen38,2,pfbest1k,1024,--moe thr-start=sat,
+ts-mimo-vk,mimo,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ts-mimo-vk-sat,mimo,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe thr-start=sat",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ts-glm-vk,glm,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ts-glm-vk-sat,glm,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe thr-start=sat",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ts-qni3-vk,qwen38,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json
+ts-qni3-vk-sat,qwen38,2,pfbest1k,1024,"-dev Vulkan0,Vulkan1 --moe thr-start=sat",--env VK_ICD_FILENAMES=/p/bw/p2p/userspace-595-gl/nvidia_icd_595.json

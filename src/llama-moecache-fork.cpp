@@ -4124,7 +4124,9 @@ void resource_probe(moe_cache * mc, const llama_model & model) {
     bool probe_stored = false;
     {
         std::string pv; double s_cpu = 0, s_tot = 0; int s_sat = 0;
-        if (!moe_opt("probe-remeasure") && moe_state_get("machine", pkey, pv) && sscanf(pv.c_str(), "%lf %lf %d", &s_cpu, &s_tot, &s_sat) == 3 && s_cpu > 0 && s_tot > 0 && s_sat > 0) {
+        const char * tsm = moe_opt("thr-start");   // thr-start=sat: the decode threads start at this probe's count, measured at every start (user 2026-11-18), stored as always
+        const bool remeasure = moe_opt("probe-remeasure") || (tsm && strcmp(tsm, "sat") == 0);
+        if (!remeasure && moe_state_get("machine", pkey, pv) && sscanf(pv.c_str(), "%lf %lf %d", &s_cpu, &s_tot, &s_sat) == 3 && s_cpu > 0 && s_tot > 0 && s_sat > 0) {
             cpu_alone = s_cpu; total = s_tot; n_sat = s_sat; probe_stored = true;
             link_alone.assign(mc->n_links, 0.0);
         }

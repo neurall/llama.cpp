@@ -2725,10 +2725,15 @@ static void threads_save(const llama_model & model, const char * key, int dflt, 
 // Comparisons, the last 8, newest last: "<count>/<half><+ the half won, - it lost, = undecided>".
 struct thread_walk { int start = 0, n = 0, starts = 0; char st = 'w'; std::string hist; };
 static thread_walk g_thr_walk;   // one decoding context per process (as the search's own state)
+// --moe thr-start=sat (A/B, user 2026-11-18: "test with 25 as start too", "just store but measured each start"): with GPUs the walk starts at the threads that
+// saturate the RAM read rate (the start-up probe, measured at every start in this mode), not at the true cores; its walk is stored apart, and a stored walk
+// counts when its start is within an eighth of this start's (the probe scatters: 21-25 on PC1)
+static bool g_thr_sat = false;
+static const char * thread_walk_key() { return g_thr_sat ? "threads_walk_sat" : "threads_walk"; }
 
 static bool thread_walk_load(const llama_model & model, thread_walk & w) {
     std::string v;
-    if (!moe_state_get(moe_state_section(model), threads_key(model, "threads_walk"), v)) { return false; }
+    if (!moe_state_get(moe_state_section(model), threads_key(model, thread_walk_key()), v)) { return false; }
     char st = 0; int used = 0;
     if (sscanf(v.c_str(), "%d %d %c %d %n", &w.start, &w.n, &st, &w.starts, &used) < 4 || (st != 'w' && st != 's') || w.n < 1) { return false; }
     w.st = st; w.hist = used > 0 && (size_t) used < v.size() ? v.substr((size_t) used) : std::string();
@@ -2736,7 +2741,7 @@ static bool thread_walk_load(const llama_model & model, thread_walk & w) {
 }
 
 static void thread_walk_store(const llama_model & model, const thread_walk & w) {
-    moe_state_set(moe_state_section(model), { { threads_key(model, "threads_walk"),
+    moe_state_set(moe_state_section(model), { { threads_key(model, thread_walk_key()),
         std::to_string(w.start) + " " + std::to_string(w.n) + " " + w.st + " " + std::to_string(w.starts) + (w.hist.empty() ? "" : " " + w.hist) } });
 }
 
@@ -2756,12 +2761,20 @@ void llama_context::set_thread_autotune(bool on) {
     thr.base  = thr.base0;
     thr.hold  = 8;   // the first tokens run on the default (the counter runs across requests)
     // base0: the computed start (common_thread_start_fork); the pool holds every CPU the process may use, the walk only goes lower
+    const char * tsm = moe_opt("thr-start");
+    g_thr_sat = tsm && strcmp(tsm, "sat") == 0;
+    const bool gpus = thr.base0 < llama_cpu_allowed_count_fork();   // the computed start: the true cores with GPUs, every thread CPU only
+    const char * from = gpus ? "the true cores" : "every thread (no GPU)";
+    if (on && g_thr_sat && gpus) {
+        const int n_sat = llama_moe_cache_cpu_sat_threads_fork();
+        if (n_sat > 0 && n_sat < thr.base0) { thr.base0 = thr.base = n_sat; cparams.n_threads = (uint32_t) n_sat; from = "the threads that saturate the RAM read rate"; }
+    }
     g_thr_walk = thread_walk();
     g_thr_walk.start = g_thr_walk.n = thr.base0;
     if (on) {
         thread_walk w;
-        const char * from = thr.base0 >= llama_cpu_allowed_count_fork() ? "every thread (no GPU)" : "the true cores";
-        if (thread_walk_load(model, w) && w.start == thr.base0) {
+        if (thread_walk_load(model, w) && (g_thr_sat ? 8 * std::abs(w.start - thr.base0) <= thr.base0 : w.start == thr.base0)) {
+            w.start = thr.base0;
             w.starts++;
             if (w.starts % 8 == 0) { w.n = thr.base0; w.st = 'w'; from = "every 8th start: a fresh walk from the computed start"; }
             else { from = w.st == 's' ? "stored, settled" : "stored, walking on"; }
