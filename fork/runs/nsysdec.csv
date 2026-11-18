@@ -1,2 +1,3 @@
 name,model,n,test,tokens,args,extra
 qni3-nsys,qwen38,1,pfbest1k,256,,"--wrap 'nsys profile --trace=cuda,osrt,nvtx --sample=cpu --cudabacktrace=none -o /p/bw/data/nsys/qni3-%p --force-overwrite=true'"
+qni3-nsysk,qwen38,1,pfbest1k,256,,"--wrap 'nsys profile --trace=cuda --cuda-graph-trace=node --sample=none --cpuctxsw=none -o /p/bw/data/nsys/qni3k-%p --force-overwrite=true'"
