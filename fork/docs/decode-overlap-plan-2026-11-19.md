@@ -162,3 +162,16 @@ tokens plus waits for the CPU experts (item 4 measured 1.54 ms of host work a to
 
 Also in the run history of this row (4096-token prompt): Strata's prompt speed 1,970 to 1,990 t/s, ours 1,240 to 1,320. Not checked whether both
 are measured the same way; the claim "we lead in prefill on one card" needs this row looked at.
+
+## Correction, 20:45: tonight's speed pairs ran on unpinned state
+
+Every `q1-*` pair above ran without `-cs -gh`. A build keeps its own learned state (the key carries the commit) and that state matures over the build's
+cells: `host_cut` `q1-def` read 74.17 and 74.45 t/s at 19:54 to 20:00 and 76.74 t/s at 20:41, the same binary, the same row. So a difference under about
+2 t/s between two builds in the tables above is not established: the allocator fix's +1.8%, 4 against 3 against 2 streams, the IQ2_S dots, the inputs as
+one batch, the ceiling of 8 streams, `fuse_pick` against `host_cut`. What stands without the pairs: defaults against everything off on one build (56.6
+against 74), 64 pool workers (8.9), the plan dumps, the timers (slot picks 287 to 854 -> 0 us), the traces (z beside the chain, the fuse's 9 us a layer),
+the perplexity pairs.
+
+From here: one build (`prep_timers`), the frozen hot map of this (model, test) settled once (`-cs --hot-settle`), then one row a switch turned off
+(`q1-fuse0`, `q1-pick0`, `q1-spread0`, `q1-s2def`, `q1-s0def`, `q1-nopriodef`, `q1-iq0def`, `q1-alloff`) against `q1-def`, all with `-cs -gh`
+(memory: feedback_hot_maps_per_prompt, which I did not apply tonight).
