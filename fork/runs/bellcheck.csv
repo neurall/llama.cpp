@@ -11,3 +11,5 @@ glm3-off,glm,2,pfbest1k,1024,,
 glm3-bell,glm,2,pfbest1k,1024,"--moe bell=1",
 mimo-off,mimo,2,pfbest1k,1024,,
 mimo-bell,mimo,2,pfbest1k,1024,"--moe bell=1",
+qni3-dbg,qwen38,1,pf1k,4,"--moe bell=1",--env GGML_SCHED_DEBUG=2
+qni3-bopt,qwen38,1,pfbest1k,1024,"--moe bell=1",--env GGML_CUDA_GRAPH_OPT=1

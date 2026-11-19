@@ -14,6 +14,7 @@
 
 #include "ggml-cuda/allreduce.cuh"
 #include "ggml-cuda/common.cuh"
+#include "ggml-streams-fork.h"
 #include "ggml-cuda/acc.cuh"
 #include "ggml-cuda/add-id.cuh"
 #include "ggml-cuda/arange.cuh"
@@ -941,6 +942,10 @@ struct ggml_cuda_scratch_region {
     const void * owner = nullptr;   // the ggml_backend_cuda_context the region serves (nullptr: any, the caller did not say)
     struct piece { size_t off, size; bool freed; };
     std::vector<piece> live;
+    // the side stream of a two-stream graph (ggml-streams-fork.h) takes from the top, downwards: its kernels run beside the main stream's, whose scratch at
+    // the bottom is handed out again from one launch to the next
+    size_t side_used = 0;
+    std::vector<piece> side_live;
 };
 static ggml_cuda_scratch_region g_cuda_scratch[GGML_CUDA_MAX_DEVICES];
 
@@ -954,8 +959,8 @@ struct ggml_cuda_pool_scratch : public ggml_cuda_pool {
         ggml_cuda_scratch_region & s = g_cuda_scratch[device];
         if (s.base != nullptr && size > 0 && (s.owner == nullptr || s.owner == ctx)) {
             const size_t off = GGML_PAD(s.top, 256);
-            s.hwm = std::max(s.hwm, off + size);
-            if (off + size <= s.cap) {
+            s.hwm = std::max(s.hwm, off + size + s.side_used);
+            if (off + size + s.side_used <= s.cap) {
                 s.live.push_back({ off, size, false });
                 s.top = off + size;
                 *actual_size = size;
@@ -980,6 +985,45 @@ struct ggml_cuda_pool_scratch : public ggml_cuda_pool {
     }
 };
 
+struct ggml_cuda_pool_scratch_side : public ggml_cuda_pool {
+    int device;
+    const void * ctx;
+    std::unique_ptr<ggml_cuda_pool> inner;
+    ggml_cuda_pool_scratch_side(int device, const void * ctx, std::unique_ptr<ggml_cuda_pool> inner) : device(device), ctx(ctx), inner(std::move(inner)) {}
+
+    void * alloc(size_t size, size_t * actual_size) override {
+        ggml_cuda_scratch_region & s = g_cuda_scratch[device];
+        if (s.base != nullptr && size > 0 && (s.owner == nullptr || s.owner == ctx)) {
+            const size_t bottom = GGML_PAD(s.top, 256);
+            s.hwm = std::max(s.hwm, bottom + s.side_used + GGML_PAD(size, 256));
+            if (s.cap >= s.side_used + size) {
+                const size_t off = (s.cap - s.side_used - size) & ~(size_t) 255;
+                if (off >= bottom) {
+                    s.side_live.push_back({ off, size, false });
+                    s.side_used = s.cap - off;
+                    *actual_size = size;
+                    return s.base + off;
+                }
+            }
+        }
+        return inner->alloc(size, actual_size);
+    }
+
+    void free(void * ptr, size_t size) override {
+        ggml_cuda_scratch_region & s = g_cuda_scratch[device];
+        if (s.base != nullptr && (char *) ptr >= s.base && (char *) ptr < s.base + s.cap) {
+            const size_t off = (size_t) ((char *) ptr - s.base);
+            for (size_t i = s.side_live.size(); i-- > 0; ) {
+                if (s.side_live[i].off == off && !s.side_live[i].freed) { s.side_live[i].freed = true; break; }
+            }
+            while (!s.side_live.empty() && s.side_live.back().freed) { s.side_live.pop_back(); }
+            s.side_used = s.side_live.empty() ? 0 : s.cap - s.side_live.back().off;
+            return;
+        }
+        inner->free(ptr, size);
+    }
+};
+
 // fork: the CUDA driver API version (e.g. 13040), for the key of the VRAM need the engine stores per driver
 static int ggml_backend_cuda_driver_version_fork(void) {
     int v = 0;
@@ -993,7 +1037,7 @@ static size_t ggml_backend_cuda_scratch_fork(int device, ggml_backend_buffer_t b
     void * base = buf ? (char *) ggml_backend_buffer_get_base(buf) + off : nullptr;
     ggml_cuda_scratch_region & s = g_cuda_scratch[device];
     const size_t hwm = s.hwm;
-    if (s.live.empty()) {   // never move a region that still holds live buffers
+    if (s.live.empty() && s.side_live.empty()) {   // never move a region that still holds live buffers
         s.base  = (char *) base;
         s.cap   = base ? cap : 0;
         s.top   = 0;
@@ -1030,6 +1074,8 @@ std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(g
     }
     if (stream_no == 0) {   // fork: the main stream may take its scratch from a region the caller lends (ggml_backend_cuda_scratch_fork)
         p.reset(new ggml_cuda_pool_scratch(device, &ctx, std::move(p)));
+    } else if (stream_no == 1) {   // and the side stream of a two-stream graph from the same region's top
+        p.reset(new ggml_cuda_pool_scratch_side(device, &ctx, std::move(p)));
     }
     return p;
 }
@@ -5502,6 +5548,76 @@ static bool ggml_cuda_is_view_or_noop(const ggml_tensor * t) {
            t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_NONE;
 }
 
+// fork: two streams for a card's part of a decode graph (ggml-streams-fork.h): GGML_CUDA_STREAMS=2. Off until the rows say it wins.
+static int ggml_cuda_streams_fork() {
+    static const int n = [] { const char * e = getenv("GGML_CUDA_STREAMS"); return e ? atoi(e) : 0; }();
+    return n >= 2 ? 2 : 0;
+}
+
+// What a call of a graph launched: per launch its first node and every node it ran (a fusion runs several, some of them further on in the graph). Kept per
+// card and graph from the last call that went node by node; the capture that follows plans its streams from it, with no second copy of the fusion rules.
+struct ggml_cuda_stream_rec_fork {
+    int n_nodes = 0;
+    std::vector<int>              leader;
+    std::vector<std::vector<int>> members;
+};
+static std::mutex g_cuda_stream_rec_mtx;
+static std::map<std::pair<int, const void *>, ggml_cuda_stream_rec_fork> g_cuda_stream_recs;
+static std::vector<cudaEvent_t> g_cuda_stream_events[GGML_CUDA_MAX_DEVICES];   // 0: a chunk's start, 1: its join, 2 + k: behind the chunk's unit k
+
+// may this node run beside the main chain? A pure op that writes memory of its own. Everything else stays on the main stream: an op that writes into a state
+// tensor or in place (a view), one that meets the host (the bell), one with a hook of the expert cache (MUL_MAT_ID), the attention kernels and their indexers.
+static bool ggml_cuda_stream_movable_fork(const ggml_tensor * t) {
+    if (t->view_src != nullptr) {
+        return false;
+    }
+    switch (t->op) {
+        case GGML_OP_MUL_MAT: case GGML_OP_ADD: case GGML_OP_SUB: case GGML_OP_MUL: case GGML_OP_DIV: case GGML_OP_SCALE: case GGML_OP_UNARY: case GGML_OP_GLU:
+        case GGML_OP_RMS_NORM: case GGML_OP_CONCAT: case GGML_OP_CONT: case GGML_OP_DUP: case GGML_OP_GET_ROWS: case GGML_OP_SUM_ROWS: case GGML_OP_CLAMP:
+        case GGML_OP_SQR: case GGML_OP_SQRT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static ggml_stream_unit ggml_cuda_stream_unit_fork(const ggml_cgraph * cgraph, int leader, const std::vector<int> & members) {
+    ggml_stream_unit u;
+    u.leader  = leader;
+    u.movable = true;
+    for (int m : members) {
+        const ggml_tensor * t = cgraph->nodes[m];
+        if (ggml_cuda_is_view_or_noop(t)) {
+            continue;
+        }
+        u.movable = u.movable && ggml_cuda_stream_movable_fork(t);
+        double bytes = 0.0;
+        if (t->data != nullptr) {
+            u.writes.push_back({ (uintptr_t) t->data, (uintptr_t) t->data + ggml_nbytes(t) });
+            bytes = (double) ggml_nbytes(t);
+        }
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            const ggml_tensor * s = t->src[j];
+            if (s == nullptr || s->data == nullptr) {
+                continue;
+            }
+            // the weights of a product are read and never written by a graph: not a range of the plan (the expert cache's block tensor spans memory the graph
+            // itself is lent, every unit would wait for the experts)
+            if (j == 0 && (t->op == GGML_OP_MUL_MAT_ID ||
+                           (t->op == GGML_OP_MUL_MAT && s->buffer && ggml_backend_buffer_get_usage(s->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS))) {
+                bytes += t->op == GGML_OP_MUL_MAT_ID && t->src[2] ? (double) s->nb[2] * (double) ggml_nelements(t->src[2]) : (double) ggml_nbytes(s);
+                continue;
+            }
+            u.reads.push_back({ (uintptr_t) s->data, (uintptr_t) s->data + ggml_nbytes(s) });
+        }
+        u.cost += 1.5f + (float) (bytes / 836e3);   // microseconds: a kernel's own latency, and the bytes it moves at a card's 836 GB/s
+    }
+    if (u.writes.empty()) {
+        u.movable = false;
+    }
+    return u;
+}
+
 #ifdef USE_CUDA_GRAPH
 static bool ggml_cuda_graph_debug_enabled() {
     static const bool enabled = ggml_cuda_env_flag("GGML_CUDA_GRAPH_DEBUG");
@@ -7815,6 +7931,108 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
     size_t            n_chunks   = 0;
 #endif // USE_CUDA_GRAPH
 
+    // fork: two streams for a decode graph (ggml-streams-fork.h). A call that goes node by node notes what it launches (rec_new); a capture whose graph was
+    // noted before is planned chunk by chunk from that note (sp)
+    struct {
+        bool   active = false, side_used = false;
+        const ggml_cuda_stream_rec_fork * rec = nullptr;
+        std::vector<char> skipped;   // per node: run by an earlier launch, the loop never comes to it
+        size_t next = 0;             // the next launch of the note
+        size_t u0 = 0, u1 = 0;       // the launches of the chunk planned last
+        ggml_stream_plan plan;
+        int    cur = -1;             // the launch under way, as an index into the plan (-1: none)
+    } sp;
+    ggml_cuda_stream_rec_fork rec_new;
+    const bool rec_on = ggml_cuda_streams_fork() > 0;
+    cuda_ctx->curr_stream_no = 0;   // a call that ended in an exception may have left the side stream set
+    const auto sp_event = [&](size_t k) -> cudaEvent_t {
+        std::vector<cudaEvent_t> & ev = g_cuda_stream_events[cuda_ctx->device];
+        while (ev.size() <= k) {
+            cudaEvent_t e;
+            CUDA_CHECK(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
+            ev.push_back(e);
+        }
+        return ev[k];
+    };
+    // the side stream's work ends before the main stream goes on: at a chunk's end (its capture may end only then) and at the graph's
+    const auto sp_join = [&] {
+        if (sp.side_used) {
+            CUDA_CHECK(cudaEventRecord(sp_event(1), cuda_ctx->stream(cuda_ctx->device, 1)));
+            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, 0), sp_event(1)));
+            sp.side_used = false;
+        }
+        cuda_ctx->curr_stream_no = 0;
+        sp.cur = -1;
+    };
+    // a chunk starts at node i_from and ends before the first node at or behind node_end that the loop comes to: its launches are planned
+    const auto sp_chunk = [&](int i_from, int node_end) {
+        int cut = cgraph->n_nodes;
+        for (int j = std::max(i_from, node_end); node_end > 0 && j < cgraph->n_nodes; ++j) {
+            if (!sp.skipped[j]) { cut = j; break; }
+        }
+        sp.u0 = sp.next;
+        sp.u1 = sp.u0;
+        std::vector<ggml_stream_unit> units;
+        while (sp.u1 < sp.rec->leader.size() && sp.rec->leader[sp.u1] < cut) {
+            units.push_back(ggml_cuda_stream_unit_fork(cgraph, sp.rec->leader[sp.u1], sp.rec->members[sp.u1]));
+            sp.u1++;
+        }
+        const std::vector<uint8_t> no_cut(units.size(), 0);
+        sp.plan = ggml_stream_plan_make(units, no_cut, 1.0f);
+        static const bool check = getenv("GGML_CUDA_STREAMS_CHECK") != nullptr;
+        if (check && !ggml_stream_plan_check(units, no_cut, sp.plan)) {
+            GGML_ABORT("CUDA%d streams: the plan of the chunk at node %d lets two launches that share memory run out of order", cuda_ctx->device, i_from);
+        }
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 12) {
+            int n_wait = 0;
+            for (int w : sp.plan.wait) { n_wait += w >= 0; }
+            GGML_LOG_WARN("CUDA%d streams: chunk of %zu launches from node %d: %d beside the main chain, %d waits, estimated %.0f -> %.0f us\n", cuda_ctx->device,
+                    units.size(), i_from, sp.plan.n_side, n_wait, sp.plan.t_serial, sp.plan.t_plan);
+        }
+        CUDA_CHECK(cudaEventRecord(sp_event(0), cuda_ctx->stream(cuda_ctx->device, 0)));   // what the side stream starts behind in this chunk
+    };
+    // before a launch at node i: its stream, and the launch of the other stream it has to follow
+    const auto sp_before = [&](int i) {
+        if (!sp.active) {
+            return;
+        }
+        if (sp.next >= sp.u1 || sp.rec->leader[sp.next] != i) {   // not the launches the plan was made from: one stream from here on
+            sp_join();
+            sp.active = false;
+            return;
+        }
+        sp.cur = (int) (sp.next++ - sp.u0);
+        const int st = sp.plan.stream[sp.cur];
+        if (st == 1 && !sp.side_used) {
+            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, 1), sp_event(0)));
+            sp.side_used = true;
+        }
+        if (sp.plan.wait[sp.cur] >= 0) {
+            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, st), sp_event(2 + (size_t) sp.plan.wait[sp.cur])));
+        }
+        cuda_ctx->curr_stream_no = st;
+    };
+    // behind a launch: the event a later launch of the other stream waits for, and the note of what ran (the nodes a fusion marked further on, too)
+    const auto sp_after = [&](int i, int n_skip, const std::vector<bool> & fused, const bool * fused_was) {
+        if (sp.cur >= 0) {
+            if (sp.plan.record[sp.cur]) {
+                CUDA_CHECK(cudaEventRecord(sp_event(2 + (size_t) sp.cur), cuda_ctx->stream()));
+            }
+            cuda_ctx->curr_stream_no = 0;
+            sp.cur = -1;
+        }
+        if (rec_on) {
+            std::vector<int> m;
+            for (int k = 0; k <= n_skip; ++k) { m.push_back(i + k); }
+            for (int k = n_skip + 1; k < 16 && i + k < cgraph->n_nodes; ++k) {
+                if (fused[i + k] && !fused_was[k]) { m.push_back(i + k); }
+            }
+            rec_new.leader.push_back(i);
+            rec_new.members.push_back(std::move(m));
+        }
+    };
+
     const auto try_launch_concurrent_event = [&](const ggml_tensor * node) {
         if (stream_ctx.concurrent_events.find(node) != stream_ctx.concurrent_events.end()) {
             concurrent_event = &stream_ctx.concurrent_events[node];
@@ -7903,6 +8121,27 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             }
 
             std::vector<bool> nodes_fused(cgraph->n_nodes, false);
+#ifdef USE_CUDA_GRAPH
+            if (rec_on && use_cuda_graph && cuda_graph_update_required && stream_ctx.concurrent_events.empty() && cgraph->n_nodes >= 32) {
+                bool small = true;   // a decode graph: a prompt pass's kernels fill the card one at a time, nothing to gain beside them
+                for (int i = 0; i < cgraph->n_nodes && small; ++i) {
+                    small = ggml_cuda_is_view_or_noop(cgraph->nodes[i]) || ggml_nbytes(cgraph->nodes[i]) <= ((size_t) 4 << 20);
+                }
+                std::lock_guard<std::mutex> lock(g_cuda_stream_rec_mtx);
+                const auto it = g_cuda_stream_recs.find({ cuda_ctx->device, graph_key });
+                if (small && it != g_cuda_stream_recs.end() && it->second.n_nodes == cgraph->n_nodes) {
+                    sp.rec    = &it->second;
+                    sp.active = true;
+                    sp.skipped.assign(cgraph->n_nodes, 0);
+                    for (size_t u = 0; u < sp.rec->leader.size(); ++u) {
+                        for (int m : sp.rec->members[u]) {
+                            if (m != sp.rec->leader[u] && m >= 0 && m < cgraph->n_nodes) { sp.skipped[m] = 1; }
+                        }
+                    }
+                    sp_chunk(0, chunk_size);
+                }
+            }
+#endif // USE_CUDA_GRAPH
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
                 g_cuda_oom_node = node;   // fork: the op an out-of-memory came from (ggml_cuda_oom_report)
@@ -7914,9 +8153,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 // fused nodes are skipped together, so a cut never splits a fusion
                 // a concurrent region must join before its capture can end
                 if (use_cuda_graph && chunk_size > 0 && i >= chunk_end && !is_concurrent_event_active) {
+                    sp_join();
                     ggml_cuda_graph_launch_chunk(cuda_ctx, graph, n_chunks++);
                     CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
                     chunk_end = i + chunk_size;
+                    if (sp.active) { sp_chunk(i, chunk_end); }
                 }
 #endif // USE_CUDA_GRAPH
                 if (is_concurrent_event_active) {
@@ -7968,13 +8209,18 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (node->op == GGML_OP_MUL_MAT_ID && g_obs_full_on.load(std::memory_order_relaxed)) {
                     ggml_cuda_obs_full_count(*cuda_ctx, node->src[0], node->src[2]);   // fork: --moe uniqdump (every router pick, fused or not)
                 }
+                bool fused_was[16];
+                for (int k = 0; k < 16; ++k) { fused_was[k] = i + k < cgraph->n_nodes && nodes_fused[i + k]; }
+                sp_before(i);
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i, nodes_fused);
 
                 if (nodes_fused[i]) {
                     // the node was handled by a fusion together with a future consumer
+                    sp_after(i, 0, nodes_fused, fused_was);
                     continue;
                 }
                 if (nodes_to_skip != 0) {
+                    sp_after(i, nodes_to_skip, nodes_fused, fused_was);
                     if (check_node) { ggml_cuda_scratch_check_end_fork(cuda_ctx->device, cgraph, i, nodes_to_skip + 1, check_saved); }
 #ifdef GGML_CUDA_DEBUG
                     const int last_fused = i + nodes_to_skip;
@@ -8012,10 +8258,18 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 }
                 GGML_ASSERT(ok);
+                sp_after(i, 0, nodes_fused, fused_was);
 
                 if (!is_concurrent_event_active) {
                     try_launch_concurrent_event(node);
                }
+            }
+            sp_join();
+            if (rec_on) {
+                rec_new.n_nodes = cgraph->n_nodes;
+                std::lock_guard<std::mutex> lock(g_cuda_stream_rec_mtx);
+                g_cuda_stream_recs[{ cuda_ctx->device, graph_key }] = std::move(rec_new);
+                sp.rec = nullptr;
             }
             if (g_op_prof_every > 0 && !use_cuda_graph) { op_prof.mark(cuda_ctx->stream(), nullptr); }
         }
