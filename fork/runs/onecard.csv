@@ -24,3 +24,5 @@ v1-ovlvf,qwen38,1,pf12k1k,128,"--moe bell=1,bell-pool=32,sync=0,verify=2 -bs",--
 q1-hcq8,qwen38hc,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 pp-bf16,qwen38,1,pplb,,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12
 pp-hcq8,qwen38hc,1,pplb,,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12
+q1-hcload,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+pp-hcload,qwen38,1,pplb,,"--moe hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12

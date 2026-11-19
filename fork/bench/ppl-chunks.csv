@@ -4312,3 +4312,43 @@ start_ts,build,model,test,chunk,cum_ppl
 2026-11-18 14:18:32,"rel_pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -dev CUDA0,Vulkan0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9389
 2026-11-18 14:18:56,"rel_pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -dev CUDA0,Vulkan0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,1,1.9386
 2026-11-18 14:18:56,"rel_pool_copy_own_card -np 1 --cpu-moe --moe-expert-cache 19 --moe autotune=0,predict=0,admit-boot=0 -dev CUDA0,Vulkan0",OLMoE-1B-7B-0924-Q4_K_M.gguf,ppl,2,1.9397
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1354
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1143
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1441
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2238
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2649
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3303
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4145
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3918
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3989
+2026-11-19 13:01:24,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3953
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1354
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1143
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1441
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2238
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2649
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3303
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4145
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3918
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3989
+2026-11-19 13:02:02,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3953
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1329
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1062
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1413
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2157
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2543
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3203
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4037
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3828
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3937
+2026-11-19 13:03:10,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3913
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,1,1.1329
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,2,1.1062
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,3,1.1413
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,4,1.2157
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,5,1.2543
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,6,1.3203
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,7,1.4037
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,8,1.3828
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,9,1.3937
+2026-11-19 13:03:40,step_overlap -np 1,Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf,pplb,10,1.3913
