@@ -8108,7 +8108,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
         const std::vector<uint8_t> no_cut(units.size(), 0);
         // what a wait across the streams costs, in microseconds (GGML_CUDA_STREAMS_SWITCH_US): a launch moves only when it starts earlier by more than that
         static const float switch_us = [] { const char * e = getenv("GGML_CUDA_STREAMS_SWITCH_US"); return e ? (float) atof(e) : 1.0f; }();
-        sp.plan = ggml_stream_plan_make(units, no_cut, switch_us, ggml_cuda_streams_fork());
+        sp.plan = ggml_stream_plan_pick(units, no_cut, switch_us, ggml_cuda_streams_fork());   // the fewest streams with the best estimate, up to the set count
         static const bool check = getenv("GGML_CUDA_STREAMS_CHECK") != nullptr;
         if (check && !ggml_stream_plan_check(units, no_cut, sp.plan)) {
             GGML_ABORT("CUDA%d streams: the plan of the chunk at node %d lets two launches that share memory run out of order", cuda_ctx->device, i_from);

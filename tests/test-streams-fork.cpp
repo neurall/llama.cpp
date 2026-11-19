@@ -121,6 +121,13 @@ int main() {
         }
         printf("delta-net layer, %d streams: %d units beside the main chain, estimate %.1f -> %.1f\n", k, p.n_side, p.t_serial, p.t_plan);
     }
+    {   // the count is picked from the estimate: the delta-net layer takes all four, the shared expert beside the routed chain one side stream
+        const std::vector<ggml_stream_unit> g = gdn(), l = layer(5);
+        std::vector<uint8_t> cg(g.size(), 0), cl(l.size(), 0);
+        const ggml_stream_plan pg = ggml_stream_plan_pick(g, cg, sw, GGML_STREAMS_MAX), pl = ggml_stream_plan_pick(l, cl, sw, GGML_STREAMS_MAX);
+        assert(pg.n_streams == 4 && pg.t_plan == ggml_stream_plan_make(g, cg, sw, 4).t_plan && ggml_stream_plan_check(g, cg, pg));
+        assert(pl.n_streams == 2 && pl.t_plan == 37 && ggml_stream_plan_check(l, cl, pl));
+    }
     {   // more streams never make this layer's estimate longer
         const std::vector<ggml_stream_unit> u = gdn();
         std::vector<uint8_t> cut(u.size(), 0);

@@ -141,6 +141,19 @@ static inline ggml_stream_plan ggml_stream_plan_make(const std::vector<ggml_stre
     return p;
 }
 
+// The plan with the fewest streams that reaches the best estimate up to n_max streams: a graph without branches beside its main chain gets none, a layer
+// with one branch one side stream (user 2026-11-19: the count is the planner's to decide, from a reasonable start). The estimate is the start value;
+// what the card measures decides after it.
+static inline ggml_stream_plan ggml_stream_plan_pick(const std::vector<ggml_stream_unit> & units, const std::vector<uint8_t> & cut, float switch_cost, int n_max) {
+    ggml_stream_plan best = ggml_stream_plan_make(units, cut, switch_cost, n_max);
+    for (int k = std::min(n_max, GGML_STREAMS_MAX) - 1; k >= 2; --k) {
+        ggml_stream_plan p = ggml_stream_plan_make(units, cut, switch_cost, k);
+        if (p.t_plan > best.t_plan + 1e-3f) { break; }
+        best = std::move(p);
+    }
+    return best;
+}
+
 // the rule itself, checked for every pair: units that touch the same memory (one of them writing) run in graph order. The order a plan gives: the units of a
 // stream one after another, a unit behind the units it waits for (and behind what those knew to have ended), everything behind a cut.
 static inline bool ggml_stream_plan_check(const std::vector<ggml_stream_unit> & units, const std::vector<uint8_t> & cut, const ggml_stream_plan & p) {
