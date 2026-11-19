@@ -144,3 +144,21 @@ pair before it becomes a default. Fusion decisions by measured time per launch (
   decide whether the fused kernel or the unfused graph is the one that is off.
 - Done after this: planner with up to three side streams and the hold rule (`ggml-streams-fork.h`, test passes for 2, 3 and 4 streams), the scratch
   region safe for several side streams, a q8 reuse lane per stream. Build `multi_side`, rows `p1-plan4`, `p1-allk4`, `q1-s3`, `q1-s4`, `pd-s4`.
+
+## Correction, 19:05: traced token times do not compare the two engines
+
+| decode, t/s | without tracer | under nsys | tracer cost, ms a token |
+|---|---|---|---|
+| Strata 0.2.15, exact mode | 82.2, 81.6 | 67.2 in the traced window (cell average 71) | about 2.7 |
+| Strata 0.2.15, default mode | 83.5 | 76.1 | |
+| ours, `multi_side`, 4 streams | 74.0 (one cell) | 67.4 | about 1.3 |
+
+Strata launches about 2,000 kernels a token through the API and nsys hooks every call; we replay captured graphs. So the "wall" and "no work running"
+rows of the tables above flatter us: under the tracer the `multi_side` trace reads 14,814 us against Strata's 14,878, without it the tokens take
+13.5 ms against 12.2 ms. The kernels' own times on the card and what runs in parallel inside one engine's trace stay usable; a comparison of the two
+engines' walls or host times from traces does not. The real gap is 1.3 ms a token: the HC fuse (0.45 ms, off in `multi_side`) and host time between
+tokens plus waits for the CPU experts (item 4 measured 1.54 ms of host work a token on our side). Measure those with the engine's own timers
+(`LLAMA_STEP_TIME`, `LLAMA_BELL_TIME`), not with nsys.
+
+Also in the run history of this row (4096-token prompt): Strata's prompt speed 1,970 to 1,990 t/s, ours 1,240 to 1,320. Not checked whether both
+are measured the same way; the claim "we lead in prefill on one card" needs this row looked at.
