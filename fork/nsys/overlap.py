@@ -27,4 +27,4 @@ def run(f, marker, per_tok, A, B, top):
     for kk,v in pair.most_common(top): print(f"   {v/k:7.1f}  {kk}")
 for a in sys.argv[1:]:
     if 'strata' in a: run(a,"gr_norm_split",97,10,105,9)
-    else: run(a,"hcf_up",97,60,300,9)
+    else: run(a,"topk_moe",48,60,300,9)   # one per layer in every build of ours (the HC fuse kernels are not)
