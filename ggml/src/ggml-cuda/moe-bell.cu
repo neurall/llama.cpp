@@ -1,8 +1,6 @@
 #include "moe-bell.cuh"
 #include "../ggml-bell-fork.h"
 
-#include <algorithm>
-#include <cstdlib>
 #include <mutex>
 #include <unordered_map>
 
@@ -78,16 +76,13 @@ static __global__ void k_moe_bell(const int32_t * __restrict__ ids, const int32_
     }
 }
 
-// as ggml_bell_rows_take. The picks and their blocks are read from the card's own tensors: a layer with every pick on the card touches no host memory.
-// Many blocks, 16-byte reads: the rows come over PCIe, ~1 us a read; one block of 4-byte reads moved ~1 KB a microsecond (k_moe_rows 29 us a layer,
-// 1.40 ms a token on Qwen3.8, trace 2026-11-19). Every block waits for the flag itself (one polling thread each), then copies its share.
-template <bool vec4>
+// one block; as ggml_bell_rows_take. The picks and their blocks are read from the card's own tensors: a layer with every pick on the card touches no host memory
 static __global__ void k_moe_rows(float * __restrict__ down, const int32_t * __restrict__ ids, const int32_t * __restrict__ slots, ggml_bell * b,
                                   const int n_used, const int n_embd) {
     const int i = threadIdx.x;
     const int miss = i < n_used && ids[i] >= 0 && slots[i] < 0;
     if (__syncthreads_count(miss) == 0) {
-        if (i == 0 && blockIdx.x == 0) { b->rows_seq = (int32_t) b->seq; }
+        if (i == 0) { b->rows_seq = (int32_t) b->seq; }
         return;
     }
     if (i == 0) {
@@ -101,23 +96,13 @@ static __global__ void k_moe_rows(float * __restrict__ down, const int32_t * __r
     }
     __syncthreads();
     const float * rows = (const float *) (b + 1) + n_embd;
-    const int n = vec4 ? n_embd / 4 : n_embd;
     for (int e = 0; e < n_used; ++e) {
-        if (ids[e] < 0 || slots[e] >= 0) { continue; }
-        for (int j = blockIdx.x * blockDim.x + i; j < n; j += gridDim.x * blockDim.x) {
-            if constexpr (vec4) {
-                const volatile float4 * src = (const volatile float4 *) (rows + (size_t) e * n_embd) + j;
-                const float4 v = make_float4(src->x, src->y, src->z, src->w);
-                ((float4 *) (down + (size_t) e * n_embd))[j] = v;
-            } else {
-                down[(size_t) e * n_embd + j] = rows[(size_t) e * n_embd + j];
-            }
+        if (ids[e] >= 0 && slots[e] < 0) {
+            for (int j = i; j < n_embd; j += blockDim.x) { down[(size_t) e * n_embd + j] = rows[(size_t) e * n_embd + j]; }
         }
     }
-    if (blockIdx.x == 0) {
-        __syncthreads();
-        if (i == 0) { b->rows_seq = (int32_t) b->seq; }
-    }
+    __syncthreads();
+    if (i == 0) { b->rows_seq = (int32_t) b->seq; }
 }
 
 void ggml_cuda_op_moe_bell(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -132,14 +117,5 @@ void ggml_cuda_op_moe_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * down = dst->src[0], * ids = dst->src[1], * slots = dst->src[2];
     ggml_bell * b = bell_dev(dst);
     GGML_ASSERT(b != nullptr && dst->data == down->data);
-    const int n_embd = (int) down->ne[0];
-    const float * rows = (const float *) (b + 1) + n_embd;   // device-side address of the mapped rows
-    const bool vec4 = n_embd % 4 == 0 && ((uintptr_t) rows & 15) == 0 && ((uintptr_t) dst->data & 15) == 0;
-    static const int n_blocks = getenv("GGML_CUDA_ROWS_BLOCKS") ? atoi(getenv("GGML_CUDA_ROWS_BLOCKS")) : 16;   // dev: copy blocks per layer
-    const int nb = std::max(1, std::min(n_blocks, (vec4 ? n_embd / 4 : n_embd) / 256 + 1));
-    if (vec4) {
-        k_moe_rows<true><<<nb, 256, 0, ctx.stream()>>>((float *) dst->data, (const int32_t *) ids->data, (const int32_t *) slots->data, b, (int) ids->ne[0], n_embd);
-    } else {
-        k_moe_rows<false><<<nb, 256, 0, ctx.stream()>>>((float *) dst->data, (const int32_t *) ids->data, (const int32_t *) slots->data, b, (int) ids->ne[0], n_embd);
-    }
+    k_moe_rows<<<1, 256, 0, ctx.stream()>>>((float *) dst->data, (const int32_t *) ids->data, (const int32_t *) slots->data, b, (int) ids->ne[0], (int) down->ne[0]);
 }
