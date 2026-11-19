@@ -72,3 +72,4 @@ q1-s8,qwen38,2,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_ST
 p1-plan8,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=8 --env GGML_CUDA_STREAMS_DEBUG=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-bp48,qwen38,2,pf12k1k,512,"--moe bell-pool=48 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
 q1-bp64,qwen38,2,pf12k1k,512,"--moe bell-pool=64 -bs",--env CUDA_VISIBLE_DEVICES=0 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
+q1-stepiq0,qwen38,1,pf12k1k,512,"-bs",--env CUDA_VISIBLE_DEVICES=0 --env LLAMA_BELL_IQ2S=0 --env LLAMA_STEP_TIME=1 --env LLAMA_BELL_TIME=1 --env PERF_PTOK=4096 --env PERF_PNAME=b4k512-qwen38
