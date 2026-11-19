@@ -4715,7 +4715,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         }
     }
     double   mask_budget_mib = 0.0;
-    if (cparams.moe_cache && memory) {
+    // only for a call with a pass to size: a decode token opened and parsed /proc/meminfo and two hugepage files here, 35 to 40 us of every token with the
+    // card idle (perf of the decode thread, Qwen3.8, 2026-11-19), for a limit that one token never reaches
+    if (cparams.moe_cache && memory && n_tokens_all == 1) {   // what the block below keeps current for the RAM checks, without its file reads
+        g_host_held = backend_cpu ? (uint64_t) ggml_backend_sched_get_buffer_size(sched.get(), backend_cpu) : 0;
+        g_host_ub   = cparams.n_ubatch;
+    }
+    if (cparams.moe_cache && memory && n_tokens_all > 1) {
         const char * mm = llama_moe_get_opt("mask-mb");
         // Calculated, not guessed: the mask is pinned host memory. A pin served by free 1 GiB pool pages is immediate and certain (a 5.0 GiB mask took 0.3 s from 5 free pages),
         // every page beyond that depends on the kernel finding pinnable memory (the 6.5 GiB request stalled for 180 s). So the budget is the free pool pages right now (at least 1 GiB),
