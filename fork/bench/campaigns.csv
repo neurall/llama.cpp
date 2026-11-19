@@ -10314,3 +10314,5 @@ cuda_step_scan_once-q1-steptime-pf12k1k,2026-11-19 10:13:57,bench /m/q/1/Qwen3.8
 dev_step_sched-q1-steptime-pf12k1k,2026-11-19 10:17:19,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_step_sched variants v test pf12k n=2,,
 cuda_step_scan_once-q1-best-pf12k1k,2026-11-19 10:19:43,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_step_scan_once variants v test pf12k n=2,,
 cuda_step_scan_once-q1-nosync-pf12k1k,2026-11-19 10:21:06,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_step_scan_once variants v test pf12k n=2,,
+cuda_step_scan_once-q1-steptime-pf12k1k,2026-11-19 10:23:58,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_step_scan_once variants v test pf12k n=2,,
+cuda_step_scan_once-q1-poll-pf12k1k,2026-11-19 10:25:21,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_step_scan_once variants v test pf12k n=2,,

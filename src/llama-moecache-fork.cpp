@@ -18345,7 +18345,10 @@ static void bell_serve(bell_chain & c) {
         bell_need(c.pub, miss, b->n_used);
     }
     // the host chain, as the scheduler ran it: its gate op shows the cache every pick, its products compute the missing ones (none: one thread zeroes the rows)
+    static const bool bt_on = getenv("LLAMA_BELL_TIME") != nullptr;   // dev: where a layer's host time goes
+    const int64_t bt0 = bt_on ? ggml_time_us() : 0;
     if (ggml_backend_graph_compute(c.cpu, c.g) != GGML_STATUS_SUCCESS) { GGML_ABORT("moe-cache: bell: the host chain failed"); }
+    const int64_t bt1 = bt_on ? ggml_time_us() : 0;
     g_bell_n_layers++;
     if (n > 0) {
         const size_t row = sizeof(float) * (size_t) b->n_embd;
@@ -18353,6 +18356,17 @@ static void bell_serve(bell_chain & c) {
             if (miss[i] >= 0) { memcpy((char *) ggml_bell_rows(b) + (size_t) i * row, (const char *) c.out->data + (size_t) i * row, row); }
         }
         ggml_bell_host_done(b, bl.seen);
+        if (bt_on) {
+            static int64_t s_comp = 0, s_copy = 0, s_miss = 0, s_n = 0, s_hist[5] = {0};
+            s_comp += bt1 - bt0; s_copy += ggml_time_us() - bt1; s_miss += n; ++s_n;
+            const int64_t us = bt1 - bt0; s_hist[us < 20 ? 0 : us < 50 ? 1 : us < 100 ? 2 : us < 200 ? 3 : 4]++;
+            if (s_n % 4096 == 0) {
+                LLAMA_LOG_WARN("bell time: %lld layers with misses, %.2f misses each, host chain %.1f us, rows copy %.1f us; chain <20 %lld, <50 %lld, <100 %lld, <200 %lld, more %lld\n",
+                    (long long) s_n, (double) s_miss / s_n, (double) s_comp / s_n, (double) s_copy / s_n,
+                    (long long) s_hist[0], (long long) s_hist[1], (long long) s_hist[2], (long long) s_hist[3], (long long) s_hist[4]);
+                s_comp = s_copy = s_miss = s_n = 0; for (auto & h : s_hist) { h = 0; }
+            }
+        }
         g_bell_n_wait++;
         g_bell_n_miss += (uint64_t) n;
     }
