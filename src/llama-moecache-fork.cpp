@@ -18360,7 +18360,7 @@ static bool bell_pool_check(bell_chain & c) {
         else if (t->op == GGML_OP_GLU) { if (glu) { return false; } glu = t; }
         else if (t->op != GGML_OP_VIEW && t->op != GGML_OP_RESHAPE && t->op != GGML_OP_NONE) { return false; }
     }
-    if (n_mm != 3 || !glu || ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU || ggml_get_op_params_i32(glu, 1) != 0 || glu->src[1] == nullptr) { return false; }
+    if (n_mm != 3 || !glu || ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU || glu->op_params[1] != 0 || glu->src[1] == nullptr) { return false; }
     ggml_tensor * gate = glu->src[0], * up = glu->src[1], * down = nullptr;
     for (ggml_tensor * t : mm) { if (t != gate && t != up) { down = t; } }
     if (!down || down->src[1] != glu || gate->op != GGML_OP_MUL_MAT_ID || up->op != GGML_OP_MUL_MAT_ID || gate->src[1] != up->src[1]) { return false; }
