@@ -8123,13 +8123,21 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             std::vector<bool> nodes_fused(cgraph->n_nodes, false);
 #ifdef USE_CUDA_GRAPH
             if (rec_on && use_cuda_graph && cuda_graph_update_required && stream_ctx.concurrent_events.empty() && cgraph->n_nodes >= 32) {
-                bool small = true;   // a decode graph: a prompt pass's kernels fill the card one at a time, nothing to gain beside them
-                for (int i = 0; i < cgraph->n_nodes && small; ++i) {
-                    small = ggml_cuda_is_view_or_noop(cgraph->nodes[i]) || ggml_nbytes(cgraph->nodes[i]) <= ((size_t) 4 << 20);
+                // a decode graph: a prompt pass's kernels fill the card one at a time, nothing to gain beside them. A node that writes into another tensor
+                // (a row of the KV, a state) has that tensor's size and says nothing
+                const char * why = nullptr;
+                for (int i = 0; i < cgraph->n_nodes && !why; ++i) {
+                    const ggml_tensor * t = cgraph->nodes[i];
+                    if (!ggml_cuda_is_view_or_noop(t) && t->view_src == nullptr && ggml_nbytes(t) > ((size_t) 4 << 20)) { why = t->name; }
                 }
                 std::lock_guard<std::mutex> lock(g_cuda_stream_rec_mtx);
                 const auto it = g_cuda_stream_recs.find({ cuda_ctx->device, graph_key });
-                if (small && it != g_cuda_stream_recs.end() && it->second.n_nodes == cgraph->n_nodes) {
+                static std::atomic<int> said{0};
+                if ((why || it == g_cuda_stream_recs.end() || it->second.n_nodes != cgraph->n_nodes) && said.fetch_add(1) < 6) {
+                    GGML_LOG_WARN("CUDA%d streams: a graph of %d nodes stays on one stream: %s%s\n", cuda_ctx->device, cgraph->n_nodes,
+                            why ? "a node of over 4 MiB, " : it == g_cuda_stream_recs.end() ? "no call of it noted yet" : "its last call had another node count", why ? why : "");
+                }
+                if (!why && it != g_cuda_stream_recs.end() && it->second.n_nodes == cgraph->n_nodes) {
                     sp.rec    = &it->second;
                     sp.active = true;
                     sp.skipped.assign(cgraph->n_nodes, 0);
