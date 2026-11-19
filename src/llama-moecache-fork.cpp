@@ -18350,6 +18350,7 @@ static void bell_need(const llama_moe_cache_layer_fork * pub, const int32_t * mi
 }
 
 #include "llama-bellpool-fork.h"
+extern "C" bool llama_bell_iq2s_fork(bellpool_dot_t * dot, bellpool_dot2_t * dot2);   // llama-iq2s-avx2-fork.cpp
 
 static int bell_pool_n() {   // --moe bell-pool=N: the bell's CPU experts on a pool of N workers (0: the scheduler's CPU graph); unset: a worker a physical core
     static const int n = [] {
@@ -18428,6 +18429,22 @@ static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
     bellpool_layer L;
     L.n_embd = (int) c.up->src[0]->ne[0]; L.n_ff = (int) c.up->src[0]->ne[1];
     bell_pool_type(c.up->src[0], L.n_embd, L.up); bell_pool_type(c.gate->src[0], L.n_embd, L.gate); bell_pool_type(c.down->src[0], L.n_ff, L.down);
+    {   // fork: IQ2_S rows by the pool's own AVX2 dots where the CPU has them (llama-iq2s-avx2-fork.cpp): bit-identical to the CPU backend's (its test), fewer
+        // instructions a block, and an up row and a gate row in one pass over the input. LLAMA_BELL_IQ2S=0 keeps the backend's dot
+        static bellpool_dot_t  d1 = nullptr;
+        static bellpool_dot2_t d2 = nullptr;
+        static const bool have = [] {
+            const char * e = getenv("LLAMA_BELL_IQ2S");
+            const ggml_type_traits_cpu * tr = bell_traits(GGML_TYPE_IQ2_S);
+            return (!e || atoi(e) != 0) && tr && tr->vec_dot_type == GGML_TYPE_Q8_K && llama_bell_iq2s_fork(&d1, &d2);
+        }();
+        if (have) {
+            const bool u2 = c.up->src[0]->type == GGML_TYPE_IQ2_S && L.up.quant != nullptr, g2 = c.gate->src[0]->type == GGML_TYPE_IQ2_S && L.gate.quant != nullptr;
+            if (u2) { L.up.dot = d1; }
+            if (g2) { L.gate.dot = d1; }
+            if (u2 && g2) { L.upgate2 = d2; }
+        }
+    }
     L.x = (const float *) ggml_bell_x(c.b);
     const size_t row = sizeof(float) * (size_t) c.b->n_embd;
     for (int i = 0; i < c.b->n_used; ++i) {

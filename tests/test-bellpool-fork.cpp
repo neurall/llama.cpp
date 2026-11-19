@@ -74,6 +74,27 @@ int main() {
         pool.run(L);
         assert(o[0] != -1.0f);
     }
-    printf("ok: bell pool, 1/3/8 workers, 50 layers each, float and quantized input, wake after sleep\n");
+    {   // up and gate rows in one pass give what two dots give (float input shared, and a quantized input shared)
+        const int n_embd = 64, n_ff = 48;
+        std::mt19937 rng(11);
+        std::uniform_real_distribution<float> U(-1.0f, 1.0f);
+        std::vector<float> x(n_embd), wu((size_t) n_ff * n_embd), wg((size_t) n_ff * n_embd), wd((size_t) n_embd * n_ff), a(n_embd), b(n_embd);
+        for (auto * v : { &x, &wu, &wg, &wd }) { for (float & f : *v) { f = U(rng); } }
+        for (int quantized = 0; quantized < 2; ++quantized) {
+            for (int two = 0; two < 2; ++two) {
+                bellpool pool(3);
+                bellpool_layer L;
+                L.n_embd = n_embd; L.n_ff = n_ff; L.n = 1; L.x = x.data();
+                L.up = L.gate = { dot_f32, quantized ? quant_x2 : nullptr, (size_t) n_embd * 4, (size_t) n_embd * 4 };
+                L.down = { dot_f32, nullptr, (size_t) n_ff * 4, (size_t) n_ff * 4 };
+                if (two) { L.upgate2 = [](int n, float * s_a, float * s_b, const void * xa, const void * xb, const void * y) { dot_f32(n, s_a, 0, xa, 0, y, 0, 1); dot_f32(n, s_b, 0, xb, 0, y, 0, 1); }; }
+                L.w_up[0] = (const char *) wu.data(); L.w_gate[0] = (const char *) wg.data(); L.w_down[0] = (const char *) wd.data();
+                L.out[0] = two ? b.data() : a.data();
+                pool.run(L);
+            }
+            for (int i = 0; i < n_embd; ++i) { assert(a[i] == b[i]); }
+        }
+    }
+    printf("ok: bell pool, 1/3/8 workers, 50 layers each, float and quantized input, wake after sleep, up and gate in one pass\n");
     return 0;
 }

@@ -38,6 +38,7 @@ set(LLAMA_CORE_SOURCES
     llama-model-saver.cpp
     llama-model.cpp
     llama-moecache-fork.cpp
+    llama-iq2s-avx2-fork.cpp
     llama-gpu-probe-fork.cpp
     llama-dsplit-fork.cpp
     llama-moestate-fork.cpp
@@ -70,6 +71,15 @@ set_source_files_properties(${LLAMA_CORE_SOURCES} ../include/llama.h unicode.h
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 
 configure_file(llama-version.h.in ${CMAKE_CURRENT_BINARY_DIR}/llama-version.h @ONLY)
+
+# fork: the bell pool's IQ2_S dots are built with AVX2 and FMA on x86 whatever the library targets; the code asks the CPU before it hands them out
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    if (MSVC)
+        set_source_files_properties(llama-iq2s-avx2-fork.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    else()
+        set_source_files_properties(llama-iq2s-avx2-fork.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+    endif()
+endif()
 
 target_include_directories(llama PRIVATE . ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(llama PUBLIC ../include)

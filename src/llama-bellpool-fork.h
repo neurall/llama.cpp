@@ -30,6 +30,7 @@
 
 typedef void (*bellpool_dot_t)(int n, float * s, size_t bs, const void * x, size_t bx, const void * y, size_t by, int nrc);
 typedef void (*bellpool_quant_t)(const float * x, void * y, int64_t n);
+typedef void (*bellpool_dot2_t)(int n, float * s_a, float * s_b, const void * xa, const void * xb, const void * y);   // two weight rows against one input
 
 struct bellpool_type {   // one weight type: its dot with the quantized input, and how the input is quantized for it
     bellpool_dot_t   dot   = nullptr;
@@ -41,6 +42,7 @@ struct bellpool_type {   // one weight type: its dot with the quantized input, a
 struct bellpool_layer {   // one layer's missing experts for one token
     int n_embd = 0, n_ff = 0;
     bellpool_type up, gate, down;
+    bellpool_dot2_t upgate2 = nullptr;            // an up row and a gate row against the same quantized input in one pass (the input's bytes loaded once)
     int n = 0;                                    // missing experts
     const char * w_up[16], * w_gate[16], * w_down[16];   // expert matrices: row r at w + r * w_row
     float * out[16];                              // n_embd floats each
@@ -98,11 +100,16 @@ struct bellpool {
         const void * qg = L.gate.quant ? (const void *) (same_q ? qx_up.data() : qx_gate.data()) : (const void *) L.x;
         int64_t lo, hi;
         bellpool_split((int64_t) L.n * L.n_ff, n_workers, w, lo, hi);
+        const bool two = L.upgate2 != nullptr && qu == qg;
         for (int64_t t = lo; t < hi; ++t) {
             const int e = (int) (t / L.n_ff), r = (int) (t % L.n_ff);
             float u = 0.0f, g = 0.0f;
-            L.up.dot(L.n_embd, &u, 0, L.w_up[e] + (size_t) r * L.up.w_row, 0, qu, 0, 1);
-            L.gate.dot(L.n_embd, &g, 0, L.w_gate[e] + (size_t) r * L.gate.w_row, 0, qg, 0, 1);
+            if (two) {
+                L.upgate2(L.n_embd, &u, &g, L.w_up[e] + (size_t) r * L.up.w_row, L.w_gate[e] + (size_t) r * L.gate.w_row, qu);
+            } else {
+                L.up.dot(L.n_embd, &u, 0, L.w_up[e] + (size_t) r * L.up.w_row, 0, qu, 0, 1);
+                L.gate.dot(L.n_embd, &g, 0, L.w_gate[e] + (size_t) r * L.gate.w_row, 0, qg, 0, 1);
+            }
             hu[(size_t) t] = g / (1.0f + std::exp(-g)) * u;
         }
     }
