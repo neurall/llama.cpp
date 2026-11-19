@@ -58,3 +58,4 @@ q1-s3,qwen38,2,pf12k1k,512,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1 -bs",--env 
 pd-s4,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=4 --env PERF_PPL_CHUNKS=12
 pd-bf16,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env PERF_PPL_CHUNKS=12
 pd-fuse,qwen38,1,ppl,,"--moe bell=1,bell-pool=32,sync=0,hc-q8=1",--env CUDA_VISIBLE_DEVICES=0 --env GGML_CUDA_STREAMS=2 --env GGML_CUDA_HC_FUSE=1 --env PERF_PPL_CHUNKS=12
+pd-default,qwen38,1,ppl,,,--env CUDA_VISIBLE_DEVICES=0 --env PERF_PPL_CHUNKS=12
