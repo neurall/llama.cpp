@@ -10299,3 +10299,4 @@ strata-0.2.15-nsys-q1-stratak-pf12k1k,2026-11-19 09:19:27,bench /m/q/1/Qwen3.8-F
 cuda_routed_streams-q1-bestc-pf12k1k,2026-11-19 09:21:35,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_routed_streams variants v test pf12k n=2,,
 cuda_routed_streams-q1-bestc-pf12k1k,2026-11-19 09:23:45,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds cuda_routed_streams variants v test pf12k n=2,,
 dev_step_time-q1-steptime-pf12k1k,2026-11-19 09:27:53,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_step_time variants v test pf12k n=2,,
+dev_fuse_dump-q1-fusedump-pf12k1k,2026-11-19 09:33:39,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_fuse_dump variants v test pf12k n=2,,
