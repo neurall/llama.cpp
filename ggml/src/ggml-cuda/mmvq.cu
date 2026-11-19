@@ -1720,7 +1720,7 @@ void ggml_cuda_mul_mat_vec_q(
         const int64_t q8_ne[4] = { ne10, ne11, ne12, ne13 };
         const int64_t q8_s[3]  = { s11, s12, s13 };
         bool q8_hit = false;
-        src1_q8 = (char *) ggml_cuda_q8_reuse_fork(ctx.device, ctx.curr_stream_no > 0 ? 1 : 0, src1_d, q8_ne, q8_s, ggml_nbytes(src1), q8_bytes, &q8_hit);
+        src1_q8 = (char *) ggml_cuda_q8_reuse_fork(ctx.device, ctx.curr_stream_no, src1_d, q8_ne, q8_s, ggml_nbytes(src1), q8_bytes, &q8_hit);
         if (src1_q8 == nullptr) {
             src1_q8 = src1_q8_1.alloc(q8_bytes);
         }

@@ -16,7 +16,7 @@
 #include "ggml-cuda/common.cuh"
 #include "ggml-streams-fork.h"
 #include "ggml-cuda/q8reuse-fork.h"
-static constexpr int    Q8R_LANES = 2, Q8R_SLOTS = 8;
+static constexpr int    Q8R_LANES = 4, Q8R_SLOTS = 8;   // a lane per stream of the plan (GGML_STREAMS_MAX, ggml-streams-fork.h)
 static constexpr size_t Q8R_SLOT_BYTES = 16384;
 static bool ggml_cuda_q8_reuse_on() { static const bool on = !getenv("GGML_CUDA_Q8_REUSE") || atoi(getenv("GGML_CUDA_Q8_REUSE")) != 0; return on; }   // on unless GGML_CUDA_Q8_REUSE=0 (2026-11-19: with the hc fuse +2 t/s Qwen3.8 decode)
 #include "ggml-cuda/acc.cuh"
@@ -944,10 +944,11 @@ struct ggml_cuda_scratch_region {
     size_t top  = 0;
     size_t hwm  = 0;
     const void * owner = nullptr;   // the ggml_backend_cuda_context the region serves (nullptr: any, the caller did not say)
-    struct piece { size_t off, size; bool freed; };
+    struct piece { size_t off, size; bool freed; int st = 0; };   // st: the side stream a piece of the top belongs to
     std::vector<piece> live;
-    // the side stream of a two-stream graph (ggml-streams-fork.h) takes from the top, downwards: its kernels run beside the main stream's, whose scratch at
-    // the bottom is handed out again from one launch to the next
+    // the side streams of a planned graph (ggml-streams-fork.h) take from the top, downwards: their kernels run beside the main stream's, whose scratch at
+    // the bottom is handed out again from one launch to the next. A piece of the top goes again only to the stream that had it (a stream's kernels run
+    // one after another, two side streams' at the same time), and the top is free again when the streams were joined (ggml_cuda_scratch_side_join_fork)
     size_t side_used = 0;
     std::vector<piece> side_live;
 };
@@ -991,19 +992,27 @@ struct ggml_cuda_pool_scratch : public ggml_cuda_pool {
 
 struct ggml_cuda_pool_scratch_side : public ggml_cuda_pool {
     int device;
+    int st;   // the side stream this pool serves
     const void * ctx;
     std::unique_ptr<ggml_cuda_pool> inner;
-    ggml_cuda_pool_scratch_side(int device, const void * ctx, std::unique_ptr<ggml_cuda_pool> inner) : device(device), ctx(ctx), inner(std::move(inner)) {}
+    ggml_cuda_pool_scratch_side(int device, int st, const void * ctx, std::unique_ptr<ggml_cuda_pool> inner) : device(device), st(st), ctx(ctx), inner(std::move(inner)) {}
 
     void * alloc(size_t size, size_t * actual_size) override {
         ggml_cuda_scratch_region & s = g_cuda_scratch[device];
         if (s.base != nullptr && size > 0 && (s.owner == nullptr || s.owner == ctx)) {
+            for (auto & p : s.side_live) {   // a piece this stream had: its earlier kernel has run when the next one of the stream starts
+                if (p.freed && p.st == st && p.size >= size) {
+                    p.freed = false;
+                    *actual_size = size;
+                    return s.base + p.off;
+                }
+            }
             const size_t bottom = GGML_PAD(s.top, 256);
             s.hwm = std::max(s.hwm, bottom + s.side_used + GGML_PAD(size, 256));
             if (s.cap >= s.side_used + size) {
                 const size_t off = (s.cap - s.side_used - size) & ~(size_t) 255;
                 if (off >= bottom) {
-                    s.side_live.push_back({ off, size, false });
+                    s.side_live.push_back({ off, size, false, st });
                     s.side_used = s.cap - off;
                     *actual_size = size;
                     return s.base + off;
@@ -1020,13 +1029,20 @@ struct ggml_cuda_pool_scratch_side : public ggml_cuda_pool {
             for (size_t i = s.side_live.size(); i-- > 0; ) {
                 if (s.side_live[i].off == off && !s.side_live[i].freed) { s.side_live[i].freed = true; break; }
             }
-            while (!s.side_live.empty() && s.side_live.back().freed) { s.side_live.pop_back(); }
-            s.side_used = s.side_live.empty() ? 0 : s.cap - s.side_live.back().off;
-            return;
+            return;   // kept for its stream until the streams are joined: another side stream's kernel may run while this one's still does
         }
         inner->free(ptr, size);
     }
 };
+// every side stream was joined into the main one: no kernel reads the top of the region any more
+static void ggml_cuda_scratch_side_join_fork(int device) {
+    ggml_cuda_scratch_region & s = g_cuda_scratch[device];
+    for (const auto & p : s.side_live) {
+        if (!p.freed) { return; }
+    }
+    s.side_live.clear();
+    s.side_used = 0;
+}
 
 // fork: the CUDA driver API version (e.g. 13040), for the key of the VRAM need the engine stores per driver
 static int ggml_backend_cuda_driver_version_fork(void) {
@@ -1078,8 +1094,8 @@ std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(g
     }
     if (stream_no == 0) {   // fork: the main stream may take its scratch from a region the caller lends (ggml_backend_cuda_scratch_fork)
         p.reset(new ggml_cuda_pool_scratch(device, &ctx, std::move(p)));
-    } else if (stream_no == 1) {   // and the side stream of a two-stream graph from the same region's top
-        p.reset(new ggml_cuda_pool_scratch_side(device, &ctx, std::move(p)));
+    } else if (stream_no < GGML_STREAMS_MAX) {   // and the side streams of a planned graph from the same region's top
+        p.reset(new ggml_cuda_pool_scratch_side(device, stream_no, &ctx, std::move(p)));
     }
     return p;
 }
@@ -4657,10 +4673,12 @@ static size_t ggml_cuda_fattn_scratch_fork(int device, const ggml_tensor * dst) 
 // all-reduce). The pool asks this once per split of every new graph (the scheduler keeps the value until it splits again): one call per split, the device set
 // once (some path tests read the current device's properties, ggml_cuda_should_use_mmq: shared memory per block; switching per node cost 0.2 ms per DeepSeek
 // 4.1 decode step).
+static int ggml_cuda_streams_fork();
 static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor * const * nodes, int n) {
     ggml_cuda_fattn_f16_scratch_fork[device] = true;
     int prev = -1;
     size_t need = 0;
+    size_t side = 0;   // the most a node takes that may run on a side stream of a planned graph (a product within the plan's 4 MiB)
     for (int i = 0; i < n; ++i) {
         const ggml_tensor * node = nodes[i];
         switch (node->op) {
@@ -4674,7 +4692,12 @@ static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor
         }
         switch (node->op) {
             case GGML_OP_MUL_MAT_ID:     need = std::max(need, ggml_cuda_mmid_scratch_fork(device, node));                            break;
-            case GGML_OP_MUL_MAT:        need = std::max(need, ggml_cuda_mm_scratch_fork(device, node->src[0], node->src[1], node, 0)); break;
+            case GGML_OP_MUL_MAT: {
+                const size_t mm = ggml_cuda_mm_scratch_fork(device, node->src[0], node->src[1], node, 0);
+                need = std::max(need, mm);
+                if (ggml_nbytes(node) <= ((size_t) 4 << 20)) { side = std::max(side, mm); }
+                break;
+            }
             case GGML_OP_FLASH_ATTN_EXT: need = std::max(need, ggml_cuda_fattn_scratch_fork(device, node));                           break;
             case GGML_OP_TOP_K:          need = std::max(need, ggml_cuda_top_k_scratch_fork(node, 0));                                break;
             case GGML_OP_ARGSORT:        need = std::max(need, ggml_cuda_argsort_scratch_fork(node, 0));                              break;
@@ -4694,6 +4717,10 @@ static size_t ggml_backend_cuda_nodes_scratch_fork(int device, const ggml_tensor
     for (int i = 0; i < n && !has_mm; ++i) { has_mm = nodes[i]->op == GGML_OP_MUL_MAT || nodes[i]->op == GGML_OP_MUL_MAT_ID; }
     if (has_mm && ggml_cuda_q8_reuse_on()) {
         need += GGML_PAD((size_t) Q8R_LANES * Q8R_SLOTS * Q8R_SLOT_BYTES, 256);   // the q8 reuse slots stay taken under every node of the graph
+    }
+    if (n > 1 && ggml_cuda_streams_fork() > 0) {
+        // the side streams' pieces stay at the top of the region until the streams are joined (ggml_cuda_pool_scratch_side): room for two a stream
+        need += (size_t) (ggml_cuda_streams_fork() - 1) * 2 * GGML_PAD(side, 256);
     }
     return need;
 }
@@ -5560,7 +5587,7 @@ static bool ggml_cuda_is_view_or_noop(const ggml_tensor * t) {
 // fork: two streams for a card's part of a decode graph (ggml-streams-fork.h): GGML_CUDA_STREAMS=2. Off until the rows say it wins.
 static int ggml_cuda_streams_fork() {
     static const int n = [] { const char * e = getenv("GGML_CUDA_STREAMS"); return e ? atoi(e) : 0; }();
-    return n >= 2 ? 2 : 0;
+    return n >= 2 ? std::min(n, GGML_STREAMS_MAX) : 0;   // the main stream and n - 1 beside it
 }
 
 // What a call of a graph launched: per launch its first node and every node it ran (a fusion runs several, some of them further on in the graph). Kept per
@@ -5572,7 +5599,8 @@ struct ggml_cuda_stream_rec_fork {
 };
 static std::mutex g_cuda_stream_rec_mtx;
 static std::map<std::pair<int, const void *>, ggml_cuda_stream_rec_fork> g_cuda_stream_recs;
-static std::vector<cudaEvent_t> g_cuda_stream_events[GGML_CUDA_MAX_DEVICES];   // 0: a chunk's start, 1: its join, 2 + k: behind the chunk's unit k
+static std::vector<cudaEvent_t> g_cuda_stream_events[GGML_CUDA_MAX_DEVICES];   // 0: a chunk's start, s: side stream s's join, GGML_STREAMS_MAX + k: behind the chunk's unit k
+static_assert(Q8R_LANES >= GGML_STREAMS_MAX, "a q8 reuse lane per stream of the plan: a slot written on one stream is never read from another");
 
 // may this node run beside the main chain? A pure op that writes memory of its own. Everything else stays on the main stream: an op that writes into a state
 // tensor or in place (a view), one that meets the host (the bell), one with a hook of the expert cache (MUL_MAT_ID), the attention kernels and their indexers.
@@ -5631,7 +5659,9 @@ static ggml_stream_unit ggml_cuda_stream_unit_fork(const ggml_cgraph * cgraph, i
             }
             u.reads.push_back({ (uintptr_t) s->data, (uintptr_t) s->data + ggml_nbytes(s) });
         }
-        u.cost += 1.5f + (float) (bytes / 836e3);   // microseconds: a kernel's own latency, and the bytes it moves at a card's 836 GB/s
+        const float mem_us = (float) (bytes / 836e3);
+        u.cost += 1.5f + mem_us;   // microseconds: a kernel's own latency, and the bytes it moves at a card's 836 GB/s
+        u.fills = u.fills || mem_us > 1.5f;   // bound by the bus, not by its launch: it takes every SM for several waves and its end depends on what runs beside it
         if (t->op == GGML_OP_MOE_ROWS) {
             // the launch waits for the host's rows (bell). Costed at 1.5 us the plan kept the shared expert's tail (swiglu, down, gate, mul) behind
             // that wait (trace 2026-11-19: 30 us mean, p90 81 us); Strata runs its shared expert inside it.
@@ -8027,7 +8057,8 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
     // fork: two streams for a decode graph (ggml-streams-fork.h). A call that goes node by node notes what it launches (rec_new); a capture whose graph was
     // noted before is planned chunk by chunk from that note (sp)
     struct {
-        bool   active = false, side_used = false;
+        bool   active = false;
+        unsigned side_used = 0;      // bit s: side stream s has run something since the last join
         const ggml_cuda_stream_rec_fork * rec = nullptr;
         std::vector<char> skipped;   // per node: run by an earlier launch, the loop never comes to it
         size_t next = 0;             // the next launch of the note
@@ -8049,11 +8080,14 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
     };
     // the side stream's work ends before the main stream goes on: at a chunk's end (its capture may end only then) and at the graph's
     const auto sp_join = [&] {
-        if (sp.side_used) {
-            CUDA_CHECK(cudaEventRecord(sp_event(1), cuda_ctx->stream(cuda_ctx->device, 1)));
-            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, 0), sp_event(1)));
-            sp.side_used = false;
+        for (int st = 1; st < GGML_STREAMS_MAX; ++st) {
+            if (sp.side_used & (1u << st)) {
+                CUDA_CHECK(cudaEventRecord(sp_event((size_t) st), cuda_ctx->stream(cuda_ctx->device, st)));
+                CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, 0), sp_event((size_t) st)));
+            }
         }
+        if (sp.side_used) { ggml_cuda_scratch_side_join_fork(cuda_ctx->device); }
+        sp.side_used = 0;
         cuda_ctx->curr_stream_no = 0;
         sp.cur = -1;
     };
@@ -8073,7 +8107,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
         const std::vector<uint8_t> no_cut(units.size(), 0);
         // what a wait across the streams costs, in microseconds (GGML_CUDA_STREAMS_SWITCH_US): a launch moves only when it starts earlier by more than that
         static const float switch_us = [] { const char * e = getenv("GGML_CUDA_STREAMS_SWITCH_US"); return e ? (float) atof(e) : 1.0f; }();
-        sp.plan = ggml_stream_plan_make(units, no_cut, switch_us);
+        sp.plan = ggml_stream_plan_make(units, no_cut, switch_us, ggml_cuda_streams_fork());
         static const bool check = getenv("GGML_CUDA_STREAMS_CHECK") != nullptr;
         if (check && !ggml_stream_plan_check(units, no_cut, sp.plan)) {
             GGML_ABORT("CUDA%d streams: the plan of the chunk at node %d lets two launches that share memory run out of order", cuda_ctx->device, i_from);
@@ -8081,9 +8115,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
         static std::atomic<int> said{0};
         if (said.fetch_add(1) < 12) {
             int n_wait = 0;
-            for (int w : sp.plan.wait) { n_wait += w >= 0; }
-            GGML_LOG_WARN("CUDA%d streams: chunk of %zu launches from node %d: %d beside the main chain, %d waits, estimated %.0f -> %.0f us\n", cuda_ctx->device,
-                    units.size(), i_from, sp.plan.n_side, n_wait, sp.plan.t_serial, sp.plan.t_plan);
+            for (const ggml_stream_ids & w : sp.plan.wait) { for (int x : w) { n_wait += x >= 0; } }
+            GGML_LOG_WARN("CUDA%d streams: chunk of %zu launches from node %d: %d beside the main chain on %d streams, %d waits, estimated %.0f -> %.0f us\n", cuda_ctx->device,
+                    units.size(), i_from, sp.plan.n_side, sp.plan.n_streams - 1, n_wait, sp.plan.t_serial, sp.plan.t_plan);
         }
         // GGML_CUDA_STREAMS_DEBUG=1: the plan of each card's first chunks, launch by launch (which launch each one waits for, and what keeps it on the main chain)
         static const bool dump = getenv("GGML_CUDA_STREAMS_DEBUG") != nullptr;
@@ -8095,9 +8129,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 for (int v = (int) k - 1; v >= 0 && dep < 0; --v) {
                     if (ggml_stream_conflict(units[v], units[k])) { dep = v; }
                 }
-                GGML_LOG_WARN("CUDA%d streams: %3zu %s %-14s %-28s %6.1f us%s  after %d (%s)%s\n", cuda_ctx->device, k, sp.plan.stream[k] ? "SIDE" : "main", ggml_op_name(t->op), t->name,
-                        units[k].cost, units[k].movable ? "" : " fixed", dep, dep >= 0 ? cgraph->nodes[units[dep].leader]->name : "-",
-                        sp.plan.wait[k] >= 0 ? (std::string(", waits for ") + std::to_string(sp.plan.wait[k])).c_str() : "");
+                std::string waits;
+                for (int x : sp.plan.wait[k]) { if (x >= 0) { waits += (waits.empty() ? ", waits for " : " ") + std::to_string(x); } }
+                const char * where[GGML_STREAMS_MAX] = { "main", "SIDE1", "SIDE2", "SIDE3" };
+                GGML_LOG_WARN("CUDA%d streams: %3zu %-5s %-14s %-28s %6.1f us%s%s  after %d (%s)%s\n", cuda_ctx->device, k, where[sp.plan.stream[k]], ggml_op_name(t->op), t->name,
+                        units[k].cost, units[k].movable ? "" : " fixed", units[k].fills ? " fills" : "", dep, dep >= 0 ? cgraph->nodes[units[dep].leader]->name : "-", waits.c_str());
             }
         }
         CUDA_CHECK(cudaEventRecord(sp_event(0), cuda_ctx->stream(cuda_ctx->device, 0)));   // what the side stream starts behind in this chunk
@@ -8114,12 +8150,12 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
         }
         sp.cur = (int) (sp.next++ - sp.u0);
         const int st = sp.plan.stream[sp.cur];
-        if (st == 1 && !sp.side_used) {
-            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, 1), sp_event(0)));
-            sp.side_used = true;
+        if (st >= 1 && !(sp.side_used & (1u << st))) {
+            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, st), sp_event(0)));
+            sp.side_used |= 1u << st;
         }
-        if (sp.plan.wait[sp.cur] >= 0) {
-            CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, st), sp_event(2 + (size_t) sp.plan.wait[sp.cur])));
+        for (int w : sp.plan.wait[sp.cur]) {
+            if (w >= 0) { CUDA_CHECK(cudaStreamWaitEvent(cuda_ctx->stream(cuda_ctx->device, st), sp_event(GGML_STREAMS_MAX + (size_t) w))); }
         }
         cuda_ctx->curr_stream_no = st;
     };
@@ -8127,7 +8163,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
     const auto sp_after = [&](int i, int n_skip, const std::vector<bool> & fused, const bool * fused_was) {
         if (sp.cur >= 0) {
             if (sp.plan.record[sp.cur]) {
-                CUDA_CHECK(cudaEventRecord(sp_event(2 + (size_t) sp.cur), cuda_ctx->stream()));
+                CUDA_CHECK(cudaEventRecord(sp_event(GGML_STREAMS_MAX + (size_t) sp.cur), cuda_ctx->stream()));
             }
             cuda_ctx->curr_stream_no = 0;
             sp.cur = -1;
