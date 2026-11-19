@@ -1905,7 +1905,6 @@ void * cpu_proc_fork(const char * name) {   // the CPU backend's fork entry poin
     ggml_backend_reg_t reg = ggml_backend_reg_by_name("CPU");
     return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
 }
-extern "C" void llama_bell_dots_register_fork(void);   // below, beside the bell pool: its one-row kernels go to the CPU backend's per-type timing
 void * cuda_obs_proc(const char * name) {   // a process-wide hook from whichever backend has it (llama-backend-fork.h)
     return llama_fork_proc(name);
 }
@@ -9237,7 +9236,6 @@ static void rp_setup(moe_cache * mc, const llama_model & model) {
         for (int k = 0; k < 3; ++k) { ls.rp_tab[k] = ggml_rampool_table_fork(ts[k]); }
     }
     if (auto set = (void (*)(const void * (*)(const ggml_tensor *, int64_t))) cpu_proc_fork("ggml_backend_cpu_set_expert_ptr_hook")) { set(rp_cpu_ptr); }
-    llama_bell_dots_register_fork();
     mc->rp_on = true;
     ram_watch_start();   // rp_resize's measure, from the first request on
     // --moe map-guard=1 (user 2026-11-08: "we have no control over individual moes in [the mapping] and can't evict ... shall read/prefetch intelligently instead of faults"): the
@@ -18409,16 +18407,45 @@ static bool bell_dots_on() {
     static const bool on = !getenv("LLAMA_BELL_DOTS") || atoi(getenv("LLAMA_BELL_DOTS")) != 0;
     return on;
 }
-// The one-row kernels as one more form of the CPU backend's per-type timing (ggml-cpu.c, ggml_cpu_tune_vec_dot): every CPU path of a type (the pool, the
-// scheduler's CPU graph) runs them where they are the quickest on this CPU and give the default's sums, and nowhere else. Called before the first graph:
-// a type is timed once.
-extern "C" void llama_bell_dots_register_fork(void) {
-    auto set = (void (*)(ggml_type, bellpool_dot_t)) cpu_proc_fork("ggml_backend_cpu_set_extra_vec_dot");
-    if (!bell_dots_on() || !set) { return; }
-    for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
-        int act = -1; bellpool_dot_t d1 = nullptr; bellpool_dot2_t d2 = nullptr;
-        const ggml_type_traits_cpu * tr = bell_traits((ggml_type) t);
-        if (llama_bell_dots_fork(t, &act, &d1, &d2) && d1 && tr && (int) tr->vec_dot_type == act) { set((ggml_type) t, d1); }
+// A type's one-row kernel of this library against the dot the CPU backend has for it, timed once a type on rows of the first expert served (64 rows, in
+// cache after the first round, the best of 5 rounds a side) with their sums compared (the backend's own rule for its forms: within 2e-5). 3% or more
+// quicker and the same sums: the pool runs it and the backend takes it too (ggml_cpu_set_vec_dot), so the scheduler's CPU graph of the type gets it as
+// well. No sample is quantized for this: the backend's own timing does that (slow for the IQ types) and would stall the first tokens on the bell's thread.
+static void bell_dot1_pick(ggml_type type, bellpool_type & ty, int n_in, const char * rows, int n_rows) {
+    static bool done[GGML_TYPE_COUNT] = {};
+    static bellpool_dot_t picked[GGML_TYPE_COUNT] = {};   // the pool's own record: a CPU backend without the setter keeps its table
+    if (done[type]) {
+        if (picked[type] && ty.quant) { ty.dot = picked[type]; }
+        return;
+    }
+    done[type] = true;
+    int act = -1; bellpool_dot_t d1 = nullptr; bellpool_dot2_t d2 = nullptr;
+    const ggml_type_traits_cpu * tr = bell_traits(type);
+    if (!bell_dots_on() || !ty.quant || !ty.dot || !tr || !rows || cpu_gpu_shape_on() || !llama_bell_dots_fork((int) type, &act, &d1, &d2) || !d1 || (int) tr->vec_dot_type != act || ty.dot == d1) { return; }
+    const int nr = std::min(64, n_rows);
+    if (nr < 1) { return; }
+    std::vector<float> xf((size_t) n_in);
+    for (int i = 0; i < n_in; ++i) { xf[(size_t) i] = 0.001f * (float) ((i * 37) % 201 - 100); }
+    std::vector<uint8_t> q(ty.q_row);
+    ty.quant(xf.data(), q.data(), n_in);
+    float s0[64], s1[64];
+    int64_t t0 = INT64_MAX, t1 = INT64_MAX;
+    for (int round = 0; round < 5; ++round) {
+        int64_t a = bellpool::now_ns();
+        for (int r = 0; r < nr; ++r) { ty.dot(n_in, &s0[r], 0, rows + (size_t) r * ty.w_row, 0, q.data(), 0, 1); }
+        t0 = std::min(t0, bellpool::now_ns() - a);
+        a = bellpool::now_ns();
+        for (int r = 0; r < nr; ++r) { d1(n_in, &s1[r], 0, rows + (size_t) r * ty.w_row, 0, q.data(), 0, 1); }
+        t1 = std::min(t1, bellpool::now_ns() - a);
+    }
+    double diff = 0.0;
+    for (int r = 0; r < nr; ++r) { diff = std::max(diff, std::fabs((double) s0[r] - (double) s1[r]) / (std::fabs((double) s0[r]) + 1e-3)); }
+    const bool take = diff <= 2e-5 && t1 * 100 < t0 * 97;
+    LLAMA_LOG_WARN("moe-cache: bell pool: %s rows of %d one by one: this library's kernel %.0f ns a row, the CPU backend's %.0f ns, sums differ by %.0e: %s\n",
+            ggml_type_name(type), n_in, (double) t1 / nr, (double) t0 / nr, diff, take ? "this library's" : "the backend's");
+    if (take) {
+        ty.dot = picked[type] = d1;
+        if (auto set = (void (*)(ggml_type, bellpool_dot_t)) cpu_proc_fork("ggml_backend_cpu_set_vec_dot")) { set(type, d1); }
     }
 }
 // Two rows in one pass where the type has that kernel and it beats two calls of the type's own dot on this CPU: timed once a type, on rows of the first
@@ -18454,22 +18481,6 @@ static bellpool_dot2_t bell_dot2_pick(ggml_type type, const bellpool_type & ty, 
     return p.fn;
 }
 static bool bell_pool_type(const ggml_tensor * w, int64_t n_in, bellpool_type & ty) {
-    {   // the backend picks the quickest form of a type's dot the first time a graph of its own multiplies the type; a type only the pool multiplies was
-        // never timed and kept the default form: on Zen 1 / Zen 2 the pdep one of IQ1_S and IQ1_M, 25 to 35 times slower (2026-11-19)
-        static auto tune = (void (*)(ggml_type)) cpu_proc_fork("ggml_backend_cpu_tune_vec_dot");
-        static bool asked[GGML_TYPE_COUNT] = {};
-        if (tune && w->type >= 0 && w->type < GGML_TYPE_COUNT && !asked[w->type]) {
-            asked[w->type] = true;
-            tune(w->type);
-            // which one-row dot the type ends with (the backend's own line is INFO and muted while the start-up probes run)
-            int act = -1; bellpool_dot_t d1 = nullptr; bellpool_dot2_t d2 = nullptr;
-            const ggml_type_traits_cpu * t1 = bell_traits(w->type);
-            if (t1 && bell_dots_on() && llama_bell_dots_fork((int) w->type, &act, &d1, &d2) && d1) {
-                LLAMA_LOG_WARN("moe-cache: bell pool: %s rows one by one: %s\n", ggml_type_name(w->type), (bellpool_dot_t) t1->vec_dot == d1 ?
-                        "this library's AVX2 kernel (the quickest form in the CPU backend's timing)" : "a form of the CPU backend (this library's kernel was not quicker)");
-            }
-        }
-    }
     const ggml_type_traits_cpu * tr = bell_traits(w->type);
     if (!tr || !tr->vec_dot || tr->nrows != 1) { return false; }
     ty.dot   = (bellpool_dot_t) tr->vec_dot;
@@ -18535,10 +18546,14 @@ static bool bell_pool_serve(bell_chain & c, const int32_t * miss, int n) {
         L.out[L.n] = (float *) ((char *) ggml_bell_rows(c.b) + (size_t) i * row);
         L.n++;
     }
-    if (L.n > 0) {   // rows in pairs where measured quicker (bell_dot2_pick): an up row with its gate row when both are one type, two neighbouring down rows
-        const ggml_type tu = c.up->src[0]->type, tg = c.gate->src[0]->type;
+    if (L.n > 0) {   // this library's kernels where measured quicker on this CPU: one row first (bell_dot1_pick), then rows in pairs against the winner
+        // (bell_dot2_pick): an up row with its gate row when both are one type, two neighbouring down rows
+        const ggml_type tu = c.up->src[0]->type, tg = c.gate->src[0]->type, td = c.down->src[0]->type;
+        bell_dot1_pick(tu, L.up, L.n_embd, L.w_up[0], L.n_ff);
+        if (tg != tu) { bell_dot1_pick(tg, L.gate, L.n_embd, L.w_gate[0], L.n_ff); } else { L.gate.dot = L.up.dot; }
+        bell_dot1_pick(td, L.down, L.n_ff, L.w_down[0], L.n_embd);
         if (tu == tg) { L.upgate2 = bell_dot2_pick(tu, L.up, L.n_embd, L.w_up[0], L.n_ff); }
-        L.down2 = bell_dot2_pick(c.down->src[0]->type, L.down, L.n_ff, L.w_down[0], L.n_embd);
+        L.down2 = bell_dot2_pick(td, L.down, L.n_ff, L.w_down[0], L.n_embd);
     }
     pool->run(L);
     return true;
