@@ -641,6 +641,34 @@ void ggml_backend_tensor_get_2d_async(ggml_backend_t backend, const struct ggml_
     backend->iface.get_tensor_2d_async(backend, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
 }
 
+// fork: between _begin and _end the calling thread's ggml_backend_tensor_set calls of up to 64 KiB into device buffers are gathered and sent as one batch
+// (ggml_backend_tensor_set_n: one wait a buffer type, not one a tensor). A decode graph sets about 20 inputs, each a blocking transfer on CUDA: 116 us a
+// token on Qwen3.8 while the card waits for the graph (2026-11-19, LLAMA_STEP_TIME). The bytes are copied at the call: callers pass temporaries.
+struct ggml_set_batch_fork {
+    bool on = false;
+    std::vector<struct ggml_tensor *> tensors;
+    std::vector<size_t> offsets, sizes, data_offsets;
+    std::vector<uint8_t> bytes;
+};
+static thread_local ggml_set_batch_fork g_set_batch_fork;
+extern "C" {
+    GGML_API void ggml_backend_tensor_set_batch_begin_fork(void);
+    GGML_API void ggml_backend_tensor_set_batch_end_fork(void);
+}
+void ggml_backend_tensor_set_batch_begin_fork(void) {
+    ggml_set_batch_fork & b = g_set_batch_fork;
+    b.on = true;
+    b.tensors.clear(); b.offsets.clear(); b.sizes.clear(); b.data_offsets.clear(); b.bytes.clear();
+}
+void ggml_backend_tensor_set_batch_end_fork(void) {
+    ggml_set_batch_fork & b = g_set_batch_fork;
+    b.on = false;
+    if (!b.tensors.empty()) {
+        ggml_backend_tensor_set_n(b.tensors.data(), b.bytes.data(), b.offsets.data(), b.sizes.data(), b.data_offsets.data(), b.tensors.size());
+        b.tensors.clear();
+    }
+}
+
 void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(tensor);
     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
@@ -652,6 +680,14 @@ void ggml_backend_tensor_set(struct ggml_tensor * tensor, const void * data, siz
 
     GGML_ASSERT(tensor->data != NULL && "tensor not allocated");
     GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor write out of bounds");
+    {   // fork: see ggml_backend_tensor_set_batch_begin_fork
+        ggml_set_batch_fork & b = g_set_batch_fork;
+        if (b.on && size <= ((size_t) 64 << 10) && buf->iface.set_tensor_n != NULL && !ggml_backend_buffer_is_host(buf)) {
+            b.tensors.push_back(tensor); b.offsets.push_back(offset); b.sizes.push_back(size); b.data_offsets.push_back(b.bytes.size());
+            b.bytes.insert(b.bytes.end(), (const uint8_t *) data, (const uint8_t *) data + size);
+            return;
+        }
+    }
     ggml_backend_fork_pool_access(tensor, (const char *) tensor->data + offset, size, "tensor_set");
 
     buf->iface.set_tensor(buf, tensor, data, offset, size);
