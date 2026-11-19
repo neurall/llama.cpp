@@ -10338,3 +10338,4 @@ dev_decode_sections-q1-steptime-pf12k1k,2026-11-19 11:18:48,bench /m/q/1/Qwen3.8
 dev_decode_sections2-q1-steptime-pf12k1k,2026-11-19 11:21:46,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_decode_sections2 variants v test pf12k n=2,,
 dev_decode_sections3-q1-steptime-pf12k1k,2026-11-19 11:24:34,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_decode_sections3 variants v test pf12k n=2,,
 dev_inputs_time-q1-steptime-pf12k1k,2026-11-19 11:27:50,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_inputs_time variants v test pf12k n=2,,
+dev_rowread_time-q1-steptime-pf12k1k,2026-11-19 11:31:13,bench /m/q/1/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf builds dev_rowread_time variants v test pf12k n=2,,
