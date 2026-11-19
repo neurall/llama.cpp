@@ -3996,3 +3996,9 @@ ts,commit,line
 2026-11-19 09:52:42,f750875e88,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
 2026-11-19 09:52:55,f750875e88,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
 2026-11-19 09:52:55,f750875e88,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:34.21 1:16.47 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-19 09:56:15,a44b68be60,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 09:56:29,a44b68be60,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 09:56:29,a44b68be60,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:35.68 1:15.76 -> 1 (not sure: the value in use stays, 8 slices each)"
+2026-11-19 09:57:38,a44b68be60,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 09:57:52,a44b68be60,moe-cache: self-tune: 1 of 4 knobs start at their stored verdicts UPLOAD_WAIT=3; the others are tuned first
+2026-11-19 09:57:52,a44b68be60,"moe-cache: self-tune: WAIT_SWAPS ms/token 0:34.58 1:15.95 -> 1 (not sure: the value in use stays, 8 slices each)"
