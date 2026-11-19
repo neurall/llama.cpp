@@ -275,6 +275,16 @@ bool llama_rowread_fill_rows_fork(const ggml_tensor * t, int part, const int32_t
             ggml_rampool_rows_put_fork(t, mr.data(), mr.size(), mb.data());
         }
     }
+    static const bool st = getenv("LLAMA_STEP_TIME") != nullptr;   // dev: small calls (decode) summed, every 256
+    if (st && nu < 512) {
+        static size_t c_n = 0, c_rows = 0, c_ram = 0, c_ahead = 0, c_now = 0; static int64_t c_us = 0;
+        c_n++; c_rows += nu; c_ram += n_ram; c_ahead += mr.size() - n_miss; c_now += n_miss; c_us += ggml_time_us() - t0;
+        if (c_n == 256) {
+            LLAMA_LOG_WARN("%s: %s: 256 small calls, rows %.1f a call: in RAM %.1f, read-ahead %.1f, read now %.1f; %.0f us a call after the RAM lookup\n", __func__,
+                    ggml_get_name(t), c_rows / 256.0, c_ram / 256.0, c_ahead / 256.0, c_now / 256.0, c_us / 256.0);
+            c_n = c_rows = c_ram = c_ahead = c_now = 0; c_us = 0;
+        }
+    }
     static const bool dbg = getenv("LLAMA_SPLIT_CTL_DEBUG") != nullptr;
     if (dbg && nu >= 512) {
         uint64_t v[10];
