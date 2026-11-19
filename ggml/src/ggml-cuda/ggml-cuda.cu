@@ -10414,6 +10414,19 @@ ggml_backend_t ggml_backend_cuda_init(int device) {
         GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
         return nullptr;
     }
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    {   // fork: the main stream above the others, so a side-stream kernel of the two-stream decode plan (ggml-streams-fork.h) takes only the SMs the main
+        // chain leaves free: blocks are handed out by priority, without it a big matvec on either stream holds every SM until its last wave (trace
+        // 2026-11-19). Made here, before anything asks the context for it (here, not in common.cuh: a header edit rebuilds every CUDA file).
+        // GGML_CUDA_STREAMS_PRIO=0: all streams at the default priority
+        static const bool prio = !getenv("GGML_CUDA_STREAMS_PRIO") || atoi(getenv("GGML_CUDA_STREAMS_PRIO")) != 0;
+        int least = 0, greatest = 0;
+        if (prio && ctx->streams[device][0] == nullptr && cudaDeviceGetStreamPriorityRange(&least, &greatest) == cudaSuccess && greatest < least) {
+            ggml_cuda_set_device(device);
+            CUDA_CHECK(cudaStreamCreateWithPriority(&ctx->streams[device][0], cudaStreamNonBlocking, greatest));
+        }
+    }
+#endif
     ggml_backend_sched_set_xcopy_dst_ordered(ggml_backend_cuda_xcopy_dst_ordered);   // fork: see ggml_cuda_xstage_copy
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     ggml_backend_sched_set_stamp_fn(ggml_backend_cuda_stamp);                        // fork: see ggml_backend_cuda_stamp
